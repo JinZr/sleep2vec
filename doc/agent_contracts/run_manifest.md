@@ -6,7 +6,7 @@
 
 The canonical managed key is `(step_id, run_id)`. Both fields are required and one canonical table contains at most one row per key. A run uses the next stable step-local `run-NNN` id. `run_name` is human-readable, and `version` is the bounded slug of experiment id, step id, run id, and run name. Version may resolve external evidence only when a complete managed key is absent and the match is unique.
 
-Plan-owned identity, semantic parameters, config/script hashes, artifact paths, runtime/checkpoint directories, and execution identity are frozen after registration. Shared execution identity consists of target, host, workdir, GPUs, log path, and command. Direct execution additionally owns the PID path, launched PID, process-group id, and OS process-start token. Slurm execution instead freezes scheduler type, submit token, sbatch path/hash, allocation-identity path, and terminal-sidecar path; the numeric scheduler job id and optional cluster are trusted one-time bindings. PID and scheduler bindings are mutually exclusive. Only the canonical owner may perform each trusted first fill.
+Plan-owned identity, semantic parameters, config/script hashes, artifact paths, runtime/checkpoint directories, and execution identity are frozen after registration. Shared execution identity consists of target, host, workdir, GPUs, log path, and command. Direct execution additionally owns the PID path, launched PID, process-group id, and OS process-start token. Slurm execution instead freezes scheduler type, submit token, sbatch path/hash, allocation-identity path, and terminal-sidecar path; the execution-snapshot SHA-256, numeric scheduler job id, and optional cluster are trusted one-time bindings. PID and scheduler bindings are mutually exclusive. Only the canonical owner may perform each trusted first fill.
 
 Pipeline-managed inference rows may additionally freeze `pipeline_id`,
 `job_id`, `attempt`, and `result_root`. Managed rows may freeze
@@ -127,20 +127,23 @@ after the group has exited.
 
 ## Slurm scheduler evidence
 
-One Slurm-backed canonical run owns one frozen leaf `job.sbatch`. The launcher
-commits transport identity plus `submitting` before calling `sbatch --parsable`.
-The returned positive job id and optional cluster are immutable scheduler
-bindings. Follow-up `squeue`, `scontrol`, and `scancel` commands route to the
-bound cluster. If submission times out, returns malformed output, or loses SSH
-after possible submission, the launcher searches the exact frozen comment
-token; zero or multiple matches remain unresolved and never authorize another
-submission.
+One Slurm-backed canonical run owns one frozen leaf `job.sbatch`. Before any
+submission, the launcher freezes the plan-level execution snapshot's raw
+SHA-256 across all canonical runs. It commits transport identity plus
+`submitting`, and passes that digest as a batch-script argument to
+`sbatch --parsable`. The returned positive job id and optional cluster are
+immutable scheduler bindings. Follow-up `squeue`, `scontrol`, and `scancel`
+commands route to the bound cluster. If submission times out, returns malformed
+output, or loses SSH after possible submission, the launcher searches the exact
+frozen comment token; zero or multiple matches remain unresolved and never
+authorize another submission.
 
-Live state comes from `squeue` and `scontrol`. The compute wrapper revalidates
-the runtime commit, module origin, CLI, and frozen launch/config hashes, runs the
-leaf script in the allocation foreground, and atomically writes allocation and
-terminal JSON sidecars bound to the same token and job id. A canonical terminal
-status requires both the matching terminal sidecar and a terminal scheduler
+Live state comes from `squeue` and `scontrol`. The compute wrapper verifies the
+exact execution-snapshot bytes before parsing them, then revalidates the runtime
+commit, module origin, CLI, and frozen launch/config hashes, runs the leaf script
+in the allocation foreground, and atomically writes allocation and terminal
+JSON sidecars bound to the same token and job id. A canonical terminal status
+requires both the matching terminal sidecar and a terminal scheduler
 observation; a scheduler failure overrides a zero wrapper exit code. Because
 accounting may be disabled, a vanished job or an incomplete terminal evidence
 pair becomes active `unknown_scheduler` rather than inferred success or

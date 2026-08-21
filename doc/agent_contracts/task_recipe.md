@@ -197,8 +197,10 @@ rechecks Python/version, commit, repository root, hostname, module origin,
 untracked or ignored importable code, and the run's frozen script/config hashes.
 For Slurm, the allocation wrapper also compares its observed Python executable
 and version with the plan-level execution snapshot before starting the leaf
-script; compute-node hostname is observed evidence and may differ from the
-submission host.
+script. The launcher freezes the snapshot's raw SHA-256 in every canonical run
+and passes it as a batch-script argument, so the allocation verifies the exact
+snapshot bytes before parsing them. Compute-node hostname is observed evidence
+and may differ from the submission host.
 Plans lacking frozen Python or commit identity must be recreated rather than
 upgraded in place.
 

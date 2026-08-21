@@ -28,7 +28,7 @@ SCHEDULER_PLAN_IDENTITY_FIELDS = {
     "scheduler_result_path",
     "allocation_identity_path",
 }
-SCHEDULER_BINDING_FIELDS = {"scheduler_job_id", "scheduler_cluster"}
+SCHEDULER_BINDING_FIELDS = {"scheduler_job_id", "scheduler_cluster", "execution_snapshot_sha256"}
 SCHEDULER_IDENTITY_FIELDS = SCHEDULER_PLAN_IDENTITY_FIELDS | SCHEDULER_BINDING_FIELDS
 EXECUTION_IDENTITY_FIELDS = {
     "target",
@@ -1146,6 +1146,9 @@ def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
         raise ValueError(f"Slurm scheduler_job_id must be a positive integer: {job_id!r}")
     if row.get("scheduler_cluster") not in (None, "") and not job_id:
         raise ValueError("Slurm scheduler_cluster requires scheduler_job_id.")
+    execution_snapshot_sha256 = str(row.get("execution_snapshot_sha256") or "")
+    if execution_snapshot_sha256 and re.fullmatch(r"[0-9a-f]{64}", execution_snapshot_sha256) is None:
+        raise ValueError("Slurm execution_snapshot_sha256 must be 64 lowercase hexadecimal characters.")
     status = str(row.get("status") or "planned")
     if status in {"planned", "pending", "submitting", "launch_failed", "superseded"} and job_id:
         raise ValueError(f"Slurm managed run status {status} cannot define scheduler_job_id.")

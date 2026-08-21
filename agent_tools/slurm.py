@@ -167,6 +167,7 @@ def render_batch_script(
         "--module",
         module,
     ]
+    worker_command = " ".join(transport.sh(part) for part in worker)
     return "\n".join(
         [
             "#!/usr/bin/env bash",
@@ -177,7 +178,7 @@ def render_batch_script(
             f"export PYTHONPATH={transport.sh(workdir)}",
             *env_lines,
             "",
-            f"exec {' '.join(transport.sh(part) for part in worker)}",
+            f'exec {worker_command} --execution-snapshot-sha256 "${{1:-}}"',
             "",
         ]
     )
@@ -194,6 +195,7 @@ def run_frozen_job(
     result_path: str,
     allocation_identity_path: str,
     execution_snapshot_path: str,
+    execution_snapshot_sha256: str,
     log_path: str,
     submit_token: str,
     workdir: str,
@@ -241,7 +243,18 @@ def run_frozen_job(
                 )
                 if snapshot["module"] != module:
                     raise ValueError("Frozen Slurm module differs from the verified runtime module.")
-                frozen_snapshot = manifests.read_json(execution_snapshot_path)
+                expected_snapshot_sha256 = _sha256(execution_snapshot_sha256)
+                snapshot_artifact = Path(execution_snapshot_path)
+                if (
+                    snapshot_artifact.is_symlink()
+                    or not snapshot_artifact.is_file()
+                    or snapshot_artifact.stat().st_nlink != 1
+                ):
+                    raise ValueError(f"Frozen execution snapshot is not an independent file: {snapshot_artifact}")
+                snapshot_bytes = snapshot_artifact.read_bytes()
+                if hashlib.sha256(snapshot_bytes).hexdigest() != expected_snapshot_sha256:
+                    raise ValueError("Frozen Slurm execution snapshot changed before allocation start.")
+                frozen_snapshot = json.loads(snapshot_bytes)
                 identity_fields = ("python", "python_version")
                 changed = [
                     field
@@ -334,11 +347,12 @@ def submit(
     script: str,
     submit_token: str,
     *,
+    execution_snapshot_sha256: str,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
 ) -> JobIdentity:
     result = run_command(
         execution,
-        ["sbatch", "--parsable", f"--comment={submit_token}", script],
+        ["sbatch", "--parsable", f"--comment={submit_token}", script, _sha256(execution_snapshot_sha256)],
         timeout=timeout,
     )
     if result.returncode != 0:
@@ -538,8 +552,11 @@ def parse_exit_code(value: str) -> tuple[int, int]:
     return int(match.group(1)), int(match.group(2))
 
 
-def submission_command(script: str, submit_token: str) -> str:
-    return " ".join(transport.sh(part) for part in ["sbatch", "--parsable", f"--comment={submit_token}", script])
+def submission_command(script: str, submit_token: str, execution_snapshot_sha256: str | None = None) -> str:
+    argv = ["sbatch", "--parsable", f"--comment={submit_token}", script]
+    if execution_snapshot_sha256:
+        argv.append(_sha256(execution_snapshot_sha256))
+    return " ".join(transport.sh(part) for part in argv)
 
 
 def sidecar_identity(
@@ -615,6 +632,13 @@ def _job_id(value: str) -> str:
     return text
 
 
+def _sha256(value: str) -> str:
+    text = str(value or "")
+    if re.fullmatch(r"[0-9a-f]{64}", text) is None:
+        raise ValueError("SHA-256 must be 64 lowercase hexadecimal characters.")
+    return text
+
+
 def _cluster_name(value: str | None) -> str:
     text = str(value or "")
     if text and re.fullmatch(r"[A-Za-z0-9_.-]+", text) is None:
@@ -675,6 +699,7 @@ def _main(argv: list[str] | None = None) -> int:
         "result_path",
         "allocation_identity_path",
         "execution_snapshot_path",
+        "execution_snapshot_sha256",
         "log_path",
         "submit_token",
         "workdir",

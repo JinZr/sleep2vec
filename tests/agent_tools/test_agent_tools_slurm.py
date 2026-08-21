@@ -37,16 +37,22 @@ def test_submit_quotes_remote_arguments_and_parses_identity(monkeypatch):
         {"target": "ssh", "host": "baichuan3"},
         "/shared/run dir/job.sbatch",
         "token;$(touch nope)",
+        execution_snapshot_sha256="d" * 64,
     )
 
     assert identity == slurm.JobIdentity("3880", "wuji-h20")
     assert calls == [
         (
             "baichuan3",
-            "sbatch --parsable '--comment=token;$(touch nope)' '/shared/run dir/job.sbatch'",
+            "sbatch --parsable '--comment=token;$(touch nope)' '/shared/run dir/job.sbatch' " + "d" * 64,
             10,
         )
     ]
+    assert calls[0][1] == slurm.submission_command(
+        "/shared/run dir/job.sbatch",
+        "token;$(touch nope)",
+        "d" * 64,
+    )
 
 
 def test_submit_preserves_nonzero_result(monkeypatch):
@@ -57,10 +63,30 @@ def test_submit_preserves_nonzero_result(monkeypatch):
     )
 
     with pytest.raises(slurm.SlurmCommandError) as exc_info:
-        slurm.submit({"target": "local"}, "/shared/job.sbatch", "token")
+        slurm.submit(
+            {"target": "local"},
+            "/shared/job.sbatch",
+            "token",
+            execution_snapshot_sha256="d" * 64,
+        )
 
     assert exc_info.value.returncode == 1
     assert "invalid partition" in str(exc_info.value)
+
+
+def test_submit_rejects_malformed_execution_snapshot_digest_before_transport(monkeypatch):
+    calls = []
+    monkeypatch.setattr(slurm.transport, "run_shell", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        slurm.submit(
+            {"target": "local"},
+            "/shared/job.sbatch",
+            "token",
+            execution_snapshot_sha256="not-a-digest",
+        )
+
+    assert calls == []
 
 
 def test_active_jobs_filters_exact_submit_token(monkeypatch):
@@ -383,6 +409,7 @@ def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path):
     assert f"#SBATCH --error={str(log_path).replace('%', '%%')}" in script
     assert "agent_tools.slurm run-frozen-job" in script
     assert f"--execution-snapshot-path {tmp_path / 'execution_snapshot.json'}" in script
+    assert '--execution-snapshot-sha256 "${1:-}"' in script
     assert f"--log-path {log_path}" in script
     assert "export PYTHONPATH=/shared/repo" in script
     assert "${PYTHONPATH" not in script
@@ -427,6 +454,7 @@ def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, 
         result_path=str(result_path),
         allocation_identity_path=str(allocation_path),
         execution_snapshot_path=str(snapshot_path),
+        execution_snapshot_sha256=hashlib.sha256(snapshot_path.read_bytes()).hexdigest(),
         log_path=str(log_path),
         submit_token="agent-tools-unit",
         workdir=str(tmp_path),
@@ -484,6 +512,7 @@ def test_run_frozen_job_rejects_allocation_interpreter_drift_before_spawn(
         result_path=str(result_path),
         allocation_identity_path=str(allocation_path),
         execution_snapshot_path=str(snapshot_path),
+        execution_snapshot_sha256=hashlib.sha256(snapshot_path.read_bytes()).hexdigest(),
         log_path=str(log_path),
         submit_token="agent-tools-unit",
         workdir=str(tmp_path),
@@ -497,6 +526,60 @@ def test_run_frozen_job_rejects_allocation_interpreter_drift_before_spawn(
     assert not allocation_path.exists()
     assert json.loads(result_path.read_text())["exit_code"] == 2
     assert field in log_path.read_text()
+
+
+def test_run_frozen_job_rejects_changed_execution_snapshot_digest_before_spawn(tmp_path: Path, monkeypatch):
+    config = tmp_path / "config.yaml"
+    config.write_text("task: unit\n")
+    script = tmp_path / "launch.sh"
+    script.write_text("#!/usr/bin/env bash\ntrue\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    snapshot = {
+        "python": "/opt/python",
+        "python_version": "3.10.0",
+        "runtime_commit": "c" * 40,
+        "runtime_repo_root": str(tmp_path),
+        "module": "sleep2vec.finetune",
+        "module_origin": str(tmp_path / "sleep2vec" / "finetune.py"),
+    }
+    snapshot_path = tmp_path / "execution_snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot))
+    expected_sha256 = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+    snapshot_path.write_text(json.dumps(snapshot, indent=2))
+    from agent_tools import managed_scheduler
+
+    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    spawned = []
+    monkeypatch.setattr(slurm.subprocess, "Popen", lambda *args, **kwargs: spawned.append((args, kwargs)))
+    result_path = tmp_path / "slurm_terminal.json"
+    allocation_path = tmp_path / "allocation_identity.json"
+    log_path = tmp_path / "slurm.log"
+
+    exit_code = slurm.run_frozen_job(
+        run_id="run-000",
+        command="/opt/python -m sleep2vec.finetune --config config.yaml",
+        script=str(script),
+        script_sha256=hashlib.sha256(script.read_bytes()).hexdigest(),
+        config=str(config),
+        config_sha256=hashlib.sha256(config.read_bytes()).hexdigest(),
+        result_path=str(result_path),
+        allocation_identity_path=str(allocation_path),
+        execution_snapshot_path=str(snapshot_path),
+        execution_snapshot_sha256=expected_sha256,
+        log_path=str(log_path),
+        submit_token="agent-tools-unit",
+        workdir=str(tmp_path),
+        python="/opt/python",
+        runtime_commit="c" * 40,
+        module="sleep2vec.finetune",
+    )
+
+    assert exit_code == 2
+    assert spawned == []
+    assert not allocation_path.exists()
+    assert json.loads(result_path.read_text())["exit_code"] == 2
+    assert "execution snapshot changed" in log_path.read_text()
 
 
 @pytest.mark.parametrize("signum", [slurm.signal.SIGTERM, slurm.signal.SIGINT])
@@ -546,6 +629,7 @@ def test_run_frozen_job_does_not_spawn_after_signal_during_verification(tmp_path
         result_path=str(result_path),
         allocation_identity_path=str(tmp_path / "allocation_identity.json"),
         execution_snapshot_path=str(snapshot_path),
+        execution_snapshot_sha256=hashlib.sha256(snapshot_path.read_bytes()).hexdigest(),
         log_path=str(tmp_path / "slurm.log"),
         submit_token="agent-tools-unit",
         workdir=str(tmp_path),

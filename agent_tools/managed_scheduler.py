@@ -22,6 +22,7 @@ from .experiment_workspace import (
     PROCESS_IDENTITY_FIELDS,
     SCHEDULER_PLAN_IDENTITY_FIELDS,
     append_event,
+    file_sha256,
     managed_run_key,
     merge_run_manifest,
     read_run_manifest,
@@ -1023,6 +1024,7 @@ def _launch_slurm_runs(
             preview_rows.append(previous)
 
     launchable = [run for run in runs if workspace_by_key[managed_run_key(run)].get("status") in LAUNCHABLE_STATUSES]
+    execution_snapshot_sha256 = ""
     if launchable and not dry_run:
         remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
         frozen_paths = [
@@ -1044,6 +1046,16 @@ def _launch_slurm_runs(
         )
         if write_execution_snapshot:
             write_execution_snapshot_file(snapshot_path, execution_snapshot)
+        execution_snapshot_sha256 = file_sha256(snapshot_path)
+        snapshot_rows = [
+            {
+                **workspace_by_key[managed_run_key(run)],
+                "execution_snapshot_sha256": execution_snapshot_sha256,
+            }
+            for run in runs
+        ]
+        committed = hooks.merge_manifest(workspace, snapshot_rows, lock_held=True)
+        workspace_by_key = {managed_run_key(row): row for row in committed}
 
     started_keys: set[RunKey] = set()
     uncertain_error: RuntimeError | None = None
@@ -1053,7 +1065,7 @@ def _launch_slurm_runs(
             previous = workspace_by_key[key]
             submitting = {
                 **previous,
-                **_slurm_execution_identity(execution, run),
+                **_slurm_execution_identity(execution, run, execution_snapshot_sha256),
                 "status": "submitting",
                 "scheduler_observed_at": utc_now(),
             }
@@ -1067,6 +1079,7 @@ def _launch_slurm_runs(
                     execution,
                     str(run["scheduler_script"]),
                     str(run["scheduler_submit_token"]),
+                    execution_snapshot_sha256=execution_snapshot_sha256,
                     timeout=LAUNCH_TIMEOUT_SECONDS,
                 )
                 submitted = _submitted_slurm_row(submitting, identity, raw_state="SUBMITTED")
@@ -1125,11 +1138,17 @@ def _launch_slurm_runs(
     return result
 
 
-def _slurm_execution_identity(execution: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+def _slurm_execution_identity(
+    execution: dict[str, Any], run: dict[str, Any], execution_snapshot_sha256: str | None = None
+) -> dict[str, Any]:
     target = str(execution.get("target", "local") or "local")
-    inner = slurm.submission_command(str(run["scheduler_script"]), str(run["scheduler_submit_token"]))
+    inner = slurm.submission_command(
+        str(run["scheduler_script"]),
+        str(run["scheduler_submit_token"]),
+        execution_snapshot_sha256,
+    )
     command = f"ssh {transport.sh(execution['host'])} {transport.sh(inner)}" if target == "ssh" else inner
-    return {
+    identity = {
         "target": target,
         "host": execution.get("host", ""),
         "workdir": execution.get("workdir") or str(REPO_ROOT),
@@ -1139,6 +1158,9 @@ def _slurm_execution_identity(execution: dict[str, Any], run: dict[str, Any]) ->
         "command": command,
         **{field: "" for field in PROCESS_IDENTITY_FIELDS},
     }
+    if execution_snapshot_sha256:
+        identity["execution_snapshot_sha256"] = execution_snapshot_sha256
+    return identity
 
 
 def _submitted_slurm_row(

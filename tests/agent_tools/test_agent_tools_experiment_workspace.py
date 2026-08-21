@@ -1476,6 +1476,7 @@ def test_scheduler_identity_allows_one_trusted_job_binding(tmp_path: Path):
         "run_id": "run-000",
         "target": "ssh",
         "status": "submitting",
+        "execution_snapshot_sha256": "a" * 64,
         **_slurm_identity(tmp_path),
     }
 
@@ -1485,10 +1486,11 @@ def test_scheduler_identity_allows_one_trusted_job_binding(tmp_path: Path):
         allow_execution_identity_fill=True,
     )
     for field in SCHEDULER_BINDING_FIELDS:
+        changed = "b" * 64 if field == "execution_snapshot_sha256" else "3881"
         with pytest.raises(ValueError, match=field):
             validate_frozen_run_update(
                 {**existing, "scheduler_job_id": "3880", "scheduler_cluster": "wuji-h20"},
-                {field: "3881"},
+                {field: changed},
                 allow_execution_identity_fill=True,
             )
 

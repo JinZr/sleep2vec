@@ -48,7 +48,12 @@ _RUNTIME_COMMIT = subprocess.run(
 
 @pytest.fixture(autouse=True)
 def _stub_execution_snapshot_preflight(monkeypatch):
-    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", lambda *_args, **_kwargs: (None, False))
+    def validated_snapshot(_run_dir, execution, _runs, _workspace_by_key):
+        if (execution.get("scheduler") or {}).get("type") == "slurm":
+            return {"python": "/opt/python", "python_version": "3.10.0"}, True
+        return None, False
+
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", validated_snapshot)
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -686,8 +691,8 @@ def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: 
     plan_dir, plan = _write_slurm_plan(tmp_path, run_count=2)
     calls = []
 
-    def submit(execution, script, token, *, timeout):
-        calls.append((execution, script, token, timeout))
+    def submit(execution, script, token, *, execution_snapshot_sha256, timeout):
+        calls.append((execution, script, token, execution_snapshot_sha256, timeout))
         return slurm.JobIdentity(str(3880 + len(calls)), "wuji-h20")
 
     monkeypatch.setattr(managed_scheduler.slurm, "submit", submit)
@@ -700,8 +705,11 @@ def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: 
         if row["run_id"] in {run["run_id"] for run in plan["runs"]}
     ]
     assert len(calls) == 2
+    expected_snapshot_sha256 = file_sha256(plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME)
+    assert all(call[3] == expected_snapshot_sha256 for call in calls)
     assert [row["status"] for row in rows] == ["queued", "queued"]
     assert [row["scheduler_job_id"] for row in rows] == ["3881", "3882"]
+    assert all(row["execution_snapshot_sha256"] == expected_snapshot_sha256 for row in rows)
     assert all(row["gpus"] == "" for row in rows)
     assert all(row["pid"] == "" and row["process_group_id"] == "" for row in rows)
     assert all("--devices 0" in Path(run["script"]).read_text() for run in plan["runs"])
