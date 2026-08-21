@@ -1041,8 +1041,7 @@ def verify_run_snapshot(run: dict[str, Any]) -> None:
 
 
 def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(existing)
-    existing_status = merged.get("status")
+    existing_status = existing.get("status")
     incoming_status = incoming.get("status")
     existing_stop_requested_at = existing.get("stop_requested_at")
     stale_stop_observation = (
@@ -1050,7 +1049,7 @@ def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
         and existing_stop_requested_at not in (None, "")
         and incoming.get("stop_requested_at") != existing_stop_requested_at
     )
-    merged.update(json_ready(incoming))
+    merged = {**existing, **json_ready(incoming)}
     if existing_status in TERMINAL_STATUSES:
         if incoming_status == "failed" and existing_status in {"completed", "finished"}:
             merged["status"] = "failed"

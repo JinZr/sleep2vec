@@ -619,10 +619,17 @@ def test_merge_run_row_preserves_status_precedence(existing_status: str, incomin
 
 
 @pytest.mark.parametrize("incoming_status", ["queued", "running", "unknown_scheduler", "completed", "failed"])
-@pytest.mark.parametrize("incoming_stop_requested_at", [None, "", "2026-08-21T03:39:00Z"])
+@pytest.mark.parametrize(
+    "incoming_stop_fields",
+    [
+        {},
+        {"stop_requested_at": "", "stop_reason": "stale reason"},
+        {"stop_requested_at": "2026-08-21T03:39:00Z", "stop_reason": "stale reason"},
+    ],
+)
 def test_merge_run_row_preserves_stop_intent_against_stale_observations(
     incoming_status: str,
-    incoming_stop_requested_at: str | None,
+    incoming_stop_fields: dict,
 ):
     existing = {
         "step_id": "train",
@@ -636,10 +643,8 @@ def test_merge_run_row_preserves_stop_intent_against_stale_observations(
         "run_id": "run-000",
         "status": incoming_status,
         "scheduler_raw_state": "RUNNING",
+        **incoming_stop_fields,
     }
-    if incoming_stop_requested_at is not None:
-        incoming["stop_requested_at"] = incoming_stop_requested_at
-        incoming["stop_reason"] = "stale reason"
 
     merged = merge_run_row(existing, incoming)
 

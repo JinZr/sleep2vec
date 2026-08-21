@@ -4112,12 +4112,13 @@ def test_async_slurm_stop_does_not_launch_replacement_before_confirmation(tmp_pa
         retirement_credit=1,
     )
     stop_calls = []
+
+    def request_stop(*_args, **kwargs):
+        stop_calls.append(kwargs["run_keys"])
+        return []
+
     monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [pending_row])
-    monkeypatch.setattr(
-        adaptive_hparam,
-        "_stop_bad_running_runs",
-        lambda *_args, **kwargs: stop_calls.append(kwargs["run_keys"]) or [],
-    )
+    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", request_stop)
     monkeypatch.setattr(
         adaptive_hparam,
         "_launch_with_recovery",

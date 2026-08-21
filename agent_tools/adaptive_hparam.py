@@ -844,11 +844,10 @@ def _drain_bad_runs(
                 f"{_committed_phrase(state.round_committed)}. "
                 + _preserved_tail(state.stopped_run_keys, state.superseded_current_keys, state.next_dir)
             ) from exc
-        if stopped:
-            state.stopped_run_keys.extend(stopped)
-            state.retirement_credit -= len(stopped)
-        else:
+        if not stopped:
             break
+        state.stopped_run_keys.extend(stopped)
+        state.retirement_credit -= len(stopped)
         canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
         if not any(row.get("status") in {"planned", "pending"} for row in next_round_rows):
@@ -874,9 +873,8 @@ def _drain_bad_runs(
             )
         if not newly_started:
             statuses = ", ".join(sorted({str(row.get("status") or "") for row in next_round_rows})) or "none"
-            stop_attempt = f"stopping {run_key[1]}" if stopped else f"the stop attempt for {run_key[1]}"
             raise RuntimeError(
-                f"Round {state.next_round:03d} started no additional runs after {stop_attempt} "
+                f"Round {state.next_round:03d} started no additional runs after stopping {run_key[1]} "
                 f"(statuses: {statuses}); the round {_committed_phrase(state.round_committed)}. "
                 + _preserved_tail(state.stopped_run_keys, state.superseded_current_keys, state.next_dir)
             )
