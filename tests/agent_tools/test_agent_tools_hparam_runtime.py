@@ -944,31 +944,31 @@ def test_slurm_monitor_recovers_terminal_state_from_accounting_after_controller_
             }
         )
     )
-    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(managed_scheduler.slurm, "show_job", lambda *_args, **_kwargs: None)
-    accounting_calls = []
-    monkeypatch.setattr(
-        managed_scheduler.slurm,
-        "accounting_job",
-        lambda _execution, job_id, *, submit_token, cluster=None, timeout=10: accounting_calls.append(
-            (job_id, submit_token, cluster)
+    scheduler_calls = []
+
+    def run_command(_execution, argv, *, timeout):
+        scheduler_calls.append(argv)
+        if argv[0] in {"squeue", "scontrol"}:
+            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
+        assert argv[0] == "sacct"
+        return subprocess.CompletedProcess(
+            [],
+            0,
+            f"3880|COMPLETED|0:0|h20-bj-96|{run['scheduler_submit_token']}\n",
+            "",
         )
-        or slurm.JobObservation(
-            job_id,
-            "COMPLETED",
-            node_list="h20-bj-96",
-            comment=submit_token,
-            exit_code="0:0",
-        ),
-    )
+
+    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
 
     hparam_runtime.monitor_hparam_runs(plan_dir)
 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
-    assert accounting_calls == [("3880", run["scheduler_submit_token"], "wuji-h20")]
     assert canonical["status"] == "completed"
     assert canonical["scheduler_raw_state"] == "COMPLETED"
     assert canonical["scheduler_exit_code"] == "0"
+    assert [argv[0] for argv in scheduler_calls] == ["squeue", "scontrol", "sacct"]
+    assert all("--clusters=wuji-h20" in argv for argv in scheduler_calls)
+    assert "--duplicates" in scheduler_calls[-1]
 
 
 @pytest.mark.parametrize("observation_source", ["controller", "accounting"])
@@ -1541,15 +1541,21 @@ def test_slurm_stop_request_uses_accounting_after_controller_purges_cancelled_jo
     monkeypatch.setattr(slurm, "cancel", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-21T03:40:00Z")
     hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")
-    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(managed_scheduler.slurm, "show_job", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        managed_scheduler.slurm,
-        "accounting_job",
-        lambda _execution, job_id, *, submit_token, cluster=None, timeout=10: slurm.JobObservation(
-            job_id, "CANCELLED", comment=submit_token
-        ),
-    )
+    scheduler_calls = []
+
+    def run_command(_execution, argv, *, timeout):
+        scheduler_calls.append(argv)
+        if argv[0] in {"squeue", "scontrol"}:
+            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
+        assert argv[0] == "sacct"
+        return subprocess.CompletedProcess(
+            [],
+            0,
+            f"3880|CANCELLED|0:15|h20-bj-96|{run['scheduler_submit_token']}\n",
+            "",
+        )
+
+    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
     monkeypatch.setattr(managed_scheduler, "utc_now", lambda: "2026-08-21T03:41:00Z")
 
     hparam_runtime.monitor_hparam_runs(plan_dir)
@@ -1558,6 +1564,11 @@ def test_slurm_stop_request_uses_accounting_after_controller_purges_cancelled_jo
     assert canonical["status"] == "stopped"
     assert canonical["scheduler_raw_state"] == "CANCELLED"
     assert canonical["stopped_at"] == "2026-08-21T03:41:00Z"
+    assert canonical["stop_requested_at"] == "2026-08-21T03:40:00Z"
+    assert canonical["stop_reason"] == "validation diverged"
+    assert [argv[0] for argv in scheduler_calls] == ["squeue", "scontrol", "sacct"]
+    assert all("--clusters=wuji-h20" in argv for argv in scheduler_calls)
+    assert "--duplicates" in scheduler_calls[-1]
 
 
 def test_slurm_stop_request_rejects_blank_accounting_comment_without_terminalizing_run(tmp_path: Path, monkeypatch):

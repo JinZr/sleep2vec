@@ -410,6 +410,9 @@ def active_jobs(
         argv.extend(["--jobs", _job_id(job_id)])
     result = run_command(execution, argv, timeout=timeout)
     if result.returncode != 0:
+        detail = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+        if job_id is not None and re.search(r"\b(?:invalid|unknown) job[ _-]?id\b", detail):
+            return []
         raise SlurmCommandError("active-job query", result)
     observations = [_parse_squeue_line(line) for line in str(result.stdout or "").splitlines() if line.strip()]
     if submit_token is not None:

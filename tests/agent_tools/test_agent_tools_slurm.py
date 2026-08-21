@@ -204,6 +204,41 @@ def test_active_jobs_filters_exact_submit_token(monkeypatch):
     assert jobs == [slurm.JobObservation("3881", "RUNNING", "", "h20-bj-96", "token-b")]
 
 
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "slurm_load_jobs error: Invalid job id specified",
+        "squeue: error: Unknown JobId 3880",
+    ],
+)
+def test_active_jobs_returns_empty_when_bound_job_is_missing(monkeypatch, diagnostic: str):
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", diagnostic),
+    )
+
+    assert slurm.active_jobs({"target": "local"}, job_id="3880", cluster="wuji-h20") == []
+
+
+@pytest.mark.parametrize(
+    ("query", "diagnostic"),
+    [
+        ({"job_id": "3880"}, "squeue: error: Access denied"),
+        ({"submit_token": "token"}, "slurm_load_jobs error: Invalid job id specified"),
+    ],
+)
+def test_active_jobs_preserves_other_query_failures(monkeypatch, query: dict, diagnostic: str):
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", diagnostic),
+    )
+
+    with pytest.raises(slurm.SlurmCommandError, match="active-job query"):
+        slurm.active_jobs({"target": "local"}, **query)
+
+
 def test_show_job_parses_exact_job_and_missing_job(monkeypatch):
     results = iter(
         [
