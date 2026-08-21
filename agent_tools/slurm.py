@@ -524,9 +524,29 @@ def normalize_state(value: str) -> str:
 
 def state_category(value: str) -> str:
     state = normalize_state(value)
-    if state in {"PENDING", "CONFIGURING"}:
+    if state in {
+        "PENDING",
+        "CONFIGURING",
+        "EXPEDITING",
+        "POWER_UP_NODE",
+        "REQUEUED",
+        "REQUEUE_FED",
+        "REQUEUE_HOLD",
+        "RESV_DEL_HOLD",
+        "REVOKED",
+        "SPECIAL_EXIT",
+    }:
         return "queued"
-    if state in {"RUNNING", "COMPLETING", "SUSPENDED"}:
+    if state in {
+        "RUNNING",
+        "SUSPENDED",
+        "COMPLETING",
+        "RESIZING",
+        "SIGNALING",
+        "STAGE_OUT",
+        "STOPPED",
+        "UPDATE_DB",
+    }:
         return "running"
     if state == "COMPLETED":
         return "completed"
@@ -540,6 +560,8 @@ def state_category(value: str) -> str:
         "BOOT_FAIL",
         "DEADLINE",
         "PREEMPTED",
+        "LAUNCH_FAILED",
+        "RECONFIG_FAIL",
     }:
         return "failed"
     return "unknown"

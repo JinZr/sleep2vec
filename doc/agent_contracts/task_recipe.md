@@ -216,7 +216,8 @@ request records nonterminal `stopping`; only a matching scheduler `CANCELLED`
 observation commits canonical `stopped`, even when cancellation prevented the
 wrapper from writing a terminal sidecar. A cancellation signal received while
 the allocation wrapper is still validating frozen identity terminates the job
-without starting the leaf process.
+without starting the leaf process. Live Slurm transition flags remain active;
+raw `STOPPED` retains its allocation and is not canonical `stopped`.
 The submission command strips every ambient `SBATCH_*` variable on the local or
 SSH submission host before invoking `sbatch`, while preserving ordinary runtime
 environment such as `PATH` and Slurm client configuration.

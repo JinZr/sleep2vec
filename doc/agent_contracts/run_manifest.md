@@ -155,7 +155,9 @@ failure. `hparam-stop` records a successful `scancel` request as nonterminal
 `stopping` with its reason and request time. Monitoring commits `stopped` only
 after the same scheduler job is observed as `CANCELLED`; this explicit stop
 intent is the narrow exception that does not require a terminal sidecar because
-a pending job may never start its wrapper.
+a pending job may never start its wrapper. Slurm transition flags remain active;
+in particular, raw `STOPPED` retains its allocation and maps to canonical
+`running` or `stopping`, never terminal `stopped`.
 
 When monitoring proves corrupt, partial, mismatched, or reused managed process
 identity, it records `process_identity_error` with the canonical status update.

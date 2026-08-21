@@ -765,6 +765,10 @@ def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypat
         ("RUNNING", 0, "running"),
         ("COMPLETING", 0, "running"),
         ("SUSPENDED", 0, "running"),
+        ("STOPPED", 0, "running"),
+        ("RESIZING", 0, "running"),
+        ("SIGNALING", 0, "running"),
+        ("STAGE_OUT", 0, "running"),
         ("COMPLETED", 7, "failed"),
         ("FAILED", 0, "failed"),
         ("CANCELLED", 0, "failed"),
@@ -1164,6 +1168,10 @@ def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch):
         ("running", "RUNNING", True, 143, "stopping"),
         ("running", "COMPLETING", True, 143, "stopping"),
         ("running", "SUSPENDED", True, 143, "stopping"),
+        ("running", "STOPPED", True, 143, "stopping"),
+        ("running", "RESIZING", True, 143, "stopping"),
+        ("running", "SIGNALING", True, 143, "stopping"),
+        ("running", "STAGE_OUT", True, 143, "stopping"),
         ("queued", "CANCELLED", False, 0, "stopped"),
         ("running", "CANCELLED", False, 0, "stopped"),
         ("running", "CANCELLED", True, 143, "stopped"),
@@ -1213,9 +1221,7 @@ def test_slurm_stop_request_waits_for_matching_scheduler_cancellation(
     monkeypatch.setattr(
         managed_scheduler.slurm,
         "active_jobs",
-        lambda *_args, **_kwargs: [
-            slurm.JobObservation("3880", scheduler_state, "", "h20-bj-96", token)
-        ],
+        lambda *_args, **_kwargs: [slurm.JobObservation("3880", scheduler_state, "", "h20-bj-96", token)],
     )
     monkeypatch.setattr(managed_scheduler, "utc_now", lambda: "2026-08-21T03:41:00Z")
 
@@ -1226,15 +1232,11 @@ def test_slurm_stop_request_waits_for_matching_scheduler_cancellation(
     assert canonical["scheduler_raw_state"] == scheduler_state
     assert canonical["stop_requested_at"] == "2026-08-21T03:40:00Z"
     assert canonical["stop_reason"] == "validation diverged"
-    assert canonical.get("stopped_at", "") == (
-        "2026-08-21T03:41:00Z" if expected_status == "stopped" else ""
-    )
+    assert canonical.get("stopped_at", "") == ("2026-08-21T03:41:00Z" if expected_status == "stopped" else "")
     events_path = tmp_path / "events.jsonl"
     events = [json.loads(line) for line in events_path.read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_stop_requested") == 1
-    assert [event["event_type"] for event in events].count("run_stopped") == (
-        1 if expected_status == "stopped" else 0
-    )
+    assert [event["event_type"] for event in events].count("run_stopped") == (1 if expected_status == "stopped" else 0)
     if expected_status == "stopped":
         hparam_runtime.monitor_hparam_runs(plan_dir)
         repeated_events = [json.loads(line) for line in events_path.read_text().splitlines()]
