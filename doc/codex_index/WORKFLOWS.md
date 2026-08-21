@@ -231,9 +231,11 @@ tables, matrices, events, and reports are projections. `RESEARCH_LOG.md` is an
 append-only narrative record and is never a status source. Direct managed
 launches use a dedicated process group with PID, group, and OS start-token
 evidence. Slurm managed launches freeze one sbatch leaf job and submit token per
-run, bind one numeric scheduler job id, observe live state through
-`squeue`/`scontrol`, and require both a terminal scheduler observation and the
-compute wrapper's matching terminal sidecar for terminal truth. Uncertain direct
+run, bind one numeric scheduler job id, observe controller state through
+`squeue`/`scontrol`, fall back to the bound-cluster `sacct` allocation after the
+job outlives controller history, and require both a terminal scheduler
+observation and the compute wrapper's matching terminal sidecar for terminal
+truth. Uncertain direct
 or scheduler identity never authorizes relaunch or retry. Direct stop waits for
 the process group to exit. Slurm stop records a nonterminal request after
 `scancel` succeeds and commits `stopped` only after matching scheduler

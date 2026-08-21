@@ -247,6 +247,37 @@ def test_show_job_parses_exact_job_and_missing_job(monkeypatch):
     assert slurm.show_job({"target": "local"}, "3880") is None
 
 
+def test_accounting_job_queries_exact_allocation_on_bound_cluster(monkeypatch):
+    calls = []
+
+    def fake_run_command(execution, argv, *, timeout):
+        calls.append((execution, argv, timeout))
+        output = "3880|COMPLETED|0:0|h20-bj-96\n3880.batch|COMPLETED|0:0|h20-bj-96\n"
+        return subprocess.CompletedProcess([], 0, output, "")
+
+    monkeypatch.setattr(slurm, "run_command", fake_run_command)
+
+    assert slurm.accounting_job({"target": "local"}, "3880", cluster="wuji-h20") == slurm.JobObservation(
+        "3880", "COMPLETED", node_list="h20-bj-96", exit_code="0:0"
+    )
+    assert calls == [
+        (
+            {"target": "local"},
+            [
+                "sacct",
+                "--noheader",
+                "--parsable2",
+                "--allocations",
+                "--clusters=wuji-h20",
+                "--jobs",
+                "3880",
+                "--format=JobIDRaw,State%64,ExitCode,NodeList",
+            ],
+            10,
+        )
+    ]
+
+
 def test_follow_up_commands_route_to_bound_cluster(monkeypatch):
     calls = []
     results = iter(

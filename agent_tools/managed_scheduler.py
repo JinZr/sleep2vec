@@ -1283,6 +1283,10 @@ def observe_slurm_run(
             active = matches[0] if matches else None
         if active is None:
             active = slurm.show_job(execution, job_id, cluster=cluster or None)
+        from_accounting = False
+        if active is None:
+            active = slurm.accounting_job(execution, job_id, cluster=cluster or None)
+            from_accounting = active is not None
         if active is None:
             observation.update(
                 {
@@ -1303,9 +1307,10 @@ def observe_slurm_run(
                     health_error = "Slurm job details are unavailable."
                 else:
                     active = detailed
+                    from_accounting = False
             except (slurm.SlurmCommandError, subprocess.TimeoutExpired, RuntimeError, ValueError) as exc:
                 health_error = str(exc)
-        if active.comment != token:
+        if not from_accounting and active.comment != token:
             raise ValueError("Observed Slurm job comment differs from the frozen submit token.")
         category = slurm.state_category(active.state)
         reason = active.reason

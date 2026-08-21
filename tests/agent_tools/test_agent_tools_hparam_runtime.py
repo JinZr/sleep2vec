@@ -838,12 +838,53 @@ def test_slurm_monitor_keeps_terminal_sidecar_unknown_without_scheduler_record(t
     )
     monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(managed_scheduler.slurm, "show_job", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(managed_scheduler.slurm, "accounting_job", lambda *_args, **_kwargs: None)
 
     hparam_runtime.monitor_hparam_runs(plan_dir)
 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert canonical["status"] == "unknown_scheduler"
     assert "before terminal scheduler state was observed" in canonical["scheduler_reason"]
+
+
+def test_slurm_monitor_recovers_terminal_state_from_accounting_after_controller_purge(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    Path(run["scheduler_result_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": run["scheduler_submit_token"],
+                "node": "h20-bj-96",
+                "exit_code": 0,
+            }
+        )
+    )
+    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(managed_scheduler.slurm, "show_job", lambda *_args, **_kwargs: None)
+    accounting_calls = []
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "accounting_job",
+        lambda _execution, job_id, *, cluster=None, timeout=10: accounting_calls.append((job_id, cluster))
+        or slurm.JobObservation(job_id, "COMPLETED", node_list="h20-bj-96", exit_code="0:0"),
+    )
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert accounting_calls == [("3880", "wuji-h20")]
+    assert canonical["status"] == "completed"
+    assert canonical["scheduler_raw_state"] == "COMPLETED"
+    assert canonical["scheduler_exit_code"] == "0"
 
 
 def test_slurm_monitor_fails_closed_when_job_disappears_without_sidecar(tmp_path: Path, monkeypatch):
@@ -857,12 +898,18 @@ def test_slurm_monitor_fails_closed_when_job_disappears_without_sidecar(tmp_path
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
     monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(managed_scheduler.slurm, "show_job", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "accounting_job",
+        lambda _execution, job_id, **_kwargs: slurm.JobObservation(job_id, "COMPLETED", exit_code="0:0"),
+    )
 
     hparam_runtime.monitor_hparam_runs(plan_dir)
 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert canonical["status"] == "unknown_scheduler"
-    assert "without a terminal sidecar" in canonical["scheduler_reason"]
+    assert canonical["scheduler_raw_state"] == "COMPLETED"
+    assert "missing the matching terminal sidecar" in canonical["scheduler_reason"]
 
 
 def test_slurm_monitor_health_reports_queue_diagnostics_without_pid_or_gpu_probes(tmp_path: Path, monkeypatch):
@@ -1242,6 +1289,35 @@ def test_slurm_stop_request_waits_for_matching_scheduler_cancellation(
         repeated_events = [json.loads(line) for line in events_path.read_text().splitlines()]
         assert [event["event_type"] for event in repeated_events].count("run_stop_requested") == 1
         assert [event["event_type"] for event in repeated_events].count("run_stopped") == 1
+
+
+def test_slurm_stop_request_uses_accounting_after_controller_purges_cancelled_job(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    monkeypatch.setattr(slurm, "cancel", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-21T03:40:00Z")
+    hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")
+    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(managed_scheduler.slurm, "show_job", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "accounting_job",
+        lambda _execution, job_id, *, cluster=None, timeout=10: slurm.JobObservation(job_id, "CANCELLED"),
+    )
+    monkeypatch.setattr(managed_scheduler, "utc_now", lambda: "2026-08-21T03:41:00Z")
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["status"] == "stopped"
+    assert canonical["scheduler_raw_state"] == "CANCELLED"
+    assert canonical["stopped_at"] == "2026-08-21T03:41:00Z"
 
 
 def test_slurm_stop_failure_does_not_commit_request_state(tmp_path: Path, monkeypatch):

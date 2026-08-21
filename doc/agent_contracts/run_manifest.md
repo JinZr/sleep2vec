@@ -142,16 +142,20 @@ submission command removes every inherited `SBATCH_*` variable so ambient
 client options cannot override frozen directives; other submission environment
 remains available.
 
-Live state comes from `squeue` and `scontrol`. The compute wrapper verifies the
-exact execution-snapshot bytes before parsing them, then revalidates the runtime
-commit, module origin, CLI, and frozen launch/config hashes, runs the leaf script
-in the allocation foreground, and atomically writes allocation and terminal
-JSON sidecars bound to the same token and job id. A canonical completed or
-failed status requires both the matching terminal sidecar and a terminal
-scheduler observation; a scheduler failure overrides a zero wrapper exit code. Because
-accounting may be disabled, a vanished job or an incomplete terminal evidence
-pair becomes active `unknown_scheduler` rather than inferred success or
-failure. `hparam-stop` records a successful `scancel` request as nonterminal
+Live controller state comes from `squeue` and `scontrol`. If both no longer know
+a bound job, monitoring queries its exact allocation record through `sacct` on
+the bound cluster when accounting is available. The compute wrapper verifies
+the exact execution-snapshot bytes before parsing them, then revalidates the
+runtime commit, module origin, CLI, and frozen launch/config hashes, runs the
+leaf script in the allocation foreground, and atomically writes allocation and
+terminal JSON sidecars bound to the same token and job id. A canonical completed
+or failed status requires both the matching terminal sidecar and a terminal
+scheduler observation; a scheduler failure overrides a zero wrapper exit code.
+If controller and accounting evidence are unavailable, a vanished job or an
+incomplete terminal evidence pair becomes active `unknown_scheduler` rather
+than inferred success or failure. An accounting terminal record is scheduler
+evidence only; ordinary completion or failure still requires the matching
+sidecar. `hparam-stop` records a successful `scancel` request as nonterminal
 `stopping` with its reason and request time. Monitoring commits `stopped` only
 after the same scheduler job is observed as `CANCELLED`; this explicit stop
 intent is the narrow exception that does not require a terminal sidecar because
