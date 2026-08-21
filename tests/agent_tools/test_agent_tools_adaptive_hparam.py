@@ -4100,7 +4100,7 @@ def test_running_stop_passes_remote_status_row_to_failure_log_check(tmp_path: Pa
 
 
 def test_async_slurm_stop_does_not_launch_replacement_before_confirmation(tmp_path: Path, monkeypatch):
-    bad_key = ("train-model", "run-000")
+    bad_keys = [("train-model", f"run-{index:03d}") for index in range(3)]
     pending_key = ("train-model-round-001", "run-000")
     pending_row = {"step_id": pending_key[0], "run_id": pending_key[1], "status": "pending"}
     state = adaptive_hparam._ReplacementState(
@@ -4111,8 +4111,13 @@ def test_async_slurm_stop_does_not_launch_replacement_before_confirmation(tmp_pa
         launch_failed_keys=set(),
         retirement_credit=1,
     )
+    stop_calls = []
     monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [pending_row])
-    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "_stop_bad_running_runs",
+        lambda *_args, **kwargs: stop_calls.append(kwargs["run_keys"]) or [],
+    )
     monkeypatch.setattr(
         adaptive_hparam,
         "_launch_with_recovery",
@@ -4125,11 +4130,12 @@ def test_async_slurm_stop_does_not_launch_replacement_before_confirmation(tmp_pa
         state,
         tmp_path / "round_000",
         {},
-        [bad_key],
+        bad_keys,
         [pending_row],
     )
 
     assert rows == [pending_row]
+    assert stop_calls == [{bad_keys[0]}]
     assert state.retirement_credit == 1
     assert state.stopped_run_keys == []
 

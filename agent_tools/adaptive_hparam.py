@@ -848,7 +848,7 @@ def _drain_bad_runs(
             state.stopped_run_keys.extend(stopped)
             state.retirement_credit -= len(stopped)
         else:
-            continue
+            break
         canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
         if not any(row.get("status") in {"planned", "pending"} for row in next_round_rows):
