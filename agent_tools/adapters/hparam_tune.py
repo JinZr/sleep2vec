@@ -99,35 +99,33 @@ class HparamTuneAdapter(TaskAdapter):
                 None,
                 {"error": str(exc)},
             )
-            issues = [*report.issues, issue]
-            return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
-
-        priority_type = capabilities["priority_type"] or "unknown priority policy"
-        scheduler_type = capabilities["scheduler_type"] or "unknown scheduler"
-        accounting_type = capabilities["accounting_storage_type"] or "unknown accounting storage"
-        message = (
-            f"Read-only Slurm inspection reports {priority_type}, {scheduler_type}, {accounting_type}, and "
-            f"{capabilities['reservation_count']} visible reservation(s). "
-        )
-        if priority_type == "priority/basic":
-            message += (
-                "Submit time and fitting credible short resource requests into backfill are the practical user-side "
-                "levers; no setting can guarantee first priority."
-            )
-        elif priority_type == "priority/multifactor":
-            message += (
-                "Priority may also depend on cluster-controlled age, fair-share, QOS, and association policy; no "
-                "setting can guarantee first priority."
-            )
         else:
-            message += "Cluster policy determines ordering; no user-side setting can guarantee first priority."
-        issue = DecisionIssue(
-            DecisionStatus.WARN,
-            "execution.scheduler.capabilities",
-            message,
-            None,
-            capabilities,
-        )
+            priority_type = capabilities["priority_type"] or "unknown priority policy"
+            scheduler_type = capabilities["scheduler_type"] or "unknown scheduler"
+            accounting_type = capabilities["accounting_storage_type"] or "unknown accounting storage"
+            message = (
+                f"Read-only Slurm inspection reports {priority_type}, {scheduler_type}, {accounting_type}, and "
+                f"{capabilities['reservation_count']} visible reservation(s). "
+            )
+            if priority_type == "priority/basic":
+                message += (
+                    "Submit time and fitting credible short resource requests into backfill are the practical "
+                    "user-side levers; no setting can guarantee first priority."
+                )
+            elif priority_type == "priority/multifactor":
+                message += (
+                    "Priority may also depend on cluster-controlled age, fair-share, QOS, and association policy; no "
+                    "setting can guarantee first priority."
+                )
+            else:
+                message += "Cluster policy determines ordering; no user-side setting can guarantee first priority."
+            issue = DecisionIssue(
+                DecisionStatus.WARN,
+                "execution.scheduler.capabilities",
+                message,
+                None,
+                capabilities,
+            )
         issues = [*report.issues, issue]
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
 
