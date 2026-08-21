@@ -971,6 +971,72 @@ def test_slurm_monitor_recovers_terminal_state_from_accounting_after_controller_
     assert canonical["scheduler_exit_code"] == "0"
 
 
+@pytest.mark.parametrize("observation_source", ["controller", "accounting"])
+@pytest.mark.parametrize("terminal_exit_code", [None, 0, 7])
+def test_slurm_monitor_keeps_revoked_federation_sibling_unknown(
+    tmp_path: Path,
+    monkeypatch,
+    observation_source: str,
+    terminal_exit_code: int | None,
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    token = run["scheduler_submit_token"]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    if terminal_exit_code is not None:
+        Path(run["scheduler_result_path"]).write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "scheduler_job_id": "3880",
+                    "scheduler_cluster": "wuji-h20",
+                    "scheduler_submit_token": token,
+                    "node": "h20-bj-96",
+                    "exit_code": terminal_exit_code,
+                }
+            )
+        )
+    revoked = slurm.JobObservation("3880", "REVOKED", "Federated", "", token)
+    accounting_calls = []
+    if observation_source == "controller":
+        monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [revoked])
+        monkeypatch.setattr(
+            managed_scheduler.slurm,
+            "accounting_job",
+            lambda *_args, **_kwargs: pytest.fail("controller REVOKED must not query accounting"),
+        )
+    else:
+        monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(managed_scheduler.slurm, "show_job", lambda *_args, **_kwargs: None)
+
+        def accounting_job(_execution, job_id, *, submit_token, cluster=None, timeout=10):
+            accounting_calls.append((job_id, submit_token, cluster))
+            return revoked
+
+        monkeypatch.setattr(managed_scheduler.slurm, "accounting_job", accounting_job)
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["status"] == "unknown_scheduler"
+    assert canonical["scheduler_job_id"] == "3880"
+    assert canonical["scheduler_cluster"] == "wuji-h20"
+    assert canonical["scheduler_raw_state"] == "REVOKED"
+    assert canonical["scheduler_reason"] == (
+        "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported. "
+        "Scheduler reason: Federated"
+    )
+    assert canonical.get("scheduler_exit_code", "") == (
+        str(terminal_exit_code) if terminal_exit_code is not None else ""
+    )
+    assert accounting_calls == ([("3880", token, "wuji-h20")] if observation_source == "accounting" else [])
+
+
 def test_slurm_monitor_rejects_unauthenticated_accounting_without_terminalizing_run(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -1168,6 +1234,42 @@ def test_slurm_submission_timeout_reconciles_exact_submit_token(tmp_path: Path, 
     assert canonical["scheduler_reason"] == "Resources"
 
 
+def test_slurm_submission_timeout_reconciles_revoked_without_resubmitting(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    submitted = []
+
+    def timeout(*_args, **_kwargs):
+        submitted.append(True)
+        raise subprocess.TimeoutExpired("sbatch", 60)
+
+    def active_jobs(_execution, *, job_id=None, submit_token=None, cluster=None, timeout=10):
+        if job_id is None:
+            assert submit_token == run["scheduler_submit_token"]
+        else:
+            assert job_id == "3880"
+            assert submit_token is None
+        assert cluster is None
+        return [slurm.JobObservation("3880", "REVOKED", "Sibling", "", run["scheduler_submit_token"])]
+
+    monkeypatch.setattr(managed_scheduler.slurm, "submit", timeout)
+    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", active_jobs)
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert submitted == [True]
+    assert canonical["status"] == "unknown_scheduler"
+    assert canonical["scheduler_job_id"] == "3880"
+    assert canonical["scheduler_cluster"] == ""
+    assert canonical["scheduler_raw_state"] == "REVOKED"
+    assert canonical["scheduler_reason"] == (
+        "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported. "
+        "Scheduler reason: Sibling"
+    )
+
+
 def test_slurm_submission_timeout_sidecar_still_waits_for_scheduler_terminal(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -1345,6 +1447,7 @@ def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch):
         ("running", "COMPLETING", True, 143, "stopping"),
         ("running", "SUSPENDED", True, 143, "stopping"),
         ("running", "STOPPED", True, 143, "stopping"),
+        ("running", "REVOKED", False, 0, "unknown_scheduler"),
         ("running", "RESIZING", True, 143, "stopping"),
         ("running", "SIGNALING", True, 143, "stopping"),
         ("running", "STAGE_OUT", True, 143, "stopping"),
@@ -1409,6 +1512,12 @@ def test_slurm_stop_request_waits_for_matching_scheduler_cancellation(
     assert canonical["stop_requested_at"] == "2026-08-21T03:40:00Z"
     assert canonical["stop_reason"] == "validation diverged"
     assert canonical.get("stopped_at", "") == ("2026-08-21T03:41:00Z" if expected_status == "stopped" else "")
+    if scheduler_state == "REVOKED":
+        assert canonical["scheduler_job_id"] == "3880"
+        assert canonical["scheduler_cluster"] == "wuji-h20"
+        assert canonical["scheduler_reason"] == (
+            "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported."
+        )
     events_path = tmp_path / "events.jsonl"
     events = [json.loads(line) for line in events_path.read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_stop_requested") == 1

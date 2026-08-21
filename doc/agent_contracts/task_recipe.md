@@ -234,7 +234,10 @@ when cancellation prevented the wrapper from writing a terminal sidecar. A
 cancellation signal received while the allocation wrapper is still validating
 frozen identity terminates the job without starting the leaf process. Live
 Slurm transition flags remain active; raw `STOPPED` retains its allocation and
-is not canonical `stopped`.
+is not canonical `stopped`. When Slurm reports raw `REVOKED` federation sibling
+state, sibling-cluster rebinding is unsupported; the run fails closed as active
+`unknown_scheduler`, the frozen job, cluster, scheduler reason, and stop intent
+remain canonical, and the run is not relaunched.
 The submission command strips every ambient `SBATCH_*` variable on the local or
 SSH submission host before invoking `sbatch`, while preserving ordinary runtime
 environment such as `PATH` and Slurm client configuration.

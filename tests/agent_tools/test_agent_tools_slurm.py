@@ -481,7 +481,7 @@ def test_cancel_uses_exact_numeric_job_id(monkeypatch):
         ("REQUEUE_FED", "queued"),
         ("REQUEUE_HOLD", "queued"),
         ("RESV_DEL_HOLD", "queued"),
-        ("REVOKED", "queued"),
+        ("REVOKED", "unknown"),
         ("SPECIAL_EXIT", "queued"),
         ("RUNNING", "running"),
         ("COMPLETING", "running"),

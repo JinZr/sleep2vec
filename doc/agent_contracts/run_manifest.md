@@ -170,7 +170,11 @@ scheduler job is observed as `CANCELLED`; this explicit stop
 intent is the narrow exception that does not require a terminal sidecar because
 a pending job may never start its wrapper. Slurm transition flags remain active;
 in particular, raw `STOPPED` retains its allocation and maps to canonical
-`running` or `stopping`, never terminal `stopped`. A stale observation that was
+`running` or `stopping`, never terminal `stopped`. When Slurm reports raw
+`REVOKED` federation sibling state, sibling-cluster rebinding is unsupported;
+the run fails closed as active `unknown_scheduler` while preserving the frozen
+job, cluster, scheduler reason, and any stop intent, and never authorizes
+rebinding or relaunch. A stale observation that was
 created before the stop request may update diagnostic evidence but cannot erase
 or bypass the canonical stop intent.
 

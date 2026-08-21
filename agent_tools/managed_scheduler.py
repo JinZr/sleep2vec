@@ -1217,15 +1217,20 @@ def _reconcile_slurm_submission(
         observed = matches[0]
         category = slurm.state_category(observed.state)
         status = category if category in {"queued", "running"} else "unknown_scheduler"
+        reason = observed.reason
+        if slurm.normalize_state(observed.state) == "REVOKED":
+            reason = "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported."
+            if observed.reason:
+                reason = f"{reason} Scheduler reason: {observed.reason}"
         return (
             {
                 **_submitted_slurm_row(
                     row,
-                    slurm.JobIdentity(observed.job_id),
+                    slurm.JobIdentity(observed.job_id, str(row.get("scheduler_cluster") or "")),
                     raw_state=observed.state,
                     status=status,
                 ),
-                "scheduler_reason": observed.reason,
+                "scheduler_reason": reason,
                 "scheduler_node": observed.node_list,
             },
             None,
@@ -1335,6 +1340,10 @@ def observe_slurm_run(
             raise ValueError("Observed Slurm job comment differs from the frozen submit token.")
         category = slurm.state_category(active.state)
         reason = active.reason
+        if slurm.normalize_state(active.state) == "REVOKED":
+            reason = "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported."
+            if active.reason:
+                reason = f"{reason} Scheduler reason: {active.reason}"
         if terminal_exit_code is not None:
             if category == "cancelled" and stop_requested:
                 status = "stopped"

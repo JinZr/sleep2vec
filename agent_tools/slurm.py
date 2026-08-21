@@ -594,7 +594,6 @@ def state_category(value: str) -> str:
         "REQUEUE_FED",
         "REQUEUE_HOLD",
         "RESV_DEL_HOLD",
-        "REVOKED",
         "SPECIAL_EXIT",
     }:
         return "queued"
