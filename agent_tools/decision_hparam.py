@@ -441,6 +441,7 @@ def _hparam_execution_issues(
     issues: list[DecisionIssue] = []
     scheduler = execution.get("scheduler") if "scheduler" in execution else {"type": "direct"}
     scheduler_type = scheduler.get("type") if isinstance(scheduler, dict) else None
+    is_slurm = scheduler_type == "slurm"
     if scheduler_type not in {"direct", "slurm"}:
         issues.append(
             DecisionIssue(
@@ -461,7 +462,7 @@ def _hparam_execution_issues(
                 {"scheduler": scheduler, "preflight_before_workspace": True},
             )
         )
-    if scheduler_type == "slurm":
+    if is_slurm:
         for field in ("gpu_pool", "max_concurrent"):
             if field in execution:
                 issues.append(
@@ -615,7 +616,7 @@ def _hparam_execution_issues(
             )
         )
     max_concurrent = None
-    if "max_concurrent" in execution and scheduler_type != "slurm":
+    if "max_concurrent" in execution and not is_slurm:
         raw_max_concurrent = execution["max_concurrent"]
         if type(raw_max_concurrent) is not int or raw_max_concurrent <= 0:
             issues.append(
@@ -629,7 +630,7 @@ def _hparam_execution_issues(
             )
         else:
             max_concurrent = raw_max_concurrent
-    if scheduler_type != "slurm" and "gpu_pool" in execution and not isinstance(execution["gpu_pool"], list):
+    if not is_slurm and "gpu_pool" in execution and not isinstance(execution["gpu_pool"], list):
         issues.append(
             DecisionIssue(
                 DecisionStatus.FAIL,
@@ -654,7 +655,7 @@ def _hparam_execution_issues(
             )
         else:
             gpus_per_run = raw_gpus_per_run
-    if scheduler_type == "slurm" and isinstance(scheduler, dict) and not (set(scheduler) - _HPARAM_SCHEDULER_FIELDS):
+    if is_slurm and isinstance(scheduler, dict) and not (set(scheduler) - _HPARAM_SCHEDULER_FIELDS):
         try:
             slurm.normalize_resources(scheduler, gpus_per_run if gpus_per_run is not None else 1)
         except ValueError as exc:
@@ -692,7 +693,7 @@ def _hparam_execution_issues(
     # An invalid (non-list) gpu_pool already failed above; drop it so the shared rules
     # fall back to runtime.devices, matching the previous inline behaviour. An invalid
     # gpus_per_run skips the pool rules entirely (type failure already reported).
-    if scheduler_type != "slurm" and (gpus_per_run is not None or "gpus_per_run" not in execution):
+    if not is_slurm and (gpus_per_run is not None or "gpus_per_run" not in execution):
         invalid_gpu_pool = "gpu_pool" in execution and not isinstance(execution["gpu_pool"], list)
         gpu_execution = (
             {key: value for key, value in execution.items() if key != "gpu_pool"} if invalid_gpu_pool else execution
@@ -742,7 +743,7 @@ def _hparam_execution_issues(
                 )
             if (
                 isinstance(env_name, str)
-                and scheduler_type == "slurm"
+                and is_slurm
                 and (env_name.startswith("SLURM_") or env_name == "CUDA_VISIBLE_DEVICES")
             ):
                 issues.append(
