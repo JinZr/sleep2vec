@@ -406,13 +406,14 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                 matches = slurm.active_jobs(
                     {"target": target, "host": host},
                     submit_token=str(previous["scheduler_submit_token"]),
+                    cluster=cluster or None,
                 )
                 if len(matches) != 1:
                     raise ValueError(
                         f"Cannot resolve one Slurm job for run_id {run_id}; found {len(matches)} matching jobs."
                     )
                 job_id = matches[0].job_id
-            slurm.cancel({"target": target, "host": host}, job_id)
+            slurm.cancel({"target": target, "host": host}, job_id, cluster=cluster or None)
             final = merge_run_row(
                 previous,
                 {

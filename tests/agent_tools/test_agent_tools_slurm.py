@@ -126,6 +126,47 @@ def test_show_job_parses_exact_job_and_missing_job(monkeypatch):
     assert slurm.show_job({"target": "local"}, "3880") is None
 
 
+def test_follow_up_commands_route_to_bound_cluster(monkeypatch):
+    calls = []
+    results = iter(
+        [
+            subprocess.CompletedProcess([], 0, "3880|RUNNING|None|h20-bj-96|token\n", ""),
+            subprocess.CompletedProcess(
+                [],
+                0,
+                "JobId=3880 JobState=RUNNING Reason=None NodeList=h20-bj-96 Comment=token ExitCode=0:0\n",
+                "",
+            ),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+    )
+
+    def fake_run_command(execution, argv, *, timeout):
+        calls.append((execution, argv, timeout))
+        return next(results)
+
+    monkeypatch.setattr(slurm, "run_command", fake_run_command)
+
+    assert slurm.active_jobs({"target": "local"}, job_id="3880", cluster="wuji-h20") == [
+        slurm.JobObservation("3880", "RUNNING", "", "h20-bj-96", "token")
+    ]
+    assert slurm.show_job({"target": "local"}, "3880", cluster="wuji-h20") is not None
+    slurm.cancel({"target": "local"}, "3880", cluster="wuji-h20")
+
+    assert [argv for _execution, argv, _timeout in calls] == [
+        ["squeue", "--noheader", "--format=%i|%T|%R|%N|%k", "--clusters=wuji-h20", "--jobs", "3880"],
+        ["scontrol", "--clusters=wuji-h20", "show", "job", "--oneliner", "3880"],
+        ["scancel", "--clusters=wuji-h20", "3880"],
+    ]
+
+
+def test_follow_up_commands_reject_invalid_cluster_before_execution(monkeypatch):
+    monkeypatch.setattr(slurm, "run_command", lambda *_args, **_kwargs: pytest.fail("must not execute"))
+
+    with pytest.raises(ValueError, match="cluster name is invalid"):
+        slurm.active_jobs({"target": "local"}, cluster="wuji;scancel 3880")
+
+
 def test_cluster_scheduling_capabilities_use_read_only_scontrol_queries(monkeypatch):
     outputs = {
         "scontrol --version": "slurm 20.11.9\n",

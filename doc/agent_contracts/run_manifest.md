@@ -129,10 +129,12 @@ after the group has exited.
 
 One Slurm-backed canonical run owns one frozen leaf `job.sbatch`. The launcher
 commits transport identity plus `submitting` before calling `sbatch --parsable`.
-The returned positive job id is an immutable scheduler binding. If submission
-times out, returns malformed output, or loses SSH after possible submission,
-the launcher searches the exact frozen comment token; zero or multiple matches
-remain unresolved and never authorize another submission.
+The returned positive job id and optional cluster are immutable scheduler
+bindings. Follow-up `squeue`, `scontrol`, and `scancel` commands route to the
+bound cluster. If submission times out, returns malformed output, or loses SSH
+after possible submission, the launcher searches the exact frozen comment
+token; zero or multiple matches remain unresolved and never authorize another
+submission.
 
 Live state comes from `squeue` and `scontrol`. The compute wrapper revalidates
 the runtime commit, module origin, CLI, and frozen launch/config hashes, runs the

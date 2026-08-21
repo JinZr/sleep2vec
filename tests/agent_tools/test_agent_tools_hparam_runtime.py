@@ -874,9 +874,10 @@ def test_slurm_submission_timeout_reconciles_exact_submit_token(tmp_path: Path, 
         lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("sbatch", 60)),
     )
 
-    def active_jobs(_execution, *, job_id=None, submit_token=None, timeout=10):
+    def active_jobs(_execution, *, job_id=None, submit_token=None, cluster=None, timeout=10):
         assert job_id is None
         assert submit_token == run["scheduler_submit_token"]
+        assert cluster is None
         return [slurm.JobObservation("3880", "PENDING", "Resources", "", submit_token)]
 
     monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", active_jobs)
@@ -955,15 +956,17 @@ def test_slurm_late_job_binding_records_launch_time_without_overwriting_existing
             )
         )
 
-    def active_jobs(_execution, *, job_id=None, submit_token=None, timeout=10):
+    def active_jobs(_execution, *, job_id=None, submit_token=None, cluster=None, timeout=10):
         if binding_source == "terminal":
             pytest.fail("Terminal sidecar binding must not query Slurm")
         if binding_source == "queue":
             assert job_id is None
             assert submit_token == token
+            assert cluster is None
         else:
             assert job_id == "3880"
             assert submit_token is None
+            assert cluster == "wuji-h20"
         return [slurm.JobObservation("3880", "RUNNING", "", "h20-bj-96", token)]
 
     monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", active_jobs)
@@ -986,12 +989,16 @@ def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch):
     )
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
     cancelled = []
-    monkeypatch.setattr(slurm, "cancel", lambda execution, job_id: cancelled.append((execution, job_id)))
+    monkeypatch.setattr(
+        slurm,
+        "cancel",
+        lambda execution, job_id, *, cluster=None: cancelled.append((execution, job_id, cluster)),
+    )
 
     hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")
 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
-    assert cancelled == [({"target": "local", "host": ""}, "3880")]
+    assert cancelled == [({"target": "local", "host": ""}, "3880", "wuji-h20")]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "validation diverged"
 

@@ -1220,6 +1220,7 @@ def observe_slurm_run(
     owner = Path(owner_dir)
     token = str(row["scheduler_submit_token"])
     job_id = str(row.get("scheduler_job_id") or "")
+    cluster = str(row.get("scheduler_cluster") or "")
     terminal = _read_slurm_json(owner, execution, row["scheduler_result_path"])
     observation: dict[str, Any] = {**row, "scheduler_observed_at": utc_now()}
     if terminal:
@@ -1247,13 +1248,14 @@ def observe_slurm_run(
             job_id = allocation_identity.job_id
             observation["scheduler_job_id"] = job_id
             observation["scheduler_cluster"] = allocation_identity.cluster
+            cluster = allocation_identity.cluster
             observation["launched_at"] = row.get("launched_at") or utc_now()
         observation["scheduler_node"] = allocation.get("node", "")
         observation["scheduler_started_at"] = allocation.get("started_at", "")
     health_error = ""
     try:
         if not job_id:
-            matches = slurm.active_jobs(execution, submit_token=token)
+            matches = slurm.active_jobs(execution, submit_token=token, cluster=cluster or None)
             if len(matches) > 1:
                 raise ValueError(f"Multiple Slurm jobs match frozen submit token {token}.")
             if not matches:
@@ -1264,10 +1266,10 @@ def observe_slurm_run(
             observation["scheduler_job_id"] = job_id
             observation["launched_at"] = row.get("launched_at") or utc_now()
         else:
-            matches = slurm.active_jobs(execution, job_id=job_id)
+            matches = slurm.active_jobs(execution, job_id=job_id, cluster=cluster or None)
             active = matches[0] if matches else None
         if active is None:
-            active = slurm.show_job(execution, job_id)
+            active = slurm.show_job(execution, job_id, cluster=cluster or None)
         if active is None:
             observation.update(
                 {
@@ -1279,7 +1281,7 @@ def observe_slurm_run(
             return _slurm_artifact_observation(observation, health=health)
         if health:
             try:
-                detailed = slurm.show_job(execution, job_id)
+                detailed = slurm.show_job(execution, job_id, cluster=cluster or None)
                 if detailed is None:
                     health_error = "Slurm job details are unavailable."
                 else:

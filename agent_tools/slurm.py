@@ -350,9 +350,13 @@ def active_jobs(
     *,
     job_id: str | None = None,
     submit_token: str | None = None,
+    cluster: str | None = None,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
 ) -> list[JobObservation]:
     argv = ["squeue", "--noheader", "--format=%i|%T|%R|%N|%k"]
+    cluster_name = _cluster_name(cluster)
+    if cluster_name:
+        argv.append(f"--clusters={cluster_name}")
     if job_id is not None:
         argv.extend(["--jobs", _job_id(job_id)])
     result = run_command(execution, argv, timeout=timeout)
@@ -370,10 +374,16 @@ def show_job(
     execution: dict[str, Any],
     job_id: str,
     *,
+    cluster: str | None = None,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
 ) -> JobObservation | None:
     job_id = _job_id(job_id)
-    result = run_command(execution, ["scontrol", "show", "job", "--oneliner", job_id], timeout=timeout)
+    argv = ["scontrol"]
+    cluster_name = _cluster_name(cluster)
+    if cluster_name:
+        argv.append(f"--clusters={cluster_name}")
+    argv.extend(["show", "job", "--oneliner", job_id])
+    result = run_command(execution, argv, timeout=timeout)
     if result.returncode != 0:
         detail = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
         if "invalid job id" in detail:
@@ -477,9 +487,15 @@ def cancel(
     execution: dict[str, Any],
     job_id: str,
     *,
+    cluster: str | None = None,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
 ) -> None:
-    result = run_command(execution, ["scancel", _job_id(job_id)], timeout=timeout)
+    argv = ["scancel"]
+    cluster_name = _cluster_name(cluster)
+    if cluster_name:
+        argv.append(f"--clusters={cluster_name}")
+    argv.append(_job_id(job_id))
+    result = run_command(execution, argv, timeout=timeout)
     if result.returncode != 0:
         raise SlurmCommandError("cancellation", result)
 
@@ -595,6 +611,13 @@ def _job_id(value: str) -> str:
     text = str(value or "").strip()
     if re.fullmatch(r"[1-9][0-9]*", text) is None:
         raise ValueError(f"Slurm job id must be a positive integer: {value!r}")
+    return text
+
+
+def _cluster_name(value: str | None) -> str:
+    text = str(value or "")
+    if text and re.fullmatch(r"[A-Za-z0-9_.-]+", text) is None:
+        raise ValueError(f"Slurm cluster name is invalid: {value!r}")
     return text
 
 
