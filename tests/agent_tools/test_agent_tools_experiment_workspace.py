@@ -618,6 +618,63 @@ def test_merge_run_row_preserves_status_precedence(existing_status: str, incomin
     assert merged["status"] == expected_status
 
 
+@pytest.mark.parametrize("incoming_status", ["queued", "running", "unknown_scheduler", "completed", "failed"])
+@pytest.mark.parametrize("incoming_stop_requested_at", [None, "", "2026-08-21T03:39:00Z"])
+def test_merge_run_row_preserves_stop_intent_against_stale_observations(
+    incoming_status: str,
+    incoming_stop_requested_at: str | None,
+):
+    existing = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "status": "stopping",
+        "stop_requested_at": "2026-08-21T03:40:00Z",
+        "stop_reason": "validation diverged",
+    }
+    incoming = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "status": incoming_status,
+        "scheduler_raw_state": "RUNNING",
+    }
+    if incoming_stop_requested_at is not None:
+        incoming["stop_requested_at"] = incoming_stop_requested_at
+        incoming["stop_reason"] = "stale reason"
+
+    merged = merge_run_row(existing, incoming)
+
+    assert merged["status"] == "stopping"
+    assert merged["stop_requested_at"] == "2026-08-21T03:40:00Z"
+    assert merged["stop_reason"] == "validation diverged"
+    assert merged["scheduler_raw_state"] == "RUNNING"
+
+
+@pytest.mark.parametrize("incoming_status", ["stopping", "stopped", "completed", "failed", "unknown_scheduler"])
+def test_merge_run_row_accepts_observation_bound_to_current_stop_intent(incoming_status: str):
+    existing = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "status": "stopping",
+        "stop_requested_at": "2026-08-21T03:40:00Z",
+        "stop_reason": "validation diverged",
+    }
+
+    merged = merge_run_row(
+        existing,
+        {
+            "step_id": "train",
+            "run_id": "run-000",
+            "status": incoming_status,
+            "stop_requested_at": "2026-08-21T03:40:00Z",
+            "stop_reason": "validation diverged",
+        },
+    )
+
+    assert merged["status"] == incoming_status
+    assert merged["stop_requested_at"] == "2026-08-21T03:40:00Z"
+    assert merged["stop_reason"] == "validation diverged"
+
+
 def test_merge_run_row_is_idempotent():
     existing = {"step_id": "train", "run_id": "run-000", "status": "completed"}
     incoming = {"status": "running", "score": 0.8}

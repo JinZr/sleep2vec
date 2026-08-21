@@ -237,7 +237,8 @@ compute wrapper's matching terminal sidecar for terminal truth. Uncertain direct
 or scheduler identity never authorizes relaunch or retry. Direct stop waits for
 the process group to exit. Slurm stop records a nonterminal request after
 `scancel` succeeds and commits `stopped` only after matching scheduler
-cancellation evidence. Optional health
+cancellation evidence; stale monitor observations cannot overwrite that stop
+intent. Optional health
 labels remain observational:
 DDP child GPU activity follows the managed process group, and unavailable
 required probes or first-baseline observations report `health_unknown` rather

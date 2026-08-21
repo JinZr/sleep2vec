@@ -1268,6 +1268,51 @@ def test_slurm_stop_failure_does_not_commit_request_state(tmp_path: Path, monkey
     } == before
 
 
+@pytest.mark.parametrize("stale_status", ["queued", "running", "unknown_scheduler"])
+def test_slurm_monitor_preserves_concurrent_stop_intent(tmp_path: Path, monkeypatch, stale_status: str):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "running"}],
+    )
+    monkeypatch.setattr(slurm, "cancel", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-21T03:40:00Z")
+
+    def observe_stale_row(_root, _execution, row, *, health=False):
+        assert row["status"] == "running"
+        assert row.get("stop_requested_at", "") == ""
+        hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")
+        return {
+            **row,
+            "status": stale_status,
+            "stop_requested_at": "",
+            "stop_reason": "",
+            "scheduler_raw_state": "RUNNING",
+        }
+
+    monkeypatch.setattr(managed_scheduler, "observe_slurm_run", observe_stale_row)
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["status"] == "stopping"
+    assert canonical["stop_requested_at"] == "2026-08-21T03:40:00Z"
+    assert canonical["stop_reason"] == "validation diverged"
+    assert canonical["scheduler_raw_state"] == "RUNNING"
+    assert _read_table(plan_dir / "run_status.tsv")[0] == canonical
+    launch = _read_table(plan_dir / "launch_manifest.tsv")[0]
+    assert launch["status"] == "stopping"
+    assert launch["stop_requested_at"] == "2026-08-21T03:40:00Z"
+    assert launch["stop_reason"] == "validation diverged"
+
+
 def test_registered_step_remains_canonical_through_plan_and_dry_run_launch(tmp_path: Path):
     source = tmp_path / "source"
     recipe = _hparam_recipe(source)

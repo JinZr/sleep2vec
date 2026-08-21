@@ -1044,12 +1044,20 @@ def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
     merged = dict(existing)
     existing_status = merged.get("status")
     incoming_status = incoming.get("status")
+    existing_stop_requested_at = existing.get("stop_requested_at")
+    stale_stop_observation = (
+        existing_status == "stopping"
+        and existing_stop_requested_at not in (None, "")
+        and incoming.get("stop_requested_at") != existing_stop_requested_at
+    )
     merged.update(json_ready(incoming))
     if existing_status in TERMINAL_STATUSES:
         if incoming_status == "failed" and existing_status in {"completed", "finished"}:
             merged["status"] = "failed"
         else:
             merged["status"] = existing_status
+    elif stale_stop_observation:
+        merged["status"] = existing_status
     elif incoming_status == "superseded" and existing_status not in {"planned", "pending"}:
         merged["status"] = existing_status
     elif existing_status in {
@@ -1066,6 +1074,10 @@ def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
         "pending",
     }:
         merged["status"] = existing_status
+    if existing_status == "stopping":
+        for field in ("stop_requested_at", "stop_reason"):
+            if existing.get(field) not in (None, ""):
+                merged[field] = existing[field]
     return merged
 
 
