@@ -1088,6 +1088,10 @@ def adaptive_step(
         if report.exit_code != 0:
             raise RuntimeError(f"Round {next_round:03d} plan failed with exit code {report.exit_code}.")
         _append_registry_rows(root, next_round, next_dir)
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+        if scheduler.get("type") == "slurm":
+            monitor_hparam_runs(round_dir)
         current_plan = artifacts.read_hparam_plan(round_dir)
         bad_run_keys = _bad_running_run_keys(root, round_dir, recipe)
         ordered_bad_run_keys = [
@@ -1870,6 +1874,8 @@ def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -
         if key not in plan_keys:
             continue
         if row.get("status") != "running":
+            continue
+        if scheduler_type(row) == "slurm" and row.get("scheduler_exit_code") not in (None, ""):
             continue
         should_stop = evidence.log_has_failure(row.get("log_path"), row)
         data = {}

@@ -148,6 +148,37 @@ def test_adaptive_slurm_grace_uses_allocation_start_not_submission_time():
     assert adaptive_hparam._grace_satisfied({"scheduler_type": "slurm", "launched_at": old}, {}, replacement) is False
 
 
+def test_adaptive_retirement_skips_slurm_run_with_verified_terminal_sidecar(tmp_path: Path, monkeypatch):
+    recipe = {
+        "adaptive": {
+            "objective_metric": "val_score",
+            "objective_mode": "max",
+            "replacement": {"enabled": True, "allow_running_stop": True},
+        }
+    }
+    run = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "status": "running",
+        "scheduler_type": "slurm",
+        "scheduler_exit_code": "0",
+    }
+    monkeypatch.setattr(
+        adaptive_hparam.artifacts,
+        "read_hparam_plan",
+        lambda _round_dir: {"recipe": {"experiment": {"root": str(tmp_path)}}, "runs": [run]},
+    )
+    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [run])
+    monkeypatch.setattr(adaptive_hparam, "_latest_incumbent_score", lambda _root: 1.0)
+    monkeypatch.setattr(
+        adaptive_hparam.evidence,
+        "log_has_failure",
+        lambda *_args, **_kwargs: pytest.fail("terminal Slurm work must not be considered for retirement"),
+    )
+
+    assert adaptive_hparam._bad_running_run_keys(tmp_path, tmp_path / "round", recipe) == set()
+
+
 def test_adaptive_minutes_since_accepts_slurm_sidecar_timestamp():
     minutes = adaptive_hparam._minutes_since(slurm._utc_now())
 
