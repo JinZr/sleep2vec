@@ -6,7 +6,7 @@
 
 The canonical managed key is `(step_id, run_id)`. Both fields are required and one canonical table contains at most one row per key. A run uses the next stable step-local `run-NNN` id. `run_name` is human-readable, and `version` is the bounded slug of experiment id, step id, run id, and run name. Version may resolve external evidence only when a complete managed key is absent and the match is unique.
 
-Plan-owned identity, semantic parameters, config/script hashes, artifact paths, runtime/checkpoint directories, and execution identity are frozen after registration. Execution identity consists of target, host, workdir, GPUs, PID/log paths, command, and the launched PID, process-group id, and OS process-start token. Only the canonical owner may perform each trusted first fill.
+Plan-owned identity, semantic parameters, config/script hashes, artifact paths, runtime/checkpoint directories, and execution identity are frozen after registration. Shared execution identity consists of target, host, workdir, GPUs, log path, and command. Direct execution additionally owns the PID path, launched PID, process-group id, and OS process-start token. Slurm execution instead freezes scheduler type, submit token, sbatch path/hash, allocation-identity path, and terminal-sidecar path; the execution-snapshot SHA-256, numeric scheduler job id, and optional cluster are trusted one-time bindings. PID and scheduler bindings are mutually exclusive. Only the canonical owner may perform each trusted first fill.
 
 Pipeline-managed inference rows may additionally freeze `pipeline_id`,
 `job_id`, `attempt`, and `result_root`. Managed rows may freeze
@@ -15,10 +15,12 @@ Pipeline-managed inference rows may additionally freeze `pipeline_id`,
 existing lifecycle behavior; a present value is immutable and must match all
 later evidence.
 
-When present, `terminal_status_owner` is exactly `script` or `monitor`. It
+When present, `terminal_status_owner` is exactly `script`, `monitor`, or
+`scheduler_sidecar`. It
 selects the existing process-exit rule explicitly: script-owned runs must commit
 their own terminal status, while monitor-owned runs leave confirmed-exit
-inference to the monitor.
+inference to the monitor. Scheduler-sidecar runs take terminal truth only from
+their verified atomic sidecar.
 Lifecycle-owned inference with explicit runtime identity uses the same frozen
 runtime Python for its workload and every lifecycle commit, after its frozen
 runtime-commit guard succeeds.
@@ -47,7 +49,7 @@ validated manifest.
 
 ## Status reducer
 
-The current vocabulary includes scheduled `planned`/`pending`, active `launched`/`running`/`unknown_remote`/`missing_pid`, and terminal `completed`/`failed`/`finished`/`launch_failed`/`stopped`/`superseded` states.
+The current vocabulary includes scheduled `planned`/`pending`, scheduler handoff `submitting`/`queued`, active `launched`/`running`/`stopping`/`unknown_remote`/`unknown_scheduler`/`missing_pid`, and terminal `completed`/`failed`/`finished`/`launch_failed`/`stopped`/`superseded` states.
 
 - An update without status preserves the existing status.
 - Terminal status is sticky, except incoming `failed` evidence may correct `completed` or `finished`.
@@ -122,6 +124,59 @@ Stop propagates identity uncertainty before signal or mutation and rejects
 terminal rows before identity access. On SSH it verifies and signals atomically.
 It sends `SIGTERM` to the complete process group and commits `stopped` only
 after the group has exited.
+
+## Slurm scheduler evidence
+
+One Slurm-backed canonical run owns one frozen leaf `job.sbatch`. Before any
+submission, the launcher freezes the plan-level execution snapshot's raw
+SHA-256 across all canonical runs. It commits transport identity plus
+`submitting`, and passes that digest as a batch-script argument to
+`sbatch --parsable`. The returned positive job id and optional cluster are
+immutable scheduler bindings. Follow-up `squeue`, `scontrol`, and `scancel`
+commands route to the bound cluster. If submission times out, returns malformed
+output, or loses SSH after possible submission, the launcher searches the exact
+frozen comment token; zero or multiple matches remain unresolved and never
+authorize another submission.
+Before invoking `sbatch` on either a local or SSH submission host, the canonical
+submission command removes every inherited `SBATCH_*` variable so ambient
+client options cannot override frozen directives; other submission environment
+remains available.
+
+Live controller state comes from `squeue` and `scontrol`. If both no longer know
+a bound job, monitoring queries duplicate allocation records through `sacct`
+on the bound cluster when accounting is available. Accounting identity requires
+exactly one JobID row whose comment matches the frozen submit token; blank,
+mismatched, absent, or ambiguous comments fail without changing canonical
+lifecycle. A cluster that does not retain job comments cannot provide terminal
+accounting identity, so monitoring remains unchanged and fails closed. The
+compute wrapper verifies
+the exact execution-snapshot bytes before parsing them, then revalidates the
+runtime commit, module origin, CLI, and frozen launch/config hashes. It requires
+the allocation task count to match the frozen GPU count and starts one foreground
+`srun` step with one task per GPU. Only the wrapper writes the allocation and
+terminal JSON sidecars bound to the same token and job id; the terminal sidecar
+records the aggregate step exit code. A canonical completed
+or failed status requires both the matching terminal sidecar and a terminal
+scheduler observation; a scheduler failure overrides a zero wrapper exit code.
+If controller and accounting evidence are unavailable, a vanished job or an
+incomplete terminal evidence pair becomes active `unknown_scheduler` rather
+than inferred success or failure. An accounting terminal record is scheduler
+evidence only; ordinary completion or failure still requires the matching
+sidecar. Before `scancel`, `hparam-stop` atomically records nonterminal
+`stopping` with its reason, request time, and frozen job binding. A failed or
+interrupted cancellation preserves that canonical intent and may be retried
+only with the same reason. Monitoring commits `stopped` only after the same
+scheduler job is observed as `CANCELLED`; this explicit stop
+intent is the narrow exception that does not require a terminal sidecar because
+a pending job may never start its wrapper. Slurm transition flags remain active;
+in particular, raw `STOPPED` retains its allocation and maps to canonical
+`running` or `stopping`, never terminal `stopped`. When Slurm reports raw
+`REVOKED` federation sibling state, sibling-cluster rebinding is unsupported;
+the run fails closed as active `unknown_scheduler` while preserving the frozen
+job, cluster, scheduler reason, and any stop intent, and never authorizes
+rebinding or relaunch. A stale observation that was
+created before the stop request may update diagnostic evidence but cannot erase
+or bypass the canonical stop intent.
 
 When monitoring proves corrupt, partial, mismatched, or reused managed process
 identity, it records `process_identity_error` with the canonical status update.

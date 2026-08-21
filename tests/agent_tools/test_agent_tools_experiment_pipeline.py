@@ -215,6 +215,28 @@ def test_schema_rejects_non_executable_runtime_python(tmp_path: Path, python_com
         experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
 
 
+def test_external_pipeline_explicitly_rejects_slurm_before_state_creation(tmp_path: Path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    spec = _spec(root)
+    spec["execution"]["scheduler"] = {"type": "slurm"}
+    spec_path = tmp_path / "external.yaml"
+    spec_path.write_text(yaml.safe_dump(spec, sort_keys=False))
+
+    with pytest.raises(ValueError, match="supports only execution.scheduler.type=direct"):
+        experiment_pipeline.run_experiment_pipeline(root, spec_path, unlock_final_test=True, execute=True)
+
+    assert not (root / "pipelines").exists()
+
+
+def test_external_pipeline_accepts_explicit_direct_scheduler(tmp_path: Path):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    spec["execution"]["scheduler"] = {"type": "direct"}
+
+    experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+
+
 @pytest.mark.parametrize(
     "section,field,value,message",
     [

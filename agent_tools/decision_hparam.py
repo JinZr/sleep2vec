@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from . import gpu_rules
+from . import gpu_rules, slurm
 from .adaptive_proposals import validate_parameter_envelopes
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import multilabel_sidecar_issue
@@ -26,9 +26,11 @@ _HPARAM_EXECUTION_FIELDS = {
     "conda_env",
     "python",
     "runtime_commit",
+    "scheduler",
     "wandb_project",
     "wandb_group",
 }
+_HPARAM_SCHEDULER_FIELDS = {"type", "partition", "cpus_per_task", "memory", "walltime", "nice", "nodelist"}
 _HPARAM_EVALUATION_FIELDS = {
     "selection_metric",
     "selection_mode",
@@ -102,6 +104,28 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
                     source_layer,
                 )
             )
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    if "scheduler" in execution:
+        scheduler = execution["scheduler"]
+        if not isinstance(scheduler, dict):
+            issues.append(
+                _contract_issue(
+                    "execution.scheduler",
+                    "execution.scheduler must be a mapping.",
+                    scheduler,
+                    source_layer,
+                )
+            )
+        else:
+            for field in sorted(set(scheduler) - _HPARAM_SCHEDULER_FIELDS):
+                issues.append(
+                    _contract_issue(
+                        f"execution.scheduler.{field}",
+                        f"Unknown hparam execution.scheduler field: {field}.",
+                        scheduler[field],
+                        source_layer,
+                    )
+                )
 
     if "adaptive" not in recipe:
         return issues
@@ -247,6 +271,7 @@ def hparam_tune_issues(
     local_evaluation = (
         local_recipe.get("evaluation_policy") if isinstance(local_recipe.get("evaluation_policy"), dict) else {}
     )
+    local_runtime = local_recipe.get("runtime") if isinstance(local_recipe.get("runtime"), dict) else {}
     local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
     if config_summary:
         for issue in config_summary.get("blocking_issues", []):
@@ -346,7 +371,14 @@ def hparam_tune_issues(
         issues.append(needs_issue("hparam_search_space", "search.parameters is required.", high_impact))
     else:
         issues.extend(_hparam_search_parameter_issues(search.get("parameters")))
-    issues.extend(_hparam_execution_issues(execution, runtime))
+    issues.extend(
+        _hparam_execution_issues(
+            execution,
+            runtime,
+            local_runtime=local_runtime,
+            variant=str(recipe.get("variant") or ""),
+        )
+    )
     issues.extend(_hparam_adaptive_issues(adaptive))
     max_runs = search.get("max_runs")
     if max_runs in (None, ""):
@@ -407,8 +439,69 @@ def hparam_tune_issues(
     return issues
 
 
-def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any]) -> list[DecisionIssue]:
+def _hparam_execution_issues(
+    execution: dict[str, Any],
+    runtime: dict[str, Any],
+    *,
+    local_runtime: dict[str, Any] | None = None,
+    variant: str = "",
+) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
+    scheduler = execution.get("scheduler") if "scheduler" in execution else {"type": "direct"}
+    scheduler_type = scheduler.get("type") if isinstance(scheduler, dict) else None
+    is_slurm = scheduler_type == "slurm"
+    if scheduler_type not in {"direct", "slurm"}:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.scheduler.type",
+                "execution.scheduler.type must be direct or slurm.",
+                None,
+                {"type": scheduler_type, "preflight_before_workspace": True},
+            )
+        )
+    if scheduler_type == "direct" and set(scheduler) - {"type"}:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.scheduler",
+                "Direct execution.scheduler accepts only type: direct.",
+                None,
+                {"scheduler": scheduler, "preflight_before_workspace": True},
+            )
+        )
+    if is_slurm:
+        for field in ("gpu_pool", "max_concurrent"):
+            if field in execution:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        f"execution.{field}",
+                        f"execution.{field} is not used with execution.scheduler.type=slurm.",
+                        None,
+                        {field: execution[field], "preflight_before_workspace": True},
+                    )
+                )
+        if execution.get("conda_env") not in (None, ""):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "execution.conda_env",
+                    "Slurm execution requires an explicit execution.python path instead of execution.conda_env.",
+                    None,
+                    {"conda_env": execution.get("conda_env"), "preflight_before_workspace": True},
+                )
+            )
+        if local_runtime is not None and "devices" in local_runtime:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "runtime.devices",
+                    "Slurm hparam recipes derive logical runtime.devices from execution.gpus_per_run.",
+                    None,
+                    {"devices": local_runtime.get("devices"), "preflight_before_workspace": True},
+                )
+            )
     if "gpus_per_trial" in execution:
         issues.append(
             DecisionIssue(
@@ -531,7 +624,7 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
             )
         )
     max_concurrent = None
-    if "max_concurrent" in execution:
+    if "max_concurrent" in execution and not is_slurm:
         raw_max_concurrent = execution["max_concurrent"]
         if type(raw_max_concurrent) is not int or raw_max_concurrent <= 0:
             issues.append(
@@ -545,7 +638,7 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
             )
         else:
             max_concurrent = raw_max_concurrent
-    if "gpu_pool" in execution and not isinstance(execution["gpu_pool"], list):
+    if not is_slurm and "gpu_pool" in execution and not isinstance(execution["gpu_pool"], list):
         issues.append(
             DecisionIssue(
                 DecisionStatus.FAIL,
@@ -557,18 +650,8 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
         )
     gpus_per_run = None
     if "gpus_per_run" in execution:
-        try:
-            raw_gpus_per_run = execution["gpus_per_run"]
-            gpus_per_run = int(raw_gpus_per_run)
-            if (
-                isinstance(raw_gpus_per_run, bool)
-                or gpus_per_run <= 0
-                or isinstance(raw_gpus_per_run, float)
-                and not raw_gpus_per_run.is_integer()
-            ):
-                raise ValueError
-        except (TypeError, ValueError):
-            gpus_per_run = None
+        raw_gpus_per_run = execution["gpus_per_run"]
+        if type(raw_gpus_per_run) is not int or raw_gpus_per_run <= 0:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
@@ -578,10 +661,57 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
                     {"gpus_per_run": execution.get("gpus_per_run")},
                 )
             )
+        else:
+            gpus_per_run = raw_gpus_per_run
+    if is_slurm and variant == "sex_age_baseline" and gpus_per_run is not None and gpus_per_run > 1:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.gpus_per_run",
+                "sex_age_baseline does not support multi-GPU Slurm execution.",
+                None,
+                {"gpus_per_run": gpus_per_run, "variant": variant, "preflight_before_workspace": True},
+            )
+        )
+    if is_slurm and isinstance(scheduler, dict) and not (set(scheduler) - _HPARAM_SCHEDULER_FIELDS):
+        try:
+            slurm.normalize_resources(scheduler, gpus_per_run if gpus_per_run is not None else 1)
+        except ValueError as exc:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "execution.scheduler",
+                    str(exc),
+                    None,
+                    {"scheduler": scheduler, "preflight_before_workspace": True},
+                )
+            )
+        else:
+            priority_message = (
+                "Slurm priority is cluster-managed and cannot be guaranteed by this tool. Keep nice=0, submit "
+                "frozen jobs promptly, request the shortest credible walltime and only necessary CPU, memory, and "
+                "GPU resources, and avoid nodelist unless it is required."
+            )
+            if scheduler.get("nice", 0) > 0:
+                priority_message += f" The configured nice={scheduler['nice']} voluntarily lowers priority."
+            if scheduler.get("nodelist"):
+                priority_message += " The configured nodelist narrows eligible nodes and may delay backfill."
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.WARN,
+                    "execution.scheduler.priority",
+                    priority_message,
+                    None,
+                    {
+                        "nice": scheduler.get("nice", 0),
+                        "nodelist": scheduler.get("nodelist", ""),
+                    },
+                )
+            )
     # An invalid (non-list) gpu_pool already failed above; drop it so the shared rules
     # fall back to runtime.devices, matching the previous inline behaviour. An invalid
     # gpus_per_run skips the pool rules entirely (type failure already reported).
-    if gpus_per_run is not None or "gpus_per_run" not in execution:
+    if not is_slurm and (gpus_per_run is not None or "gpus_per_run" not in execution):
         invalid_gpu_pool = "gpu_pool" in execution and not isinstance(execution["gpu_pool"], list)
         gpu_execution = (
             {key: value for key, value in execution.items() if key != "gpu_pool"} if invalid_gpu_pool else execution
@@ -627,6 +757,25 @@ def _hparam_execution_issues(execution: dict[str, Any], runtime: dict[str, Any])
                         "execution.env values must be scalar strings, numbers, or booleans.",
                         None,
                         {"value": value},
+                    )
+                )
+            if (
+                isinstance(env_name, str)
+                and is_slurm
+                and (
+                    env_name.startswith("SLURM_")
+                    or env_name == "CUDA_VISIBLE_DEVICES"
+                    or env_name in {"RANK", "LOCAL_RANK", "WORLD_SIZE"}
+                    or env_name.startswith("MASTER_")
+                )
+            ):
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        f"execution.env.{env_name}",
+                        f"{env_name} is owned by Slurm and cannot be overridden in execution.env.",
+                        None,
+                        {env_name: value},
                     )
                 )
         for env_name, field in {

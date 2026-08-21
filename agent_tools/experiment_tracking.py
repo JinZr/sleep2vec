@@ -24,6 +24,7 @@ from .experiment_workspace import (
     read_run_manifest,
     resolve_external_run_row,
     resolve_run_row,
+    scheduler_type,
     validate_checkpoint_ownership,
     validate_frozen_run_update,
     validate_managed_run_rows,
@@ -163,10 +164,13 @@ def wandb_run_observations(run_rows: list[dict[str, Any]], wandb_rows: list[dict
             )
         if incoming_wandb_run_id:
             wandb_run_ids[key] = incoming_wandb_run_id
+        fields = WANDB_RUN_FIELDS
+        if scheduler_type(existing) == "slurm" or existing.get("terminal_status_owner") == "scheduler_sidecar":
+            fields = fields - {"status"}
         update = {
             "step_id": key[0],
             "run_id": key[1],
-            **{field: row[field] for field in WANDB_RUN_FIELDS if field in row},
+            **{field: row[field] for field in fields if field in row},
         }
         observations[key] = merge_run_row(observations.get(key, {}), update)
     rows = list(observations.values())
@@ -311,46 +315,89 @@ def monitor_run_row(
     remote: str | None = None,
 ) -> dict[str, Any]:
     previous = resolve_run_row(previous_rows, row) or {}
-    has_managed_script = any(source.get("script") not in (None, "") for source in (row, previous))
-    has_process_identity = any(source.get("pid_path") not in (None, "") for source in (row, previous))
-    has_execution_evidence = any(
-        source.get(field) not in (None, "") for source in (row, previous) for field in ("pid_path", "state")
-    )
-    # Hparam scripts expose process identity for monitor-owned exit inference; lifecycle scripts self-commit.
-    legacy_script_owner = has_managed_script and not has_process_identity
-    owner_row = previous if previous.get("terminal_status_owner") not in (None, "") else row
-    script_commits_terminal_status = managed_scheduler.script_commits_terminal_status(
-        owner_row,
-        default=legacy_script_owner,
-    )
-    if (previous.get("status") or row.get("status")) == "running" and has_managed_script and not has_execution_evidence:
-        return {
-            "step_id": row["step_id"],
-            "run_id": row["run_id"],
-            "status": "running",
-            "health_status": "running",
-            "monitored_at": utc_now(),
-        }
     observation_row = dict(row)
     transport_override = bool(remote and not observation_row.get("host"))
     if transport_override:
         observation_row["target"] = "ssh"
         observation_row["host"] = remote
-    status = evidence.status_row(
-        root,
-        observation_row,
-        previous,
-        script_commits_terminal_status=script_commits_terminal_status,
-        health=True,
-    )
+    scheduler_row = previous if previous.get("scheduler_type") not in (None, "") else row
+    if scheduler_type(scheduler_row) == "slurm":
+        has_execution_identity = any(source.get("target") not in (None, "") for source in (row, previous))
+        if has_execution_identity:
+            execution = {"target": observation_row.get("target") or "local"}
+            if execution["target"] == "ssh":
+                execution["host"] = observation_row.get("host")
+            status = managed_scheduler.observe_slurm_run(root, execution, observation_row, health=True)
+        else:
+            status = observation_row
+    else:
+        has_managed_script = any(source.get("script") not in (None, "") for source in (row, previous))
+        has_process_identity = any(source.get("pid_path") not in (None, "") for source in (row, previous))
+        has_execution_evidence = any(
+            source.get(field) not in (None, "") for source in (row, previous) for field in ("pid_path", "state")
+        )
+        # Hparam scripts expose process identity for monitor-owned exit inference; lifecycle scripts self-commit.
+        legacy_script_owner = has_managed_script and not has_process_identity
+        owner_row = previous if previous.get("terminal_status_owner") not in (None, "") else row
+        script_commits_terminal_status = managed_scheduler.script_commits_terminal_status(
+            owner_row,
+            default=legacy_script_owner,
+        )
+        if (
+            (previous.get("status") or row.get("status")) == "running"
+            and has_managed_script
+            and not has_execution_evidence
+        ):
+            status = {
+                "step_id": row["step_id"],
+                "run_id": row["run_id"],
+                "status": "running",
+                "health_status": "running",
+                "monitored_at": utc_now(),
+            }
+        else:
+            status = evidence.status_row(
+                root,
+                observation_row,
+                previous,
+                script_commits_terminal_status=script_commits_terminal_status,
+                health=True,
+            )
     if status.get("status") == "finished":
         status["status"] = "completed"
     if status.get("health_status") == "finished":
         status["health_status"] = "completed"
+    observation_fields = evidence.RUN_STATUS_FIELDS | {
+        "scheduler_job_id",
+        "scheduler_cluster",
+        "scheduler_raw_state",
+        "scheduler_reason",
+        "scheduler_node",
+        "scheduler_exit_code",
+        "scheduler_observed_at",
+        "scheduler_started_at",
+        "scheduler_priority",
+        "scheduler_nice",
+        "scheduler_partition",
+        "scheduler_account",
+        "scheduler_qos",
+        "scheduler_reservation",
+        "scheduler_submit_time",
+        "scheduler_eligible_time",
+        "scheduler_start_time",
+        "scheduler_time_limit",
+        "scheduler_requested_nodes",
+        "scheduler_features",
+        "scheduler_requested_tres",
+        "scheduler_tres_per_node",
+        "scheduler_health_error",
+        "scheduler_queue_age_seconds",
+        "scheduler_allocation_age_seconds",
+    }
     observation = {
         "step_id": row["step_id"],
         "run_id": row["run_id"],
-        **{field: status[field] for field in evidence.RUN_STATUS_FIELDS if field in status},
+        **{field: status[field] for field in observation_fields if field in status},
     }
     if transport_override:
         observation.pop("target", None)
@@ -451,14 +498,26 @@ def monitor_report(rows: list[dict[str, Any]]) -> str:
     lines = ["# Experiment Monitor", ""]
     if not rows:
         return "# Experiment Monitor\n\nNo runs found.\n"
-    lines.append("| run | setting | status | health | gpu | log age | checkpoints |")
-    lines.append("|---|---|---|---|---|---:|---:|")
+    lines.append("| run | setting | status | scheduler | health | gpu | log age | checkpoints |")
+    lines.append("|---|---|---|---|---|---|---:|---:|")
     for row in rows:
+        scheduler = " ".join(
+            f"{label}={row[field]}"
+            for label, field in (
+                ("job", "scheduler_job_id"),
+                ("state", "scheduler_raw_state"),
+                ("reason", "scheduler_reason"),
+                ("node", "scheduler_node"),
+                ("priority", "scheduler_priority"),
+            )
+            if row.get(field) not in (None, "")
+        )
         lines.append(
-            "| {run} | {setting} | {status} | {health} | {gpu} | {log_age} | {ckpts} |".format(
+            "| {run} | {setting} | {status} | {scheduler} | {health} | {gpu} | {log_age} | {ckpts} |".format(
                 run=f"{row.get('step_id', '')} / {row.get('run_id', '')} — {row.get('run_name', '')}",
                 setting=str(row.get("parameter_summary", "")).replace("|", "/"),
                 status=row.get("status", ""),
+                scheduler=scheduler.replace("|", "/"),
                 health=row.get("health_status", ""),
                 gpu=str(row.get("gpu_summary", "")).replace("|", "/"),
                 log_age=row.get("log_age_seconds", ""),

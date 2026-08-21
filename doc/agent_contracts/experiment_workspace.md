@@ -158,7 +158,12 @@ invalid and are not repaired in place.
 - `hparam-launch` validates frozen artifacts and explicitly starts one eligible wave; dry-run remains the default.
 - `hparam-run-queue` is the explicit long-running action that repeatedly fills available capacity until every current-plan run is terminal; dry-run performs one preview and returns.
 - `hparam-monitor` observes registered runs and never schedules pending work.
-- `hparam-stop` requires a reason, verifies the canonical PID/process-group/start-token identity, stops the complete process group, and records terminal state only after exit is confirmed.
+- `hparam-stop` requires a reason. Direct runs verify and stop the complete
+  process group before committing terminal state. Slurm runs atomically record
+  nonterminal `stopping`, request time, reason, and job binding before
+  `scancel`; an interrupted request is retriable only with the same reason, and
+  `stopped` is committed only after the matching job is observed as
+  `CANCELLED`.
 - `hparam-select` writes step-scoped validation ranking.
 - `hparam-adaptive-*` appends rounds and commits replacements through the canonical owner.
 - `experiment-note` atomically appends one evidence-backed research-log entry and never changes lifecycle state.
@@ -218,6 +223,14 @@ root, hostname, module origin, untracked or ignored importable code, and the
 selected run's frozen script/config hashes. Target and leaf `PYTHONPATH`
 contain only `execution.workdir`, so another manager checkout cannot satisfy
 missing imports.
+
+For Slurm, the first execute freezes the snapshot's raw SHA-256 in every
+canonical run and binds it to each queued job as a batch-script argument.
+`job.sbatch` carries the plan-level snapshot path into the allocation wrapper,
+which verifies those exact bytes before parsing the snapshot. The compute node
+must then match the frozen Python executable and version before it may start the
+leaf script. Its hostname remains allocation evidence and is not required to
+equal the submission host.
 
 Dry-run and monitor never probe or create the snapshot. A plan without frozen
 Python/commit identity must be recreated. A missing snapshot may be established

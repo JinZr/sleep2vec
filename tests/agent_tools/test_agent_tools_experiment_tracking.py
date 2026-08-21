@@ -786,6 +786,53 @@ def test_experiment_wandb_sync_applies_directional_terminal_precedence(
     assert synced[0]["run_id"] == "run-000"
 
 
+@pytest.mark.parametrize(("status", "wandb_status"), [("queued", "completed"), ("running", "failed")])
+def test_wandb_observations_do_not_override_slurm_lifecycle(status: str, wandb_status: str):
+    managed = [
+        {
+            "experiment_id": "unit",
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "version": "managed-v1",
+            "status": status,
+            "scheduler_type": "slurm",
+            "scheduler_submit_token": "unit-token",
+            "scheduler_script": "/plan/job.sbatch",
+            "scheduler_script_sha256": "a" * 64,
+            "scheduler_result_path": "/plan/slurm_terminal.json",
+            "allocation_identity_path": "/plan/slurm_allocation.json",
+            "scheduler_job_id": "3880",
+            "terminal_status_owner": "scheduler_sidecar",
+        }
+    ]
+
+    observations = experiment_tracking.wandb_run_observations(
+        managed,
+        [
+            {
+                "experiment_id": "unit",
+                "step_id": "train-model",
+                "run_id": "run-000",
+                "status": wandb_status,
+                "state": "finished" if wandb_status == "completed" else "failed",
+                "wandb_run_id": "wandb-1",
+                "wandb_url": "https://wandb.example/run",
+            }
+        ],
+    )
+
+    assert observations == [
+        {
+            "step_id": "train-model",
+            "run_id": "run-000",
+            "state": "finished" if wandb_status == "completed" else "failed",
+            "wandb_run_id": "wandb-1",
+            "wandb_url": "https://wandb.example/run",
+        }
+    ]
+    assert experiment_workspace.merge_run_row(managed[0], observations[0])["status"] == status
+
+
 def test_wandb_observations_strip_matching_and_frozen_fields():
     managed = [
         {
@@ -1120,6 +1167,103 @@ def test_remote_monitor_uses_transport_identity_without_persisting_it(tmp_path: 
 
     assert observed_rows[0]["target"] == "ssh"
     assert observed_rows[0]["host"] == "unit-host"
+    assert "target" not in observation
+    assert "host" not in observation
+
+
+@pytest.mark.parametrize(
+    ("remote", "expected_execution"),
+    [(None, {"target": "local"}), ("unit-host", {"target": "ssh", "host": "unit-host"})],
+    ids=["local", "ssh"],
+)
+def test_experiment_monitor_routes_slurm_observation_by_transport(
+    tmp_path: Path,
+    monkeypatch,
+    remote: str | None,
+    expected_execution: dict[str, str],
+):
+    row = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "script": "/plan/run.sh",
+        "scheduler_type": "slurm",
+        "scheduler_submit_token": "unit-token",
+        "scheduler_script": "/plan/job.sbatch",
+        "scheduler_script_sha256": "a" * 64,
+        "scheduler_result_path": "/plan/slurm_terminal.json",
+        "allocation_identity_path": "/plan/slurm_allocation.json",
+        "target": "local",
+        "host": "",
+        "status": "submitting",
+    }
+    observed = []
+
+    def fake_slurm_observation(owner_dir, execution, observed_row, *, health):
+        observed.append((owner_dir, execution, dict(observed_row), health))
+        return {
+            **observed_row,
+            "scheduler_job_id": "3880",
+            "scheduler_cluster": "wuji-h20",
+            "scheduler_raw_state": "PENDING",
+            "scheduler_reason": "Resources",
+            "scheduler_node": "",
+            "scheduler_priority": "42",
+            "scheduler_queue_age_seconds": 30,
+            "health_status": "scheduler_queued",
+            "scheduler_observed_at": "now",
+            "status": "queued",
+            "monitored_at": "now",
+        }
+
+    monkeypatch.setattr(experiment_tracking.managed_scheduler, "observe_slurm_run", fake_slurm_observation)
+    monkeypatch.setattr(
+        run_evidence,
+        "status_row",
+        lambda *_args, **_kwargs: pytest.fail("Slurm runs must not use direct PID evidence"),
+    )
+
+    observation = experiment_tracking.monitor_run_row(tmp_path, dict(row), [dict(row)], remote=remote)
+
+    assert observed[0][0] == tmp_path
+    assert observed[0][1] == expected_execution
+    assert observed[0][3] is True
+    assert observation["status"] == "queued"
+    assert observation["scheduler_job_id"] == "3880"
+    assert observation["scheduler_cluster"] == "wuji-h20"
+    assert observation["scheduler_raw_state"] == "PENDING"
+    assert observation["scheduler_reason"] == "Resources"
+    assert observation["scheduler_priority"] == "42"
+    assert observation["scheduler_queue_age_seconds"] == 30
+    assert observation["health_status"] == "scheduler_queued"
+    assert observation["scheduler_observed_at"] == "now"
+    if remote:
+        assert observed[0][2]["target"] == "ssh"
+        assert observed[0][2]["host"] == "unit-host"
+        assert "target" not in observation
+        assert "host" not in observation
+
+
+def test_experiment_monitor_does_not_observe_unlaunched_slurm_run(tmp_path: Path, monkeypatch):
+    row = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "scheduler_type": "slurm",
+        "scheduler_submit_token": "unit-token",
+        "scheduler_script": "/plan/job.sbatch",
+        "scheduler_script_sha256": "a" * 64,
+        "scheduler_result_path": "/plan/slurm_terminal.json",
+        "allocation_identity_path": "/plan/slurm_allocation.json",
+        "status": "planned",
+    }
+    monkeypatch.setattr(
+        experiment_tracking.managed_scheduler,
+        "observe_slurm_run",
+        lambda *_args, **_kwargs: pytest.fail("An unlaunched Slurm run must remain planned"),
+    )
+
+    observation = experiment_tracking.monitor_run_row(tmp_path, dict(row), [dict(row)], remote="unit-host")
+
+    assert observation["status"] == "planned"
     assert "target" not in observation
     assert "host" not in observation
 

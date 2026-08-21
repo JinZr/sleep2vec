@@ -8,6 +8,7 @@ import stat
 from typing import Any, Iterator
 
 from .experiment_workspace import (
+    SCHEDULER_PLAN_IDENTITY_FIELDS,
     experiment_metadata_issues,
     experiment_root,
     managed_run_key,
@@ -124,14 +125,27 @@ def read_hparam_plan(
                 "runtime_dir",
                 "checkpoint_dir",
                 "terminal_status_owner",
+                *sorted(SCHEDULER_PLAN_IDENTITY_FIELDS),
             ):
                 if str(workspace_row.get(field) or "") != str(run.get(field) or ""):
                     raise ValueError(
                         f"Workspace run manifest differs from plan field {field}: {run['step_id']} / {run['run_id']}"
                     )
+            if run.get("scheduler_type") == "slurm" and str(workspace_row.get("log_path") or "") != str(
+                run.get("log_path") or ""
+            ):
+                raise ValueError(
+                    f"Workspace run manifest differs from plan field log_path: {run['step_id']} / {run['run_id']}"
+                )
             plan_parameters = managed_run_parameters(run)
             workspace_parameters = managed_run_parameters(workspace_row)
-            if set(plan_parameters) != set(workspace_parameters):
+            missing_parameters = set(plan_parameters) - set(workspace_parameters)
+            nonempty_extra_parameters = {
+                field
+                for field in set(workspace_parameters) - set(plan_parameters)
+                if workspace_parameters[field] not in (None, "")
+            }
+            if missing_parameters or nonempty_extra_parameters:
                 raise ValueError(f"Workspace run parameters differ from plan: {run['step_id']} / {run['run_id']}")
             for field, value in plan_parameters.items():
                 expected_value = "" if value is None else str(value)

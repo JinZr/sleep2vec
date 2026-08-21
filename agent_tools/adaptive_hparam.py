@@ -19,6 +19,7 @@ from . import (
     adaptive_proposals,
     experiment_io as exp_io,
     hparam_runtime,
+    managed_scheduler,
     plan_hparam,
     run_artifacts as artifacts,
     run_evidence as evidence,
@@ -34,6 +35,7 @@ from .experiment_workspace import (
     managed_run_parameters,
     merge_run_manifest,
     read_run_manifest,
+    scheduler_type,
     validate_frozen_run_update,
     validate_managed_run_rows,
 )
@@ -44,6 +46,7 @@ from .plans import build_plan, preflight_plan
 from .recipes import load_recipe_with_base, recipe_name
 
 _EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
+_SLURM_ACCEPTED_STATUSES = {"queued", "running", "stopping", "completed", "finished", "failed", "stopped"}
 
 
 class AdaptivePreflightError(RuntimeError):
@@ -51,6 +54,17 @@ class AdaptivePreflightError(RuntimeError):
         self.report = report
         details = "; ".join(f"{issue.field}: {issue.message}" for issue in report.blocking_issues())
         super().__init__(f"Round 000 plan failed preflight with exit code {report.exit_code}: {details}")
+
+
+def _is_accepted_start(row: dict[str, Any]) -> bool:
+    if scheduler_type(row) == "direct":
+        return row.get("status") in {"launched", "running"}
+    job_id = str(row.get("scheduler_job_id") or "")
+    return row.get("status") in _SLURM_ACCEPTED_STATUSES and job_id.isdigit() and int(job_id) > 0
+
+
+def _accepted_start_keys(rows: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    return {managed_run_key(row) for row in rows if _is_accepted_start(row)}
 
 
 def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> Path:
@@ -734,7 +748,7 @@ def _launch_with_recovery(
     except Exception as exc:
         try:
             canonical_rows, unresolved_launches, reconciled_starts = _reconcile_interrupted_launch(
-                workspace, state.next_plan_keys
+                workspace, state.next_dir, state.next_plan_keys
             )
         except Exception as reconcile_exc:
             raise _not_superseded_launch_error(
@@ -746,9 +760,7 @@ def _launch_with_recovery(
                 "unresolved", state.next_round, attempt_run_id=attempt_run_id, unresolved_ids=unresolved_ids
             ) from exc
         next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
-        refreshed_started_keys = {
-            managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
-        }
+        refreshed_started_keys = _accepted_start_keys(next_round_rows)
         confirmed_starts = (refreshed_started_keys - before_launch) | reconciled_starts
         if confirmed_starts:
             try:
@@ -782,9 +794,7 @@ def _launch_initial_replacement(
     _launch_with_recovery(root, workspace, state, round_dir, attempt_run_id=None, before_launch=before_launch)
     canonical_rows = read_run_manifest(workspace)
     next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
-    refreshed_started_keys = {
-        managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
-    }
+    refreshed_started_keys = _accepted_start_keys(next_round_rows)
     newly_launch_failed = {
         managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
     } - state.launch_failed_keys
@@ -819,6 +829,9 @@ def _drain_bad_runs(
         if state.retirement_credit <= 0 and not pending:
             break
         run_key = ordered_bad_run_keys[bad_index]
+        before_stop = dict({managed_run_key(row): row for row in canonical_rows}[run_key])
+        if scheduler_type(before_stop) == "slurm" and state.retirement_credit <= 0:
+            break
         bad_index += 1
         try:
             stopped = _stop_bad_running_runs(root, round_dir, recipe, run_keys={run_key})
@@ -831,9 +844,22 @@ def _drain_bad_runs(
                 f"{_committed_phrase(state.round_committed)}. "
                 + _preserved_tail(state.stopped_run_keys, state.superseded_current_keys, state.next_dir)
             ) from exc
-        if stopped:
-            state.stopped_run_keys.extend(stopped)
-            state.retirement_credit -= len(stopped)
+        if not stopped:
+            canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+            after_stop = canonical_by_key[run_key]
+            if (
+                before_stop.get("stop_requested_at") in (None, "")
+                and after_stop.get("status") == "stopping"
+                and after_stop.get("stop_requested_at") not in (None, "")
+                and after_stop.get("stop_reason") == "adaptive replacement"
+            ):
+                state.retirement_credit -= 1
+                if state.retirement_credit <= 0:
+                    break
+                continue
+            break
+        state.stopped_run_keys.extend(stopped)
+        state.retirement_credit -= len(stopped)
         canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
         if not any(row.get("status") in {"planned", "pending"} for row in next_round_rows):
@@ -843,9 +869,7 @@ def _drain_bad_runs(
         _launch_with_recovery(root, workspace, state, round_dir, attempt_run_id=run_key[1], before_launch=before_launch)
         canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
-        state.started_keys = {
-            managed_run_key(row) for row in next_round_rows if row.get("status") in {"launched", "running"}
-        }
+        state.started_keys = _accepted_start_keys(next_round_rows)
         newly_launch_failed = {
             managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
         } - before_launch_failed
@@ -861,9 +885,8 @@ def _drain_bad_runs(
             )
         if not newly_started:
             statuses = ", ".join(sorted({str(row.get("status") or "") for row in next_round_rows})) or "none"
-            stop_attempt = f"stopping {run_key[1]}" if stopped else f"the stop attempt for {run_key[1]}"
             raise RuntimeError(
-                f"Round {state.next_round:03d} started no additional runs after {stop_attempt} "
+                f"Round {state.next_round:03d} started no additional runs after stopping {run_key[1]} "
                 f"(statuses: {statuses}); the round {_committed_phrase(state.round_committed)}. "
                 + _preserved_tail(state.stopped_run_keys, state.superseded_current_keys, state.next_dir)
             )
@@ -1080,6 +1103,10 @@ def adaptive_step(
         if report.exit_code != 0:
             raise RuntimeError(f"Round {next_round:03d} plan failed with exit code {report.exit_code}.")
         _append_registry_rows(root, next_round, next_dir)
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+        if scheduler.get("type") == "slurm":
+            monitor_hparam_runs(round_dir)
         current_plan = artifacts.read_hparam_plan(round_dir)
         bad_run_keys = _bad_running_run_keys(root, round_dir, recipe)
         ordered_bad_run_keys = [
@@ -1091,11 +1118,9 @@ def adaptive_step(
             next_round=next_round,
             next_dir=next_dir,
             next_plan_keys=next_plan_keys,
-            started_keys={
-                managed_run_key(row)
-                for row in canonical_rows
-                if managed_run_key(row) in next_plan_keys and row.get("status") in {"launched", "running"}
-            },
+            started_keys=_accepted_start_keys(
+                [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
+            ),
             launch_failed_keys={
                 managed_run_key(row)
                 for row in canonical_rows
@@ -1464,15 +1489,33 @@ def _resolve_workflow_round(path: Path) -> tuple[Path, Path, int]:
 
 
 def _reconcile_interrupted_launch(
-    workspace: Path, plan_keys: set[tuple[str, str]]
+    workspace: Path, plan_dir: Path, plan_keys: set[tuple[str, str]]
 ) -> tuple[list[dict[str, Any]], set[tuple[str, str]], set[tuple[str, str]]]:
+    plan = artifacts.read_hparam_plan(plan_dir)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     canonical_rows = read_run_manifest(workspace)
     updates = []
     unresolved = set()
     reconciled = set()
     for row in canonical_rows:
         key = managed_run_key(row)
-        if key not in plan_keys or row.get("status") not in {"planned", "pending"}:
+        if key not in plan_keys:
+            continue
+        if scheduler_type(row) == "slurm":
+            if _is_accepted_start(row):
+                reconciled.add(key)
+                continue
+            if row.get("status") not in {"submitting", "unknown_scheduler"}:
+                continue
+            observed = managed_scheduler.observe_slurm_run(plan_dir, execution, row)
+            if _is_accepted_start(observed):
+                updates.append(observed)
+                reconciled.add(key)
+            else:
+                unresolved.add(key)
+            continue
+        if row.get("status") not in {"planned", "pending"}:
             continue
         if row.get("target") in (None, ""):
             continue
@@ -1535,6 +1578,12 @@ def _reject_unresolved_launch_attempts(root: Path, workspace: Path) -> None:
             if row is None:
                 raise ValueError(f"Uncommitted adaptive run is missing from the canonical manifest: {run_key}")
             status = str(row.get("status") or "")
+            if scheduler_type(row) == "slurm":
+                if status in {"submitting", "unknown_scheduler"} or _is_accepted_start(row):
+                    unresolved.append((round_index, str(row["run_id"])))
+                elif status in {"planned", "pending"}:
+                    abandoned.append((round_index, row))
+                continue
             pid = row.get("pid")
             if row.get("target") not in (None, ""):
                 try:
@@ -1841,6 +1890,8 @@ def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -
             continue
         if row.get("status") != "running":
             continue
+        if scheduler_type(row) == "slurm" and row.get("scheduler_exit_code") not in (None, ""):
+            continue
         should_stop = evidence.log_has_failure(row.get("log_path"), row)
         data = {}
         if not should_stop:
@@ -1887,8 +1938,10 @@ def _stop_bad_running_runs(
         if key not in keys or row.get("status") != "running":
             continue
         stop_hparam_run(round_dir, str(row["run_id"]), reason="adaptive replacement")
-        _append_event(root, "stop_bad_running_run", {"round_dir": str(round_dir), "run_id": row["run_id"]})
-        stopped.append(key)
+        canonical_by_key = {managed_run_key(item): item for item in read_run_manifest(workspace)}
+        if canonical_by_key[key].get("status") == "stopped":
+            _append_event(root, "stop_bad_running_run", {"round_dir": str(round_dir), "run_id": row["run_id"]})
+            stopped.append(key)
     return stopped
 
 
@@ -1902,7 +1955,10 @@ def _grace_satisfied(row: dict[str, Any], manifest: dict[str, Any], replacement:
             return False
     grace_minutes = replacement.get("grace_minutes")
     if grace_minutes is not None:
-        minutes = _minutes_since(row.get("launched_at", ""))
+        started_at = (
+            row.get("scheduler_started_at", "") if scheduler_type(row) == "slurm" else row.get("launched_at", "")
+        )
+        minutes = _minutes_since(started_at)
         if minutes is None or minutes < float(grace_minutes):
             return False
     return True

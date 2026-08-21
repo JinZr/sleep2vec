@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ from agent_tools import (
     plans,
     run_artifacts,
     run_evidence,
+    slurm,
 )
 from agent_tools.experiment_workspace import merge_run_manifest
 from agent_tools.models import REPO_ROOT
@@ -43,6 +45,145 @@ def _read_table(path: Path) -> list[dict[str, str]]:
     delimiter = "\t" if path.suffix == ".tsv" else ","
     with path.open(newline="") as file_obj:
         return list(csv.DictReader(file_obj, delimiter=delimiter))
+
+
+def test_adaptive_accepted_starts_are_backend_aware():
+    rows = [
+        {"step_id": "direct", "run_id": "run-000", "status": "launched"},
+        {
+            "step_id": "slurm",
+            "run_id": "run-001",
+            "status": "queued",
+            "scheduler_type": "slurm",
+            "scheduler_job_id": "3880",
+        },
+        {
+            "step_id": "slurm",
+            "run_id": "run-002",
+            "status": "submitting",
+            "scheduler_type": "slurm",
+        },
+        {
+            "step_id": "slurm",
+            "run_id": "run-003",
+            "status": "unknown_scheduler",
+            "scheduler_type": "slurm",
+            "scheduler_job_id": "3881",
+        },
+    ]
+
+    assert adaptive_hparam._accepted_start_keys(rows) == {("direct", "run-000"), ("slurm", "run-001")}
+
+
+@pytest.mark.parametrize(("observed_status", "expected_unresolved"), [("queued", False), ("submitting", True)])
+def test_adaptive_interrupted_slurm_launch_reconciles_by_scheduler_identity(
+    tmp_path: Path, monkeypatch, observed_status: str, expected_unresolved: bool
+):
+    row = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "status": "submitting",
+        "scheduler_type": "slurm",
+        "scheduler_submit_token": "unit-token",
+        "target": "local",
+    }
+    observed = {
+        **row,
+        "status": observed_status,
+        **({"scheduler_job_id": "3880"} if observed_status == "queued" else {}),
+    }
+    merged = []
+    monkeypatch.setattr(
+        adaptive_hparam.artifacts,
+        "read_hparam_plan",
+        lambda _plan_dir: {"recipe": {"execution": {"target": "local"}}},
+    )
+    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [row])
+    monkeypatch.setattr(
+        adaptive_hparam.managed_scheduler,
+        "observe_slurm_run",
+        lambda owner_dir, execution, current: observed,
+    )
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "merge_run_manifest",
+        lambda _workspace, updates: merged.extend(updates) or updates,
+    )
+    monkeypatch.setattr(
+        adaptive_hparam.evidence,
+        "read_process_identity",
+        lambda *_args, **_kwargs: pytest.fail("Slurm recovery must not read PID identity"),
+    )
+
+    rows, unresolved, reconciled = adaptive_hparam._reconcile_interrupted_launch(
+        tmp_path, tmp_path / "round", {("train-model", "run-000")}
+    )
+
+    assert unresolved == ({("train-model", "run-000")} if expected_unresolved else set())
+    assert reconciled == (set() if expected_unresolved else {("train-model", "run-000")})
+    assert merged == ([] if expected_unresolved else [observed])
+    assert rows == (merged if merged else [row])
+
+
+def test_adaptive_slurm_grace_uses_allocation_start_not_submission_time():
+    old = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    replacement = {"grace_minutes": 1}
+
+    assert (
+        adaptive_hparam._grace_satisfied(
+            {
+                "scheduler_type": "slurm",
+                "launched_at": old,
+                "scheduler_started_at": recent,
+            },
+            {},
+            replacement,
+        )
+        is False
+    )
+    assert adaptive_hparam._grace_satisfied(
+        {"scheduler_type": "slurm", "launched_at": recent, "scheduler_started_at": old}, {}, replacement
+    )
+    assert adaptive_hparam._grace_satisfied({"scheduler_type": "slurm", "launched_at": old}, {}, replacement) is False
+
+
+def test_adaptive_retirement_skips_slurm_run_with_verified_terminal_sidecar(tmp_path: Path, monkeypatch):
+    recipe = {
+        "adaptive": {
+            "objective_metric": "val_score",
+            "objective_mode": "max",
+            "replacement": {"enabled": True, "allow_running_stop": True},
+        }
+    }
+    run = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "status": "running",
+        "scheduler_type": "slurm",
+        "scheduler_exit_code": "0",
+    }
+    monkeypatch.setattr(
+        adaptive_hparam.artifacts,
+        "read_hparam_plan",
+        lambda _round_dir: {"recipe": {"experiment": {"root": str(tmp_path)}}, "runs": [run]},
+    )
+    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [run])
+    monkeypatch.setattr(adaptive_hparam, "_latest_incumbent_score", lambda _root: 1.0)
+    monkeypatch.setattr(
+        adaptive_hparam.evidence,
+        "log_has_failure",
+        lambda *_args, **_kwargs: pytest.fail("terminal Slurm work must not be considered for retirement"),
+    )
+
+    assert adaptive_hparam._bad_running_run_keys(tmp_path, tmp_path / "round", recipe) == set()
+
+
+def test_adaptive_minutes_since_accepts_slurm_sidecar_timestamp():
+    minutes = adaptive_hparam._minutes_since(slurm._utc_now())
+
+    assert minutes is not None
+    assert 0 <= minutes < 1
 
 
 def _adaptive_recipe(
@@ -3223,6 +3364,18 @@ def test_best_neighborhood_step_replaces_bad_running_run_before_round_terminal(t
     def fake_stop(run_dir, run_id, *, reason):
         call_order.append("stop")
         stopped.append((Path(run_dir), run_id))
+        merge_run_manifest(
+            tmp_path,
+            [
+                {
+                    "step_id": run["step_id"],
+                    "run_id": run_id,
+                    "status": "stopped",
+                    "stopped_at": manifests.utc_now(),
+                    "stop_reason": reason,
+                }
+            ],
+        )
         return Path(run_dir) / "run_status.tsv"
 
     def record_launch_round(root, event_type, payload):
@@ -3966,12 +4119,124 @@ def test_running_stop_passes_remote_status_row_to_failure_log_check(tmp_path: Pa
     monkeypatch.setattr(run_evidence, "log_has_failure", fake_log_has_failure)
     monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
 
-    adaptive_hparam._stop_bad_running_runs(workflow_dir, round_dir, adaptive_hparam.load_recipe_with_base(recipe))
+    confirmed = adaptive_hparam._stop_bad_running_runs(
+        workflow_dir, round_dir, adaptive_hparam.load_recipe_with_base(recipe)
+    )
 
     assert seen_rows[0][0] == "/remote/run.log"
     assert seen_rows[0][1]["target"] == "ssh"
     assert seen_rows[0][1]["host"] == "baichuan3"
     assert stopped == [(round_dir, "run-000")]
+    assert confirmed == []
+
+
+@pytest.mark.parametrize(("retirement_credit", "expected_requests"), [(0, 0), (1, 1), (2, 2)])
+def test_async_slurm_stop_consumes_credit_without_launching_before_confirmation(
+    tmp_path: Path, monkeypatch, retirement_credit: int, expected_requests: int
+):
+    bad_keys = [("train-model", f"run-{index:03d}") for index in range(3)]
+    pending_key = ("train-model-round-001", "run-000")
+    pending_row = {"step_id": pending_key[0], "run_id": pending_key[1], "status": "pending"}
+    bad_rows = [
+        {"step_id": step_id, "run_id": run_id, "status": "running", "scheduler_type": "slurm"}
+        for step_id, run_id in bad_keys
+    ]
+    state = adaptive_hparam._ReplacementState(
+        next_round=1,
+        next_dir=tmp_path / "round_001",
+        next_plan_keys={pending_key},
+        started_keys=set(),
+        launch_failed_keys=set(),
+        retirement_credit=retirement_credit,
+    )
+    stop_calls = []
+
+    def request_stop(*_args, **kwargs):
+        run_key = next(iter(kwargs["run_keys"]))
+        stop_calls.append(kwargs["run_keys"])
+        row = next(item for item in bad_rows if adaptive_hparam.managed_run_key(item) == run_key)
+        row.update(
+            {
+                "status": "stopping",
+                "stop_requested_at": "2026-08-21T03:40:00Z",
+                "stop_reason": "adaptive replacement",
+            }
+        )
+        return []
+
+    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [pending_row, *bad_rows])
+    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", request_stop)
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "_launch_with_recovery",
+        lambda *_args, **_kwargs: pytest.fail("replacement must wait for scheduler cancellation confirmation"),
+    )
+
+    rows = adaptive_hparam._drain_bad_runs(
+        tmp_path,
+        tmp_path,
+        state,
+        tmp_path / "round_000",
+        {},
+        bad_keys,
+        [pending_row],
+    )
+
+    assert rows == [pending_row]
+    assert stop_calls == [{key} for key in bad_keys[:expected_requests]]
+    assert state.retirement_credit == 0
+    assert state.stopped_run_keys == []
+    assert [row["status"] for row in bad_rows] == ["stopping"] * expected_requests + ["running"] * (
+        len(bad_rows) - expected_requests
+    )
+
+
+def test_async_slurm_stop_dispatch_error_does_not_request_later_runs(tmp_path: Path, monkeypatch):
+    bad_keys = [("train-model", f"run-{index:03d}") for index in range(2)]
+    bad_rows = [{"step_id": step_id, "run_id": run_id, "status": "running"} for step_id, run_id in bad_keys]
+    state = adaptive_hparam._ReplacementState(
+        next_round=1,
+        next_dir=tmp_path / "round_001",
+        next_plan_keys=set(),
+        started_keys=set(),
+        launch_failed_keys=set(),
+        retirement_credit=2,
+        round_committed=True,
+    )
+    stop_calls = []
+
+    def fail_after_intent(*_args, **kwargs):
+        run_key = next(iter(kwargs["run_keys"]))
+        stop_calls.append(run_key)
+        row = next(item for item in bad_rows if adaptive_hparam.managed_run_key(item) == run_key)
+        row.update(
+            {
+                "status": "stopping",
+                "stop_requested_at": "2026-08-21T03:40:00Z",
+                "stop_reason": "adaptive replacement",
+            }
+        )
+        raise RuntimeError("scancel failed")
+
+    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: bad_rows)
+    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", fail_after_intent)
+
+    with pytest.raises(RuntimeError, match="failed while stopping run-000"):
+        adaptive_hparam._drain_bad_runs(
+            tmp_path,
+            tmp_path,
+            state,
+            tmp_path / "round_000",
+            {},
+            bad_keys,
+            [],
+        )
+
+    assert stop_calls == [bad_keys[0]]
+    assert bad_rows[0]["status"] == "stopping"
+    assert bad_rows[1]["status"] == "running"
+    assert state.retirement_credit == 2
+    assert state.stopped_run_keys == []
 
 
 def test_metric_based_running_stop_honors_grace(tmp_path: Path, monkeypatch):

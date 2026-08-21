@@ -159,13 +159,39 @@ The optional `execution` block configures the managed launcher.
   arguments, or `~` shorthand. `execution.runtime_commit` names the full
   expected Git commit.
 - Conda wrapping belongs in `execution.conda_env`, not `execution.python`.
+- Omitted `execution.scheduler` resolves to `{type: direct}`. Direct runs use
+  the existing `gpu_pool` / `gpus_per_run` / `max_concurrent` process model.
+- `execution.scheduler.type: slurm` keeps `target` as local/SSH control
+  transport and submits every frozen run as its own single-node allocation. It requires
+  `partition`, `cpus_per_task`, `memory`, and `walltime`; optional scheduler
+  fields are `nice` and `nodelist`. `gpus_per_run` is a positive YAML integer,
+  defaults to one, and becomes the allocation GPU count plus logical
+  `runtime.devices=[0, ..., N-1]`. The allocation wrapper starts one foreground
+  `srun` step containing exactly N tasks, one per GPU. `cpus_per_task` applies
+  to each task, so the total CPU request is `N * cpus_per_task`; `memory` is
+  the allocation's whole-node memory limit. `sex_age_baseline` rejects N > 1
+  because that runtime does not implement DDP.
+  Slurm recipes reject `gpu_pool`, `max_concurrent`, `conda_env`, locally
+  authored `runtime.devices`, unknown scheduler fields, and arbitrary sbatch
+  arguments. They also reject `SLURM_*`, `RANK`, `LOCAL_RANK`, `WORLD_SIZE`,
+  `MASTER_*`, and `CUDA_VISIBLE_DEVICES` entries in `execution.env` because
+  allocation identity, distributed rank identity, and GPU isolation belong to
+  the scheduler. The allocation wrapper removes ambient generic distributed
+  rank and rendezvous variables before starting `srun`, so Slurm task identity
+  remains canonical.
+- Slurm plans warn that priority remains cluster-managed. `doctor` may inspect
+  version, priority, backfill, accounting, partition, and reservation
+  capabilities through read-only `scontrol` queries. Advice never changes the
+  frozen scheduler request: `nice=0` is the highest unprivileged nice setting,
+  and no user-side option guarantees first priority.
 - Only the canonical manager runtime—a local target at `REPO_ROOT` without a
   conda wrapper—may omit Python and commit identity. Planning then freezes the
   current manager interpreter and repository HEAD. SSH targets, separate local
   workdirs, and conda-wrapped targets must author both values explicitly.
-- `hparam-launch` starts one capacity-limited wave.
-  `hparam-run-queue --execute` uses monitor observations and the same locked
-  launch owner until the current plan is terminal.
+- With direct scheduling, `hparam-launch` starts one capacity-limited wave and
+  `hparam-run-queue --execute` keeps filling that capacity. With Slurm, the
+  launch owner submits every launchable leaf job without applying host-global
+  GPU capacity to scheduler allocations.
 - Generated leaf scripts use only `execution.workdir` on `PYTHONPATH`;
   `execution.env.PYTHONPATH` is rejected rather than merged.
 
@@ -176,8 +202,45 @@ supported-option digest, and exact validated argv digest in
 each managed process starts, the same target/env/conda/PYTHONPATH wrapper
 rechecks Python/version, commit, repository root, hostname, module origin,
 untracked or ignored importable code, and the run's frozen script/config hashes.
+For Slurm, the allocation wrapper also requires `SLURM_NTASKS` to match the
+frozen `gpus_per_run`, then compares its observed Python executable and version
+with the plan-level execution snapshot before starting the leaf script through
+one `srun --gpu-bind=none --kill-on-bad-exit=1 --quit-on-interrupt` child. The launcher freezes the
+snapshot's raw SHA-256 in every canonical run and passes it as a batch-script
+argument, so the allocation verifies the exact snapshot bytes before parsing
+them. Compute-node hostname is observed evidence and may differ from the
+submission host.
 Plans lacking frozen Python or commit identity must be recreated rather than
 upgraded in place.
+
+Each Slurm run additionally freezes `job.sbatch`, its hash, a deterministic
+submit token, log path, allocation-identity path, and terminal-sidecar path.
+Only the allocation wrapper writes the two scheduler sidecars; ranks share the
+Slurm log, and only global rank zero writes the diagnostic exit marker. The
+terminal sidecar records the aggregate `srun` exit code.
+Submission commits `submitting` before `sbatch`; a timeout or SSH disconnect is
+reconciled by the exact token and is never retried blindly. Monitoring uses
+`squeue`/`scontrol` for controller state, then queries the exact bound-cluster
+`sacct` allocation when the job has aged out of the controller. It requires
+both a terminal scheduler observation and the matching atomic terminal sidecar
+for terminal truth;
+incomplete terminal evidence is `unknown_scheduler`. Stop first records the
+frozen scheduler job id, nonterminal `stopping`, request time, and reason in the
+canonical manifest, then uses that job id with `scancel`, not PID evidence. An
+interrupted or failed cancellation keeps the request recoverable; the same
+reason may retry it, while a different reason cannot overwrite it. Only a
+matching scheduler `CANCELLED` observation commits canonical `stopped`, even
+when cancellation prevented the wrapper from writing a terminal sidecar. A
+cancellation signal received while the allocation wrapper is still validating
+frozen identity terminates the job without starting the leaf process. Live
+Slurm transition flags remain active; raw `STOPPED` retains its allocation and
+is not canonical `stopped`. When Slurm reports raw `REVOKED` federation sibling
+state, sibling-cluster rebinding is unsupported; the run fails closed as active
+`unknown_scheduler`, the frozen job, cluster, scheduler reason, and stop intent
+remain canonical, and the run is not relaunched.
+The submission command strips every ambient `SBATCH_*` variable on the local or
+SSH submission host before invoking `sbatch`, while preserving ordinary runtime
+environment such as `PATH` and Slurm client configuration.
 
 Frozen per-run execution identity and its canonical owner are defined in
 [run_manifest.md](run_manifest.md).
@@ -224,6 +287,10 @@ Without explicit bounds, numeric parameters use their original minimum and
 maximum, and categorical proposals remain within the original choices. A
 disabled adaptive block starts no suggestion protocol. Active-round replacement
 and automatic neighborhood suggestions require explicit `best_neighborhood`.
+Each confirmed replacement start grants one retirement credit. A durable Slurm
+`stopping` request reserves one credit in plan order but does not release
+capacity; only scheduler-confirmed `stopped` may precede a capacity-dependent
+replacement launch.
 
 ### Agent proposal handshake
 

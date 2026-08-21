@@ -16,6 +16,7 @@ from sleep2vec.results import (
 )
 
 RESULT_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
+RANK_ENV_NAMES = ("RANK", "SLURM_PROCID", "LOCAL_RANK", "SLURM_LOCALID")
 BINARY_PROBABILITY_RESULTS = {
     "test_episode_auprc": 0.5,
     "test_episode_brier": 0.460625,
@@ -110,6 +111,36 @@ def test_save_result_csv_skips_nonzero_rank(tmp_path, monkeypatch):
     save_result_csv({"test_loss": 1.0}, str(csv_path), _finetune_args(version="exp-a"))
 
     assert not csv_path.exists()
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_save_result_csv_skips_nonzero_slurm_rank(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    for env_name in RANK_ENV_NAMES:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("SLURM_PROCID", "1")
+    csv_path = tmp_path / f"{package_name}.csv"
+
+    results_mod.save_result_csv({"test_loss": 1.0}, str(csv_path), _finetune_args(version="exp-a"))
+
+    assert not csv_path.exists()
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_save_training_manifest_skips_nonzero_slurm_rank(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    for env_name in RANK_ENV_NAMES:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("SLURM_PROCID", "1")
+    manifest_path = tmp_path / f"{package_name}.json"
+
+    results_mod.save_training_run_manifest(
+        _finetune_args(version="exp-a"),
+        manifest_path=manifest_path,
+        status="completed",
+    )
+
+    assert not manifest_path.exists()
 
 
 def test_save_result_csv_builds_infer_experiment_version_when_version_is_missing(tmp_path, monkeypatch):
@@ -776,6 +807,49 @@ def test_is_rank_zero_process_falls_back_true_on_invalid_rank(monkeypatch):
     monkeypatch.delenv("LOCAL_RANK", raising=False)
 
     assert is_rank_zero_process() is True
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+@pytest.mark.parametrize(
+    ("env_name", "rank", "expected"),
+    [
+        ("SLURM_PROCID", "0", True),
+        ("SLURM_PROCID", "2", False),
+        ("SLURM_LOCALID", "0", True),
+        ("SLURM_LOCALID", "2", False),
+    ],
+)
+def test_is_rank_zero_process_reads_slurm_rank(
+    monkeypatch, package_name: str, env_name: str, rank: str, expected: bool
+):
+    distributed_mod = importlib.import_module(f"{package_name}.distributed")
+    for rank_env_name in RANK_ENV_NAMES:
+        monkeypatch.delenv(rank_env_name, raising=False)
+    monkeypatch.setenv(env_name, rank)
+
+    assert distributed_mod.is_rank_zero_process() is expected
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_is_rank_zero_process_prefers_slurm_process_rank_over_local_rank(monkeypatch, package_name: str):
+    distributed_mod = importlib.import_module(f"{package_name}.distributed")
+    for env_name in RANK_ENV_NAMES:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("SLURM_PROCID", "1")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+
+    assert distributed_mod.is_rank_zero_process() is False
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_is_rank_zero_process_prefers_global_rank_over_slurm_process_rank(monkeypatch, package_name: str):
+    distributed_mod = importlib.import_module(f"{package_name}.distributed")
+    for env_name in RANK_ENV_NAMES:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("SLURM_PROCID", "1")
+
+    assert distributed_mod.is_rank_zero_process() is True
 
 
 def test_is_torch_distributed_ready_false_when_dist_is_unavailable(monkeypatch):

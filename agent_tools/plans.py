@@ -519,7 +519,8 @@ def write_questions(output_dir: str | Path, report: DecisionReport) -> None:
 
 
 def prepare_doctor_report(output_dir: str | Path | None, recipe: dict, report: DecisionReport) -> DecisionReport:
-    return report
+    adapter = get_adapter(recipe.get("task"))
+    return adapter.prepare_doctor_report(recipe, report) if adapter is not None else report
 
 
 def write_doctor_outputs(output_dir: str | Path | None, recipe: dict, report: DecisionReport) -> None:

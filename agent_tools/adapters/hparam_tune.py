@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 from typing import Any
 
+from .. import slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_tune_issues
-from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
+from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
 from ..models import coerce_list
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, finetune_loaded_split_values
 from .base import TaskAdapter
@@ -82,6 +84,51 @@ class HparamTuneAdapter(TaskAdapter):
             unlock_final_test=unlock_final_test,
         )
 
+    def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+        if scheduler.get("type") != "slurm" or report.blocking_issues():
+            return report
+        try:
+            capabilities = slurm.cluster_scheduling_capabilities(execution, str(scheduler["partition"]))
+        except (slurm.SlurmCommandError, subprocess.TimeoutExpired, ValueError) as exc:
+            issue = DecisionIssue(
+                DecisionStatus.WARN,
+                "execution.scheduler.capabilities",
+                f"Read-only Slurm capability inspection was unavailable: {exc}",
+                None,
+                {"error": str(exc)},
+            )
+        else:
+            priority_type = capabilities["priority_type"] or "unknown priority policy"
+            scheduler_type = capabilities["scheduler_type"] or "unknown scheduler"
+            accounting_type = capabilities["accounting_storage_type"] or "unknown accounting storage"
+            message = (
+                f"Read-only Slurm inspection reports {priority_type}, {scheduler_type}, {accounting_type}, and "
+                f"{capabilities['reservation_count']} visible reservation(s). "
+            )
+            if priority_type == "priority/basic":
+                message += (
+                    "Submit time and fitting credible short resource requests into backfill are the practical "
+                    "user-side levers; no setting can guarantee first priority."
+                )
+            elif priority_type == "priority/multifactor":
+                message += (
+                    "Priority may also depend on cluster-controlled age, fair-share, QOS, and association policy; no "
+                    "setting can guarantee first priority."
+                )
+            else:
+                message += "Cluster policy determines ordering; no user-side setting can guarantee first priority."
+            issue = DecisionIssue(
+                DecisionStatus.WARN,
+                "execution.scheduler.capabilities",
+                message,
+                None,
+                capabilities,
+            )
+        issues = [*report.issues, issue]
+        return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
+
     def write_plan(
         self,
         recipe: dict[str, Any],
@@ -143,12 +190,22 @@ class HparamTuneAdapter(TaskAdapter):
             out / plan_hparam.FROZEN_FINAL_EVAL_CONFIG_NAME,
         ]
         offset = next_run_index(recipe)
+        scheduler = (recipe.get("execution") or {}).get("scheduler") or {}
         for idx, combo in enumerate(plan_hparam.hparam_combos(recipe)):
             identity = run_identity(recipe, offset + idx, combo)
             run_dir = out / "runs" / f"{identity['run_id']}--{identity['run_name']}"
             paths.extend(
                 [run_dir / "launch.sh", run_dir / "config.yaml", run_dir / "run.json", run_dir / "artifacts.json"]
             )
+            if scheduler.get("type") == "slurm":
+                paths.extend(
+                    [
+                        run_dir / "job.sbatch",
+                        run_dir / "slurm_terminal.json",
+                        run_dir / "allocation_identity.json",
+                        run_dir / "slurm.log",
+                    ]
+                )
         paths.append(out / "final_external_test.sh")
         return paths
 

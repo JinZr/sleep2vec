@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -15,14 +16,17 @@ from typing import Any
 
 import yaml
 
-from . import experiment_io as exp_io, gpu_rules, run_evidence as evidence, transport
+from . import experiment_io as exp_io, gpu_rules, run_evidence as evidence, slurm, transport
 from .experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     PROCESS_IDENTITY_FIELDS,
+    SCHEDULER_PLAN_IDENTITY_FIELDS,
     append_event,
+    file_sha256,
     managed_run_key,
     merge_run_manifest,
     read_run_manifest,
+    scheduler_type,
     validate_frozen_run_update,
     write_status_report,
 )
@@ -30,7 +34,9 @@ from .manifests import read_json, utc_now
 from .models import REPO_ROOT
 
 RunKey = tuple[str, str]
-ACTIVE_STATUSES = frozenset({"launched", "running", "unknown_remote", "missing_pid"})
+ACTIVE_STATUSES = frozenset(
+    {"submitting", "queued", "launched", "running", "stopping", "unknown_remote", "unknown_scheduler", "missing_pid"}
+)
 LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
 LAUNCH_TIMEOUT_SECONDS = 60
 EXECUTION_SNAPSHOT_NAME = "execution_snapshot.json"
@@ -59,6 +65,7 @@ __all__ = [
     "managed_run_lock",
     "observe_run",
     "observe_runs",
+    "observe_slurm_run",
     "run_execution_command",
     "script_commits_terminal_status",
     "shares_capacity",
@@ -316,9 +323,9 @@ def script_commits_terminal_status(row: dict[str, Any], *, default: bool = False
         return default
     if owner == "script":
         return True
-    if owner == "monitor":
+    if owner in {"monitor", "scheduler_sidecar"}:
         return False
-    raise ValueError("terminal_status_owner must be 'script' or 'monitor'.")
+    raise ValueError("terminal_status_owner must be 'script', 'monitor', or 'scheduler_sidecar'.")
 
 
 def observe_run(
@@ -403,7 +410,12 @@ def capacity_state(
     unknown_other_active = 0
     external_missing_pid: list[RunKey] = []
     for key, row in workspace_rows.items():
-        if not groups or key in expected_keys or row.get("status") not in ACTIVE_STATUSES:
+        if (
+            not groups
+            or key in expected_keys
+            or row.get("status") not in ACTIVE_STATUSES
+            or scheduler_type(row) == "slurm"
+        ):
             continue
         row_target = str(row.get("target") or "")
         if not row_target:
@@ -468,6 +480,8 @@ def shares_capacity(
     groups: list[list[Any]],
     row: dict[str, Any],
 ) -> bool:
+    if scheduler_type(row) == "slurm":
+        return False
     row_target = str(row.get("target") or "")
     target = str(execution.get("target", "local") or "local")
     if row_target and row_target != target:
@@ -547,6 +561,19 @@ def _launch_managed_runs(
     projection_writer: Callable[[LaunchResult], None] | None,
     hooks: SchedulerHooks,
 ) -> LaunchResult:
+    backend = _managed_scheduler_type(execution, runs)
+    if backend == "slurm":
+        return _launch_slurm_runs(
+            workspace,
+            owner_dir,
+            runs,
+            execution,
+            dry_run=dry_run,
+            runtime_output_fields=runtime_output_fields,
+            runtime_output_root=runtime_output_root,
+            projection_writer=projection_writer,
+            hooks=hooks,
+        )
     planned_by_key = {managed_run_key(run): run for run in runs}
     snapshot_path = owner_dir / EXECUTION_SNAPSHOT_NAME
     exp_io.validate_managed_output_paths(
@@ -892,6 +919,533 @@ def _launch_managed_runs(
     if missing_pid_blocker is not None:
         raise missing_pid_blocker
     return result
+
+
+def _managed_scheduler_type(execution: dict[str, Any], runs: list[dict[str, Any]]) -> str:
+    scheduler = execution.get("scheduler") or {}
+    if not isinstance(scheduler, dict):
+        raise ValueError("execution.scheduler must be a mapping.")
+    configured = str(scheduler.get("type") or "direct")
+    if configured not in {"direct", "slurm"}:
+        raise ValueError("execution.scheduler.type must be direct or slurm.")
+    planned = {scheduler_type(run) for run in runs}
+    if len(planned) != 1 or planned != {configured}:
+        raise ValueError("Frozen run scheduler identity differs from execution.scheduler.type.")
+    return configured
+
+
+def _launch_slurm_runs(
+    workspace: Path,
+    owner_dir: Path,
+    runs: list[dict[str, Any]],
+    execution: dict[str, Any],
+    *,
+    dry_run: bool,
+    runtime_output_fields: tuple[str, ...],
+    runtime_output_root: str | Path | None,
+    projection_writer: Callable[[LaunchResult], None] | None,
+    hooks: SchedulerHooks,
+) -> LaunchResult:
+    snapshot_path = owner_dir / EXECUTION_SNAPSHOT_NAME
+    exp_io.validate_managed_output_paths(
+        workspace,
+        [
+            workspace / "run_manifest.tsv",
+            workspace / "run_matrix.csv",
+            workspace / "reports" / "run_matrix.md",
+            workspace / "events.jsonl",
+            workspace / "reports" / "status.md",
+            snapshot_path,
+        ],
+    )
+    experiment_manifest = yaml.safe_load((workspace / "experiment.yaml").read_text()) or {}
+    experiment = experiment_manifest.get("experiment") if isinstance(experiment_manifest, dict) else None
+    if isinstance(experiment, dict) and experiment.get("status") == "completed":
+        raise ValueError(f"Experiment is completed and cannot launch runs: {workspace}")
+    expected_keys = {managed_run_key(run) for run in runs}
+    workspace_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    missing = expected_keys - set(workspace_by_key)
+    if missing:
+        step_id, run_id = sorted(missing)[0]
+        raise ValueError(f"Canonical run is missing: {step_id} / {run_id}")
+    planned_fields = {
+        "experiment_id",
+        "step_id",
+        "run_id",
+        "run_name",
+        "parameter_summary",
+        "version",
+        "config",
+        "config_sha256",
+        "script",
+        "script_sha256",
+        "run_dir",
+        "artifacts",
+        "runtime_dir",
+        "checkpoint_dir",
+        "terminal_status_owner",
+        "log_path",
+        *SCHEDULER_PLAN_IDENTITY_FIELDS,
+    }
+    for run in runs:
+        previous = workspace_by_key[managed_run_key(run)]
+        hooks.validate_run_update(
+            previous,
+            {field: run[field] for field in planned_fields if field in run},
+            allow_execution_identity_fill=True,
+        )
+
+    status_changes: dict[RunKey, tuple[Any, Any]] = {}
+    if not dry_run:
+        observed_rows = []
+        previous_statuses = {}
+        for run in runs:
+            key = managed_run_key(run)
+            previous = workspace_by_key[key]
+            previous_statuses[key] = previous.get("status")
+            observed = (
+                observe_slurm_run(owner_dir, execution, previous)
+                if previous.get("target") not in (None, "")
+                else previous
+            )
+            observed_rows.append(observed)
+        committed = hooks.merge_manifest(workspace, observed_rows, lock_held=True)
+        workspace_by_key = {managed_run_key(row): row for row in committed}
+        status_changes = {
+            key: (before, workspace_by_key[key].get("status"))
+            for key, before in previous_statuses.items()
+            if workspace_by_key[key].get("status") != before
+        }
+
+    preview_rows = []
+    for run in runs:
+        key = managed_run_key(run)
+        previous = workspace_by_key[key]
+        identity = _slurm_execution_identity(execution, run)
+        if dry_run and previous.get("target") in (None, ""):
+            preview_rows.append({**previous, **identity})
+        else:
+            preview_rows.append(previous)
+
+    launchable = [run for run in runs if workspace_by_key[managed_run_key(run)].get("status") in LAUNCHABLE_STATUSES]
+    execution_snapshot_sha256 = ""
+    if launchable and not dry_run:
+        remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
+        runtime_roots = [
+            Path(str(run[field]))
+            for run in launchable
+            for field in runtime_output_fields
+            if run.get(field) not in (None, "")
+        ]
+        runtime_root = (
+            Path(runtime_output_root)
+            if runtime_output_root is not None
+            else Path(str(execution.get("workdir") or REPO_ROOT))
+        )
+        exp_io.validate_managed_output_paths(runtime_root, runtime_roots, remote=remote)
+        frozen_paths = [
+            Path(str(run[field]))
+            for run in launchable
+            for field in ("scheduler_script", "scheduler_result_path", "allocation_identity_path", "log_path")
+        ]
+        exp_io.validate_managed_output_paths(owner_dir, frozen_paths, remote=remote)
+        for run in launchable:
+            script_text = exp_io.read_text_at(run["scheduler_script"], remote=remote)
+            if hashlib.sha256(script_text.encode()).hexdigest() != run["scheduler_script_sha256"]:
+                raise ValueError(f"Frozen Slurm script changed before submission: {run['scheduler_script']}")
+        validated_snapshot = hooks.validated_snapshot or validated_execution_snapshot
+        execution_snapshot, write_execution_snapshot = validated_snapshot(
+            owner_dir,
+            execution,
+            runs,
+            workspace_by_key,
+        )
+        if write_execution_snapshot:
+            write_execution_snapshot_file(snapshot_path, execution_snapshot)
+        execution_snapshot_sha256 = file_sha256(snapshot_path)
+        snapshot_rows = [
+            {
+                **workspace_by_key[managed_run_key(run)],
+                "execution_snapshot_sha256": execution_snapshot_sha256,
+            }
+            for run in runs
+        ]
+        committed = hooks.merge_manifest(workspace, snapshot_rows, lock_held=True)
+        workspace_by_key = {managed_run_key(row): row for row in committed}
+
+    started_keys: set[RunKey] = set()
+    uncertain_error: RuntimeError | None = None
+    if not dry_run:
+        for run in launchable:
+            key = managed_run_key(run)
+            previous = workspace_by_key[key]
+            submitting = {
+                **previous,
+                **_slurm_execution_identity(execution, run, execution_snapshot_sha256),
+                "status": "submitting",
+                "scheduler_observed_at": utc_now(),
+            }
+            committed = hooks.merge_manifest(workspace, [submitting], lock_held=True)
+            workspace_by_key = {managed_run_key(row): row for row in committed}
+            submitting = workspace_by_key[key]
+            if submitting.get("status") != "submitting":
+                continue
+            try:
+                identity = slurm.submit(
+                    execution,
+                    str(run["scheduler_script"]),
+                    str(run["scheduler_submit_token"]),
+                    execution_snapshot_sha256=execution_snapshot_sha256,
+                    timeout=LAUNCH_TIMEOUT_SECONDS,
+                )
+                submitted = _submitted_slurm_row(submitting, identity, raw_state="SUBMITTED")
+            except slurm.SlurmCommandError as exc:
+                if exc.returncode != 255:
+                    failed = {
+                        **submitting,
+                        "status": "launch_failed",
+                        "scheduler_reason": str(exc),
+                        "scheduler_observed_at": utc_now(),
+                    }
+                    committed = hooks.merge_manifest(workspace, [failed], lock_held=True)
+                    workspace_by_key = {managed_run_key(row): row for row in committed}
+                    continue
+                submitted, uncertain_error = _reconcile_slurm_submission(owner_dir, execution, submitting, exc)
+            except (subprocess.TimeoutExpired, ValueError) as exc:
+                submitted, uncertain_error = _reconcile_slurm_submission(owner_dir, execution, submitting, exc)
+            committed = hooks.merge_manifest(workspace, [submitted], lock_held=True)
+            workspace_by_key = {managed_run_key(row): row for row in committed}
+            if workspace_by_key[key].get("scheduler_job_id") not in (None, ""):
+                started_keys.add(key)
+            if uncertain_error is not None:
+                break
+
+    committed_rows = [workspace_by_key[managed_run_key(run)] for run in runs]
+    launch_rows = preview_rows if dry_run else committed_rows
+    result = LaunchResult(
+        committed_rows=committed_rows,
+        launch_rows=launch_rows,
+        started_keys=frozenset(started_keys),
+        status_changes=status_changes,
+        external_status_changes={},
+    )
+    if projection_writer is not None:
+        projection_writer(result)
+    for key, (before, after) in status_changes.items():
+        hooks.append_event(
+            workspace,
+            "run_status_changed",
+            {"step_id": key[0], "run_id": key[1], "from": before, "to": after},
+        )
+    for key in started_keys:
+        row = workspace_by_key[key]
+        hooks.append_event(
+            workspace,
+            "run_launched",
+            {
+                "step_id": key[0],
+                "run_id": key[1],
+                "scheduler_job_id": row["scheduler_job_id"],
+            },
+        )
+    hooks.write_status_report(workspace)
+    if uncertain_error is not None:
+        raise uncertain_error
+    return result
+
+
+def _slurm_execution_identity(
+    execution: dict[str, Any], run: dict[str, Any], execution_snapshot_sha256: str | None = None
+) -> dict[str, Any]:
+    target = str(execution.get("target", "local") or "local")
+    inner = slurm.submission_command(
+        str(run["scheduler_script"]),
+        str(run["scheduler_submit_token"]),
+        execution_snapshot_sha256,
+    )
+    command = f"ssh {transport.sh(execution['host'])} {transport.sh(inner)}" if target == "ssh" else inner
+    identity = {
+        "target": target,
+        "host": execution.get("host", ""),
+        "workdir": execution.get("workdir") or str(REPO_ROOT),
+        "gpus": "",
+        "pid_path": "",
+        "log_path": run["log_path"],
+        "command": command,
+        **{field: "" for field in PROCESS_IDENTITY_FIELDS},
+    }
+    if execution_snapshot_sha256:
+        identity["execution_snapshot_sha256"] = execution_snapshot_sha256
+    return identity
+
+
+def _submitted_slurm_row(
+    row: dict[str, Any],
+    identity: slurm.JobIdentity,
+    *,
+    raw_state: str,
+    status: str = "queued",
+) -> dict[str, Any]:
+    return {
+        **row,
+        "status": status,
+        "scheduler_job_id": identity.job_id,
+        "scheduler_cluster": identity.cluster,
+        "scheduler_raw_state": raw_state,
+        "scheduler_reason": "",
+        "scheduler_observed_at": utc_now(),
+        "launched_at": row.get("launched_at") or utc_now(),
+    }
+
+
+def _reconcile_slurm_submission(
+    owner_dir: Path,
+    execution: dict[str, Any],
+    row: dict[str, Any],
+    cause: BaseException,
+) -> tuple[dict[str, Any], RuntimeError | None]:
+    terminal = _read_slurm_json(owner_dir, execution, row["scheduler_result_path"])
+    if terminal:
+        return observe_slurm_run(owner_dir, execution, row), None
+    try:
+        matches = slurm.active_jobs(execution, submit_token=row["scheduler_submit_token"])
+    except Exception as reconcile_error:
+        detail = f"{cause}; reconciliation failed: {reconcile_error}"
+        unresolved = {**row, "scheduler_reason": detail, "scheduler_observed_at": utc_now()}
+        return unresolved, RuntimeError(f"Slurm submission outcome is uncertain: {detail}")
+    if len(matches) == 1:
+        observed = matches[0]
+        category = slurm.state_category(observed.state)
+        status = category if category in {"queued", "running"} else "unknown_scheduler"
+        reason = observed.reason
+        if slurm.normalize_state(observed.state) == "REVOKED":
+            reason = "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported."
+            if observed.reason:
+                reason = f"{reason} Scheduler reason: {observed.reason}"
+        return (
+            {
+                **_submitted_slurm_row(
+                    row,
+                    slurm.JobIdentity(observed.job_id, str(row.get("scheduler_cluster") or "")),
+                    raw_state=observed.state,
+                    status=status,
+                ),
+                "scheduler_reason": reason,
+                "scheduler_node": observed.node_list,
+            },
+            None,
+        )
+    detail = f"{cause}; reconciliation found {len(matches)} jobs for token {row['scheduler_submit_token']}"
+    unresolved = {**row, "scheduler_reason": detail, "scheduler_observed_at": utc_now()}
+    return unresolved, RuntimeError(f"Slurm submission outcome is uncertain: {detail}")
+
+
+def observe_slurm_run(
+    owner_dir: str | Path,
+    execution: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    health: bool = False,
+) -> dict[str, Any]:
+    owner = Path(owner_dir)
+    token = str(row["scheduler_submit_token"])
+    job_id = str(row.get("scheduler_job_id") or "")
+    cluster = str(row.get("scheduler_cluster") or "")
+    stop_requested = row.get("stop_requested_at") not in (None, "")
+    terminal = _read_slurm_json(owner, execution, row["scheduler_result_path"])
+    observation: dict[str, Any] = {**row, "scheduler_observed_at": utc_now()}
+    terminal_exit_code: int | None = None
+    if terminal:
+        identity = slurm.sidecar_identity(terminal, token, expected_job_id=job_id or None)
+        if cluster and identity.cluster and identity.cluster != cluster:
+            raise ValueError("Slurm terminal sidecar cluster differs from the canonical run.")
+        job_id = identity.job_id
+        cluster = identity.cluster or cluster
+        terminal_exit_code = slurm.terminal_exit_code(terminal)
+        observation.update(
+            {
+                "scheduler_job_id": job_id,
+                "scheduler_cluster": cluster,
+                "scheduler_node": terminal.get("node", ""),
+                "scheduler_exit_code": terminal_exit_code,
+                "scheduler_started_at": terminal.get("started_at", ""),
+                "launched_at": row.get("launched_at") or utc_now(),
+            }
+        )
+    else:
+        allocation = _read_slurm_json(owner, execution, row["allocation_identity_path"])
+        if allocation:
+            allocation_identity = slurm.sidecar_identity(allocation, token, expected_job_id=job_id or None)
+            if cluster and allocation_identity.cluster and allocation_identity.cluster != cluster:
+                raise ValueError("Slurm allocation sidecar cluster differs from the canonical run.")
+            cluster = allocation_identity.cluster or cluster
+            if not job_id:
+                job_id = allocation_identity.job_id
+                observation["scheduler_job_id"] = job_id
+                observation["launched_at"] = row.get("launched_at") or utc_now()
+            observation["scheduler_cluster"] = cluster
+            observation["scheduler_node"] = allocation.get("node", "")
+            observation["scheduler_started_at"] = allocation.get("started_at", "")
+    health_error = ""
+    try:
+        if not job_id:
+            matches = slurm.active_jobs(execution, submit_token=token, cluster=cluster or None)
+            if len(matches) > 1:
+                raise ValueError(f"Multiple Slurm jobs match frozen submit token {token}.")
+            if not matches:
+                observation.update({"status": "submitting", "scheduler_reason": "submission_unresolved"})
+                return _slurm_artifact_observation(observation, health=health)
+            active = matches[0]
+            job_id = active.job_id
+            observation["scheduler_job_id"] = job_id
+            observation["launched_at"] = row.get("launched_at") or utc_now()
+        else:
+            matches = slurm.active_jobs(execution, job_id=job_id, cluster=cluster or None)
+            active = matches[0] if matches else None
+        if active is None:
+            active = slurm.show_job(execution, job_id, cluster=cluster or None)
+        from_accounting = False
+        if active is None:
+            active = slurm.accounting_job(
+                execution,
+                job_id,
+                submit_token=token,
+                cluster=cluster or None,
+            )
+            from_accounting = active is not None
+        if active is None:
+            observation.update(
+                {
+                    "status": "unknown_scheduler",
+                    "scheduler_raw_state": "MISSING",
+                    "scheduler_reason": (
+                        "Slurm job disappeared before terminal scheduler state was observed."
+                        if terminal
+                        else "Slurm job disappeared without a terminal sidecar."
+                    ),
+                }
+            )
+            return _slurm_artifact_observation(observation, health=health)
+        if health:
+            try:
+                detailed = slurm.show_job(execution, job_id, cluster=cluster or None)
+                if detailed is None:
+                    health_error = "Slurm job details are unavailable."
+                else:
+                    active = detailed
+                    from_accounting = False
+            except (slurm.SlurmCommandError, subprocess.TimeoutExpired, RuntimeError, ValueError) as exc:
+                health_error = str(exc)
+        if not from_accounting and active.comment != token:
+            raise ValueError("Observed Slurm job comment differs from the frozen submit token.")
+        category = slurm.state_category(active.state)
+        reason = active.reason
+        if slurm.normalize_state(active.state) == "REVOKED":
+            reason = "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported."
+            if active.reason:
+                reason = f"{reason} Scheduler reason: {active.reason}"
+        if terminal_exit_code is not None:
+            if category == "cancelled" and stop_requested:
+                status = "stopped"
+            elif category == "completed":
+                status = "completed" if terminal_exit_code == 0 else "failed"
+            elif category in {"failed", "cancelled"}:
+                status = "failed"
+            elif category in {"queued", "running"}:
+                status = "stopping" if stop_requested else category
+            else:
+                status = "unknown_scheduler"
+                reason = reason or "Slurm terminal sidecar is present but scheduler state is not recognized."
+        else:
+            if category == "cancelled" and stop_requested:
+                status = "stopped"
+            else:
+                status = (
+                    "stopping"
+                    if stop_requested and category in {"queued", "running"}
+                    else category if category in {"queued", "running"} else "unknown_scheduler"
+                )
+            if category in {"completed", "failed", "cancelled"} and status != "stopped":
+                reason = reason or "Terminal scheduler state is missing the matching terminal sidecar."
+        observation.update(
+            {
+                "scheduler_raw_state": active.state,
+                "scheduler_reason": reason,
+                "scheduler_node": active.node_list or observation.get("scheduler_node", ""),
+                "status": status,
+                **{f"scheduler_{field}": value for field, value in active.details.items()},
+            }
+        )
+        if status == "stopped":
+            observation["stopped_at"] = row.get("stopped_at") or observation["scheduler_observed_at"]
+    except (slurm.SlurmCommandError, subprocess.TimeoutExpired, RuntimeError) as exc:
+        observation.update(
+            {
+                "status": "unknown_scheduler" if job_id else "submitting",
+                "scheduler_reason": str(exc),
+            }
+        )
+        health_error = str(exc)
+    return _slurm_artifact_observation(observation, health=health, health_error=health_error)
+
+
+def _read_slurm_json(owner_dir: Path, execution: dict[str, Any], path: str | Path) -> dict[str, Any]:
+    remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
+    exp_io.validate_managed_output_paths(owner_dir, [path], remote=remote)
+    text = exp_io.read_text_at(path, remote=remote)
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Slurm sidecar is not valid JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Slurm sidecar must be a mapping: {path}")
+    return payload
+
+
+def _slurm_artifact_observation(row: dict[str, Any], *, health: bool = False, health_error: str = "") -> dict[str, Any]:
+    observed_artifacts = evidence.runtime_artifacts(row)
+    if observed_artifacts is not None:
+        run_manifest, _manifest, checkpoints = observed_artifacts
+        row.update({"run_manifest": run_manifest, "checkpoints": ";".join(checkpoints)})
+    row["log_tail"] = evidence.log_tail(row.get("log_path"), row)
+    if health:
+        status = str(row.get("status") or "")
+        if health_error or status in {"submitting", "unknown_scheduler"}:
+            health_status = "health_unknown"
+        elif status == "queued":
+            health_status = "scheduler_queued"
+        elif status == "running":
+            health_status = "scheduler_running"
+        else:
+            health_status = status
+        log_age = evidence.log_age_seconds(row.get("log_path"), row)
+        queue_age = _timestamp_age_seconds(row.get("launched_at")) if status == "queued" else None
+        allocation_age = _timestamp_age_seconds(row.get("scheduler_started_at"))
+        row.update(
+            {
+                "health_status": health_status,
+                "scheduler_health_error": health_error,
+                "scheduler_queue_age_seconds": "" if queue_age is None else queue_age,
+                "scheduler_allocation_age_seconds": "" if allocation_age is None else allocation_age,
+                "log_age_seconds": "" if log_age is None else log_age,
+            }
+        )
+    row["monitored_at"] = utc_now()
+    return row
+
+
+def _timestamp_age_seconds(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return max(int((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()), 0)
 
 
 def validated_execution_snapshot(

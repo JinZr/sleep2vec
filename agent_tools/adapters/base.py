@@ -4,7 +4,7 @@ Layering contract (import directions are one-way):
 
 - Layer 0 (leaf modules adapters MAY import): models, decision_models,
   transport, plan_rendering, decision_paths, gpu_rules, decision_hparam,
-  plan_hparam, experiment_workspace, manifests, repo.
+  plan_hparam, experiment_workspace, manifests, repo, slurm.
 - Layer 1 (this package): adapters/base.py, adapters/<task>.py,
   adapters/registry.py.
 - Layer 2 (kernel orchestration, imports the registry): configs,
@@ -107,6 +107,10 @@ class TaskAdapter:
     ) -> list[DecisionIssue]:
         """Extra issues evaluated only during preflight_plan (not doctor)."""
         return []
+
+    def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
+        """Add task-specific read-only doctor findings."""
+        return report
 
     def write_plan(
         self,

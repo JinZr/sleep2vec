@@ -21,6 +21,7 @@ from agent_tools import experiment_io, experiment_workspace, experiments, hparam
 from agent_tools.experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     MANAGED_RUN_PATH_FIELDS,
+    SCHEDULER_BINDING_FIELDS,
     append_event,
     canonical_local_experiment_root,
     commit_step_manifest,
@@ -40,6 +41,7 @@ from agent_tools.experiment_workspace import (
     semantic_run_name,
     validate_frozen_run_update,
     validate_managed_run_rows,
+    validate_scheduler_run_identity,
 )
 
 
@@ -259,6 +261,36 @@ def test_hparam_plan_rejects_workspace_parameter_contract_drift(tmp_path: Path, 
 
     with pytest.raises(ValueError, match="parameters differ|runtime\\.lr|Historical parameter fields"):
         run_artifacts.read_hparam_plan(plan_dir)
+
+
+def test_hparam_plan_ignores_blank_shared_manifest_parameter_padding(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    historical = dict(payload)
+    historical["step"] = {**payload["step"], "id": "historical"}
+    historical["search"] = {
+        **payload["search"],
+        "parameters": {"runtime.batch_size": [32]},
+    }
+    historical_recipe = tmp_path / "historical.yaml"
+    historical_recipe.write_text(yaml.safe_dump(historical, sort_keys=False))
+    current = dict(payload)
+    current["step"] = {**payload["step"], "id": "current"}
+    current_recipe = tmp_path / "current.yaml"
+    current_recipe.write_text(yaml.safe_dump(current, sort_keys=False))
+    historical_plan = tmp_path / "plans" / "historical"
+    current_plan = tmp_path / "plans" / "current"
+
+    first = _run("plan", "--recipe", str(historical_recipe), "--output-dir", str(historical_plan))
+    second = _run("plan", "--recipe", str(current_recipe), "--output-dir", str(current_plan))
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    with (tmp_path / "run_manifest.tsv").open(newline="") as file_obj:
+        rows = list(csv.DictReader(file_obj, delimiter="\t"))
+    current_row = next(row for row in rows if row["step_id"] == "current")
+    assert current_row["runtime.batch_size"] == ""
+    assert run_artifacts.read_hparam_plan(current_plan)["runs"][0]["runtime.lr"] == 2e-6
 
 
 def test_plan_blocks_missing_experiment_metadata(tmp_path: Path):
@@ -553,7 +585,11 @@ def test_managed_run_parameters_reject_legacy_prefix():
         ("launched", {"status": "pending"}, "launched"),
         ("running", {"status": "planned"}, "running"),
         ("running", {"status": "pending"}, "running"),
+        ("stopping", {"status": "planned"}, "stopping"),
+        ("stopping", {"status": "pending"}, "stopping"),
         ("unknown_remote", {"status": "planned"}, "unknown_remote"),
+        ("unknown_scheduler", {"status": "planned"}, "unknown_scheduler"),
+        ("unknown_scheduler", {"status": "pending"}, "unknown_scheduler"),
         ("missing_pid", {"status": "pending"}, "missing_pid"),
         ("running", {"status": "failed"}, "failed"),
         ("planned", {"status": "superseded"}, "superseded"),
@@ -580,6 +616,68 @@ def test_merge_run_row_preserves_status_precedence(existing_status: str, incomin
     merged = merge_run_row(existing, incoming)
 
     assert merged["status"] == expected_status
+
+
+@pytest.mark.parametrize("incoming_status", ["queued", "running", "unknown_scheduler", "completed", "failed"])
+@pytest.mark.parametrize(
+    "incoming_stop_fields",
+    [
+        {},
+        {"stop_requested_at": "", "stop_reason": "stale reason"},
+        {"stop_requested_at": "2026-08-21T03:39:00Z", "stop_reason": "stale reason"},
+    ],
+)
+def test_merge_run_row_preserves_stop_intent_against_stale_observations(
+    incoming_status: str,
+    incoming_stop_fields: dict,
+):
+    existing = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "status": "stopping",
+        "stop_requested_at": "2026-08-21T03:40:00Z",
+        "stop_reason": "validation diverged",
+    }
+    incoming = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "status": incoming_status,
+        "scheduler_raw_state": "RUNNING",
+        **incoming_stop_fields,
+    }
+
+    merged = merge_run_row(existing, incoming)
+
+    assert merged["status"] == "stopping"
+    assert merged["stop_requested_at"] == "2026-08-21T03:40:00Z"
+    assert merged["stop_reason"] == "validation diverged"
+    assert merged["scheduler_raw_state"] == "RUNNING"
+
+
+@pytest.mark.parametrize("incoming_status", ["stopping", "stopped", "completed", "failed", "unknown_scheduler"])
+def test_merge_run_row_accepts_observation_bound_to_current_stop_intent(incoming_status: str):
+    existing = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "status": "stopping",
+        "stop_requested_at": "2026-08-21T03:40:00Z",
+        "stop_reason": "validation diverged",
+    }
+
+    merged = merge_run_row(
+        existing,
+        {
+            "step_id": "train",
+            "run_id": "run-000",
+            "status": incoming_status,
+            "stop_requested_at": "2026-08-21T03:40:00Z",
+            "stop_reason": "validation diverged",
+        },
+    )
+
+    assert merged["status"] == incoming_status
+    assert merged["stop_requested_at"] == "2026-08-21T03:40:00Z"
+    assert merged["stop_reason"] == "validation diverged"
 
 
 def test_merge_run_row_is_idempotent():
@@ -1423,6 +1521,106 @@ def test_frozen_validator_allows_only_one_trusted_process_identity_fill():
 
     with pytest.raises(ValueError, match="pid"):
         validate_frozen_run_update({**existing, "pid": 123}, {"pid": 456}, allow_execution_identity_fill=True)
+
+
+def _slurm_identity(tmp_path: Path) -> dict[str, str]:
+    return {
+        "scheduler_type": "slurm",
+        "scheduler_submit_token": "unit-token",
+        "scheduler_script": str(tmp_path / "job.sbatch"),
+        "scheduler_script_sha256": "a" * 64,
+        "scheduler_result_path": str(tmp_path / "slurm_terminal.json"),
+        "allocation_identity_path": str(tmp_path / "allocation_identity.json"),
+    }
+
+
+def test_scheduler_identity_allows_one_trusted_job_binding(tmp_path: Path):
+    existing = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "target": "ssh",
+        "status": "submitting",
+        "execution_snapshot_sha256": "a" * 64,
+        **_slurm_identity(tmp_path),
+    }
+
+    validate_frozen_run_update(
+        existing,
+        {"scheduler_job_id": "3880", "scheduler_cluster": "wuji-h20"},
+        allow_execution_identity_fill=True,
+    )
+    for field in SCHEDULER_BINDING_FIELDS:
+        changed = "b" * 64 if field == "execution_snapshot_sha256" else "3881"
+        with pytest.raises(ValueError, match=field):
+            validate_frozen_run_update(
+                {**existing, "scheduler_job_id": "3880", "scheduler_cluster": "wuji-h20"},
+                {field: changed},
+                allow_execution_identity_fill=True,
+            )
+
+
+def test_scheduler_identity_is_backend_specific(tmp_path: Path):
+    validate_scheduler_run_identity({"scheduler_type": "direct", "status": "planned"})
+    validate_scheduler_run_identity({"status": "planned"})
+    validate_scheduler_run_identity({"status": "submitting", **_slurm_identity(tmp_path)})
+    validate_scheduler_run_identity({"status": "queued", "scheduler_job_id": "3880", **_slurm_identity(tmp_path)})
+    validate_scheduler_run_identity({"status": "stopping", "scheduler_job_id": "3880", **_slurm_identity(tmp_path)})
+
+    with pytest.raises(ValueError, match="PID process identity"):
+        validate_scheduler_run_identity(
+            {"status": "queued", "scheduler_job_id": "3880", "pid": "42", **_slurm_identity(tmp_path)}
+        )
+    with pytest.raises(ValueError, match="cannot define Slurm"):
+        validate_scheduler_run_identity(
+            {"scheduler_type": "direct", "scheduler_submit_token": "unit-token", "status": "planned"}
+        )
+    with pytest.raises(ValueError, match="requires scheduler_job_id"):
+        validate_scheduler_run_identity({"status": "queued", **_slurm_identity(tmp_path)})
+
+
+def test_manifest_binds_scheduler_job_once_and_updates_observation(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    identity = {
+        "experiment_id": "unit",
+        "step_id": "train",
+        "run_id": "run-000",
+        "target": "ssh",
+        **_slurm_identity(tmp_path),
+    }
+    merge_run_manifest(tmp_path, [{**identity, "status": "planned"}])
+    merge_run_manifest(tmp_path, [{"step_id": "train", "run_id": "run-000", "status": "submitting"}])
+    committed = merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": "train",
+                "run_id": "run-000",
+                "status": "queued",
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_state": "PENDING",
+            }
+        ],
+    )
+
+    assert committed[0]["scheduler_job_id"] == "3880"
+    assert committed[0]["scheduler_state"] == "PENDING"
+    updated = merge_run_manifest(
+        tmp_path,
+        [{"step_id": "train", "run_id": "run-000", "scheduler_state": "RUNNING"}],
+    )
+    assert updated[0]["scheduler_state"] == "RUNNING"
+    with pytest.raises(ValueError, match="scheduler_job_id"):
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": "train", "run_id": "run-000", "scheduler_job_id": "3881"}],
+        )
+
+
+def test_scheduler_active_status_does_not_regress_to_pending():
+    for status in ("submitting", "queued"):
+        assert merge_run_row({"status": status}, {"status": "pending"})["status"] == status
 
 
 def test_semantic_run_name_keeps_boolean_settings_readable():

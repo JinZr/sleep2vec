@@ -192,6 +192,38 @@ def _finetune_recipe(tmp_path: Path, config: Path) -> Path:
     )
 
 
+def _hparam_recipe(tmp_path: Path, config: Path, *, execution: dict | None = None) -> Path:
+    return _write_yaml(
+        tmp_path / "hparam.yaml",
+        {
+            "name": "unit_sex_age_hparam_val_only",
+            "task": "hparam_tune",
+            "variant": "sex_age_baseline",
+            "base_recipe": str(_finetune_recipe(tmp_path, config)),
+            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-3]}},
+            "execution": execution or {},
+            "evaluation_policy": {
+                "selection_metric": "val_c_index",
+                "selection_mode": "max",
+                "selection_split": "val",
+                "external_test_locked": True,
+                "test_after_fit": False,
+                "final_eval_split": "validation",
+                "final_test_unlocked": False,
+                "require_manual_unlock_for_final_test": True,
+            },
+            "decisions": {
+                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
+                "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
+                "external_test_locked": {"value": True, "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+
+
 def _infer_recipe(tmp_path: Path, config: Path, ckpt: Path) -> Path:
     return _write_yaml(
         tmp_path / "infer.yaml",
@@ -457,35 +489,7 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
     payload = yaml.safe_load(config.read_text())
     for field in ("event_time_index", "is_event_index", "has_label_index"):
         Path(payload["finetune"]["survival"][field]).write_text("eid,d1,d2\n001,10,20\n002,30,40\n")
-    base = _finetune_recipe(tmp_path, config)
-    recipe = _write_yaml(
-        tmp_path / "hparam_val_only.yaml",
-        {
-            "name": "unit_sex_age_hparam_val_only",
-            "task": "hparam_tune",
-            "variant": "sex_age_baseline",
-            "base_recipe": str(base),
-            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-3]}},
-            "evaluation_policy": {
-                "selection_metric": "val_c_index",
-                "selection_mode": "max",
-                "selection_split": "val",
-                "external_test_locked": True,
-                "test_after_fit": False,
-                "final_eval_split": "validation",
-                "final_test_unlocked": False,
-                "require_manual_unlock_for_final_test": True,
-            },
-            "decisions": {
-                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-                "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
-                "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
-                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-            },
-        },
-    )
+    recipe = _hparam_recipe(tmp_path, config)
 
     report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-hparam-val-only")
 
@@ -497,6 +501,33 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
     assert "--no-test-after-fit" in script
     assert "--test-after-fit" not in script
     assert "--wandb-mode" not in script
+
+
+def test_sex_age_baseline_slurm_multi_gpu_is_rejected_before_plan_write(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    recipe = _hparam_recipe(
+        tmp_path,
+        config,
+        execution={
+            "gpus_per_run": 2,
+            "scheduler": {
+                "type": "slurm",
+                "partition": "gpu",
+                "cpus_per_task": 8,
+                "memory": "64G",
+                "walltime": "01:00:00",
+            },
+        },
+    )
+    plan_dir = tmp_path / "plan-slurm-multi-gpu"
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    failures = [issue for issue in report.issues if issue.status.value == "FAIL"]
+    assert report.exit_code == 1
+    assert [issue.field for issue in failures] == ["execution.gpus_per_run"]
+    assert "does not support multi-GPU Slurm execution" in failures[0].message
+    assert not plan_dir.exists()
 
 
 def test_sex_age_baseline_finetune_blocks_invalid_metadata_values(tmp_path: Path):

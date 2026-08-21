@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 from pathlib import Path
 import sys
@@ -378,6 +379,26 @@ def test_persist_run_config_and_args_writes_root_and_stage1_snapshots(tmp_path: 
     assert (exp_dir / "config.stage1.yaml").read_text() == "stage: 1\n"
     assert yaml.safe_load((exp_dir / "cli_args.yaml").read_text())["phase"] == "stage1"
     assert yaml.safe_load((exp_dir / "cli_args.stage1.yaml").read_text())["phase"] == "stage1"
+
+
+@pytest.mark.parametrize("package_name", ("sleep2vec", "sleep2vec2", "sleep2expert"))
+def test_persist_run_config_and_args_skips_nonzero_slurm_rank(tmp_path: Path, monkeypatch, package_name: str):
+    common_mod = importlib.import_module(f"{package_name}.common")
+    for env_name in ("RANK", "SLURM_PROCID", "LOCAL_RANK", "SLURM_LOCALID"):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("SLURM_PROCID", "1")
+    config_path = tmp_path / f"{package_name}.yaml"
+    config_path.write_text("stage: 1\n")
+    exp_dir = tmp_path / package_name
+
+    common_mod.persist_run_config_and_args(
+        _args_with_config(config_path, phase="stage1"),
+        exp_dir,
+        phase_name="stage1",
+        write_root_files=True,
+    )
+
+    assert not exp_dir.exists()
 
 
 def test_persist_run_config_and_args_preserves_existing_root_files_for_stage2(tmp_path: Path):

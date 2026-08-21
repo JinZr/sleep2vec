@@ -38,6 +38,7 @@ SUCCESS_STATUSES = {"completed", "finished"}
 SOURCE_MANIFEST_SUCCESS_STATUSES = SUCCESS_STATUSES | {"skipped_test"}
 ACTIVE_STATUSES = {"launched", "running"}
 UNCERTAIN_STATUSES = {"missing_pid", "unknown_remote"}
+SOURCE_UNCERTAIN_STATUSES = UNCERTAIN_STATUSES | {"submitting", "unknown_scheduler"}
 RETRYABLE_STATUSES = {"failed", "launch_failed"}
 
 
@@ -67,7 +68,7 @@ _RUNTIME_FIELDS = {
     "batch_size",
     "seed",
 }
-_EXECUTION_FIELDS = {"gpu_pool", "gpus_per_run", "max_concurrent", "max_attempts"}
+_EXECUTION_FIELDS = {"gpu_pool", "gpus_per_run", "max_concurrent", "max_attempts", "scheduler"}
 _EVALUATION_FIELDS = {"external_test_locked", "final_test_unlocked"}
 _CHECKPOINT_POLICY_FIELDS = {
     "avg_ckpts",
@@ -232,6 +233,11 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
 
     execution = _mapping(spec, "execution")
     _reject_unknown_fields(execution, _EXECUTION_FIELDS, "execution")
+    if "scheduler" in execution:
+        scheduler = _mapping(execution, "scheduler")
+        _reject_unknown_fields(scheduler, {"type"}, "execution.scheduler")
+        if scheduler.get("type") != "direct":
+            raise ValueError("Schema v1 external evaluation supports only execution.scheduler.type=direct.")
     gpu_pool = execution.get("gpu_pool")
     if (
         not isinstance(gpu_pool, list)
@@ -504,7 +510,7 @@ def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list
             canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
         rows = [canonical[managed_run_key(run)] for run in plan["runs"]]
         statuses = [str(row.get("status") or "") for row in rows]
-        uncertain = [row["run_id"] for row in rows if row.get("status") in UNCERTAIN_STATUSES]
+        uncertain = [row["run_id"] for row in rows if row.get("status") in SOURCE_UNCERTAIN_STATUSES]
         failed = [row["run_id"] for row in rows if row.get("status") in TERMINAL_STATUSES - SUCCESS_STATUSES]
         complete = bool(rows) and all(status in SUCCESS_STATUSES for status in statuses)
         if complete:
@@ -558,7 +564,7 @@ def _execute_pipeline(
         state_status = _source_summary_status(sources)
         _update_state(pipeline_dir, status=state_status, source_states=sources)
         if state_status in {"blocked", "failed"}:
-            raise RuntimeError("External pipeline source plans are failed or have uncertain process identity.")
+            raise RuntimeError("External pipeline source plans are failed or have uncertain execution identity.")
         if state_status == "ready":
             break
         time.sleep(poll_seconds)

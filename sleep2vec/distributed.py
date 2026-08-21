@@ -6,20 +6,18 @@ import torch.distributed as dist
 def is_rank_zero_process() -> bool:
     """Return whether this process should behave as rank zero.
 
-    This helper is intentionally scoped to single-node launches. It only inspects
-    process-level `RANK` / `LOCAL_RANK` environment variables and treats missing
-    or invalid values as rank zero. Multi-node correctness is out of scope for
-    this helper; callers that need cluster-global rank semantics should use
-    `torch.distributed.get_rank()` after distributed initialization instead.
+    This helper is intentionally scoped to single-node launches. Multi-node
+    correctness is out of scope; callers that need cluster-global rank semantics
+    should use `torch.distributed.get_rank()` after distributed initialization.
     """
-    for env_name in ("RANK", "LOCAL_RANK"):
+    for env_name in ("RANK", "SLURM_PROCID", "LOCAL_RANK", "SLURM_LOCALID"):
         rank = os.environ.get(env_name)
         if rank in (None, ""):
             continue
         try:
             return int(rank) == 0
         except ValueError:
-            return True
+            continue
     return True
 
 
