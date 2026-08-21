@@ -46,6 +46,7 @@ def _frozen_job_inputs(tmp_path: Path, *, script_text: str = "#!/usr/bin/env bas
             "python": "/opt/python",
             "runtime_commit": "c" * 40,
             "module": "sleep2vec.finetune",
+            "gpus_per_run": 1,
         },
         snapshot,
     )
@@ -512,7 +513,8 @@ def test_normalize_resources_rejects_unsafe_values(field: str, value, message: s
 
 
 @pytest.mark.parametrize("whitespace", [" ", "\t"])
-def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path, whitespace: str):
+@pytest.mark.parametrize("gpus_per_run", [1, 2, 4])
+def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path, whitespace: str, gpus_per_run: int):
     run = {
         "experiment_id": "unit experiment",
         "step_id": "tune",
@@ -532,7 +534,7 @@ def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path, whitespace: 
             "memory": "64G",
             "walltime": "01:00:00",
         },
-        1,
+        gpus_per_run,
     )
     token = slurm.submit_token(run, resources, "c" * 40)
     log_path = tmp_path / f"run{whitespace}dir%j" / "slurm%A-%a.log"
@@ -550,8 +552,9 @@ def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path, whitespace: 
     )
 
     assert "#SBATCH --nodes=1" in script
-    assert "#SBATCH --ntasks=1" in script
-    assert "#SBATCH --gres=gpu:1" in script
+    assert f"#SBATCH --ntasks={gpus_per_run}" in script
+    assert f"#SBATCH --ntasks-per-node={gpus_per_run}" in script
+    assert f"#SBATCH --gres=gpu:{gpus_per_run}" in script
     assert "#SBATCH --no-requeue" in script
     assert f"#SBATCH --comment={token}" in script
     escaped_log_path = str(log_path).replace("%", "%%")
@@ -561,6 +564,7 @@ def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path, whitespace: 
     assert shlex.split(error_directive) == ["#SBATCH", f"--error={escaped_log_path}"]
     assert "agent_tools.slurm run-frozen-job" in script
     assert f"--execution-snapshot-path {tmp_path / 'execution_snapshot.json'}" in script
+    assert f"--gpus-per-run {gpus_per_run}" in script
     assert '--execution-snapshot-sha256 "${1:-}"' in script
     worker = shlex.split(next(line for line in script.splitlines() if line.startswith("exec ")))
     assert worker[worker.index("--log-path") + 1] == str(log_path)
@@ -575,6 +579,16 @@ def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, 
     kwargs, snapshot = _frozen_job_inputs(tmp_path, script_text="#!/usr/bin/env bash\necho leaf-run\n")
     monkeypatch.setenv("SLURM_JOB_ID", "3880")
     monkeypatch.setenv("SLURM_CLUSTER_NAME", "wuji-h20")
+    monkeypatch.setenv("SLURM_NTASKS", "1")
+    for env_name in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
+        monkeypatch.setenv(env_name, "ambient")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_srun = fake_bin / "srun"
+    fake_srun.write_text('#!/usr/bin/env bash\nfor arg in "$@"; do command="$arg"; done\nexec "$command"\n')
+    fake_srun.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
 
     from agent_tools import managed_scheduler
 
@@ -583,6 +597,14 @@ def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, 
     allocation_path = Path(kwargs["allocation_identity_path"])
     log_path = Path(kwargs["log_path"])
 
+    real_popen = slurm.subprocess.Popen
+    spawned = []
+
+    def record_popen(*args, **popen_kwargs):
+        spawned.append((args, popen_kwargs))
+        return real_popen(*args, **popen_kwargs)
+
+    monkeypatch.setattr(slurm.subprocess, "Popen", record_popen)
     exit_code = slurm.run_frozen_job(**kwargs)
 
     assert exit_code == 0
@@ -591,6 +613,19 @@ def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, 
     assert terminal["scheduler_cluster"] == "wuji-h20"
     assert terminal["exit_code"] == 0
     assert "leaf-run" in log_path.read_text()
+    assert len(spawned) == 1
+    assert spawned[0][0][0] == [
+        "srun",
+        "--nodes=1",
+        "--ntasks=1",
+        "--ntasks-per-node=1",
+        "--gpu-bind=none",
+        "--kill-on-bad-exit=1",
+        "--quit-on-interrupt",
+        kwargs["script"],
+    ]
+    for env_name in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
+        assert env_name not in spawned[0][1]["env"]
 
 
 @pytest.mark.parametrize(("field", "observed"), [("python", "/other/python"), ("python_version", "3.11.0")])
@@ -599,6 +634,7 @@ def test_run_frozen_job_rejects_allocation_interpreter_drift_before_spawn(
 ):
     kwargs, frozen_snapshot = _frozen_job_inputs(tmp_path)
     monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    monkeypatch.setenv("SLURM_NTASKS", "1")
 
     observed_snapshot = {**frozen_snapshot, field: observed}
     from agent_tools import managed_scheduler
@@ -622,6 +658,7 @@ def test_run_frozen_job_rejects_allocation_interpreter_drift_before_spawn(
 def test_run_frozen_job_rejects_changed_execution_snapshot_digest_before_spawn(tmp_path: Path, monkeypatch):
     kwargs, snapshot = _frozen_job_inputs(tmp_path)
     monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    monkeypatch.setenv("SLURM_NTASKS", "1")
     snapshot_path = Path(kwargs["execution_snapshot_path"])
     snapshot_path.write_text(json.dumps(snapshot, indent=2))
     from agent_tools import managed_scheduler
@@ -646,6 +683,7 @@ def test_run_frozen_job_rejects_changed_execution_snapshot_digest_before_spawn(t
 def test_run_frozen_job_does_not_spawn_after_signal_during_verification(tmp_path: Path, monkeypatch, signum: int):
     kwargs, snapshot = _frozen_job_inputs(tmp_path)
     monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    monkeypatch.setenv("SLURM_NTASKS", "1")
     handlers = {}
 
     def capture_signal(current_signum, handler):
@@ -670,3 +708,143 @@ def test_run_frozen_job_does_not_spawn_after_signal_during_verification(tmp_path
     assert spawned == []
     assert exit_code == 128 + signum
     assert json.loads(result_path.read_text())["exit_code"] == 128 + signum
+
+
+@pytest.mark.parametrize(("gpus_per_run", "slurm_ntasks"), [(0, "1"), (2, "1"), (2, "")])
+def test_run_frozen_job_rejects_invalid_allocation_task_count_before_spawn(
+    tmp_path: Path, monkeypatch, gpus_per_run: int, slurm_ntasks: str
+):
+    kwargs, snapshot = _frozen_job_inputs(tmp_path)
+    kwargs["gpus_per_run"] = gpus_per_run
+    monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    if slurm_ntasks:
+        monkeypatch.setenv("SLURM_NTASKS", slurm_ntasks)
+    else:
+        monkeypatch.delenv("SLURM_NTASKS", raising=False)
+
+    from agent_tools import managed_scheduler
+
+    inspected = []
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda *_args, **_kwargs: inspected.append(True) or snapshot,
+    )
+    spawned = []
+    monkeypatch.setattr(slurm.subprocess, "Popen", lambda *args, **popen_kwargs: spawned.append((args, popen_kwargs)))
+
+    exit_code = slurm.run_frozen_job(**kwargs)
+
+    assert exit_code == 2
+    assert inspected == []
+    assert spawned == []
+    assert not Path(kwargs["allocation_identity_path"]).exists()
+    assert json.loads(Path(kwargs["result_path"]).read_text())["exit_code"] == 2
+    assert "gpus_per_run" in Path(kwargs["log_path"]).read_text()
+
+
+def test_run_frozen_job_records_aggregate_srun_failure(tmp_path: Path, monkeypatch):
+    kwargs, snapshot = _frozen_job_inputs(tmp_path)
+    kwargs["gpus_per_run"] = 2
+    monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    monkeypatch.setenv("SLURM_NTASKS", "2")
+
+    from agent_tools import managed_scheduler
+
+    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    spawned = []
+
+    class FailedStep:
+        def wait(self):
+            return 7
+
+        def poll(self):
+            return 7
+
+    def fake_popen(*args, **popen_kwargs):
+        spawned.append((args, popen_kwargs))
+        return FailedStep()
+
+    monkeypatch.setattr(slurm.subprocess, "Popen", fake_popen)
+    created_sidecars = []
+    real_atomic_create_json = slurm._atomic_create_json
+
+    def record_sidecar(path, payload):
+        created_sidecars.append(Path(path))
+        real_atomic_create_json(path, payload)
+
+    monkeypatch.setattr(slurm, "_atomic_create_json", record_sidecar)
+
+    exit_code = slurm.run_frozen_job(**kwargs)
+
+    assert exit_code == 7
+    assert len(spawned) == 1
+    assert spawned[0][0][0] == [
+        "srun",
+        "--nodes=1",
+        "--ntasks=2",
+        "--ntasks-per-node=2",
+        "--gpu-bind=none",
+        "--kill-on-bad-exit=1",
+        "--quit-on-interrupt",
+        kwargs["script"],
+    ]
+    assert created_sidecars == [Path(kwargs["allocation_identity_path"]), Path(kwargs["result_path"])]
+    assert json.loads(Path(kwargs["result_path"]).read_text())["exit_code"] == 7
+
+
+@pytest.mark.parametrize("signum", [slurm.signal.SIGTERM, slurm.signal.SIGINT])
+def test_run_frozen_job_forwards_signal_to_active_srun_and_records_terminal_sidecar(
+    tmp_path: Path, monkeypatch, signum: int
+):
+    kwargs, snapshot = _frozen_job_inputs(tmp_path)
+    monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    monkeypatch.setenv("SLURM_NTASKS", "1")
+    handlers = {}
+
+    def capture_signal(current_signum, handler):
+        previous = handlers.get(current_signum, slurm.signal.SIG_DFL)
+        handlers[current_signum] = handler
+        return previous
+
+    monkeypatch.setattr(slurm.signal, "signal", capture_signal)
+    from agent_tools import managed_scheduler
+
+    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    sent_signals = []
+
+    class ActiveStep:
+        def wait(self):
+            handlers[signum](signum, None)
+            return -signum
+
+        def poll(self):
+            return None
+
+        def send_signal(self, child_signum):
+            sent_signals.append(child_signum)
+
+    spawned = []
+
+    def fake_popen(*args, **popen_kwargs):
+        spawned.append((args, popen_kwargs))
+        return ActiveStep()
+
+    monkeypatch.setattr(slurm.subprocess, "Popen", fake_popen)
+    created_sidecars = []
+    real_atomic_create_json = slurm._atomic_create_json
+
+    def record_sidecar(path, payload):
+        created_sidecars.append(Path(path))
+        real_atomic_create_json(path, payload)
+
+    monkeypatch.setattr(slurm, "_atomic_create_json", record_sidecar)
+
+    exit_code = slurm.run_frozen_job(**kwargs)
+
+    assert len(spawned) == 1
+    assert "--quit-on-interrupt" in spawned[0][0][0]
+    assert sent_signals == [signum]
+    assert exit_code == 128 + signum
+    assert created_sidecars == [Path(kwargs["allocation_identity_path"]), Path(kwargs["result_path"])]
+    assert json.loads(Path(kwargs["result_path"]).read_text())["exit_code"] == 128 + signum

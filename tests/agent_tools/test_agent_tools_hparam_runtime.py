@@ -60,8 +60,8 @@ def _run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
 
 
-def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None) -> Path:
-    base = write_finetune_recipe(tmp_path)
+def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None, variant: str = "sleep2vec") -> Path:
+    base = write_finetune_recipe(tmp_path, variant=variant)
     execution_payload = dict(execution) if execution is not None else {"workdir": str(tmp_path)}
     manager_runtime = (
         str(execution_payload.get("target", "local") or "local") == "local"
@@ -76,7 +76,7 @@ def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None) -> Path:
         {
             "name": "unit_hparam",
             "task": "hparam_tune",
-            "variant": "sleep2vec",
+            "variant": variant,
             "base_recipe": str(base),
             "search": {
                 "method": "grid",
@@ -376,8 +376,12 @@ def test_hparam_plan_records_monitor_owned_exit_status_contract(tmp_path: Path):
     assert MONITOR_EXIT_CODE_PREFIX in script
 
 
-def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+@pytest.mark.parametrize(
+    ("variant", "gpus_per_run"),
+    [("sleep2vec", 1), ("sleep2vec", 2), ("sleep2vec2", 2), ("sleep2expert", 2)],
+)
+def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path, variant: str, gpus_per_run: int):
+    recipe = _hparam_recipe(tmp_path, variant=variant)
     payload = yaml.safe_load(recipe.read_text())
     configured_scheduler = {
         "type": "slurm",
@@ -389,7 +393,7 @@ def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path):
     }
     payload["execution"].update(
         {
-            "gpus_per_run": 1,
+            "gpus_per_run": gpus_per_run,
             "scheduler": configured_scheduler,
         }
     )
@@ -409,7 +413,18 @@ def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path):
     assert run["scheduler_type"] == "slurm"
     assert canonical["scheduler_type"] == "slurm"
     assert Path(run["scheduler_script"]).name == "job.sbatch"
-    assert "#SBATCH --nice=0" in Path(run["scheduler_script"]).read_text()
+    scheduler_script = Path(run["scheduler_script"]).read_text()
+    assert "#SBATCH --nice=0" in scheduler_script
+    assert f"#SBATCH --ntasks={gpus_per_run}" in scheduler_script
+    assert f"#SBATCH --ntasks-per-node={gpus_per_run}" in scheduler_script
+    assert f"#SBATCH --gres=gpu:{gpus_per_run}" in scheduler_script
+    assert f"--gpus-per-run {gpus_per_run}" in scheduler_script
+    command = shlex.split(run["command"])
+    devices_index = command.index("--devices")
+    assert command[devices_index + 1 : devices_index + 1 + gpus_per_run] == [
+        str(device) for device in range(gpus_per_run)
+    ]
+    assert command[devices_index + 1 + gpus_per_run].startswith("--")
     assert "sbatch --parsable" in _read_table(plan_dir / "launch_manifest.tsv")[0]["command"]
 
 
@@ -3316,6 +3331,33 @@ def test_hparam_execution_reports_invalid_gpus_per_run(gpus_per_run):
     assert "must be a positive integer" in issues[0].message
 
 
+def test_slurm_sex_age_baseline_rejects_multi_gpu_without_changing_direct_execution():
+    scheduler = {
+        "type": "slurm",
+        "partition": "gpu",
+        "cpus_per_task": 8,
+        "memory": "64G",
+        "walltime": "01:00:00",
+    }
+
+    slurm_issues = decision_hparam._hparam_execution_issues(
+        {"gpus_per_run": 2, "scheduler": scheduler},
+        {},
+        variant="sex_age_baseline",
+    )
+    direct_issues = decision_hparam._hparam_execution_issues(
+        {"gpu_pool": [0, 1], "gpus_per_run": 2},
+        {},
+        variant="sex_age_baseline",
+    )
+
+    failures = [issue for issue in slurm_issues if issue.status.value == "FAIL"]
+    assert len(failures) == 1
+    assert failures[0].field == "execution.gpus_per_run"
+    assert "does not support multi-GPU Slurm execution" in failures[0].message
+    assert not [issue for issue in direct_issues if issue.status.value == "FAIL"]
+
+
 @pytest.mark.parametrize("gpus_per_run", [1.0, "1"])
 def test_slurm_hparam_rejects_coerced_gpu_count_before_plan_write(tmp_path: Path, gpus_per_run):
     recipe = _hparam_recipe(tmp_path)
@@ -3917,6 +3959,31 @@ def test_monitor_owned_launch_uses_shell_exit_code(tmp_path: Path, exit_code: in
 
     assert log_path.read_text().splitlines()[-1] == f"{MONITOR_EXIT_CODE_PREFIX}{exit_code}"
     assert observed["status"] == expected_status
+
+
+@pytest.mark.parametrize(("slurm_procid", "marker_count"), [("0", 1), ("1", 0)])
+def test_hparam_exit_marker_is_written_only_by_slurm_rank_zero(tmp_path: Path, slurm_procid: str, marker_count: int):
+    script = tmp_path / "launch.sh"
+    script.write_text(
+        "\n".join(
+            plan_rendering.hparam_script_lines(
+                ["exit 7"],
+                record_exit_code=True,
+                run_cwd=tmp_path,
+            )
+        )
+        + "\n"
+    )
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        text=True,
+        capture_output=True,
+        env={**os.environ, "SLURM_PROCID": slurm_procid},
+    )
+
+    assert result.returncode == 7
+    assert result.stdout.count(MONITOR_EXIT_CODE_PREFIX) == marker_count
 
 
 def test_launch_timeout_remains_nonterminal_until_process_evidence_reconciles(monkeypatch):
@@ -4539,7 +4606,18 @@ def test_hparam_plan_rejects_environment_semantic_aliases(tmp_path: Path, env_na
 
 
 @pytest.mark.parametrize(
-    "env_name", ["SLURM_JOB_ID", "SLURM_CLUSTER_NAME", "SLURM_ARRAY_TASK_ID", "CUDA_VISIBLE_DEVICES"]
+    "env_name",
+    [
+        "SLURM_JOB_ID",
+        "SLURM_CLUSTER_NAME",
+        "SLURM_ARRAY_TASK_ID",
+        "CUDA_VISIBLE_DEVICES",
+        "RANK",
+        "LOCAL_RANK",
+        "WORLD_SIZE",
+        "MASTER_ADDR",
+        "MASTER_PORT",
+    ],
 )
 def test_slurm_hparam_rejects_scheduler_owned_environment_before_plan_write(tmp_path: Path, env_name: str):
     recipe = _hparam_recipe(tmp_path)

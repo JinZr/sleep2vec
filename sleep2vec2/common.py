@@ -10,6 +10,7 @@ import typing as t
 import yaml
 
 from sleep2vec2.config import DATA_BACKEND_CHOICES, FinetuneConfig, ModelConfig, TaskConfig, load_finetune_config
+from sleep2vec2.distributed import is_rank_zero_process
 
 _BUILTIN_TASK_SPECS = {
     "stage3": {
@@ -183,6 +184,8 @@ def persist_run_config_and_args(
     phase_name: str | None = None,
     write_root_files: bool = True,
 ) -> None:
+    if not is_rank_zero_process():
+        return
     exp_dir.mkdir(parents=True, exist_ok=True)
     config_src = Path(args.config)
 

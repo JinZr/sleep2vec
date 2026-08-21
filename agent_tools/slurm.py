@@ -44,6 +44,7 @@ class SlurmCommandError(RuntimeError):
 
 
 RESOURCE_FIELDS = {"type", "partition", "cpus_per_task", "memory", "walltime", "nice", "nodelist"}
+_DISTRIBUTED_ENV_FIELDS = {"RANK", "LOCAL_RANK", "WORLD_SIZE"}
 
 
 def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> dict[str, Any]:
@@ -117,7 +118,8 @@ def render_batch_script(
         f"#SBATCH --job-name={job_name}",
         f"#SBATCH --partition={resources['partition']}",
         "#SBATCH --nodes=1",
-        "#SBATCH --ntasks=1",
+        f"#SBATCH --ntasks={resources['gpus_per_run']}",
+        f"#SBATCH --ntasks-per-node={resources['gpus_per_run']}",
         f"#SBATCH --cpus-per-task={resources['cpus_per_task']}",
         f"#SBATCH --mem={resources['memory']}",
         f"#SBATCH --time={resources['walltime']}",
@@ -166,6 +168,8 @@ def render_batch_script(
         execution["runtime_commit"],
         "--module",
         module,
+        "--gpus-per-run",
+        resources["gpus_per_run"],
     ]
     worker_command = " ".join(transport.sh(part) for part in worker)
     return "\n".join(
@@ -202,9 +206,11 @@ def run_frozen_job(
     python: str,
     runtime_commit: str,
     module: str,
+    gpus_per_run: int,
 ) -> int:
     started_at = _utc_now()
     job_id = _job_id(os.environ.get("SLURM_JOB_ID", ""))
+    expected_tasks = gpus_per_run
     cluster = str(os.environ.get("SLURM_CLUSTER_NAME") or "")
     node = socket.gethostname()
     child: subprocess.Popen | None = None
@@ -224,6 +230,13 @@ def run_frozen_job(
         with log_target.open("a") as log:
             try:
                 from .managed_scheduler import inspect_execution_target
+
+                expected_tasks = _positive_int(expected_tasks, "gpus_per_run")
+                if os.environ.get("SLURM_NTASKS") != str(expected_tasks):
+                    raise ValueError(
+                        f"Slurm allocation task count must equal gpus_per_run={expected_tasks}; "
+                        f"observed SLURM_NTASKS={os.environ.get('SLURM_NTASKS')!r}."
+                    )
 
                 for path, expected in ((script, script_sha256), (config, config_sha256)):
                     artifact = Path(path)
@@ -278,10 +291,23 @@ def run_frozen_job(
                             "execution_snapshot": snapshot,
                         },
                     )
+                    child_env = os.environ.copy()
+                    for env_name in tuple(child_env):
+                        if env_name in _DISTRIBUTED_ENV_FIELDS or env_name.startswith("MASTER_"):
+                            child_env.pop(env_name)
                     child = subprocess.Popen(
-                        [script],
+                        [
+                            "srun",
+                            "--nodes=1",
+                            f"--ntasks={expected_tasks}",
+                            f"--ntasks-per-node={expected_tasks}",
+                            "--gpu-bind=none",
+                            "--kill-on-bad-exit=1",
+                            "--quit-on-interrupt",
+                            script,
+                        ],
                         cwd=workdir,
-                        env=os.environ.copy(),
+                        env=child_env,
                         stdout=log,
                         stderr=subprocess.STDOUT,
                         start_new_session=False,
@@ -775,6 +801,7 @@ def _main(argv: list[str] | None = None) -> int:
         "module",
     ):
         worker.add_argument(f"--{name.replace('_', '-')}", required=True)
+    worker.add_argument("--gpus-per-run", required=True, type=int)
     args = parser.parse_args(argv)
     payload = vars(args)
     payload.pop("command_name")

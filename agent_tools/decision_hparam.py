@@ -371,7 +371,14 @@ def hparam_tune_issues(
         issues.append(needs_issue("hparam_search_space", "search.parameters is required.", high_impact))
     else:
         issues.extend(_hparam_search_parameter_issues(search.get("parameters")))
-    issues.extend(_hparam_execution_issues(execution, runtime, local_runtime=local_runtime))
+    issues.extend(
+        _hparam_execution_issues(
+            execution,
+            runtime,
+            local_runtime=local_runtime,
+            variant=str(recipe.get("variant") or ""),
+        )
+    )
     issues.extend(_hparam_adaptive_issues(adaptive))
     max_runs = search.get("max_runs")
     if max_runs in (None, ""):
@@ -437,6 +444,7 @@ def _hparam_execution_issues(
     runtime: dict[str, Any],
     *,
     local_runtime: dict[str, Any] | None = None,
+    variant: str = "",
 ) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
     scheduler = execution.get("scheduler") if "scheduler" in execution else {"type": "direct"}
@@ -655,6 +663,16 @@ def _hparam_execution_issues(
             )
         else:
             gpus_per_run = raw_gpus_per_run
+    if is_slurm and variant == "sex_age_baseline" and gpus_per_run is not None and gpus_per_run > 1:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.gpus_per_run",
+                "sex_age_baseline does not support multi-GPU Slurm execution.",
+                None,
+                {"gpus_per_run": gpus_per_run, "variant": variant, "preflight_before_workspace": True},
+            )
+        )
     if is_slurm and isinstance(scheduler, dict) and not (set(scheduler) - _HPARAM_SCHEDULER_FIELDS):
         try:
             slurm.normalize_resources(scheduler, gpus_per_run if gpus_per_run is not None else 1)
@@ -744,7 +762,12 @@ def _hparam_execution_issues(
             if (
                 isinstance(env_name, str)
                 and is_slurm
-                and (env_name.startswith("SLURM_") or env_name == "CUDA_VISIBLE_DEVICES")
+                and (
+                    env_name.startswith("SLURM_")
+                    or env_name == "CUDA_VISIBLE_DEVICES"
+                    or env_name in {"RANK", "LOCAL_RANK", "WORLD_SIZE"}
+                    or env_name.startswith("MASTER_")
+                )
             ):
                 issues.append(
                     DecisionIssue(
