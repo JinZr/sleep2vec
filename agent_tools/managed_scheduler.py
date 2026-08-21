@@ -569,6 +569,8 @@ def _launch_managed_runs(
             runs,
             execution,
             dry_run=dry_run,
+            runtime_output_fields=runtime_output_fields,
+            runtime_output_root=runtime_output_root,
             projection_writer=projection_writer,
             hooks=hooks,
         )
@@ -939,6 +941,8 @@ def _launch_slurm_runs(
     execution: dict[str, Any],
     *,
     dry_run: bool,
+    runtime_output_fields: tuple[str, ...],
+    runtime_output_root: str | Path | None,
     projection_writer: Callable[[LaunchResult], None] | None,
     hooks: SchedulerHooks,
 ) -> LaunchResult:
@@ -1027,6 +1031,18 @@ def _launch_slurm_runs(
     execution_snapshot_sha256 = ""
     if launchable and not dry_run:
         remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
+        runtime_roots = [
+            Path(str(run[field]))
+            for run in launchable
+            for field in runtime_output_fields
+            if run.get(field) not in (None, "")
+        ]
+        runtime_root = (
+            Path(runtime_output_root)
+            if runtime_output_root is not None
+            else Path(str(execution.get("workdir") or REPO_ROOT))
+        )
+        exp_io.validate_managed_output_paths(runtime_root, runtime_roots, remote=remote)
         frozen_paths = [
             Path(str(run[field]))
             for run in launchable

@@ -109,7 +109,12 @@ def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None, variant: st
     )
 
 
-def _write_slurm_plan(tmp_path: Path, *, run_count: int = 1) -> tuple[Path, dict]:
+def _write_slurm_plan(
+    tmp_path: Path,
+    *,
+    run_count: int = 1,
+    execution: dict | None = None,
+) -> tuple[Path, dict]:
     recipe_path = _hparam_recipe(tmp_path)
     if run_count > 1:
         payload = yaml.safe_load(recipe_path.read_text())
@@ -133,6 +138,7 @@ def _write_slurm_plan(tmp_path: Path, *, run_count: int = 1) -> tuple[Path, dict
             },
         }
     )
+    recipe["execution"].update(execution or {})
     source_config = (source_plan_dir / "config.source.yaml").read_bytes()
     plan_dir = tmp_path / "slurm-plan"
     plan_hparam.write_hparam_plan(
@@ -728,6 +734,61 @@ def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: 
     assert all(row["gpus"] == "" for row in rows)
     assert all(row["pid"] == "" and row["process_group_id"] == "" for row in rows)
     assert all("--devices 0" in Path(run["script"]).read_text() for run in plan["runs"])
+
+
+@pytest.mark.parametrize("field", ["runtime_dir", "checkpoint_dir"])
+def test_slurm_launch_rejects_existing_local_runtime_output_before_submission(tmp_path: Path, monkeypatch, field: str):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    Path(run[field]).mkdir(parents=True)
+    submitted = []
+    monkeypatch.setattr(managed_scheduler.slurm, "submit", lambda *_args, **_kwargs: submitted.append(True))
+
+    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert submitted == []
+    assert canonical["status"] in {"planned", "pending"}
+    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+
+
+def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(
+        tmp_path,
+        execution={"target": "ssh", "host": "offline-host", "workdir": str(tmp_path)},
+    )
+    run = plan["runs"][0]
+    checkpoint_dir = Path(run["checkpoint_dir"])
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+    remote_probes = []
+
+    def reject_remote_checkpoint(root, paths, remote=None):
+        if remote:
+            remote_probes.append((Path(root), list(paths), remote))
+            if checkpoint_dir in paths:
+                raise ValueError(f"Managed output paths must be independent regular files: {checkpoint_dir}")
+            return None
+        return real_validate(root, paths)
+
+    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", reject_remote_checkpoint)
+    submitted = []
+    monkeypatch.setattr(managed_scheduler.slurm, "submit", lambda *_args, **_kwargs: submitted.append(True))
+
+    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert remote_probes == [
+        (
+            tmp_path,
+            [Path(run["runtime_dir"]), checkpoint_dir],
+            "offline-host",
+        )
+    ]
+    assert submitted == []
+    assert canonical["status"] in {"planned", "pending"}
+    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
 
 
 def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypatch):
