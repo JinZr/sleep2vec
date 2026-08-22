@@ -24,6 +24,7 @@ from .experiment_workspace import (
     merge_run_manifest,
     merge_run_row,
     read_run_manifest,
+    scheduler_direct_controller,
     scheduler_type,
     validate_frozen_run_update,
     write_status_report,
@@ -284,7 +285,6 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
     root = Path(run_dir)
     plan = artifacts.read_hparam_plan(root)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     expected_keys = {managed_run_key(run) for run in plan["runs"]}
     status_path = root / "run_status.tsv"
     workspace = experiment_root(recipe)
@@ -317,6 +317,11 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
             rows.append(prior)
             continue
         if scheduler_type(prior) == "slurm":
+            execution = {"target": prior["target"]}
+            if prior["target"] == "ssh":
+                execution["host"] = prior["host"]
+            if scheduler_direct_controller(prior):
+                execution["scheduler"] = {"direct_controller": True}
             rows.append(scheduler.observe_slurm_run(root, execution, prior, health=health))
         else:
             rows.append(
@@ -429,11 +434,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         if target == "ssh" and (not isinstance(host, str) or not host.strip()):
             raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
         execution = {"target": target, "host": host}
-        recipe_execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-        recipe_scheduler = (
-            recipe_execution.get("scheduler") if isinstance(recipe_execution.get("scheduler"), dict) else {}
-        )
-        if recipe_scheduler.get("direct_controller") is True:
+        if scheduler_direct_controller(previous):
             execution["scheduler"] = {"direct_controller": True}
 
         if backend == "slurm":

@@ -396,6 +396,41 @@ def test_slurm_plan_freezes_controller_topology(tmp_path: Path, direct_controlle
     assert canonical["scheduler_direct_controller"] == expected
 
 
+@pytest.mark.parametrize("direct_controller", [False, True])
+def test_hparam_monitor_uses_canonical_slurm_controller_topology(
+    tmp_path: Path,
+    monkeypatch,
+    direct_controller: bool,
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=direct_controller)
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    recipe_scheduler = plan["recipe"]["execution"]["scheduler"]
+    if direct_controller:
+        recipe_scheduler.pop("direct_controller")
+    else:
+        recipe_scheduler["direct_controller"] = True
+    monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda _path: plan)
+    observed_executions = []
+
+    def observe_slurm_run(_root, execution, row, *, health=False):
+        observed_executions.append(execution)
+        return row
+
+    monkeypatch.setattr(managed_scheduler, "observe_slurm_run", observe_slurm_run)
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    execution = {"target": "local"}
+    if direct_controller:
+        execution["scheduler"] = {"direct_controller": True}
+    assert observed_executions == [execution]
+
+
 @pytest.mark.parametrize(
     ("variant", "gpus_per_run"),
     [("sleep2vec", 1), ("sleep2vec", 2), ("sleep2vec2", 2), ("sleep2expert", 2)],
@@ -1487,6 +1522,12 @@ def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch, dir
         lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
     )
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    recipe_scheduler = plan["recipe"]["execution"]["scheduler"]
+    if direct_controller:
+        recipe_scheduler.pop("direct_controller")
+    else:
+        recipe_scheduler["direct_controller"] = True
+    monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda _path: plan)
     cancelled = []
     monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-21T03:40:00Z")
 
