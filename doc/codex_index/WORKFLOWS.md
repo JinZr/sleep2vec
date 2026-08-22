@@ -219,9 +219,13 @@ trial/checkpoint pairs by the frozen `test_*` metric. The exact winning path and
 SHA-256 are frozen; the many-checkpoint audit remains plan-local while workspace
 reports retain one row per managed run. Plans registered under one step may be
 aggregated only when their frozen selection metric, mode, and split all match.
-Adaptive test-selected digests, incumbents, proposals, and metric-based
-replacement use that same complete checkpoint-level objective evidence;
-top-level test metrics remain evidence for the validation-best checkpoint.
+Finetune runtimes reject non-empty version directories before persistence or
+fit, and publish aggregate result rows for an all-checkpoint test only after the
+complete matrix succeeds, using one locked atomic replacement.
+Adaptive test-selected `test_*` objectives use complete checkpoint-level
+evidence even when they differ from the static selection metric. Validation and
+run-level objectives such as `val_*` and `best_model_score` retain top-level
+evidence.
 
 Direct `infer` and `evaluate` plans targeting `eval_split=test` require both
 `external_test_locked=false` and `final_test_unlocked=true`. Other splits do
