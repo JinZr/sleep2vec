@@ -365,6 +365,9 @@ def _write_checkpoint_test_manifest(
     *,
     scores: dict[int, float],
     top_level_score: float,
+    extra_checkpoint_metrics: dict[str, dict[int, float]] | None = None,
+    extra_top_level_metrics: dict[str, float] | None = None,
+    best_model_score: float = 0.5,
 ) -> tuple[dict, dict[int, Path]]:
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     launched = _run("hparam-launch", "--plan-dir", str(round_dir))
@@ -382,16 +385,26 @@ def _write_checkpoint_test_manifest(
                 "version": run["version"],
                 "monitor": "val_ahi_pearson",
                 "monitor_mode": "max",
-                "best_model_score": 0.5,
+                "best_model_score": best_model_score,
                 "best_model_path": str(checkpoint_dir / "best-epoch=1.ckpt"),
                 "epoch": 1,
-                "metrics": {"val_ahi_pearson": 0.5, "test_auroc": top_level_score},
+                "metrics": {
+                    "val_ahi_pearson": 0.5,
+                    "test_auroc": top_level_score,
+                    **(extra_top_level_metrics or {}),
+                },
                 "test_all_checkpoints_after_fit": True,
                 "checkpoint_test_results": [
                     {
                         "checkpoint_path": str(checkpoints[epoch]),
                         "epoch": epoch,
-                        "metrics": {"test_auroc": score},
+                        "metrics": {
+                            "test_auroc": score,
+                            **{
+                                metric: metric_scores[epoch]
+                                for metric, metric_scores in (extra_checkpoint_metrics or {}).items()
+                            },
+                        },
                     }
                     for epoch, score in scores.items()
                 ],
@@ -2329,6 +2342,69 @@ def test_val_selected_adaptive_digest_keeps_top_level_objective_and_validation_c
     assert row["test_auroc"] == "0.73"
     assert row["checkpoint_path"] == str(checkpoints[1])
     assert row["epoch"] == "1"
+
+
+def test_test_selected_adaptive_distinct_test_objective_uses_checkpoint_evidence(tmp_path: Path):
+    recipe = _test_selected_adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"].update({"objective_metric": "test_loss", "objective_mode": "min"})
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    run, checkpoints = _write_checkpoint_test_manifest(
+        workflow_dir,
+        scores={1: 0.5, 2: 0.9, 3: 0.8},
+        top_level_score=0.99,
+        extra_checkpoint_metrics={"test_loss": {1: 0.4, 2: 0.2, 3: 0.2}},
+        extra_top_level_metrics={"test_loss": 0.01},
+    )
+    _mark_round_terminal(workflow_dir, tmp_path)
+
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+
+    assert input_path is not None
+    digest_row = _read_table(workflow_dir / "adaptive" / "digests" / "round_000.csv")[0]
+    assert digest_row["test_loss"] == "0.2"
+    assert digest_row["checkpoint_path"] == str(checkpoints[2])
+    assert digest_row["epoch"] == "2"
+    incumbent = _read_table(workflow_dir / "adaptive" / "incumbents.tsv")[-1]
+    assert incumbent["run_id"] == run["run_id"]
+    assert incumbent["objective_score"] == "0.2"
+    assert incumbent["checkpoint_path"] == str(checkpoints[2])
+    proposal_row = json.loads(input_path.read_text())["input"]["digest_rows"][0]
+    assert proposal_row["test_loss"] == "0.2"
+    assert proposal_row["checkpoint_path"] == str(checkpoints[2])
+
+
+def test_test_selected_adaptive_run_level_objective_keeps_top_level_evidence(tmp_path: Path):
+    recipe = _test_selected_adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"].update({"objective_metric": "best_model_score", "objective_mode": "max"})
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    run, checkpoints = _write_checkpoint_test_manifest(
+        workflow_dir,
+        scores={1: 0.2, 2: 0.9},
+        top_level_score=0.99,
+        best_model_score=0.73,
+    )
+    _mark_round_terminal(workflow_dir, tmp_path)
+
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+
+    assert input_path is not None
+    digest_row = _read_table(workflow_dir / "adaptive" / "digests" / "round_000.csv")[0]
+    assert digest_row["best_model_score"] == "0.73"
+    assert digest_row["checkpoint_path"] == str(checkpoints[1])
+    assert digest_row["epoch"] == "1"
+    incumbent = _read_table(workflow_dir / "adaptive" / "incumbents.tsv")[-1]
+    assert incumbent["run_id"] == run["run_id"]
+    assert incumbent["objective_score"] == "0.73"
+    assert incumbent["checkpoint_path"] == str(checkpoints[1])
+    proposal_row = json.loads(input_path.read_text())["input"]["digest_rows"][0]
+    assert proposal_row["best_model_score"] == "0.73"
+    assert proposal_row["checkpoint_path"] == str(checkpoints[1])
 
 
 def test_adaptive_digest_uses_canonical_status_not_runtime_manifest(tmp_path: Path):
@@ -4580,6 +4656,85 @@ def test_test_selected_running_replacement_requires_complete_checkpoint_objectiv
     log_path.parent.mkdir()
     log_path.write_text("Traceback\nRuntimeError: failed\n" if evidence_case == "log-failure" else "still training\n")
     (workflow_dir / "adaptive" / "incumbents.tsv").write_text(f"objective_score\n{incumbent_score}\n")
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "status": "running",
+                "log_path": str(log_path),
+                "launched_at": "2000-01-01T00:00:00Z",
+            }
+        ],
+    )
+
+    bad_keys = adaptive_hparam._bad_running_run_keys(
+        workflow_dir,
+        round_dir,
+        adaptive_hparam.load_recipe_with_base(recipe),
+    )
+
+    expected = {(run["step_id"], run["run_id"])} if expected_bad else set()
+    assert bad_keys == expected
+
+
+@pytest.mark.parametrize(
+    ("objective_metric", "objective_mode", "checkpoint_scores", "top_level_score", "incumbent", "expected_bad"),
+    [
+        ("test_loss", "min", (0.1, 0.2), 0.9, 0.4, False),
+        ("test_loss", "min", (0.5, 0.6), 0.1, 0.4, True),
+        ("best_model_score", "max", (0.1, 0.2), 0.9, 0.73, False),
+        ("best_model_score", "max", (0.9, 0.8), 0.5, 0.73, True),
+    ],
+)
+def test_test_selected_running_replacement_distinguishes_checkpoint_and_run_level_objectives(
+    tmp_path: Path,
+    objective_metric: str,
+    objective_mode: str,
+    checkpoint_scores: tuple[float, float],
+    top_level_score: float,
+    incumbent: float,
+    expected_bad: bool,
+):
+    recipe = _test_selected_adaptive_recipe(tmp_path, strategy="best_neighborhood", max_rounds=1)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"].update({"objective_metric": objective_metric, "objective_mode": objective_mode})
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    checkpoint_dir = Path(run["checkpoint_dir"])
+    checkpoint_dir.mkdir(parents=True)
+    checkpoints = [checkpoint_dir / "epoch=1.ckpt", checkpoint_dir / "epoch=2.ckpt"]
+    for checkpoint in checkpoints:
+        checkpoint.write_text(checkpoint.name)
+    manifest = {
+        "epoch": 2,
+        "best_model_score": top_level_score if objective_metric == "best_model_score" else 0.5,
+        "metrics": {
+            "test_auroc": 0.99,
+            **({"test_loss": top_level_score} if objective_metric == "test_loss" else {}),
+        },
+        "test_all_checkpoints_after_fit": True,
+        "checkpoint_test_results": [
+            {
+                "checkpoint_path": str(checkpoint),
+                "epoch": epoch,
+                "metrics": {
+                    "test_auroc": 0.99 - epoch * 0.01,
+                    **({"test_loss": score} if objective_metric == "test_loss" else {}),
+                },
+            }
+            for checkpoint, epoch, score in zip(checkpoints, (1, 2), checkpoint_scores)
+        ],
+    }
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(json.dumps(manifest))
+    log_path = round_dir / "logs" / "run-000.log"
+    log_path.parent.mkdir()
+    log_path.write_text("still training\n")
+    (workflow_dir / "adaptive" / "incumbents.tsv").write_text(f"objective_score\n{incumbent}\n")
     merge_run_manifest(
         tmp_path,
         [

@@ -256,8 +256,8 @@ def _digest_rows(
         }
         row.update(managed_run_parameters(run))
         row.update(_manifest_metrics(manifest))
-        if selection_split == "test":
-            # Top-level test metrics describe the validation-best checkpoint; test selection uses checkpoint evidence.
+        if selection_split == "test" and objective["metric"].startswith("test_"):
+            # Every test_* objective changes checkpoint identity; validation/run-level objectives stay top-level.
             row.pop(objective["metric"], None)
             row.pop("epoch", None)
             row["checkpoint_path"] = ""
@@ -1990,7 +1990,7 @@ def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -
             observed_artifacts = evidence.runtime_artifacts(row)
             if observed_artifacts is not None:
                 _manifest_path, data, checkpoint_names = observed_artifacts
-        if selection_split == "test":
+        if selection_split == "test" and objective["metric"].startswith("test_"):
             checkpoint_objective = _test_checkpoint_objective(
                 data,
                 objective,
@@ -1999,7 +1999,7 @@ def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -
             )
             score = checkpoint_objective["score"] if checkpoint_objective is not None else None
         else:
-            score = artifacts.metric_value(data, objective["metric"])
+            score = _manifest_metrics(data).get(objective["metric"], artifacts.metric_value(data, objective["metric"]))
         if (
             not should_stop
             and incumbent is not None
