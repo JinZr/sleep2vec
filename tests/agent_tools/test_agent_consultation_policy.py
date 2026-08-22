@@ -545,6 +545,89 @@ def test_hparam_tune_selection_split_test_requires_trial_test_metrics(
         assert "selection_split=test requires test_after_fit=true" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("runtime_interval", "search_space", "max_runs", "expected_exit"),
+    [
+        (None, {"parameters": {"runtime.lr": [1e-6]}}, 1, 0),
+        (1, {"parameters": {"runtime.lr": [1e-6]}}, 1, 0),
+        (2, {"parameters": {"runtime.lr": [1e-6]}}, 1, 1),
+        (2, {"parameters": {"runtime.ckpt_every_n_epochs": [1]}}, 1, 0),
+        (1, {"parameters": {"runtime.ckpt_every_n_epochs": [1, 2]}}, 1, 0),
+        (1, {"parameters": {"runtime.ckpt_every_n_epochs": [1, 2]}}, 2, 1),
+        (
+            2,
+            {
+                "configurations": [
+                    {"runtime.ckpt_every_n_epochs": 1},
+                    {"runtime.ckpt_every_n_epochs": 2},
+                ]
+            },
+            1,
+            0,
+        ),
+        (
+            1,
+            {
+                "configurations": [
+                    {"runtime.ckpt_every_n_epochs": 1},
+                    {"runtime.ckpt_every_n_epochs": 2},
+                ]
+            },
+            2,
+            1,
+        ),
+    ],
+)
+def test_hparam_tune_test_selection_requires_every_epoch_checkpoint(
+    tmp_path: Path,
+    runtime_interval: int | None,
+    search_space: dict,
+    max_runs: int,
+    expected_exit: int,
+):
+    recipe = {
+        "name": "unit_tune",
+        "task": "hparam_tune",
+        "variant": "sleep2vec",
+        "base_recipe": str(write_finetune_recipe(tmp_path)),
+        "search": {"method": "grid", "max_runs": max_runs, **search_space},
+        "evaluation_policy": {
+            "selection_metric": "test_ahi_pearson",
+            "selection_mode": "max",
+            "selection_split": "test",
+            "external_test_locked": False,
+            "test_after_fit": True,
+            "final_eval_split": "test",
+            "final_test_unlocked": False,
+            "require_manual_unlock_for_final_test": True,
+        },
+        "decisions": {
+            "task": {"value": "hparam_tune", "source": "explicit_recipe"},
+            "label_name": {"value": "ahi", "source": "explicit_recipe"},
+            "external_test_locked": {"value": False, "source": "explicit_recipe"},
+            "test_after_fit": {"value": True, "source": "explicit_recipe"},
+            "train_val_test_policy": {"value": "test", "source": "explicit_recipe"},
+            "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+            "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
+        },
+    }
+    if runtime_interval is not None:
+        recipe["runtime"] = {"ckpt_every_n_epochs": runtime_interval}
+
+    result = _run(
+        "doctor",
+        "--recipe",
+        str(write_yaml(tmp_path / "tune.yaml", recipe)),
+        "--output-dir",
+        str(tmp_path / "doctor"),
+        cwd=Path.cwd(),
+    )
+
+    assert result.returncode == expected_exit
+    if expected_exit == 1:
+        assert "selection_split=test requires effective runtime.ckpt_every_n_epochs=1" in result.stdout
+
+
 @pytest.mark.parametrize("selection_metric", ["val_ahi_pearson", 1, []])
 def test_hparam_tune_test_selection_rejects_non_test_metric(tmp_path: Path, selection_metric: object):
     recipe = {

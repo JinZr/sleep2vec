@@ -35,7 +35,7 @@ execution:
 - `python -m agent_tools hparam-adaptive-step --workflow-dir <dir> --proposal <submission.json>`
 
 ## Decision checklist
-Confirm the static tuning selection split/metric/mode, the default test-after-fit behavior or an explicit opt-out, namespaced `runtime.*` or `yaml:/...` search keys, generated config directory, unique version names, execution target and required Python/commit identity, scheduler type and resources, GPU assignment, W&B project/group, log and lifecycle identity locations, direct max concurrency when applicable, final-test unlock state, and whether the run is explicitly external-optimized adaptive tuning. Test-selected tuning must use `selection_split: test`, `external_test_locked: false`, and `test_after_fit: true`. For `agent_proposal`, also confirm the numeric authorization bounds and that terminal-only rounds, disabled replacement, and an external two-phase agent driver are intended.
+Confirm the static tuning selection split/metric/mode, the default test-after-fit behavior or an explicit opt-out, namespaced `runtime.*` or `yaml:/...` search keys, generated config directory, unique version names, execution target and required Python/commit identity, scheduler type and resources, GPU assignment, W&B project/group, log and lifecycle identity locations, direct max concurrency when applicable, final-test unlock state, and whether the run is explicitly external-optimized adaptive tuning. Test-selected tuning must use `selection_split: test`, `external_test_locked: false`, `test_after_fit: true`, and effective `runtime.ckpt_every_n_epochs: 1` for every trial. For `agent_proposal`, also confirm the numeric authorization bounds and that terminal-only rounds, disabled replacement, and an external two-phase agent driver are intended.
 
 ## Stop-and-consult gates
 The agent must stop and ask the user before continuing if any high-impact decision is missing, ambiguous, conflicting, or marked as `ASK_USER`.
@@ -48,6 +48,7 @@ Stop and consult the user if:
 - `selection_metric` or `selection_mode` is missing.
 - `external_test_locked` is missing.
 - `selection_split` is test while test access remains locked or `test_after_fit` is false.
+- `selection_split` is test while any trial has effective `runtime.ckpt_every_n_epochs` other than `1`.
 - `test_after_fit=true` while `external_test_locked=true`.
 - Final test evaluation is requested without explicit unlock.
 - `execution.target=ssh` is requested without a host.

@@ -503,7 +503,24 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
     assert "--wandb-mode" not in script
 
 
-def test_sex_age_baseline_hparam_test_selection_uses_policy_default(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("runtime_interval", "search_intervals", "max_runs", "expected_exit"),
+    [
+        (None, None, 1, 0),
+        (1, None, 1, 0),
+        (2, None, 1, 1),
+        (2, [1], 1, 0),
+        (1, [1, 2], 1, 0),
+        (1, [1, 2], 2, 1),
+    ],
+)
+def test_sex_age_baseline_hparam_test_selection_requires_every_epoch_checkpoint(
+    tmp_path: Path,
+    runtime_interval: int | None,
+    search_intervals: list[int] | None,
+    max_runs: int,
+    expected_exit: int,
+):
     config = _write_survival_config(tmp_path)
     recipe = _hparam_recipe(tmp_path, config)
     payload = yaml.safe_load(recipe.read_text())
@@ -517,12 +534,27 @@ def test_sex_age_baseline_hparam_test_selection_uses_policy_default(tmp_path: Pa
     payload["evaluation_policy"].pop("test_after_fit")
     payload["decisions"]["external_test_locked"] = {"value": False, "source": "explicit_recipe"}
     payload["decisions"]["train_val_test_policy"] = {"value": "test", "source": "explicit_recipe"}
+    if runtime_interval is not None:
+        payload.setdefault("runtime", {})["ckpt_every_n_epochs"] = runtime_interval
+    if search_intervals is not None:
+        payload["search"] = {
+            "method": "grid",
+            "max_runs": max_runs,
+            "parameters": {"runtime.ckpt_every_n_epochs": search_intervals},
+        }
     _write_yaml(recipe, payload)
     plan_dir = tmp_path / "plan-hparam-test-selection"
 
     report = build_plan(recipe_path=recipe, output_dir=plan_dir)
 
-    assert report.exit_code == 0
+    assert report.exit_code == expected_exit
+    if expected_exit == 1:
+        assert any(
+            "selection_split=test requires effective runtime.ckpt_every_n_epochs=1" in issue.message
+            for issue in report.issues
+        )
+        assert not (plan_dir / "plan.json").exists()
+        return
     scripts = list((plan_dir / "runs").glob("run-000--*/launch.sh"))
     assert len(scripts) == 1
     script = scripts[0].read_text()

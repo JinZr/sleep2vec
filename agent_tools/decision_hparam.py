@@ -427,6 +427,42 @@ def hparam_tune_issues(
                 {"evaluation_policy": evaluation},
             )
         )
+    if selection_split == "test":
+        parameters = search.get("parameters")
+        search_space_is_plannable = (
+            search.get("method") == "grid"
+            and type(max_runs) is int
+            and max_runs > 0
+            and not ("configurations" in search and "parameters" in search)
+            and (
+                isinstance(configurations, list)
+                and bool(configurations)
+                and all(isinstance(point, dict) and point for point in configurations)
+                or isinstance(parameters, dict)
+                and bool(parameters)
+                and all(isinstance(values, list) and values for values in parameters.values())
+            )
+        )
+        if search_space_is_plannable:
+            from .plan_hparam import hparam_combos
+
+            checkpoint_intervals = [
+                combo.get("runtime.ckpt_every_n_epochs", runtime.get("ckpt_every_n_epochs", 1))
+                for combo in hparam_combos(recipe)
+            ]
+        else:
+            checkpoint_intervals = []
+        # Early stopping can occur before a wider interval fires, so test-selected tuning must save every epoch.
+        if any(type(interval) is not int or interval != 1 for interval in checkpoint_intervals):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "runtime.ckpt_every_n_epochs",
+                    "selection_split=test requires effective runtime.ckpt_every_n_epochs=1 for every trial.",
+                    None,
+                    {"effective_values": checkpoint_intervals},
+                )
+            )
     if type(test_after_fit) is not bool:
         issues.append(
             DecisionIssue(
