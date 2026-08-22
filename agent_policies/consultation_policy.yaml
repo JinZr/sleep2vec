@@ -4,6 +4,11 @@ task_defaults:
       value: true
       source: policy_default
       meaning: Run the configured test split after fit unless the recipe or user explicitly opts out.
+  hparam_tune:
+    test_after_fit:
+      value: true
+      source: policy_default
+      meaning: Run the configured test split after each trial unless the recipe or user explicitly opts out.
 
 high_impact_fields:
   - id: task
@@ -28,7 +33,7 @@ high_impact_fields:
 
   - id: selection_metric
     required_for_tasks: ["finetune", "hparam_tune"]
-    question: "Which validation metric should be used to select the best checkpoint or best run?"
+    question: "Which metric should be used to select the best checkpoint or best run?"
 
   - id: selection_mode
     required_for_tasks: ["finetune", "hparam_tune"]

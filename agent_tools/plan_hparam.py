@@ -285,6 +285,7 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     selection_metric = evaluation.get("selection_metric")
+    selection_split = evaluation.get("selection_split")
     if "selection_metric" in evaluation and selection_metric in (None, ""):
         return [
             DecisionIssue(
@@ -328,23 +329,29 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
             data = run_config.get("data") if isinstance(run_config.get("data"), dict) else {}
             finetune = run_config.get("finetune") if isinstance(run_config.get("finetune"), dict) else {}
             task = finetune.get("task") if isinstance(finetune.get("task"), dict) else {}
-            for field, (decision_value, config_value, config_field) in {
+            config_contract = {
                 "data_backend": (
                     data_backend,
                     data.get("backend") or "npz",
                     "data.backend",
                 ),
-                "selection_metric": (
-                    selection_metric,
-                    task.get("monitor"),
-                    "finetune.task.monitor",
-                ),
-                "selection_mode": (
-                    selection_mode,
-                    task.get("monitor_mod"),
-                    "finetune.task.monitor_mod",
-                ),
-            }.items():
+            }
+            if selection_split != "test":
+                config_contract.update(
+                    {
+                        "selection_metric": (
+                            selection_metric,
+                            task.get("monitor"),
+                            "finetune.task.monitor",
+                        ),
+                        "selection_mode": (
+                            selection_mode,
+                            task.get("monitor_mod"),
+                            "finetune.task.monitor_mod",
+                        ),
+                    }
+                )
+            for field, (decision_value, config_value, config_field) in config_contract.items():
                 if decision_value not in (None, "") and decision_value != config_value:
                     return [
                         DecisionIssue(
@@ -571,6 +578,8 @@ def write_hparam_plan(
         write_frozen_final_eval_config.unlink()
     combos = hparam_combos(recipe)
     runs = []
+    test_after_fit = evaluation["test_after_fit"]
+    selection_split = str(evaluation.get("selection_split") or "")
     run_index_offset = next_run_index(recipe)
     for idx, combo in enumerate(combos):
         identity = run_identity(recipe, run_index_offset + idx, combo)
@@ -618,7 +627,9 @@ def write_hparam_plan(
         if recipe.get("variant") != "sex_age_baseline":
             rendering.append_option(command_parts, "--wandb-project", execution.get("wandb_project"))
             rendering.append_option(command_parts, "--wandb-group", execution.get("wandb_group"))
-        command_parts.append("--no-test-after-fit")
+        command_parts.append("--test-after-fit" if test_after_fit else "--no-test-after-fit")
+        if selection_split == "test":
+            command_parts.append("--test-all-checkpoints-after-fit")
         command = rendering.render_command(command_parts)
         script_path = run_dir / "launch.sh"
         write_script_path = write_run_dir / "launch.sh"
@@ -627,6 +638,8 @@ def write_hparam_plan(
             "\n".join(
                 rendering.hparam_script_lines(
                     [command],
+                    test_after_fit=test_after_fit,
+                    selection_split=selection_split,
                     record_exit_code=True,
                     run_cwd=run_cwd,
                 )
@@ -718,6 +731,8 @@ def write_hparam_plan(
                         [sys.executable, "-m", "agent_tools", "hparam-run-queue", "--plan-dir", out, "--execute"]
                     )
                 ],
+                test_after_fit=test_after_fit,
+                selection_split=selection_split,
                 run_cwd=REPO_ROOT,
             )
         )
@@ -743,7 +758,12 @@ def write_hparam_plan(
         "",
         "Status: PASS",
         "",
-        "Run commands do not evaluate the external test split.",
+        (
+            "Run commands evaluate the configured test split after fit."
+            if test_after_fit
+            else "Run commands do not evaluate the configured test split."
+        ),
+        f"Candidate selection uses the frozen {selection_split} split metric.",
     ]
     if final_allowed:
         ckpt_path = resolved_ckpt_path(recipe)
@@ -773,6 +793,7 @@ def write_hparam_plan(
             "\n".join(
                 rendering.hparam_script_lines(
                     [final_command],
+                    selection_split=selection_split,
                     final_external_test=True,
                     run_cwd=run_cwd,
                 )

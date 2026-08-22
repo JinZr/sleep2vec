@@ -42,6 +42,26 @@ while leaving the current health poll's `checkpoint_count` blank.
 
 Runtime `run_manifest.json` supplies metrics and checkpoint evidence only. It does not own lifecycle status. A truly missing runtime manifest means evidence is not yet available; an existing alias, non-regular file, invalid encoding/JSON, or non-mapping payload is corrupt.
 
+For test-selected hparam runs, the terminal runtime manifest also contains
+`test_all_checkpoints_after_fit: true` and `checkpoint_test_results`, one
+`{checkpoint_path, epoch, metrics}` mapping for every regular non-alias
+`epoch=*.ckpt` in the frozen checkpoint directory.
+Top-level `metrics` remains the test result for the validation-best checkpoint;
+checkpoint-level hparam selection uses only the complete nested evidence. The
+selector hashes each checkpoint, writes the plan-local all-checkpoint ranking,
+and keeps `run_manifest.tsv` at one lifecycle row per run by projecting only
+that run's best test-ranked checkpoint.
+
+Finetune runtime directories are single-use: rank zero rejects a non-empty
+`log-finetune/<version>` before persisting configuration, loading data, or
+fitting. All-checkpoint result rows form one evidence matrix; runtimes evaluate
+the complete declared checkpoint set first, then append the full matrix to the
+aggregate results CSV under one lock and one atomic replacement. A failed
+checkpoint test may publish its existing `status=failed` manifest, but never a
+successful terminal manifest or a partial checkpoint matrix. Atomic rewrites
+read historical cells as text so lexical identities such as zero-padded
+experiment versions remain unchanged.
+
 For a pipeline attempt, `result_root` is a single-use empty directory and the
 runtime manifest beneath it must be unique and match the frozen inference
 inputs. Pipeline projections cannot infer success from files other than that
@@ -191,7 +211,7 @@ Experiment checkpoint indexing follows each row's frozen runtime/checkpoint pair
 
 Every hparam mutation first validates workspace ownership, step registration, frozen run hashes, the independent `recipe.resolved.yaml` byte digest recorded by `plan.json`, and equality between the two complete effective recipe copies. Missing or partial canonical state fails rather than being repaired by launch, selection, collection, or postprocess.
 
-Selected-candidate postprocessing refreshes lifecycle status from the current canonical manifest rather than trusting ranking or candidate-table status. `hparam-external-eval` accepts only `completed` or `finished` runs after final rank/top-k filtering and before writing configs, manifests, or runnable scripts.
+Selected-candidate postprocessing refreshes lifecycle status from the current canonical manifest rather than trusting ranking or candidate-table status. For test selection, caller-provided rank, checkpoint path, and SHA-256 must match both the frozen workspace ranking and canonical run row before rehash or top-k filtering. `hparam-external-eval` accepts only `completed` or `finished` runs; it and `hparam-export-logits` reject SSH-owned candidates before writing outputs because these direct helpers have no remote config-staging and result-collection protocol.
 
 An adaptive plan under `adaptive/rounds/round_NNN` is runnable only after the
 root-matching `adaptive/workflow.json` commit marker exists as an independent

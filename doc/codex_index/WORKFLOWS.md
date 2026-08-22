@@ -133,7 +133,8 @@ average window probabilities by path before scoring; AUPRC, Brier, and ECE are
 reported only in that explicitly episode-denominated family.
 
 External or final test data stays locked until the recorded decision allows it.
-Hyperparameter ranking is validation evidence, not final-test evidence.
+Hyperparameter ranking uses the split and metric frozen in the recipe; test
+evidence is eligible only when tuning explicitly unlocks and evaluates test.
 
 ## Inference And Evaluation
 
@@ -203,13 +204,29 @@ Hparam `plan.json` independently records the exact byte digest of
 `recipe.resolved.yaml`; every managed consumer verifies that digest before
 trusting the frozen recipe.
 
-Direct finetune plans materialize an omitted `test_after_fit` as the documented
-`true` policy default and freeze the resolved choice plus an explicit
-`--test-after-fit` or `--no-test-after-fit` argument. Hyperparameter candidate
-trials instead require explicit `test_after_fit=false`, exclude test from
-preflight, and render `--no-test-after-fit`. Selection and checkpoint freezing
-use validation evidence before the separately unlocked final external
-evaluation reads test metrics.
+Finetune and hparam plans materialize an omitted `test_after_fit` as the
+documented `true` policy default and freeze the resolved choice plus an explicit
+`--test-after-fit` or `--no-test-after-fit` argument. Hparam selection uses the
+recipe's frozen split and metric. Test-selected tuning requires unlocked test
+access, includes test in preflight, and renders
+`--test-all-checkpoints-after-fit`. Every actually planned trial must have an
+effective `runtime.ckpt_every_n_epochs=1`, because early stopping can precede a
+wider checkpoint interval. Validation monitoring still owns training and early
+stopping, but it does not prefilter test selection: runtime evaluates every
+regular non-alias `epoch=*.ckpt`, records complete checkpoint-level test evidence
+in the terminal run manifest, and `hparam-select` globally ranks all
+trial/checkpoint pairs by the frozen `test_*` metric. The exact winning path and
+SHA-256 are frozen; the many-checkpoint audit remains plan-local while workspace
+reports retain one row per managed run. Plans registered under one step may be
+aggregated only when their frozen selection metric, mode, and split all match.
+Finetune runtimes reject non-empty version directories before persistence or
+fit, and publish aggregate result rows for an all-checkpoint test only after the
+complete matrix succeeds, using one locked atomic replacement that preserves
+historical CSV cell text.
+Adaptive test-selected `test_*` objectives use complete checkpoint-level
+evidence even when they differ from the static selection metric. Validation and
+run-level objectives such as `val_*` and `best_model_score` retain top-level
+evidence.
 
 Direct `infer` and `evaluate` plans targeting `eval_split=test` require both
 `external_test_locked=false` and `final_test_unlocked=true`. Other splits do
@@ -271,13 +288,16 @@ unchanged polling does not produce a log entry.
 
 ### External evaluation
 
-`hparam-external-eval` rechecks final top-k candidates against canonical
-`run_manifest.tsv`; only `completed` or `finished` runs may enter its runnable
-script.
+Test-selected postprocessing binds caller rank, checkpoint path, and SHA-256 to
+both the frozen workspace ranking and canonical `run_manifest.tsv` before
+rehash or top-k filtering. `hparam-external-eval` additionally accepts only
+`completed` or `finished` runs. The direct external-eval and logits-export
+helpers reject SSH-owned candidates before output; remote execution belongs to
+a workflow that explicitly stages configs and collects results.
 
-`experiment-run` owns the resumable validation-to-external-test flow. It
-validates the strict spec without launching in dry-run mode, waits for successful
-managed sources, freezes validation-selected checkpoints, preflights every
+`experiment-run` owns the resumable source-ranking-to-external-evaluation flow.
+It validates the strict spec without launching in dry-run mode, waits for
+successful managed sources, freezes source-ranked checkpoints, preflights every
 external recipe, and runs package-local inference in isolated result roots.
 Existing state resumes only with its exact frozen identity. Only explicit
 retryable canonical failures receive a fresh attempt; uncertain identity or

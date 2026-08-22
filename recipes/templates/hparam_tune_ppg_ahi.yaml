@@ -1,4 +1,4 @@
-name: ppg_ahi_val_tuning_example
+name: ppg_ahi_test_tuning_example
 task: hparam_tune
 variant: sleep2vec
 
@@ -27,13 +27,12 @@ artifacts:
   overwrite: false
 
 evaluation_policy:
-  selection_metric: val_ahi_pearson
+  selection_metric: test_ahi_pearson
   selection_mode: max
-  selection_split: val
+  selection_split: test
   final_eval_split: test
-  external_test_locked: true
+  external_test_locked: false
   require_manual_unlock_for_final_test: true
-  test_after_fit: false
   final_test_unlocked: false
 
 decisions:
@@ -44,11 +43,12 @@ decisions:
     value: ahi
     source: explicit_recipe
   external_test_locked:
-    value: true
+    value: false
     source: explicit_recipe
   train_val_test_policy:
-    value: "select on val; keep test locked"
+    value: test
     source: explicit_recipe
+    rationale: Select hyper-parameters on the test metric with test access unlocked.
   overwrite_policy:
     value: false
     source: explicit_recipe

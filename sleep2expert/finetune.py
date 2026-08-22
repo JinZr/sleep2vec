@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
+import re
 import shutil
 import sys
 
@@ -27,6 +28,7 @@ from sleep2expert.distributed import is_rank_zero_process
 from sleep2expert.results import (
     save_multilabel_per_disease_metrics_csv,
     save_result_csv,
+    save_result_rows_csv,
     save_survival_per_disease_metrics_csv,
     save_training_run_manifest,
 )
@@ -61,12 +63,24 @@ def supervised(args, config_bundle):
         args.accumulate_grad_batches = 1
     if not hasattr(args, "test_after_fit"):
         args.test_after_fit = True
+    if not hasattr(args, "test_all_checkpoints_after_fit"):
+        args.test_all_checkpoints_after_fit = False
+    if args.test_all_checkpoints_after_fit and not args.test_after_fit:
+        raise ValueError("--test-all-checkpoints-after-fit requires --test-after-fit.")
+    if args.test_all_checkpoints_after_fit and args.epochs <= 0:
+        raise ValueError("--test-all-checkpoints-after-fit requires --epochs greater than 0.")
 
     model_config = config_bundle.model
     averaging_config = config_bundle.averaging
 
     # Persist YAML alongside experiment artifacts
     exp_root = Path(f"log-finetune/{args.version}/")
+    # Runtime directories are single-use; stale checkpoints must never enter a new run's test evidence.
+    if is_rank_zero_process() and exp_root.exists() and any(exp_root.iterdir()):
+        raise FileExistsError(
+            f"Finetune run directory already exists and is not empty: {exp_root}. "
+            "Use a new --version-name or manually clear the existing directory."
+        )
     persist_run_config_and_args(args, exp_root)
 
     # get data loaders
@@ -123,12 +137,16 @@ def supervised(args, config_bundle):
             mode=args.monitor_mod,
         )
 
+        checkpoint_kwargs = {}
+        if args.test_all_checkpoints_after_fit:
+            checkpoint_kwargs["save_on_train_epoch_end"] = False
         checkpoint_callback = ModelCheckpoint(
             dirpath=f"log-finetune/{version}/checkpoints",  # ← 你想要的目录
             save_top_k=-1,  # 保留全部 checkpoint
             save_last=True,  # 额外保存 last.ckpt
             every_n_epochs=args.ckpt_every_n_epochs,  # 控制保存频率
             filename="{epoch:02d}",
+            **checkpoint_kwargs,
         )
         best_checkpoint_callback = ModelCheckpoint(
             dirpath=f"log-finetune/{version}/checkpoints",
@@ -220,18 +238,74 @@ def supervised(args, config_bundle):
             )
             return
 
-        # test the model
-        if args.epochs > 0:
-            ckpt_path = best_checkpoint_callback.best_model_path or "last"
+        checkpoint_test_results = []
+        original_ckpt_path = args.ckpt_path
+        if args.test_all_checkpoints_after_fit and args.epochs > 0:
+            checkpoint_dir = Path(checkpoint_callback.dirpath)
+            resolved_checkpoint_dir = checkpoint_dir.resolve()
+            periodic_checkpoints = []
+            seen_epochs = set()
+            for path in checkpoint_dir.glob("epoch=*.ckpt"):
+                if path.is_symlink():
+                    continue
+                if not path.is_file() or path.resolve().parent != resolved_checkpoint_dir:
+                    raise ValueError(f"Invalid periodic checkpoint: {path}")
+                match = re.fullmatch(r"epoch=(\d+)(?:-step=\d+)?\.ckpt", path.name)
+                if match is None:
+                    raise ValueError(f"Malformed periodic checkpoint name: {path.name}")
+                epoch = int(match.group(1))
+                if epoch in seen_epochs:
+                    raise ValueError(f"Duplicate periodic checkpoint epoch: {epoch}")
+                seen_epochs.add(epoch)
+                periodic_checkpoints.append((epoch, path.resolve()))
+            if not periodic_checkpoints:
+                raise ValueError("No regular epoch=*.ckpt checkpoints were saved for test evaluation.")
+
+            best_path = best_checkpoint_callback.best_model_path
+            best_match = re.search(r"(?:^|-)epoch=(\d+)(?:-step=\d+)?\.ckpt$", Path(str(best_path or "")).name)
+            best_epoch = int(best_match.group(1)) if best_match is not None else None
+            periodic_checkpoints.sort(key=lambda item: (item[0] == best_epoch, item[0], str(item[1])))
+
+            pretrain_result = None
+            checkpoint_result_rows = []
+            for epoch, checkpoint_path in periodic_checkpoints:
+                args.ckpt_path = str(checkpoint_path)
+                result = trainer.test(
+                    model=model,
+                    ckpt_path=str(checkpoint_path),
+                    dataloaders=test_loader,
+                )[0]
+                logging.info(result)
+                checkpoint_result_rows.append((result, str(checkpoint_path)))
+                checkpoint_test_results.append(
+                    {"checkpoint_path": str(checkpoint_path), "epoch": epoch, "metrics": result}
+                )
+                if epoch == best_epoch:
+                    pretrain_result = result
+
+            if pretrain_result is None:
+                ckpt_path = best_path or "last"
+                args.ckpt_path = str(Path(ckpt_path).resolve()) if ckpt_path != "last" else ckpt_path
+                pretrain_result = trainer.test(
+                    model=model,
+                    ckpt_path=ckpt_path,
+                    dataloaders=test_loader,
+                )[0]
+                logging.info(pretrain_result)
+                checkpoint_result_rows.append((pretrain_result, args.ckpt_path))
+            save_result_rows_csv(checkpoint_result_rows, args.results_csv_path, args)
         else:
-            ckpt_path = args.ckpt_path if args.ckpt_path != "" else None
-        pretrain_result = trainer.test(
-            model=model,
-            ckpt_path=ckpt_path,
-            dataloaders=test_loader,
-        )[0]
-        logging.info(pretrain_result)
-        save_result_csv(pretrain_result, args.results_csv_path, args)
+            if args.epochs > 0:
+                ckpt_path = best_checkpoint_callback.best_model_path or "last"
+            else:
+                ckpt_path = args.ckpt_path if args.ckpt_path != "" else None
+            pretrain_result = trainer.test(
+                model=model,
+                ckpt_path=ckpt_path,
+                dataloaders=test_loader,
+            )[0]
+            logging.info(pretrain_result)
+            save_result_csv(pretrain_result, args.results_csv_path, args)
         survival_per_disease_metric_rows = [
             row for row in getattr(model, "survival_per_disease_metric_rows", []) if row.get("stage") == "test"
         ]
@@ -254,6 +328,7 @@ def supervised(args, config_bundle):
                 str(multilabel_per_disease_metrics_csv_path),
                 args,
             )
+        args.ckpt_path = original_ckpt_path
         save_training_run_manifest(
             args,
             manifest_path=manifest_path,
@@ -267,6 +342,7 @@ def supervised(args, config_bundle):
             survival_per_disease_metrics_csv_path=survival_per_disease_metrics_csv_path,
             multilabel_per_disease_metrics_csv_path=multilabel_per_disease_metrics_csv_path,
             metrics=pretrain_result,
+            checkpoint_test_results=checkpoint_test_results,
         )
     except BaseException:
         if "manifest_path" in locals() and not getattr(args, "print_diagnostics", False):
@@ -495,6 +571,11 @@ if __name__ == "__main__":
             "Run test evaluation after fit by default. Use --no-test-after-fit during validation-based model "
             "selection; evaluate test separately from the selected checkpoint."
         ),
+    )
+    parser.add_argument(
+        "--test-all-checkpoints-after-fit",
+        action="store_true",
+        help="After fitting, evaluate every saved epoch=*.ckpt on test; requires --test-after-fit.",
     )
     parser.add_argument(
         "--check-val-every-n-epoch",

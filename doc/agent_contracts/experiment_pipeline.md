@@ -1,7 +1,7 @@
 # External Evaluation Pipeline Contract
 
 `experiment-run` is the explicit, resumable owner for the standard workflow
-that waits for managed hparam sources, freezes validation-selected checkpoints,
+that waits for managed hparam sources, freezes checkpoints selected by their registered rankings,
 runs an external-evaluation matrix, and finalizes the experiment. It is not a
 general command DAG and is not a monitoring command.
 
@@ -43,7 +43,7 @@ The closed v1 sections are:
   `final_test_unlocked: true`;
 - `checkpoint_policy`: one checkpoint, no model averaging, forbidden state-key
   prefixes, and AHI-threshold enforcement;
-- `checkpoint_sources`: absolute managed plan, validation metric/mode, and
+- `checkpoint_sources`: absolute managed plan, frozen selection metric/mode, and
   optional task/variant/label assertions;
 - `jobs`: stable id, source id, cohort, modality, absolute inference preset,
   workers, and optional task/variant/label assertions.
@@ -52,11 +52,11 @@ The closed v1 sections are:
 
 All source plans must belong to the workspace, have no active runs, and finish
 successfully before checkpoint selection. Selection reuses the managed
-validation-ranking owner and requires an exact metric and mode match. The
+hparam-ranking owner and requires an exact metric and mode match. The
 pipeline freezes the selected score, config, checkpoint path, and content
 hashes before any external job starts.
 If interruption leaves `checkpoints.json` before its hash reaches pipeline
-state, resume reruns the validation-ranking owner and accepts the orphan only
+state, resume reruns the hparam-ranking owner and accepts the orphan only
 when every selected field still matches; it never adopts the file by hashing
 its current bytes alone.
 

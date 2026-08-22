@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 import random
+import re
 from typing import Any
 
 import numpy as np
@@ -26,6 +27,7 @@ from sleep2vec.results import (
     save_multilabel_per_disease_metrics_csv,
     save_prediction_csv,
     save_result_csv,
+    save_result_rows_csv,
     save_survival_per_disease_metrics_csv,
     save_training_run_manifest,
 )
@@ -68,6 +70,12 @@ def build_version_name(args: Namespace, cfg: BaselineConfig) -> str:
 
 
 def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
+    if not hasattr(args, "test_all_checkpoints_after_fit"):
+        args.test_all_checkpoints_after_fit = False
+    if args.test_all_checkpoints_after_fit and not args.test_after_fit:
+        raise ValueError("--test-all-checkpoints-after-fit requires --test-after-fit.")
+    if args.test_all_checkpoints_after_fit and args.epochs <= 0:
+        raise ValueError("--test-all-checkpoints-after-fit requires --epochs greater than 0.")
     configure_result_args(args, cfg)
     args.version = build_version_name(args, cfg)
     epochs = int(args.epochs)
@@ -82,6 +90,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
 
     device = torch.device(args.device)
     run_dir = Path("log-finetune") / args.version
+    # Runtime directories are single-use; stale checkpoints must never enter a new run's test evidence.
     if run_dir.exists() and any(run_dir.iterdir()):
         raise FileExistsError(
             f"sex_age_baseline run directory already exists and is not empty: {run_dir}. "
@@ -176,24 +185,85 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         )
         return
 
-    if best_path.exists():
-        load_checkpoint(model, best_path, device=device, cfg=cfg)
-        args.ckpt_path = str(best_path)
-        args.ckpt_resolved_path = str(best_path)
-
     test_set = _required_dataset(cfg, "test", loaded_splits=loaded_splits)
     test_loader = make_dataloader(test_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
     args.eval_split = "test"
-    test_result = evaluate_model(
-        model,
-        test_loader,
-        cfg,
-        device=device,
-        stage="test",
-        export_predictions=cfg.outputs.prediction_csv,
-    )
+    checkpoint_test_results = []
+    original_ckpt_path = args.ckpt_path
+    if args.test_all_checkpoints_after_fit and epochs > 0:
+        best_checkpoint = load_checkpoint(model, best_path, device=device, cfg=cfg)
+        best_epoch = int(best_checkpoint["epoch"])
+        resolved_checkpoint_dir = checkpoint_dir.resolve()
+        periodic_checkpoints = []
+        seen_epochs = set()
+        for path in checkpoint_dir.glob("epoch=*.ckpt"):
+            if path.is_symlink():
+                continue
+            if not path.is_file() or path.resolve().parent != resolved_checkpoint_dir:
+                raise ValueError(f"Invalid periodic checkpoint: {path}")
+            match = re.fullmatch(r"epoch=(\d+)(?:-step=\d+)?\.ckpt", path.name)
+            if match is None:
+                raise ValueError(f"Malformed periodic checkpoint name: {path.name}")
+            epoch = int(match.group(1))
+            if epoch in seen_epochs:
+                raise ValueError(f"Duplicate periodic checkpoint epoch: {epoch}")
+            seen_epochs.add(epoch)
+            periodic_checkpoints.append((epoch, path.resolve()))
+        if not periodic_checkpoints:
+            raise ValueError("No regular epoch=*.ckpt checkpoints were saved for test evaluation.")
+        periodic_checkpoints.sort(key=lambda item: (item[0] == best_epoch, item[0], str(item[1])))
 
-    save_result_csv(test_result.metrics, str(args.results_csv_path), args)
+        test_result = None
+        checkpoint_result_rows = []
+        for epoch, checkpoint_path in periodic_checkpoints:
+            load_checkpoint(model, checkpoint_path, device=device, cfg=cfg)
+            args.ckpt_path = str(checkpoint_path)
+            args.ckpt_resolved_path = str(checkpoint_path)
+            result = evaluate_model(
+                model,
+                test_loader,
+                cfg,
+                device=device,
+                stage="test",
+                export_predictions=cfg.outputs.prediction_csv,
+            )
+            checkpoint_result_rows.append((result.metrics, str(checkpoint_path)))
+            checkpoint_test_results.append(
+                {"checkpoint_path": str(checkpoint_path), "epoch": epoch, "metrics": result.metrics}
+            )
+            if epoch == best_epoch:
+                test_result = result
+
+        if test_result is None:
+            resolved_best_path = best_path.resolve()
+            load_checkpoint(model, best_path, device=device, cfg=cfg)
+            args.ckpt_path = str(resolved_best_path)
+            args.ckpt_resolved_path = str(resolved_best_path)
+            test_result = evaluate_model(
+                model,
+                test_loader,
+                cfg,
+                device=device,
+                stage="test",
+                export_predictions=cfg.outputs.prediction_csv,
+            )
+            checkpoint_result_rows.append((test_result.metrics, str(resolved_best_path)))
+        save_result_rows_csv(checkpoint_result_rows, str(args.results_csv_path), args)
+    else:
+        if best_path.exists():
+            load_checkpoint(model, best_path, device=device, cfg=cfg)
+            args.ckpt_path = str(best_path)
+            args.ckpt_resolved_path = str(best_path)
+        test_result = evaluate_model(
+            model,
+            test_loader,
+            cfg,
+            device=device,
+            stage="test",
+            export_predictions=cfg.outputs.prediction_csv,
+        )
+        save_result_csv(test_result.metrics, str(args.results_csv_path), args)
+
     prediction_csv_path = run_dir / "predictions.csv"
     if cfg.outputs.prediction_csv:
         save_prediction_csv(test_result.prediction_rows, str(prediction_csv_path), args)
@@ -205,6 +275,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     if cfg.outputs.per_disease_metrics_csv and test_result.multilabel_per_disease_rows:
         multilabel_csv_path = run_dir / "multilabel_per_disease_metrics.csv"
         save_multilabel_per_disease_metrics_csv(test_result.multilabel_per_disease_rows, str(multilabel_csv_path), args)
+    args.ckpt_path = original_ckpt_path
     save_training_run_manifest(
         args,
         manifest_path=manifest_path,
@@ -218,6 +289,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         survival_per_disease_metrics_csv_path=survival_csv_path,
         multilabel_per_disease_metrics_csv_path=multilabel_csv_path,
         metrics=test_result.metrics,
+        checkpoint_test_results=checkpoint_test_results,
     )
 
 

@@ -13,7 +13,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from . import experiment_io as exp_io, run_artifacts as artifacts
+from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence
 from .experiment_workspace import (
     canonical_local_experiment_root,
     experiment_root,
@@ -50,6 +50,7 @@ def generate_external_eval(
         top_k=top_k,
         all_candidates=all_candidates,
     )
+    _require_local_postprocess_execution(rows, owner_plans, "hparam-external-eval")
     for row in rows:
         if row.get("status") not in {"completed", "finished"}:
             raise ValueError(
@@ -164,6 +165,7 @@ def export_hparam_logits(
         top_k=top_k,
         all_candidates=all_candidates,
     )
+    _require_local_postprocess_execution(rows, owner_plans, "hparam-export-logits")
     config_dir = root / "logits_export_configs"
     output_dir = root / "logits_exports"
     manifest = root / "logits_export_manifest.tsv"
@@ -445,17 +447,28 @@ def _selected_candidate_rows(
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     selection_metric = evaluation.get("selection_metric")
     selection_mode = evaluation.get("selection_mode")
+    selection_split = evaluation.get("selection_split")
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Selected candidates require a managed experiment workspace.")
     step = recipe.get("step") if isinstance(recipe.get("step"), dict) else {}
     step_id = str(step.get("id") or "")
     workspace_by_key = {managed_run_key(run): run for run in read_run_manifest(workspace)}
+    frozen_ranking_by_key = {}
+    if selection_split == "test":
+        ranking_path = workspace / "reports" / "ranking.csv"
+        frozen_ranking = read_rows(ranking_path, require_managed_identity=True)
+        validate_managed_run_rows(frozen_ranking, source=str(ranking_path), cardinality="one_per_run")
+        frozen_ranking_by_key = {managed_run_key(row): row for row in frozen_ranking}
 
     owner_runs_by_key = {}
     owner_plans_by_key = {}
     for registered_root, owner_plan in artifacts.iter_registered_hparam_plans(
-        workspace, step_id, selection_metric=selection_metric, selection_mode=selection_mode
+        workspace,
+        step_id,
+        selection_metric=selection_metric,
+        selection_mode=selection_mode,
+        selection_split=selection_split,
     ):
         for run in owner_plan["runs"]:
             key = managed_run_key(run)
@@ -510,6 +523,38 @@ def _selected_candidate_rows(
                 raise ValueError(f"Selected candidate parameter differs from the managed plan: {field}")
         derived = {field: value for field, value in row.items() if field not in candidate_parameters}
         validate_frozen_run_update(run, derived, require_checkpoint_ownership=True)
+        if selection_split == "test":
+            checkpoint_path = str(derived.get("checkpoint_path") or "")
+            checkpoint_sha256 = str(derived.get("checkpoint_sha256") or "")
+            if not checkpoint_path or not checkpoint_sha256:
+                raise ValueError(f"Test-selected candidate is missing frozen checkpoint_sha256: {key[0]} / {key[1]}")
+            # Caller rows are only selectors; checkpoint identity remains owned by hparam-select outputs.
+            frozen_ranking = frozen_ranking_by_key.get(key)
+            if frozen_ranking is None:
+                raise ValueError(
+                    f"Test-selected candidate is missing from the frozen hparam ranking: {key[0]} / {key[1]}"
+                )
+            canonical = workspace_by_key[key]
+            for field, value in (
+                ("rank", str(derived.get("rank") or "")),
+                ("checkpoint_path", checkpoint_path),
+                ("checkpoint_sha256", checkpoint_sha256),
+            ):
+                if value != str(frozen_ranking.get(field) or "") or value != str(canonical.get(field) or ""):
+                    raise ValueError(
+                        f"Test-selected candidate {field} differs from frozen hparam selection: {key[0]} / {key[1]}"
+                    )
+            # Postprocessing must verify the frozen bytes on the run's execution target before exporting them.
+            evidence_row = {**run, **workspace_by_key[key]}
+            owner_recipe = (
+                owner_plans_by_key[key].get("recipe") if isinstance(owner_plans_by_key[key].get("recipe"), dict) else {}
+            )
+            execution = owner_recipe.get("execution") if isinstance(owner_recipe.get("execution"), dict) else {}
+            for field in ("target", "host"):
+                if evidence_row.get(field) in (None, ""):
+                    evidence_row[field] = execution.get(field, "")
+            if evidence.checkpoint_file_sha256(evidence_row, checkpoint_path) != checkpoint_sha256:
+                raise ValueError(f"Frozen checkpoint SHA-256 differs: {checkpoint_path}")
         managed_rows.append({**derived, **run, "status": workspace_by_key[key].get("status", "")})
     if not all_candidates and (type(top_k) is not int or top_k <= 0):
         raise ValueError("top_k must be a positive integer.")
@@ -532,6 +577,20 @@ def _selected_candidate_rows(
     if not selected:
         raise ValueError("No selected candidates remain after rank/top_k filtering.")
     return selected, owner_plans_by_key
+
+
+def _require_local_postprocess_execution(
+    rows: list[dict[str, Any]],
+    owner_plans: dict[tuple[str, str], dict[str, Any]],
+    operation: str,
+) -> None:
+    for row in rows:
+        owner_plan = owner_plans[managed_run_key(row)]
+        recipe = owner_plan.get("recipe") if isinstance(owner_plan.get("recipe"), dict) else {}
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        # Generated configs and collected outputs are manager-local; pretending remote paths are shared is unsafe.
+        if execution.get("target", "local") == "ssh":
+            raise ValueError(f"{operation} does not support SSH execution targets; no outputs were written.")
 
 
 def _copy_config_with_data_paths(

@@ -264,6 +264,10 @@ The optional `adaptive` block defines append-only rounds bounded by
   positive YAML integers; replacement grace and margin values must be finite
   and non-negative.
 - Test or external objectives require explicit test-feedback authorization.
+- When `selection_split=test`, adaptive `test_*` objectives—including a `test_*` objective distinct from the frozen
+  selection metric—reduce the complete `checkpoint_test_results` by the frozen objective mode and bind the selected
+  checkpoint path and epoch. Validation/run-level objectives such as `val_*` and `best_model_score` retain top-level
+  evidence. Incomplete checkpoint evidence cannot trigger metric-based retirement, while independent log failures can.
 - Initialization resolves `execution.python`, `execution.runtime_commit`,
   `adaptive.objective_metric`, and `adaptive.objective_mode` once for round 000
   and stores them as workflow-wide frozen values.
