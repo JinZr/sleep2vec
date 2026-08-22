@@ -236,6 +236,7 @@ def iter_registered_hparam_plans(
     *,
     selection_metric: Any,
     selection_mode: Any,
+    selection_split: Any,
 ) -> Iterator[tuple[Path, dict[str, Any]]]:
     step_manifest = read_step_manifest(workspace, step_id)
     for registered_plan_dir in step_manifest["plans"]:
@@ -271,6 +272,9 @@ def iter_registered_hparam_plans(
             raise ValueError("Existing ranking selection metric differs from the current recipe.")
         if registered_evaluation.get("selection_mode") != selection_mode:
             raise ValueError("Existing ranking selection mode differs from the current recipe.")
+        # The invoking split governs evidence interpretation, so registered aggregation must be homogeneous.
+        if registered_evaluation.get("selection_split") != selection_split:
+            raise ValueError("Existing ranking selection split differs from the current recipe.")
         yield registered_root, registered_plan
 
 

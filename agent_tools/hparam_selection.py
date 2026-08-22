@@ -145,7 +145,11 @@ def select_hparam_candidates(
     remaining_prior_keys = {managed_run_key(row) for row in prior_step_rows}
     step_runs = []
     for registered_root, registered_plan in artifacts.iter_registered_hparam_plans(
-        workspace, step_id, selection_metric=metric, selection_mode=mode
+        workspace,
+        step_id,
+        selection_metric=metric,
+        selection_mode=mode,
+        selection_split=selection_split,
     ):
         registered_runs = registered_plan["runs"]
         step_runs.extend(registered_runs)

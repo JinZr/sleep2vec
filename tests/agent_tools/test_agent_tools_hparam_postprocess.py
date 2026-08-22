@@ -797,6 +797,21 @@ def test_selected_candidates_rank_all_registered_plans_in_current_step(tmp_path:
     assert [row["run_id"] for row in selected] == [first_run["run_id"]]
 
 
+def test_selected_candidates_reject_registered_selection_split_drift(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    run = plan["runs"][0]
+    plan["recipe"]["evaluation_policy"]["selection_split"] = "test"
+
+    with pytest.raises(ValueError, match="selection split differs"):
+        hparam_postprocess._selected_candidate_rows(
+            [{"step_id": run["step_id"], "run_id": run["run_id"], "rank": "1"}],
+            plan=plan,
+        )
+
+
 @pytest.mark.parametrize("rank", [None, "", 0, -1, 1.5, "nan", "invalid", True])
 def test_selected_candidates_require_positive_integer_rank(tmp_path: Path, rank):
     recipe = _hparam_recipe(tmp_path)

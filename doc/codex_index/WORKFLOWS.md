@@ -217,7 +217,8 @@ regular non-alias `epoch=*.ckpt`, records complete checkpoint-level test evidenc
 in the terminal run manifest, and `hparam-select` globally ranks all
 trial/checkpoint pairs by the frozen `test_*` metric. The exact winning path and
 SHA-256 are frozen; the many-checkpoint audit remains plan-local while workspace
-reports retain one row per managed run.
+reports retain one row per managed run. Plans registered under one step may be
+aggregated only when their frozen selection metric, mode, and split all match.
 
 Direct `infer` and `evaluate` plans targeting `eval_split=test` require both
 `external_test_locked=false` and `final_test_unlocked=true`. Other splits do

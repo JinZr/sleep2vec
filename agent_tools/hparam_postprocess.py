@@ -445,6 +445,7 @@ def _selected_candidate_rows(
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     selection_metric = evaluation.get("selection_metric")
     selection_mode = evaluation.get("selection_mode")
+    selection_split = evaluation.get("selection_split")
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Selected candidates require a managed experiment workspace.")
@@ -455,7 +456,11 @@ def _selected_candidate_rows(
     owner_runs_by_key = {}
     owner_plans_by_key = {}
     for registered_root, owner_plan in artifacts.iter_registered_hparam_plans(
-        workspace, step_id, selection_metric=selection_metric, selection_mode=selection_mode
+        workspace,
+        step_id,
+        selection_metric=selection_metric,
+        selection_mode=selection_mode,
+        selection_split=selection_split,
     ):
         for run in owner_plan["runs"]:
             key = managed_run_key(run)

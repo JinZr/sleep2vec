@@ -1621,6 +1621,37 @@ def test_hparam_select_rejects_foreign_step_plan_before_writing(tmp_path: Path):
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
+@pytest.mark.parametrize(("registered_split", "invoking_split"), [("val", "test"), ("test", "val")])
+def test_hparam_select_rejects_selection_split_drift_across_registered_plans_before_writing(
+    tmp_path: Path,
+    registered_split: str,
+    invoking_split: str,
+):
+    registered_recipe = _hparam_recipe(
+        tmp_path,
+        selection_metric="test_ahi_pearson",
+        selection_split=registered_split,
+        config_monitor="test_ahi_pearson",
+    )
+    registered_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(registered_recipe), "--output-dir", str(registered_plan)).returncode == 0
+
+    invoking_recipe = _hparam_recipe(
+        tmp_path,
+        selection_metric="test_ahi_pearson",
+        selection_split=invoking_split,
+        config_monitor="test_ahi_pearson",
+    )
+    invoking_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(invoking_recipe), "--output-dir", str(invoking_plan)).returncode == 0
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="selection split differs"):
+        hparam_selection.select_hparam_candidates(invoking_plan)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 @pytest.mark.parametrize(
     ("selection_metric", "selection_mode", "expected_message"),
     [
