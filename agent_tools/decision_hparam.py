@@ -30,7 +30,16 @@ _HPARAM_EXECUTION_FIELDS = {
     "wandb_project",
     "wandb_group",
 }
-_HPARAM_SCHEDULER_FIELDS = {"type", "partition", "cpus_per_task", "memory", "walltime", "nice", "nodelist"}
+_HPARAM_SCHEDULER_FIELDS = {
+    "type",
+    "partition",
+    "cpus_per_task",
+    "memory",
+    "walltime",
+    "nice",
+    "nodelist",
+    "direct_controller",
+}
 _HPARAM_EVALUATION_FIELDS = {
     "selection_metric",
     "selection_mode",

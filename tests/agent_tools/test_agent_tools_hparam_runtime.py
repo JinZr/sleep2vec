@@ -114,6 +114,7 @@ def _write_slurm_plan(
     *,
     run_count: int = 1,
     execution: dict | None = None,
+    direct_controller: bool = False,
 ) -> tuple[Path, dict]:
     recipe_path = _hparam_recipe(tmp_path)
     if run_count > 1:
@@ -138,6 +139,8 @@ def _write_slurm_plan(
             },
         }
     )
+    if direct_controller:
+        recipe["execution"]["scheduler"]["direct_controller"] = True
     recipe["execution"].update(execution or {})
     source_config = (source_plan_dir / "config.source.yaml").read_bytes()
     plan_dir = tmp_path / "slurm-plan"
@@ -380,6 +383,52 @@ def test_hparam_plan_records_monitor_owned_exit_status_contract(tmp_path: Path):
     assert canonical["scheduler_type"] == "direct"
     assert "trap _agent_tools_record_exit EXIT" in script
     assert MONITOR_EXIT_CODE_PREFIX in script
+
+
+@pytest.mark.parametrize("direct_controller", [False, True])
+def test_slurm_plan_freezes_controller_topology(tmp_path: Path, direct_controller: bool):
+    plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=direct_controller)
+    run = plan["runs"][0]
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    expected = str(direct_controller).lower()
+
+    assert run["scheduler_direct_controller"] == expected
+    assert canonical["scheduler_direct_controller"] == expected
+
+
+@pytest.mark.parametrize("direct_controller", [False, True])
+def test_hparam_monitor_uses_canonical_slurm_controller_topology(
+    tmp_path: Path,
+    monkeypatch,
+    direct_controller: bool,
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=direct_controller)
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    recipe_scheduler = plan["recipe"]["execution"]["scheduler"]
+    if direct_controller:
+        recipe_scheduler.pop("direct_controller")
+    else:
+        recipe_scheduler["direct_controller"] = True
+    monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda _path: plan)
+    observed_executions = []
+
+    def observe_slurm_run(_root, execution, row, *, health=False):
+        observed_executions.append(execution)
+        return row
+
+    monkeypatch.setattr(managed_scheduler, "observe_slurm_run", observe_slurm_run)
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    execution = {"target": "local"}
+    if direct_controller:
+        execution["scheduler"] = {"direct_controller": True}
+    assert observed_executions == [execution]
 
 
 @pytest.mark.parametrize(
@@ -920,11 +969,80 @@ def test_slurm_monitor_keeps_terminal_sidecar_unknown_without_scheduler_record(t
 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert canonical["status"] == "unknown_scheduler"
+    assert canonical["scheduler_raw_state"] == "MISSING"
     assert "before terminal scheduler state was observed" in canonical["scheduler_reason"]
 
 
-def test_slurm_monitor_recovers_terminal_state_from_accounting_after_controller_purge(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(
+    ("terminal_exit_code", "stop_requested"),
+    [
+        (None, False),
+        (0, False),
+        (7, False),
+        (143, True),
+    ],
+)
+def test_slurm_monitor_handles_purged_job_when_accounting_is_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+    terminal_exit_code: int | None,
+    stop_requested: bool,
+):
     plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    token = run["scheduler_submit_token"]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "active_jobs",
+        lambda *_args, **_kwargs: [slurm.JobObservation("3880", "RUNNING", "", "h20-bj-96", token)],
+    )
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    if stop_requested:
+        monkeypatch.setattr(slurm, "cancel", lambda *_args, **_kwargs: None)
+        hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="user requested stop")
+    if terminal_exit_code is not None:
+        Path(run["scheduler_result_path"]).write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "scheduler_job_id": "3880",
+                    "scheduler_cluster": "wuji-h20",
+                    "scheduler_submit_token": token,
+                    "node": "h20-bj-96",
+                    "exit_code": terminal_exit_code,
+                }
+            )
+        )
+
+    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(managed_scheduler.slurm, "show_job", lambda *_args, **_kwargs: None)
+
+    def accounting_unavailable(*_args, **_kwargs):
+        result = subprocess.CompletedProcess([], 1, "", "Slurm accounting storage is disabled")
+        raise slurm.SlurmCommandError("accounting query", result)
+
+    monkeypatch.setattr(managed_scheduler.slurm, "accounting_job", accounting_unavailable)
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["status"] == "unknown_scheduler"
+    assert canonical["scheduler_raw_state"] == "MISSING"
+    assert canonical["scheduler_raw_state"] != "RUNNING"
+    assert "Slurm accounting query failed: Slurm accounting storage is disabled" in canonical["scheduler_reason"]
+    if terminal_exit_code not in (None, 0):
+        assert f"non-zero exit code {terminal_exit_code}" in canonical["scheduler_reason"]
+
+
+def test_slurm_monitor_recovers_terminal_state_from_accounting_after_controller_purge(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=True)
     run = plan["runs"][0]
     monkeypatch.setattr(
         managed_scheduler.slurm,
@@ -967,7 +1085,7 @@ def test_slurm_monitor_recovers_terminal_state_from_accounting_after_controller_
     assert canonical["scheduler_raw_state"] == "COMPLETED"
     assert canonical["scheduler_exit_code"] == "0"
     assert [argv[0] for argv in scheduler_calls] == ["squeue", "scontrol", "sacct"]
-    assert all("--clusters=wuji-h20" in argv for argv in scheduler_calls)
+    assert all("--clusters=wuji-h20" not in argv for argv in scheduler_calls)
     assert "--duplicates" in scheduler_calls[-1]
 
 
@@ -1394,8 +1512,9 @@ def test_slurm_late_job_binding_records_launch_time_without_overwriting_existing
     assert observed["launched_at"] == (launched_at or "2026-08-21T00:02:00Z")
 
 
-def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch):
-    plan_dir, plan = _write_slurm_plan(tmp_path)
+@pytest.mark.parametrize("direct_controller", [False, True])
+def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch, direct_controller: bool):
+    plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=direct_controller)
     run = plan["runs"][0]
     monkeypatch.setattr(
         managed_scheduler.slurm,
@@ -1403,6 +1522,12 @@ def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch):
         lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
     )
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    recipe_scheduler = plan["recipe"]["execution"]["scheduler"]
+    if direct_controller:
+        recipe_scheduler.pop("direct_controller")
+    else:
+        recipe_scheduler["direct_controller"] = True
+    monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda _path: plan)
     cancelled = []
     monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-21T03:40:00Z")
 
@@ -1420,7 +1545,10 @@ def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch):
     hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")
 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
-    assert cancelled == [({"target": "local", "host": ""}, "3880", "wuji-h20")]
+    execution = {"target": "local", "host": ""}
+    if direct_controller:
+        execution["scheduler"] = {"direct_controller": True}
+    assert cancelled == [(execution, "3880", "wuji-h20")]
     assert canonical["status"] == "stopping"
     assert canonical["status"] not in hparam_runtime.TERMINAL_STATUSES
     assert canonical["stop_requested_at"] == "2026-08-21T03:40:00Z"
@@ -1435,7 +1563,7 @@ def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch):
     with pytest.raises(ValueError, match="pending stop request"):
         hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="repeat request")
 
-    assert cancelled == [({"target": "local", "host": ""}, "3880", "wuji-h20")]
+    assert cancelled == [(execution, "3880", "wuji-h20")]
 
 
 @pytest.mark.parametrize(
@@ -1530,7 +1658,7 @@ def test_slurm_stop_request_waits_for_matching_scheduler_cancellation(
 
 
 def test_slurm_stop_request_uses_accounting_after_controller_purges_cancelled_job(tmp_path: Path, monkeypatch):
-    plan_dir, plan = _write_slurm_plan(tmp_path)
+    plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=True)
     run = plan["runs"][0]
     monkeypatch.setattr(
         managed_scheduler.slurm,
@@ -1567,7 +1695,7 @@ def test_slurm_stop_request_uses_accounting_after_controller_purges_cancelled_jo
     assert canonical["stop_requested_at"] == "2026-08-21T03:40:00Z"
     assert canonical["stop_reason"] == "validation diverged"
     assert [argv[0] for argv in scheduler_calls] == ["squeue", "scontrol", "sacct"]
-    assert all("--clusters=wuji-h20" in argv for argv in scheduler_calls)
+    assert all("--clusters=wuji-h20" not in argv for argv in scheduler_calls)
     assert "--duplicates" in scheduler_calls[-1]
 
 

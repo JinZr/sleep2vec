@@ -4,7 +4,7 @@
 Use for `hparam_tune` recipes that generate validation-selected run plans, orchestrate active launch/monitor/select/evaluate, or run append-only adaptive external-optimized tuning through `agent_tools`. Managed candidate trials remain validation-first and must not read test data before checkpoint selection is frozen.
 
 ## Required inputs
-Requires experiment metadata, a named step, base recipe, search method, search parameters, budget, selection metric/mode/split, external-test lock policy, and final evaluation policy. Active orchestration additionally uses `execution:` fields. Omitted `execution.scheduler` means direct execution. Slurm requires `execution.scheduler` with `type`, `partition`, `cpus_per_task`, `memory`, and `walltime`; `gpus_per_run` defaults to one. A local target at `REPO_ROOT` without a conda wrapper may omit Python/commit identity; SSH targets and separate local workdirs require explicit `execution.python` and full `execution.runtime_commit`. Slurm also requires an explicit Python path instead of a conda wrapper. Adaptive tuning additionally requires `adaptive.enabled=true`; if optimizing test/external metrics, `adaptive.test_feedback_for_selection=true` must be explicit. Omitting `adaptive.suggest.strategy` selects `agent_proposal`; agent proposals additionally require `adaptive.objective_metric` as an explicit non-blank string plus explicit non-empty `adaptive.objective_mode`, `adaptive.round_size`, `adaptive.max_rounds`, and `adaptive.max_runs_total`, are terminal-only, and require replacement to be omitted or exactly disabled. Use explicit `best_neighborhood` only for automatic neighborhood suggestions or active-round replacement.
+Requires experiment metadata, a named step, base recipe, search method, search parameters, budget, selection metric/mode/split, external-test lock policy, and final evaluation policy. Active orchestration additionally uses `execution:` fields. Omitted `execution.scheduler` means direct execution. Slurm requires `execution.scheduler` with `type`, `partition`, `cpus_per_task`, `memory`, and `walltime`; `gpus_per_run` defaults to one. Set optional `direct_controller: true` only when the submission endpoint already talks directly to the bound controller and cannot use federation routing. A local target at `REPO_ROOT` without a conda wrapper may omit Python/commit identity; SSH targets and separate local workdirs require explicit `execution.python` and full `execution.runtime_commit`. Slurm also requires an explicit Python path instead of a conda wrapper. Adaptive tuning additionally requires `adaptive.enabled=true`; if optimizing test/external metrics, `adaptive.test_feedback_for_selection=true` must be explicit. Omitting `adaptive.suggest.strategy` selects `agent_proposal`; agent proposals additionally require `adaptive.objective_metric` as an explicit non-blank string plus explicit non-empty `adaptive.objective_mode`, `adaptive.round_size`, `adaptive.max_rounds`, and `adaptive.max_runs_total`, are terminal-only, and require replacement to be omitted or exactly disabled. Use explicit `best_neighborhood` only for automatic neighborhood suggestions or active-round replacement.
 
 ```yaml
 execution:
@@ -20,6 +20,7 @@ execution:
     cpus_per_task: 8
     memory: 64G
     walltime: "01:00:00"
+    direct_controller: true
 ```
 
 ## First information-gathering commands

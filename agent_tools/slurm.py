@@ -43,7 +43,16 @@ class SlurmCommandError(RuntimeError):
         super().__init__(f"Slurm {action} failed: {detail}")
 
 
-RESOURCE_FIELDS = {"type", "partition", "cpus_per_task", "memory", "walltime", "nice", "nodelist"}
+RESOURCE_FIELDS = {
+    "type",
+    "partition",
+    "cpus_per_task",
+    "memory",
+    "walltime",
+    "nice",
+    "nodelist",
+    "direct_controller",
+}
 _DISTRIBUTED_ENV_FIELDS = {"RANK", "LOCAL_RANK", "WORLD_SIZE"}
 
 
@@ -73,6 +82,9 @@ def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> dict[st
     nodelist = str(scheduler.get("nodelist") or "")
     if nodelist and re.fullmatch(r"[A-Za-z0-9_.\-,\[\]]+", nodelist) is None:
         raise ValueError("execution.scheduler.nodelist must be a Slurm node-list expression.")
+    direct_controller = scheduler.get("direct_controller", False)
+    if type(direct_controller) is not bool:
+        raise ValueError("execution.scheduler.direct_controller must be a boolean.")
     return {
         "partition": partition,
         "cpus_per_task": cpus_per_task,
@@ -80,6 +92,7 @@ def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> dict[st
         "walltime": walltime,
         "nice": nice,
         "nodelist": nodelist,
+        "direct_controller": direct_controller,
         "gpus_per_run": gpus,
     }
 
@@ -304,7 +317,6 @@ def run_frozen_job(
                                 "--nodes=1",
                                 f"--ntasks={expected_tasks}",
                                 f"--ntasks-per-node={expected_tasks}",
-                                "--gpu-bind=none",
                                 "--kill-on-bad-exit=1",
                                 "--quit-on-interrupt",
                                 script,
@@ -403,7 +415,7 @@ def active_jobs(
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
 ) -> list[JobObservation]:
     argv = ["squeue", "--noheader", "--format=%i|%T|%R|%N|%k"]
-    cluster_name = _cluster_name(cluster)
+    cluster_name = _follow_up_cluster_name(execution, cluster)
     if cluster_name:
         argv.append(f"--clusters={cluster_name}")
     if job_id is not None:
@@ -431,7 +443,7 @@ def show_job(
 ) -> JobObservation | None:
     job_id = _job_id(job_id)
     argv = ["scontrol"]
-    cluster_name = _cluster_name(cluster)
+    cluster_name = _follow_up_cluster_name(execution, cluster)
     if cluster_name:
         argv.append(f"--clusters={cluster_name}")
     argv.extend(["show", "job", "--oneliner", job_id])
@@ -484,7 +496,7 @@ def accounting_job(
 ) -> JobObservation | None:
     job_id = _job_id(job_id)
     argv = ["sacct", "--duplicates", "--noheader", "--parsable2", "--allocations"]
-    cluster_name = _cluster_name(cluster)
+    cluster_name = _follow_up_cluster_name(execution, cluster)
     if cluster_name:
         argv.append(f"--clusters={cluster_name}")
     argv.extend(["--jobs", job_id, "--format=JobIDRaw,State%64,ExitCode,NodeList,Comment%64"])
@@ -570,13 +582,19 @@ def cancel(
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
 ) -> None:
     argv = ["scancel"]
-    cluster_name = _cluster_name(cluster)
+    cluster_name = _follow_up_cluster_name(execution, cluster)
     if cluster_name:
         argv.append(f"--clusters={cluster_name}")
     argv.append(_job_id(job_id))
     result = run_command(execution, argv, timeout=timeout)
     if result.returncode != 0:
         raise SlurmCommandError("cancellation", result)
+
+
+def _follow_up_cluster_name(execution: dict[str, Any], cluster: str | None) -> str:
+    cluster_name = _cluster_name(cluster)
+    scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+    return "" if scheduler.get("direct_controller") is True else cluster_name
 
 
 def normalize_state(value: str) -> str:

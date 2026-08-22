@@ -35,6 +35,7 @@ from .experiment_workspace import (
     managed_run_parameters,
     merge_run_manifest,
     read_run_manifest,
+    scheduler_direct_controller,
     scheduler_type,
     validate_frozen_run_update,
     validate_managed_run_rows,
@@ -1491,9 +1492,7 @@ def _resolve_workflow_round(path: Path) -> tuple[Path, Path, int]:
 def _reconcile_interrupted_launch(
     workspace: Path, plan_dir: Path, plan_keys: set[tuple[str, str]]
 ) -> tuple[list[dict[str, Any]], set[tuple[str, str]], set[tuple[str, str]]]:
-    plan = artifacts.read_hparam_plan(plan_dir)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    artifacts.read_hparam_plan(plan_dir)
     canonical_rows = read_run_manifest(workspace)
     updates = []
     unresolved = set()
@@ -1508,6 +1507,11 @@ def _reconcile_interrupted_launch(
                 continue
             if row.get("status") not in {"submitting", "unknown_scheduler"}:
                 continue
+            execution = {"target": row["target"]}
+            if row["target"] == "ssh":
+                execution["host"] = row["host"]
+            if scheduler_direct_controller(row):
+                execution["scheduler"] = {"direct_controller": True}
             observed = managed_scheduler.observe_slurm_run(plan_dir, execution, row)
             if _is_accepted_start(observed):
                 updates.append(observed)

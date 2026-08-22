@@ -76,14 +76,20 @@ def test_adaptive_accepted_starts_are_backend_aware():
 
 
 @pytest.mark.parametrize(("observed_status", "expected_unresolved"), [("queued", False), ("submitting", True)])
+@pytest.mark.parametrize("direct_controller", [False, True])
 def test_adaptive_interrupted_slurm_launch_reconciles_by_scheduler_identity(
-    tmp_path: Path, monkeypatch, observed_status: str, expected_unresolved: bool
+    tmp_path: Path,
+    monkeypatch,
+    observed_status: str,
+    expected_unresolved: bool,
+    direct_controller: bool,
 ):
     row = {
         "step_id": "train-model",
         "run_id": "run-000",
         "status": "submitting",
         "scheduler_type": "slurm",
+        "scheduler_direct_controller": str(direct_controller).lower(),
         "scheduler_submit_token": "unit-token",
         "target": "local",
     }
@@ -93,16 +99,24 @@ def test_adaptive_interrupted_slurm_launch_reconciles_by_scheduler_identity(
         **({"scheduler_job_id": "3880"} if observed_status == "queued" else {}),
     }
     merged = []
+    observed_executions = []
     monkeypatch.setattr(
         adaptive_hparam.artifacts,
         "read_hparam_plan",
-        lambda _plan_dir: {"recipe": {"execution": {"target": "local"}}},
+        lambda _plan_dir: {
+            "recipe": {
+                "execution": {
+                    "target": "local",
+                    "scheduler": {"direct_controller": not direct_controller},
+                }
+            }
+        },
     )
     monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [row])
     monkeypatch.setattr(
         adaptive_hparam.managed_scheduler,
         "observe_slurm_run",
-        lambda owner_dir, execution, current: observed,
+        lambda owner_dir, execution, current: observed_executions.append(execution) or observed,
     )
     monkeypatch.setattr(
         adaptive_hparam,
@@ -123,6 +137,10 @@ def test_adaptive_interrupted_slurm_launch_reconciles_by_scheduler_identity(
     assert reconciled == (set() if expected_unresolved else {("train-model", "run-000")})
     assert merged == ([] if expected_unresolved else [observed])
     assert rows == (merged if merged else [row])
+    execution = {"target": "local"}
+    if direct_controller:
+        execution["scheduler"] = {"direct_controller": True}
+    assert observed_executions == [execution]
 
 
 def test_adaptive_slurm_grace_uses_allocation_start_not_submission_time():

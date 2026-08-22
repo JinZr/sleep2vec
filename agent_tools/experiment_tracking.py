@@ -24,6 +24,7 @@ from .experiment_workspace import (
     read_run_manifest,
     resolve_external_run_row,
     resolve_run_row,
+    scheduler_direct_controller,
     scheduler_type,
     validate_checkpoint_ownership,
     validate_frozen_run_update,
@@ -327,6 +328,8 @@ def monitor_run_row(
             execution = {"target": observation_row.get("target") or "local"}
             if execution["target"] == "ssh":
                 execution["host"] = observation_row.get("host")
+            if scheduler_direct_controller(scheduler_row):
+                execution["scheduler"] = {"direct_controller": True}
             status = managed_scheduler.observe_slurm_run(root, execution, observation_row, health=True)
         else:
             status = observation_row

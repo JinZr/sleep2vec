@@ -1559,6 +1559,34 @@ def test_scheduler_identity_allows_one_trusted_job_binding(tmp_path: Path):
             )
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, False), ("", False), ("false", False), ("true", True)],
+)
+def test_scheduler_direct_controller_parses_canonical_manifest_values(value, expected: bool):
+    assert experiment_workspace.scheduler_direct_controller({"scheduler_direct_controller": value}) is expected
+
+
+@pytest.mark.parametrize("value", [False, True, 0, 1, "False", "True", "yes"])
+def test_scheduler_direct_controller_rejects_noncanonical_manifest_values(value):
+    with pytest.raises(ValueError, match="scheduler_direct_controller must be true or false"):
+        experiment_workspace.scheduler_direct_controller({"scheduler_direct_controller": value})
+
+
+def test_scheduler_direct_controller_is_frozen_plan_identity(tmp_path: Path):
+    existing = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "status": "planned",
+        "scheduler_direct_controller": "true",
+        **_slurm_identity(tmp_path),
+    }
+
+    validate_frozen_run_update(existing, {"scheduler_direct_controller": "true"})
+    with pytest.raises(ValueError, match="scheduler_direct_controller"):
+        validate_frozen_run_update(existing, {"scheduler_direct_controller": "false"})
+
+
 def test_scheduler_identity_is_backend_specific(tmp_path: Path):
     validate_scheduler_run_identity({"scheduler_type": "direct", "status": "planned"})
     validate_scheduler_run_identity({"status": "planned"})
@@ -1573,6 +1601,10 @@ def test_scheduler_identity_is_backend_specific(tmp_path: Path):
     with pytest.raises(ValueError, match="cannot define Slurm"):
         validate_scheduler_run_identity(
             {"scheduler_type": "direct", "scheduler_submit_token": "unit-token", "status": "planned"}
+        )
+    with pytest.raises(ValueError, match="cannot define Slurm"):
+        validate_scheduler_run_identity(
+            {"scheduler_type": "direct", "scheduler_direct_controller": "false", "status": "planned"}
         )
     with pytest.raises(ValueError, match="requires scheduler_job_id"):
         validate_scheduler_run_identity({"status": "queued", **_slurm_identity(tmp_path)})

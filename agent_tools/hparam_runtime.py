@@ -24,6 +24,7 @@ from .experiment_workspace import (
     merge_run_manifest,
     merge_run_row,
     read_run_manifest,
+    scheduler_direct_controller,
     scheduler_type,
     validate_frozen_run_update,
     write_status_report,
@@ -284,7 +285,6 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
     root = Path(run_dir)
     plan = artifacts.read_hparam_plan(root)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     expected_keys = {managed_run_key(run) for run in plan["runs"]}
     status_path = root / "run_status.tsv"
     workspace = experiment_root(recipe)
@@ -317,6 +317,11 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
             rows.append(prior)
             continue
         if scheduler_type(prior) == "slurm":
+            execution = {"target": prior["target"]}
+            if prior["target"] == "ssh":
+                execution["host"] = prior["host"]
+            if scheduler_direct_controller(prior):
+                execution["scheduler"] = {"direct_controller": True}
             rows.append(scheduler.observe_slurm_run(root, execution, prior, health=health))
         else:
             rows.append(
@@ -429,6 +434,8 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         if target == "ssh" and (not isinstance(host, str) or not host.strip()):
             raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
         execution = {"target": target, "host": host}
+        if scheduler_direct_controller(previous):
+            execution["scheduler"] = {"direct_controller": True}
 
         if backend == "slurm":
             job_id = str(previous.get("scheduler_job_id") or "")
