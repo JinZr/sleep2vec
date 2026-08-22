@@ -162,9 +162,13 @@ The optional `execution` block configures the managed launcher.
 - Omitted `execution.scheduler` resolves to `{type: direct}`. Direct runs use
   the existing `gpu_pool` / `gpus_per_run` / `max_concurrent` process model.
 - `execution.scheduler.type: slurm` keeps `target` as local/SSH control
-  transport and submits every frozen run as its own single-node allocation. It requires
-  `partition`, `cpus_per_task`, `memory`, and `walltime`; optional scheduler
-  fields are `nice` and `nodelist`. `gpus_per_run` is a positive YAML integer,
+  transport and submits every frozen run as its own single-node allocation. It
+  requires `partition`, `cpus_per_task`, `memory`, and `walltime`; optional scheduler
+  fields are `nice`, `nodelist`, and boolean `direct_controller`. The latter
+  defaults to false: follow-up commands route to the bound cluster with
+  `--clusters`. Set it to true only when the submission endpoint already talks
+  directly to that controller and federation routing is unavailable. This
+  topology is never inferred from `target`. `gpus_per_run` is a positive YAML integer,
   defaults to one, and becomes the allocation GPU count plus logical
   `runtime.devices=[0, ..., N-1]`. The allocation wrapper starts one foreground
   `srun` step containing exactly N tasks, one per GPU. `cpus_per_task` applies
@@ -205,11 +209,13 @@ untracked or ignored importable code, and the run's frozen script/config hashes.
 For Slurm, the allocation wrapper also requires `SLURM_NTASKS` to match the
 frozen `gpus_per_run`, then compares its observed Python executable and version
 with the plan-level execution snapshot before starting the leaf script through
-one `srun --gpu-bind=none --kill-on-bad-exit=1 --quit-on-interrupt` child. The launcher freezes the
-snapshot's raw SHA-256 in every canonical run and passes it as a batch-script
-argument, so the allocation verifies the exact snapshot bytes before parsing
-them. Compute-node hostname is observed evidence and may differ from the
-submission host.
+one `srun --kill-on-bad-exit=1 --quit-on-interrupt` child without explicit
+task-level GPU binding. This preserves the complete allocated GPU visibility
+expected by the frozen Lightning device list in every externally launched rank.
+The launcher freezes the snapshot's raw SHA-256 in every canonical run and
+passes it as a batch-script argument, so the allocation verifies the exact
+snapshot bytes before parsing them. Compute-node hostname is observed evidence
+and may differ from the submission host.
 Plans lacking frozen Python or commit identity must be recreated rather than
 upgraded in place.
 
@@ -222,8 +228,10 @@ Submission commits `submitting` before `sbatch`; a timeout or SSH disconnect is
 reconciled by the exact token and is never retried blindly. Monitoring uses
 `squeue`/`scontrol` for controller state, then queries the exact bound-cluster
 `sacct` allocation when the job has aged out of the controller. It requires
-both a terminal scheduler observation and the matching atomic terminal sidecar
-for terminal truth;
+`--clusters=<scheduler_cluster>` for bound-cluster routing unless the frozen
+recipe explicitly declares `direct_controller: true`; local transport alone
+does not establish direct-controller topology. Terminal truth requires both a
+terminal scheduler observation and the matching atomic terminal sidecar;
 incomplete terminal evidence is `unknown_scheduler`. Stop first records the
 frozen scheduler job id, nonterminal `stopping`, request time, and reason in the
 canonical manifest, then uses that job id with `scancel`, not PID evidence. An
