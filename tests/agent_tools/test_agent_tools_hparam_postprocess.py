@@ -987,6 +987,55 @@ def test_test_selected_candidate_rank_must_match_frozen_hparam_ranking_before_to
     assert rehash_calls == []
 
 
+def test_test_selected_top_k_rehashes_only_retained_checkpoints(tmp_path: Path):
+    recipe = _test_selected_hparam_recipe(tmp_path, run_count=2)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr or result.stdout
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    for run, score in zip(plan["runs"], (0.9, 0.8)):
+        checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_text(run["run_id"])
+        (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+            json.dumps(
+                {
+                    "test_all_checkpoints_after_fit": True,
+                    "checkpoint_test_results": [
+                        {
+                            "checkpoint_path": str(checkpoint),
+                            "epoch": 1,
+                            "metrics": {"test_ahi_pearson": score},
+                        }
+                    ],
+                }
+            )
+        )
+    _set_run_status(plan_dir, plan["runs"])
+    selection = _run("hparam-select", "--run-dir", str(plan_dir))
+    assert selection.returncode == 0, selection.stderr or selection.stdout
+    frozen = _read_table(_ranking_path(plan_dir))
+    frozen_by_rank = {row["rank"]: row for row in frozen}
+    Path(frozen_by_rank["2"]["checkpoint_path"]).write_text("drifted lower-rank checkpoint")
+
+    selected, _owner_plans = hparam_postprocess._selected_candidate_rows(frozen, plan=plan, top_k=1)
+
+    assert [row["run_id"] for row in selected] == [frozen_by_rank["1"]["run_id"]]
+    ranking_path = _ranking_path(plan_dir)
+    hparam_postprocess.generate_external_eval(plan_dir, ranking_path, unlock_final_test=True)
+    logits_manifest = hparam_postprocess.export_hparam_logits(
+        plan_dir,
+        ranking_path,
+        unlock_final_test=True,
+    )
+    assert [row["run_id"] for row in _read_table(plan_dir / "external_eval_manifest.tsv")] == [
+        frozen_by_rank["1"]["run_id"]
+    ]
+    assert [row["run_id"] for row in _read_table(logits_manifest)] == [frozen_by_rank["1"]["run_id"]]
+    with pytest.raises(ValueError, match="Frozen checkpoint SHA-256 differs"):
+        hparam_postprocess._selected_candidate_rows(frozen, plan=plan, all_candidates=True)
+
+
 def test_validation_selected_external_eval_does_not_require_checkpoint_hash(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path)})
     plan_dir = tmp_path / "plan"

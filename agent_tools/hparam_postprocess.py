@@ -544,17 +544,6 @@ def _selected_candidate_rows(
                     raise ValueError(
                         f"Test-selected candidate {field} differs from frozen hparam selection: {key[0]} / {key[1]}"
                     )
-            # Postprocessing must verify the frozen bytes on the run's execution target before exporting them.
-            evidence_row = {**run, **workspace_by_key[key]}
-            owner_recipe = (
-                owner_plans_by_key[key].get("recipe") if isinstance(owner_plans_by_key[key].get("recipe"), dict) else {}
-            )
-            execution = owner_recipe.get("execution") if isinstance(owner_recipe.get("execution"), dict) else {}
-            for field in ("target", "host"):
-                if evidence_row.get(field) in (None, ""):
-                    evidence_row[field] = execution.get(field, "")
-            if evidence.checkpoint_file_sha256(evidence_row, checkpoint_path) != checkpoint_sha256:
-                raise ValueError(f"Frozen checkpoint SHA-256 differs: {checkpoint_path}")
         managed_rows.append({**derived, **run, "status": workspace_by_key[key].get("status", "")})
     if not all_candidates and (type(top_k) is not int or top_k <= 0):
         raise ValueError("top_k must be a positive integer.")
@@ -576,6 +565,23 @@ def _selected_candidate_rows(
     selected = managed_rows if all_candidates else [row for _rank, _index, row in sorted(ranked_rows)[:top_k]]
     if not selected:
         raise ValueError("No selected candidates remain after rank/top_k filtering.")
+    if selection_split == "test":
+        # Physical I/O follows selection so an unused lower-rank checkpoint cannot block top-k postprocessing.
+        for row in selected:
+            key = managed_run_key(row)
+            canonical = workspace_by_key[key]
+            checkpoint_path = str(canonical.get("checkpoint_path") or "")
+            checkpoint_sha256 = str(canonical.get("checkpoint_sha256") or "")
+            evidence_row = {**owner_runs_by_key[key], **canonical}
+            owner_recipe = (
+                owner_plans_by_key[key].get("recipe") if isinstance(owner_plans_by_key[key].get("recipe"), dict) else {}
+            )
+            execution = owner_recipe.get("execution") if isinstance(owner_recipe.get("execution"), dict) else {}
+            for field in ("target", "host"):
+                if evidence_row.get(field) in (None, ""):
+                    evidence_row[field] = execution.get(field, "")
+            if evidence.checkpoint_file_sha256(evidence_row, checkpoint_path) != checkpoint_sha256:
+                raise ValueError(f"Frozen checkpoint SHA-256 differs: {checkpoint_path}")
     return selected, owner_plans_by_key
 
 

@@ -290,10 +290,12 @@ unchanged polling does not produce a log entry.
 
 Test-selected postprocessing binds caller rank, checkpoint path, and SHA-256 to
 both the frozen workspace ranking and canonical `run_manifest.tsv` before
-rehash or top-k filtering. `hparam-external-eval` additionally accepts only
-`completed` or `finished` runs. The direct external-eval and logits-export
-helpers reject SSH-owned candidates before output; remote execution belongs to
-a workflow that explicitly stages configs and collects results.
+top-k filtering, then physically rehashes only retained candidates; explicit
+all-candidate workflows still rehash every candidate. `hparam-external-eval`
+additionally accepts only `completed` or `finished` runs. The direct
+external-eval and logits-export helpers reject SSH-owned candidates before
+output; remote execution belongs to a workflow that explicitly stages configs
+and collects results.
 
 `experiment-run` owns the resumable source-ranking-to-external-evaluation flow.
 It validates the strict spec without launching in dry-run mode, waits for
