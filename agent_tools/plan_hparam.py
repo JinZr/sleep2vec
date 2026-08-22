@@ -676,6 +676,7 @@ def write_hparam_plan(
             run.update(
                 {
                     "scheduler_type": "slurm",
+                    "scheduler_direct_controller": str(slurm_resources["direct_controller"]).lower(),
                     "scheduler_submit_token": token,
                     "scheduler_script": str(scheduler_script),
                     "scheduler_script_sha256": file_sha256(write_scheduler_script),

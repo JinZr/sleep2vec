@@ -22,6 +22,7 @@ MONITOR_EXIT_CODE_PREFIX = "AGENT_TOOLS_EXIT_CODE="
 PROCESS_IDENTITY_FIELDS = {"pid", "process_group_id", "process_start_token"}
 SCHEDULER_PLAN_IDENTITY_FIELDS = {
     "scheduler_type",
+    "scheduler_direct_controller",
     "scheduler_submit_token",
     "scheduler_script",
     "scheduler_script_sha256",
@@ -1137,8 +1138,19 @@ def scheduler_type(row: dict[str, Any]) -> str:
     return value
 
 
+def scheduler_direct_controller(row: dict[str, Any]) -> bool:
+    raw_value = row.get("scheduler_direct_controller")
+    if raw_value in (None, ""):
+        return False
+    value = str(raw_value)
+    if value not in {"false", "true"}:
+        raise ValueError(f"scheduler_direct_controller must be true or false: {value!r}")
+    return value == "true"
+
+
 def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
     backend = scheduler_type(row)
+    scheduler_direct_controller(row)
     populated_process = {field for field in PROCESS_IDENTITY_FIELDS if row.get(field) not in (None, "")}
     populated_scheduler = {
         field for field in SCHEDULER_IDENTITY_FIELDS - {"scheduler_type"} if row.get(field) not in (None, "")
@@ -1149,7 +1161,7 @@ def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
         return
     if populated_process:
         raise ValueError("Slurm managed run cannot define PID process identity.")
-    required_plan_fields = SCHEDULER_PLAN_IDENTITY_FIELDS - {"scheduler_type"}
+    required_plan_fields = SCHEDULER_PLAN_IDENTITY_FIELDS - {"scheduler_type", "scheduler_direct_controller"}
     missing_plan_fields = sorted(field for field in required_plan_fields if row.get(field) in (None, ""))
     if missing_plan_fields:
         raise ValueError(f"Slurm managed run is missing scheduler plan identity: {', '.join(missing_plan_fields)}")

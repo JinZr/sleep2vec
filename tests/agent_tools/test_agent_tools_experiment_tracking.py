@@ -1172,15 +1172,21 @@ def test_remote_monitor_uses_transport_identity_without_persisting_it(tmp_path: 
 
 
 @pytest.mark.parametrize(
-    ("remote", "expected_execution"),
+    ("remote", "expected_transport"),
     [(None, {"target": "local"}), ("unit-host", {"target": "ssh", "host": "unit-host"})],
     ids=["local", "ssh"],
+)
+@pytest.mark.parametrize(
+    "controller_topology",
+    [None, "false", "true"],
+    ids=["legacy-default", "federation", "direct-controller"],
 )
 def test_experiment_monitor_routes_slurm_observation_by_transport(
     tmp_path: Path,
     monkeypatch,
     remote: str | None,
-    expected_execution: dict[str, str],
+    expected_transport: dict[str, str],
+    controller_topology: str | None,
 ):
     row = {
         "step_id": "train-model",
@@ -1196,6 +1202,8 @@ def test_experiment_monitor_routes_slurm_observation_by_transport(
         "host": "",
         "status": "submitting",
     }
+    if controller_topology is not None:
+        row["scheduler_direct_controller"] = controller_topology
     observed = []
 
     def fake_slurm_observation(owner_dir, execution, observed_row, *, health):
@@ -1225,6 +1233,9 @@ def test_experiment_monitor_routes_slurm_observation_by_transport(
     observation = experiment_tracking.monitor_run_row(tmp_path, dict(row), [dict(row)], remote=remote)
 
     assert observed[0][0] == tmp_path
+    expected_execution = dict(expected_transport)
+    if controller_topology == "true":
+        expected_execution["scheduler"] = {"direct_controller": True}
     assert observed[0][1] == expected_execution
     assert observed[0][3] is True
     assert observation["status"] == "queued"
@@ -1241,6 +1252,25 @@ def test_experiment_monitor_routes_slurm_observation_by_transport(
         assert observed[0][2]["host"] == "unit-host"
         assert "target" not in observation
         assert "host" not in observation
+
+
+def test_experiment_monitor_rejects_invalid_controller_topology_before_scheduler_query(tmp_path: Path, monkeypatch):
+    row = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "scheduler_type": "slurm",
+        "scheduler_direct_controller": "True",
+        "target": "local",
+        "status": "submitting",
+    }
+    monkeypatch.setattr(
+        experiment_tracking.managed_scheduler,
+        "observe_slurm_run",
+        lambda *_args, **_kwargs: pytest.fail("invalid topology must fail before querying Slurm"),
+    )
+
+    with pytest.raises(ValueError, match="scheduler_direct_controller must be true or false"):
+        experiment_tracking.monitor_run_row(tmp_path, row, [dict(row)])
 
 
 def test_experiment_monitor_does_not_observe_unlaunched_slurm_run(tmp_path: Path, monkeypatch):

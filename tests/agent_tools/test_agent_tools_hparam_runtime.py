@@ -385,6 +385,17 @@ def test_hparam_plan_records_monitor_owned_exit_status_contract(tmp_path: Path):
     assert MONITOR_EXIT_CODE_PREFIX in script
 
 
+@pytest.mark.parametrize("direct_controller", [False, True])
+def test_slurm_plan_freezes_controller_topology(tmp_path: Path, direct_controller: bool):
+    plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=direct_controller)
+    run = plan["runs"][0]
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    expected = str(direct_controller).lower()
+
+    assert run["scheduler_direct_controller"] == expected
+    assert canonical["scheduler_direct_controller"] == expected
+
+
 @pytest.mark.parametrize(
     ("variant", "gpus_per_run"),
     [("sleep2vec", 1), ("sleep2vec", 2), ("sleep2vec2", 2), ("sleep2expert", 2)],

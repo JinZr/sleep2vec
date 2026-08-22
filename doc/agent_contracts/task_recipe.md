@@ -230,8 +230,10 @@ reconciled by the exact token and is never retried blindly. Monitoring uses
 `sacct` allocation when the job has aged out of the controller. It requires
 `--clusters=<scheduler_cluster>` for bound-cluster routing unless the frozen
 recipe explicitly declares `direct_controller: true`; local transport alone
-does not establish direct-controller topology. Terminal truth requires both a
-terminal scheduler observation and the matching atomic terminal sidecar;
+does not establish direct-controller topology. New Slurm plans freeze that
+choice in each canonical run so `experiment-monitor` preserves it without
+reinterpreting transport. Terminal truth requires both a terminal scheduler
+observation and the matching atomic terminal sidecar;
 incomplete terminal evidence is `unknown_scheduler`. Stop first records the
 frozen scheduler job id, nonterminal `stopping`, request time, and reason in the
 canonical manifest, then uses that job id with `scancel`, not PID evidence. An
