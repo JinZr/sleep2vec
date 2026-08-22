@@ -7,14 +7,14 @@ name: unit_hparam
 task: hparam_tune
 variant: sleep2vec
 experiment: {id: unit-experiment, title: Unit experiment, objective: Exercise tuning, root: artifacts/experiments/unit, baseline: {type: none, rationale: First run.}}
-step: {id: tune, phase: train, purpose: Select a validation configuration.}
+step: {id: tune, phase: train, purpose: Select a configuration on the frozen test metric.}
 inputs:
   config: configs/example.yaml
   label_name: ahi
 evaluation_policy:
-  selection_split: val
-  external_test_locked: true
-  test_after_fit: false
+  selection_metric: test_ahi_pearson
+  selection_split: test
+  external_test_locked: false
 search:
   method: grid
   max_runs: 1
@@ -77,8 +77,8 @@ The closed section fields are:
   - `infer` / `evaluate`: `external_test_locked`, `final_test_unlocked`.
   - `hparam_tune`: `external_test_locked`, `final_eval_split`, `final_test_unlocked`, `require_manual_unlock_for_final_test`, `selection_metric`, `selection_mode`, `selection_split`, `test_after_fit`.
   - `sleep2stat`: `external_test_locked`.
-  - For direct `finetune`, omitted `test_after_fit` is materialized as `true` with source `policy_default` before consultation and frozen in the resolved recipe. Generated commands always render `--test-after-fit` or `--no-test-after-fit`; set `test_after_fit: false` explicitly to opt out.
-  - Every `hparam_tune` recipe must explicitly set `test_after_fit: false`. Trial preflight and commands remain validation-first; `final_test_unlocked` separately controls selected-model final evaluation after validation checkpoint selection is frozen.
+  - For `finetune` and `hparam_tune`, omitted `test_after_fit` is materialized as `true` with source `policy_default` before consultation and frozen in the resolved recipe. Generated commands always render `--test-after-fit` or `--no-test-after-fit`; set `test_after_fit: false` explicitly to opt out.
+  - Hparam selection uses the explicitly frozen `selection_split`. Test-selected tuning requires `selection_split: test`, `external_test_locked: false`, and `test_after_fit: true`; its `selection_metric` may be a `test_*` metric distinct from the validation checkpoint monitor in `finetune.task.monitor`. The planner derives `--test-all-checkpoints-after-fit` for this policy; it is not a second recipe field. Every regular non-alias saved `epoch=*.ckpt` is evaluated, and selection requires its finite checkpoint-level test metric.
   - Concrete `external_test_locked` values must be YAML booleans; strings and numbers are not coerced.
 - Non-hparam `execution`: every task accepts `host`, `path_context`, `path_validation`, `target`, and an absolute `workdir` used for cwd/PYTHONPATH. Relative runtime-semantic paths are validated from that workdir, or `REPO_ROOT` when it is omitted; local relative `inputs.config` remains a planning-source locator under `REPO_ROOT`. Only `infer` / `evaluate` additionally accept `python` and `runtime_commit`; declaring either creates an all-or-none local runtime identity with `workdir`, where `python` is one executable name or path without whitespace, arguments, or `~` shorthand and `runtime_commit` is a lowercase 40-character Git commit SHA. Other non-hparam tasks reject these two inert identity fields. `experiment-run` supplies the complete identity for every managed attempt.
 - Hparam `execution`: `conda_env`, `env`, `gpu_pool`, `gpus_per_run`, `host`, `max_concurrent`, `path_context`, `path_validation`, `python`, `runtime_commit`, `scheduler`, `target`, `wandb_group`, `wandb_project`, `workdir`. `python` is one target executable name or path without whitespace, arguments, or `~` shorthand and `runtime_commit` is a full Git hash; Conda wrapping belongs in `conda_env`. They may be omitted only for a local target at `REPO_ROOT` without `conda_env`; planning then freezes the current manager interpreter and manager repository HEAD. SSH targets, separate local workdirs, and conda-wrapped targets require both fields explicitly. `env` has dynamic environment-variable names but may not duplicate `PYTHONPATH` or the explicit W&B fields. Local relative `final_eval_config_path` remains a planning-source locator under `REPO_ROOT` before it is frozen.

@@ -229,6 +229,7 @@ def _runtime_args(config: Path, tmp_path: Path, *, version_name: str, epochs: in
         results_csv_path=tmp_path / "results.csv",
         seed=4523,
         test_after_fit=test_after_fit,
+        test_all_checkpoints_after_fit=False,
         ckpt_every_n_epochs=1,
     )
 
@@ -619,6 +620,19 @@ def test_negative_epochs_fail_before_run_directory(tmp_path: Path, monkeypatch, 
     assert not (tmp_path / "log-finetune" / version_name).exists()
 
 
+def test_all_checkpoint_mode_requires_test_after_fit_and_positive_epochs(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    args = _runtime_args(config, tmp_path, version_name="invalid-all-checkpoints", test_after_fit=False)
+    args.test_all_checkpoints_after_fit = True
+    with pytest.raises(ValueError, match="requires --test-after-fit"):
+        baseline_runtime.train_and_save(args, object())
+
+    args.test_after_fit = True
+    args.epochs = 0
+    with pytest.raises(ValueError, match="requires --epochs greater than 0"):
+        baseline_runtime.train_and_save(args, object())
+
+
 @pytest.mark.parametrize("ckpt_every_n_epochs", [0, -1])
 def test_nonpositive_checkpoint_interval_fails_before_run_directory(
     tmp_path: Path,
@@ -743,6 +757,39 @@ def test_test_after_fit_writers_receive_test_eval_split(tmp_path: Path, monkeypa
 
     assert seen_splits
     assert set(seen_splits) == {"test"}
+
+
+def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_metrics(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        [
+            "001,train,50,0",
+            "002,train,60,1",
+            "003,val,55,0",
+            "004,val,65,1",
+            "005,test,58,0",
+            "006,test,68,1",
+        ],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    args = _runtime_args(config, tmp_path, version_name="all-checkpoints", epochs=2, test_after_fit=True)
+    args.test_all_checkpoints_after_fit = True
+
+    baseline_runtime.train_and_save(args, cfg)
+
+    run_dir = tmp_path / "log-finetune" / "all-checkpoints"
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    checkpoint_results = manifest["checkpoint_test_results"]
+    assert manifest["test_all_checkpoints_after_fit"] is True
+    assert {row["epoch"] for row in checkpoint_results} == {0, 1}
+    assert all(Path(row["checkpoint_path"]).is_absolute() for row in checkpoint_results)
+    assert {Path(row["checkpoint_path"]).name for row in checkpoint_results} == {"epoch=00.ckpt", "epoch=01.ckpt"}
+    best_epoch = torch.load(run_dir / "checkpoints" / "best.ckpt", weights_only=False)["epoch"]
+    assert checkpoint_results[-1]["epoch"] == best_epoch
+    best_result = next(row for row in checkpoint_results if row["epoch"] == best_epoch)
+    assert manifest["metrics"] == best_result["metrics"]
 
 
 def test_infer_run_inference_callable_validates_and_delegates(tmp_path: Path, monkeypatch):

@@ -42,6 +42,16 @@ while leaving the current health poll's `checkpoint_count` blank.
 
 Runtime `run_manifest.json` supplies metrics and checkpoint evidence only. It does not own lifecycle status. A truly missing runtime manifest means evidence is not yet available; an existing alias, non-regular file, invalid encoding/JSON, or non-mapping payload is corrupt.
 
+For test-selected hparam runs, the terminal runtime manifest also contains
+`test_all_checkpoints_after_fit: true` and `checkpoint_test_results`, one
+`{checkpoint_path, epoch, metrics}` mapping for every regular non-alias
+`epoch=*.ckpt` in the frozen checkpoint directory.
+Top-level `metrics` remains the test result for the validation-best checkpoint;
+checkpoint-level hparam selection uses only the complete nested evidence. The
+selector hashes each checkpoint, writes the plan-local all-checkpoint ranking,
+and keeps `run_manifest.tsv` at one lifecycle row per run by projecting only
+that run's best test-ranked checkpoint.
+
 For a pipeline attempt, `result_root` is a single-use empty directory and the
 runtime manifest beneath it must be unique and match the frozen inference
 inputs. Pipeline projections cannot infer success from files other than that

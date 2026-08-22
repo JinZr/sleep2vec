@@ -503,6 +503,38 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
     assert "--wandb-mode" not in script
 
 
+def test_sex_age_baseline_hparam_test_selection_uses_policy_default(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    recipe = _hparam_recipe(tmp_path, config)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].update(
+        {
+            "selection_metric": "test_c_index",
+            "selection_split": "test",
+            "external_test_locked": False,
+        }
+    )
+    payload["evaluation_policy"].pop("test_after_fit")
+    payload["decisions"]["external_test_locked"] = {"value": False, "source": "explicit_recipe"}
+    payload["decisions"]["train_val_test_policy"] = {"value": "test", "source": "explicit_recipe"}
+    _write_yaml(recipe, payload)
+    plan_dir = tmp_path / "plan-hparam-test-selection"
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 0
+    scripts = list((plan_dir / "runs").glob("run-000--*/launch.sh"))
+    assert len(scripts) == 1
+    script = scripts[0].read_text()
+    assert "python -m sex_age_baseline.finetune" in script
+    assert "--test-after-fit" in script
+    assert "--no-test-after-fit" not in script
+    assert "--test-all-checkpoints-after-fit" in script
+    assert "--wandb-project" not in script
+    assert "--wandb-group" not in script
+    assert "--wandb-mode" not in script
+
+
 def test_sex_age_baseline_slurm_multi_gpu_is_rejected_before_plan_write(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     recipe = _hparam_recipe(

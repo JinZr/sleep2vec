@@ -247,8 +247,8 @@ def _adaptive_recipe(
                 "selection_metric": "val_ahi_pearson",
                 "selection_mode": "max",
                 "selection_split": "val",
-                "external_test_locked": True,
-                "test_after_fit": False,
+                "external_test_locked": False,
+                "test_after_fit": True,
                 "final_eval_split": "test",
                 "final_test_unlocked": False,
                 "require_manual_unlock_for_final_test": True,
@@ -256,7 +256,7 @@ def _adaptive_recipe(
             "decisions": {
                 "task": {"value": "hparam_tune", "source": "explicit_recipe"},
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
-                "external_test_locked": {"value": True, "source": "explicit_recipe"},
+                "external_test_locked": {"value": False, "source": "explicit_recipe"},
                 "train_val_test_policy": {"value": "external optimized adaptive", "source": "explicit_recipe"},
                 "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
@@ -346,6 +346,20 @@ def test_adaptive_recipe_requires_explicit_test_feedback_flag(tmp_path: Path):
 
     assert result.returncode == 1
     assert "adaptive.test_feedback_for_selection" in result.stdout
+
+
+def test_adaptive_default_test_objective_requires_test_after_fit(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"].pop("objective_metric")
+    payload["evaluation_policy"]["test_after_fit"] = False
+    payload["decisions"]["test_after_fit"] = {"value": False, "source": "explicit_recipe"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
+
+    assert result.returncode == 2
+    assert "test-metric adaptive objective requires test_after_fit=true" in result.stdout
 
 
 def test_adaptive_runtime_requires_literal_true_enabled_flag():
@@ -1502,7 +1516,11 @@ def test_adaptive_init_creates_round_zero_without_modifying_original_recipe(tmp_
     assert result.returncode == 0, result.stderr
     assert recipe.read_text() == before
     assert (workflow_dir / "adaptive" / "workflow.json").exists()
-    assert (workflow_dir / "adaptive" / "rounds" / "round_000" / "plan.json").exists()
+    round_plan_path = workflow_dir / "adaptive" / "rounds" / "round_000" / "plan.json"
+    assert round_plan_path.exists()
+    round_plan = json.loads(round_plan_path.read_text())
+    assert "--test-after-fit" in round_plan["runs"][0]["command"]
+    assert "--no-test-after-fit" not in round_plan["runs"][0]["command"]
     assert (workflow_dir / "adaptive" / "run_registry.tsv").exists()
     assert "adaptive_init" in (tmp_path / "events.jsonl").read_text()
 

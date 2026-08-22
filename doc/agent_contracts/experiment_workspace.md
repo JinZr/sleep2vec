@@ -164,10 +164,10 @@ invalid and are not repaired in place.
   `scancel`; an interrupted request is retriable only with the same reason, and
   `stopped` is committed only after the matching job is observed as
   `CANCELLED`.
-- `hparam-select` writes step-scoped validation ranking.
+- `hparam-select` writes a step-scoped ranking using the metric and split frozen in the hparam recipe. For test-selected tuning it first writes the invoking plan's complete checkpoint-level audit ranking, then projects the best checkpoint per run into the existing workspace ranking and canonical one-row-per-run manifest.
 - `hparam-adaptive-*` appends rounds and commits replacements through the canonical owner.
 - `experiment-note` atomically appends one evidence-backed research-log entry and never changes lifecycle state.
-- `experiment-run` is the explicit, resumable external-evaluation launcher. Dry-run starts nothing; execute waits for successful source plans, freezes validation-selected checkpoints, and manages the declared job matrix.
+- `experiment-run` is the explicit, resumable external-evaluation launcher. Dry-run starts nothing; execute waits for successful source plans, freezes checkpoints selected by each source plan's registered ranking, and manages the declared job matrix.
 - `experiment-rank` writes experiment-wide ranking.
 - `experiment-finalize` requires no active runs and a non-empty final report.
 

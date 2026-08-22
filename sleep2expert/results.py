@@ -526,6 +526,7 @@ def save_training_run_manifest(
     survival_per_disease_metrics_csv_path: str | Path | None = None,
     multilabel_per_disease_metrics_csv_path: str | Path | None = None,
     metrics: Mapping[str, Any] | None = None,
+    checkpoint_test_results: Sequence[Mapping[str, Any]] | None = None,
 ) -> None:
     if not is_rank_zero_process():
         return
@@ -547,6 +548,8 @@ def save_training_run_manifest(
         "best_model_score": _json_safe(best_model_score),
         "last_checkpoint_path": _stringify_optional_path(last_checkpoint_path),
         "test_after_fit": getattr(args, "test_after_fit", None),
+        "test_all_checkpoints_after_fit": getattr(args, "test_all_checkpoints_after_fit", False),
+        "checkpoint_test_results": list(checkpoint_test_results or []),
         "results_csv_path": _stringify_optional_path(results_csv_path),
         "survival_per_disease_metrics_csv_path": _stringify_optional_path(survival_per_disease_metrics_csv_path),
         "multilabel_per_disease_metrics_csv_path": _stringify_optional_path(multilabel_per_disease_metrics_csv_path),

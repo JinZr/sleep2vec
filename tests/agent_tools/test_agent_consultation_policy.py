@@ -500,7 +500,10 @@ def test_hparam_tune_missing_external_test_locked_needs_user_input(tmp_path: Pat
     assert "external_test_locked" in result.stdout
 
 
-def test_hparam_tune_selection_split_test_needs_user_input(tmp_path: Path):
+@pytest.mark.parametrize(("test_after_fit", "expected_exit"), [(True, 0), (False, 2)])
+def test_hparam_tune_selection_split_test_requires_trial_test_metrics(
+    tmp_path: Path, test_after_fit: bool, expected_exit: int
+):
     recipe = {
         "name": "unit_tune",
         "task": "hparam_tune",
@@ -508,20 +511,21 @@ def test_hparam_tune_selection_split_test_needs_user_input(tmp_path: Path):
         "base_recipe": str(write_finetune_recipe(tmp_path)),
         "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
         "evaluation_policy": {
-            "selection_metric": "val_ahi_pearson",
+            "selection_metric": "test_ahi_pearson",
             "selection_mode": "max",
             "selection_split": "test",
-            "external_test_locked": True,
-            "test_after_fit": False,
-            "final_eval_split": "validation",
+            "external_test_locked": False,
+            "test_after_fit": test_after_fit,
+            "final_eval_split": "test",
             "final_test_unlocked": False,
             "require_manual_unlock_for_final_test": True,
         },
         "decisions": {
             "task": {"value": "hparam_tune", "source": "explicit_recipe"},
             "label_name": {"value": "ahi", "source": "explicit_recipe"},
-            "external_test_locked": {"value": True, "source": "explicit_recipe"},
-            "train_val_test_policy": {"value": "bad", "source": "explicit_recipe"},
+            "external_test_locked": {"value": False, "source": "explicit_recipe"},
+            "test_after_fit": {"value": test_after_fit, "source": "explicit_recipe"},
+            "train_val_test_policy": {"value": "test", "source": "explicit_recipe"},
             "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
         },
@@ -536,8 +540,51 @@ def test_hparam_tune_selection_split_test_needs_user_input(tmp_path: Path):
         cwd=Path.cwd(),
     )
 
-    assert result.returncode == 2
-    assert "selection_split=test" in result.stdout
+    assert result.returncode == expected_exit
+    if not test_after_fit:
+        assert "selection_split=test requires test_after_fit=true" in result.stdout
+
+
+@pytest.mark.parametrize("selection_metric", ["val_ahi_pearson", 1, []])
+def test_hparam_tune_test_selection_rejects_non_test_metric(tmp_path: Path, selection_metric: object):
+    recipe = {
+        "name": "unit_tune",
+        "task": "hparam_tune",
+        "variant": "sleep2vec",
+        "base_recipe": str(write_finetune_recipe(tmp_path)),
+        "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
+        "evaluation_policy": {
+            "selection_metric": selection_metric,
+            "selection_mode": "max",
+            "selection_split": "test",
+            "external_test_locked": False,
+            "test_after_fit": True,
+            "final_eval_split": "test",
+            "final_test_unlocked": False,
+            "require_manual_unlock_for_final_test": True,
+        },
+        "decisions": {
+            "task": {"value": "hparam_tune", "source": "explicit_recipe"},
+            "label_name": {"value": "ahi", "source": "explicit_recipe"},
+            "external_test_locked": {"value": False, "source": "explicit_recipe"},
+            "test_after_fit": {"value": True, "source": "explicit_recipe"},
+            "train_val_test_policy": {"value": "test", "source": "explicit_recipe"},
+            "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+            "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
+        },
+    }
+
+    result = _run(
+        "doctor",
+        "--recipe",
+        str(write_yaml(tmp_path / "tune.yaml", recipe)),
+        "--output-dir",
+        str(tmp_path / "doctor"),
+        cwd=Path.cwd(),
+    )
+
+    assert result.returncode == 1
+    assert "selection_split=test requires a test_* selection_metric" in result.stdout
 
 
 def test_hparam_tune_blocks_on_base_config_blocking_issues(tmp_path: Path):

@@ -317,7 +317,6 @@ def hparam_tune_issues(
         "selection_mode": ("evaluation_policy.selection_mode", "selection_mode"),
         "selection_split": ("evaluation_policy.selection_split", "train_val_test_policy"),
         "external_test_locked": ("evaluation_policy.external_test_locked", "external_test_locked"),
-        "test_after_fit": ("evaluation_policy.test_after_fit", "test_after_fit"),
         "final_eval_split": ("evaluation_policy.final_eval_split", "final_eval_split"),
         "final_test_unlocked": ("evaluation_policy.final_test_unlocked", "final_eval_unlock"),
         "require_manual_unlock_for_final_test": (
@@ -402,16 +401,6 @@ def hparam_tune_issues(
                 {"max_runs": max_runs},
             )
         )
-    if evaluation.get("selection_split") == "test":
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "selection_split",
-                "selection_split=test is not allowed for model selection.",
-                "Which validation split should be used for model selection?",
-                {"evaluation_policy": evaluation},
-            )
-        )
     user_external_lock = decisions.get("external_test_locked")
     has_external_lock = (
         "external_test_locked" in local_evaluation
@@ -421,6 +410,23 @@ def hparam_tune_issues(
     if not has_external_lock:
         issues.append(needs_issue("external_test_locked", "external_test_locked must be explicit.", high_impact))
     test_after_fit = decisions["test_after_fit"].value
+    external_test_locked = evaluation.get("external_test_locked")
+    selection_split = evaluation.get("selection_split")
+    selection_metric = evaluation.get("selection_metric")
+    if (
+        selection_split == "test"
+        and selection_metric not in (None, "", "ASK_USER")
+        and (not isinstance(selection_metric, str) or not selection_metric.startswith("test_"))
+    ):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "selection_metric",
+                "selection_split=test requires a test_* selection_metric.",
+                None,
+                {"evaluation_policy": evaluation},
+            )
+        )
     if type(test_after_fit) is not bool:
         issues.append(
             DecisionIssue(
@@ -431,14 +437,38 @@ def hparam_tune_issues(
                 {"value": test_after_fit, "evaluation_policy": evaluation},
             )
         )
-    elif test_after_fit:
+    elif test_after_fit and external_test_locked is True:
         issues.append(
             DecisionIssue(
                 DecisionStatus.NEEDS_USER_INPUT,
                 "test_after_fit",
-                "Hyper-parameter trials require test_after_fit=false until validation checkpoint selection is frozen.",
-                "Should test_after_fit be false so final test evaluation remains a separate unlocked step?",
+                "test_after_fit=true would evaluate test while external_test_locked=true.",
+                "Should test_after_fit be false, or should external_test_locked=false?",
                 {"evaluation_policy": evaluation},
+            )
+        )
+    if selection_split == "test" and test_after_fit is False:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.NEEDS_USER_INPUT,
+                "test_after_fit",
+                (
+                    "selection_split=test requires test_after_fit=true so every trial produces the frozen "
+                    "selection metric."
+                ),
+                "Should test_after_fit be true for test-selected hyper-parameter tuning?",
+                {"evaluation_policy": evaluation},
+            )
+        )
+    objective_metric = str(adaptive.get("objective_metric") or "test_auroc")
+    if adaptive.get("enabled") is True and objective_metric.startswith("test_") and test_after_fit is False:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.NEEDS_USER_INPUT,
+                "test_after_fit",
+                "A test-metric adaptive objective requires test_after_fit=true so trials produce objective evidence.",
+                "Should test_after_fit be true for this adaptive test objective?",
+                {"objective_metric": objective_metric, "evaluation_policy": evaluation},
             )
         )
     if evaluation.get("final_eval_split") == "test" and "require_manual_unlock_for_final_test" not in evaluation:
