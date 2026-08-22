@@ -43,7 +43,16 @@ class SlurmCommandError(RuntimeError):
         super().__init__(f"Slurm {action} failed: {detail}")
 
 
-RESOURCE_FIELDS = {"type", "partition", "cpus_per_task", "memory", "walltime", "nice", "nodelist"}
+RESOURCE_FIELDS = {
+    "type",
+    "partition",
+    "cpus_per_task",
+    "memory",
+    "walltime",
+    "nice",
+    "nodelist",
+    "direct_controller",
+}
 _DISTRIBUTED_ENV_FIELDS = {"RANK", "LOCAL_RANK", "WORLD_SIZE"}
 
 
@@ -73,6 +82,9 @@ def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> dict[st
     nodelist = str(scheduler.get("nodelist") or "")
     if nodelist and re.fullmatch(r"[A-Za-z0-9_.\-,\[\]]+", nodelist) is None:
         raise ValueError("execution.scheduler.nodelist must be a Slurm node-list expression.")
+    direct_controller = scheduler.get("direct_controller", False)
+    if type(direct_controller) is not bool:
+        raise ValueError("execution.scheduler.direct_controller must be a boolean.")
     return {
         "partition": partition,
         "cpus_per_task": cpus_per_task,
@@ -80,6 +92,7 @@ def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> dict[st
         "walltime": walltime,
         "nice": nice,
         "nodelist": nodelist,
+        "direct_controller": direct_controller,
         "gpus_per_run": gpus,
     }
 
@@ -580,8 +593,8 @@ def cancel(
 
 def _follow_up_cluster_name(execution: dict[str, Any], cluster: str | None) -> str:
     cluster_name = _cluster_name(cluster)
-    # A direct controller already targets its local cluster; --clusters requires federation accounting.
-    return "" if execution.get("target", "local") == "local" else cluster_name
+    scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+    return "" if scheduler.get("direct_controller") is True else cluster_name
 
 
 def normalize_state(value: str) -> str:

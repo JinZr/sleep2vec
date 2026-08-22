@@ -429,6 +429,12 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         if target == "ssh" and (not isinstance(host, str) or not host.strip()):
             raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
         execution = {"target": target, "host": host}
+        recipe_execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        recipe_scheduler = (
+            recipe_execution.get("scheduler") if isinstance(recipe_execution.get("scheduler"), dict) else {}
+        )
+        if recipe_scheduler.get("direct_controller") is True:
+            execution["scheduler"] = {"direct_controller": True}
 
         if backend == "slurm":
             job_id = str(previous.get("scheduler_job_id") or "")

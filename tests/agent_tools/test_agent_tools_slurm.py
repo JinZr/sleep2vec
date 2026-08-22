@@ -384,7 +384,12 @@ def test_accounting_job_rejects_duplicate_records_without_one_token_match(monkey
         slurm.accounting_job({"target": "local"}, "3880", submit_token="agent-tools-unit")
 
 
-def test_follow_up_commands_route_to_bound_cluster(monkeypatch):
+@pytest.mark.parametrize(
+    "execution",
+    [{"target": "local"}, {"target": "ssh", "host": "scheduler"}],
+    ids=["local", "ssh"],
+)
+def test_follow_up_commands_route_to_bound_cluster(monkeypatch, execution: dict):
     calls = []
     results = iter(
         [
@@ -395,6 +400,7 @@ def test_follow_up_commands_route_to_bound_cluster(monkeypatch):
                 "JobId=3880 JobState=RUNNING Reason=None NodeList=h20-bj-96 Comment=token ExitCode=0:0\n",
                 "",
             ),
+            subprocess.CompletedProcess([], 0, "3880|COMPLETED|0:0|h20-bj-96|token\n", ""),
             subprocess.CompletedProcess([], 0, "", ""),
         ]
     )
@@ -405,21 +411,40 @@ def test_follow_up_commands_route_to_bound_cluster(monkeypatch):
 
     monkeypatch.setattr(slurm, "run_command", fake_run_command)
 
-    execution = {"target": "ssh", "host": "scheduler"}
     assert slurm.active_jobs(execution, job_id="3880", cluster="wuji-h20") == [
         slurm.JobObservation("3880", "RUNNING", "", "h20-bj-96", "token")
     ]
     assert slurm.show_job(execution, "3880", cluster="wuji-h20") is not None
+    assert slurm.accounting_job(execution, "3880", submit_token="token", cluster="wuji-h20") is not None
     slurm.cancel(execution, "3880", cluster="wuji-h20")
 
     assert [argv for _execution, argv, _timeout in calls] == [
         ["squeue", "--noheader", "--format=%i|%T|%R|%N|%k", "--clusters=wuji-h20", "--jobs", "3880"],
         ["scontrol", "--clusters=wuji-h20", "show", "job", "--oneliner", "3880"],
+        [
+            "sacct",
+            "--duplicates",
+            "--noheader",
+            "--parsable2",
+            "--allocations",
+            "--clusters=wuji-h20",
+            "--jobs",
+            "3880",
+            "--format=JobIDRaw,State%64,ExitCode,NodeList,Comment%64",
+        ],
         ["scancel", "--clusters=wuji-h20", "3880"],
     ]
 
 
-def test_follow_up_commands_do_not_route_direct_controller_through_federation(monkeypatch):
+@pytest.mark.parametrize(
+    "execution",
+    [
+        {"target": "local", "scheduler": {"direct_controller": True}},
+        {"target": "ssh", "host": "scheduler", "scheduler": {"direct_controller": True}},
+    ],
+    ids=["local", "ssh"],
+)
+def test_follow_up_commands_do_not_route_direct_controller_through_federation(monkeypatch, execution: dict):
     calls = []
     results = iter(
         [
@@ -430,6 +455,7 @@ def test_follow_up_commands_do_not_route_direct_controller_through_federation(mo
                 "JobId=3880 JobState=RUNNING Reason=None NodeList=h20-bj-96 Comment=token ExitCode=0:0\n",
                 "",
             ),
+            subprocess.CompletedProcess([], 0, "3880|COMPLETED|0:0|h20-bj-96|token\n", ""),
             subprocess.CompletedProcess([], 0, "", ""),
         ]
     )
@@ -440,9 +466,9 @@ def test_follow_up_commands_do_not_route_direct_controller_through_federation(mo
 
     monkeypatch.setattr(slurm, "run_command", fake_run_command)
 
-    execution = {"target": "local"}
     assert slurm.active_jobs(execution, job_id="3880", cluster="wuji-h20")
     assert slurm.show_job(execution, "3880", cluster="wuji-h20") is not None
+    assert slurm.accounting_job(execution, "3880", submit_token="token", cluster="wuji-h20") is not None
     slurm.cancel(execution, "3880", cluster="wuji-h20")
 
     assert all(not any(arg.startswith("--clusters=") for arg in argv) for _execution, argv, _timeout in calls)
@@ -610,6 +636,7 @@ def test_normalize_resources_freezes_supported_slurm_fields():
             "walltime": "1-00:00:00",
             "nice": 100,
             "nodelist": "h20-bj-[94,96]",
+            "direct_controller": True,
         },
         2,
     ) == {
@@ -619,6 +646,7 @@ def test_normalize_resources_freezes_supported_slurm_fields():
         "walltime": "1-00:00:00",
         "nice": 100,
         "nodelist": "h20-bj-[94,96]",
+        "direct_controller": True,
         "gpus_per_run": 2,
     }
 
@@ -631,6 +659,7 @@ def test_normalize_resources_freezes_supported_slurm_fields():
         ("walltime", "01:60:00", "HH:MM:SS"),
         ("nice", -1, "0 to 10000"),
         ("nodelist", "node;touch", "node-list expression"),
+        ("direct_controller", "true", "boolean"),
     ],
 )
 def test_normalize_resources_rejects_unsafe_values(field: str, value, message: str):
