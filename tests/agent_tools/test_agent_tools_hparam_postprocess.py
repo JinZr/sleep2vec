@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from agent_tools import cli, hparam_postprocess
-from agent_tools.experiment_workspace import merge_run_manifest
+from agent_tools.experiment_workspace import file_sha256, merge_run_manifest
 from agent_tools.models import REPO_ROOT
 
 _RUNTIME_COMMIT = subprocess.run(
@@ -79,6 +79,23 @@ def _hparam_recipe(
             },
         },
     )
+
+
+def _test_selected_hparam_recipe(tmp_path: Path) -> Path:
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path)})
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].update(
+        {
+            "selection_metric": "test_ahi_pearson",
+            "selection_split": "test",
+            "external_test_locked": False,
+            "test_after_fit": True,
+        }
+    )
+    payload.setdefault("runtime", {})["ckpt_every_n_epochs"] = 1
+    payload["decisions"]["external_test_locked"] = {"value": False, "source": "explicit_recipe"}
+    payload["decisions"]["train_val_test_policy"] = {"value": "test", "source": "explicit_recipe"}
+    return write_yaml(recipe, payload)
 
 
 def _read_table(path: Path) -> list[dict[str, str]]:
@@ -810,6 +827,85 @@ def test_selected_candidates_reject_registered_selection_split_drift(tmp_path: P
             [{"step_id": run["step_id"], "run_id": run["run_id"], "rank": "1"}],
             plan=plan,
         )
+
+
+@pytest.mark.parametrize("evidence_case", ["valid", "missing-hash", "hash-drift"])
+def test_test_selected_candidates_require_frozen_checkpoint_hash(
+    tmp_path: Path,
+    evidence_case: str,
+):
+    recipe = _test_selected_hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr or result.stdout
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    run = plan["runs"][0]
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("frozen checkpoint")
+    row = {
+        "step_id": run["step_id"],
+        "run_id": run["run_id"],
+        "rank": 1,
+        "checkpoint_path": str(checkpoint),
+    }
+    if evidence_case != "missing-hash":
+        row["checkpoint_sha256"] = file_sha256(checkpoint)
+    if evidence_case == "hash-drift":
+        checkpoint.write_text("drifted checkpoint")
+
+    if evidence_case == "valid":
+        selected, _owner_plans = hparam_postprocess._selected_candidate_rows([row], plan=plan)
+        assert selected[0]["checkpoint_sha256"] == row["checkpoint_sha256"]
+        return
+    error = "missing frozen checkpoint_sha256" if evidence_case == "missing-hash" else "SHA-256 differs"
+    with pytest.raises(ValueError, match=error):
+        hparam_postprocess._selected_candidate_rows([row], plan=plan)
+
+
+def test_test_selected_external_eval_rejects_checkpoint_hash_drift_before_writing(tmp_path: Path):
+    recipe = _test_selected_hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr or result.stdout
+    run = _first_run(plan_dir)
+    _set_run_status(plan_dir, run)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("frozen checkpoint")
+    selected = plan_dir / "selected.csv"
+    selected.write_text(
+        "step_id,run_id,rank,checkpoint_path,checkpoint_sha256\n"
+        f"{run['step_id']},{run['run_id']},1,{checkpoint},{file_sha256(checkpoint)}\n"
+    )
+    checkpoint.write_text("drifted checkpoint")
+
+    with pytest.raises(ValueError, match="Frozen checkpoint SHA-256 differs"):
+        hparam_postprocess.generate_external_eval(plan_dir, selected, unlock_final_test=True)
+
+    assert not (plan_dir / "external_eval_configs").exists()
+    assert not (plan_dir / "external_eval_manifest.tsv").exists()
+    assert not (plan_dir / "external_eval.sh").exists()
+
+
+def test_validation_selected_external_eval_does_not_require_checkpoint_hash(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path)})
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr or result.stdout
+    run = _first_run(plan_dir)
+    _set_run_status(plan_dir, run)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("validation-selected checkpoint")
+    selected = plan_dir / "selected.csv"
+    selected.write_text("step_id,run_id,rank,checkpoint_path\n" f"{run['step_id']},{run['run_id']},1,{checkpoint}\n")
+
+    script = hparam_postprocess.generate_external_eval(plan_dir, selected, unlock_final_test=True)
+
+    assert script == plan_dir / "external_eval.sh"
+    assert (plan_dir / "external_eval_configs").is_dir()
+    assert (plan_dir / "external_eval_manifest.tsv").is_file()
 
 
 @pytest.mark.parametrize("rank", [None, "", 0, -1, 1.5, "nan", "invalid", True])

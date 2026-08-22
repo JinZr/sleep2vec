@@ -13,7 +13,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from . import experiment_io as exp_io, run_artifacts as artifacts
+from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence
 from .experiment_workspace import (
     canonical_local_experiment_root,
     experiment_root,
@@ -515,6 +515,22 @@ def _selected_candidate_rows(
                 raise ValueError(f"Selected candidate parameter differs from the managed plan: {field}")
         derived = {field: value for field, value in row.items() if field not in candidate_parameters}
         validate_frozen_run_update(run, derived, require_checkpoint_ownership=True)
+        if selection_split == "test":
+            checkpoint_path = str(derived.get("checkpoint_path") or "")
+            checkpoint_sha256 = str(derived.get("checkpoint_sha256") or "")
+            if not checkpoint_path or not checkpoint_sha256:
+                raise ValueError(f"Test-selected candidate is missing frozen checkpoint_sha256: {key[0]} / {key[1]}")
+            # Postprocessing must verify the frozen bytes on the run's execution target before exporting them.
+            evidence_row = {**run, **workspace_by_key[key]}
+            owner_recipe = (
+                owner_plans_by_key[key].get("recipe") if isinstance(owner_plans_by_key[key].get("recipe"), dict) else {}
+            )
+            execution = owner_recipe.get("execution") if isinstance(owner_recipe.get("execution"), dict) else {}
+            for field in ("target", "host"):
+                if evidence_row.get(field) in (None, ""):
+                    evidence_row[field] = execution.get(field, "")
+            if evidence.checkpoint_file_sha256(evidence_row, checkpoint_path) != checkpoint_sha256:
+                raise ValueError(f"Frozen checkpoint SHA-256 differs: {checkpoint_path}")
         managed_rows.append({**derived, **run, "status": workspace_by_key[key].get("status", "")})
     if not all_candidates and (type(top_k) is not int or top_k <= 0):
         raise ValueError("top_k must be a positive integer.")
