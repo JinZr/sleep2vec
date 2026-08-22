@@ -74,6 +74,12 @@ def supervised(args, config_bundle):
 
     # Persist YAML alongside experiment artifacts
     exp_root = Path(f"log-finetune/{args.version}/")
+    # Runtime directories are single-use; stale checkpoints must never enter a new run's test evidence.
+    if is_rank_zero_process() and exp_root.exists() and any(exp_root.iterdir()):
+        raise FileExistsError(
+            f"Finetune run directory already exists and is not empty: {exp_root}. "
+            "Use a new --version-name or manually clear the existing directory."
+        )
     persist_run_config_and_args(args, exp_root)
 
     # get data loaders

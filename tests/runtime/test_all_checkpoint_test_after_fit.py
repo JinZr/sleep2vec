@@ -27,12 +27,11 @@ def _load_finetune_module(module_name: str, monkeypatch: pytest.MonkeyPatch) -> 
         f"{namespace}.callbacks": ModuleType(f"{namespace}.callbacks"),
         f"{namespace}.callbacks.grad_scale_logger": ModuleType(f"{namespace}.callbacks.grad_scale_logger"),
         f"{namespace}.common": ModuleType(f"{namespace}.common"),
+        f"{namespace}.distributed": ModuleType(f"{namespace}.distributed"),
         f"{namespace}.results": ModuleType(f"{namespace}.results"),
         f"{namespace}.sleep2vec_finetuning": ModuleType(f"{namespace}.sleep2vec_finetuning"),
         f"{namespace}.utils": ModuleType(f"{namespace}.utils"),
     }
-    if namespace == "sleep2expert":
-        stubbed_modules[f"{namespace}.distributed"] = ModuleType(f"{namespace}.distributed")
 
     stubbed_modules["pytorch_lightning"].Trainer = object
     stubbed_modules["pytorch_lightning.callbacks"].LearningRateMonitor = object
@@ -42,22 +41,22 @@ def _load_finetune_module(module_name: str, monkeypatch: pytest.MonkeyPatch) -> 
     stubbed_modules["pytorch_lightning.strategies.ddp"].DDPStrategy = lambda **_kwargs: object()
     stubbed_modules["wandb"].run = None
     stubbed_modules["wandb"].finish = lambda: None
-    stubbed_modules["wandb"].Table = object
+    stubbed_modules["wandb"].Table = lambda **_kwargs: object()
     stubbed_modules[f"{namespace}.callbacks"].build_distributed_ahi_progress_bar = lambda: object()
     stubbed_modules[f"{namespace}.callbacks.grad_scale_logger"].GradScaleLoggerCallback = object
     stubbed_modules[f"{namespace}.common"].apply_finetune_config = lambda *_args, **_kwargs: (None, None)
     stubbed_modules[f"{namespace}.common"].persist_run_config_and_args = lambda *_args, **_kwargs: None
+    stubbed_modules[f"{namespace}.distributed"].is_rank_zero_process = lambda: True
     for name in (
         "save_multilabel_per_disease_metrics_csv",
         "save_result_csv",
+        "save_result_rows_csv",
         "save_survival_per_disease_metrics_csv",
         "save_training_run_manifest",
     ):
         setattr(stubbed_modules[f"{namespace}.results"], name, lambda *_args, **_kwargs: None)
     stubbed_modules[f"{namespace}.sleep2vec_finetuning"].Sleep2vecFinetuning = object
     stubbed_modules[f"{namespace}.utils"].get_finetune_dataloaders = lambda *_args, **_kwargs: (None, None, None)
-    if namespace == "sleep2expert":
-        stubbed_modules[f"{namespace}.distributed"].is_rank_zero_process = lambda: False
 
     for name, module in stubbed_modules.items():
         monkeypatch.setitem(sys.modules, name, module)
@@ -154,7 +153,11 @@ def _run_supervised(
     )
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(finetune_mod, "persist_run_config_and_args", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        finetune_mod,
+        "persist_run_config_and_args",
+        lambda _args, exp_root: Path(exp_root).mkdir(parents=True, exist_ok=True),
+    )
     monkeypatch.setattr(finetune_mod, "prepare_dataloader", lambda args: ("train", "val", "test"))
     monkeypatch.setattr(finetune_mod, "Sleep2vecFinetuning", lambda *args, **kwargs: DummyModel())
     monkeypatch.setattr(finetune_mod, "WandbLogger", lambda *args, **kwargs: DummyLogger())
@@ -175,10 +178,68 @@ def _run_supervised(
     )
     monkeypatch.setattr(finetune_mod.wandb, "run", None, raising=False)
     if hasattr(finetune_mod, "is_rank_zero_process"):
-        monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
+        monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: True)
 
     finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
     return checkpoints, test_calls, result_rows, manifest_calls, args
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+@pytest.mark.parametrize("existing_entry", ("marker.txt", "checkpoints/epoch=00.ckpt"))
+def test_finetune_rejects_nonempty_run_directory_before_persisting(
+    module_name: str,
+    existing_entry: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetune_mod = _load_finetune_module(module_name, monkeypatch)
+    run_dir = tmp_path / "log-finetune" / "unit-test"
+    entry = run_dir / existing_entry
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text("stale\n")
+    persist_calls = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: True)
+    monkeypatch.setattr(finetune_mod, "persist_run_config_and_args", lambda *args: persist_calls.append(args))
+    args = argparse.Namespace(
+        version="unit-test",
+        epochs=1,
+        test_after_fit=True,
+        test_all_checkpoints_after_fit=False,
+    )
+
+    with pytest.raises(FileExistsError, match="Use a new --version-name"):
+        finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
+
+    assert persist_calls == []
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_finetune_nonzero_rank_does_not_reject_rank_zero_runtime_files(
+    module_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetune_mod = _load_finetune_module(module_name, monkeypatch)
+    run_dir = tmp_path / "log-finetune" / "unit-test"
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.yaml").write_text("current run\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
+    monkeypatch.setattr(
+        finetune_mod,
+        "persist_run_config_and_args",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("continued past output preflight")),
+    )
+    args = argparse.Namespace(
+        version="unit-test",
+        epochs=1,
+        test_after_fit=True,
+        test_all_checkpoints_after_fit=False,
+    )
+
+    with pytest.raises(RuntimeError, match="continued past output preflight"):
+        finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)
