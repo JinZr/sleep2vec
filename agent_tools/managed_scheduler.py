@@ -1305,27 +1305,40 @@ def observe_slurm_run(
         if active is None:
             active = slurm.show_job(execution, job_id, cluster=cluster or None)
         from_accounting = False
+        accounting_error = ""
         if active is None:
-            active = slurm.accounting_job(
-                execution,
-                job_id,
-                submit_token=token,
-                cluster=cluster or None,
-            )
+            try:
+                active = slurm.accounting_job(
+                    execution,
+                    job_id,
+                    submit_token=token,
+                    cluster=cluster or None,
+                )
+            except (slurm.SlurmCommandError, subprocess.TimeoutExpired, RuntimeError) as exc:
+                accounting_error = str(exc)
             from_accounting = active is not None
         if active is None:
+            failed_sidecar = terminal_exit_code not in (None, 0) and not stop_requested
+            if failed_sidecar:
+                reason = f"Authenticated Slurm terminal sidecar reports non-zero exit code {terminal_exit_code}."
+            elif terminal:
+                reason = "Slurm job disappeared before terminal scheduler state was observed."
+            else:
+                reason = "Slurm job disappeared without a terminal sidecar."
+            if accounting_error:
+                reason = f"{reason} {accounting_error}"
             observation.update(
                 {
-                    "status": "unknown_scheduler",
+                    "status": "failed" if failed_sidecar else "unknown_scheduler",
                     "scheduler_raw_state": "MISSING",
-                    "scheduler_reason": (
-                        "Slurm job disappeared before terminal scheduler state was observed."
-                        if terminal
-                        else "Slurm job disappeared without a terminal sidecar."
-                    ),
+                    "scheduler_reason": reason,
                 }
             )
-            return _slurm_artifact_observation(observation, health=health)
+            return _slurm_artifact_observation(
+                observation,
+                health=health,
+                health_error=accounting_error,
+            )
         if health:
             try:
                 detailed = slurm.show_job(execution, job_id, cluster=cluster or None)
