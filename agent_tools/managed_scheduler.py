@@ -1318,18 +1318,17 @@ def observe_slurm_run(
                 accounting_error = str(exc)
             from_accounting = active is not None
         if active is None:
-            failed_sidecar = terminal_exit_code not in (None, 0) and not stop_requested
-            if failed_sidecar:
-                reason = f"Authenticated Slurm terminal sidecar reports non-zero exit code {terminal_exit_code}."
-            elif terminal:
+            if terminal:
                 reason = "Slurm job disappeared before terminal scheduler state was observed."
             else:
                 reason = "Slurm job disappeared without a terminal sidecar."
+            if terminal_exit_code not in (None, 0):
+                reason = f"{reason} Authenticated terminal sidecar reports non-zero exit code {terminal_exit_code}."
             if accounting_error:
                 reason = f"{reason} {accounting_error}"
             observation.update(
                 {
-                    "status": "failed" if failed_sidecar else "unknown_scheduler",
+                    "status": "unknown_scheduler",
                     "scheduler_raw_state": "MISSING",
                     "scheduler_reason": reason,
                 }

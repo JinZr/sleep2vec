@@ -925,12 +925,12 @@ def test_slurm_monitor_keeps_terminal_sidecar_unknown_without_scheduler_record(t
 
 
 @pytest.mark.parametrize(
-    ("terminal_exit_code", "stop_requested", "expected_status"),
+    ("terminal_exit_code", "stop_requested"),
     [
-        (None, False, "unknown_scheduler"),
-        (0, False, "unknown_scheduler"),
-        (7, False, "failed"),
-        (143, True, "unknown_scheduler"),
+        (None, False),
+        (0, False),
+        (7, False),
+        (143, True),
     ],
 )
 def test_slurm_monitor_handles_purged_job_when_accounting_is_unavailable(
@@ -938,7 +938,6 @@ def test_slurm_monitor_handles_purged_job_when_accounting_is_unavailable(
     monkeypatch,
     terminal_exit_code: int | None,
     stop_requested: bool,
-    expected_status: str,
 ):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -985,11 +984,11 @@ def test_slurm_monitor_handles_purged_job_when_accounting_is_unavailable(
     hparam_runtime.monitor_hparam_runs(plan_dir)
 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
-    assert canonical["status"] == expected_status
+    assert canonical["status"] == "unknown_scheduler"
     assert canonical["scheduler_raw_state"] == "MISSING"
     assert canonical["scheduler_raw_state"] != "RUNNING"
     assert "Slurm accounting query failed: Slurm accounting storage is disabled" in canonical["scheduler_reason"]
-    if terminal_exit_code not in (None, 0) and not stop_requested:
+    if terminal_exit_code not in (None, 0):
         assert f"non-zero exit code {terminal_exit_code}" in canonical["scheduler_reason"]
 
 
