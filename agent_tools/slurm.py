@@ -304,7 +304,6 @@ def run_frozen_job(
                                 "--nodes=1",
                                 f"--ntasks={expected_tasks}",
                                 f"--ntasks-per-node={expected_tasks}",
-                                "--gpu-bind=single:1",
                                 "--kill-on-bad-exit=1",
                                 "--quit-on-interrupt",
                                 script,
