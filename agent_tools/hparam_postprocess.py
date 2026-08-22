@@ -452,6 +452,12 @@ def _selected_candidate_rows(
     step = recipe.get("step") if isinstance(recipe.get("step"), dict) else {}
     step_id = str(step.get("id") or "")
     workspace_by_key = {managed_run_key(run): run for run in read_run_manifest(workspace)}
+    frozen_ranking_by_key = {}
+    if selection_split == "test":
+        ranking_path = workspace / "reports" / "ranking.csv"
+        frozen_ranking = read_rows(ranking_path, require_managed_identity=True)
+        validate_managed_run_rows(frozen_ranking, source=str(ranking_path), cardinality="one_per_run")
+        frozen_ranking_by_key = {managed_run_key(row): row for row in frozen_ranking}
 
     owner_runs_by_key = {}
     owner_plans_by_key = {}
@@ -520,6 +526,22 @@ def _selected_candidate_rows(
             checkpoint_sha256 = str(derived.get("checkpoint_sha256") or "")
             if not checkpoint_path or not checkpoint_sha256:
                 raise ValueError(f"Test-selected candidate is missing frozen checkpoint_sha256: {key[0]} / {key[1]}")
+            # Caller rows are only selectors; checkpoint identity remains owned by hparam-select outputs.
+            frozen_ranking = frozen_ranking_by_key.get(key)
+            if frozen_ranking is None:
+                raise ValueError(
+                    f"Test-selected candidate is missing from the frozen hparam ranking: {key[0]} / {key[1]}"
+                )
+            canonical = workspace_by_key[key]
+            for field, value in (
+                ("rank", str(derived.get("rank") or "")),
+                ("checkpoint_path", checkpoint_path),
+                ("checkpoint_sha256", checkpoint_sha256),
+            ):
+                if value != str(frozen_ranking.get(field) or "") or value != str(canonical.get(field) or ""):
+                    raise ValueError(
+                        f"Test-selected candidate {field} differs from frozen hparam selection: {key[0]} / {key[1]}"
+                    )
             # Postprocessing must verify the frozen bytes on the run's execution target before exporting them.
             evidence_row = {**run, **workspace_by_key[key]}
             owner_recipe = (
