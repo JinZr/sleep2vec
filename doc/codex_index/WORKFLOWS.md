@@ -219,6 +219,9 @@ trial/checkpoint pairs by the frozen `test_*` metric. The exact winning path and
 SHA-256 are frozen; the many-checkpoint audit remains plan-local while workspace
 reports retain one row per managed run. Plans registered under one step may be
 aggregated only when their frozen selection metric, mode, and split all match.
+Adaptive test-selected digests, incumbents, proposals, and metric-based
+replacement use that same complete checkpoint-level objective evidence;
+top-level test metrics remain evidence for the validation-best checkpoint.
 
 Direct `infer` and `evaluate` plans targeting `eval_split=test` require both
 `external_test_locked=false` and `final_test_unlocked=true`. Other splits do

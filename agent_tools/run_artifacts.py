@@ -451,9 +451,10 @@ def checkpoint_names(run: dict[str, Any]) -> list[str]:
     if not run.get("checkpoint_dir"):
         return []
     ckpt_dir = Path(str(run["checkpoint_dir"]))
-    if not ckpt_dir.exists():
+    if ckpt_dir.is_symlink() or not ckpt_dir.is_dir():
         return []
-    return [path.name for path in sorted(ckpt_dir.glob("*.ckpt"))]
+    # Match remote evidence collection: only physical checkpoint files belong to the runtime inventory.
+    return [path.name for path in sorted(ckpt_dir.glob("*.ckpt")) if not path.is_symlink() and path.is_file()]
 
 
 def checkpoint_for_epoch_in_dir(ckpt_dir: Path, epoch: int | None) -> Path | None:

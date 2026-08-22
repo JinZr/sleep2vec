@@ -197,16 +197,25 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
         ],
     )
     monitor_hparam_runs(round_dir)
-    rows = _digest_rows(round_dir, round_index, workspace)
+    objective = _objective(workflow_root, recipe)
+    rows = _digest_rows(round_dir, round_index, workspace, objective)
     write_rows(out, rows)
-    write_text(out_dir / f"round_{round_index:03d}.md", _digest_markdown(rows, _objective(workflow_root, recipe)))
+    write_text(out_dir / f"round_{round_index:03d}.md", _digest_markdown(rows, objective))
     _append_event(workflow_root, "digest", {"round": round_index, "path": str(out), "rows": len(rows)})
-    _write_incumbent(workflow_root, rows, _objective(workflow_root, recipe), round_index)
+    _write_incumbent(workflow_root, rows, objective, round_index)
     return out
 
 
-def _digest_rows(round_dir: Path, round_index: int, workspace: Path) -> list[dict[str, Any]]:
+def _digest_rows(
+    round_dir: Path,
+    round_index: int,
+    workspace: Path,
+    objective: dict[str, str],
+) -> list[dict[str, Any]]:
     plan = artifacts.read_hparam_plan(round_dir)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    selection_split = str(evaluation.get("selection_split") or "")
     plan_keys = {managed_run_key(run) for run in plan.get("runs", [])}
     status_rows = {
         managed_run_key(row): row for row in read_run_manifest(workspace) if managed_run_key(row) in plan_keys
@@ -247,6 +256,21 @@ def _digest_rows(round_dir: Path, round_index: int, workspace: Path) -> list[dic
         }
         row.update(managed_run_parameters(run))
         row.update(_manifest_metrics(manifest))
+        if selection_split == "test":
+            # Top-level test metrics describe the validation-best checkpoint; test selection uses checkpoint evidence.
+            row.pop(objective["metric"], None)
+            row.pop("epoch", None)
+            row["checkpoint_path"] = ""
+            checkpoint_objective = _test_checkpoint_objective(
+                manifest,
+                objective,
+                checkpoint_dir,
+                checkpoint_names,
+            )
+            if checkpoint_objective is not None:
+                row[objective["metric"]] = checkpoint_objective["score"]
+                row["checkpoint_path"] = checkpoint_objective["checkpoint_path"]
+                row["epoch"] = checkpoint_objective["epoch"]
         row["status"] = status.get("status", "")
         row["pid"] = status.get("pid", "")
         rows.append(row)
@@ -337,7 +361,10 @@ def _round_is_terminal(round_dir: Path, workspace: Path) -> bool:
 
 def _proposal_digest_rows(root: Path, workspace: Path) -> list[dict[str, str]]:
     source_round = _latest_round_index(root)
-    rows = _digest_rows(_round_dir(root, source_round), source_round, workspace)
+    round_dir = _round_dir(root, source_round)
+    plan = artifacts.read_hparam_plan(round_dir)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    rows = _digest_rows(round_dir, source_round, workspace, _objective(root, recipe))
     fieldnames = sorted({key for row in rows for key in row})
     return [{key: "" if row.get(key) is None else str(row.get(key)) for key in fieldnames} for row in rows]
 
@@ -1692,6 +1719,63 @@ def _manifest_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _test_checkpoint_objective(
+    manifest: dict[str, Any],
+    objective: dict[str, str],
+    checkpoint_dir: str,
+    checkpoint_names: list[str],
+) -> dict[str, Any] | None:
+    results = manifest.get("checkpoint_test_results")
+    if manifest.get("test_all_checkpoints_after_fit") is not True or not isinstance(results, list):
+        return None
+    expected = {}
+    expected_epochs = set()
+    for name in sorted(checkpoint_names):
+        if not name.startswith("epoch="):
+            continue
+        epoch = artifacts.epoch_number_from_checkpoint_name(name)
+        if epoch is None or epoch in expected_epochs:
+            return None
+        expected_epochs.add(epoch)
+        expected[str(Path(checkpoint_dir) / name)] = epoch
+    if not expected:
+        return None
+    candidates = []
+    seen_paths = set()
+    seen_epochs = set()
+    for result in results:
+        if not isinstance(result, dict):
+            return None
+        checkpoint_path = str(result.get("checkpoint_path") or "")
+        epoch = artifacts.epoch_number(result.get("epoch"))
+        if (
+            checkpoint_path not in expected
+            or checkpoint_path in seen_paths
+            or epoch != expected[checkpoint_path]
+            or epoch in seen_epochs
+        ):
+            return None
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        raw_score = metrics.get(objective["metric"])
+        score = None if isinstance(raw_score, bool) else artifacts.float_or_none(raw_score)
+        if score is None:
+            return None
+        seen_paths.add(checkpoint_path)
+        seen_epochs.add(epoch)
+        candidates.append(
+            {
+                "score": score,
+                "checkpoint_path": checkpoint_path,
+                "epoch": epoch,
+            }
+        )
+    if seen_paths != set(expected):
+        return None
+    candidates.sort(key=lambda row: (int(row["epoch"]), str(row["checkpoint_path"])))
+    candidates.sort(key=lambda row: float(row["score"]), reverse=objective["mode"] == "max")
+    return candidates[0]
+
+
 def _digest_markdown(rows: list[dict[str, Any]], objective: dict[str, str]) -> str:
     ranked = _rank_rows(rows, objective)
     lines = [
@@ -1730,6 +1814,7 @@ def _write_incumbent(root: Path, rows: list[dict[str, Any]], objective: dict[str
             "objective_mode": objective["mode"],
             "objective_score": best.get(objective["metric"], ""),
             "checkpoint_path": best.get("checkpoint_path", ""),
+            "epoch": best.get("epoch", ""),
             "external_optimized": True,
             "selected_at": utc_now(),
         }
@@ -1883,6 +1968,8 @@ def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -
     margin = float(replacement.get("kill_margin") or 0.0)
     plan = artifacts.read_hparam_plan(round_dir)
     plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    evaluation = plan_recipe.get("evaluation_policy") if isinstance(plan_recipe.get("evaluation_policy"), dict) else {}
+    selection_split = str(evaluation.get("selection_split") or "")
     workspace = experiment_root(plan_recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
@@ -1898,11 +1985,21 @@ def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -
             continue
         should_stop = evidence.log_has_failure(row.get("log_path"), row)
         data = {}
+        checkpoint_names = []
         if not should_stop:
             observed_artifacts = evidence.runtime_artifacts(row)
             if observed_artifacts is not None:
-                _manifest_path, data, _checkpoint_names = observed_artifacts
-        score = artifacts.metric_value(data, objective["metric"])
+                _manifest_path, data, checkpoint_names = observed_artifacts
+        if selection_split == "test":
+            checkpoint_objective = _test_checkpoint_objective(
+                data,
+                objective,
+                str(row.get("checkpoint_dir") or ""),
+                checkpoint_names,
+            )
+            score = checkpoint_objective["score"] if checkpoint_objective is not None else None
+        else:
+            score = artifacts.metric_value(data, objective["metric"])
         if (
             not should_stop
             and incumbent is not None
