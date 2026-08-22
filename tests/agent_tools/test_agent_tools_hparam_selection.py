@@ -10,8 +10,8 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import hparam_selection, run_artifacts
-from agent_tools.experiment_workspace import merge_run_manifest
+from agent_tools import hparam_selection, run_artifacts, run_evidence
+from agent_tools.experiment_workspace import merge_run_manifest, read_run_manifest
 from agent_tools.manifests import read_rows, write_rows
 from agent_tools.models import REPO_ROOT
 
@@ -251,6 +251,199 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
         hparam_selection.select_hparam_candidates(plan_dir)
     assert ranking.read_bytes() == ranking_before
     assert (plan_dir / "checkpoint_test_ranking.csv").read_bytes() == checkpoint_ranking_before
+
+
+def test_checkpoint_hash_uses_ssh_execution_target(monkeypatch):
+    checkpoint = "/remote/runtime/checkpoints/epoch=1.ckpt"
+    digest = "a" * 64
+    calls = []
+
+    def fake_run(row, command):
+        calls.append((row, command))
+        return subprocess.CompletedProcess(command, 0, digest, "")
+
+    monkeypatch.setattr(run_evidence, "run_row_command", fake_run)
+
+    observed = run_evidence.checkpoint_file_sha256(
+        {"target": "ssh", "host": "unit-host"},
+        checkpoint,
+    )
+
+    assert observed == digest
+    assert calls[0][0] == {"target": "ssh", "host": "unit-host"}
+    assert checkpoint in calls[0][1]
+    assert "hashlib.sha256" in calls[0][1]
+
+
+@pytest.mark.parametrize("selection_split", ["val", "test"])
+def test_hparam_select_uses_ssh_manifest_inventory_and_hash_evidence(
+    tmp_path: Path,
+    monkeypatch,
+    selection_split: str,
+):
+    metric = "test_ahi_pearson" if selection_split == "test" else "val_ahi_pearson"
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={
+            "target": "ssh",
+            "host": "unit-host",
+            "workdir": "/remote/repository",
+            "path_context": "remote",
+            "path_validation": "defer",
+        },
+        selection_metric=metric,
+        selection_split=selection_split,
+        config_monitor="val_ahi_pearson",
+    )
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr or result.stdout
+    run = _first_run(plan_dir)
+    checkpoint = str(Path(run["checkpoint_dir"]) / "epoch=1.ckpt")
+    manifest = {
+        "epoch": 1,
+        "best_model_path": str(Path(run["checkpoint_dir"]) / "best-epoch=1.ckpt"),
+        "metrics": {metric: 0.8},
+    }
+    if selection_split == "test":
+        manifest.update(
+            {
+                "test_all_checkpoints_after_fit": True,
+                "checkpoint_test_results": [
+                    {
+                        "checkpoint_path": checkpoint,
+                        "epoch": 1,
+                        "metrics": {metric: 0.8},
+                    }
+                ],
+            }
+        )
+    runtime_calls = []
+    hash_calls = []
+
+    def fake_runtime_artifacts(row):
+        runtime_calls.append(row)
+        return str(Path(run["runtime_dir"]) / "run_manifest.json"), manifest, ["epoch=1.ckpt"]
+
+    def fake_checkpoint_hash(row, path):
+        hash_calls.append((row, path))
+        return "b" * 64
+
+    monkeypatch.setattr(hparam_selection.evidence, "runtime_artifacts", fake_runtime_artifacts)
+    monkeypatch.setattr(hparam_selection.evidence, "checkpoint_file_sha256", fake_checkpoint_hash)
+    monkeypatch.setattr(hparam_selection.tracking, "validate_checkpoint_evidence_rows", lambda *_args: None)
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "completed"}],
+    )
+
+    ranking = hparam_selection.select_hparam_candidates(plan_dir)
+
+    row = _read_table(ranking)[0]
+    assert row["score"] == "0.8"
+    assert row["checkpoint_path"] == checkpoint
+    assert row["run_manifest"] == str(Path(run["runtime_dir"]) / "run_manifest.json")
+    assert runtime_calls and runtime_calls[0]["target"] == "ssh"
+    assert runtime_calls[0]["host"] == "unit-host"
+    if selection_split == "test":
+        assert row["checkpoint_sha256"] == "b" * 64
+        assert [(call[0]["target"], call[0]["host"], call[1]) for call in hash_calls] == [
+            ("ssh", "unit-host", checkpoint)
+        ]
+    else:
+        assert hash_calls == []
+
+
+@pytest.mark.parametrize("mutated_epoch", [1, 2], ids=["selected-checkpoint", "non-selected-checkpoint"])
+def test_hparam_select_ssh_reentry_fails_closed_on_any_checkpoint_hash_drift(
+    tmp_path: Path,
+    monkeypatch,
+    mutated_epoch: int,
+):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={
+            "target": "ssh",
+            "host": "unit-host",
+            "workdir": "/remote/repository",
+            "path_context": "remote",
+            "path_validation": "defer",
+        },
+        selection_metric="test_ahi_pearson",
+        selection_split="test",
+        config_monitor="val_ahi_pearson",
+    )
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr or result.stdout
+    run = _first_run(plan_dir)
+    checkpoints = [str(Path(run["checkpoint_dir"]) / f"epoch={epoch}.ckpt") for epoch in (1, 2)]
+    manifest = {
+        "test_all_checkpoints_after_fit": True,
+        "checkpoint_test_results": [
+            {
+                "checkpoint_path": checkpoint,
+                "epoch": epoch,
+                "metrics": {"test_ahi_pearson": score},
+            }
+            for checkpoint, epoch, score in zip(checkpoints, (1, 2), (0.9, 0.8))
+        ],
+    }
+    current_hashes = {checkpoints[0]: "a" * 64, checkpoints[1]: "b" * 64}
+    evidence_calls = []
+
+    def fake_runtime_artifacts(row):
+        assert (row["target"], row["host"]) == ("ssh", "unit-host")
+        return str(Path(run["runtime_dir"]) / "run_manifest.json"), manifest, ["epoch=1.ckpt", "epoch=2.ckpt"]
+
+    def fake_checkpoint_hash(row, checkpoint_path):
+        assert (row["target"], row["host"]) == ("ssh", "unit-host")
+        return current_hashes[checkpoint_path]
+
+    def fake_validate_checkpoint_evidence(runs, rows, **_kwargs):
+        runs_by_key = {(row["step_id"], row["run_id"]): row for row in runs}
+        for row in rows:
+            owner = runs_by_key[(row["step_id"], row["run_id"])]
+            assert (owner["target"], owner["host"]) == ("ssh", "unit-host")
+            evidence_calls.append(row["checkpoint_path"])
+
+    monkeypatch.setattr(hparam_selection.evidence, "runtime_artifacts", fake_runtime_artifacts)
+    monkeypatch.setattr(hparam_selection.evidence, "checkpoint_file_sha256", fake_checkpoint_hash)
+    monkeypatch.setattr(
+        hparam_selection.tracking,
+        "validate_checkpoint_evidence_rows",
+        fake_validate_checkpoint_evidence,
+    )
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "target": "ssh",
+                "host": "unit-host",
+                "status": "completed",
+            }
+        ],
+    )
+    canonical = read_run_manifest(tmp_path)[0]
+    assert (canonical["target"], canonical["host"]) == ("ssh", "unit-host")
+
+    ranking = hparam_selection.select_hparam_candidates(plan_dir)
+    checkpoint_ranking = plan_dir / "checkpoint_test_ranking.csv"
+    events = tmp_path / "events.jsonl"
+    first_bytes = (ranking.read_bytes(), checkpoint_ranking.read_bytes(), events.read_bytes())
+
+    hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert (ranking.read_bytes(), checkpoint_ranking.read_bytes(), events.read_bytes()) == first_bytes
+    assert set(evidence_calls) == set(checkpoints)
+    current_hashes[checkpoints[mutated_epoch - 1]] = "c" * 64
+
+    with pytest.raises(ValueError, match="Frozen checkpoint SHA-256 differs"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert (ranking.read_bytes(), checkpoint_ranking.read_bytes(), events.read_bytes()) == first_bytes
 
 
 @pytest.mark.parametrize("delete_workspace_ranking", [False, True], ids=["audit-deleted", "both-deleted"])

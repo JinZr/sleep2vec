@@ -5,12 +5,16 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import experiment_io as exp_io, experiment_tracking as tracking, run_artifacts as artifacts
+from . import (
+    experiment_io as exp_io,
+    experiment_tracking as tracking,
+    run_artifacts as artifacts,
+    run_evidence as evidence,
+)
 from .experiment_workspace import (
     TERMINAL_STATUSES,
     append_event,
     experiment_root,
-    file_sha256,
     managed_run_key,
     managed_run_parameters,
     merge_run_manifest,
@@ -44,6 +48,7 @@ def select_hparam_candidates(
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
     canonical_rows = read_run_manifest(workspace)
+    canonical_by_key = {managed_run_key(row): row for row in canonical_rows}
     step_id = str((recipe.get("step") or {}).get("id") or "")
     out = workspace / "reports" / "ranking.csv"
     checkpoint_out = root / "checkpoint_test_ranking.csv"
@@ -58,6 +63,27 @@ def select_hparam_candidates(
             workspace / "events.jsonl",
         ],
     )
+    step_runs = []
+    evidence_runs_by_key = {}
+    for _registered_root, registered_plan in artifacts.iter_registered_hparam_plans(
+        workspace,
+        step_id,
+        selection_metric=metric,
+        selection_mode=mode,
+        selection_split=selection_split,
+    ):
+        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
+        execution = registered_recipe.get("execution") if isinstance(registered_recipe.get("execution"), dict) else {}
+        for run in registered_plan["runs"]:
+            key = managed_run_key(run)
+            step_runs.append(run)
+            evidence_run = {**run, **(canonical_by_key.get(key) or {})}
+            # A registered plan's frozen execution target remains authoritative before lifecycle rows fill it.
+            for field in ("target", "host"):
+                if evidence_run.get(field) in (None, ""):
+                    evidence_run[field] = execution.get(field, "")
+            evidence_runs_by_key[key] = evidence_run
+    checkpoint_evidence_runs = [evidence_runs_by_key.get(managed_run_key(row), row) for row in canonical_rows]
     if selection_split == "test":
         events_path = workspace / "events.jsonl"
         if events_path.exists():
@@ -72,12 +98,12 @@ def select_hparam_candidates(
                     continue
                 selected_path = str(event.get("selected_checkpoint_path") or "")
                 selected_sha256 = str(event.get("selected_checkpoint_sha256") or "")
-                if (
-                    not selected_path
-                    or not selected_sha256
-                    or not Path(selected_path).is_file()
-                    or file_sha256(selected_path) != selected_sha256
-                ):
+                selected_run = evidence_runs_by_key.get((step_id, str(event.get("selected_run_id") or "")))
+                if not selected_path or not selected_sha256 or selected_run is None:
+                    raise ValueError(
+                        f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}"
+                    )
+                if evidence.checkpoint_file_sha256(selected_run, selected_path) != selected_sha256:
                     raise ValueError(
                         f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}"
                     )
@@ -99,9 +125,9 @@ def select_hparam_candidates(
                 f"{row.get('step_id', '')} / {row.get('run_id', '')}"
             )
         validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
-    tracking.validate_checkpoint_evidence_rows(canonical_rows, existing_ranked)
+    tracking.validate_checkpoint_evidence_rows(checkpoint_evidence_runs, existing_ranked)
     if selection_split == "test":
-        _validate_stored_checkpoint_hashes(existing_ranked, step_id=step_id)
+        _validate_stored_checkpoint_hashes(existing_ranked, evidence_runs_by_key, step_id=step_id)
     existing_checkpoint_ranked = []
     if selection_split == "test":
         existing_checkpoint_ranked = read_rows(checkpoint_out, require_managed_identity=True)
@@ -118,8 +144,13 @@ def select_hparam_candidates(
                     f"{row.get('step_id', '')} / {row.get('run_id', '')}"
                 )
             validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
-        tracking.validate_checkpoint_evidence_rows(canonical_rows, existing_checkpoint_ranked)
-        _validate_stored_checkpoint_hashes(existing_checkpoint_ranked, step_id=step_id, required=True)
+        tracking.validate_checkpoint_evidence_rows(checkpoint_evidence_runs, existing_checkpoint_ranked)
+        _validate_stored_checkpoint_hashes(
+            existing_checkpoint_ranked,
+            evidence_runs_by_key,
+            step_id=step_id,
+            required=True,
+        )
     for row in existing_ranked:
         score = row.get("score")
         score_is_finite = not isinstance(score, bool) and artifacts.float_or_none(score) is not None
@@ -143,17 +174,7 @@ def select_hparam_candidates(
         if row.get("metric") != metric:
             raise ValueError("Existing ranking selection metric differs from the current recipe.")
     remaining_prior_keys = {managed_run_key(row) for row in prior_step_rows}
-    step_runs = []
-    for registered_root, registered_plan in artifacts.iter_registered_hparam_plans(
-        workspace,
-        step_id,
-        selection_metric=metric,
-        selection_mode=mode,
-        selection_split=selection_split,
-    ):
-        registered_runs = registered_plan["runs"]
-        step_runs.extend(registered_runs)
-        remaining_prior_keys -= {managed_run_key(run) for run in registered_runs}
+    remaining_prior_keys -= {managed_run_key(run) for run in step_runs}
     if remaining_prior_keys:
         raise ValueError("Existing ranking rows are not owned by a registered plan for this step.")
     rows = []
@@ -163,15 +184,28 @@ def select_hparam_candidates(
         canonical = resolve_run_row(canonical_rows, run)
         if canonical is None:
             raise ValueError(f"Managed run is missing from run_manifest.tsv: {run['step_id']} / {run['run_id']}")
-        manifest_path = artifacts.find_run_manifest(run)
-        manifest = read_json(manifest_path) if manifest_path else {}
+        artifact_row = evidence_runs_by_key[managed_run_key(run)]
+        # The execution target owns runtime evidence; never interpret a same-named manager-local tree for SSH runs.
+        observed_artifacts = evidence.runtime_artifacts(artifact_row)
+        if observed_artifacts is None:
+            manifest_path = ""
+            manifest = {}
+            checkpoint_names = []
+        else:
+            manifest_path, manifest, checkpoint_names = observed_artifacts
         if selection_split == "test":
             status = str(canonical.get("status") or "")
             if status not in TERMINAL_STATUSES:
                 active_runs.append(f"{run['step_id']} / {run['run_id']} ({status})")
                 continue
             if status in {"completed", "finished"}:
-                test_rows = _checkpoint_test_result_rows(run, metric, manifest_path, manifest)
+                test_rows = _checkpoint_test_result_rows(
+                    artifact_row,
+                    metric,
+                    manifest_path,
+                    manifest,
+                    checkpoint_names,
+                )
                 for row in test_rows:
                     row["status"] = status
                 rows.extend(test_rows)
@@ -186,7 +220,11 @@ def select_hparam_candidates(
                 )
             continue
         score = artifacts.metric_value(manifest, metric)
-        ckpt = artifacts.fixed_checkpoint_path(manifest, Path(str(run["checkpoint_dir"])))
+        ckpt = artifacts.fixed_checkpoint_path_from_names(
+            manifest,
+            str(run["checkpoint_dir"]),
+            checkpoint_names,
+        )
         row = {
             "step_id": run["step_id"],
             "run_id": run["run_id"],
@@ -203,7 +241,7 @@ def select_hparam_candidates(
         }
         valid_score = not isinstance(score, bool) and artifacts.float_or_none(score) is not None
         if valid_score and ckpt:
-            tracking.validate_checkpoint_evidence_rows(canonical_rows, [row])
+            tracking.validate_checkpoint_evidence_rows([artifact_row], [row])
         if not valid_score or not ckpt:
             unscored_rows.append(row)
         else:
@@ -300,10 +338,11 @@ def select_hparam_candidates(
 def _checkpoint_test_result_rows(
     run: dict[str, Any],
     metric: str,
-    manifest_path: Path | None,
+    manifest_path: str | Path | None,
     manifest: dict[str, Any],
+    checkpoint_names: list[str],
 ) -> list[dict[str, Any]]:
-    if manifest_path is None:
+    if not manifest_path:
         raise ValueError(
             f"Completed test-selected run is missing run_manifest.json: {run['step_id']} / {run['run_id']}"
         )
@@ -317,27 +356,30 @@ def _checkpoint_test_result_rows(
         raise ValueError(
             f"Completed test-selected run is missing checkpoint_test_results: {run['step_id']} / {run['run_id']}"
         )
-    checkpoint_dir = Path(str(run["checkpoint_dir"]))
-    expected_paths = (
-        [path for path in sorted(checkpoint_dir.glob("epoch=*.ckpt")) if not path.is_symlink()]
-        if checkpoint_dir.is_dir() and not checkpoint_dir.is_symlink()
-        else []
-    )
-    if not expected_paths:
+    checkpoint_dir = str(run["checkpoint_dir"])
+    expected_names = sorted(name for name in checkpoint_names if name.startswith("epoch="))
+    if not expected_names:
         raise ValueError(f"Completed hparam run has no saved epoch checkpoints: {run['step_id']} / {run['run_id']}")
+    expected_epochs = {}
+    seen_expected_epochs = set()
+    for name in expected_names:
+        checkpoint_path = str(Path(checkpoint_dir) / name)
+        epoch = artifacts.epoch_number_from_checkpoint_name(name)
+        if epoch is None:
+            raise ValueError(
+                f"Saved epoch checkpoint has an invalid epoch for {run['step_id']} / {run['run_id']}: "
+                f"{checkpoint_path}"
+            )
+        if epoch in seen_expected_epochs:
+            raise ValueError(
+                f"Saved epoch checkpoints contain a duplicate epoch for " f"{run['step_id']} / {run['run_id']}: {epoch}"
+            )
+        seen_expected_epochs.add(epoch)
+        expected_epochs[checkpoint_path] = epoch
     tracking.validate_checkpoint_evidence_rows(
         [run],
-        [{"step_id": run["step_id"], "run_id": run["run_id"], "checkpoint_path": str(path)} for path in expected_paths],
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "checkpoint_path": path} for path in expected_epochs],
     )
-    expected_epochs = {
-        str(path.resolve()): artifacts.epoch_number_from_checkpoint_name(path.name) for path in expected_paths
-    }
-    malformed_paths = [path for path, epoch in expected_epochs.items() if epoch is None]
-    if malformed_paths:
-        raise ValueError(
-            f"Saved epoch checkpoint has an invalid epoch for {run['step_id']} / {run['run_id']}: "
-            + ", ".join(malformed_paths)
-        )
     rows = []
     seen_paths = set()
     seen_epochs = set()
@@ -387,7 +429,6 @@ def _checkpoint_test_result_rows(
                 "epoch": epoch,
                 "config": run.get("config"),
                 "checkpoint_path": checkpoint_path,
-                "checkpoint_sha256": file_sha256(checkpoint_path),
                 "run_manifest": str(manifest_path),
                 "source": "checkpoint_test_results",
                 **managed_run_parameters(run),
@@ -399,11 +440,14 @@ def _checkpoint_test_result_rows(
             f"checkpoint_test_results is incomplete for {run['step_id']} / {run['run_id']}: " + ", ".join(missing_paths)
         )
     tracking.validate_checkpoint_evidence_rows([run], rows)
+    for row in rows:
+        row["checkpoint_sha256"] = evidence.checkpoint_file_sha256(run, row["checkpoint_path"])
     return rows
 
 
 def _validate_stored_checkpoint_hashes(
     rows: list[dict[str, Any]],
+    runs_by_key: dict[tuple[str, str] | None, dict[str, Any]],
     *,
     step_id: str,
     required: bool = False,
@@ -416,7 +460,13 @@ def _validate_stored_checkpoint_hashes(
             if required:
                 raise ValueError("Frozen checkpoint test ranking is missing checkpoint_sha256.")
             continue
-        if file_sha256(str(row["checkpoint_path"])) != stored:
+        run = runs_by_key.get(managed_run_key(row))
+        if run is None:
+            raise ValueError(
+                f"Frozen checkpoint test ranking is outside the canonical manifest: "
+                f"{row.get('step_id', '')} / {row.get('run_id', '')}"
+            )
+        if evidence.checkpoint_file_sha256(run, str(row["checkpoint_path"])) != stored:
             raise ValueError(f"Frozen checkpoint SHA-256 differs: {row['checkpoint_path']}")
 
 
