@@ -304,7 +304,7 @@ def run_frozen_job(
                                 "--nodes=1",
                                 f"--ntasks={expected_tasks}",
                                 f"--ntasks-per-node={expected_tasks}",
-                                "--gpu-bind=none",
+                                "--gpu-bind=single:1",
                                 "--kill-on-bad-exit=1",
                                 "--quit-on-interrupt",
                                 script,
@@ -403,7 +403,7 @@ def active_jobs(
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
 ) -> list[JobObservation]:
     argv = ["squeue", "--noheader", "--format=%i|%T|%R|%N|%k"]
-    cluster_name = _cluster_name(cluster)
+    cluster_name = _follow_up_cluster_name(execution, cluster)
     if cluster_name:
         argv.append(f"--clusters={cluster_name}")
     if job_id is not None:
@@ -431,7 +431,7 @@ def show_job(
 ) -> JobObservation | None:
     job_id = _job_id(job_id)
     argv = ["scontrol"]
-    cluster_name = _cluster_name(cluster)
+    cluster_name = _follow_up_cluster_name(execution, cluster)
     if cluster_name:
         argv.append(f"--clusters={cluster_name}")
     argv.extend(["show", "job", "--oneliner", job_id])
@@ -484,7 +484,7 @@ def accounting_job(
 ) -> JobObservation | None:
     job_id = _job_id(job_id)
     argv = ["sacct", "--duplicates", "--noheader", "--parsable2", "--allocations"]
-    cluster_name = _cluster_name(cluster)
+    cluster_name = _follow_up_cluster_name(execution, cluster)
     if cluster_name:
         argv.append(f"--clusters={cluster_name}")
     argv.extend(["--jobs", job_id, "--format=JobIDRaw,State%64,ExitCode,NodeList,Comment%64"])
@@ -570,13 +570,19 @@ def cancel(
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
 ) -> None:
     argv = ["scancel"]
-    cluster_name = _cluster_name(cluster)
+    cluster_name = _follow_up_cluster_name(execution, cluster)
     if cluster_name:
         argv.append(f"--clusters={cluster_name}")
     argv.append(_job_id(job_id))
     result = run_command(execution, argv, timeout=timeout)
     if result.returncode != 0:
         raise SlurmCommandError("cancellation", result)
+
+
+def _follow_up_cluster_name(execution: dict[str, Any], cluster: str | None) -> str:
+    cluster_name = _cluster_name(cluster)
+    # A direct controller already targets its local cluster; --clusters requires federation accounting.
+    return "" if execution.get("target", "local") == "local" else cluster_name
 
 
 def normalize_state(value: str) -> str:

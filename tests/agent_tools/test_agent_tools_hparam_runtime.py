@@ -967,7 +967,7 @@ def test_slurm_monitor_recovers_terminal_state_from_accounting_after_controller_
     assert canonical["scheduler_raw_state"] == "COMPLETED"
     assert canonical["scheduler_exit_code"] == "0"
     assert [argv[0] for argv in scheduler_calls] == ["squeue", "scontrol", "sacct"]
-    assert all("--clusters=wuji-h20" in argv for argv in scheduler_calls)
+    assert all("--clusters=wuji-h20" not in argv for argv in scheduler_calls)
     assert "--duplicates" in scheduler_calls[-1]
 
 
@@ -1567,7 +1567,7 @@ def test_slurm_stop_request_uses_accounting_after_controller_purges_cancelled_jo
     assert canonical["stop_requested_at"] == "2026-08-21T03:40:00Z"
     assert canonical["stop_reason"] == "validation diverged"
     assert [argv[0] for argv in scheduler_calls] == ["squeue", "scontrol", "sacct"]
-    assert all("--clusters=wuji-h20" in argv for argv in scheduler_calls)
+    assert all("--clusters=wuji-h20" not in argv for argv in scheduler_calls)
     assert "--duplicates" in scheduler_calls[-1]
 
 

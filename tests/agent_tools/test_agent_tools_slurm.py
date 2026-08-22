@@ -295,14 +295,14 @@ def test_accounting_job_queries_exact_allocation_on_bound_cluster(monkeypatch):
     monkeypatch.setattr(slurm, "run_command", fake_run_command)
 
     assert slurm.accounting_job(
-        {"target": "local"},
+        {"target": "ssh", "host": "scheduler"},
         "3880",
         submit_token="agent-tools-unit",
         cluster="wuji-h20",
     ) == slurm.JobObservation("3880", "COMPLETED", node_list="h20-bj-96", comment="agent-tools-unit", exit_code="0:0")
     assert calls == [
         (
-            {"target": "local"},
+            {"target": "ssh", "host": "scheduler"},
             [
                 "sacct",
                 "--duplicates",
@@ -405,17 +405,47 @@ def test_follow_up_commands_route_to_bound_cluster(monkeypatch):
 
     monkeypatch.setattr(slurm, "run_command", fake_run_command)
 
-    assert slurm.active_jobs({"target": "local"}, job_id="3880", cluster="wuji-h20") == [
+    execution = {"target": "ssh", "host": "scheduler"}
+    assert slurm.active_jobs(execution, job_id="3880", cluster="wuji-h20") == [
         slurm.JobObservation("3880", "RUNNING", "", "h20-bj-96", "token")
     ]
-    assert slurm.show_job({"target": "local"}, "3880", cluster="wuji-h20") is not None
-    slurm.cancel({"target": "local"}, "3880", cluster="wuji-h20")
+    assert slurm.show_job(execution, "3880", cluster="wuji-h20") is not None
+    slurm.cancel(execution, "3880", cluster="wuji-h20")
 
     assert [argv for _execution, argv, _timeout in calls] == [
         ["squeue", "--noheader", "--format=%i|%T|%R|%N|%k", "--clusters=wuji-h20", "--jobs", "3880"],
         ["scontrol", "--clusters=wuji-h20", "show", "job", "--oneliner", "3880"],
         ["scancel", "--clusters=wuji-h20", "3880"],
     ]
+
+
+def test_follow_up_commands_do_not_route_direct_controller_through_federation(monkeypatch):
+    calls = []
+    results = iter(
+        [
+            subprocess.CompletedProcess([], 0, "3880|RUNNING|None|h20-bj-96|token\n", ""),
+            subprocess.CompletedProcess(
+                [],
+                0,
+                "JobId=3880 JobState=RUNNING Reason=None NodeList=h20-bj-96 Comment=token ExitCode=0:0\n",
+                "",
+            ),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+    )
+
+    def fake_run_command(execution, argv, *, timeout):
+        calls.append((execution, argv, timeout))
+        return next(results)
+
+    monkeypatch.setattr(slurm, "run_command", fake_run_command)
+
+    execution = {"target": "local"}
+    assert slurm.active_jobs(execution, job_id="3880", cluster="wuji-h20")
+    assert slurm.show_job(execution, "3880", cluster="wuji-h20") is not None
+    slurm.cancel(execution, "3880", cluster="wuji-h20")
+
+    assert all(not any(arg.startswith("--clusters=") for arg in argv) for _execution, argv, _timeout in calls)
 
 
 def test_follow_up_commands_reject_invalid_cluster_before_execution(monkeypatch):
@@ -723,7 +753,7 @@ def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, 
         "--nodes=1",
         "--ntasks=1",
         "--ntasks-per-node=1",
-        "--gpu-bind=none",
+        "--gpu-bind=single:1",
         "--kill-on-bad-exit=1",
         "--quit-on-interrupt",
         kwargs["script"],
@@ -888,7 +918,7 @@ def test_run_frozen_job_records_aggregate_srun_failure(tmp_path: Path, monkeypat
         "--nodes=1",
         "--ntasks=2",
         "--ntasks-per-node=2",
-        "--gpu-bind=none",
+        "--gpu-bind=single:1",
         "--kill-on-bad-exit=1",
         "--quit-on-interrupt",
         kwargs["script"],
