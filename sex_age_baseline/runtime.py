@@ -27,6 +27,7 @@ from sleep2vec.results import (
     save_multilabel_per_disease_metrics_csv,
     save_prediction_csv,
     save_result_csv,
+    save_result_rows_csv,
     save_survival_per_disease_metrics_csv,
     save_training_run_manifest,
 )
@@ -213,6 +214,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         periodic_checkpoints.sort(key=lambda item: (item[0] == best_epoch, item[0], str(item[1])))
 
         test_result = None
+        checkpoint_result_rows = []
         for epoch, checkpoint_path in periodic_checkpoints:
             load_checkpoint(model, checkpoint_path, device=device, cfg=cfg)
             args.ckpt_path = str(checkpoint_path)
@@ -225,7 +227,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
                 stage="test",
                 export_predictions=cfg.outputs.prediction_csv,
             )
-            save_result_csv(result.metrics, str(args.results_csv_path), args)
+            checkpoint_result_rows.append((result.metrics, str(checkpoint_path)))
             checkpoint_test_results.append(
                 {"checkpoint_path": str(checkpoint_path), "epoch": epoch, "metrics": result.metrics}
             )
@@ -245,7 +247,8 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
                 stage="test",
                 export_predictions=cfg.outputs.prediction_csv,
             )
-            save_result_csv(test_result.metrics, str(args.results_csv_path), args)
+            checkpoint_result_rows.append((test_result.metrics, str(resolved_best_path)))
+        save_result_rows_csv(checkpoint_result_rows, str(args.results_csv_path), args)
     else:
         if best_path.exists():
             load_checkpoint(model, best_path, device=device, cfg=cfg)

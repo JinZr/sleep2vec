@@ -28,6 +28,7 @@ from sleep2expert.distributed import is_rank_zero_process
 from sleep2expert.results import (
     save_multilabel_per_disease_metrics_csv,
     save_result_csv,
+    save_result_rows_csv,
     save_survival_per_disease_metrics_csv,
     save_training_run_manifest,
 )
@@ -266,6 +267,7 @@ def supervised(args, config_bundle):
             periodic_checkpoints.sort(key=lambda item: (item[0] == best_epoch, item[0], str(item[1])))
 
             pretrain_result = None
+            checkpoint_result_rows = []
             for epoch, checkpoint_path in periodic_checkpoints:
                 args.ckpt_path = str(checkpoint_path)
                 result = trainer.test(
@@ -274,7 +276,7 @@ def supervised(args, config_bundle):
                     dataloaders=test_loader,
                 )[0]
                 logging.info(result)
-                save_result_csv(result, args.results_csv_path, args)
+                checkpoint_result_rows.append((result, str(checkpoint_path)))
                 checkpoint_test_results.append(
                     {"checkpoint_path": str(checkpoint_path), "epoch": epoch, "metrics": result}
                 )
@@ -290,7 +292,8 @@ def supervised(args, config_bundle):
                     dataloaders=test_loader,
                 )[0]
                 logging.info(pretrain_result)
-                save_result_csv(pretrain_result, args.results_csv_path, args)
+                checkpoint_result_rows.append((pretrain_result, args.ckpt_path))
+            save_result_rows_csv(checkpoint_result_rows, args.results_csv_path, args)
         else:
             if args.epochs > 0:
                 ckpt_path = best_checkpoint_callback.best_model_path or "last"

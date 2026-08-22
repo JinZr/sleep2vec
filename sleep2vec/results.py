@@ -135,16 +135,7 @@ MULTILABEL_PER_DISEASE_METADATA_COLUMNS = (
 )
 
 
-def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: Any | None = None):
-    """Append one experiment result row to `csv_path`.
-
-    The rank-zero gate here intentionally follows the repository's current
-    single-node assumption by delegating to `is_rank_zero_process()`. Multi-node
-    distributed jobs are not considered in this write path today.
-    """
-    if not csv_path or not is_rank_zero_process():
-        return
-
+def _result_row(pretrain_result: Mapping[str, float], args: Any | None) -> dict[str, Any]:
     new_row: dict[str, Any] = dict(copy.deepcopy(pretrain_result))
     new_row["experiment_version"] = _resolve_experiment_version(args)
     new_row["result_source"] = _resolve_result_source(args)
@@ -170,15 +161,14 @@ def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: A
             new_row["channel_names"] = ""
         preset_path = getattr(args, "inference_preset_path", None) or getattr(args, "finetune_preset_path", None)
         new_row["preset_path"] = _stringify_optional_path(preset_path)
+    return new_row
 
-    df_new = pd.DataFrame([new_row])
-    csv_file = Path(csv_path)
 
+def _commit_result_rows(df_new: pd.DataFrame, csv_file: Path, *, append_when_compatible: bool) -> None:
     with _result_csv_lock(csv_file):
         if not csv_file.exists() or csv_file.stat().st_size == 0:
             ordered_columns = _ordered_result_columns(df_new)
             _write_result_csv(df_new.reindex(columns=ordered_columns), csv_file)
-            print(f"Results written to {csv_path} [experiment_version={new_row['experiment_version']}]")
             return
 
         try:
@@ -186,11 +176,10 @@ def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: A
         except pd.errors.EmptyDataError:
             ordered_columns = _ordered_result_columns(df_new)
             _write_result_csv(df_new.reindex(columns=ordered_columns), csv_file)
-            print(f"Results written to {csv_path} [experiment_version={new_row['experiment_version']}]")
             return
 
         existing_columns = list(df_old.columns)
-        if all(column in existing_columns for column in df_new.columns):
+        if append_when_compatible and all(column in existing_columns for column in df_new.columns):
             _write_result_csv(df_new.reindex(columns=existing_columns), csv_file, mode="a", header=False)
         else:
             ordered_columns = _ordered_result_columns(df_old, df_new)
@@ -201,7 +190,39 @@ def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: A
             )
             _write_result_csv(df_merged, csv_file)
 
+
+def save_result_csv(pretrain_result: Mapping[str, float], csv_path: str, args: Any | None = None):
+    """Append one experiment result row to `csv_path`.
+
+    The rank-zero gate here intentionally follows the repository's current
+    single-node assumption by delegating to `is_rank_zero_process()`. Multi-node
+    distributed jobs are not considered in this write path today.
+    """
+    if not csv_path or not is_rank_zero_process():
+        return
+
+    new_row = _result_row(pretrain_result, args)
+    _commit_result_rows(pd.DataFrame([new_row]), Path(csv_path), append_when_compatible=True)
     print(f"Results written to {csv_path} [experiment_version={new_row['experiment_version']}]")
+
+
+def save_result_rows_csv(
+    result_rows: Sequence[tuple[Mapping[str, float], str]],
+    csv_path: str,
+    args: Any,
+) -> None:
+    """Atomically append one complete checkpoint-evaluation matrix."""
+    if not result_rows or not csv_path or not is_rank_zero_process():
+        return
+
+    new_rows = []
+    for metrics, checkpoint_path in result_rows:
+        row_args = copy.copy(args)
+        row_args.ckpt_path = checkpoint_path
+        new_rows.append(_result_row(metrics, row_args))
+    # The matrix is one evidence unit: hold one lock and replace the aggregate only after every row is ready.
+    _commit_result_rows(pd.DataFrame(new_rows), Path(csv_path), append_when_compatible=False)
+    print(f"Results written to {csv_path} [rows={len(new_rows)}]")
 
 
 def prepare_inference_result_paths(

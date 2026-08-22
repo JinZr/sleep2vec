@@ -79,6 +79,7 @@ def _run_supervised(
     checkpoint_names: tuple[str, ...],
     best_epoch: int = 1,
     test_all_checkpoints_after_fit: bool = True,
+    test_failure_checkpoint: str | None = None,
 ):
     finetune_mod = _load_finetune_module(module_name, monkeypatch)
     checkpoints = []
@@ -129,6 +130,8 @@ def _run_supervised(
         def test(self, *args, **kwargs):
             checkpoint_path = Path(kwargs["ckpt_path"])
             test_calls.append(str(checkpoint_path))
+            if checkpoint_path.name == test_failure_checkpoint:
+                raise RuntimeError(f"checkpoint test failed: {checkpoint_path.name}")
             match = re.fullmatch(r"epoch=(\d+)(?:-step=\d+)?\.ckpt", checkpoint_path.name)
             score = float(match.group(1)) if match is not None else 99.0
             return [{"test_score": score}]
@@ -173,6 +176,11 @@ def _run_supervised(
     )
     monkeypatch.setattr(
         finetune_mod,
+        "save_result_rows_csv",
+        lambda rows, _path, _args: result_rows.extend((checkpoint_path, metrics) for metrics, checkpoint_path in rows),
+    )
+    monkeypatch.setattr(
+        finetune_mod,
         "save_training_run_manifest",
         lambda current_args, **kwargs: manifest_calls.append((current_args.ckpt_path, kwargs)),
     )
@@ -180,7 +188,11 @@ def _run_supervised(
     if hasattr(finetune_mod, "is_rank_zero_process"):
         monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: True)
 
-    finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
+    if test_failure_checkpoint is None:
+        finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
+    else:
+        with pytest.raises(RuntimeError, match=f"checkpoint test failed: {re.escape(test_failure_checkpoint)}"):
+            finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
     return checkpoints, test_calls, result_rows, manifest_calls, args
 
 
@@ -293,6 +305,34 @@ def test_all_checkpoint_mode_tests_every_regular_checkpoint_and_keeps_best_last(
         {"checkpoint_path": expected_paths[1], "epoch": 2, "metrics": {"test_score": 2.0}},
         {"checkpoint_path": expected_paths[2], "epoch": 1, "metrics": {"test_score": 1.0}},
     ]
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+@pytest.mark.parametrize("test_failure_checkpoint", ("epoch=02.ckpt", "best-epoch=01.ckpt"))
+def test_all_checkpoint_mode_commits_no_result_rows_until_every_test_succeeds(
+    module_name: str,
+    test_failure_checkpoint: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    checkpoint_names = (
+        ("epoch=00.ckpt", "epoch=02.ckpt")
+        if test_failure_checkpoint.startswith("best-")
+        else ("epoch=00.ckpt", "epoch=01.ckpt", "epoch=02.ckpt")
+    )
+
+    _checkpoints, test_calls, result_rows, manifest_calls, _args = _run_supervised(
+        module_name,
+        tmp_path,
+        monkeypatch,
+        checkpoint_names=checkpoint_names,
+        best_epoch=1,
+        test_failure_checkpoint=test_failure_checkpoint,
+    )
+
+    assert test_calls[-1].endswith(test_failure_checkpoint)
+    assert result_rows == []
+    assert manifest_calls[-1][1]["status"] == "failed"
 
 
 def test_all_checkpoint_mode_evaluates_best_alias_when_best_epoch_was_not_periodically_saved(

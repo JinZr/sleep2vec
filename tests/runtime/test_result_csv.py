@@ -127,6 +127,66 @@ def test_save_result_csv_skips_nonzero_slurm_rank(tmp_path, monkeypatch, package
 
 
 @pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_save_result_rows_csv_atomically_appends_complete_checkpoint_matrix(
+    tmp_path,
+    monkeypatch,
+    package_name: str,
+):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    for env_name in RANK_ENV_NAMES:
+        monkeypatch.delenv(env_name, raising=False)
+    csv_path = tmp_path / f"{package_name}.csv"
+    pd.DataFrame([{"test_loss": 1.0, "label_name": "old"}]).to_csv(csv_path, index=False)
+    writes = []
+    original_write = results_mod._write_result_csv
+
+    def capture_write(df, path, **kwargs):
+        writes.append(kwargs)
+        return original_write(df, path, **kwargs)
+
+    monkeypatch.setattr(results_mod, "_write_result_csv", capture_write)
+    args = _finetune_args(version="exp-b")
+
+    results_mod.save_result_rows_csv(
+        [
+            ({"test_loss": 0.5}, "/checkpoints/epoch=00.ckpt"),
+            ({"test_loss": 0.25, "test_ahi_pearson": 0.8}, "/checkpoints/epoch=01.ckpt"),
+        ],
+        str(csv_path),
+        args,
+    )
+
+    df = pd.read_csv(csv_path)
+    assert len(df) == 3
+    assert df["test_loss"].tolist() == [1.0, 0.5, 0.25]
+    assert df.loc[1:, "experiment_version"].tolist() == ["exp-b", "exp-b"]
+    assert df.loc[1:, "ckpt_path"].tolist() == [
+        "/checkpoints/epoch=00.ckpt",
+        "/checkpoints/epoch=01.ckpt",
+    ]
+    assert pd.isna(df.loc[0, "test_ahi_pearson"])
+    assert df.loc[2, "test_ahi_pearson"] == pytest.approx(0.8)
+    assert writes == [{}]
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_save_result_rows_csv_skips_nonzero_rank(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    for env_name in RANK_ENV_NAMES:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("RANK", "1")
+    csv_path = tmp_path / f"{package_name}.csv"
+
+    results_mod.save_result_rows_csv(
+        [({"test_loss": 0.5}, "/checkpoints/epoch=00.ckpt")],
+        str(csv_path),
+        _finetune_args(version="exp-a"),
+    )
+
+    assert not csv_path.exists()
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
 def test_save_training_manifest_skips_nonzero_slurm_rank(tmp_path, monkeypatch, package_name: str):
     results_mod = importlib.import_module(f"{package_name}.results")
     for env_name in RANK_ENV_NAMES:

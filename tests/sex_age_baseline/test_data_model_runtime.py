@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import pickle
 
+import pandas as pd
 import pytest
 import torch
 import yaml
@@ -790,6 +791,48 @@ def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_me
     assert checkpoint_results[-1]["epoch"] == best_epoch
     best_result = next(row for row in checkpoint_results if row["epoch"] == best_epoch)
     assert manifest["metrics"] == best_result["metrics"]
+    result_rows = pd.read_csv(args.results_csv_path)
+    assert len(result_rows) == 2
+    assert set(result_rows["ckpt_path"]) == {row["checkpoint_path"] for row in checkpoint_results}
+
+
+def test_all_checkpoint_test_failure_preserves_existing_results_csv(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        [
+            "001,train,50,0",
+            "002,train,60,1",
+            "003,val,55,0",
+            "004,val,65,1",
+            "005,test,58,0",
+            "006,test,68,1",
+        ],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    args = _runtime_args(config, tmp_path, version_name="failed-all-checkpoints", epochs=2, test_after_fit=True)
+    args.test_all_checkpoints_after_fit = True
+    args.results_csv_path.write_text("experiment_version,test_loss\nold,1.0\n")
+    results_before = args.results_csv_path.read_bytes()
+    original_evaluate = baseline_runtime.evaluate_model
+    test_calls = 0
+
+    def fail_second_test(*call_args, **call_kwargs):
+        nonlocal test_calls
+        if call_kwargs.get("stage") == "test":
+            test_calls += 1
+            if test_calls == 2:
+                raise RuntimeError("second checkpoint test failed")
+        return original_evaluate(*call_args, **call_kwargs)
+
+    monkeypatch.setattr(baseline_runtime, "evaluate_model", fail_second_test)
+
+    with pytest.raises(RuntimeError, match="second checkpoint test failed"):
+        baseline_runtime.train_and_save(args, cfg)
+
+    assert test_calls == 2
+    assert args.results_csv_path.read_bytes() == results_before
 
 
 def test_infer_run_inference_callable_validates_and_delegates(tmp_path: Path, monkeypatch):

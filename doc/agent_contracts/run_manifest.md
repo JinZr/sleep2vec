@@ -52,6 +52,14 @@ selector hashes each checkpoint, writes the plan-local all-checkpoint ranking,
 and keeps `run_manifest.tsv` at one lifecycle row per run by projecting only
 that run's best test-ranked checkpoint.
 
+Finetune runtime directories are single-use: rank zero rejects a non-empty
+`log-finetune/<version>` before persisting configuration, loading data, or
+fitting. All-checkpoint result rows form one evidence matrix; runtimes evaluate
+the complete declared checkpoint set first, then append the full matrix to the
+aggregate results CSV under one lock and one atomic replacement. A failed
+checkpoint test may publish its existing `status=failed` manifest, but never a
+successful terminal manifest or a partial checkpoint matrix.
+
 For a pipeline attempt, `result_root` is a single-use empty directory and the
 runtime manifest beneath it must be unique and match the frozen inference
 inputs. Pipeline projections cannot infer success from files other than that
