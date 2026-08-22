@@ -50,6 +50,7 @@ def generate_external_eval(
         top_k=top_k,
         all_candidates=all_candidates,
     )
+    _require_local_postprocess_execution(rows, owner_plans, "hparam-external-eval")
     for row in rows:
         if row.get("status") not in {"completed", "finished"}:
             raise ValueError(
@@ -164,6 +165,7 @@ def export_hparam_logits(
         top_k=top_k,
         all_candidates=all_candidates,
     )
+    _require_local_postprocess_execution(rows, owner_plans, "hparam-export-logits")
     config_dir = root / "logits_export_configs"
     output_dir = root / "logits_exports"
     manifest = root / "logits_export_manifest.tsv"
@@ -575,6 +577,20 @@ def _selected_candidate_rows(
     if not selected:
         raise ValueError("No selected candidates remain after rank/top_k filtering.")
     return selected, owner_plans_by_key
+
+
+def _require_local_postprocess_execution(
+    rows: list[dict[str, Any]],
+    owner_plans: dict[tuple[str, str], dict[str, Any]],
+    operation: str,
+) -> None:
+    for row in rows:
+        owner_plan = owner_plans[managed_run_key(row)]
+        recipe = owner_plan.get("recipe") if isinstance(owner_plan.get("recipe"), dict) else {}
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        # Generated configs and collected outputs are manager-local; pretending remote paths are shared is unsafe.
+        if execution.get("target", "local") == "ssh":
+            raise ValueError(f"{operation} does not support SSH execution targets; no outputs were written.")
 
 
 def _copy_config_with_data_paths(

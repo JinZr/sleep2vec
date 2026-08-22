@@ -287,9 +287,12 @@ unchanged polling does not produce a log entry.
 
 ### External evaluation
 
-`hparam-external-eval` rechecks final top-k candidates against canonical
-`run_manifest.tsv`; only `completed` or `finished` runs may enter its runnable
-script.
+Test-selected postprocessing binds caller rank, checkpoint path, and SHA-256 to
+both the frozen workspace ranking and canonical `run_manifest.tsv` before
+rehash or top-k filtering. `hparam-external-eval` additionally accepts only
+`completed` or `finished` runs. The direct external-eval and logits-export
+helpers reject SSH-owned candidates before output; remote execution belongs to
+a workflow that explicitly stages configs and collects results.
 
 `experiment-run` owns the resumable source-ranking-to-external-evaluation flow.
 It validates the strict spec without launching in dry-run mode, waits for

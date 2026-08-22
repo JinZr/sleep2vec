@@ -1007,6 +1007,79 @@ def test_validation_selected_external_eval_does_not_require_checkpoint_hash(tmp_
     assert (plan_dir / "external_eval_manifest.tsv").is_file()
 
 
+def test_hparam_external_eval_rejects_ssh_execution_before_writing(tmp_path: Path):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={
+            "target": "ssh",
+            "host": "unit-host",
+            "workdir": "/remote/repository",
+            "path_context": "remote",
+            "path_validation": "defer",
+        },
+    )
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr or result.stdout
+    run = _first_run(plan_dir)
+    _set_run_status(plan_dir, run)
+    selected = plan_dir / "selected.csv"
+    selected.write_text(
+        "step_id,run_id,rank,checkpoint_path\n"
+        f"{run['step_id']},{run['run_id']},1,{Path(run['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
+    )
+
+    with pytest.raises(ValueError, match="hparam-external-eval does not support SSH execution targets"):
+        hparam_postprocess.generate_external_eval(plan_dir, selected, unlock_final_test=True)
+
+    assert not (plan_dir / "external_eval_configs").exists()
+    assert not (plan_dir / "external_eval_manifest.tsv").exists()
+    assert not (plan_dir / "external_eval.sh").exists()
+
+
+@pytest.mark.parametrize("execute", [False, True], ids=["dry-run", "execute"])
+def test_hparam_export_logits_rejects_ssh_execution_before_writing(
+    tmp_path: Path,
+    monkeypatch,
+    execute: bool,
+):
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={
+            "target": "ssh",
+            "host": "unit-host",
+            "workdir": "/remote/repository",
+            "path_context": "remote",
+            "path_validation": "defer",
+        },
+    )
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr or result.stdout
+    run = _first_run(plan_dir)
+    selected = plan_dir / "selected.csv"
+    selected.write_text(
+        "step_id,run_id,rank,checkpoint_path\n"
+        f"{run['step_id']},{run['run_id']},1,{Path(run['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
+    )
+    execution_calls = []
+    monkeypatch.setattr(hparam_postprocess, "_run_logit_export", lambda *_args, **_kwargs: execution_calls.append(True))
+
+    with pytest.raises(ValueError, match="hparam-export-logits does not support SSH execution targets"):
+        hparam_postprocess.export_hparam_logits(
+            plan_dir,
+            selected,
+            unlock_final_test=True,
+            execute=execute,
+        )
+
+    assert execution_calls == []
+    assert not (plan_dir / "logits_export_configs").exists()
+    assert not (plan_dir / "logits_exports").exists()
+    assert not (plan_dir / "logits_export_manifest.tsv").exists()
+    assert not (plan_dir / "logits_export.sh").exists()
+
+
 @pytest.mark.parametrize("rank", [None, "", 0, -1, 1.5, "nan", "invalid", True])
 def test_selected_candidates_require_positive_integer_rank(tmp_path: Path, rank):
     recipe = _hparam_recipe(tmp_path)
