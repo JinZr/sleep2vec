@@ -172,7 +172,8 @@ def _commit_result_rows(df_new: pd.DataFrame, csv_file: Path, *, append_when_com
             return
 
         try:
-            df_old = pd.read_csv(csv_file)
+            # Atomic rewrites must preserve historical field text such as zero-padded experiment versions.
+            df_old = pd.read_csv(csv_file, dtype=str, keep_default_na=False)
         except pd.errors.EmptyDataError:
             ordered_columns = _ordered_result_columns(df_new)
             _write_result_csv(df_new.reindex(columns=ordered_columns), csv_file)

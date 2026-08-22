@@ -1,7 +1,10 @@
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+import csv
 import importlib
 import json
 from pathlib import Path
+import threading
 
 import pandas as pd
 import pytest
@@ -167,6 +170,109 @@ def test_save_result_rows_csv_atomically_appends_complete_checkpoint_matrix(
     assert pd.isna(df.loc[0, "test_ahi_pearson"])
     assert df.loc[2, "test_ahi_pearson"] == pytest.approx(0.8)
     assert writes == [{}]
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+@pytest.mark.parametrize("schema_compatible", (True, False))
+def test_save_result_rows_csv_preserves_historical_field_text(
+    tmp_path,
+    monkeypatch,
+    package_name: str,
+    schema_compatible: bool,
+):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    for env_name in RANK_ENV_NAMES:
+        monkeypatch.delenv(env_name, raising=False)
+    csv_path = tmp_path / f"{package_name}.csv"
+    args = _finetune_args(version="exp-b")
+    new_row = results_mod._result_row({"test_loss": 0.5}, args)
+    existing_columns = list(new_row) if schema_compatible else ["experiment_version", "test_loss"]
+    historical_row = {column: "" for column in existing_columns}
+    historical_row.update({"experiment_version": "001", "test_loss": "1.00"})
+    with csv_path.open("w", newline="") as file_obj:
+        writer = csv.DictWriter(file_obj, fieldnames=existing_columns)
+        writer.writeheader()
+        writer.writerow(historical_row)
+
+    results_mod.save_result_rows_csv(
+        [
+            ({"test_loss": 0.5}, "/checkpoints/epoch=00.ckpt"),
+            ({"test_loss": 0.25}, "/checkpoints/epoch=01.ckpt"),
+        ],
+        str(csv_path),
+        args,
+    )
+
+    with csv_path.open(newline="") as file_obj:
+        reader = csv.DictReader(file_obj)
+        rows = list(reader)
+    assert len(rows) == 3
+    assert rows[0]["experiment_version"] == "001"
+    assert rows[0]["test_loss"] == "1.00"
+    assert rows[1]["experiment_version"] == "exp-b"
+    assert rows[2]["experiment_version"] == "exp-b"
+    if schema_compatible:
+        assert set(reader.fieldnames or ()) == set(existing_columns)
+    else:
+        assert set(existing_columns) < set(reader.fieldnames or ())
+        assert rows[0]["result_source"] == ""
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+def test_save_result_rows_csv_serializes_concurrent_single_row_writer(tmp_path, monkeypatch, package_name: str):
+    results_mod = importlib.import_module(f"{package_name}.results")
+    for env_name in RANK_ENV_NAMES:
+        monkeypatch.delenv(env_name, raising=False)
+    csv_path = tmp_path / f"{package_name}.csv"
+    results_mod.save_result_csv({"test_loss": 1.0}, str(csv_path), _finetune_args(version="001"))
+
+    matrix_write_ready = threading.Event()
+    single_lock_attempted = threading.Event()
+    single_thread_id = None
+    writes = []
+    original_flock = results_mod.fcntl.flock
+    original_write = results_mod._write_result_csv
+
+    def track_flock(file_descriptor, operation):
+        if threading.get_ident() == single_thread_id and operation == results_mod.fcntl.LOCK_EX:
+            single_lock_attempted.set()
+        return original_flock(file_descriptor, operation)
+
+    def hold_matrix_write(df, path, **kwargs):
+        writes.append((len(df), kwargs))
+        if len(df) == 3 and not kwargs:
+            matrix_write_ready.set()
+            assert single_lock_attempted.wait(timeout=5)
+        return original_write(df, path, **kwargs)
+
+    def write_matrix():
+        results_mod.save_result_rows_csv(
+            [
+                ({"test_loss": 0.5}, "/checkpoints/epoch=00.ckpt"),
+                ({"test_loss": 0.25}, "/checkpoints/epoch=01.ckpt"),
+            ],
+            str(csv_path),
+            _finetune_args(version="matrix"),
+        )
+
+    def write_single():
+        nonlocal single_thread_id
+        single_thread_id = threading.get_ident()
+        results_mod.save_result_csv({"test_loss": 0.125}, str(csv_path), _finetune_args(version="single"))
+
+    monkeypatch.setattr(results_mod.fcntl, "flock", track_flock)
+    monkeypatch.setattr(results_mod, "_write_result_csv", hold_matrix_write)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        matrix_future = executor.submit(write_matrix)
+        assert matrix_write_ready.wait(timeout=5)
+        single_future = executor.submit(write_single)
+        matrix_future.result(timeout=5)
+        single_future.result(timeout=5)
+
+    with csv_path.open(newline="") as file_obj:
+        rows = list(csv.DictReader(file_obj))
+    assert [row["experiment_version"] for row in rows] == ["001", "matrix", "matrix", "single"]
+    assert writes == [(3, {}), (1, {"mode": "a", "header": False})]
 
 
 @pytest.mark.parametrize("package_name", RESULT_PACKAGES)

@@ -58,7 +58,9 @@ fitting. All-checkpoint result rows form one evidence matrix; runtimes evaluate
 the complete declared checkpoint set first, then append the full matrix to the
 aggregate results CSV under one lock and one atomic replacement. A failed
 checkpoint test may publish its existing `status=failed` manifest, but never a
-successful terminal manifest or a partial checkpoint matrix.
+successful terminal manifest or a partial checkpoint matrix. Atomic rewrites
+read historical cells as text so lexical identities such as zero-padded
+experiment versions remain unchanged.
 
 For a pipeline attempt, `result_root` is a single-use empty directory and the
 runtime manifest beneath it must be unique and match the frozen inference
