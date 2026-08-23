@@ -37,6 +37,12 @@ execution:
 ## Decision checklist
 Confirm the static tuning selection split/metric/mode, the default test-after-fit behavior or an explicit opt-out, namespaced `runtime.*` or `yaml:/...` search keys, generated config directory, unique version names, execution target and required Python/commit identity, scheduler type and resources, GPU assignment, W&B project/group, log and lifecycle identity locations, direct max concurrency when applicable, final-test unlock state, and whether the run is explicitly external-optimized adaptive tuning. Test-selected tuning must use `selection_split: test`, `external_test_locked: false`, `test_after_fit: true`, and effective `runtime.ckpt_every_n_epochs: 1` for every trial. For `agent_proposal`, also confirm the numeric authorization bounds and that terminal-only rounds, disabled replacement, and an external two-phase agent driver are intended.
 
+The user must explicitly confirm the selection split, metric, and mode. If any
+of the three was inferred by the agent, stop and ask instead of freezing it as
+`explicit_recipe`. Direct finetune does not implement test-based checkpoint
+selection; represent a fixed configuration as one hparam configuration with
+`max_runs: 1` so the all-checkpoint test evidence and hash contracts apply.
+
 ## Stop-and-consult gates
 The agent must stop and ask the user before continuing if any high-impact decision is missing, ambiguous, conflicting, or marked as `ASK_USER`.
 

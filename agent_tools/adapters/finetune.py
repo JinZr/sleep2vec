@@ -162,6 +162,23 @@ class FinetuneAdapter(TaskAdapter):
             )
         return issues
 
+    def preflight_issues(
+        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None, *, unlock_final_test: bool
+    ) -> list[DecisionIssue]:
+        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+        if evaluation.get("selection_split") != "test":
+            return []
+        return [
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "evaluation_policy.selection_split",
+                "Direct finetune cannot select checkpoints on test. Use task=hparam_tune with one configuration "
+                "and max_runs: 1 to test and rank every saved epoch checkpoint.",
+                None,
+                {"selection_split": "test", "preflight_before_workspace": True},
+            )
+        ]
+
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
         inputs = _inputs(recipe)
         runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}

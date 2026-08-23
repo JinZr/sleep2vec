@@ -123,6 +123,9 @@ window and explicitly named episode denominators separate.
 External or final test data stays locked until the recorded decision allows it.
 Hyperparameter ranking uses the split and metric frozen in the recipe; test
 evidence is eligible only when tuning explicitly unlocks and evaluates test.
+Direct finetune cannot select checkpoints on test; a fixed test-selected
+configuration uses a one-configuration hparam plan so every epoch checkpoint
+is evaluated, ranked, and hash-bound.
 
 ## Inference And Evaluation
 

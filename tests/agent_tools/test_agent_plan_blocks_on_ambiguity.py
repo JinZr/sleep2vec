@@ -947,6 +947,54 @@ def test_finetune_plan_materializes_test_after_fit_policy_default(tmp_path: Path
         assert frozen["decisions"]["test_after_fit"]["source"] == "policy_default"
 
 
+@pytest.mark.parametrize("test_after_fit", [False, True])
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_finetune_plan_rejects_test_selection_before_workspace_mutation(
+    tmp_path: Path,
+    variant: str,
+    test_after_fit: bool,
+):
+    source_dir = tmp_path / "source"
+    recipe = write_finetune_recipe(source_dir, variant=variant)
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    payload["evaluation_policy"].update(
+        {
+            "selection_split": "test",
+            "external_test_locked": False,
+            "test_after_fit": test_after_fit,
+        }
+    )
+    payload["decisions"].update(
+        {
+            "train_val_test_policy": {"value": "test", "source": "explicit_user"},
+            "external_test_locked": {"value": False, "source": "explicit_user"},
+            "test_after_fit": {"value": test_after_fit, "source": "explicit_user"},
+        }
+    )
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    source_recipe_bytes = recipe.read_bytes()
+    config = Path(payload["inputs"]["config"])
+    source_config_bytes = config.read_bytes()
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--output-dir",
+        str(workspace / "plans" / "direct-finetune"),
+    )
+
+    assert result.returncode == 1
+    assert "Direct finetune cannot select checkpoints on test" in result.stdout
+    assert "task=hparam_tune" in result.stdout
+    assert "max_runs: 1" in result.stdout
+    assert not workspace.exists()
+    assert recipe.read_bytes() == source_recipe_bytes
+    assert config.read_bytes() == source_config_bytes
+
+
 def test_finetune_lock_does_not_silently_disable_default_test_after_fit(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
