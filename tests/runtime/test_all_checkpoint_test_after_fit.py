@@ -548,6 +548,7 @@ def test_all_checkpoint_mode_preserves_frozen_checkpoint_path_spelling(
         tmp_path,
         monkeypatch,
         checkpoint_names=("epoch=00.ckpt",),
+        best_epoch=0,
         frozen_checkpoint_dir=str(frozen_dir),
     )
 
