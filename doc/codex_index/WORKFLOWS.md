@@ -231,7 +231,9 @@ finalization requires one verified success per declared job. See the
 
 Adaptive tuning keeps external-agent suggestions inside authenticated proposal
 snapshots and parameter envelopes; planning, preflight, launch, and lifecycle
-mutation remain tool-owned. `agent_proposal` is terminal-only, while automatic
+mutation remain tool-owned. Recipes with `adaptive.enabled=true` enter through
+`hparam-adaptive-init`; the generic `plan` command does not publish incomplete
+adaptive workspaces. `agent_proposal` is terminal-only, while automatic
 neighborhood suggestions and active replacement require explicit
 `best_neighborhood`. See the [task recipe contract](../agent_contracts/task_recipe.md)
 and [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md).

@@ -266,6 +266,10 @@ Frozen per-run execution identity and its canonical owner are defined in
 The optional `adaptive` block defines append-only rounds bounded by
 `adaptive.max_runs_total`.
 
+An authored recipe with `adaptive.enabled=true` must enter through
+`hparam-adaptive-init`. The generic `plan` command rejects it before workspace
+mutation; only the adaptive workflow owner may materialize round plans.
+
 - Control flags must be YAML booleans; run, round, and poll budgets must be
   positive YAML integers; replacement grace and margin values must be finite
   and non-negative.

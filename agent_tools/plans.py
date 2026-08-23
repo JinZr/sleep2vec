@@ -664,6 +664,7 @@ def build_plan(
     staging_dir: str | Path | None = None,
     defer_commit: bool = False,
     registered_recipe_path: str | Path | None = None,
+    allow_adaptive_workflow: bool = False,
 ) -> DecisionReport:
     out = canonical_local_experiment_root(output_dir, Path.cwd())
     recipe, cfg, report = preflight_plan(
@@ -673,6 +674,7 @@ def build_plan(
         allow_unresolved=allow_unresolved,
         unlock_final_test=unlock_final_test,
         allow_existing_output_artifacts=defer_commit,
+        allow_adaptive_workflow=allow_adaptive_workflow,
     )
     if expected_recipe is not None:
         recipe_source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
@@ -889,8 +891,23 @@ def preflight_plan(
     allow_unresolved: bool = False,
     unlock_final_test: bool = False,
     allow_existing_output_artifacts: bool = False,
+    allow_adaptive_workflow: bool = False,
 ) -> tuple[dict, dict | None, DecisionReport]:
     recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path)
+    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+    if adaptive.get("enabled") is True and not allow_adaptive_workflow:
+        report = _append_issues(
+            report,
+            [
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "adaptive.enabled",
+                    "Adaptive recipes must be initialized with hparam-adaptive-init, not plan.",
+                    None,
+                    {"preflight_before_workspace": True},
+                )
+            ],
+        )
     out = canonical_local_experiment_root(output_dir, Path.cwd())
     metadata_unresolved = bool(experiment_metadata_issues(recipe)) or any(
         issue.field in {"experiment", "step"}
