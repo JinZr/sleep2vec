@@ -319,9 +319,6 @@ lives in `managed_scheduler`, external-matrix policy in `experiment_pipeline`,
 and task-specific behavior in adapters/domain modules. See
 [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) for layering.
 
-This index supplies navigation only. It does not authorize commands or replace
-live repository inspection.
-
 ## Variants And Routing
 
 Recipe `variant` determines the package-local runtime:
@@ -332,26 +329,13 @@ Recipe `variant` determines the package-local runtime:
 - `sex_age_baseline` uses its dedicated demographic baseline where supported;
 - `sleep2stat` is a task and has no model variant.
 
-Do not route variant recipes through root entrypoints. Root-to-variant changes
-to config, data, checkpoints, metrics, results, callbacks, tokenizers, or model
-interfaces require package-local parity validation. `sleep2expert` routing
-analysis reads MoE routing outputs; compact artifacts are created through its
-subnetwork export owner rather than manual checkpoint surgery.
+Use package-local entrypoints. See the
+[variant boundary](./MODULE_MAP.md#variant-boundary) for ownership and
+[standalone variant guidance](./REUSE_GUIDE.md#standalone-variants) for reuse
+and parity rules.
 
-## Verification Routing
+## Verification
 
-Use the smallest focused suite first, then the owning gate from `AGENTS.md`:
-
-| Change | Focused tests |
-| --- | --- |
-| config/task/builders | `tests/config/` |
-| dataset/sampler/preset contracts | `tests/data/`, `tests/preprocess/` |
-| model/head/loss behavior | `tests/models/` |
-| checkpoints, metrics, results, entrypoints | `tests/runtime/` |
-| root-to-variant parity | `tests/variants/` |
-| analysis bundles | `tests/sleep2stat/` |
-| consultation and experiment management | `tests/agent_tools/` |
-
-Runtime smoke commands are warranted only when the touched contract is not
-fully represented by focused tests. Variant validation is mandatory whenever a
-shared change can affect `sleep2vec2` or `sleep2expert`.
+Start with the focused suite in
+[High-Risk Seams And Tests](./MODULE_MAP.md#high-risk-seams-and-tests), then run
+the owning verification gate from [`AGENTS.md`](../../AGENTS.md).
