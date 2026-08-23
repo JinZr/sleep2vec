@@ -227,6 +227,8 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             periodic_checkpoints.append((epoch, recorded_path))
         if not periodic_checkpoints:
             raise ValueError("No regular epoch=*.ckpt checkpoints were saved for test evaluation.")
+        if best_epoch not in seen_epochs:
+            raise ValueError(f"Validation-best epoch checkpoint is missing from periodic test evidence: {best_epoch}")
         periodic_checkpoints.sort(key=lambda item: (item[0] == best_epoch, item[0], str(item[1])))
 
         test_result = None
@@ -249,20 +251,6 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             if epoch == best_epoch:
                 test_result = result
 
-        if test_result is None:
-            resolved_best_path = best_path.resolve()
-            load_checkpoint(model, best_path, device=device, cfg=cfg)
-            args.ckpt_path = str(resolved_best_path)
-            args.ckpt_resolved_path = str(resolved_best_path)
-            test_result = evaluate_model(
-                model,
-                test_loader,
-                cfg,
-                device=device,
-                stage="test",
-                export_predictions=cfg.outputs.prediction_csv,
-            )
-            checkpoint_result_rows.append((test_result.metrics, str(resolved_best_path)))
     else:
         if best_path.exists():
             load_checkpoint(model, best_path, device=device, cfg=cfg)

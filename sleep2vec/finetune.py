@@ -350,6 +350,10 @@ def supervised(args, config_bundle):
             best_path = best_checkpoint_callback.best_model_path
             best_match = re.search(r"(?:^|-)epoch=(\d+)(?:-step=\d+)?\.ckpt$", Path(str(best_path or "")).name)
             best_epoch = int(best_match.group(1)) if best_match is not None else None
+            if best_epoch is not None and best_epoch not in seen_epochs:
+                raise ValueError(
+                    f"Validation-best epoch checkpoint is missing from periodic test evidence: {best_epoch}"
+                )
             periodic_checkpoints.sort(key=lambda item: (item[0] == best_epoch, item[0], str(item[1])))
 
             pretrain_result = None

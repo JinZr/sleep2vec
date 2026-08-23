@@ -557,29 +557,21 @@ def test_all_checkpoint_mode_preserves_frozen_checkpoint_path_spelling(
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)
-@pytest.mark.parametrize("test_failure_checkpoint", ("epoch=02.ckpt", "best-epoch=01.ckpt"))
 def test_all_checkpoint_mode_commits_no_result_rows_until_every_test_succeeds(
     module_name: str,
-    test_failure_checkpoint: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    checkpoint_names = (
-        ("epoch=00.ckpt", "epoch=02.ckpt")
-        if test_failure_checkpoint.startswith("best-")
-        else ("epoch=00.ckpt", "epoch=01.ckpt", "epoch=02.ckpt")
-    )
-
     _checkpoints, test_calls, result_rows, manifest_calls, _args = _run_supervised(
         module_name,
         tmp_path,
         monkeypatch,
-        checkpoint_names=checkpoint_names,
+        checkpoint_names=("epoch=00.ckpt", "epoch=01.ckpt", "epoch=02.ckpt"),
         best_epoch=1,
-        test_failure_checkpoint=test_failure_checkpoint,
+        test_failure_checkpoint="epoch=02.ckpt",
     )
 
-    assert test_calls[-1].endswith(test_failure_checkpoint)
+    assert test_calls[-1].endswith("epoch=02.ckpt")
     assert result_rows == []
     assert manifest_calls[-1][1]["status"] == "failed"
 
@@ -627,25 +619,18 @@ def test_all_checkpoint_mode_commits_matrix_after_artifacts_before_success_manif
     assert events == ["survival", "multilabel", "matrix", "manifest:completed"]
 
 
-def test_all_checkpoint_mode_evaluates_best_alias_when_best_epoch_was_not_periodically_saved(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_all_checkpoint_mode_rejects_missing_validation_best_periodic_checkpoint(
+    module_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    _checkpoints, test_calls, _result_rows, manifest_calls, _args = _run_supervised(
-        "sleep2vec.finetune",
-        tmp_path,
-        monkeypatch,
-        checkpoint_names=("epoch=00.ckpt", "epoch=02.ckpt"),
-        best_epoch=1,
-    )
-
-    checkpoint_dir = (tmp_path / "log-finetune" / "unit-test" / "checkpoints").resolve()
-    assert test_calls == [
-        str(checkpoint_dir / "epoch=00.ckpt"),
-        str(checkpoint_dir / "epoch=02.ckpt"),
-        str(Path("log-finetune/unit-test/checkpoints/best-epoch=01.ckpt")),
-    ]
-    assert manifest_calls[-1][1]["metrics"] == {"test_score": 99.0}
-    assert len(manifest_calls[-1][1]["checkpoint_test_results"]) == 2
+    with pytest.raises(ValueError, match="Validation-best epoch checkpoint is missing"):
+        _run_supervised(
+            module_name,
+            tmp_path,
+            monkeypatch,
+            checkpoint_names=("epoch=00.ckpt", "epoch=02.ckpt"),
+            best_epoch=1,
+        )
 
 
 @pytest.mark.parametrize(

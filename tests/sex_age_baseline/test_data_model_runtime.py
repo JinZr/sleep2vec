@@ -865,6 +865,37 @@ def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_me
     assert events == ["prediction", "survival", "multilabel", "matrix", "manifest"]
 
 
+def test_all_checkpoint_test_rejects_missing_validation_best_periodic_checkpoint(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        [
+            "001,train,50,0",
+            "002,train,60,1",
+            "003,val,55,0",
+            "004,val,65,1",
+            "005,test,58,0",
+            "006,test,68,1",
+        ],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    args = _runtime_args(config, tmp_path, version_name="missing-best-periodic", epochs=2, test_after_fit=True)
+    args.test_all_checkpoints_after_fit = True
+    original_save_checkpoint = baseline_runtime.save_checkpoint
+
+    def omit_first_periodic(path, *call_args, **call_kwargs):
+        if Path(path).name == "epoch=00.ckpt":
+            return None
+        return original_save_checkpoint(path, *call_args, **call_kwargs)
+
+    monkeypatch.setattr(baseline_runtime, "save_checkpoint", omit_first_periodic)
+    monkeypatch.setattr(baseline_runtime, "_is_better", lambda _value, best, _mode: best is None)
+
+    with pytest.raises(ValueError, match="Validation-best epoch checkpoint is missing"):
+        baseline_runtime.train_and_save(args, cfg)
+
+
 def test_all_checkpoint_test_failure_preserves_existing_results_csv(tmp_path: Path, monkeypatch):
     config = _write_config(
         tmp_path,
