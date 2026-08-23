@@ -257,20 +257,21 @@ def _digest_rows(
         row.update(managed_run_parameters(run))
         row.update(_manifest_metrics(manifest))
         if selection_split == "test" and objective["metric"].startswith("test_"):
-            # Every test_* objective changes checkpoint identity; validation/run-level objectives stay top-level.
+            # Checkpoint test evidence changes identity and is valid only after canonical successful completion.
             row.pop(objective["metric"], None)
             row.pop("epoch", None)
             row["checkpoint_path"] = ""
-            checkpoint_objective = _test_checkpoint_objective(
-                manifest,
-                objective,
-                checkpoint_dir,
-                checkpoint_names,
-            )
-            if checkpoint_objective is not None:
-                row[objective["metric"]] = checkpoint_objective["score"]
-                row["checkpoint_path"] = checkpoint_objective["checkpoint_path"]
-                row["epoch"] = checkpoint_objective["epoch"]
+            if status.get("status") in {"completed", "finished"}:
+                checkpoint_objective = _test_checkpoint_objective(
+                    manifest,
+                    objective,
+                    checkpoint_dir,
+                    checkpoint_names,
+                )
+                if checkpoint_objective is not None:
+                    row[objective["metric"]] = checkpoint_objective["score"]
+                    row["checkpoint_path"] = checkpoint_objective["checkpoint_path"]
+                    row["epoch"] = checkpoint_objective["epoch"]
         row["status"] = status.get("status", "")
         row["pid"] = status.get("pid", "")
         rows.append(row)
@@ -1984,20 +1985,15 @@ def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -
         if scheduler_type(row) == "slurm" and row.get("scheduler_exit_code") not in (None, ""):
             continue
         should_stop = evidence.log_has_failure(row.get("log_path"), row)
+        uses_checkpoint_test_objective = selection_split == "test" and objective["metric"].startswith("test_")
         data = {}
-        checkpoint_names = []
-        if not should_stop:
+        if not should_stop and not uses_checkpoint_test_objective:
             observed_artifacts = evidence.runtime_artifacts(row)
             if observed_artifacts is not None:
-                _manifest_path, data, checkpoint_names = observed_artifacts
-        if selection_split == "test" and objective["metric"].startswith("test_"):
-            checkpoint_objective = _test_checkpoint_objective(
-                data,
-                objective,
-                str(row.get("checkpoint_dir") or ""),
-                checkpoint_names,
-            )
-            score = checkpoint_objective["score"] if checkpoint_objective is not None else None
+                _manifest_path, data, _checkpoint_names = observed_artifacts
+        if uses_checkpoint_test_objective:
+            # Checkpoint test objectives become selection evidence only after canonical successful completion.
+            score = None
         else:
             score = _manifest_metrics(data).get(objective["metric"], artifacts.metric_value(data, objective["metric"]))
         if (

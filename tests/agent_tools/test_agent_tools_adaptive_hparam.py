@@ -2277,6 +2277,33 @@ def test_test_selected_adaptive_evidence_uses_checkpoint_objective_through_agent
     assert proposal_row["epoch"] == "2"
 
 
+def test_failed_test_checkpoint_objective_stays_unscored_through_agent_proposal(tmp_path: Path):
+    recipe = _test_selected_adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    run, _checkpoints = _write_checkpoint_test_manifest(
+        workflow_dir,
+        scores={1: 0.8, 2: 0.9},
+        top_level_score=0.99,
+    )
+    _mark_round_terminal(workflow_dir, tmp_path, status="failed")
+
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+
+    assert input_path is not None
+    digest_row = _read_table(workflow_dir / "adaptive" / "digests" / "round_000.csv")[0]
+    assert digest_row["status"] == "failed"
+    assert digest_row.get("test_auroc", "") == ""
+    assert digest_row["checkpoint_path"] == ""
+    assert digest_row.get("epoch", "") == ""
+    assert not (workflow_dir / "adaptive" / "incumbents.tsv").exists()
+    proposal_row = json.loads(input_path.read_text())["input"]["digest_rows"][0]
+    assert proposal_row["status"] == "failed"
+    assert proposal_row.get("test_auroc", "") == ""
+    assert proposal_row["checkpoint_path"] == ""
+    assert proposal_row.get("epoch", "") == ""
+
+
 def test_test_selected_adaptive_evidence_ignores_epoch_checkpoint_symlink(tmp_path: Path):
     recipe = _test_selected_adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
@@ -4603,13 +4630,13 @@ def test_metric_based_running_stop_honors_grace(tmp_path: Path, monkeypatch):
         ("absent", "max", None, 0.1, 0.73, False),
         ("incomplete", "max", (0.9, 0.8), 0.1, 0.73, False),
         ("complete-good", "max", (0.9, 0.8), 0.1, 0.73, False),
-        ("complete-bad", "max", (0.5, 0.6), 0.99, 0.73, True),
+        ("complete-bad", "max", (0.5, 0.6), 0.99, 0.73, False),
         ("complete-good", "min", (0.1, 0.2), 0.99, 0.27, False),
-        ("complete-bad", "min", (0.5, 0.4), 0.01, 0.27, True),
+        ("complete-bad", "min", (0.5, 0.4), 0.01, 0.27, False),
         ("log-failure", "max", None, 0.1, 0.73, True),
     ],
 )
-def test_test_selected_running_replacement_requires_complete_checkpoint_objective(
+def test_test_selected_running_replacement_ignores_checkpoint_objective_until_successful_completion(
     tmp_path: Path,
     evidence_case: str,
     objective_mode: str,
@@ -4683,7 +4710,7 @@ def test_test_selected_running_replacement_requires_complete_checkpoint_objectiv
     ("objective_metric", "objective_mode", "checkpoint_scores", "top_level_score", "incumbent", "expected_bad"),
     [
         ("test_loss", "min", (0.1, 0.2), 0.9, 0.4, False),
-        ("test_loss", "min", (0.5, 0.6), 0.1, 0.4, True),
+        ("test_loss", "min", (0.5, 0.6), 0.1, 0.4, False),
         ("best_model_score", "max", (0.1, 0.2), 0.9, 0.73, False),
         ("best_model_score", "max", (0.9, 0.8), 0.5, 0.73, True),
     ],

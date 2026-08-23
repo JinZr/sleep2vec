@@ -229,9 +229,10 @@ and every required run-local prediction or per-disease artifact succeeds. The
 locked atomic matrix replacement preserves historical CSV cell
 text and precedes the successful terminal manifest.
 Adaptive test-selected `test_*` objectives use complete checkpoint-level
-evidence even when they differ from the static selection metric. Validation and
-run-level objectives such as `val_*` and `best_model_score` retain top-level
-evidence.
+evidence even when they differ from the static selection metric, and only
+canonically completed or finished runs are eligible for their ranking and
+incumbency. Validation and run-level objectives such as `val_*` and
+`best_model_score` retain top-level evidence.
 
 Direct `infer` and `evaluate` plans targeting `eval_split=test` require both
 `external_test_locked=false` and `final_test_unlocked=true`. Other splits do
