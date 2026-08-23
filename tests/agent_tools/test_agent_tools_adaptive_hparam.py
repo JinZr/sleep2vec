@@ -2324,7 +2324,7 @@ def test_test_selected_adaptive_evidence_ignores_epoch_checkpoint_symlink(tmp_pa
     assert row["epoch"] == "1"
 
 
-def test_incomplete_test_checkpoint_evidence_stays_unscored_through_agent_proposal(tmp_path: Path):
+def test_incomplete_test_checkpoint_evidence_fails_adaptive_reduction(tmp_path: Path):
     recipe = _test_selected_adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
@@ -2339,18 +2339,46 @@ def test_incomplete_test_checkpoint_evidence_stays_unscored_through_agent_propos
     manifest_path.write_text(json.dumps(manifest))
     _mark_round_terminal(workflow_dir, tmp_path)
 
-    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    with pytest.raises(ValueError, match="lacks complete checkpoint test evidence"):
+        adaptive_hparam.adaptive_step(workflow_dir)
 
-    assert input_path is not None
-    digest_row = _read_table(workflow_dir / "adaptive" / "digests" / "round_000.csv")[0]
-    assert digest_row.get("test_auroc", "") == ""
-    assert digest_row["checkpoint_path"] == ""
-    assert digest_row.get("epoch", "") == ""
+    assert not (workflow_dir / "adaptive" / "digests" / "round_000.csv").exists()
     assert not (workflow_dir / "adaptive" / "incumbents.tsv").exists()
-    proposal_row = json.loads(input_path.read_text())["input"]["digest_rows"][0]
-    assert proposal_row.get("test_auroc", "") == ""
-    assert proposal_row["checkpoint_path"] == ""
-    assert proposal_row.get("epoch", "") == ""
+    assert not (workflow_dir / "adaptive" / "proposal_inputs").exists()
+
+
+def test_unavailable_completed_test_checkpoint_evidence_fails_adaptive_reduction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    recipe = _test_selected_adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    run, _checkpoints = _write_checkpoint_test_manifest(
+        workflow_dir,
+        scores={1: 0.8},
+        top_level_score=0.99,
+    )
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "status": "finished",
+                "target": "ssh",
+                "host": "unit-host",
+            }
+        ],
+    )
+    monkeypatch.setattr(adaptive_hparam, "monitor_hparam_runs", lambda _run_dir: None)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
+
+    with pytest.raises(ValueError, match="lacks complete checkpoint test evidence"):
+        adaptive_hparam.digest_hparam_run(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "digests" / "round_000.csv").exists()
+    assert not (workflow_dir / "adaptive" / "incumbents.tsv").exists()
 
 
 def test_val_selected_adaptive_digest_keeps_top_level_objective_and_validation_checkpoint(tmp_path: Path):

@@ -268,10 +268,15 @@ def _digest_rows(
                     checkpoint_dir,
                     checkpoint_names,
                 )
-                if checkpoint_objective is not None:
-                    row[objective["metric"]] = checkpoint_objective["score"]
-                    row["checkpoint_path"] = checkpoint_objective["checkpoint_path"]
-                    row["epoch"] = checkpoint_objective["epoch"]
+                # Completed test-selected runs participate atomically; partial evidence cannot steer later rounds.
+                if checkpoint_objective is None:
+                    raise ValueError(
+                        f"Completed test-selected adaptive run lacks complete checkpoint test evidence: "
+                        f"{run['step_id']} / {run_id}"
+                    )
+                row[objective["metric"]] = checkpoint_objective["score"]
+                row["checkpoint_path"] = checkpoint_objective["checkpoint_path"]
+                row["epoch"] = checkpoint_objective["epoch"]
         row["status"] = status.get("status", "")
         row["pid"] = status.get("pid", "")
         rows.append(row)
