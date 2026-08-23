@@ -210,11 +210,12 @@ documented `true` policy default and freeze the resolved choice plus an explicit
 recipe's frozen split and metric. Test-selected tuning requires unlocked test
 access, includes test in preflight, and renders
 `--test-all-checkpoints-after-fit`. Every actually planned trial must have an
-effective `runtime.ckpt_every_n_epochs=1`, because early stopping can precede a
-wider checkpoint interval. Validation monitoring still owns training and early
-stopping, but it does not prefilter test selection: runtime evaluates every
-regular non-alias `epoch=*.ckpt`, records complete checkpoint-level test evidence
-in the terminal run manifest, and `hparam-select` globally ranks all
+effective positive-integer `runtime.epochs` and `runtime.ckpt_every_n_epochs=1`,
+because the run needs an epoch-checkpoint opportunity and early stopping can
+precede a wider checkpoint interval. Validation monitoring still owns training
+and early stopping, but it does not prefilter test selection: runtime evaluates
+every regular non-alias `epoch=*.ckpt`, records complete checkpoint-level test
+evidence in the terminal run manifest, and `hparam-select` globally ranks all
 trial/checkpoint pairs by the frozen `test_*` metric. The exact winning path and
 SHA-256 are frozen; the many-checkpoint audit remains plan-local while workspace
 reports retain one row per managed run. Plans registered under one step may be

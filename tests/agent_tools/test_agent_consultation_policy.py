@@ -546,16 +546,26 @@ def test_hparam_tune_selection_split_test_requires_trial_test_metrics(
 
 
 @pytest.mark.parametrize(
-    ("runtime_interval", "search_space", "max_runs", "expected_exit"),
+    ("runtime", "search_space", "max_runs", "expected_issue"),
     [
-        (None, {"parameters": {"runtime.lr": [1e-6]}}, 1, 0),
-        (1, {"parameters": {"runtime.lr": [1e-6]}}, 1, 0),
-        (2, {"parameters": {"runtime.lr": [1e-6]}}, 1, 1),
-        (2, {"parameters": {"runtime.ckpt_every_n_epochs": [1]}}, 1, 0),
-        (1, {"parameters": {"runtime.ckpt_every_n_epochs": [1, 2]}}, 1, 0),
-        (1, {"parameters": {"runtime.ckpt_every_n_epochs": [1, 2]}}, 2, 1),
+        (None, {"parameters": {"runtime.lr": [1e-6]}}, 1, None),
+        ({"ckpt_every_n_epochs": 1}, {"parameters": {"runtime.lr": [1e-6]}}, 1, None),
         (
+            {"ckpt_every_n_epochs": 2},
+            {"parameters": {"runtime.lr": [1e-6]}},
+            1,
+            "runtime.ckpt_every_n_epochs",
+        ),
+        ({"ckpt_every_n_epochs": 2}, {"parameters": {"runtime.ckpt_every_n_epochs": [1]}}, 1, None),
+        ({"ckpt_every_n_epochs": 1}, {"parameters": {"runtime.ckpt_every_n_epochs": [1, 2]}}, 1, None),
+        (
+            {"ckpt_every_n_epochs": 1},
+            {"parameters": {"runtime.ckpt_every_n_epochs": [1, 2]}},
             2,
+            "runtime.ckpt_every_n_epochs",
+        ),
+        (
+            {"ckpt_every_n_epochs": 2},
             {
                 "configurations": [
                     {"runtime.ckpt_every_n_epochs": 1},
@@ -563,10 +573,10 @@ def test_hparam_tune_selection_split_test_requires_trial_test_metrics(
                 ]
             },
             1,
-            0,
+            None,
         ),
         (
-            1,
+            {"ckpt_every_n_epochs": 1},
             {
                 "configurations": [
                     {"runtime.ckpt_every_n_epochs": 1},
@@ -574,16 +584,20 @@ def test_hparam_tune_selection_split_test_requires_trial_test_metrics(
                 ]
             },
             2,
-            1,
+            "runtime.ckpt_every_n_epochs",
         ),
+        ({"epochs": 0}, {"parameters": {"runtime.lr": [1e-6]}}, 1, "runtime.epochs"),
+        ({"epochs": 0}, {"parameters": {"runtime.epochs": [1]}}, 1, None),
+        ({"epochs": 1}, {"parameters": {"runtime.epochs": [1, 0]}}, 1, None),
+        ({"epochs": 1}, {"parameters": {"runtime.epochs": [1, 0]}}, 2, "runtime.epochs"),
     ],
 )
-def test_hparam_tune_test_selection_requires_every_epoch_checkpoint(
+def test_hparam_tune_test_selection_requires_checkpoint_opportunity(
     tmp_path: Path,
-    runtime_interval: int | None,
+    runtime: dict | None,
     search_space: dict,
     max_runs: int,
-    expected_exit: int,
+    expected_issue: str | None,
 ):
     recipe = {
         "name": "unit_tune",
@@ -611,8 +625,8 @@ def test_hparam_tune_test_selection_requires_every_epoch_checkpoint(
             "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
         },
     }
-    if runtime_interval is not None:
-        recipe["runtime"] = {"ckpt_every_n_epochs": runtime_interval}
+    if runtime is not None:
+        recipe["runtime"] = runtime
 
     result = _run(
         "doctor",
@@ -623,9 +637,9 @@ def test_hparam_tune_test_selection_requires_every_epoch_checkpoint(
         cwd=Path.cwd(),
     )
 
-    assert result.returncode == expected_exit
-    if expected_exit == 1:
-        assert "selection_split=test requires effective runtime.ckpt_every_n_epochs=1" in result.stdout
+    assert result.returncode == int(expected_issue is not None)
+    if expected_issue:
+        assert f"selection_split=test requires effective {expected_issue}" in result.stdout
 
 
 @pytest.mark.parametrize("selection_metric", ["val_ahi_pearson", 1, []])
