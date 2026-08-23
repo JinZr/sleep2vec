@@ -310,7 +310,6 @@ def monitor_hparam_runs(
             root / "run_status.tsv",
         ],
     )
-    out = status_path
     while True:
         workspace_rows = read_run_manifest(workspace)
         workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
@@ -346,7 +345,7 @@ def monitor_hparam_runs(
         committed = merge_run_manifest(workspace, rows)
         committed_by_key = {managed_run_key(row): row for row in committed}
         rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
-        write_rows(out, rows)
+        write_rows(status_path, rows)
         for row in rows:
             before = previous_rows[managed_run_key(row)].get("status")
             after = row.get("status")
@@ -373,8 +372,8 @@ def monitor_hparam_runs(
                     )
         write_status_report(workspace)
         if once or all(row.get("status") in TERMINAL_STATUSES for row in rows):
-            return out
-        print(f"wrote {out}")
+            return status_path
+        print(f"wrote {status_path}")
         time.sleep(poll_seconds)
 
 
