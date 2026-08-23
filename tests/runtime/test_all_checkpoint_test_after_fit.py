@@ -410,14 +410,12 @@ def test_finetune_preflight_torchelastic_restart_does_not_reuse_previous_claim(
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)
-def test_finetune_external_ddp_ranks_share_launch_identity(
+def test_finetune_external_ddp_requires_explicit_launch_identity(
     module_name: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
     finetune_mod = _load_finetune_module(module_name, monkeypatch)
-    run_dir = tmp_path / "log-finetune" / "unit-test"
-    args = argparse.Namespace(devices=[0, 1])
     for name in (
         "_SLEEP2VEC_FINETUNE_LAUNCH_ID",
         "SLURM_JOB_ID",
@@ -430,36 +428,8 @@ def test_finetune_external_ddp_ranks_share_launch_identity(
     monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
     monkeypatch.setenv("MASTER_PORT", "29500")
     monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: True)
-    finetune_mod._preflight_finetune_run_directory(args, run_dir)
 
-    assert (run_dir / ".distributed-preflight").read_text() == "external:127.0.0.1:29500:2\n"
-
-    monkeypatch.setenv("RANK", "1")
-    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
-    finetune_mod._preflight_finetune_run_directory(args, run_dir)
-
-
-@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
-def test_finetune_external_ddp_requires_shared_launch_identity(
-    module_name: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    finetune_mod = _load_finetune_module(module_name, monkeypatch)
-    for name in (
-        "_SLEEP2VEC_FINETUNE_LAUNCH_ID",
-        "SLURM_JOB_ID",
-        "SLURM_STEP_ID",
-        "TORCHELASTIC_RUN_ID",
-        "MASTER_ADDR",
-        "MASTER_PORT",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("RANK", "0")
-    monkeypatch.setenv("WORLD_SIZE", "2")
-    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: True)
-
-    with pytest.raises(ValueError, match="MASTER_ADDR, MASTER_PORT, and WORLD_SIZE"):
+    with pytest.raises(ValueError, match="_SLEEP2VEC_FINETUNE_LAUNCH_ID shared by every rank"):
         finetune_mod._preflight_finetune_run_directory(argparse.Namespace(devices=[0, 1]), tmp_path / "run")
 
 
