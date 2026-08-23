@@ -261,7 +261,8 @@ def _digest_rows(
         }
         row.update(managed_run_parameters(run))
         row.update(_manifest_metrics(manifest))
-        if selection_split == "test" and objective["metric"].startswith("test_"):
+        checkpoint_test_objective = selection_split == "test" and objective["metric"].startswith("test_")
+        if checkpoint_test_objective:
             # Checkpoint test evidence changes identity and is valid only after canonical successful completion.
             row.pop(objective["metric"], None)
             row.pop("epoch", None)
@@ -282,6 +283,13 @@ def _digest_rows(
                 row[objective["metric"]] = checkpoint_objective["score"]
                 row["checkpoint_path"] = checkpoint_objective["checkpoint_path"]
                 row["epoch"] = checkpoint_objective["epoch"]
+        elif status.get("status") in {"completed", "finished"}:
+            raw_objective = row.get(objective["metric"])
+            if isinstance(raw_objective, bool) or artifacts.float_or_none(raw_objective) is None:
+                raise ValueError(
+                    f"Completed adaptive run lacks finite {objective['metric']} objective evidence: "
+                    f"{run['step_id']} / {run_id}"
+                )
         row["status"] = status.get("status", "")
         row["pid"] = status.get("pid", "")
         rows.append(row)

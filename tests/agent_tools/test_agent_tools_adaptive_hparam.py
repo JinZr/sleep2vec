@@ -2386,6 +2386,38 @@ def test_unavailable_completed_adaptive_evidence_fails_reduction(
     assert not (workflow_dir / "adaptive" / "incumbents.tsv").exists()
 
 
+@pytest.mark.parametrize("objective_value", [None, float("nan")])
+def test_completed_adaptive_run_requires_finite_run_level_objective(
+    tmp_path: Path,
+    objective_value: float | None,
+):
+    recipe = _test_selected_adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"]["objective_metric"] = "best_model_score"
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    run, _checkpoints = _write_checkpoint_test_manifest(
+        workflow_dir,
+        scores={1: 0.8},
+        top_level_score=0.99,
+    )
+    manifest_path = Path(run["runtime_dir"]) / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if objective_value is None:
+        manifest.pop("best_model_score")
+    else:
+        manifest["best_model_score"] = objective_value
+    manifest_path.write_text(json.dumps(manifest))
+    _mark_round_terminal(workflow_dir, tmp_path)
+
+    with pytest.raises(ValueError, match="lacks finite best_model_score objective evidence"):
+        adaptive_hparam.digest_hparam_run(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "digests" / "round_000.csv").exists()
+    assert not (workflow_dir / "adaptive" / "incumbents.tsv").exists()
+
+
 def test_val_selected_adaptive_digest_keeps_top_level_objective_and_validation_checkpoint(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
