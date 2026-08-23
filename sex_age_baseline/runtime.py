@@ -190,6 +190,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     args.eval_split = "test"
     checkpoint_test_results = []
     original_ckpt_path = args.ckpt_path
+    checkpoint_result_rows = None
     if args.test_all_checkpoints_after_fit and epochs > 0:
         best_checkpoint = load_checkpoint(model, best_path, device=device, cfg=cfg)
         best_epoch = int(best_checkpoint["epoch"])
@@ -248,7 +249,6 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
                 export_predictions=cfg.outputs.prediction_csv,
             )
             checkpoint_result_rows.append((test_result.metrics, str(resolved_best_path)))
-        save_result_rows_csv(checkpoint_result_rows, str(args.results_csv_path), args)
     else:
         if best_path.exists():
             load_checkpoint(model, best_path, device=device, cfg=cfg)
@@ -275,6 +275,9 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     if cfg.outputs.per_disease_metrics_csv and test_result.multilabel_per_disease_rows:
         multilabel_csv_path = run_dir / "multilabel_per_disease_metrics.csv"
         save_multilabel_per_disease_metrics_csv(test_result.multilabel_per_disease_rows, str(multilabel_csv_path), args)
+    if checkpoint_result_rows is not None:
+        # Publish the checkpoint matrix only after every required run artifact succeeds.
+        save_result_rows_csv(checkpoint_result_rows, str(args.results_csv_path), args)
     args.ckpt_path = original_ckpt_path
     save_training_run_manifest(
         args,

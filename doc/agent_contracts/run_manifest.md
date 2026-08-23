@@ -55,12 +55,14 @@ that run's best test-ranked checkpoint.
 Finetune runtime directories are single-use: rank zero rejects a non-empty
 `log-finetune/<version>` before persisting configuration, loading data, or
 fitting. All-checkpoint result rows form one evidence matrix; runtimes evaluate
-the complete declared checkpoint set first, then append the full matrix to the
-aggregate results CSV under one lock and one atomic replacement. A failed
-checkpoint test may publish its existing `status=failed` manifest, but never a
-successful terminal manifest or a partial checkpoint matrix. Atomic rewrites
-read historical cells as text so lexical identities such as zero-padded
-experiment versions remain unchanged.
+the complete declared checkpoint set and write every required run-local
+prediction or per-disease artifact before appending the full matrix to the
+aggregate results CSV under one lock and one atomic replacement. The successful
+terminal manifest is written only after that matrix commit. A failed checkpoint
+test or required artifact writer may publish its existing `status=failed`
+manifest, but never a successful terminal manifest or a partial checkpoint
+matrix. Atomic rewrites read historical cells as text so lexical identities
+such as zero-padded experiment versions remain unchanged.
 
 For a pipeline attempt, `result_root` is a single-use empty directory and the
 runtime manifest beneath it must be unique and match the frozen inference

@@ -777,6 +777,45 @@ def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_me
     monkeypatch.chdir(tmp_path)
     args = _runtime_args(config, tmp_path, version_name="all-checkpoints", epochs=2, test_after_fit=True)
     args.test_all_checkpoints_after_fit = True
+    events = []
+    original_save_prediction = baseline_runtime.save_prediction_csv
+    original_save_survival = baseline_runtime.save_survival_per_disease_metrics_csv
+    original_save_multilabel = baseline_runtime.save_multilabel_per_disease_metrics_csv
+    original_save_matrix = baseline_runtime.save_result_rows_csv
+    original_save_manifest = baseline_runtime.save_training_run_manifest
+    original_evaluate = baseline_runtime.evaluate_model
+
+    def evaluate_with_survival_rows(*call_args, **call_kwargs):
+        result = original_evaluate(*call_args, **call_kwargs)
+        result.survival_per_disease_rows = [{"disease": "unit"}]
+        return result
+
+    def save_prediction(*call_args, **call_kwargs):
+        events.append("prediction")
+        return original_save_prediction(*call_args, **call_kwargs)
+
+    def save_multilabel(*call_args, **call_kwargs):
+        events.append("multilabel")
+        return original_save_multilabel(*call_args, **call_kwargs)
+
+    def save_survival(*call_args, **call_kwargs):
+        events.append("survival")
+        return original_save_survival(*call_args, **call_kwargs)
+
+    def save_matrix(*call_args, **call_kwargs):
+        events.append("matrix")
+        return original_save_matrix(*call_args, **call_kwargs)
+
+    def save_manifest(*call_args, **call_kwargs):
+        events.append("manifest")
+        return original_save_manifest(*call_args, **call_kwargs)
+
+    monkeypatch.setattr(baseline_runtime, "evaluate_model", evaluate_with_survival_rows)
+    monkeypatch.setattr(baseline_runtime, "save_prediction_csv", save_prediction)
+    monkeypatch.setattr(baseline_runtime, "save_survival_per_disease_metrics_csv", save_survival)
+    monkeypatch.setattr(baseline_runtime, "save_multilabel_per_disease_metrics_csv", save_multilabel)
+    monkeypatch.setattr(baseline_runtime, "save_result_rows_csv", save_matrix)
+    monkeypatch.setattr(baseline_runtime, "save_training_run_manifest", save_manifest)
 
     baseline_runtime.train_and_save(args, cfg)
 
@@ -794,6 +833,7 @@ def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_me
     result_rows = pd.read_csv(args.results_csv_path)
     assert len(result_rows) == 2
     assert set(result_rows["ckpt_path"]) == {row["checkpoint_path"] for row in checkpoint_results}
+    assert events == ["prediction", "survival", "multilabel", "matrix", "manifest"]
 
 
 def test_all_checkpoint_test_failure_preserves_existing_results_csv(tmp_path: Path, monkeypatch):
@@ -833,6 +873,60 @@ def test_all_checkpoint_test_failure_preserves_existing_results_csv(tmp_path: Pa
 
     assert test_calls == 2
     assert args.results_csv_path.read_bytes() == results_before
+
+
+@pytest.mark.parametrize(
+    ("artifact_writer", "emit_survival_rows"),
+    (
+        ("save_prediction_csv", False),
+        ("save_survival_per_disease_metrics_csv", True),
+        ("save_multilabel_per_disease_metrics_csv", False),
+    ),
+)
+def test_all_checkpoint_artifact_failure_preserves_existing_results_csv(
+    artifact_writer: str,
+    emit_survival_rows: bool,
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = _write_config(
+        tmp_path,
+        [
+            "001,train,50,0",
+            "002,train,60,1",
+            "003,val,55,0",
+            "004,val,65,1",
+            "005,test,58,0",
+            "006,test,68,1",
+        ],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    args = _runtime_args(config, tmp_path, version_name=f"failed-{artifact_writer}", epochs=2, test_after_fit=True)
+    args.test_all_checkpoints_after_fit = True
+    args.results_csv_path.write_text("experiment_version,test_loss\nold,1.0\n")
+    results_before = args.results_csv_path.read_bytes()
+
+    def fail_artifact(*_args, **_kwargs):
+        raise RuntimeError("required artifact failed")
+
+    if emit_survival_rows:
+        original_evaluate = baseline_runtime.evaluate_model
+
+        def evaluate_with_survival_rows(*call_args, **call_kwargs):
+            result = original_evaluate(*call_args, **call_kwargs)
+            result.survival_per_disease_rows = [{"disease": "unit"}]
+            return result
+
+        monkeypatch.setattr(baseline_runtime, "evaluate_model", evaluate_with_survival_rows)
+    monkeypatch.setattr(baseline_runtime, artifact_writer, fail_artifact)
+
+    with pytest.raises(RuntimeError, match="required artifact failed"):
+        baseline_runtime.train_and_save(args, cfg)
+
+    assert args.results_csv_path.read_bytes() == results_before
+    assert not (tmp_path / "log-finetune" / args.version_name / "run_manifest.json").exists()
 
 
 def test_infer_run_inference_callable_validates_and_delegates(tmp_path: Path, monkeypatch):

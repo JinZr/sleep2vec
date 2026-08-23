@@ -240,6 +240,7 @@ def supervised(args, config_bundle):
 
         checkpoint_test_results = []
         original_ckpt_path = args.ckpt_path
+        checkpoint_result_rows = None
         if args.test_all_checkpoints_after_fit and args.epochs > 0:
             checkpoint_dir = Path(checkpoint_callback.dirpath)
             resolved_checkpoint_dir = checkpoint_dir.resolve()
@@ -293,7 +294,6 @@ def supervised(args, config_bundle):
                 )[0]
                 logging.info(pretrain_result)
                 checkpoint_result_rows.append((pretrain_result, args.ckpt_path))
-            save_result_rows_csv(checkpoint_result_rows, args.results_csv_path, args)
         else:
             if args.epochs > 0:
                 ckpt_path = best_checkpoint_callback.best_model_path or "last"
@@ -328,6 +328,9 @@ def supervised(args, config_bundle):
                 str(multilabel_per_disease_metrics_csv_path),
                 args,
             )
+        if checkpoint_result_rows is not None:
+            # Publish the checkpoint matrix only after every required run artifact succeeds.
+            save_result_rows_csv(checkpoint_result_rows, args.results_csv_path, args)
         args.ckpt_path = original_ckpt_path
         save_training_run_manifest(
             args,

@@ -221,8 +221,9 @@ reports retain one row per managed run. Plans registered under one step may be
 aggregated only when their frozen selection metric, mode, and split all match.
 Finetune runtimes reject non-empty version directories before persistence or
 fit, and publish aggregate result rows for an all-checkpoint test only after the
-complete matrix succeeds, using one locked atomic replacement that preserves
-historical CSV cell text.
+complete matrix and every required run-local prediction or per-disease artifact
+succeeds. The locked atomic matrix replacement preserves historical CSV cell
+text and precedes the successful terminal manifest.
 Adaptive test-selected `test_*` objectives use complete checkpoint-level
 evidence even when they differ from the static selection metric. Validation and
 run-level objectives such as `val_*` and `best_model_score` retain top-level

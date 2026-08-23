@@ -80,15 +80,23 @@ def _run_supervised(
     best_epoch: int = 1,
     test_all_checkpoints_after_fit: bool = True,
     test_failure_checkpoint: str | None = None,
+    artifact_failure: str | None = None,
+    emit_artifacts: bool = False,
+    event_log: list[str] | None = None,
 ):
     finetune_mod = _load_finetune_module(module_name, monkeypatch)
     checkpoints = []
     test_calls = []
     result_rows = []
     manifest_calls = []
+    events = event_log if event_log is not None else []
 
     class DummyModel:
         moe_finetune_status = {}
+
+        def __init__(self):
+            self.survival_per_disease_metric_rows = [{"stage": "test"}] if emit_artifacts else []
+            self.multilabel_per_disease_metric_rows = [{"stage": "test"}] if emit_artifacts else []
 
         def moe_finetune_hparams(self):
             return {}
@@ -169,30 +177,54 @@ def _run_supervised(
     monkeypatch.setattr(finetune_mod, "ModelCheckpoint", DummyCheckpoint)
     monkeypatch.setattr(finetune_mod.pl, "Trainer", DummyTrainer)
     monkeypatch.setattr(finetune_mod.shutil, "copy2", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        finetune_mod,
-        "save_result_csv",
-        lambda metrics, _path, current_args: result_rows.append((current_args.ckpt_path, metrics)),
-    )
+
+    def save_single_result(metrics, _path, current_args):
+        events.append("single")
+        result_rows.append((current_args.ckpt_path, metrics))
+
+    monkeypatch.setattr(finetune_mod, "save_result_csv", save_single_result)
+
+    def save_result_rows(rows, _path, _args):
+        events.append("matrix")
+        result_rows.extend((checkpoint_path, metrics) for metrics, checkpoint_path in rows)
+
+    def save_artifact(kind):
+        def save(*_args, **_kwargs):
+            events.append(kind)
+            if artifact_failure == kind:
+                raise RuntimeError(f"{kind} artifact failed")
+
+        return save
+
     monkeypatch.setattr(
         finetune_mod,
         "save_result_rows_csv",
-        lambda rows, _path, _args: result_rows.extend((checkpoint_path, metrics) for metrics, checkpoint_path in rows),
+        save_result_rows,
     )
+    monkeypatch.setattr(finetune_mod, "save_survival_per_disease_metrics_csv", save_artifact("survival"))
+    monkeypatch.setattr(finetune_mod, "save_multilabel_per_disease_metrics_csv", save_artifact("multilabel"))
+
+    def save_manifest(current_args, **kwargs):
+        events.append(f"manifest:{kwargs['status']}")
+        manifest_calls.append((current_args.ckpt_path, kwargs))
+
     monkeypatch.setattr(
         finetune_mod,
         "save_training_run_manifest",
-        lambda current_args, **kwargs: manifest_calls.append((current_args.ckpt_path, kwargs)),
+        save_manifest,
     )
     monkeypatch.setattr(finetune_mod.wandb, "run", None, raising=False)
     if hasattr(finetune_mod, "is_rank_zero_process"):
         monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: True)
 
-    if test_failure_checkpoint is None:
-        finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
-    else:
+    if test_failure_checkpoint is not None:
         with pytest.raises(RuntimeError, match=f"checkpoint test failed: {re.escape(test_failure_checkpoint)}"):
             finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
+    elif artifact_failure is not None:
+        with pytest.raises(RuntimeError, match=f"{artifact_failure} artifact failed"):
+            finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
+    else:
+        finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
     return checkpoints, test_calls, result_rows, manifest_calls, args
 
 
@@ -333,6 +365,49 @@ def test_all_checkpoint_mode_commits_no_result_rows_until_every_test_succeeds(
     assert test_calls[-1].endswith(test_failure_checkpoint)
     assert result_rows == []
     assert manifest_calls[-1][1]["status"] == "failed"
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+@pytest.mark.parametrize("artifact_failure", ("survival", "multilabel"))
+def test_all_checkpoint_mode_commits_no_result_rows_when_required_artifact_fails(
+    module_name: str,
+    artifact_failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    events = []
+    _checkpoints, _test_calls, result_rows, manifest_calls, _args = _run_supervised(
+        module_name,
+        tmp_path,
+        monkeypatch,
+        checkpoint_names=("epoch=00.ckpt", "epoch=01.ckpt", "epoch=02.ckpt"),
+        artifact_failure=artifact_failure,
+        emit_artifacts=True,
+        event_log=events,
+    )
+
+    assert result_rows == []
+    assert "matrix" not in events
+    assert manifest_calls[-1][1]["status"] == "failed"
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_all_checkpoint_mode_commits_matrix_after_artifacts_before_success_manifest(
+    module_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    events = []
+    _run_supervised(
+        module_name,
+        tmp_path,
+        monkeypatch,
+        checkpoint_names=("epoch=00.ckpt", "epoch=01.ckpt", "epoch=02.ckpt"),
+        emit_artifacts=True,
+        event_log=events,
+    )
+
+    assert events == ["survival", "multilabel", "matrix", "manifest:completed"]
 
 
 def test_all_checkpoint_mode_evaluates_best_alias_when_best_epoch_was_not_periodically_saved(
