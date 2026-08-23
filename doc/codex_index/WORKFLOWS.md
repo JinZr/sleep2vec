@@ -39,6 +39,8 @@ Preset payloads remain `list[SampleIndex]`; missing-channel presets preserve
 `payload["available_channels"]`. Kaldi changes storage discovery and loading,
 not the collated batch shape. Split policy, label selection, required channels,
 and preset regeneration are high-impact decisions and must not be inferred.
+When config defines `preset_build`, it exclusively owns required-channel and
+minimum-channel runtime policy; otherwise the preset recipe owns those CLI fields.
 
 Built-in arousal preset generation consumes existing canonical
 `arousal_event` targets rather than building labels from source event files.

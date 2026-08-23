@@ -28,6 +28,12 @@ Stop and consult the user if:
 ## Canonical commands
 Use `python preprocess/save_dataset_presets.py --config <config> --index <csv> ...`.
 
+When the config defines `preset_build`, that block is the sole runtime owner of
+`required_channels` and `min_channels`. Keep matching decisions for provenance,
+but do not add `preset.channels` or `preset.min_channels`; generated commands
+must not include `--channels` or `--min-channels`. When `preset_build` is absent,
+the recipe decisions materialize those two preset CLI fields instead.
+
 ## Expected artifacts
 Preset pickle files plus sidecar `<preset>.manifest.json` files when sidecar writing is enabled.
 

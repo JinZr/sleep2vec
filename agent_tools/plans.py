@@ -322,6 +322,7 @@ def evaluate_recipe(
     user_decisions_path: str | Path | None = None,
 ) -> tuple[dict, dict | None, DecisionReport]:
     recipe = load_recipe_with_base(recipe_path)
+    source_recipe = copy.deepcopy(recipe)
     source = resolve_repo_path(recipe_path)
     if source is not None:
         recipe["_recipe_path"] = str(source.resolve())
@@ -382,6 +383,12 @@ def evaluate_recipe(
     consultation_cfg = dict(cfg) if cfg is not None else None
     if consultation_cfg is not None:
         consultation_cfg.pop("_source_config_bytes", None)
+    recipe_adapter = get_adapter(recipe.get("task"))
+    binding_issues = (
+        recipe_adapter.bind_effective_recipe(recipe, consultation_cfg, source_recipe=source_recipe)
+        if recipe_adapter is not None
+        else []
+    )
     report = evaluate_consultation_gates(
         recipe.get("task"),
         recipe,
@@ -390,6 +397,7 @@ def evaluate_recipe(
         policy,
     )
     report = _append_issues(report, materialization_issues)
+    report = _append_issues(report, binding_issues)
     if config_changed_during_validation:
         report = _append_issues(
             report,
@@ -403,7 +411,6 @@ def evaluate_recipe(
                 )
             ],
         )
-    recipe_adapter = get_adapter(recipe.get("task"))
     if (
         recipe_adapter is not None
         and recipe_adapter.enforces_required_channels
@@ -556,6 +563,7 @@ def build_context(
         "evaluation_policy": {},
         "artifacts": {"output_dir": str(output_dir)},
     }
+    source_recipe = copy.deepcopy(recipe)
     policy = load_consultation_policy()
     user_decisions = load_user_decisions(user_decisions_path)
     contract_issues = consultation_contract_issues(
@@ -572,6 +580,12 @@ def build_context(
     _materialize_task_defaults(recipe, policy, user_decisions)
     effective_config = (recipe.get("inputs") or {}).get("config")
     cfg = config_summary(effective_config, variant=variant) if effective_config else None
+    recipe_adapter = get_adapter(task)
+    binding_issues = (
+        recipe_adapter.bind_effective_recipe(recipe, cfg, source_recipe=source_recipe)
+        if recipe_adapter is not None
+        else []
+    )
     report = evaluate_consultation_gates(
         task,
         recipe,
@@ -581,6 +595,7 @@ def build_context(
         require_experiment=True,
     )
     report = _append_issues(report, materialization_issues)
+    report = _append_issues(report, binding_issues)
     out = Path(output_dir)
     if report.exit_code == 0:
         workspace_issue = validate_plan_output(recipe, out)
