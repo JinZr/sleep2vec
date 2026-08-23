@@ -538,6 +538,22 @@ def test_train_rejects_non_empty_run_dir_before_loading_data(tmp_path: Path, mon
         baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="reused"), cfg)
 
 
+def test_train_rejects_run_directory_symlink_before_loading_data(tmp_path: Path, monkeypatch):
+    config = _write_config(tmp_path, ["001,train,50,0"], task_type="multilabel_classification")
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "empty-target"
+    target.mkdir()
+    run_dir = tmp_path / "log-finetune" / "linked"
+    run_dir.parent.mkdir()
+    run_dir.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(FileExistsError, match="run directory must not be a symlink"):
+        baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="linked"), cfg)
+
+    assert not any(target.iterdir())
+
+
 def test_train_fails_when_configured_monitor_is_missing(tmp_path: Path, monkeypatch):
     config = _write_config(
         tmp_path,

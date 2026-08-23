@@ -93,6 +93,8 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
 
     device = torch.device(args.device)
     run_dir = Path("log-finetune") / args.version
+    if run_dir.is_symlink():
+        raise FileExistsError(f"sex_age_baseline run directory must not be a symlink: {run_dir}.")
     # Runtime directories are single-use; stale checkpoints must never enter a new run's test evidence.
     if run_dir.exists() and any(run_dir.iterdir()):
         raise FileExistsError(

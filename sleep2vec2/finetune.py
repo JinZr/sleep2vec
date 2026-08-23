@@ -67,6 +67,8 @@ def _preflight_finetune_run_directory(args, exp_root: Path) -> None:
         or requested_world_size > 1
         or any(os.environ.get(name) not in (None, "", "1") for name in ("WORLD_SIZE", "SLURM_NTASKS"))
     )
+    if exp_root.is_symlink():
+        raise FileExistsError(f"Finetune run directory must not be a symlink: {exp_root}.")
     existing_entries = list(exp_root.iterdir()) if exp_root.exists() else []
     if rank_zero:
         if existing_entries:

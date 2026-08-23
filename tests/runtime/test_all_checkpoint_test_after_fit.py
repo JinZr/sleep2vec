@@ -349,6 +349,25 @@ def test_finetune_preflight_rejects_mismatched_or_duplicate_launch_claim(
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_finetune_preflight_rejects_run_directory_symlink(
+    module_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetune_mod = _load_finetune_module(module_name, monkeypatch)
+    target = tmp_path / "empty-target"
+    target.mkdir()
+    run_dir = tmp_path / "log-finetune" / "unit-test"
+    run_dir.parent.mkdir()
+    run_dir.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(FileExistsError, match="run directory must not be a symlink"):
+        finetune_mod._preflight_finetune_run_directory(argparse.Namespace(devices=[0]), run_dir)
+
+    assert not any(target.iterdir())
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
 @pytest.mark.parametrize("marker_kind", ("directory", "symlink"))
 def test_finetune_nonzero_rank_rejects_invalid_preflight_marker(
     module_name: str,
