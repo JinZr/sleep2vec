@@ -5982,6 +5982,44 @@ def test_hparam_monitor_rejects_aliased_status_report_before_canonical_write(tmp
     assert not (tmp_path / "events.jsonl").exists()
 
 
+@pytest.mark.parametrize("output_name", ["run_status", "status_report"])
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_continuous_hparam_monitor_revalidates_output_aliases_each_round(
+    tmp_path: Path,
+    monkeypatch,
+    output_name: str,
+    alias_kind: str,
+):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    statuses = iter(["running", "finished"])
+    experiment_path = tmp_path / "experiment.yaml"
+    experiment_bytes = experiment_path.read_bytes()
+    alias_path = tmp_path / "run_status.tsv"
+    if output_name == "status_report":
+        alias_path = tmp_path / "reports" / "status.md"
+
+    def observe(_root, prior, *_args, **_kwargs):
+        return {**prior, "status": next(statuses)}
+
+    def replace_output_with_alias(seconds):
+        assert seconds == 60
+        alias_path.unlink()
+        if alias_kind == "symlink":
+            alias_path.symlink_to(experiment_path)
+        else:
+            alias_path.hardlink_to(experiment_path)
+
+    monkeypatch.setattr(hparam_runtime.scheduler, "observe_run", observe)
+    monkeypatch.setattr(hparam_runtime.time, "sleep", replace_output_with_alias)
+
+    with pytest.raises(ValueError, match="Managed output"):
+        monitor_hparam_runs(tmp_path, once=False, poll_seconds=60)
+
+    assert experiment_path.read_bytes() == experiment_bytes
+    assert alias_path.read_bytes() == experiment_bytes
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
+
+
 @pytest.mark.parametrize("poll_seconds", [0, -1, float("nan"), float("inf")])
 def test_hparam_monitor_rejects_invalid_poll_interval_before_writing(
     tmp_path: Path,

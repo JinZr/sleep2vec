@@ -298,18 +298,16 @@ def monitor_hparam_runs(
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    exp_io.validate_managed_output_paths(
-        workspace,
-        [
-            workspace / "run_manifest.tsv",
-            workspace / "run_matrix.csv",
-            workspace / "reports" / "run_matrix.md",
-            workspace / "events.jsonl",
-            workspace / "reports" / "status.md",
-            root / "launch_manifest.tsv",
-            root / "run_status.tsv",
-        ],
-    )
+    managed_output_paths = [
+        workspace / "run_manifest.tsv",
+        workspace / "run_matrix.csv",
+        workspace / "reports" / "run_matrix.md",
+        workspace / "events.jsonl",
+        workspace / "reports" / "status.md",
+        root / "launch_manifest.tsv",
+        root / "run_status.tsv",
+    ]
+    exp_io.validate_managed_output_paths(workspace, managed_output_paths)
     while True:
         workspace_rows = read_run_manifest(workspace)
         workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
@@ -342,6 +340,7 @@ def monitor_hparam_runs(
                         default_script_commits_terminal_status=False,
                     )
                 )
+        exp_io.validate_managed_output_paths(workspace, managed_output_paths)
         committed = merge_run_manifest(workspace, rows)
         committed_by_key = {managed_run_key(row): row for row in committed}
         rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
