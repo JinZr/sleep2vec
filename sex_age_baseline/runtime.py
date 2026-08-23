@@ -190,8 +190,8 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     args.eval_split = "test"
     checkpoint_test_results = []
     original_ckpt_path = args.ckpt_path
-    checkpoint_result_rows = None
-    if args.test_all_checkpoints_after_fit and epochs > 0:
+    checkpoint_result_rows = []
+    if args.test_all_checkpoints_after_fit:
         best_checkpoint = load_checkpoint(model, best_path, device=device, cfg=cfg)
         best_epoch = int(best_checkpoint["epoch"])
         resolved_checkpoint_dir = checkpoint_dir.resolve()
@@ -215,7 +215,6 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         periodic_checkpoints.sort(key=lambda item: (item[0] == best_epoch, item[0], str(item[1])))
 
         test_result = None
-        checkpoint_result_rows = []
         for epoch, checkpoint_path in periodic_checkpoints:
             load_checkpoint(model, checkpoint_path, device=device, cfg=cfg)
             args.ckpt_path = str(checkpoint_path)
@@ -275,7 +274,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     if cfg.outputs.per_disease_metrics_csv and test_result.multilabel_per_disease_rows:
         multilabel_csv_path = run_dir / "multilabel_per_disease_metrics.csv"
         save_multilabel_per_disease_metrics_csv(test_result.multilabel_per_disease_rows, str(multilabel_csv_path), args)
-    if checkpoint_result_rows is not None:
+    if checkpoint_result_rows:
         # Publish the checkpoint matrix only after every required run artifact succeeds.
         save_result_rows_csv(checkpoint_result_rows, str(args.results_csv_path), args)
     args.ckpt_path = original_ckpt_path

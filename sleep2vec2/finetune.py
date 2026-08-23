@@ -68,13 +68,14 @@ def _preflight_finetune_run_directory(args, exp_root: Path) -> None:
         or any(os.environ.get(name) not in (None, "", "1") for name in ("WORLD_SIZE", "SLURM_NTASKS"))
     )
     existing_entries = list(exp_root.iterdir()) if exp_root.exists() else []
-    if not distributed_launch:
+    if rank_zero:
         if existing_entries:
             raise FileExistsError(
                 f"Finetune run directory already exists and is not empty: {exp_root}. "
                 "Use a new --version-name or manually clear the existing directory."
             )
-        return
+        if not distributed_launch:
+            return
 
     launch_id = os.environ.get("_SLEEP2VEC_FINETUNE_LAUNCH_ID")
     if not launch_id:
@@ -104,11 +105,6 @@ def _preflight_finetune_run_directory(args, exp_root: Path) -> None:
 
     marker_path = exp_root / ".distributed-preflight"
     if rank_zero:
-        if existing_entries:
-            raise FileExistsError(
-                f"Finetune run directory already exists and is not empty: {exp_root}. "
-                "Use a new --version-name or manually clear the existing directory."
-            )
         exp_root.mkdir(parents=True, exist_ok=True)
         try:
             # Exclusive creation claims the directory; the trailing newline commits the complete launch token.
@@ -302,8 +298,8 @@ def supervised(args, config_bundle):
 
         checkpoint_test_results = []
         original_ckpt_path = args.ckpt_path
-        checkpoint_result_rows = None
-        if args.test_all_checkpoints_after_fit and args.epochs > 0:
+        checkpoint_result_rows = []
+        if args.test_all_checkpoints_after_fit:
             checkpoint_dir = Path(checkpoint_callback.dirpath)
             resolved_checkpoint_dir = checkpoint_dir.resolve()
             periodic_checkpoints = []
@@ -330,7 +326,6 @@ def supervised(args, config_bundle):
             periodic_checkpoints.sort(key=lambda item: (item[0] == best_epoch, item[0], str(item[1])))
 
             pretrain_result = None
-            checkpoint_result_rows = []
             for epoch, checkpoint_path in periodic_checkpoints:
                 args.ckpt_path = str(checkpoint_path)
                 result = trainer.test(
@@ -390,7 +385,7 @@ def supervised(args, config_bundle):
                 str(multilabel_per_disease_metrics_csv_path),
                 args,
             )
-        if checkpoint_result_rows is not None:
+        if checkpoint_result_rows:
             # Publish the checkpoint matrix only after every required run artifact succeeds.
             save_result_rows_csv(checkpoint_result_rows, args.results_csv_path, args)
         args.ckpt_path = original_ckpt_path

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import csv
 import json
 from pathlib import Path
@@ -86,36 +87,20 @@ def select_hparam_candidates(
             evidence_runs_by_key[key] = evidence_run
     checkpoint_evidence_runs = [evidence_runs_by_key.get(managed_run_key(row), row) for row in canonical_rows]
     if selection_split == "test":
-        events_path = workspace / "events.jsonl"
-        if events_path.exists():
-            for line in events_path.read_text().splitlines():
-                event = json.loads(line)
-                if (
-                    event.get("event_type") != "candidate_selected"
-                    or event.get("step_id") != step_id
-                    or event.get("metric") != metric
-                    or event.get("mode") != mode
-                ):
-                    continue
-                selected_path = str(event.get("selected_checkpoint_path") or "")
-                selected_sha256 = str(event.get("selected_checkpoint_sha256") or "")
-                selected_run = evidence_runs_by_key.get((step_id, str(event.get("selected_run_id") or "")))
-                if not selected_path or not selected_sha256 or selected_run is None:
-                    raise ValueError(
-                        f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}"
-                    )
-                if evidence.checkpoint_file_sha256(selected_run, selected_path) != selected_sha256:
-                    raise ValueError(
-                        f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}"
-                    )
-                if not Path(str(event.get("checkpoint_ranking") or "")).is_file():
-                    raise ValueError(
-                        "Frozen checkpoint test ranking referenced by candidate_selected event is missing."
-                    )
-                if str(event.get("ranking") or "") != str(out) or not out.is_file():
-                    raise ValueError(
-                        "Frozen hparam ranking referenced by candidate_selected event is missing or differs."
-                    )
+        for event in _candidate_selected_events(workspace):
+            if event.get("step_id") != step_id or event.get("metric") != metric or event.get("mode") != mode:
+                continue
+            selected_path = str(event.get("selected_checkpoint_path") or "")
+            selected_sha256 = str(event.get("selected_checkpoint_sha256") or "")
+            selected_run = evidence_runs_by_key.get((step_id, str(event.get("selected_run_id") or "")))
+            if not selected_path or not selected_sha256 or selected_run is None:
+                raise ValueError(f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}")
+            if evidence.checkpoint_file_sha256(selected_run, selected_path) != selected_sha256:
+                raise ValueError(f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}")
+            if not Path(str(event.get("checkpoint_ranking") or "")).is_file():
+                raise ValueError("Frozen checkpoint test ranking referenced by candidate_selected event is missing.")
+            if str(event.get("ranking") or "") != str(out) or not out.is_file():
+                raise ValueError("Frozen hparam ranking referenced by candidate_selected event is missing or differs.")
     existing_ranked = read_rows(out, require_managed_identity=True)
     validate_managed_run_rows(existing_ranked, source=str(out), cardinality="one_per_run")
     for row in existing_ranked:
@@ -331,13 +316,13 @@ def select_hparam_candidates(
         ],
     )
     selection_event = {
-        "step_id": (recipe.get("step") or {}).get("id"),
+        "step_id": step_id,
         "metric": metric,
         "mode": mode,
         "ranking": str(out),
-        "selected_run_id": step_ranked[0].get("run_id") if step_ranked else None,
-        "selected_checkpoint_path": step_ranked[0].get("checkpoint_path") if step_ranked else None,
-        "selected_checkpoint_sha256": step_ranked[0].get("checkpoint_sha256") if step_ranked else None,
+        "selected_run_id": step_ranked[0].get("run_id"),
+        "selected_checkpoint_path": step_ranked[0].get("checkpoint_path"),
+        "selected_checkpoint_sha256": step_ranked[0].get("checkpoint_sha256"),
         "checkpoint_ranking": str(checkpoint_out) if selection_split == "test" else None,
     }
     if not _selection_event_exists(workspace, selection_event):
@@ -513,16 +498,20 @@ def _existing_checkpoint_ranking_is_consistent(
 
 
 def _selection_event_exists(workspace: Path, payload: dict[str, Any]) -> bool:
+    return any(
+        all(event.get(key) == value for key, value in payload.items())
+        for event in _candidate_selected_events(workspace)
+    )
+
+
+def _candidate_selected_events(workspace: Path) -> Iterator[dict[str, Any]]:
     path = workspace / "events.jsonl"
     if not path.exists():
-        return False
+        return
     for line in path.read_text().splitlines():
         event = json.loads(line)
-        if event.get("event_type") != "candidate_selected":
-            continue
-        if all(event.get(key) == value for key, value in payload.items()):
-            return True
-    return False
+        if event.get("event_type") == "candidate_selected":
+            yield event
 
 
 def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_k: int | None = None) -> Path:

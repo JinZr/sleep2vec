@@ -207,32 +207,17 @@ trusting the frozen recipe.
 Finetune and hparam plans materialize an omitted `test_after_fit` as the
 documented `true` policy default and freeze the resolved choice plus an explicit
 `--test-after-fit` or `--no-test-after-fit` argument. Hparam selection uses the
-recipe's frozen split and metric. Test-selected tuning requires unlocked test
-access, includes test in preflight, and renders
-`--test-all-checkpoints-after-fit`. Every actually planned trial must have an
-effective positive-integer `runtime.epochs` and `runtime.ckpt_every_n_epochs=1`,
-because the run needs an epoch-checkpoint opportunity and early stopping can
-precede a wider checkpoint interval. Validation monitoring still owns training
-and early stopping, but it does not prefilter test selection: runtime evaluates
-every regular non-alias `epoch=*.ckpt`, records complete checkpoint-level test
-evidence in the terminal run manifest, and `hparam-select` globally ranks all
-trial/checkpoint pairs by the frozen `test_*` metric. The exact winning path and
-SHA-256 are frozen; the many-checkpoint audit remains plan-local while workspace
-reports retain one row per managed run. Plans registered under one step may be
-aggregated only when their frozen selection metric, mode, and split all match.
-Finetune runtimes reject non-empty version directories before persistence or
-fit. Before distributed initialization, rank zero claims an empty directory
-with an exclusive launch marker; other ranks require the matching token and
-reject stale runtime artifacts. Runtimes publish
-aggregate result rows for an all-checkpoint test only after the complete matrix
-and every required run-local prediction or per-disease artifact succeeds. The
-locked atomic matrix replacement preserves historical CSV cell
-text and precedes the successful terminal manifest.
-Adaptive test-selected `test_*` objectives use complete checkpoint-level
-evidence even when they differ from the static selection metric, and only
-canonically completed or finished runs are eligible for their ranking and
-incumbency. Validation and run-level objectives such as `val_*` and
-`best_model_score` retain top-level evidence.
+recipe's frozen split and metric. Test-selected tuning requires explicit test
+access, `test_after_fit=true`, positive epochs, and an every-epoch immutable
+checkpoint schedule. It evaluates those checkpoints and freezes complete
+checkpoint-level evidence before ranking or adaptive reuse. Validation still
+owns training and early stopping. The checkpoint audit stays plan-local, while
+workspace rankings retain one row per managed run. Runtime evidence is
+single-use and published only at the successful terminal boundary. See
+[task_recipe.md](../agent_contracts/task_recipe.md),
+[external_test_locking.md](../agent_contracts/external_test_locking.md), and
+[run_manifest.md](../agent_contracts/run_manifest.md) for the authoritative
+selection, lifecycle, and artifact contracts.
 
 Direct `infer` and `evaluate` plans targeting `eval_split=test` require both
 `external_test_locked=false` and `final_test_unlocked=true`. Other splits do
@@ -294,21 +279,14 @@ unchanged polling does not produce a log entry.
 
 ### External evaluation
 
-Test-selected postprocessing binds caller rank, checkpoint path, and SHA-256 to
-both the frozen workspace ranking and canonical `run_manifest.tsv` before
-top-k filtering, then physically rehashes only retained candidates; explicit
-all-candidate workflows still rehash every candidate. `hparam-external-eval`
-additionally accepts only `completed` or `finished` runs. The direct
-external-eval and logits-export helpers reject SSH-owned candidates before
-output; remote execution belongs to a workflow that explicitly stages configs
-and collects results.
+Test-selected postprocessing accepts only checkpoint identities frozen by the
+registered ranking and canonical manifest. Direct helpers reject SSH-owned
+candidates, and schema-v1 `experiment-run` accepts only local source plans.
 
 `experiment-run` owns the resumable source-ranking-to-external-evaluation flow.
 It validates the strict spec without launching in dry-run mode, waits for
 successful managed sources, freezes source-ranked checkpoints, preflights every
 external recipe, and runs package-local inference in isolated result roots.
-Schema v1 has no SSH source-artifact staging boundary and rejects SSH-owned
-source plans before creating pipeline state or outputs.
 Existing state resumes only with its exact frozen identity. Only explicit
 retryable canonical failures receive a fresh attempt; uncertain identity or
 result-manifest validation failure does not. External metrics remain report-only,
