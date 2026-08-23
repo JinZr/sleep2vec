@@ -100,8 +100,20 @@ def _preflight_finetune_run_directory(args, exp_root: Path) -> None:
             )
         launch_id = "|".join(launch_parts)
         if not launch_id:
-            launch_id = f"parent:{os.getpid()}"
-            os.environ["_SLEEP2VEC_FINETUNE_LAUNCH_ID"] = launch_id
+            if os.environ.get("RANK") not in (None, ""):
+                master_addr = os.environ.get("MASTER_ADDR")
+                master_port = os.environ.get("MASTER_PORT")
+                world_size = os.environ.get("WORLD_SIZE")
+                if not master_addr or not master_port or not world_size:
+                    raise ValueError(
+                        "External distributed finetune launch requires MASTER_ADDR, MASTER_PORT, and WORLD_SIZE "
+                        "or an explicit _SLEEP2VEC_FINETUNE_LAUNCH_ID."
+                    )
+                # External ranks need a token from shared launcher state, never their per-rank PID.
+                launch_id = f"external:{master_addr}:{master_port}:{world_size}"
+            else:
+                launch_id = f"parent:{os.getpid()}"
+                os.environ["_SLEEP2VEC_FINETUNE_LAUNCH_ID"] = launch_id
 
     marker_path = exp_root / ".distributed-preflight"
     if rank_zero:
