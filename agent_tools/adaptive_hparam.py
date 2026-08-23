@@ -228,6 +228,11 @@ def _digest_rows(
         artifact_row = {**run, **status}
         observed_artifacts = evidence.runtime_artifacts(artifact_row)
         if observed_artifacts is None:
+            # Canonical success participates atomically, regardless of where the objective is stored.
+            if status.get("status") in {"completed", "finished"}:
+                raise ValueError(
+                    f"Completed adaptive run has unavailable runtime artifact evidence: {run['step_id']} / {run_id}"
+                )
             manifest_path = str(status.get("run_manifest") or "")
             manifest = {}
             checkpoint_names = []

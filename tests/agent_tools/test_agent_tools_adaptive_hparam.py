@@ -2347,11 +2347,16 @@ def test_incomplete_test_checkpoint_evidence_fails_adaptive_reduction(tmp_path: 
     assert not (workflow_dir / "adaptive" / "proposal_inputs").exists()
 
 
-def test_unavailable_completed_test_checkpoint_evidence_fails_adaptive_reduction(
+@pytest.mark.parametrize("objective_metric", ["test_auroc", "best_model_score"])
+def test_unavailable_completed_adaptive_evidence_fails_reduction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    objective_metric: str,
 ):
     recipe = _test_selected_adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"]["objective_metric"] = objective_metric
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     run, _checkpoints = _write_checkpoint_test_manifest(
@@ -2374,7 +2379,7 @@ def test_unavailable_completed_test_checkpoint_evidence_fails_adaptive_reduction
     monkeypatch.setattr(adaptive_hparam, "monitor_hparam_runs", lambda _run_dir: None)
     monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
 
-    with pytest.raises(ValueError, match="lacks complete checkpoint test evidence"):
+    with pytest.raises(ValueError, match="unavailable runtime artifact evidence"):
         adaptive_hparam.digest_hparam_run(workflow_dir)
 
     assert not (workflow_dir / "adaptive" / "digests" / "round_000.csv").exists()
