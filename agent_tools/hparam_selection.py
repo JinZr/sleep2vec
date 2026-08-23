@@ -476,7 +476,7 @@ def _checkpoint_ranking_signature(rows: list[dict[str, Any]]) -> tuple[tuple[str
         "score",
         "rank",
     )
-    return tuple(tuple(str(row.get(field) or "") for field in fields) for row in rows)
+    return tuple(tuple("" if row.get(field) is None else str(row.get(field)) for field in fields) for row in rows)
 
 
 def _existing_checkpoint_ranking_is_consistent(
@@ -492,7 +492,11 @@ def _existing_checkpoint_ranking_is_consistent(
         current = current_by_run.get(managed_run_key(existing))
         if current is None:
             return False
-        if any(str(existing.get(field) or "") != str(current.get(field) or "") for field in fields):
+        if any(
+            ("" if existing.get(field) is None else str(existing.get(field)))
+            != ("" if current.get(field) is None else str(current.get(field)))
+            for field in fields
+        ):
             return False
     return True
 

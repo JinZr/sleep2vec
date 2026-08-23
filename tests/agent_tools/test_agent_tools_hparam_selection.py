@@ -175,7 +175,7 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
         runtime_dir = Path(run["runtime_dir"])
         checkpoint_dir = Path(run["checkpoint_dir"])
         checkpoint_dir.mkdir(parents=True)
-        checkpoints = [checkpoint_dir / "epoch=1.ckpt", checkpoint_dir / "epoch=3.ckpt"]
+        checkpoints = [checkpoint_dir / "epoch=00.ckpt", checkpoint_dir / "epoch=3.ckpt"]
         for checkpoint in checkpoints:
             checkpoint.write_text(f"{run['run_id']}:{checkpoint.name}")
         (checkpoint_dir / "best-epoch=3.ckpt").write_text("mutable best alias")
@@ -199,7 +199,7 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
                             "epoch": epoch,
                             "metrics": {"test_ahi_pearson": score},
                         }
-                        for checkpoint, epoch, score in zip(checkpoints, (1, 3), test_scores)
+                        for checkpoint, epoch, score in zip(checkpoints, (0, 3), test_scores)
                     ],
                 }
             )
@@ -213,13 +213,13 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
 
     rows = _read_table(ranking)
     assert [(row["run_id"], row["epoch"], row["score"]) for row in rows] == [
-        ("run-000", "1", "0.91"),
-        ("run-001", "1", "0.79"),
+        ("run-000", "0", "0.91"),
+        ("run-001", "0", "0.79"),
     ]
     checkpoint_rows = _read_table(plan_dir / "checkpoint_test_ranking.csv")
     assert [(row["run_id"], row["epoch"], row["score"]) for row in checkpoint_rows] == [
-        ("run-000", "1", "0.91"),
-        ("run-001", "1", "0.79"),
+        ("run-000", "0", "0.91"),
+        ("run-001", "0", "0.79"),
         ("run-000", "3", "0.75"),
         ("run-001", "3", "0.75"),
     ]
@@ -232,7 +232,7 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
         if json.loads(line)["event_type"] == "candidate_selected"
     )
     assert selected["selected_run_id"] == "run-000"
-    assert selected["selected_checkpoint_path"] == str(Path(plan["runs"][0]["checkpoint_dir"]) / "epoch=1.ckpt")
+    assert selected["selected_checkpoint_path"] == str(Path(plan["runs"][0]["checkpoint_dir"]) / "epoch=00.ckpt")
     assert len(selected["selected_checkpoint_sha256"]) == 64
 
     hparam_selection.select_hparam_candidates(plan_dir)
