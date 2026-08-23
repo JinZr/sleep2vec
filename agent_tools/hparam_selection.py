@@ -298,7 +298,16 @@ def select_hparam_candidates(
                 "score": row.get("score"),
                 "rank": row.get("rank"),
                 "checkpoint_path": row.get("checkpoint_path"),
-                **({"checkpoint_sha256": row.get("checkpoint_sha256")} if selection_split == "test" else {}),
+                **(
+                    {
+                        "checkpoint_sha256": row.get("checkpoint_sha256"),
+                        "epoch": row.get("epoch"),
+                        "checkpoint_rank": row.get("checkpoint_rank"),
+                        "source": row.get("source"),
+                    }
+                    if selection_split == "test"
+                    else {}
+                ),
             }
             for row in step_ranked
         ]

@@ -559,13 +559,22 @@ def _selected_candidate_rows(
                 )
             canonical = workspace_by_key[key]
             for field, value in (
-                ("rank", str(derived.get("rank") or "")),
+                ("rank", "" if derived.get("rank") is None else str(derived.get("rank"))),
                 ("checkpoint_path", checkpoint_path),
                 ("checkpoint_sha256", checkpoint_sha256),
             ):
-                if value != str(frozen_ranking.get(field) or "") or value != str(canonical.get(field) or ""):
+                frozen_value = "" if frozen_ranking.get(field) is None else str(frozen_ranking.get(field))
+                canonical_value = "" if canonical.get(field) is None else str(canonical.get(field))
+                if value != frozen_value or value != canonical_value:
                     raise ValueError(
                         f"Test-selected candidate {field} differs from frozen hparam selection: {key[0]} / {key[1]}"
+                    )
+            for field in ("metric", "score", "epoch", "checkpoint_rank", "source"):
+                frozen_value = "" if frozen_ranking.get(field) is None else str(frozen_ranking.get(field))
+                canonical_value = "" if canonical.get(field) is None else str(canonical.get(field))
+                if frozen_value != canonical_value:
+                    raise ValueError(
+                        f"Frozen hparam ranking {field} differs from canonical selection: {key[0]} / {key[1]}"
                     )
             derived.update(frozen_ranking)
         managed_rows.append({**derived, **run, "status": workspace_by_key[key].get("status", "")})

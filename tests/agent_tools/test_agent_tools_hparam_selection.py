@@ -255,6 +255,12 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
     assert selected["selected_run_id"] == "run-000"
     assert selected["selected_checkpoint_path"] == str(Path(plan["runs"][0]["checkpoint_dir"]) / "epoch=00.ckpt")
     assert len(selected["selected_checkpoint_sha256"]) == 64
+    canonical = {row["run_id"]: row for row in read_run_manifest(tmp_path)}
+    for row in rows:
+        assert {
+            field: canonical[row["run_id"]][field]
+            for field in ("metric", "score", "epoch", "checkpoint_rank", "source")
+        } == {field: row[field] for field in ("metric", "score", "epoch", "checkpoint_rank", "source")}
 
     hparam_selection.select_hparam_candidates(plan_dir)
 

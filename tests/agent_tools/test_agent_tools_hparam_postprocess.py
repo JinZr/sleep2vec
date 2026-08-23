@@ -999,6 +999,29 @@ def test_test_selected_postprocess_manifests_use_frozen_ranking_provenance(tmp_p
         assert row["val_predictions_path"] == str(tmp_path / "caller-val.csv")
 
 
+@pytest.mark.parametrize("field", ["metric", "score", "epoch", "checkpoint_rank", "source"])
+def test_test_selected_postprocess_rejects_tampered_workspace_ranking_provenance(
+    tmp_path: Path,
+    field: str,
+):
+    recipe = _test_selected_hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr or result.stdout
+    _freeze_test_selected_candidate(plan_dir)
+    ranking_path = _ranking_path(plan_dir)
+    ranking = pd.read_csv(ranking_path, dtype=str, keep_default_na=False)
+    ranking.loc[0, field] = "tampered"
+    ranking.to_csv(ranking_path, index=False)
+
+    with pytest.raises(ValueError, match=f"ranking {field} differs from canonical selection"):
+        hparam_postprocess.generate_external_eval(plan_dir, ranking_path, unlock_final_test=True)
+
+    assert not (plan_dir / "external_eval_configs").exists()
+    assert not (plan_dir / "external_eval_manifest.tsv").exists()
+    assert not (plan_dir / "external_eval.sh").exists()
+
+
 def test_test_selected_candidate_rank_must_match_frozen_hparam_ranking_before_top_k(
     tmp_path: Path,
     monkeypatch,
