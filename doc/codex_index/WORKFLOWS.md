@@ -246,9 +246,12 @@ the supervisor starts the frozen training script through `srun` with one task
 per requested GPU, while non-DDP variants remain single-GPU only. The manager
 binds one numeric scheduler job id, observes controller state through
 `squeue`/`scontrol`, falls back to the bound-cluster `sacct` allocation after the
-job outlives controller history, and requires both a terminal scheduler
+job outlives controller history, and normally requires both a terminal scheduler
 observation and the compute wrapper's matching terminal sidecar for terminal
-truth. Uncertain direct
+truth. When the exact job has been purged and `sacct` explicitly reports disabled
+accounting, the matching sidecar plus complete frozen routing identity is the
+narrow terminal-recovery exception; transport failures remain uncertain;
+other uncertain direct
 or scheduler identity never authorizes relaunch or retry. Direct stop waits for
 the process group to exit. Slurm stop records a nonterminal request after
 freezing its job binding and before dispatching `scancel`; same-reason retries
