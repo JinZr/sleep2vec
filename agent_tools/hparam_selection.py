@@ -271,7 +271,7 @@ def select_hparam_candidates(
         raise ValueError(f"No valid {metric} scores are available for hparam selection.")
     if selection_split == "test":
         validate_managed_run_rows(ranked, source="checkpoint test ranking", cardinality="many_per_run")
-        plan_checkpoint_rows = [row for row in rows if managed_run_key(row) in plan_run_keys]
+        plan_checkpoint_rows = [dict(row) for row in rows if managed_run_key(row) in plan_run_keys]
         plan_checkpoint_ranked = artifacts.assign_ranks(plan_checkpoint_rows, key="score", reverse=reverse)
         if existing_checkpoint_ranked:
             if _checkpoint_ranking_signature(existing_checkpoint_ranked) != _checkpoint_ranking_signature(

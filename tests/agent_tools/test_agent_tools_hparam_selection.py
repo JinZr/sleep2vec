@@ -645,6 +645,11 @@ def test_hparam_select_rebuilds_test_ranking_from_new_registered_plan(tmp_path: 
     assert (plans[0] / "checkpoint_test_ranking.csv").read_bytes() == first_checkpoint_ranking
     ranking = _read_table(_ranking_path(plans[0]))
     assert [(row["run_id"], row["score"]) for row in ranking] == [("run-001", "0.9"), ("run-000", "0.8")]
+    assert [(row["run_id"], row["checkpoint_rank"]) for row in ranking] == [
+        ("run-001", "1"),
+        ("run-000", "2"),
+    ]
+    assert _read_table(plans[0] / "checkpoint_test_ranking.csv")[0]["rank"] == "1"
 
 
 def test_hparam_select_rejects_a_plan_local_audit_missing_an_owned_run(tmp_path: Path):
