@@ -89,6 +89,7 @@ def _run_supervised(
     event_log: list[str] | None = None,
     epochs: int = 3,
     check_val_every_n_epoch: int = 1,
+    label_name: str = "custom",
     frozen_checkpoint_dir: str | None = None,
 ):
     finetune_mod = _load_finetune_module(module_name, monkeypatch)
@@ -165,7 +166,7 @@ def _run_supervised(
         print_diagnostics=False,
         ckpt_path="",
         results_csv_path=tmp_path / "results.csv",
-        label_name="custom",
+        label_name=label_name,
         test_after_fit=True,
         test_all_checkpoints_after_fit=test_all_checkpoints_after_fit,
     )
@@ -522,6 +523,21 @@ def test_all_checkpoint_mode_tests_every_regular_checkpoint_and_keeps_best_last(
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_event_all_checkpoint_mode_saves_after_each_validation(
+    module_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkpoints, _test_calls, _result_rows, _manifest_calls, _args = _run_supervised(
+        module_name,
+        tmp_path,
+        monkeypatch,
+        checkpoint_names=("epoch=00.ckpt", "epoch=01.ckpt"),
+        label_name="ahi",
+    )
+
+    assert checkpoints[0].kwargs["save_on_train_epoch_end"] is False
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
 def test_all_checkpoint_mode_preserves_frozen_checkpoint_path_spelling(
     module_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -678,6 +694,18 @@ def test_all_checkpoint_mode_requires_test_after_fit_positive_epochs_and_every_e
                 test_all_checkpoints_after_fit=True,
                 epochs=1,
                 ckpt_every_n_epochs=2,
+            ),
+            bundle,
+        )
+    with pytest.raises(ValueError, match="requires --check-val-every-n-epoch 1"):
+        finetune_mod.supervised(
+            argparse.Namespace(
+                test_after_fit=True,
+                test_all_checkpoints_after_fit=True,
+                epochs=1,
+                ckpt_every_n_epochs=1,
+                label_name="ahi",
+                check_val_every_n_epoch=2,
             ),
             bundle,
         )

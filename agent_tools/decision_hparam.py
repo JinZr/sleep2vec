@@ -452,9 +452,14 @@ def hparam_tune_issues(
                 for combo in planned_combos
             ]
             epoch_counts = [combo.get("runtime.epochs", runtime.get("epochs", 30)) for combo in planned_combos]
+            validation_intervals = [
+                combo.get("runtime.check_val_every_n_epoch", runtime.get("check_val_every_n_epoch", 1))
+                for combo in planned_combos
+            ]
         else:
             checkpoint_intervals = []
             epoch_counts = []
+            validation_intervals = []
         # Early stopping can occur before a wider interval fires, so test-selected tuning must save every epoch.
         if any(type(interval) is not int or interval != 1 for interval in checkpoint_intervals):
             issues.append(
@@ -477,6 +482,21 @@ def hparam_tune_issues(
                     ),
                     None,
                     {"effective_values": epoch_counts},
+                )
+            )
+        if decisions["label_name"].value in {"ahi", "arousal"} and any(
+            type(interval) is not int or interval != 1 for interval in validation_intervals
+        ):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "runtime.check_val_every_n_epoch",
+                    (
+                        "selection_split=test requires effective runtime.check_val_every_n_epoch=1 for ahi/arousal "
+                        "so every tested checkpoint contains validation-fitted thresholds."
+                    ),
+                    None,
+                    {"effective_values": validation_intervals},
                 )
             )
     if type(test_after_fit) is not bool:

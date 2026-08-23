@@ -163,6 +163,12 @@ def supervised(args, config_bundle):
         raise ValueError("--test-all-checkpoints-after-fit requires --epochs greater than 0.")
     if args.test_all_checkpoints_after_fit and args.ckpt_every_n_epochs != 1:
         raise ValueError("--test-all-checkpoints-after-fit requires --ckpt-every-n-epochs 1.")
+    if (
+        args.test_all_checkpoints_after_fit
+        and getattr(args, "label_name", None) in {"ahi", "arousal"}
+        and getattr(args, "check_val_every_n_epoch", 1) != 1
+    ):
+        raise ValueError("--test-all-checkpoints-after-fit for ahi/arousal requires --check-val-every-n-epoch 1.")
 
     model_config = config_bundle.model
     averaging_config = config_bundle.averaging
@@ -229,8 +235,8 @@ def supervised(args, config_bundle):
 
         checkpoint_kwargs = {}
         if args.test_all_checkpoints_after_fit:
-            # Test-selection snapshots must be saved independently of validation cadence.
-            checkpoint_kwargs["save_on_train_epoch_end"] = True
+            # Event-task thresholds are fitted during validation and must be serialized afterward.
+            checkpoint_kwargs["save_on_train_epoch_end"] = args.label_name not in {"ahi", "arousal"}
         checkpoint_callback = ModelCheckpoint(
             dirpath=f"log-finetune/{version}/checkpoints",  # ← 你想要的目录
             save_top_k=-1,  # 保留全部 checkpoint

@@ -590,6 +590,24 @@ def test_hparam_tune_selection_split_test_requires_trial_test_metrics(
         ({"epochs": 0}, {"parameters": {"runtime.epochs": [1]}}, 1, None),
         ({"epochs": 1}, {"parameters": {"runtime.epochs": [1, 0]}}, 1, None),
         ({"epochs": 1}, {"parameters": {"runtime.epochs": [1, 0]}}, 2, "runtime.epochs"),
+        (
+            {"check_val_every_n_epoch": 2},
+            {"parameters": {"runtime.lr": [1e-6]}},
+            1,
+            "runtime.check_val_every_n_epoch",
+        ),
+        (
+            {"check_val_every_n_epoch": 2},
+            {"parameters": {"runtime.check_val_every_n_epoch": [1]}},
+            1,
+            None,
+        ),
+        (
+            {"check_val_every_n_epoch": 1},
+            {"parameters": {"runtime.check_val_every_n_epoch": [1, 2]}},
+            2,
+            "runtime.check_val_every_n_epoch",
+        ),
     ],
 )
 def test_hparam_tune_test_selection_requires_checkpoint_opportunity(
