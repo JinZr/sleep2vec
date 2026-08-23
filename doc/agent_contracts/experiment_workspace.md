@@ -90,6 +90,10 @@ python -m agent_tools experiment-note \
   [--remote <host>]
 ```
 
+`--entry` must name an existing local YAML file, including when the managed
+workspace is remote. Inline YAML/text and stdin (`-`) are not accepted. The CLI
+validates this boundary before reading the experiment workspace.
+
 The entry YAML is a closed mapping:
 
 ```yaml

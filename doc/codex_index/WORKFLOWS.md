@@ -179,8 +179,8 @@ The control flow is:
 4. explicit launch commands execute the existing runtime entrypoints;
 5. monitor and summary commands observe canonical artifacts but do not launch
    pending work;
-6. `experiment-note` appends evidence-backed research milestones without
-   changing lifecycle state;
+6. `experiment-note` reads one local YAML entry file and appends the
+   evidence-backed research milestone without changing lifecycle state;
 7. finalization requires no active runs and a non-empty report.
 
 Runnable plans use the exact config bytes accepted by consultation and freeze

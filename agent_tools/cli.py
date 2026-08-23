@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import sys
 from typing import Any
 
@@ -154,7 +155,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     experiment_note = sub.add_parser("experiment-note")
     experiment_note.add_argument("--run-dir", required=True)
-    experiment_note.add_argument("--entry", required=True)
+    experiment_note.add_argument(
+        "--entry",
+        required=True,
+        help="Existing local YAML file path; inline text is not accepted.",
+    )
     experiment_note.add_argument("--remote")
     experiment_note.set_defaults(func=_cmd_experiment_note)
 
@@ -437,6 +442,12 @@ def _cmd_experiment_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_experiment_note(args: argparse.Namespace) -> int:
+    if not Path(args.entry).is_file():
+        print(
+            "error: --entry must be an existing local YAML file path; inline text and stdin are not accepted.",
+            file=sys.stderr,
+        )
+        return 2
     result = append_experiment_note(args.run_dir, args.entry, remote=args.remote)
     status = "appended" if result["appended"] else "already present"
     print(f"Research log {result['path']}: {result['entry_id']} {status}")
