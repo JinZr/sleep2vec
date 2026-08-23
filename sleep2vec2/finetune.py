@@ -311,6 +311,12 @@ def supervised(args, config_bundle):
         if args.test_all_checkpoints_after_fit:
             checkpoint_dir = Path(checkpoint_callback.dirpath)
             resolved_checkpoint_dir = checkpoint_dir.resolve()
+            frozen_checkpoint_dir = os.environ.get("_SLEEP2VEC_FROZEN_CHECKPOINT_DIR")
+            recorded_checkpoint_dir = (
+                Path(frozen_checkpoint_dir)
+                if frozen_checkpoint_dir
+                else checkpoint_dir if checkpoint_dir.is_absolute() else Path.cwd() / checkpoint_dir
+            )
             periodic_checkpoints = []
             seen_epochs = set()
             for path in checkpoint_dir.glob("epoch=*.ckpt"):
@@ -325,7 +331,11 @@ def supervised(args, config_bundle):
                 if epoch in seen_epochs:
                     raise ValueError(f"Duplicate periodic checkpoint epoch: {epoch}")
                 seen_epochs.add(epoch)
-                periodic_checkpoints.append((epoch, path.resolve()))
+                recorded_path = recorded_checkpoint_dir / path.name
+                if recorded_path.resolve() != path.resolve():
+                    raise ValueError(f"Frozen checkpoint path does not identify the saved checkpoint: {recorded_path}")
+                # Physical ownership is checked above; manifests preserve the plan's frozen path spelling.
+                periodic_checkpoints.append((epoch, recorded_path))
             if not periodic_checkpoints:
                 raise ValueError("No regular epoch=*.ckpt checkpoints were saved for test evaluation.")
 

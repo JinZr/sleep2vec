@@ -631,13 +631,21 @@ def write_hparam_plan(
         if selection_split == "test":
             command_parts.append("--test-all-checkpoints-after-fit")
         command = rendering.render_command(command_parts)
+        runtime_dir = run_cwd / "log-finetune" / version
+        checkpoint_dir = runtime_dir / "checkpoints"
         script_path = run_dir / "launch.sh"
         write_script_path = write_run_dir / "launch.sh"
+        script_commands = [command]
+        if selection_split == "test":
+            script_commands.insert(
+                0,
+                rendering.render_command(["export", f"_SLEEP2VEC_FROZEN_CHECKPOINT_DIR={checkpoint_dir}"]),
+            )
         write_text(
             write_script_path,
             "\n".join(
                 rendering.hparam_script_lines(
-                    [command],
+                    script_commands,
                     test_after_fit=test_after_fit,
                     selection_split=selection_split,
                     record_exit_code=True,
@@ -699,8 +707,6 @@ def write_hparam_plan(
                     "terminal_status_owner": "scheduler_sidecar",
                 }
             )
-        runtime_dir = run_cwd / "log-finetune" / version
-        checkpoint_dir = runtime_dir / "checkpoints"
         artifacts_path = run_dir / "artifacts.json"
         write_artifacts_path = write_run_dir / "artifacts.json"
         run["artifacts"] = str(artifacts_path)

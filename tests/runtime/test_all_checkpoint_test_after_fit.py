@@ -89,6 +89,7 @@ def _run_supervised(
     event_log: list[str] | None = None,
     epochs: int = 3,
     check_val_every_n_epoch: int = 1,
+    frozen_checkpoint_dir: str | None = None,
 ):
     finetune_mod = _load_finetune_module(module_name, monkeypatch)
     checkpoints = []
@@ -170,6 +171,8 @@ def _run_supervised(
     )
 
     monkeypatch.chdir(tmp_path)
+    if frozen_checkpoint_dir is not None:
+        monkeypatch.setenv("_SLEEP2VEC_FROZEN_CHECKPOINT_DIR", frozen_checkpoint_dir)
     monkeypatch.setattr(
         finetune_mod,
         "persist_run_config_and_args",
@@ -497,6 +500,25 @@ def test_all_checkpoint_mode_tests_every_regular_checkpoint_and_keeps_best_last(
         {"checkpoint_path": expected_paths[1], "epoch": 2, "metrics": {"test_score": 2.0}},
         {"checkpoint_path": expected_paths[2], "epoch": 1, "metrics": {"test_score": 1.0}},
     ]
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_all_checkpoint_mode_preserves_frozen_checkpoint_path_spelling(
+    module_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    (tmp_path / "lexical").mkdir()
+    frozen_dir = tmp_path / "lexical" / ".." / "log-finetune" / "unit-test" / "checkpoints"
+    _checkpoints, test_calls, _result_rows, manifest_calls, _args = _run_supervised(
+        module_name,
+        tmp_path,
+        monkeypatch,
+        checkpoint_names=("epoch=00.ckpt",),
+        frozen_checkpoint_dir=str(frozen_dir),
+    )
+
+    expected = str(frozen_dir / "epoch=00.ckpt")
+    assert test_calls[0] == expected
+    assert manifest_calls[-1][1]["checkpoint_test_results"][0]["checkpoint_path"] == expected
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)

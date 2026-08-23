@@ -157,6 +157,27 @@ def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path
     assert selected["selected_run_id"] == "run-000"
 
 
+def test_test_selected_plan_exports_frozen_checkpoint_path_spelling(tmp_path: Path):
+    (tmp_path / "lexical").mkdir()
+    workdir = tmp_path / "lexical" / ".."
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={"workdir": str(workdir)},
+        selection_metric="test_ahi_pearson",
+        selection_split="test",
+        config_monitor="val_ahi_pearson",
+    )
+    plan_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    run = _first_run(plan_dir)
+    expected_checkpoint_dir = workdir / "log-finetune" / run["version"] / "checkpoints"
+    assert run["checkpoint_dir"] == str(expected_checkpoint_dir)
+    assert f"export _SLEEP2VEC_FROZEN_CHECKPOINT_DIR={expected_checkpoint_dir}" in Path(run["script"]).read_text()
+
+
 def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_path: Path):
     recipe = _hparam_recipe(
         tmp_path,

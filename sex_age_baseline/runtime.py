@@ -4,6 +4,7 @@ from argparse import Namespace
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import random
 import re
@@ -197,6 +198,12 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         best_checkpoint = load_checkpoint(model, best_path, device=device, cfg=cfg)
         best_epoch = int(best_checkpoint["epoch"])
         resolved_checkpoint_dir = checkpoint_dir.resolve()
+        frozen_checkpoint_dir = os.environ.get("_SLEEP2VEC_FROZEN_CHECKPOINT_DIR")
+        recorded_checkpoint_dir = (
+            Path(frozen_checkpoint_dir)
+            if frozen_checkpoint_dir
+            else checkpoint_dir if checkpoint_dir.is_absolute() else Path.cwd() / checkpoint_dir
+        )
         periodic_checkpoints = []
         seen_epochs = set()
         for path in checkpoint_dir.glob("epoch=*.ckpt"):
@@ -211,7 +218,11 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             if epoch in seen_epochs:
                 raise ValueError(f"Duplicate periodic checkpoint epoch: {epoch}")
             seen_epochs.add(epoch)
-            periodic_checkpoints.append((epoch, path.resolve()))
+            recorded_path = recorded_checkpoint_dir / path.name
+            if recorded_path.resolve() != path.resolve():
+                raise ValueError(f"Frozen checkpoint path does not identify the saved checkpoint: {recorded_path}")
+            # Physical ownership is checked above; manifests preserve the plan's frozen path spelling.
+            periodic_checkpoints.append((epoch, recorded_path))
         if not periodic_checkpoints:
             raise ValueError("No regular epoch=*.ckpt checkpoints were saved for test evaluation.")
         periodic_checkpoints.sort(key=lambda item: (item[0] == best_epoch, item[0], str(item[1])))

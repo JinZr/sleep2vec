@@ -782,6 +782,9 @@ def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_me
     )
     cfg = load_config(config, validate_sidecars=True)
     monkeypatch.chdir(tmp_path)
+    (tmp_path / "lexical").mkdir()
+    frozen_checkpoint_dir = tmp_path / "lexical" / ".." / "log-finetune" / "all-checkpoints" / "checkpoints"
+    monkeypatch.setenv("_SLEEP2VEC_FROZEN_CHECKPOINT_DIR", str(frozen_checkpoint_dir))
     args = _runtime_args(config, tmp_path, version_name="all-checkpoints", epochs=2, test_after_fit=True)
     args.test_all_checkpoints_after_fit = True
     events = []
@@ -831,7 +834,10 @@ def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_me
     checkpoint_results = manifest["checkpoint_test_results"]
     assert manifest["test_all_checkpoints_after_fit"] is True
     assert {row["epoch"] for row in checkpoint_results} == {0, 1}
-    assert all(Path(row["checkpoint_path"]).is_absolute() for row in checkpoint_results)
+    assert {row["checkpoint_path"] for row in checkpoint_results} == {
+        str(frozen_checkpoint_dir / "epoch=00.ckpt"),
+        str(frozen_checkpoint_dir / "epoch=01.ckpt"),
+    }
     assert {Path(row["checkpoint_path"]).name for row in checkpoint_results} == {"epoch=00.ckpt", "epoch=01.ckpt"}
     best_epoch = torch.load(run_dir / "checkpoints" / "best.ckpt", weights_only=False)["epoch"]
     assert checkpoint_results[-1]["epoch"] == best_epoch
