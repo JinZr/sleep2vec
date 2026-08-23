@@ -107,6 +107,29 @@ def generate_external_eval(
                 *infer_runtime_cli_args(runtime),
             ]
         )
+        checkpoint_sha256 = str(row.get("checkpoint_sha256") or "")
+        if checkpoint_sha256:
+            # Selection-time hashing is insufficient because the generated script can be executed later.
+            hash_command = render_command(
+                [
+                    "python",
+                    "-c",
+                    (
+                        "import hashlib, sys\n"
+                        "path, expected = sys.argv[1:3]\n"
+                        "digest = hashlib.sha256()\n"
+                        "with open(path, 'rb') as checkpoint:\n"
+                        "    for chunk in iter(lambda: checkpoint.read(1024 * 1024), b''):\n"
+                        "        digest.update(chunk)\n"
+                        "observed = digest.hexdigest()\n"
+                        "if observed != expected:\n"
+                        "    raise SystemExit(f'Frozen checkpoint SHA-256 differs: {path}')"
+                    ),
+                    checkpoint_path,
+                    checkpoint_sha256,
+                ]
+            )
+            command = f"{hash_command} && {command}"
         execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
         run_cwd = Path(str(execution.get("workdir") or REPO_ROOT))
         command_root = shlex.quote(str(run_cwd))

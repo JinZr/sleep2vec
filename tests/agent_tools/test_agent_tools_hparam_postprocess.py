@@ -910,6 +910,27 @@ def test_test_selected_external_eval_rejects_checkpoint_hash_drift_before_writin
     assert not (plan_dir / "external_eval.sh").exists()
 
 
+def test_test_selected_external_eval_rechecks_checkpoint_hash_when_script_runs(tmp_path: Path):
+    recipe = _test_selected_hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr or result.stdout
+    _run_row, _checkpoints, _frozen = _freeze_test_selected_candidate(plan_dir)
+
+    script = hparam_postprocess.generate_external_eval(
+        plan_dir,
+        _ranking_path(plan_dir),
+        unlock_final_test=True,
+    )
+    selected = _read_table(_ranking_path(plan_dir))[0]
+    Path(selected["checkpoint_path"]).write_text("changed after script generation")
+
+    executed = subprocess.run(["bash", str(script)], text=True, capture_output=True)
+
+    assert executed.returncode != 0
+    assert "Frozen checkpoint SHA-256 differs" in executed.stderr
+
+
 @pytest.mark.parametrize("mismatch_field", ["checkpoint_path", "checkpoint_sha256"])
 def test_test_selected_candidate_must_match_frozen_hparam_selection_before_rehash(
     tmp_path: Path,
