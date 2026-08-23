@@ -5781,6 +5781,36 @@ def test_hparam_monitor_handles_running_missing_and_failed_rows(tmp_path: Path, 
     assert {event["run_id"] for event in status_events} == {"running", "missing", "failed"}
 
 
+def test_hparam_monitor_polls_until_the_current_plan_is_terminal(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    statuses = iter(["running", "finished"])
+    observed = []
+    sleeps = []
+
+    def observe(_root, prior, *_args, **_kwargs):
+        observed.append((prior["status"], prior.get("log_tail", "")))
+        return {**prior, "status": next(statuses)}
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        rows = _read_table(tmp_path / "run_manifest.tsv")
+        rows[0]["log_tail"] = "external-update"
+        manifests.write_rows(tmp_path / "run_manifest.tsv", rows)
+
+    monkeypatch.setattr(hparam_runtime.scheduler, "observe_run", observe)
+    monkeypatch.setattr(hparam_runtime.time, "sleep", sleep)
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+    monkeypatch.setattr(hparam_runtime.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
+
+    out = monitor_hparam_runs(tmp_path, once=False, poll_seconds=60)
+
+    assert out == tmp_path / "run_status.tsv"
+    assert observed == [("running", ""), ("running", "external-update")]
+    assert sleeps == [60]
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "finished"
+    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "finished"
+
+
 def test_hparam_monitor_does_not_overwrite_workspace_terminal_status(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -5869,6 +5899,22 @@ def test_hparam_monitor_rejects_aliased_status_report_before_canonical_write(tmp
     assert not (tmp_path / "events.jsonl").exists()
 
 
+@pytest.mark.parametrize("poll_seconds", [0, -1, float("nan"), float("inf")])
+def test_hparam_monitor_rejects_invalid_poll_interval_before_writing(
+    tmp_path: Path,
+    monkeypatch,
+    poll_seconds: float,
+):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("invalid interval must not sleep"))
+
+    with pytest.raises(ValueError, match="poll_seconds must be positive"):
+        monitor_hparam_runs(tmp_path, once=False, poll_seconds=poll_seconds)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 def test_hparam_monitor_keeps_failed_status_after_failure_evidence_disappears(tmp_path: Path, monkeypatch):
     dead_pid = tmp_path / "dead.pid"
     _write_process_identity(dead_pid)
@@ -5923,8 +5969,11 @@ def test_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch)
 
     monkeypatch.setattr(hparam_runtime, "_start_process", fake_start)
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("once monitor must not sleep"))
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+    monkeypatch.setattr(hparam_runtime.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
 
-    monitor_hparam_runs(tmp_path)
+    monitor_hparam_runs(tmp_path, once=True, poll_seconds=60)
 
     status = {row["run_id"]: row for row in _read_table(tmp_path / "run_status.tsv")}
     manifest = {row["run_id"]: row for row in _read_table(tmp_path / "launch_manifest.tsv")}
@@ -5933,6 +5982,31 @@ def test_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch)
     assert status["run-001"]["status"] == "pending"
     assert manifest["run-001"]["status"] == "pending"
     assert not manifest["run-001"]["launched_at"]
+
+
+def test_continuous_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "pending"}])
+
+    class StopPolling(Exception):
+        pass
+
+    def stop_polling(seconds):
+        assert seconds == 60
+        raise StopPolling
+
+    monkeypatch.setattr(hparam_runtime.time, "sleep", stop_polling)
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args, **_kwargs: pytest.fail("no start"))
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+    monkeypatch.setattr(hparam_runtime.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
+
+    with pytest.raises(StopPolling):
+        monitor_hparam_runs(tmp_path, once=False, poll_seconds=60)
+
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "pending"
+    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "pending"
+    launch_row = _read_table(tmp_path / "launch_manifest.tsv")[0]
+    assert launch_row["status"] == "pending"
+    assert not launch_row["launched_at"]
 
 
 def test_hparam_monitor_health_is_opt_in(tmp_path: Path, monkeypatch):

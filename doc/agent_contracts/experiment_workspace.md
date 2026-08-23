@@ -157,7 +157,7 @@ invalid and are not repaired in place.
 - `plan` freezes the effective recipe, configs, commands, hashes, and planned runs.
 - `hparam-launch` validates frozen artifacts and explicitly starts one eligible wave; dry-run remains the default.
 - `hparam-run-queue` is the explicit long-running action that repeatedly fills available capacity until every current-plan run is terminal; dry-run performs one preview and returns.
-- `hparam-monitor` observes registered runs and never schedules pending work.
+- `hparam-monitor` observes registered runs and never schedules pending work. By default it rereads the canonical manifest and observes the frozen current plan every `--poll-seconds` (60 seconds) until all of its runs are terminal; `--once` performs exactly one observation round.
 - `hparam-stop` requires a reason. Direct runs verify and stop the complete
   process group before committing terminal state. Slurm runs atomically record
   nonterminal `stopping`, request time, reason, and job binding before
@@ -171,7 +171,7 @@ invalid and are not repaired in place.
 - `experiment-rank` writes experiment-wide ranking.
 - `experiment-finalize` requires no active runs and a non-empty final report.
 
-`hparam-monitor` and `experiment-monitor` remain non-launching even when a
+Single-round and continuous `hparam-monitor`, plus `experiment-monitor`, remain non-launching even when a
 pipeline has pending jobs. Pipeline locking, frozen state, attempt isolation,
 and finalization sequencing belong to
 [experiment_pipeline.md](experiment_pipeline.md).

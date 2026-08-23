@@ -137,6 +137,7 @@ def _build_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--run-dir", required=True)
     monitor.add_argument("--once", action="store_true")
     monitor.add_argument("--health", action="store_true")
+    monitor.add_argument("--poll-seconds", type=float, default=60)
     monitor.set_defaults(func=_cmd_hparam_monitor)
 
     progress = sub.add_parser("progress")
@@ -410,7 +411,12 @@ def _cmd_hparam_run_queue(args: argparse.Namespace) -> int:
 
 
 def _cmd_hparam_monitor(args: argparse.Namespace) -> int:
-    status = monitor_hparam_runs(args.run_dir, once=args.once, health=args.health)
+    status = monitor_hparam_runs(
+        args.run_dir,
+        once=args.once,
+        health=args.health,
+        poll_seconds=args.poll_seconds,
+    )
     print(f"Wrote {status}")
     return 0
 

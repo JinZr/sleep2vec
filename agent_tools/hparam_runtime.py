@@ -281,7 +281,15 @@ def _run_execution_command(execution: dict[str, Any], command: list[str]) -> sub
     return scheduler.run_execution_command(execution, command)
 
 
-def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool = False) -> Path:
+def monitor_hparam_runs(
+    run_dir: str | Path,
+    *,
+    once: bool = True,
+    health: bool = False,
+    poll_seconds: float = 60,
+) -> Path:
+    if not math.isfinite(poll_seconds) or poll_seconds <= 0:
+        raise ValueError("poll_seconds must be positive.")
     root = Path(run_dir)
     plan = artifacts.read_hparam_plan(root)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
@@ -302,70 +310,72 @@ def monitor_hparam_runs(run_dir: str | Path, *, once: bool = True, health: bool 
             root / "run_status.tsv",
         ],
     )
-    workspace_rows = read_run_manifest(workspace)
-    workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
-    missing = expected_keys - set(workspace_by_key)
-    if missing:
-        step_id, run_id = sorted(missing)[0]
-        raise ValueError(f"Canonical run is missing for the current hparam plan: {step_id} / {run_id}")
-    previous_rows = {key: workspace_by_key[key] for key in expected_keys}
-    rows = []
-    for run in plan["runs"]:
-        key = managed_run_key(run)
-        prior = previous_rows[key]
-        if prior.get("target") in (None, ""):
-            rows.append(prior)
-            continue
-        if scheduler_type(prior) == "slurm":
-            execution = {"target": prior["target"]}
-            if prior["target"] == "ssh":
-                execution["host"] = prior["host"]
-            if scheduler_direct_controller(prior):
-                execution["scheduler"] = {"direct_controller": True}
-            rows.append(scheduler.observe_slurm_run(root, execution, prior, health=health))
-        else:
-            rows.append(
-                scheduler.observe_run(
-                    root,
-                    prior,
-                    prior,
-                    health=health,
-                    default_script_commits_terminal_status=False,
-                )
-            )
     out = status_path
-    committed = merge_run_manifest(workspace, rows)
-    committed_by_key = {managed_run_key(row): row for row in committed}
-    rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
-    write_rows(out, rows)
-    for row in rows:
-        before = previous_rows[managed_run_key(row)].get("status")
-        after = row.get("status")
-        if before and after and before != after:
-            append_event(
-                workspace,
-                "run_status_changed",
-                {
-                    "step_id": row["step_id"],
-                    "run_id": row["run_id"],
-                    "from": before,
-                    "to": after,
-                },
-            )
-            if after == "stopped" and scheduler_type(row) == "slurm":
+    while True:
+        workspace_rows = read_run_manifest(workspace)
+        workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
+        missing = expected_keys - set(workspace_by_key)
+        if missing:
+            step_id, run_id = sorted(missing)[0]
+            raise ValueError(f"Canonical run is missing for the current hparam plan: {step_id} / {run_id}")
+        previous_rows = {key: workspace_by_key[key] for key in expected_keys}
+        rows = []
+        for run in plan["runs"]:
+            key = managed_run_key(run)
+            prior = previous_rows[key]
+            if prior.get("target") in (None, ""):
+                rows.append(prior)
+                continue
+            if scheduler_type(prior) == "slurm":
+                execution = {"target": prior["target"]}
+                if prior["target"] == "ssh":
+                    execution["host"] = prior["host"]
+                if scheduler_direct_controller(prior):
+                    execution["scheduler"] = {"direct_controller": True}
+                rows.append(scheduler.observe_slurm_run(root, execution, prior, health=health))
+            else:
+                rows.append(
+                    scheduler.observe_run(
+                        root,
+                        prior,
+                        prior,
+                        health=health,
+                        default_script_commits_terminal_status=False,
+                    )
+                )
+        committed = merge_run_manifest(workspace, rows)
+        committed_by_key = {managed_run_key(row): row for row in committed}
+        rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
+        write_rows(out, rows)
+        for row in rows:
+            before = previous_rows[managed_run_key(row)].get("status")
+            after = row.get("status")
+            if before and after and before != after:
                 append_event(
                     workspace,
-                    "run_stopped",
+                    "run_status_changed",
                     {
                         "step_id": row["step_id"],
                         "run_id": row["run_id"],
-                        "reason": row.get("stop_reason", ""),
+                        "from": before,
+                        "to": after,
                     },
                 )
-    write_status_report(workspace)
-    if not once:
+                if after == "stopped" and scheduler_type(row) == "slurm":
+                    append_event(
+                        workspace,
+                        "run_stopped",
+                        {
+                            "step_id": row["step_id"],
+                            "run_id": row["run_id"],
+                            "reason": row.get("stop_reason", ""),
+                        },
+                    )
+        write_status_report(workspace)
+        if once or all(row.get("status") in TERMINAL_STATUSES for row in rows):
+            return out
         print(f"wrote {out}")
-    return out
+        time.sleep(poll_seconds)
 
 
 def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:

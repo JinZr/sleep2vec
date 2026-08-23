@@ -265,8 +265,9 @@ than `possibly_stalled`.
 
 For direct execution, `hparam-launch` starts one capacity-limited wave. For
 Slurm it submits every launchable leaf job without applying host-global GPU
-capacity. `hparam-run-queue --execute` owns continuous queue advancement and
-observation; monitor commands remain non-launching. Schema-v1 external
+capacity. `hparam-run-queue --execute` owns queue advancement; `hparam-monitor`
+is non-launching and defaults to 60-second observation until the current plan is
+terminal, while `--once` performs one round. Schema-v1 external
 evaluation stays on the direct backend. Workspace layout and lifecycle entrypoints are defined in
 [experiment_workspace.md](../agent_contracts/experiment_workspace.md); reducer,
 commit, process, and evidence rules are defined in
