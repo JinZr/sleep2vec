@@ -40,18 +40,11 @@ Preset payloads remain `list[SampleIndex]`; missing-channel presets preserve
 not the collated batch shape. Split policy, label selection, required channels,
 and preset regeneration are high-impact decisions and must not be inferred.
 
-Built-in arousal preset generation consumes existing NPZ files whose
-`arousal_event` target is a 1 Hz `[T, 4]` array in fixed
-`[RES, SPONT, Limb, PLM]` order; it does not build labels from source event
-files. Preset loading turns each 30-second block into one width-120 token. Kaldi
-conversion writes the same logical channel as one uncompressed width-120 matrix
-and repeats the total and four subtype ArI scalars plus `tst` in the manifest.
-Both backends must converge element-for-element on tokens, metadata, path, and
-token offsets. Validation and test artifacts use contiguous, non-overlapping
-windows whose stride equals the maximum window length; training artifacts may
-use other stride policies. Distributed validation and test gather event records
-only on global rank zero, compute metrics and thresholds there once, and
-broadcast the resolved metric and threshold state to every rank.
+Built-in arousal preset generation consumes existing canonical
+`arousal_event` targets rather than building labels from source event files.
+NPZ and Kaldi outputs must converge on the same logical tokens, metadata, path,
+and token offsets; the shape and runtime contract is summarized under
+[Task sidecars](./MODULE_MAP.md#task-sidecars).
 
 Variant recipes use their package-local preprocessing modules. A shared
 contract change requires explicit parity review rather than a root import.
@@ -117,20 +110,13 @@ The finetune flow is:
 5. train, select the configured checkpoint, and evaluate only authorized data;
 6. write results through the canonical artifact owners.
 
-Built-in stage tasks remap raw `stage5` labels where appropriate. AHI uses
-event-aware validation/test reduction and a validation-fitted threshold stored
-with the checkpoint. Arousal fits one validation event threshold for each fixed
-subtype, stores all four thresholds and any no-positive fallback subtype names
-in the checkpoint, and monitors subtype macro event F1. Training metrics use a
-fixed 0.5 threshold; test and inference require the stored validation thresholds
-and never refit them. Survival and multilabel tasks load explicit subject-level
-sidecars, aggregate repeated windows by the configured key, and retain
-path/window provenance in prediction outputs.
-
-For ordinary scalar binary classification, unprefixed validation/test metrics
-retain their historical window denominator. The parallel `episode_*` metrics
-average window probabilities by path before scoring; AUPRC, Brier, and ECE are
-reported only in that explicitly episode-denominated family.
+Task-specific labels, thresholds, and aggregation remain with the package-local
+data and metric owners named in the [module map](./MODULE_MAP.md) and
+[reuse guide](./REUSE_GUIDE.md). Validation owns fitted AHI and arousal
+thresholds; test and inference reuse checkpoint state without refitting.
+Survival and multilabel metrics aggregate by the configured subject key while
+prediction exports retain path/window provenance. Ordinary scalar metrics keep
+window and explicitly named episode denominators separate.
 
 External or final test data stays locked until the recorded decision allows it.
 Hyperparameter ranking uses the split and metric frozen in the recipe; test
@@ -192,87 +178,40 @@ The control flow is:
    changing lifecycle state;
 7. finalization requires no active runs and a non-empty report.
 
-Runnable plans bind the exact config bytes accepted by consultation and
-materialize from that immutable snapshot. Runtime-semantic relative paths are
-validated from the frozen workdir, while planning-source config locators remain
-repository-relative. Structural config ownership may constrain recipe
-`variant`; filename- or directory-derived guesses are diagnostic only. See
-[task_recipe.md](../agent_contracts/task_recipe.md) for recipe, path, runtime
-identity, and adaptive semantics.
+Runnable plans use the exact config bytes accepted by consultation and freeze
+their recipe, commands, hashes, paths, and run identities before execution.
+Selection policy and test access are likewise frozen; test-selected hparam
+plans retain complete checkpoint evidence while workspace lifecycle remains one
+row per run. Filename guesses and caller-local fallbacks are never semantic
+authority.
 
-Hparam `plan.json` independently records the exact byte digest of
-`recipe.resolved.yaml`; every managed consumer verifies that digest before
-trusting the frozen recipe.
-
-Finetune and hparam plans materialize an omitted `test_after_fit` as the
-documented `true` policy default and freeze the resolved choice plus an explicit
-`--test-after-fit` or `--no-test-after-fit` argument. Hparam selection uses the
-recipe's frozen split and metric. Test-selected tuning requires explicit test
-access, `test_after_fit=true`, positive epochs, and an every-epoch immutable
-checkpoint schedule. AHI/arousal checkpoints are saved after validation on
-every epoch so their fitted thresholds are part of each tested snapshot. The
-runtime freezes complete checkpoint-level evidence before ranking or adaptive
-reuse. Validation still owns training and early stopping. Checkpoint audit ranks
-stay plan-local; workspace rankings retain one row per managed run plus its
-global checkpoint rank. Runtime evidence is
-single-use and published only at the successful terminal boundary. See
-[task_recipe.md](../agent_contracts/task_recipe.md),
-[external_test_locking.md](../agent_contracts/external_test_locking.md), and
-[run_manifest.md](../agent_contracts/run_manifest.md) for the authoritative
-selection, lifecycle, and artifact contracts.
-
-Direct `infer` and `evaluate` plans targeting `eval_split=test` require both
-`external_test_locked=false` and `final_test_unlocked=true`. Other splits do
-not require this unlock. See
-[external_test_locking.md](../agent_contracts/external_test_locking.md).
-
-Staged plan bytes still freeze the final semantic paths. A plan becomes
-runnable only after the complete bundle is published and its step and run rows
-are canonically registered. Adaptive round 000 then publishes
-`adaptive/workflow.json` last; launch and queue fail closed without that marker.
-An unregistered complete round may be resumed only after exact deterministic
-plan-tree comparison, while incomplete or partial-canonical rounds are not
-repaired.
+| Concern | Canonical owner | Authoritative contract |
+| --- | --- | --- |
+| Consultation and plan publication | [`agent_tools/decisions.py`](../../agent_tools/decisions.py), [`agent_tools/plans.py`](../../agent_tools/plans.py) | [task recipe](../agent_contracts/task_recipe.md) |
+| Workspace state, launch, and monitoring | [`agent_tools/experiment_workspace.py`](../../agent_tools/experiment_workspace.py), [`agent_tools/hparam.py`](../../agent_tools/hparam.py) | [experiment workspace](../agent_contracts/experiment_workspace.md), [run manifest](../agent_contracts/run_manifest.md) |
+| Hparam ranking and test access | [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py) | [task recipe](../agent_contracts/task_recipe.md), [external test locking](../agent_contracts/external_test_locking.md) |
+| Direct and Slurm lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py), [`agent_tools/slurm.py`](../../agent_tools/slurm.py) | [run manifest](../agent_contracts/run_manifest.md) |
+| External evaluation matrix | [`agent_tools/experiment_pipeline.py`](../../agent_tools/experiment_pipeline.py) | [experiment pipeline](../agent_contracts/experiment_pipeline.md) |
+| Adaptive proposals | [`agent_tools/adaptive_proposals.py`](../../agent_tools/adaptive_proposals.py), [`agent_tools/adaptive_hparam.py`](../../agent_tools/adaptive_hparam.py) | [task recipe](../agent_contracts/task_recipe.md), [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) |
 
 ### Managed state and launching
 
-`run_manifest.tsv` is the only lifecycle and execution-identity owner. Status
-tables, matrices, events, and reports are projections. `RESEARCH_LOG.md` is an
-append-only narrative record and is never a status source. Direct managed
-launches use a dedicated process group with PID, group, and OS start-token
-evidence. Slurm managed launches freeze one sbatch leaf job and submit token per
-run. Each single-node allocation keeps one supervisor and one sidecar pair;
-the supervisor starts the frozen training script through `srun` with one task
-per requested GPU, while non-DDP variants remain single-GPU only. The manager
-binds one numeric scheduler job id, observes controller state through
-`squeue`/`scontrol`, falls back to the bound-cluster `sacct` allocation after the
-job outlives controller history, and requires both a terminal scheduler
-observation and the compute wrapper's matching terminal sidecar for terminal
-truth. Uncertain direct
-or scheduler identity never authorizes relaunch or retry. Direct stop waits for
-the process group to exit. Slurm stop records a nonterminal request after
-freezing its job binding and before dispatching `scancel`; same-reason retries
-preserve the original request, and `stopped` is committed only after matching
-scheduler cancellation evidence. Stale monitor observations cannot overwrite
-that stop intent. Optional health
-labels remain observational:
-DDP child GPU activity follows the managed process group, and unavailable
-required probes or first-baseline observations report `health_unknown` rather
-than `possibly_stalled`.
+`run_manifest.tsv` is the only lifecycle and execution-identity owner; status
+tables, events, reports, and `RESEARCH_LOG.md` are projections or narrative.
+Managed direct and Slurm follow-up always uses frozen canonical identity.
+Slurm terminal truth normally combines scheduler and sidecar evidence; a purged
+job with explicitly disabled accounting has one narrow authenticated recovery
+path. Other uncertain observations remain nonterminal and never authorize
+relaunch or retry.
 
-For direct execution, `hparam-launch` starts one capacity-limited wave. For
-Slurm it submits every launchable leaf job without applying host-global GPU
-capacity. `hparam-run-queue --execute` owns continuous queue advancement and
-observation; monitor commands remain non-launching. Schema-v1 external
-evaluation stays on the direct backend. Workspace layout and lifecycle entrypoints are defined in
-[experiment_workspace.md](../agent_contracts/experiment_workspace.md); reducer,
-commit, process, and evidence rules are defined in
-[run_manifest.md](../agent_contracts/run_manifest.md).
+For direct execution, `hparam-launch` starts one capacity-limited wave; Slurm
+submits every launchable leaf job. `hparam-run-queue --execute` owns queue
+advancement. `hparam-monitor` continuously rereads canonical state by default,
+and `--once` performs one observation round; neither mode launches pending work.
+Schema-v1 external evaluation remains direct-only.
 
-Slurm plan warnings provide safe, static priority guidance. `doctor` adds a
-read-only capability check for priority policy, backfill, accounting,
-partition, and visible reservations. These diagnostics do not mutate frozen
-resource requests or promise a priority that only cluster policy can grant.
+Slurm priority warnings and `doctor` capability checks are diagnostic only;
+they do not mutate frozen resource requests or promise scheduler priority.
 
 At task handoff, read the experiment metadata, research log when present, and
 then current canonical manifests. Add a note only when there is a meaningful
@@ -281,42 +220,21 @@ unchanged polling does not produce a log entry.
 
 ### External evaluation
 
-Test-selected postprocessing accepts only checkpoint identities frozen by the
-registered ranking and canonical manifest. Direct helpers reject SSH-owned
-candidates, and schema-v1 `experiment-run` accepts only local source plans.
-
 `experiment-run` owns the resumable source-ranking-to-external-evaluation flow.
-It validates the strict spec without launching in dry-run mode, waits for
-successful managed sources, freezes source-ranked checkpoints, preflights every
-external recipe, and runs package-local inference in isolated result roots.
-Existing state resumes only with its exact frozen identity. Only explicit
-retryable canonical failures receive a fresh attempt; uncertain identity or
-result-manifest validation failure does not. External metrics remain report-only,
-and finalization requires one verified success for every declared job.
-
-The complete spec, retry, result-manifest, and finalization contract is in
-[experiment_pipeline.md](../agent_contracts/experiment_pipeline.md).
+It accepts only checkpoint identities frozen by the registered ranking,
+preflights external recipes, and runs package-local inference in isolated
+attempt roots. Resume and retry require exact canonical evidence, and
+finalization requires one verified success per declared job. See the
+[experiment pipeline contract](../agent_contracts/experiment_pipeline.md).
 
 ### Adaptive proposals
 
-Adaptive tuning defaults to terminal-only `agent_proposal`; automatic
+Adaptive tuning keeps external-agent suggestions inside authenticated proposal
+snapshots and parameter envelopes; planning, preflight, launch, and lifecycle
+mutation remain tool-owned. `agent_proposal` is terminal-only, while automatic
 neighborhood suggestions and active replacement require explicit
-`best_neighborhood`. The proposal flow uses a tool-issued input v2 snapshot that
-binds the exact source config bytes and a single named external submission.
-Phase two authenticates the issuance, reconstructs current canonical evidence,
-and repeats validation around candidate preflight before any lifecycle mutation.
-The external agent proposes only the search space; planning, launch, and
-`run_manifest.tsv` state remain tool-owned.
-
-The detailed handshake is defined in
-[task_recipe.md](../agent_contracts/task_recipe.md). Public facades remain
-`decisions.py`, `plans.py`, `hparam.py`, and `experiments.py`; shared scheduling
-lives in `managed_scheduler`, external-matrix policy in `experiment_pipeline`,
-and task-specific behavior in adapters/domain modules. See
-[`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) for layering.
-
-This index supplies navigation only. It does not authorize commands or replace
-live repository inspection.
+`best_neighborhood`. See the [task recipe contract](../agent_contracts/task_recipe.md)
+and [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md).
 
 ## Variants And Routing
 
@@ -328,26 +246,13 @@ Recipe `variant` determines the package-local runtime:
 - `sex_age_baseline` uses its dedicated demographic baseline where supported;
 - `sleep2stat` is a task and has no model variant.
 
-Do not route variant recipes through root entrypoints. Root-to-variant changes
-to config, data, checkpoints, metrics, results, callbacks, tokenizers, or model
-interfaces require package-local parity validation. `sleep2expert` routing
-analysis reads MoE routing outputs; compact artifacts are created through its
-subnetwork export owner rather than manual checkpoint surgery.
+Use package-local entrypoints. See the
+[variant boundary](./MODULE_MAP.md#variant-boundary) for ownership and
+[standalone variant guidance](./REUSE_GUIDE.md#standalone-variants) for reuse
+and parity rules.
 
-## Verification Routing
+## Verification
 
-Use the smallest focused suite first, then the owning gate from `AGENTS.md`:
-
-| Change | Focused tests |
-| --- | --- |
-| config/task/builders | `tests/config/` |
-| dataset/sampler/preset contracts | `tests/data/`, `tests/preprocess/` |
-| model/head/loss behavior | `tests/models/` |
-| checkpoints, metrics, results, entrypoints | `tests/runtime/` |
-| root-to-variant parity | `tests/variants/` |
-| analysis bundles | `tests/sleep2stat/` |
-| consultation and experiment management | `tests/agent_tools/` |
-
-Runtime smoke commands are warranted only when the touched contract is not
-fully represented by focused tests. Variant validation is mandatory whenever a
-shared change can affect `sleep2vec2` or `sleep2expert`.
+Start with the focused suite in
+[High-Risk Seams And Tests](./MODULE_MAP.md#high-risk-seams-and-tests), then run
+the owning verification gate from [`AGENTS.md`](../../AGENTS.md).

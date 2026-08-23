@@ -1249,16 +1249,23 @@ def observe_slurm_run(
 ) -> dict[str, Any]:
     owner = Path(owner_dir)
     token = str(row["scheduler_submit_token"])
-    job_id = str(row.get("scheduler_job_id") or "")
-    cluster = str(row.get("scheduler_cluster") or "")
+    canonical_job_id = str(row.get("scheduler_job_id") or "")
+    job_id = canonical_job_id
+    canonical_cluster = str(row.get("scheduler_cluster") or "")
+    cluster = canonical_cluster
+    execution_target = str(execution.get("target", "local") or "local")
+    execution_host = str(execution.get("host") or "").strip()
+    execution_scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
     stop_requested = row.get("stop_requested_at") not in (None, "")
     terminal = _read_slurm_json(owner, execution, row["scheduler_result_path"])
     observation: dict[str, Any] = {**row, "scheduler_observed_at": utc_now()}
     terminal_exit_code: int | None = None
+    terminal_identity: slurm.JobIdentity | None = None
     if terminal:
         identity = slurm.sidecar_identity(terminal, token, expected_job_id=job_id or None)
         if cluster and identity.cluster and identity.cluster != cluster:
             raise ValueError("Slurm terminal sidecar cluster differs from the canonical run.")
+        terminal_identity = identity
         job_id = identity.job_id
         cluster = identity.cluster or cluster
         terminal_exit_code = slurm.terminal_exit_code(terminal)
@@ -1306,6 +1313,7 @@ def observe_slurm_run(
             active = slurm.show_job(execution, job_id, cluster=cluster or None)
         from_accounting = False
         accounting_error = ""
+        accounting_disabled = False
         if active is None:
             try:
                 active = slurm.accounting_job(
@@ -1314,10 +1322,46 @@ def observe_slurm_run(
                     submit_token=token,
                     cluster=cluster or None,
                 )
-            except (slurm.SlurmCommandError, subprocess.TimeoutExpired, RuntimeError) as exc:
+            except slurm.SlurmCommandError as exc:
+                accounting_error = str(exc)
+                accounting_output = f"{exc.stdout}\n{exc.stderr}".lower()
+                accounting_disabled = not (execution_target == "ssh" and exc.returncode == 255) and (
+                    "slurm accounting storage is disabled" in accounting_output
+                )
+            except (subprocess.TimeoutExpired, RuntimeError) as exc:
                 accounting_error = str(exc)
             from_accounting = active is not None
         if active is None:
+            canonical_direct_controller = str(row.get("scheduler_direct_controller") or "") == "true"
+            routing_identity_matches = (
+                execution_target == row.get("target")
+                and (execution_target != "ssh" or execution_host == str(row.get("host") or "").strip())
+                and (execution_scheduler.get("direct_controller") is True) == canonical_direct_controller
+            )
+            fallback_identity_is_frozen = (
+                bool(canonical_job_id)
+                and bool(canonical_cluster)
+                and bool(token)
+                and str(row.get("scheduler_direct_controller") or "") in {"false", "true"}
+                and (row.get("target") == "local" or (row.get("target") == "ssh" and row.get("host") not in (None, "")))
+                and routing_identity_matches
+                and terminal_identity is not None
+                and terminal_identity.cluster == canonical_cluster
+            )
+            if terminal and accounting_disabled and fallback_identity_is_frozen:
+                observation.update(
+                    {
+                        "status": "completed" if terminal_exit_code == 0 else "failed",
+                        "scheduler_raw_state": "MISSING",
+                        "scheduler_reason": (
+                            "Slurm controller no longer retains the bound job and accounting storage is disabled; "
+                            "terminal status recovered from the authenticated terminal sidecar."
+                        ),
+                    }
+                )
+                return _slurm_artifact_observation(observation, health=health)
+            if not canonical_cluster:
+                observation["scheduler_cluster"] = canonical_cluster
             if terminal:
                 reason = "Slurm job disappeared before terminal scheduler state was observed."
             else:

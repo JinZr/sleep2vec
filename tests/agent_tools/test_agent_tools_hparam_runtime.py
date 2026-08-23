@@ -974,12 +974,23 @@ def test_slurm_monitor_keeps_terminal_sidecar_unknown_without_scheduler_record(t
 
 
 @pytest.mark.parametrize(
-    ("terminal_exit_code", "stop_requested"),
+    (
+        "terminal_exit_code",
+        "stop_requested",
+        "canonical_cluster",
+        "sidecar_cluster",
+        "direct_controller",
+        "expected_status",
+    ),
     [
-        (None, False),
-        (0, False),
-        (7, False),
-        (143, True),
+        (None, False, "wuji-h20", "wuji-h20", False, "unknown_scheduler"),
+        (0, False, "wuji-h20", "wuji-h20", False, "completed"),
+        (0, False, "wuji-h20", "wuji-h20", True, "completed"),
+        (7, False, "wuji-h20", "wuji-h20", False, "failed"),
+        (143, True, "wuji-h20", "wuji-h20", False, "failed"),
+        (0, False, "wuji-h20", "", False, "unknown_scheduler"),
+        (0, False, "", "wuji-h20", False, "unknown_scheduler"),
+        (0, False, "", "", False, "unknown_scheduler"),
     ],
 )
 def test_slurm_monitor_handles_purged_job_when_accounting_is_unavailable(
@@ -987,22 +998,20 @@ def test_slurm_monitor_handles_purged_job_when_accounting_is_unavailable(
     monkeypatch,
     terminal_exit_code: int | None,
     stop_requested: bool,
+    canonical_cluster: str,
+    sidecar_cluster: str,
+    direct_controller: bool,
+    expected_status: str,
 ):
-    plan_dir, plan = _write_slurm_plan(tmp_path)
+    plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=direct_controller)
     run = plan["runs"][0]
     token = run["scheduler_submit_token"]
     monkeypatch.setattr(
         managed_scheduler.slurm,
         "submit",
-        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", canonical_cluster),
     )
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
-    monkeypatch.setattr(
-        managed_scheduler.slurm,
-        "active_jobs",
-        lambda *_args, **_kwargs: [slurm.JobObservation("3880", "RUNNING", "", "h20-bj-96", token)],
-    )
-    hparam_runtime.monitor_hparam_runs(plan_dir)
 
     if stop_requested:
         monkeypatch.setattr(slurm, "cancel", lambda *_args, **_kwargs: None)
@@ -1013,7 +1022,7 @@ def test_slurm_monitor_handles_purged_job_when_accounting_is_unavailable(
                 {
                     "schema_version": 1,
                     "scheduler_job_id": "3880",
-                    "scheduler_cluster": "wuji-h20",
+                    "scheduler_cluster": sidecar_cluster,
                     "scheduler_submit_token": token,
                     "node": "h20-bj-96",
                     "exit_code": terminal_exit_code,
@@ -1021,24 +1030,312 @@ def test_slurm_monitor_handles_purged_job_when_accounting_is_unavailable(
             )
         )
 
-    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(managed_scheduler.slurm, "show_job", lambda *_args, **_kwargs: None)
+    scheduler_calls = []
 
-    def accounting_unavailable(*_args, **_kwargs):
-        result = subprocess.CompletedProcess([], 1, "", "Slurm accounting storage is disabled")
-        raise slurm.SlurmCommandError("accounting query", result)
+    def run_command(_execution, argv, *, timeout):
+        scheduler_calls.append(argv)
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess([], 0, "", "")
+        if argv[0] == "scontrol":
+            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
+        assert argv[0] == "sacct"
+        return subprocess.CompletedProcess([], 1, "", "Slurm accounting storage is disabled")
 
-    monkeypatch.setattr(managed_scheduler.slurm, "accounting_job", accounting_unavailable)
+    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+    if not canonical_cluster and terminal_exit_code is not None:
+        hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["status"] == expected_status
+    assert canonical["scheduler_raw_state"] == "MISSING"
+    expected_commands = ["squeue", "scontrol", "sacct"] * (
+        2 if not canonical_cluster and terminal_exit_code is not None else 1
+    )
+    assert [argv[0] for argv in scheduler_calls] == expected_commands
+    if not canonical_cluster:
+        assert canonical["scheduler_cluster"] == ""
+    if canonical_cluster and expected_status in {"completed", "failed"}:
+        cluster_flag = f"--clusters={canonical_cluster}"
+        assert all((cluster_flag not in argv) == direct_controller for argv in scheduler_calls)
+    if expected_status in {"completed", "failed"}:
+        assert canonical["scheduler_exit_code"] == str(terminal_exit_code)
+        assert "accounting storage is disabled" in canonical["scheduler_reason"]
+        assert "authenticated terminal sidecar" in canonical["scheduler_reason"]
+        assert canonical["status"] != "stopped"
+    else:
+        assert "Slurm accounting query failed: Slurm accounting storage is disabled" in canonical["scheduler_reason"]
+        if terminal_exit_code not in (None, 0):
+            assert f"non-zero exit code {terminal_exit_code}" in canonical["scheduler_reason"]
+
+
+def test_slurm_monitor_ignores_local_host_label_for_accounting_disabled_recovery(
+    tmp_path: Path,
+    monkeypatch,
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path, execution={"host": "local-label"})
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    Path(run["scheduler_result_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": run["scheduler_submit_token"],
+                "node": "h20-bj-96",
+                "exit_code": 0,
+            }
+        )
+    )
+
+    def run_command(_execution, argv, *, timeout):
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess([], 0, "", "")
+        if argv[0] == "scontrol":
+            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
+        return subprocess.CompletedProcess([], 1, "", "Slurm accounting storage is disabled")
+
+    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["target"] == "local"
+    assert canonical["host"] == "local-label"
+    assert canonical["status"] == "completed"
+    assert canonical["scheduler_raw_state"] == "MISSING"
+
+
+def test_slurm_accounting_disabled_recovery_requires_matching_ssh_host(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    row = next(item for item in _read_table(tmp_path / "run_manifest.tsv") if item["run_id"] == run["run_id"])
+    row.update({"target": "ssh", "host": "baichuan3"})
+    terminal = {
+        "schema_version": 1,
+        "scheduler_job_id": "3880",
+        "scheduler_cluster": "wuji-h20",
+        "scheduler_submit_token": row["scheduler_submit_token"],
+        "node": "h20-bj-96",
+        "exit_code": 0,
+    }
+    monkeypatch.setattr(managed_scheduler, "_read_slurm_json", lambda *_args, **_kwargs: terminal)
+
+    def run_command(_execution, argv, *, timeout):
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess([], 0, "", "")
+        if argv[0] == "scontrol":
+            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
+        return subprocess.CompletedProcess([], 1, "", "Slurm accounting storage is disabled")
+
+    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
+
+    observed = managed_scheduler.observe_slurm_run(
+        plan_dir,
+        {"target": "ssh", "host": "other-host"},
+        row,
+    )
+
+    assert observed["status"] == "unknown_scheduler"
+    assert observed["scheduler_raw_state"] == "MISSING"
+
+
+@pytest.mark.parametrize("accounting_failure", ["permission", "timeout"])
+def test_slurm_monitor_keeps_purged_sidecar_unknown_for_other_accounting_failures(
+    tmp_path: Path,
+    monkeypatch,
+    accounting_failure: str,
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    Path(run["scheduler_result_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": run["scheduler_submit_token"],
+                "node": "h20-bj-96",
+                "exit_code": 0,
+            }
+        )
+    )
+
+    def run_command(_execution, argv, *, timeout):
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess([], 0, "", "")
+        if argv[0] == "scontrol":
+            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
+        if accounting_failure == "timeout":
+            raise subprocess.TimeoutExpired(argv, timeout)
+        return subprocess.CompletedProcess([], 1, "", "sacct: error: Access denied")
+
+    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
 
     hparam_runtime.monitor_hparam_runs(plan_dir)
 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert canonical["status"] == "unknown_scheduler"
     assert canonical["scheduler_raw_state"] == "MISSING"
-    assert canonical["scheduler_raw_state"] != "RUNNING"
-    assert "Slurm accounting query failed: Slurm accounting storage is disabled" in canonical["scheduler_reason"]
-    if terminal_exit_code not in (None, 0):
-        assert f"non-zero exit code {terminal_exit_code}" in canonical["scheduler_reason"]
+
+
+@pytest.mark.parametrize(
+    ("identity_override", "execution"),
+    [
+        ({"scheduler_job_id": ""}, {"target": "local"}),
+        ({"scheduler_submit_token": ""}, {"target": "local"}),
+        ({"scheduler_direct_controller": ""}, {"target": "local"}),
+        ({"target": ""}, {"target": "local"}),
+        ({"target": "ssh", "host": ""}, {"target": "local"}),
+        ({}, {"target": "local", "scheduler": {"direct_controller": True}}),
+        ({"target": "ssh", "host": "baichuan3"}, {"target": "local"}),
+    ],
+)
+def test_slurm_monitor_requires_complete_matching_canonical_identity_for_accounting_disabled_recovery(
+    tmp_path: Path,
+    monkeypatch,
+    identity_override: dict[str, str],
+    execution: dict,
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    row = next(item for item in _read_table(tmp_path / "run_manifest.tsv") if item["run_id"] == run["run_id"])
+    row.update(identity_override)
+    Path(run["scheduler_result_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": row["scheduler_submit_token"],
+                "node": "h20-bj-96",
+                "exit_code": 0,
+            }
+        )
+    )
+
+    def run_command(_execution, argv, *, timeout):
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess([], 0, "", "")
+        if argv[0] == "scontrol":
+            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
+        return subprocess.CompletedProcess([], 1, "", "Slurm accounting storage is disabled")
+
+    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
+
+    observed = managed_scheduler.observe_slurm_run(plan_dir, execution, row)
+
+    assert observed["status"] == "unknown_scheduler"
+    assert observed["scheduler_raw_state"] == "MISSING"
+
+
+def test_slurm_monitor_keeps_ssh_transport_failure_unknown_when_output_mentions_disabled_accounting(
+    tmp_path: Path,
+    monkeypatch,
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    row = next(item for item in _read_table(tmp_path / "run_manifest.tsv") if item["run_id"] == run["run_id"])
+    row.update({"target": "ssh", "host": "baichuan3"})
+    terminal = {
+        "schema_version": 1,
+        "scheduler_job_id": "3880",
+        "scheduler_cluster": "wuji-h20",
+        "scheduler_submit_token": row["scheduler_submit_token"],
+        "node": "h20-bj-96",
+        "exit_code": 0,
+    }
+    monkeypatch.setattr(managed_scheduler, "_read_slurm_json", lambda *_args, **_kwargs: terminal)
+
+    def run_command(_execution, argv, *, timeout):
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess([], 0, "", "")
+        if argv[0] == "scontrol":
+            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
+        return subprocess.CompletedProcess(
+            [],
+            255,
+            "",
+            "ssh: connection closed\nSlurm accounting storage is disabled",
+        )
+
+    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
+
+    observed = managed_scheduler.observe_slurm_run(
+        plan_dir,
+        {"target": "ssh", "host": "baichuan3"},
+        row,
+    )
+
+    assert observed["status"] == "unknown_scheduler"
+    assert observed["scheduler_raw_state"] == "MISSING"
+    assert "ssh: connection closed" in observed["scheduler_reason"]
+
+
+def test_slurm_monitor_rejects_mismatched_terminal_sidecar_cluster_before_query(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    Path(run["scheduler_result_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "other-cluster",
+                "scheduler_submit_token": run["scheduler_submit_token"],
+                "node": "h20-bj-96",
+                "exit_code": 0,
+            }
+        )
+    )
+    manifest_path = tmp_path / "run_manifest.tsv"
+    before = manifest_path.read_bytes()
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "run_command",
+        lambda *_args, **_kwargs: pytest.fail("mismatched sidecar must fail before scheduler query"),
+    )
+
+    with pytest.raises(ValueError, match="terminal sidecar cluster differs"):
+        hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    assert manifest_path.read_bytes() == before
 
 
 def test_slurm_monitor_recovers_terminal_state_from_accounting_after_controller_purge(tmp_path: Path, monkeypatch):
@@ -5567,6 +5864,36 @@ def test_hparam_monitor_handles_running_missing_and_failed_rows(tmp_path: Path, 
     assert {event["run_id"] for event in status_events} == {"running", "missing", "failed"}
 
 
+def test_hparam_monitor_polls_until_the_current_plan_is_terminal(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    statuses = iter(["running", "finished"])
+    observed = []
+    sleeps = []
+
+    def observe(_root, prior, *_args, **_kwargs):
+        observed.append((prior["status"], prior.get("log_tail", "")))
+        return {**prior, "status": next(statuses)}
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        rows = _read_table(tmp_path / "run_manifest.tsv")
+        rows[0]["log_tail"] = "external-update"
+        manifests.write_rows(tmp_path / "run_manifest.tsv", rows)
+
+    monkeypatch.setattr(hparam_runtime.scheduler, "observe_run", observe)
+    monkeypatch.setattr(hparam_runtime.time, "sleep", sleep)
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+    monkeypatch.setattr(hparam_runtime.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
+
+    out = monitor_hparam_runs(tmp_path, once=False, poll_seconds=60)
+
+    assert out == tmp_path / "run_status.tsv"
+    assert observed == [("running", ""), ("running", "external-update")]
+    assert sleeps == [60]
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "finished"
+    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "finished"
+
+
 def test_hparam_monitor_does_not_overwrite_workspace_terminal_status(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -5655,6 +5982,60 @@ def test_hparam_monitor_rejects_aliased_status_report_before_canonical_write(tmp
     assert not (tmp_path / "events.jsonl").exists()
 
 
+@pytest.mark.parametrize("output_name", ["run_status", "status_report"])
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_continuous_hparam_monitor_revalidates_output_aliases_each_round(
+    tmp_path: Path,
+    monkeypatch,
+    output_name: str,
+    alias_kind: str,
+):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    statuses = iter(["running", "finished"])
+    experiment_path = tmp_path / "experiment.yaml"
+    experiment_bytes = experiment_path.read_bytes()
+    alias_path = tmp_path / "run_status.tsv"
+    if output_name == "status_report":
+        alias_path = tmp_path / "reports" / "status.md"
+
+    def observe(_root, prior, *_args, **_kwargs):
+        return {**prior, "status": next(statuses)}
+
+    def replace_output_with_alias(seconds):
+        assert seconds == 60
+        alias_path.unlink()
+        if alias_kind == "symlink":
+            alias_path.symlink_to(experiment_path)
+        else:
+            alias_path.hardlink_to(experiment_path)
+
+    monkeypatch.setattr(hparam_runtime.scheduler, "observe_run", observe)
+    monkeypatch.setattr(hparam_runtime.time, "sleep", replace_output_with_alias)
+
+    with pytest.raises(ValueError, match="Managed output"):
+        monitor_hparam_runs(tmp_path, once=False, poll_seconds=60)
+
+    assert experiment_path.read_bytes() == experiment_bytes
+    assert alias_path.read_bytes() == experiment_bytes
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
+
+
+@pytest.mark.parametrize("poll_seconds", [0, -1, float("nan"), float("inf")])
+def test_hparam_monitor_rejects_invalid_poll_interval_before_writing(
+    tmp_path: Path,
+    monkeypatch,
+    poll_seconds: float,
+):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("invalid interval must not sleep"))
+
+    with pytest.raises(ValueError, match="poll_seconds must be positive"):
+        monitor_hparam_runs(tmp_path, once=False, poll_seconds=poll_seconds)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 def test_hparam_monitor_keeps_failed_status_after_failure_evidence_disappears(tmp_path: Path, monkeypatch):
     dead_pid = tmp_path / "dead.pid"
     _write_process_identity(dead_pid)
@@ -5709,8 +6090,11 @@ def test_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch)
 
     monkeypatch.setattr(hparam_runtime, "_start_process", fake_start)
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("once monitor must not sleep"))
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+    monkeypatch.setattr(hparam_runtime.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
 
-    monitor_hparam_runs(tmp_path)
+    monitor_hparam_runs(tmp_path, once=True, poll_seconds=60)
 
     status = {row["run_id"]: row for row in _read_table(tmp_path / "run_status.tsv")}
     manifest = {row["run_id"]: row for row in _read_table(tmp_path / "launch_manifest.tsv")}
@@ -5719,6 +6103,31 @@ def test_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch)
     assert status["run-001"]["status"] == "pending"
     assert manifest["run-001"]["status"] == "pending"
     assert not manifest["run-001"]["launched_at"]
+
+
+def test_continuous_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "pending"}])
+
+    class StopPolling(Exception):
+        pass
+
+    def stop_polling(seconds):
+        assert seconds == 60
+        raise StopPolling
+
+    monkeypatch.setattr(hparam_runtime.time, "sleep", stop_polling)
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args, **_kwargs: pytest.fail("no start"))
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+    monkeypatch.setattr(hparam_runtime.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
+
+    with pytest.raises(StopPolling):
+        monitor_hparam_runs(tmp_path, once=False, poll_seconds=60)
+
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "pending"
+    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "pending"
+    launch_row = _read_table(tmp_path / "launch_manifest.tsv")[0]
+    assert launch_row["status"] == "pending"
+    assert not launch_row["launched_at"]
 
 
 def test_hparam_monitor_health_is_opt_in(tmp_path: Path, monkeypatch):

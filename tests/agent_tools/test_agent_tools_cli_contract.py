@@ -177,6 +177,32 @@ def test_hparam_run_queue_cli_contract():
         parser.parse_args(["hparam-run-queue", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
 
 
+def test_hparam_monitor_cli_contract(tmp_path: Path, monkeypatch):
+    parser, subcommands = _parser_contract()
+    actions = _actions(subcommands["hparam-monitor"])
+    defaults = parser.parse_args(["hparam-monitor", "--run-dir", "run-dir"])
+    args = parser.parse_args(["hparam-monitor", "--run-dir", "run-dir", "--once", "--health", "--poll-seconds", "17"])
+    status = tmp_path / "run_status.tsv"
+    calls = []
+
+    def monitor(run_dir, *, once, health, poll_seconds):
+        calls.append((run_dir, once, health, poll_seconds))
+        return status
+
+    monkeypatch.setattr(cli, "monitor_hparam_runs", monitor)
+
+    assert {name for name, action in actions.items() if action.required} == {"run_dir"}
+    assert defaults.once is False
+    assert defaults.health is False
+    assert defaults.poll_seconds == 60
+    assert cli._cmd_hparam_monitor(defaults) == 0
+    assert cli._cmd_hparam_monitor(args) == 0
+    assert calls == [
+        ("run-dir", False, False, 60),
+        ("run-dir", True, True, 17),
+    ]
+
+
 def test_hparam_export_logits_cli_delegates_writes_to_postprocess(tmp_path: Path, monkeypatch, capsys):
     manifest = tmp_path / "logits_export_manifest.tsv"
     calls = []

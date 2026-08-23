@@ -232,8 +232,14 @@ reconciled by the exact token and is never retried blindly. Monitoring uses
 run freezes `scheduler_direct_controller: true`; local transport alone does not
 establish direct-controller topology. New Slurm plans freeze the recipe's
 `direct_controller` choice in each canonical run so all monitoring and stop
-paths preserve it without reinterpreting transport. Terminal truth requires
-both a terminal scheduler observation and the matching atomic terminal sidecar;
+paths preserve it without reinterpreting transport. Terminal truth normally
+requires both a terminal scheduler observation and the matching atomic terminal
+sidecar. The narrow accounting-disabled exception additionally requires the
+exact bound job to be absent from `squeue`, explicitly invalid in `scontrol`,
+and `sacct` to report disabled accounting, then uses a sidecar matching the
+frozen job, token, and non-empty canonical cluster, with frozen transport and
+controller topology matching the actual query route, to recover exit zero as
+`completed` or non-zero as `failed` while retaining raw state `MISSING`. Other
 incomplete terminal evidence is `unknown_scheduler`. Stop first records the
 frozen scheduler job id, nonterminal `stopping`, request time, and reason in the
 canonical manifest, then uses that job id with `scancel`, not PID evidence. An

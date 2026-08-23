@@ -182,10 +182,18 @@ runtime commit, module origin, CLI, and frozen launch/config hashes. It requires
 the allocation task count to match the frozen GPU count and starts one foreground
 `srun` step with one task per GPU. Only the wrapper writes the allocation and
 terminal JSON sidecars bound to the same token and job id; the terminal sidecar
-records the aggregate step exit code. A canonical completed
-or failed status requires both the matching terminal sidecar and a terminal
-scheduler observation; a scheduler failure overrides a zero wrapper exit code.
-If controller and accounting evidence are unavailable, a vanished job or an
+records the aggregate step exit code. A canonical completed or failed status
+normally requires both the matching terminal sidecar and a terminal scheduler
+observation; a scheduler failure overrides a zero wrapper exit code. The narrow
+accounting-disabled exception requires the exact bound job to be absent from
+`squeue`, explicitly invalid in `scontrol`, `sacct` to report that accounting
+storage is disabled, and the atomic sidecar to match the frozen job, token, and
+non-empty canonical cluster while transport and controller topology remain
+explicitly frozen and match the route used for every query. SSH transport
+failures remain `unknown_scheduler` even if partial output mentions disabled
+accounting. The exception records raw scheduler state `MISSING`, recovers
+exit zero as `completed` and non-zero as `failed`, and never infers `stopped`.
+Other unavailable controller or accounting evidence, a vanished job, or an
 incomplete terminal evidence pair becomes active `unknown_scheduler` rather
 than inferred success or failure. An accounting terminal record is scheduler
 evidence only; ordinary completion or failure still requires the matching

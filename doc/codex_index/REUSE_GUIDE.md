@@ -137,23 +137,6 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Route MoE schema to `sleep2expert.config`, execution to its RoFormer MoE modules, and export to routing/subnetwork owners.
 - Use `sleep2expert.export_subnetwork` when a compact artifact is required; inference route filters do not compact a checkpoint.
 
-## Major Duplication Risks
-
-- Keep model construction, checkpoint selection/averaging, metrics, and result
-  writing in their existing builders and artifact owners.
-- Preserve one `DefaultDataset` batch contract across NPZ and Kaldi. Do not
-  reinterpret channel availability, mask truthiness, sidecars, or disease order
-  in callers.
-- Keep root, `sleep2vec2`, and `sleep2expert` package-local. Use the MoE owners
-  for routing, regularization, and compact export instead of checkpoint surgery.
-- Reuse sleep2stat stage-source, reducer, and bundle-writer owners; analyzers
-  return results rather than writing bundle artifacts directly.
-- Extend agent tasks through adapters and canonical workspace owners. Do not
-  parse managed manifests in callers or create an agent-specific trainer,
-  preprocessing engine, or analysis executor.
-- Use the managed external pipeline for wait/select/launch/finalize loops;
-  monitoring remains observational.
-
 ## Non-Reuse Zones
 
 - Notebooks and historical experiment scripts are context, not canonical libraries.
