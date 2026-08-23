@@ -1070,6 +1070,89 @@ def test_slurm_monitor_handles_purged_job_when_accounting_is_unavailable(
             assert f"non-zero exit code {terminal_exit_code}" in canonical["scheduler_reason"]
 
 
+def test_slurm_monitor_ignores_local_host_label_for_accounting_disabled_recovery(
+    tmp_path: Path,
+    monkeypatch,
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path, execution={"host": "local-label"})
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    Path(run["scheduler_result_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": run["scheduler_submit_token"],
+                "node": "h20-bj-96",
+                "exit_code": 0,
+            }
+        )
+    )
+
+    def run_command(_execution, argv, *, timeout):
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess([], 0, "", "")
+        if argv[0] == "scontrol":
+            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
+        return subprocess.CompletedProcess([], 1, "", "Slurm accounting storage is disabled")
+
+    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["target"] == "local"
+    assert canonical["host"] == "local-label"
+    assert canonical["status"] == "completed"
+    assert canonical["scheduler_raw_state"] == "MISSING"
+
+
+def test_slurm_accounting_disabled_recovery_requires_matching_ssh_host(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    row = next(item for item in _read_table(tmp_path / "run_manifest.tsv") if item["run_id"] == run["run_id"])
+    row.update({"target": "ssh", "host": "baichuan3"})
+    terminal = {
+        "schema_version": 1,
+        "scheduler_job_id": "3880",
+        "scheduler_cluster": "wuji-h20",
+        "scheduler_submit_token": row["scheduler_submit_token"],
+        "node": "h20-bj-96",
+        "exit_code": 0,
+    }
+    monkeypatch.setattr(managed_scheduler, "_read_slurm_json", lambda *_args, **_kwargs: terminal)
+
+    def run_command(_execution, argv, *, timeout):
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess([], 0, "", "")
+        if argv[0] == "scontrol":
+            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
+        return subprocess.CompletedProcess([], 1, "", "Slurm accounting storage is disabled")
+
+    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
+
+    observed = managed_scheduler.observe_slurm_run(
+        plan_dir,
+        {"target": "ssh", "host": "other-host"},
+        row,
+    )
+
+    assert observed["status"] == "unknown_scheduler"
+    assert observed["scheduler_raw_state"] == "MISSING"
+
+
 @pytest.mark.parametrize("accounting_failure", ["permission", "timeout"])
 def test_slurm_monitor_keeps_purged_sidecar_unknown_for_other_accounting_failures(
     tmp_path: Path,

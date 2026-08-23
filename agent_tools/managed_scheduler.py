@@ -1335,7 +1335,7 @@ def observe_slurm_run(
             canonical_direct_controller = str(row.get("scheduler_direct_controller") or "") == "true"
             routing_identity_matches = (
                 execution_target == row.get("target")
-                and execution_host == str(row.get("host") or "").strip()
+                and (execution_target != "ssh" or execution_host == str(row.get("host") or "").strip())
                 and (execution_scheduler.get("direct_controller") is True) == canonical_direct_controller
             )
             fallback_identity_is_frozen = (
