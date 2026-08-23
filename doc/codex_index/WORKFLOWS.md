@@ -221,9 +221,12 @@ SHA-256 are frozen; the many-checkpoint audit remains plan-local while workspace
 reports retain one row per managed run. Plans registered under one step may be
 aggregated only when their frozen selection metric, mode, and split all match.
 Finetune runtimes reject non-empty version directories before persistence or
-fit, and publish aggregate result rows for an all-checkpoint test only after the
-complete matrix and every required run-local prediction or per-disease artifact
-succeeds. The locked atomic matrix replacement preserves historical CSV cell
+fit. Before distributed initialization, rank zero claims an empty directory
+with an exclusive launch marker; other ranks require the matching token and
+reject stale runtime artifacts. Runtimes publish
+aggregate result rows for an all-checkpoint test only after the complete matrix
+and every required run-local prediction or per-disease artifact succeeds. The
+locked atomic matrix replacement preserves historical CSV cell
 text and precedes the successful terminal manifest.
 Adaptive test-selected `test_*` objectives use complete checkpoint-level
 evidence even when they differ from the static selection metric. Validation and

@@ -259,7 +259,113 @@ def test_finetune_rejects_nonempty_run_directory_before_persisting(
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)
-def test_finetune_nonzero_rank_does_not_reject_rank_zero_runtime_files(
+@pytest.mark.parametrize("stale_entry", ("checkpoints/epoch=00.ckpt", "run_manifest.json"))
+def test_finetune_nonzero_rank_rejects_stale_runtime_before_persist_or_dataloader(
+    module_name: str,
+    stale_entry: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetune_mod = _load_finetune_module(module_name, monkeypatch)
+    run_dir = tmp_path / "log-finetune" / "unit-test"
+    entry = run_dir / stale_entry
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text("stale\n")
+    calls = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
+    monkeypatch.setattr(finetune_mod, "persist_run_config_and_args", lambda *_args: calls.append("persist"))
+    monkeypatch.setattr(finetune_mod, "prepare_dataloader", lambda *_args: calls.append("dataloader"))
+    monkeypatch.setenv("_SLEEP2VEC_FINETUNE_LAUNCH_ID", "current-launch")
+    args = argparse.Namespace(
+        version="unit-test",
+        devices=[0, 1],
+        epochs=1,
+        test_after_fit=True,
+        test_all_checkpoints_after_fit=False,
+    )
+
+    with pytest.raises(FileExistsError, match="Finetune run directory"):
+        finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
+    assert calls == []
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_finetune_nonzero_rank_accepts_current_launch_marker(
+    module_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetune_mod = _load_finetune_module(module_name, monkeypatch)
+    run_dir = tmp_path / "log-finetune" / "unit-test"
+    args = argparse.Namespace(devices=[0, 1])
+    monkeypatch.setenv("_SLEEP2VEC_FINETUNE_LAUNCH_ID", "current-launch")
+    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: True)
+    finetune_mod._preflight_finetune_run_directory(args, run_dir)
+    (run_dir / "config.yaml").write_text("current config\n")
+    (run_dir / "cli_args.yaml").write_text("current args\n")
+    (run_dir / "checkpoints").mkdir()
+    if module_name == "sleep2expert.finetune":
+        (run_dir / "moe_finetune_status.json").write_text("{}\n")
+
+    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
+
+    finetune_mod._preflight_finetune_run_directory(args, run_dir)
+
+    (run_dir / "checkpoints" / "epoch=00.ckpt").write_text("stale\n")
+    with pytest.raises(FileExistsError, match="Stale artifact"):
+        finetune_mod._preflight_finetune_run_directory(args, run_dir)
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_finetune_preflight_rejects_mismatched_or_duplicate_launch_claim(
+    module_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetune_mod = _load_finetune_module(module_name, monkeypatch)
+    run_dir = tmp_path / "log-finetune" / "unit-test"
+    args = argparse.Namespace(devices=[0, 1])
+    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: True)
+    monkeypatch.setenv("_SLEEP2VEC_FINETUNE_LAUNCH_ID", "first-launch")
+    finetune_mod._preflight_finetune_run_directory(args, run_dir)
+    monkeypatch.setenv("_SLEEP2VEC_FINETUNE_LAUNCH_ID", "second-launch")
+
+    with pytest.raises(FileExistsError, match="already exists and is not empty"):
+        finetune_mod._preflight_finetune_run_directory(args, run_dir)
+
+    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
+    with pytest.raises(FileExistsError, match="different launch"):
+        finetune_mod._preflight_finetune_run_directory(args, run_dir)
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+@pytest.mark.parametrize("marker_kind", ("directory", "symlink"))
+def test_finetune_nonzero_rank_rejects_invalid_preflight_marker(
+    module_name: str,
+    marker_kind: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetune_mod = _load_finetune_module(module_name, monkeypatch)
+    run_dir = tmp_path / "log-finetune" / "unit-test"
+    run_dir.mkdir(parents=True)
+    marker = run_dir / ".distributed-preflight"
+    if marker_kind == "directory":
+        marker.mkdir()
+    else:
+        target = tmp_path / "marker-target"
+        target.write_text("current-launch\n")
+        marker.symlink_to(target)
+    monkeypatch.setenv("_SLEEP2VEC_FINETUNE_LAUNCH_ID", "current-launch")
+    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
+
+    with pytest.raises(FileExistsError, match="different launch"):
+        finetune_mod._preflight_finetune_run_directory(argparse.Namespace(devices=[0, 1]), run_dir)
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_finetune_nonzero_rank_waits_for_complete_marker(
     module_name: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -267,23 +373,38 @@ def test_finetune_nonzero_rank_does_not_reject_rank_zero_runtime_files(
     finetune_mod = _load_finetune_module(module_name, monkeypatch)
     run_dir = tmp_path / "log-finetune" / "unit-test"
     run_dir.mkdir(parents=True)
-    (run_dir / "config.yaml").write_text("current run\n")
-    monkeypatch.chdir(tmp_path)
+    marker = run_dir / ".distributed-preflight"
+    marker.write_text("")
+    monkeypatch.setenv("_SLEEP2VEC_FINETUNE_LAUNCH_ID", "current-launch")
     monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
-    monkeypatch.setattr(
-        finetune_mod,
-        "persist_run_config_and_args",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("continued past output preflight")),
-    )
-    args = argparse.Namespace(
-        version="unit-test",
-        epochs=1,
-        test_after_fit=True,
-        test_all_checkpoints_after_fit=False,
-    )
+    monkeypatch.setattr(finetune_mod.time, "sleep", lambda _seconds: marker.write_text("current-launch\n"))
 
-    with pytest.raises(RuntimeError, match="continued past output preflight"):
-        finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
+    finetune_mod._preflight_finetune_run_directory(argparse.Namespace(devices=[0, 1]), run_dir)
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_finetune_preflight_torchelastic_restart_does_not_reuse_previous_claim(
+    module_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetune_mod = _load_finetune_module(module_name, monkeypatch)
+    run_dir = tmp_path / "log-finetune" / "unit-test"
+    args = argparse.Namespace(devices=[0, 1])
+    monkeypatch.delenv("_SLEEP2VEC_FINETUNE_LAUNCH_ID", raising=False)
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    monkeypatch.setenv("SLURM_STEP_ID", "4")
+    monkeypatch.setenv("TORCHELASTIC_RUN_ID", "elastic-run")
+    monkeypatch.setenv("TORCHELASTIC_RESTART_COUNT", "0")
+    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: True)
+    finetune_mod._preflight_finetune_run_directory(args, run_dir)
+
+    monkeypatch.delenv("_SLEEP2VEC_FINETUNE_LAUNCH_ID", raising=False)
+    monkeypatch.setenv("TORCHELASTIC_RESTART_COUNT", "1")
+    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
+
+    with pytest.raises(FileExistsError, match="different launch"):
+        finetune_mod._preflight_finetune_run_directory(args, run_dir)
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)
@@ -305,6 +426,7 @@ def test_direct_finetune_keeps_single_best_checkpoint_behavior(
     assert manifest_calls[-1][1]["metrics"] == {"test_score": 99.0}
     assert manifest_calls[-1][1]["checkpoint_test_results"] == []
     assert args.ckpt_path == ""
+    assert not (tmp_path / "log-finetune" / "unit-test" / ".distributed-preflight").exists()
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)

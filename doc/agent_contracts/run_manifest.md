@@ -52,9 +52,14 @@ selector hashes each checkpoint, writes the plan-local all-checkpoint ranking,
 and keeps `run_manifest.tsv` at one lifecycle row per run by projecting only
 that run's best test-ranked checkpoint.
 
-Finetune runtime directories are single-use: rank zero rejects a non-empty
-`log-finetune/<version>` before persisting configuration, loading data, or
-fitting. All-checkpoint result rows form one evidence matrix; runtimes evaluate
+Finetune runtime directories are single-use: a single-process launch rejects a
+non-empty `log-finetune/<version>` before persisting configuration, loading
+data, or fitting. Before distributed initialization, rank zero exclusively
+creates a `.distributed-preflight` launch marker only after observing an empty
+directory; other ranks require its complete matching launch token and reject
+anything outside the current startup files or an empty checkpoint directory.
+The marker stays in the run directory so late ranks reject stale launches.
+All-checkpoint result rows form one evidence matrix; runtimes evaluate
 the complete declared checkpoint set and write every required run-local
 prediction or per-disease artifact before appending the full matrix to the
 aggregate results CSV under one lock and one atomic replacement. The successful

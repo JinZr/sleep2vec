@@ -1,9 +1,11 @@
 import argparse
 import logging
+import os
 from pathlib import Path
 import re
 import shutil
 import sys
+import time
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
@@ -56,6 +58,92 @@ def _is_distributed_event_finetune(args) -> bool:
     return getattr(args, "label_name", None) in {"ahi", "arousal"} and world_size > 1
 
 
+def _preflight_finetune_run_directory(args, exp_root: Path) -> None:
+    rank_zero = is_rank_zero_process()
+    devices = getattr(args, "devices", None)
+    requested_world_size = len(devices) if isinstance(devices, (list, tuple)) else int(devices or 0)
+    distributed_launch = (
+        not rank_zero
+        or requested_world_size > 1
+        or any(os.environ.get(name) not in (None, "", "1") for name in ("WORLD_SIZE", "SLURM_NTASKS"))
+    )
+    existing_entries = list(exp_root.iterdir()) if exp_root.exists() else []
+    if not distributed_launch:
+        if existing_entries:
+            raise FileExistsError(
+                f"Finetune run directory already exists and is not empty: {exp_root}. "
+                "Use a new --version-name or manually clear the existing directory."
+            )
+        return
+
+    launch_id = os.environ.get("_SLEEP2VEC_FINETUNE_LAUNCH_ID")
+    if not launch_id:
+        launch_parts = []
+        slurm_job_id = os.environ.get("SLURM_JOB_ID")
+        if slurm_job_id:
+            launch_parts.append(
+                "slurm:"
+                + ":".join(
+                    (
+                        slurm_job_id,
+                        os.environ.get("SLURM_STEP_ID", ""),
+                        os.environ.get("SLURM_RESTART_COUNT", "0"),
+                        os.environ.get("SLURM_JOB_RESTART_COUNT", "0"),
+                    )
+                )
+            )
+        torchelastic_run_id = os.environ.get("TORCHELASTIC_RUN_ID")
+        if torchelastic_run_id:
+            launch_parts.append(
+                f"torchelastic:{torchelastic_run_id}:{os.environ.get('TORCHELASTIC_RESTART_COUNT', '0')}"
+            )
+        launch_id = "|".join(launch_parts)
+        if not launch_id:
+            launch_id = f"parent:{os.getpid()}"
+            os.environ["_SLEEP2VEC_FINETUNE_LAUNCH_ID"] = launch_id
+
+    marker_path = exp_root / ".distributed-preflight"
+    if rank_zero:
+        if existing_entries:
+            raise FileExistsError(
+                f"Finetune run directory already exists and is not empty: {exp_root}. "
+                "Use a new --version-name or manually clear the existing directory."
+            )
+        exp_root.mkdir(parents=True, exist_ok=True)
+        try:
+            # Exclusive creation claims the directory; the trailing newline commits the complete launch token.
+            with marker_path.open("x") as marker_file:
+                marker_file.write(f"{launch_id}\n")
+        except FileExistsError:
+            raise FileExistsError(f"Another launch already claimed finetune run directory: {exp_root}.") from None
+        return
+
+    deadline = time.monotonic() + 30.0
+    while True:
+        if marker_path.is_file() and not marker_path.is_symlink():
+            marker_text = marker_path.read_text()
+            if marker_text.endswith("\n"):
+                if marker_text.rstrip("\n") != launch_id:
+                    raise FileExistsError(f"Finetune run directory belongs to a different launch: {exp_root}.")
+                break
+        elif marker_path.exists():
+            raise FileExistsError(f"Finetune run directory belongs to a different launch: {exp_root}.")
+        elif exp_root.exists() and any(exp_root.iterdir()):
+            raise FileExistsError(f"Finetune run directory has no current distributed preflight: {exp_root}.")
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Timed out waiting for rank-zero finetune preflight: {exp_root}.")
+        time.sleep(0.05)
+
+    allowed_files = {marker_path.name, "config.yaml", "cli_args.yaml"}
+    for entry in exp_root.iterdir():
+        valid_file = entry.name in allowed_files and entry.is_file() and not entry.is_symlink()
+        valid_checkpoint_dir = (
+            entry.name == "checkpoints" and entry.is_dir() and not entry.is_symlink() and not any(entry.iterdir())
+        )
+        if not (valid_file or valid_checkpoint_dir):
+            raise FileExistsError(f"Stale artifact in finetune run directory: {entry}.")
+
+
 def supervised(args, config_bundle):
     # Programmatic callers may build Namespace without CLI defaults.
     if not hasattr(args, "accumulate_grad_batches"):
@@ -74,12 +162,8 @@ def supervised(args, config_bundle):
 
     # Persist YAML alongside experiment artifacts
     exp_root = Path(f"log-finetune/{args.version}/")
-    # Runtime directories are single-use; stale checkpoints must never enter a new run's test evidence.
-    if is_rank_zero_process() and exp_root.exists() and any(exp_root.iterdir()):
-        raise FileExistsError(
-            f"Finetune run directory already exists and is not empty: {exp_root}. "
-            "Use a new --version-name or manually clear the existing directory."
-        )
+    # Before torch.distributed exists, an atomic launch marker coordinates external ranks and Lightning children.
+    _preflight_finetune_run_directory(args, exp_root)
     persist_run_config_and_args(args, exp_root)
 
     # get data loaders
