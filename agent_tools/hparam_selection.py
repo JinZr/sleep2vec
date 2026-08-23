@@ -185,17 +185,22 @@ def select_hparam_candidates(
         canonical = resolve_run_row(canonical_rows, run)
         if canonical is None:
             raise ValueError(f"Managed run is missing from run_manifest.tsv: {run['step_id']} / {run['run_id']}")
+        status = str(canonical.get("status") or "")
         artifact_row = evidence_runs_by_key[managed_run_key(run)]
         # The execution target owns runtime evidence; never interpret a same-named manager-local tree for SSH runs.
         observed_artifacts = evidence.runtime_artifacts(artifact_row)
         if observed_artifacts is None:
+            if evidence.is_remote_row(artifact_row) and status in {"completed", "finished"}:
+                raise ValueError(
+                    f"Successful SSH hparam run has unavailable runtime artifacts: "
+                    f"{run['step_id']} / {run['run_id']}"
+                )
             manifest_path = ""
             manifest = {}
             checkpoint_names = []
         else:
             manifest_path, manifest, checkpoint_names = observed_artifacts
         if selection_split == "test":
-            status = str(canonical.get("status") or "")
             if status not in TERMINAL_STATUSES:
                 active_runs.append(f"{run['step_id']} / {run['run_id']} ({status})")
                 continue

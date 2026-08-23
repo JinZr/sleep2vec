@@ -354,6 +354,87 @@ def test_hparam_select_uses_ssh_manifest_inventory_and_hash_evidence(
         assert hash_calls == []
 
 
+@pytest.mark.parametrize("selection_split", ["val", "test"])
+def test_hparam_select_fails_before_partial_ranking_when_successful_ssh_evidence_is_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+    selection_split: str,
+):
+    metric = "test_ahi_pearson" if selection_split == "test" else "val_ahi_pearson"
+    recipe = _hparam_recipe(
+        tmp_path,
+        execution={
+            "target": "ssh",
+            "host": "unit-host",
+            "workdir": "/remote/repository",
+            "path_context": "remote",
+            "path_validation": "defer",
+        },
+        selection_metric=metric,
+        selection_split=selection_split,
+        config_monitor="val_ahi_pearson",
+        max_runs=2,
+    )
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr or result.stdout
+    runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
+    checkpoint = str(Path(runs[0]["checkpoint_dir"]) / "epoch=1.ckpt")
+    manifest = {
+        "epoch": 1,
+        "best_model_path": str(Path(runs[0]["checkpoint_dir"]) / "best-epoch=1.ckpt"),
+        "metrics": {metric: 0.8},
+    }
+    if selection_split == "test":
+        manifest.update(
+            {
+                "test_all_checkpoints_after_fit": True,
+                "checkpoint_test_results": [
+                    {
+                        "checkpoint_path": checkpoint,
+                        "epoch": 1,
+                        "metrics": {metric: 0.8},
+                    }
+                ],
+            }
+        )
+
+    def fake_runtime_artifacts(row):
+        assert (row["target"], row["host"]) == ("ssh", "unit-host")
+        if row["run_id"] == runs[0]["run_id"]:
+            return str(Path(row["runtime_dir"]) / "run_manifest.json"), manifest, ["epoch=1.ckpt"]
+        return None
+
+    monkeypatch.setattr(hparam_selection.evidence, "runtime_artifacts", fake_runtime_artifacts)
+    monkeypatch.setattr(hparam_selection.evidence, "checkpoint_file_sha256", lambda *_args: "b" * 64)
+    monkeypatch.setattr(hparam_selection.tracking, "validate_checkpoint_evidence_rows", lambda *_args: None)
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "target": "ssh",
+                "host": "unit-host",
+                "status": "completed",
+            }
+            for run in runs
+        ],
+    )
+    canonical = tmp_path / "run_manifest.tsv"
+    events = tmp_path / "events.jsonl"
+    canonical_before = canonical.read_bytes()
+    events_before = events.read_bytes()
+
+    with pytest.raises(ValueError, match="Successful SSH hparam run has unavailable runtime artifacts"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert not _ranking_path(plan_dir).exists()
+    assert not (plan_dir / "checkpoint_test_ranking.csv").exists()
+    assert canonical.read_bytes() == canonical_before
+    assert events.read_bytes() == events_before
+
+
 @pytest.mark.parametrize("mutated_epoch", [1, 2], ids=["selected-checkpoint", "non-selected-checkpoint"])
 def test_hparam_select_ssh_reentry_fails_closed_on_any_checkpoint_hash_drift(
     tmp_path: Path,
