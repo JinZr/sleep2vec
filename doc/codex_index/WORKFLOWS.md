@@ -209,10 +209,12 @@ documented `true` policy default and freeze the resolved choice plus an explicit
 `--test-after-fit` or `--no-test-after-fit` argument. Hparam selection uses the
 recipe's frozen split and metric. Test-selected tuning requires explicit test
 access, `test_after_fit=true`, positive epochs, and an every-epoch immutable
-checkpoint schedule. It evaluates those checkpoints and freezes complete
-checkpoint-level evidence before ranking or adaptive reuse. Validation still
-owns training and early stopping. The checkpoint audit stays plan-local, while
-workspace rankings retain one row per managed run. Runtime evidence is
+checkpoint schedule. AHI/arousal checkpoints are saved after validation on
+every epoch so their fitted thresholds are part of each tested snapshot. The
+runtime freezes complete checkpoint-level evidence before ranking or adaptive
+reuse. Validation still owns training and early stopping. Checkpoint audit ranks
+stay plan-local; workspace rankings retain one row per managed run plus its
+global checkpoint rank. Runtime evidence is
 single-use and published only at the successful terminal boundary. See
 [task_recipe.md](../agent_contracts/task_recipe.md),
 [external_test_locking.md](../agent_contracts/external_test_locking.md), and
