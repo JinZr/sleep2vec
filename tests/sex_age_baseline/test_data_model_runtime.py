@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import pickle
 
+import pandas as pd
 import pytest
 import torch
 import yaml
@@ -229,6 +230,7 @@ def _runtime_args(config: Path, tmp_path: Path, *, version_name: str, epochs: in
         results_csv_path=tmp_path / "results.csv",
         seed=4523,
         test_after_fit=test_after_fit,
+        test_all_checkpoints_after_fit=False,
         ckpt_every_n_epochs=1,
     )
 
@@ -536,6 +538,22 @@ def test_train_rejects_non_empty_run_dir_before_loading_data(tmp_path: Path, mon
         baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="reused"), cfg)
 
 
+def test_train_rejects_run_directory_symlink_before_loading_data(tmp_path: Path, monkeypatch):
+    config = _write_config(tmp_path, ["001,train,50,0"], task_type="multilabel_classification")
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "empty-target"
+    target.mkdir()
+    run_dir = tmp_path / "log-finetune" / "linked"
+    run_dir.parent.mkdir()
+    run_dir.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(FileExistsError, match="run directory must not be a symlink"):
+        baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="linked"), cfg)
+
+    assert not any(target.iterdir())
+
+
 def test_train_fails_when_configured_monitor_is_missing(tmp_path: Path, monkeypatch):
     config = _write_config(
         tmp_path,
@@ -617,6 +635,26 @@ def test_negative_epochs_fail_before_run_directory(tmp_path: Path, monkeypatch, 
         )
 
     assert not (tmp_path / "log-finetune" / version_name).exists()
+
+
+def test_all_checkpoint_mode_requires_test_after_fit_positive_epochs_and_every_epoch_checkpoints(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    args = _runtime_args(config, tmp_path, version_name="invalid-all-checkpoints", test_after_fit=False)
+    args.test_all_checkpoints_after_fit = True
+    with pytest.raises(ValueError, match="requires --test-after-fit"):
+        baseline_runtime.train_and_save(args, object())
+
+    args.test_after_fit = True
+    args.epochs = 0
+    with pytest.raises(ValueError, match="requires --epochs greater than 0"):
+        baseline_runtime.train_and_save(args, object())
+
+    args.epochs = 1
+    args.ckpt_every_n_epochs = 2
+    with pytest.raises(ValueError, match="requires --ckpt-every-n-epochs 1"):
+        baseline_runtime.train_and_save(args, object())
+
+    assert not (tmp_path / "log-finetune" / "invalid-all-checkpoints").exists()
 
 
 @pytest.mark.parametrize("ckpt_every_n_epochs", [0, -1])
@@ -743,6 +781,212 @@ def test_test_after_fit_writers_receive_test_eval_split(tmp_path: Path, monkeypa
 
     assert seen_splits
     assert set(seen_splits) == {"test"}
+
+
+def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_metrics(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        [
+            "001,train,50,0",
+            "002,train,60,1",
+            "003,val,55,0",
+            "004,val,65,1",
+            "005,test,58,0",
+            "006,test,68,1",
+        ],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "lexical").mkdir()
+    frozen_checkpoint_dir = tmp_path / "lexical" / ".." / "log-finetune" / "all-checkpoints" / "checkpoints"
+    monkeypatch.setenv("_SLEEP2VEC_FROZEN_CHECKPOINT_DIR", str(frozen_checkpoint_dir))
+    args = _runtime_args(config, tmp_path, version_name="all-checkpoints", epochs=2, test_after_fit=True)
+    args.test_all_checkpoints_after_fit = True
+    events = []
+    original_save_prediction = baseline_runtime.save_prediction_csv
+    original_save_survival = baseline_runtime.save_survival_per_disease_metrics_csv
+    original_save_multilabel = baseline_runtime.save_multilabel_per_disease_metrics_csv
+    original_save_matrix = baseline_runtime.save_result_rows_csv
+    original_save_manifest = baseline_runtime.save_training_run_manifest
+    original_evaluate = baseline_runtime.evaluate_model
+
+    def evaluate_with_survival_rows(*call_args, **call_kwargs):
+        result = original_evaluate(*call_args, **call_kwargs)
+        result.survival_per_disease_rows = [{"disease": "unit"}]
+        return result
+
+    def save_prediction(*call_args, **call_kwargs):
+        events.append("prediction")
+        return original_save_prediction(*call_args, **call_kwargs)
+
+    def save_multilabel(*call_args, **call_kwargs):
+        events.append("multilabel")
+        return original_save_multilabel(*call_args, **call_kwargs)
+
+    def save_survival(*call_args, **call_kwargs):
+        events.append("survival")
+        return original_save_survival(*call_args, **call_kwargs)
+
+    def save_matrix(*call_args, **call_kwargs):
+        events.append("matrix")
+        return original_save_matrix(*call_args, **call_kwargs)
+
+    def save_manifest(*call_args, **call_kwargs):
+        events.append("manifest")
+        return original_save_manifest(*call_args, **call_kwargs)
+
+    monkeypatch.setattr(baseline_runtime, "evaluate_model", evaluate_with_survival_rows)
+    monkeypatch.setattr(baseline_runtime, "save_prediction_csv", save_prediction)
+    monkeypatch.setattr(baseline_runtime, "save_survival_per_disease_metrics_csv", save_survival)
+    monkeypatch.setattr(baseline_runtime, "save_multilabel_per_disease_metrics_csv", save_multilabel)
+    monkeypatch.setattr(baseline_runtime, "save_result_rows_csv", save_matrix)
+    monkeypatch.setattr(baseline_runtime, "save_training_run_manifest", save_manifest)
+
+    baseline_runtime.train_and_save(args, cfg)
+
+    run_dir = tmp_path / "log-finetune" / "all-checkpoints"
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    checkpoint_results = manifest["checkpoint_test_results"]
+    assert manifest["test_all_checkpoints_after_fit"] is True
+    assert {row["epoch"] for row in checkpoint_results} == {0, 1}
+    assert {row["checkpoint_path"] for row in checkpoint_results} == {
+        str(frozen_checkpoint_dir / "epoch=00.ckpt"),
+        str(frozen_checkpoint_dir / "epoch=01.ckpt"),
+    }
+    assert {Path(row["checkpoint_path"]).name for row in checkpoint_results} == {"epoch=00.ckpt", "epoch=01.ckpt"}
+    best_epoch = torch.load(run_dir / "checkpoints" / "best.ckpt", weights_only=False)["epoch"]
+    assert checkpoint_results[-1]["epoch"] == best_epoch
+    best_result = next(row for row in checkpoint_results if row["epoch"] == best_epoch)
+    assert manifest["metrics"] == best_result["metrics"]
+    result_rows = pd.read_csv(args.results_csv_path)
+    assert len(result_rows) == 2
+    assert set(result_rows["ckpt_path"]) == {row["checkpoint_path"] for row in checkpoint_results}
+    assert events == ["prediction", "survival", "multilabel", "matrix", "manifest"]
+
+
+def test_all_checkpoint_test_rejects_missing_validation_best_periodic_checkpoint(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        [
+            "001,train,50,0",
+            "002,train,60,1",
+            "003,val,55,0",
+            "004,val,65,1",
+            "005,test,58,0",
+            "006,test,68,1",
+        ],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    args = _runtime_args(config, tmp_path, version_name="missing-best-periodic", epochs=2, test_after_fit=True)
+    args.test_all_checkpoints_after_fit = True
+    original_save_checkpoint = baseline_runtime.save_checkpoint
+
+    def omit_first_periodic(path, *call_args, **call_kwargs):
+        if Path(path).name == "epoch=00.ckpt":
+            return None
+        return original_save_checkpoint(path, *call_args, **call_kwargs)
+
+    monkeypatch.setattr(baseline_runtime, "save_checkpoint", omit_first_periodic)
+    monkeypatch.setattr(baseline_runtime, "_is_better", lambda _value, best, _mode: best is None)
+
+    with pytest.raises(ValueError, match="Validation-best epoch checkpoint is missing"):
+        baseline_runtime.train_and_save(args, cfg)
+
+
+def test_all_checkpoint_test_failure_preserves_existing_results_csv(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        [
+            "001,train,50,0",
+            "002,train,60,1",
+            "003,val,55,0",
+            "004,val,65,1",
+            "005,test,58,0",
+            "006,test,68,1",
+        ],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    args = _runtime_args(config, tmp_path, version_name="failed-all-checkpoints", epochs=2, test_after_fit=True)
+    args.test_all_checkpoints_after_fit = True
+    args.results_csv_path.write_text("experiment_version,test_loss\nold,1.0\n")
+    results_before = args.results_csv_path.read_bytes()
+    original_evaluate = baseline_runtime.evaluate_model
+    test_calls = 0
+
+    def fail_second_test(*call_args, **call_kwargs):
+        nonlocal test_calls
+        if call_kwargs.get("stage") == "test":
+            test_calls += 1
+            if test_calls == 2:
+                raise RuntimeError("second checkpoint test failed")
+        return original_evaluate(*call_args, **call_kwargs)
+
+    monkeypatch.setattr(baseline_runtime, "evaluate_model", fail_second_test)
+
+    with pytest.raises(RuntimeError, match="second checkpoint test failed"):
+        baseline_runtime.train_and_save(args, cfg)
+
+    assert test_calls == 2
+    assert args.results_csv_path.read_bytes() == results_before
+
+
+@pytest.mark.parametrize(
+    ("artifact_writer", "emit_survival_rows"),
+    (
+        ("save_prediction_csv", False),
+        ("save_survival_per_disease_metrics_csv", True),
+        ("save_multilabel_per_disease_metrics_csv", False),
+    ),
+)
+def test_all_checkpoint_artifact_failure_preserves_existing_results_csv(
+    artifact_writer: str,
+    emit_survival_rows: bool,
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = _write_config(
+        tmp_path,
+        [
+            "001,train,50,0",
+            "002,train,60,1",
+            "003,val,55,0",
+            "004,val,65,1",
+            "005,test,58,0",
+            "006,test,68,1",
+        ],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    args = _runtime_args(config, tmp_path, version_name=f"failed-{artifact_writer}", epochs=2, test_after_fit=True)
+    args.test_all_checkpoints_after_fit = True
+    args.results_csv_path.write_text("experiment_version,test_loss\nold,1.0\n")
+    results_before = args.results_csv_path.read_bytes()
+
+    def fail_artifact(*_args, **_kwargs):
+        raise RuntimeError("required artifact failed")
+
+    if emit_survival_rows:
+        original_evaluate = baseline_runtime.evaluate_model
+
+        def evaluate_with_survival_rows(*call_args, **call_kwargs):
+            result = original_evaluate(*call_args, **call_kwargs)
+            result.survival_per_disease_rows = [{"disease": "unit"}]
+            return result
+
+        monkeypatch.setattr(baseline_runtime, "evaluate_model", evaluate_with_survival_rows)
+    monkeypatch.setattr(baseline_runtime, artifact_writer, fail_artifact)
+
+    with pytest.raises(RuntimeError, match="required artifact failed"):
+        baseline_runtime.train_and_save(args, cfg)
+
+    assert args.results_csv_path.read_bytes() == results_before
+    assert not (tmp_path / "log-finetune" / args.version_name / "run_manifest.json").exists()
 
 
 def test_infer_run_inference_callable_validates_and_delegates(tmp_path: Path, monkeypatch):

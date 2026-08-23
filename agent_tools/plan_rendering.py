@@ -310,6 +310,8 @@ def blocked_script() -> str:
 def hparam_script_lines(
     commands: list[str],
     *,
+    test_after_fit: bool = False,
+    selection_split: str = "val",
     final_external_test: bool = False,
     record_exit_code: bool = False,
     run_cwd: str | Path = REPO_ROOT,
@@ -317,7 +319,14 @@ def hparam_script_lines(
     external_test_policy = "# - This script evaluates the configured final test split."
     final_test_policy = "# - Final test evaluation was explicitly unlocked."
     if not final_external_test:
-        external_test_policy = "# - Run commands do not evaluate the external test split."
+        if test_after_fit and selection_split == "test":
+            external_test_policy = (
+                "# - Run commands evaluate every saved epoch checkpoint on the configured test split after fit."
+            )
+        elif test_after_fit:
+            external_test_policy = "# - Run commands evaluate the configured test split after fit."
+        else:
+            external_test_policy = "# - Run commands do not evaluate the configured test split."
         final_test_policy = "# - Final test evaluation requires explicit unlock."
     root = shlex.quote(str(run_cwd))
     exit_code_lines = []
@@ -347,7 +356,7 @@ def hparam_script_lines(
         "# High-impact decisions were resolved by explicit recipe/config/user inputs.",
         "# External test policy:",
         external_test_policy,
-        "# - Model selection is based on validation metrics only.",
+        f"# - Candidate selection uses the frozen {selection_split} split metric.",
         final_test_policy,
         "",
         *commands,

@@ -2266,17 +2266,19 @@ def test_model_variant_controls_generated_hparam_module(tmp_path: Path, variant:
     assert f"python -m {variant}.finetune" in script
     assert "--no-test-after-fit" in script
     assert "--test-after-fit" not in script
+    assert "--test-all-checkpoints-after-fit" not in script
     assert f"--results-csv-path {shlex_quote(str(tmp_path / 'results.csv'))}" in script
 
 
-@pytest.mark.parametrize(("test_after_fit", "expected_exit"), [(False, 0), (True, 2)])
-def test_hparam_plan_excludes_test_from_trial_split_preflight(
-    tmp_path: Path, monkeypatch, test_after_fit: bool, expected_exit: int
-):
+@pytest.mark.parametrize("test_after_fit", [False, True])
+def test_hparam_plan_preflight_uses_resolved_test_after_fit(tmp_path: Path, monkeypatch, test_after_fit: bool):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"]["test_after_fit"] = test_after_fit
     payload["decisions"]["test_after_fit"] = {"value": test_after_fit, "source": "explicit_recipe"}
+    if test_after_fit:
+        payload["evaluation_policy"]["external_test_locked"] = False
+        payload["decisions"]["external_test_locked"] = {"value": False, "source": "explicit_recipe"}
     write_yaml(recipe, payload)
     observed_split_values = []
     real_index_summary = plan_context.index_summary
@@ -2289,32 +2291,84 @@ def test_hparam_plan_excludes_test_from_trial_split_preflight(
 
     report = plans.build_plan(recipe_path=recipe, output_dir=tmp_path / "plan")
 
-    assert report.exit_code == expected_exit
+    assert report.exit_code == 0
     assert observed_split_values
-    assert all("test" not in split_values for split_values in observed_split_values if split_values is not None)
+    assert all(
+        ("test" in split_values) is test_after_fit for split_values in observed_split_values if split_values is not None
+    )
 
 
-def test_hparam_plan_requires_explicit_local_test_after_fit_false(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_hparam_plan_materializes_test_after_fit_policy_default_for_test_selection(tmp_path: Path, variant: str):
+    recipe = _hparam_recipe(tmp_path, variant=variant)
     payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].update(
+        {
+            "selection_metric": "test_ahi_pearson",
+            "selection_split": "test",
+            "external_test_locked": False,
+        }
+    )
     payload["evaluation_policy"].pop("test_after_fit")
+    payload["decisions"]["external_test_locked"] = {"value": False, "source": "explicit_recipe"}
+    payload["decisions"]["train_val_test_policy"] = {"value": "test", "source": "explicit_recipe"}
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
-    assert result.returncode == 2
-    assert "test_after_fit" in result.stdout
-    assert "must be explicit in the hparam recipe" in result.stdout
-    assert not (output_dir / "runs").exists()
+    assert result.returncode == 0, result.stderr or result.stdout
+    plan = json.loads((output_dir / "plan.json").read_text())
+    resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
+    for frozen in (plan["recipe"], resolved):
+        assert frozen["evaluation_policy"]["test_after_fit"] is True
+        assert frozen["decisions"]["test_after_fit"] == {
+            "value": True,
+            "source": "policy_default",
+            "meaning": "Run the configured test split after each trial unless the recipe or user explicitly opts out.",
+        }
+    script = Path(plan["runs"][0]["script"]).read_text()
+    assert f"python -m {variant}.finetune" in script
+    assert "--test-after-fit" in script
+    assert "--no-test-after-fit" not in script
+    assert "--test-all-checkpoints-after-fit" in script
+    assert "Candidate selection uses the frozen test split metric." in script
     assert not (output_dir / "final_external_test.sh").exists()
 
 
-def test_hparam_plan_rejects_test_after_fit_true_even_when_final_test_is_unlocked(tmp_path: Path):
+def test_hparam_scalar_user_test_after_fit_false_overrides_policy_default(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].pop("test_after_fit")
+    write_yaml(recipe, payload)
+    decisions = write_yaml(tmp_path / "decisions.yaml", {"decisions": {"test_after_fit": False}})
+    output_dir = tmp_path / "plan"
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    plan = json.loads((output_dir / "plan.json").read_text())
+    assert plan["recipe"]["evaluation_policy"]["test_after_fit"] is False
+    assert "--no-test-after-fit" in plan["runs"][0]["command"]
+    assert "--test-after-fit" not in plan["runs"][0]["command"]
+    assert "--test-all-checkpoints-after-fit" not in plan["runs"][0]["command"]
+
+
+def test_hparam_plan_allows_test_metric_selection_distinct_from_validation_monitor(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"].update(
         {
+            "selection_metric": "test_ahi_pearson",
+            "selection_split": "test",
             "external_test_locked": False,
             "test_after_fit": True,
             "final_test_unlocked": True,
@@ -2325,6 +2379,7 @@ def test_hparam_plan_rejects_test_after_fit_true_even_when_final_test_is_unlocke
         {
             "external_test_locked": {"value": False, "source": "explicit_user"},
             "test_after_fit": {"value": True, "source": "explicit_user"},
+            "train_val_test_policy": {"value": "test", "source": "explicit_user"},
             "final_eval_unlock": {"value": True, "source": "explicit_user"},
         }
     )
@@ -2333,9 +2388,13 @@ def test_hparam_plan_rejects_test_after_fit_true_even_when_final_test_is_unlocke
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
-    assert result.returncode == 2
-    assert "require test_after_fit=false until validation checkpoint selection is frozen" in result.stdout
-    assert not (output_dir / "runs").exists()
+    assert result.returncode == 0, result.stderr or result.stdout
+    plan = json.loads((output_dir / "plan.json").read_text())
+    assert plan["recipe"]["evaluation_policy"]["selection_metric"] == "test_ahi_pearson"
+    assert plan["recipe"]["evaluation_policy"]["selection_split"] == "test"
+    assert "--test-after-fit" in plan["runs"][0]["command"]
+    assert "--no-test-after-fit" not in plan["runs"][0]["command"]
+    assert "--test-all-checkpoints-after-fit" in plan["runs"][0]["command"]
 
 
 def test_hparam_plan_guards_stale_final_script_when_unlocked_without_ckpt(tmp_path: Path):

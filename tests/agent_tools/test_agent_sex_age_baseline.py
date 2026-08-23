@@ -503,6 +503,76 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
     assert "--wandb-mode" not in script
 
 
+@pytest.mark.parametrize(
+    ("runtime", "search_parameters", "max_runs", "expected_issue"),
+    [
+        (None, None, 1, None),
+        ({"ckpt_every_n_epochs": 1}, None, 1, None),
+        ({"ckpt_every_n_epochs": 2}, None, 1, "runtime.ckpt_every_n_epochs"),
+        ({"ckpt_every_n_epochs": 2}, {"runtime.ckpt_every_n_epochs": [1]}, 1, None),
+        ({"ckpt_every_n_epochs": 1}, {"runtime.ckpt_every_n_epochs": [1, 2]}, 1, None),
+        (
+            {"ckpt_every_n_epochs": 1},
+            {"runtime.ckpt_every_n_epochs": [1, 2]},
+            2,
+            "runtime.ckpt_every_n_epochs",
+        ),
+        ({"epochs": 0, "ckpt_every_n_epochs": 1}, None, 1, "runtime.epochs"),
+        ({"epochs": 0, "ckpt_every_n_epochs": 1}, {"runtime.epochs": [1]}, 1, None),
+    ],
+)
+def test_sex_age_baseline_hparam_test_selection_requires_checkpoint_opportunity(
+    tmp_path: Path,
+    runtime: dict | None,
+    search_parameters: dict | None,
+    max_runs: int,
+    expected_issue: str | None,
+):
+    config = _write_survival_config(tmp_path)
+    recipe = _hparam_recipe(tmp_path, config)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].update(
+        {
+            "selection_metric": "test_c_index",
+            "selection_split": "test",
+            "external_test_locked": False,
+        }
+    )
+    payload["evaluation_policy"].pop("test_after_fit")
+    payload["decisions"]["external_test_locked"] = {"value": False, "source": "explicit_recipe"}
+    payload["decisions"]["train_val_test_policy"] = {"value": "test", "source": "explicit_recipe"}
+    if runtime is not None:
+        payload.setdefault("runtime", {}).update(runtime)
+    if search_parameters is not None:
+        payload["search"] = {
+            "method": "grid",
+            "max_runs": max_runs,
+            "parameters": search_parameters,
+        }
+    _write_yaml(recipe, payload)
+    plan_dir = tmp_path / "plan-hparam-test-selection"
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == int(expected_issue is not None)
+    if expected_issue:
+        assert any(
+            f"selection_split=test requires effective {expected_issue}" in issue.message for issue in report.issues
+        )
+        assert not (plan_dir / "plan.json").exists()
+        return
+    scripts = list((plan_dir / "runs").glob("run-000--*/launch.sh"))
+    assert len(scripts) == 1
+    script = scripts[0].read_text()
+    assert "python -m sex_age_baseline.finetune" in script
+    assert "--test-after-fit" in script
+    assert "--no-test-after-fit" not in script
+    assert "--test-all-checkpoints-after-fit" in script
+    assert "--wandb-project" not in script
+    assert "--wandb-group" not in script
+    assert "--wandb-mode" not in script
+
+
 def test_sex_age_baseline_slurm_multi_gpu_is_rejected_before_plan_write(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     recipe = _hparam_recipe(

@@ -317,7 +317,6 @@ def hparam_tune_issues(
         "selection_mode": ("evaluation_policy.selection_mode", "selection_mode"),
         "selection_split": ("evaluation_policy.selection_split", "train_val_test_policy"),
         "external_test_locked": ("evaluation_policy.external_test_locked", "external_test_locked"),
-        "test_after_fit": ("evaluation_policy.test_after_fit", "test_after_fit"),
         "final_eval_split": ("evaluation_policy.final_eval_split", "final_eval_split"),
         "final_test_unlocked": ("evaluation_policy.final_test_unlocked", "final_eval_unlock"),
         "require_manual_unlock_for_final_test": (
@@ -402,16 +401,6 @@ def hparam_tune_issues(
                 {"max_runs": max_runs},
             )
         )
-    if evaluation.get("selection_split") == "test":
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "selection_split",
-                "selection_split=test is not allowed for model selection.",
-                "Which validation split should be used for model selection?",
-                {"evaluation_policy": evaluation},
-            )
-        )
     user_external_lock = decisions.get("external_test_locked")
     has_external_lock = (
         "external_test_locked" in local_evaluation
@@ -421,6 +410,95 @@ def hparam_tune_issues(
     if not has_external_lock:
         issues.append(needs_issue("external_test_locked", "external_test_locked must be explicit.", high_impact))
     test_after_fit = decisions["test_after_fit"].value
+    external_test_locked = evaluation.get("external_test_locked")
+    selection_split = evaluation.get("selection_split")
+    selection_metric = evaluation.get("selection_metric")
+    if (
+        selection_split == "test"
+        and selection_metric not in (None, "", "ASK_USER")
+        and (not isinstance(selection_metric, str) or not selection_metric.startswith("test_"))
+    ):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "selection_metric",
+                "selection_split=test requires a test_* selection_metric.",
+                None,
+                {"evaluation_policy": evaluation},
+            )
+        )
+    if selection_split == "test":
+        parameters = search.get("parameters")
+        search_space_is_plannable = (
+            search.get("method") == "grid"
+            and type(max_runs) is int
+            and max_runs > 0
+            and not ("configurations" in search and "parameters" in search)
+            and (
+                isinstance(configurations, list)
+                and bool(configurations)
+                and all(isinstance(point, dict) and point for point in configurations)
+                or isinstance(parameters, dict)
+                and bool(parameters)
+                and all(isinstance(values, list) and values for values in parameters.values())
+            )
+        )
+        if search_space_is_plannable:
+            from .plan_hparam import hparam_combos
+
+            planned_combos = hparam_combos(recipe)
+            checkpoint_intervals = [
+                combo.get("runtime.ckpt_every_n_epochs", runtime.get("ckpt_every_n_epochs", 1))
+                for combo in planned_combos
+            ]
+            epoch_counts = [combo.get("runtime.epochs", runtime.get("epochs", 30)) for combo in planned_combos]
+            validation_intervals = [
+                combo.get("runtime.check_val_every_n_epoch", runtime.get("check_val_every_n_epoch", 1))
+                for combo in planned_combos
+            ]
+        else:
+            checkpoint_intervals = []
+            epoch_counts = []
+            validation_intervals = []
+        # Early stopping can occur before a wider interval fires, so test-selected tuning must save every epoch.
+        if any(type(interval) is not int or interval != 1 for interval in checkpoint_intervals):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "runtime.ckpt_every_n_epochs",
+                    "selection_split=test requires effective runtime.ckpt_every_n_epochs=1 for every trial.",
+                    None,
+                    {"effective_values": checkpoint_intervals},
+                )
+            )
+        if any(type(epochs) is not int or epochs <= 0 for epochs in epoch_counts):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "runtime.epochs",
+                    (
+                        "selection_split=test requires effective runtime.epochs to be a positive integer for "
+                        "every trial so each trial has an epoch checkpoint opportunity."
+                    ),
+                    None,
+                    {"effective_values": epoch_counts},
+                )
+            )
+        if decisions["label_name"].value in {"ahi", "arousal"} and any(
+            type(interval) is not int or interval != 1 for interval in validation_intervals
+        ):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "runtime.check_val_every_n_epoch",
+                    (
+                        "selection_split=test requires effective runtime.check_val_every_n_epoch=1 for ahi/arousal "
+                        "so every tested checkpoint contains validation-fitted thresholds."
+                    ),
+                    None,
+                    {"effective_values": validation_intervals},
+                )
+            )
     if type(test_after_fit) is not bool:
         issues.append(
             DecisionIssue(
@@ -431,14 +509,38 @@ def hparam_tune_issues(
                 {"value": test_after_fit, "evaluation_policy": evaluation},
             )
         )
-    elif test_after_fit:
+    elif test_after_fit and external_test_locked is True:
         issues.append(
             DecisionIssue(
                 DecisionStatus.NEEDS_USER_INPUT,
                 "test_after_fit",
-                "Hyper-parameter trials require test_after_fit=false until validation checkpoint selection is frozen.",
-                "Should test_after_fit be false so final test evaluation remains a separate unlocked step?",
+                "test_after_fit=true would evaluate test while external_test_locked=true.",
+                "Should test_after_fit be false, or should external_test_locked=false?",
                 {"evaluation_policy": evaluation},
+            )
+        )
+    if selection_split == "test" and test_after_fit is False:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.NEEDS_USER_INPUT,
+                "test_after_fit",
+                (
+                    "selection_split=test requires test_after_fit=true so every trial produces the frozen "
+                    "selection metric."
+                ),
+                "Should test_after_fit be true for test-selected hyper-parameter tuning?",
+                {"evaluation_policy": evaluation},
+            )
+        )
+    objective_metric = str(adaptive.get("objective_metric") or "test_auroc")
+    if adaptive.get("enabled") is True and objective_metric.startswith("test_") and test_after_fit is False:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.NEEDS_USER_INPUT,
+                "test_after_fit",
+                "A test-metric adaptive objective requires test_after_fit=true so trials produce objective evidence.",
+                "Should test_after_fit be true for this adaptive test objective?",
+                {"objective_metric": objective_metric, "evaluation_policy": evaluation},
             )
         )
     if evaluation.get("final_eval_split") == "test" and "require_manual_unlock_for_final_test" not in evaluation:

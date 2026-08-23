@@ -1,8 +1,11 @@
 import argparse
 import logging
+import os
 from pathlib import Path
+import re
 import shutil
 import sys
+import time
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
@@ -22,9 +25,11 @@ if str(REPO_ROOT) not in sys.path:
 from sleep2vec2.callbacks import build_distributed_ahi_progress_bar
 from sleep2vec2.callbacks.grad_scale_logger import GradScaleLoggerCallback
 from sleep2vec2.common import apply_finetune_config, persist_run_config_and_args
+from sleep2vec2.distributed import has_rank_environment, is_rank_zero_process
 from sleep2vec2.results import (
     save_multilabel_per_disease_metrics_csv,
     save_result_csv,
+    save_result_rows_csv,
     save_survival_per_disease_metrics_csv,
     save_training_run_manifest,
 )
@@ -53,18 +58,124 @@ def _is_distributed_event_finetune(args) -> bool:
     return getattr(args, "label_name", None) in {"ahi", "arousal"} and world_size > 1
 
 
+def _preflight_finetune_run_directory(args, exp_root: Path) -> None:
+    rank_zero = is_rank_zero_process()
+    devices = getattr(args, "devices", None)
+    requested_world_size = len(devices) if isinstance(devices, (list, tuple)) else int(devices or 0)
+    distributed_launch = (
+        not rank_zero
+        or requested_world_size > 1
+        or any(os.environ.get(name) not in (None, "", "1") for name in ("WORLD_SIZE", "SLURM_NTASKS"))
+    )
+    if exp_root.is_symlink():
+        raise FileExistsError(f"Finetune run directory must not be a symlink: {exp_root}.")
+    existing_entries = list(exp_root.iterdir()) if exp_root.exists() else []
+    if rank_zero:
+        if existing_entries:
+            raise FileExistsError(
+                f"Finetune run directory already exists and is not empty: {exp_root}. "
+                "Use a new --version-name or manually clear the existing directory."
+            )
+        if not distributed_launch:
+            return
+
+    launch_id = os.environ.get("_SLEEP2VEC_FINETUNE_LAUNCH_ID")
+    if not launch_id:
+        launch_parts = []
+        slurm_job_id = os.environ.get("SLURM_JOB_ID")
+        if slurm_job_id:
+            launch_parts.append(
+                "slurm:"
+                + ":".join(
+                    (
+                        slurm_job_id,
+                        os.environ.get("SLURM_STEP_ID", ""),
+                        os.environ.get("SLURM_RESTART_COUNT", "0"),
+                        os.environ.get("SLURM_JOB_RESTART_COUNT", "0"),
+                    )
+                )
+            )
+        torchelastic_run_id = os.environ.get("TORCHELASTIC_RUN_ID")
+        if torchelastic_run_id:
+            launch_parts.append(
+                f"torchelastic:{torchelastic_run_id}:{os.environ.get('TORCHELASTIC_RESTART_COUNT', '0')}"
+            )
+        launch_id = "|".join(launch_parts)
+        if not launch_id:
+            if has_rank_environment():
+                # Rank variables identify a process, not a unique launch shared by every rank.
+                raise ValueError(
+                    "External distributed finetune launch requires an explicit "
+                    "_SLEEP2VEC_FINETUNE_LAUNCH_ID shared by every rank."
+                )
+            launch_id = f"parent:{os.getpid()}"
+            os.environ["_SLEEP2VEC_FINETUNE_LAUNCH_ID"] = launch_id
+
+    marker_path = exp_root / ".distributed-preflight"
+    if rank_zero:
+        exp_root.mkdir(parents=True, exist_ok=True)
+        try:
+            # Exclusive creation claims the directory; the trailing newline commits the complete launch token.
+            with marker_path.open("x") as marker_file:
+                marker_file.write(f"{launch_id}\n")
+        except FileExistsError:
+            raise FileExistsError(f"Another launch already claimed finetune run directory: {exp_root}.") from None
+        return
+
+    deadline = time.monotonic() + 30.0
+    while True:
+        if marker_path.is_file() and not marker_path.is_symlink():
+            marker_text = marker_path.read_text()
+            if marker_text.endswith("\n"):
+                if marker_text.rstrip("\n") != launch_id:
+                    raise FileExistsError(f"Finetune run directory belongs to a different launch: {exp_root}.")
+                break
+        elif marker_path.exists():
+            raise FileExistsError(f"Finetune run directory belongs to a different launch: {exp_root}.")
+        elif exp_root.exists() and any(exp_root.iterdir()):
+            raise FileExistsError(f"Finetune run directory has no current distributed preflight: {exp_root}.")
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Timed out waiting for rank-zero finetune preflight: {exp_root}.")
+        time.sleep(0.05)
+
+    allowed_files = {marker_path.name, "config.yaml", "cli_args.yaml"}
+    for entry in exp_root.iterdir():
+        valid_file = entry.name in allowed_files and entry.is_file() and not entry.is_symlink()
+        valid_checkpoint_dir = (
+            entry.name == "checkpoints" and entry.is_dir() and not entry.is_symlink() and not any(entry.iterdir())
+        )
+        if not (valid_file or valid_checkpoint_dir):
+            raise FileExistsError(f"Stale artifact in finetune run directory: {entry}.")
+
+
 def supervised(args, config_bundle):
     # Programmatic callers may build Namespace without CLI defaults.
     if not hasattr(args, "accumulate_grad_batches"):
         args.accumulate_grad_batches = 1
     if not hasattr(args, "test_after_fit"):
         args.test_after_fit = True
+    if not hasattr(args, "test_all_checkpoints_after_fit"):
+        args.test_all_checkpoints_after_fit = False
+    if args.test_all_checkpoints_after_fit and not args.test_after_fit:
+        raise ValueError("--test-all-checkpoints-after-fit requires --test-after-fit.")
+    if args.test_all_checkpoints_after_fit and args.epochs <= 0:
+        raise ValueError("--test-all-checkpoints-after-fit requires --epochs greater than 0.")
+    if args.test_all_checkpoints_after_fit and args.ckpt_every_n_epochs != 1:
+        raise ValueError("--test-all-checkpoints-after-fit requires --ckpt-every-n-epochs 1.")
+    if (
+        args.test_all_checkpoints_after_fit
+        and getattr(args, "label_name", None) in {"ahi", "arousal"}
+        and getattr(args, "check_val_every_n_epoch", 1) != 1
+    ):
+        raise ValueError("--test-all-checkpoints-after-fit for ahi/arousal requires --check-val-every-n-epoch 1.")
 
     model_config = config_bundle.model
     averaging_config = config_bundle.averaging
 
     # Persist YAML alongside experiment artifacts
     exp_root = Path(f"log-finetune/{args.version}/")
+    # Before torch.distributed exists, an atomic launch marker coordinates external ranks and Lightning children.
+    _preflight_finetune_run_directory(args, exp_root)
     persist_run_config_and_args(args, exp_root)
 
     # get data loaders
@@ -100,12 +211,17 @@ def supervised(args, config_bundle):
             mode=args.monitor_mod,
         )
 
+        checkpoint_kwargs = {}
+        if args.test_all_checkpoints_after_fit:
+            # Event-task thresholds are fitted during validation and must be serialized afterward.
+            checkpoint_kwargs["save_on_train_epoch_end"] = args.label_name not in {"ahi", "arousal"}
         checkpoint_callback = ModelCheckpoint(
             dirpath=f"log-finetune/{version}/checkpoints",  # ← 你想要的目录
             save_top_k=-1,  # 保留全部 checkpoint
             save_last=True,  # 额外保存 last.ckpt
             every_n_epochs=args.ckpt_every_n_epochs,  # 控制保存频率
             filename="{epoch:02d}",
+            **checkpoint_kwargs,
         )
         best_checkpoint_callback = ModelCheckpoint(
             dirpath=f"log-finetune/{version}/checkpoints",
@@ -197,18 +313,87 @@ def supervised(args, config_bundle):
             )
             return
 
-        # test the model
-        if args.epochs > 0:
-            ckpt_path = best_checkpoint_callback.best_model_path or "last"
+        checkpoint_test_results = []
+        original_ckpt_path = args.ckpt_path
+        checkpoint_result_rows = []
+        if args.test_all_checkpoints_after_fit:
+            checkpoint_dir = Path(checkpoint_callback.dirpath)
+            resolved_checkpoint_dir = checkpoint_dir.resolve()
+            frozen_checkpoint_dir = os.environ.get("_SLEEP2VEC_FROZEN_CHECKPOINT_DIR")
+            recorded_checkpoint_dir = (
+                Path(frozen_checkpoint_dir)
+                if frozen_checkpoint_dir
+                else checkpoint_dir if checkpoint_dir.is_absolute() else Path.cwd() / checkpoint_dir
+            )
+            periodic_checkpoints = []
+            seen_epochs = set()
+            for path in checkpoint_dir.glob("epoch=*.ckpt"):
+                if path.is_symlink():
+                    continue
+                if not path.is_file() or path.resolve().parent != resolved_checkpoint_dir:
+                    raise ValueError(f"Invalid periodic checkpoint: {path}")
+                match = re.fullmatch(r"epoch=(\d+)(?:-step=\d+)?\.ckpt", path.name)
+                if match is None:
+                    raise ValueError(f"Malformed periodic checkpoint name: {path.name}")
+                epoch = int(match.group(1))
+                if epoch in seen_epochs:
+                    raise ValueError(f"Duplicate periodic checkpoint epoch: {epoch}")
+                seen_epochs.add(epoch)
+                recorded_path = recorded_checkpoint_dir / path.name
+                if recorded_path.resolve() != path.resolve():
+                    raise ValueError(f"Frozen checkpoint path does not identify the saved checkpoint: {recorded_path}")
+                # Physical ownership is checked above; manifests preserve the plan's frozen path spelling.
+                periodic_checkpoints.append((epoch, recorded_path))
+            if not periodic_checkpoints:
+                raise ValueError("No regular epoch=*.ckpt checkpoints were saved for test evaluation.")
+
+            best_path = best_checkpoint_callback.best_model_path
+            best_match = re.search(r"(?:^|-)epoch=(\d+)(?:-step=\d+)?\.ckpt$", Path(str(best_path or "")).name)
+            best_epoch = int(best_match.group(1)) if best_match is not None else None
+            if best_epoch is not None and best_epoch not in seen_epochs:
+                raise ValueError(
+                    f"Validation-best epoch checkpoint is missing from periodic test evidence: {best_epoch}"
+                )
+            periodic_checkpoints.sort(key=lambda item: (item[0] == best_epoch, item[0], str(item[1])))
+
+            pretrain_result = None
+            for epoch, checkpoint_path in periodic_checkpoints:
+                args.ckpt_path = str(checkpoint_path)
+                result = trainer.test(
+                    model=model,
+                    ckpt_path=str(checkpoint_path),
+                    dataloaders=test_loader,
+                )[0]
+                logging.info(result)
+                checkpoint_result_rows.append((result, str(checkpoint_path)))
+                checkpoint_test_results.append(
+                    {"checkpoint_path": str(checkpoint_path), "epoch": epoch, "metrics": result}
+                )
+                if epoch == best_epoch:
+                    pretrain_result = result
+
+            if pretrain_result is None:
+                ckpt_path = best_path or "last"
+                args.ckpt_path = str(Path(ckpt_path).resolve()) if ckpt_path != "last" else ckpt_path
+                pretrain_result = trainer.test(
+                    model=model,
+                    ckpt_path=ckpt_path,
+                    dataloaders=test_loader,
+                )[0]
+                logging.info(pretrain_result)
+                checkpoint_result_rows.append((pretrain_result, args.ckpt_path))
         else:
-            ckpt_path = args.ckpt_path if args.ckpt_path != "" else None
-        pretrain_result = trainer.test(
-            model=model,
-            ckpt_path=ckpt_path,
-            dataloaders=test_loader,
-        )[0]
-        logging.info(pretrain_result)
-        save_result_csv(pretrain_result, args.results_csv_path, args)
+            if args.epochs > 0:
+                ckpt_path = best_checkpoint_callback.best_model_path or "last"
+            else:
+                ckpt_path = args.ckpt_path if args.ckpt_path != "" else None
+            pretrain_result = trainer.test(
+                model=model,
+                ckpt_path=ckpt_path,
+                dataloaders=test_loader,
+            )[0]
+            logging.info(pretrain_result)
+            save_result_csv(pretrain_result, args.results_csv_path, args)
         survival_per_disease_metric_rows = [
             row for row in getattr(model, "survival_per_disease_metric_rows", []) if row.get("stage") == "test"
         ]
@@ -231,6 +416,10 @@ def supervised(args, config_bundle):
                 str(multilabel_per_disease_metrics_csv_path),
                 args,
             )
+        if checkpoint_result_rows:
+            # Publish the checkpoint matrix only after every required run artifact succeeds.
+            save_result_rows_csv(checkpoint_result_rows, args.results_csv_path, args)
+        args.ckpt_path = original_ckpt_path
         save_training_run_manifest(
             args,
             manifest_path=manifest_path,
@@ -244,6 +433,7 @@ def supervised(args, config_bundle):
             survival_per_disease_metrics_csv_path=survival_per_disease_metrics_csv_path,
             multilabel_per_disease_metrics_csv_path=multilabel_per_disease_metrics_csv_path,
             metrics=pretrain_result,
+            checkpoint_test_results=checkpoint_test_results,
         )
     except BaseException:
         if "manifest_path" in locals() and not getattr(args, "print_diagnostics", False):
@@ -472,6 +662,11 @@ if __name__ == "__main__":
             "Run test evaluation after fit by default. Use --no-test-after-fit during validation-based model "
             "selection; evaluate test separately from the selected checkpoint."
         ),
+    )
+    parser.add_argument(
+        "--test-all-checkpoints-after-fit",
+        action="store_true",
+        help="After fitting, evaluate every saved epoch=*.ckpt on test; requires --test-after-fit.",
     )
     parser.add_argument(
         "--check-val-every-n-epoch",

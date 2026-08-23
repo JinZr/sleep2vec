@@ -294,14 +294,23 @@ def _materialize_decisions(
     return issues
 
 
-def _materialize_task_defaults(recipe: dict, policy: dict) -> None:
+def _materialize_task_defaults(recipe: dict, policy: dict, user_decisions: dict) -> None:
     task_defaults = (policy.get("task_defaults") or {}).get(recipe.get("task"), {})
     decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
+    local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
     targets = _resolve_write_targets(recipe.get("task"))
     for field, decision in task_defaults.items():
         section, key = targets[field]
         target = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
-        if field in decisions or key in target:
+        local_target = local_recipe.get(section) if isinstance(local_recipe.get(section), dict) else {}
+        resolved_decision = decisions.get(field)
+        if (
+            field in user_decisions
+            or (isinstance(resolved_decision, dict) and resolved_decision.get("source") == "explicit_user")
+            or field in local_decisions
+            or key in local_target
+        ):
             continue
         recipe[section] = {**target, key: decision["value"]}
         decisions = {**decisions, field: decision}
@@ -341,7 +350,7 @@ def evaluate_recipe(
         recipe["decisions"] = recipe_decisions
     materialization_issues = _materialize_decisions(recipe, recipe_decisions)
     materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))
-    _materialize_task_defaults(recipe, policy)
+    _materialize_task_defaults(recipe, policy, user_decisions)
 
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     source_config = inputs.get("config")
@@ -560,7 +569,7 @@ def build_context(
     recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
     materialization_issues = _materialize_decisions(recipe, recipe_decisions)
     materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))
-    _materialize_task_defaults(recipe, policy)
+    _materialize_task_defaults(recipe, policy, user_decisions)
     effective_config = (recipe.get("inputs") or {}).get("config")
     cfg = config_summary(effective_config, variant=variant) if effective_config else None
     report = evaluate_consultation_gates(

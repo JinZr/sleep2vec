@@ -8,10 +8,15 @@ experiment:
   root: ASK_USER
   baseline: ASK_USER
 step:
-  id: tune-sleep2vec2-validation
+  id: tune-sleep2vec2-test
   phase: train
-  purpose: Tune sleep2vec2 using validation selection.
+  purpose: Tune sleep2vec2 using test selection.
 base_recipe: recipes/templates/finetune_sleep2vec2_ppg_ahi.yaml
 evaluation_policy:
-  external_test_locked: true
-  test_after_fit: false
+  selection_metric: test_ahi_pearson
+  selection_mode: max
+  selection_split: test
+  external_test_locked: false
+  final_eval_split: test
+  final_test_unlocked: false
+  require_manual_unlock_for_final_test: true

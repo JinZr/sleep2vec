@@ -122,9 +122,10 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Extend tasks through adapters and declarations; keep the reusable kernel free of new sleep-specific branches.
 - Run consultation before runnable plans and stop on `NEEDS_USER_INPUT`.
 - Treat `run_manifest.tsv` as authoritative managed state; mirrors and reports are projections.
+- Reuse `hparam_selection.select_hparam_candidates` for recipe-frozen hparam ranking. Test-selected plans consume complete per-epoch evidence from terminal run manifests, keep the many-checkpoint audit plan-local, and project only each run's best checkpoint into workspace lifecycle reports.
 - Reuse `experiments.append_experiment_note` and the workspace research-log owner for semantic notes; do not append Markdown directly or infer lifecycle state from narrative.
 - Reuse `managed_scheduler` for backend selection and lifecycle; use `slurm` for scheduler resource, command, state, and sidecar primitives. Keep schema-v1 external-pipeline policy direct-only in `experiment_pipeline`.
-- Use `experiment-run` for validation-selected external matrices. Monitor commands remain non-launching.
+- Use `experiment-run` for external matrices over checkpoints frozen by the source plan's registered ranking. Monitor commands remain non-launching.
 - Keep external-agent suggestions inside the `adaptive_proposals` snapshot/envelope contract; let `adaptive_hparam` own preflight and lifecycle changes.
 - Generate calls to existing model, preprocess, baseline, and sleep2stat entrypoints rather than adding an agent runtime.
 - Follow [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) and its layering test for kernel/domain boundaries.

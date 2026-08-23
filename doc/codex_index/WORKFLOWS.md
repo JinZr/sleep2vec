@@ -133,7 +133,8 @@ average window probabilities by path before scoring; AUPRC, Brier, and ECE are
 reported only in that explicitly episode-denominated family.
 
 External or final test data stays locked until the recorded decision allows it.
-Hyperparameter ranking is validation evidence, not final-test evidence.
+Hyperparameter ranking uses the split and metric frozen in the recipe; test
+evidence is eligible only when tuning explicitly unlocks and evaluates test.
 
 ## Inference And Evaluation
 
@@ -203,13 +204,22 @@ Hparam `plan.json` independently records the exact byte digest of
 `recipe.resolved.yaml`; every managed consumer verifies that digest before
 trusting the frozen recipe.
 
-Direct finetune plans materialize an omitted `test_after_fit` as the documented
-`true` policy default and freeze the resolved choice plus an explicit
-`--test-after-fit` or `--no-test-after-fit` argument. Hyperparameter candidate
-trials instead require explicit `test_after_fit=false`, exclude test from
-preflight, and render `--no-test-after-fit`. Selection and checkpoint freezing
-use validation evidence before the separately unlocked final external
-evaluation reads test metrics.
+Finetune and hparam plans materialize an omitted `test_after_fit` as the
+documented `true` policy default and freeze the resolved choice plus an explicit
+`--test-after-fit` or `--no-test-after-fit` argument. Hparam selection uses the
+recipe's frozen split and metric. Test-selected tuning requires explicit test
+access, `test_after_fit=true`, positive epochs, and an every-epoch immutable
+checkpoint schedule. AHI/arousal checkpoints are saved after validation on
+every epoch so their fitted thresholds are part of each tested snapshot. The
+runtime freezes complete checkpoint-level evidence before ranking or adaptive
+reuse. Validation still owns training and early stopping. Checkpoint audit ranks
+stay plan-local; workspace rankings retain one row per managed run plus its
+global checkpoint rank. Runtime evidence is
+single-use and published only at the successful terminal boundary. See
+[task_recipe.md](../agent_contracts/task_recipe.md),
+[external_test_locking.md](../agent_contracts/external_test_locking.md), and
+[run_manifest.md](../agent_contracts/run_manifest.md) for the authoritative
+selection, lifecycle, and artifact contracts.
 
 Direct `infer` and `evaluate` plans targeting `eval_split=test` require both
 `external_test_locked=false` and `final_test_unlocked=true`. Other splits do
@@ -271,13 +281,13 @@ unchanged polling does not produce a log entry.
 
 ### External evaluation
 
-`hparam-external-eval` rechecks final top-k candidates against canonical
-`run_manifest.tsv`; only `completed` or `finished` runs may enter its runnable
-script.
+Test-selected postprocessing accepts only checkpoint identities frozen by the
+registered ranking and canonical manifest. Direct helpers reject SSH-owned
+candidates, and schema-v1 `experiment-run` accepts only local source plans.
 
-`experiment-run` owns the resumable validation-to-external-test flow. It
-validates the strict spec without launching in dry-run mode, waits for successful
-managed sources, freezes validation-selected checkpoints, preflights every
+`experiment-run` owns the resumable source-ranking-to-external-evaluation flow.
+It validates the strict spec without launching in dry-run mode, waits for
+successful managed sources, freezes source-ranked checkpoints, preflights every
 external recipe, and runs package-local inference in isolated result roots.
 Existing state resumes only with its exact frozen identity. Only explicit
 retryable canonical failures receive a fresh attempt; uncertain identity or

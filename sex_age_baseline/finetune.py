@@ -38,6 +38,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--test-all-checkpoints-after-fit",
+        action="store_true",
+        help="After fitting, evaluate every saved epoch=*.ckpt on test; requires --test-after-fit.",
+    )
+    parser.add_argument(
         "--check-val-every-n-epoch",
         type=int,
         default=1,

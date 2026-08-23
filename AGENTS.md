@@ -98,7 +98,7 @@ High-impact decisions include label selection, split policy, external-test locki
 - Freeze the resolved recipe, generated config, launch command, and hashes before execution. Do not silently rewrite a planned run after launch.
 - Monitoring may update status and reports but must not start pending runs. Launching is an explicit action.
 - `experiment-run --execute` is an explicit launching action: it may wait for successful managed training sources and then fill its frozen external-evaluation matrix. `hparam-monitor` and `experiment-monitor` remain non-launching.
-- External-evaluation pipelines must select and freeze checkpoints from validation evidence before reading external metrics. Finalization requires every declared external job to have one verified successful manifest and no active attempt.
+- External-evaluation pipelines must freeze checkpoints from the source plan's registered ranking before running their separate evaluation matrix. Finalization requires every declared external job to have one verified successful manifest and no active attempt.
 - Stopping a run requires a recorded reason. Finalization requires no active runs and a non-empty final report.
 - On takeover, read `experiment.yaml`, `RESEARCH_LOG.md` when present, and the current canonical manifests before acting. Treat `run_manifest.tsv` as the only lifecycle owner.
 - Use `experiment-note` to append evidence-backed, meaningful research actions, observations, interpretations, decisions, conclusions, and corrections. Do not log unchanged monitoring polls, rewrite prior entries, or use narrative text to infer lifecycle state.
@@ -106,7 +106,7 @@ High-impact decisions include label selection, split policy, external-test locki
 
 ## Config Strictness Policy
 - Follow “let it crash” for model/data semantics: missing or inconsistent YAML fields that affect model shape, task semantics, or evaluation should raise immediately.
-- Defaults are acceptable only for optimization/logging/runtime convenience (e.g., epochs, lr, batch size, W&B metadata), except that direct `finetune` plans materialize an omitted `test_after_fit` as the documented `true` policy default before consultation and freeze it in resolved artifacts. Hyper-parameter trial recipes must still set `test_after_fit=false` explicitly.
+- Defaults are acceptable only for optimization/logging/runtime convenience (e.g., epochs, lr, batch size, W&B metadata), except that `finetune` and `hparam_tune` plans materialize an omitted `test_after_fit` as the documented `true` policy default before consultation and freeze it in resolved artifacts. Hyper-parameter selection may use the explicitly frozen `selection_split`, including `test` when test access is unlocked; test-selected hparam plans evaluate every saved immutable `epoch=*.ckpt` and rank those checkpoint-level test results globally.
 - When adding new config fields, mark explicitly whether they are required or optional and enforce it in config parsing.
 
 ## Codex Subagent Operating Model

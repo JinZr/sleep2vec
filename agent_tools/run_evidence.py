@@ -12,7 +12,13 @@ from typing import Any
 
 from . import run_artifacts as artifacts, transport
 from .experiment_io import REMOTE_MISSING_RETURN_CODE
-from .experiment_workspace import MONITOR_EXIT_CODE_PREFIX, PROCESS_IDENTITY_FIELDS, TERMINAL_STATUSES, merge_run_row
+from .experiment_workspace import (
+    MONITOR_EXIT_CODE_PREFIX,
+    PROCESS_IDENTITY_FIELDS,
+    TERMINAL_STATUSES,
+    file_sha256,
+    merge_run_row,
+)
 from .manifests import read_json, utc_now
 from .progress import read_progress
 from .transport import SSH_TIMEOUT_SECONDS
@@ -412,6 +418,53 @@ sys.stdout.write(json.dumps(payload))
     manifest_path = artifacts.find_run_manifest(row)
     manifest = read_json(manifest_path) if manifest_path else {}
     return str(manifest_path or ""), manifest, artifacts.checkpoint_names(row)
+
+
+def checkpoint_file_sha256(row: dict[str, Any], checkpoint_path: str | Path) -> str:
+    # Checkpoint bytes belong to the frozen execution target; a manager-local namesake is not SSH evidence.
+    if row.get("target") == "ssh" and not row.get("host"):
+        raise ValueError("Managed SSH checkpoint evidence requires a host.")
+    if is_remote_row(row):
+        script = """
+import hashlib
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+try:
+    info = os.lstat(path)
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+    print(f"Checkpoint is not a physical regular file: {path}", file=sys.stderr)
+    raise SystemExit(1)
+digest = hashlib.sha256()
+try:
+    with open(path, "rb") as file_obj:
+        while chunk := file_obj.read(1024 * 1024):
+            digest.update(chunk)
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+sys.stdout.write(digest.hexdigest())
+"""
+        result = run_row_command(
+            row,
+            transport.remote_python_command(script, str(checkpoint_path)),
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or f"exit code {result.returncode}"
+            raise RuntimeError(f"SSH checkpoint SHA-256 failed on {row['host']}: {detail}")
+        digest = result.stdout.strip()
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise RuntimeError(f"SSH checkpoint SHA-256 returned malformed output on {row['host']}.")
+        return digest
+    path = Path(checkpoint_path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"Checkpoint is not a physical regular file: {path}")
+    return file_sha256(path)
 
 
 def read_pid(

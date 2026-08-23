@@ -30,14 +30,14 @@ decisions:
     rationale: Use the AHI label for this experiment.
 
   external_test_locked:
-    value: true
-    source: explicit_user
-    rationale: Keep test data locked during tuning.
-
-  test_after_fit:
     value: false
     source: explicit_user
-    rationale: Keep tuning trials validation-only; run final external evaluation separately.
+    rationale: Allow test data to be used for the explicitly chosen tuning objective.
+
+  test_after_fit:
+    value: true
+    source: explicit_user
+    rationale: Produce test metrics for every saved epoch checkpoint in every tuning trial.
 
   overwrite_policy:
     value: false
@@ -54,7 +54,7 @@ Resolution precedence is:
 6. task policy default, when defined
 7. ambiguous or missing
 
-The current task policy default applies only to direct finetune
+The current task policy default applies to finetune and hparam
 `test_after_fit`: when the field remains absent after authored and user
 decisions, agent tools materialize `true` with source `policy_default` in the
 effective recipe before consultation and preserve it in resolved artifacts.
