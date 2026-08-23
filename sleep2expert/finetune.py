@@ -26,7 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 from sleep2expert.callbacks import build_distributed_ahi_progress_bar
 from sleep2expert.callbacks.grad_scale_logger import GradScaleLoggerCallback
 from sleep2expert.common import apply_finetune_config, persist_run_config_and_args
-from sleep2expert.distributed import is_rank_zero_process
+from sleep2expert.distributed import has_rank_environment, is_rank_zero_process
 from sleep2expert.results import (
     save_multilabel_per_disease_metrics_csv,
     save_result_csv,
@@ -101,8 +101,8 @@ def _preflight_finetune_run_directory(args, exp_root: Path) -> None:
             )
         launch_id = "|".join(launch_parts)
         if not launch_id:
-            if os.environ.get("RANK") not in (None, ""):
-                # RANK/WORLD_SIZE identify a topology, not a unique launch shared by every rank.
+            if has_rank_environment():
+                # Rank variables identify a process, not a unique launch shared by every rank.
                 raise ValueError(
                     "External distributed finetune launch requires an explicit "
                     "_SLEEP2VEC_FINETUNE_LAUNCH_ID shared by every rank."

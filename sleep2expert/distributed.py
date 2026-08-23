@@ -2,6 +2,12 @@ import os
 
 import torch.distributed as dist
 
+_RANK_ENV_NAMES = ("RANK", "SLURM_PROCID", "LOCAL_RANK", "SLURM_LOCALID")
+
+
+def has_rank_environment() -> bool:
+    return any(os.environ.get(name) not in (None, "") for name in _RANK_ENV_NAMES)
+
 
 def is_rank_zero_process() -> bool:
     """Return whether this process should behave as rank zero.
@@ -10,7 +16,7 @@ def is_rank_zero_process() -> bool:
     correctness is out of scope; callers that need cluster-global rank semantics
     should use `torch.distributed.get_rank()` after distributed initialization.
     """
-    for env_name in ("RANK", "SLURM_PROCID", "LOCAL_RANK", "SLURM_LOCALID"):
+    for env_name in _RANK_ENV_NAMES:
         rank = os.environ.get(env_name)
         if rank in (None, ""):
             continue

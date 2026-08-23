@@ -2,6 +2,7 @@ import argparse
 import importlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -46,6 +47,9 @@ def _load_finetune_module(module_name: str, monkeypatch: pytest.MonkeyPatch) -> 
     stubbed_modules[f"{namespace}.callbacks.grad_scale_logger"].GradScaleLoggerCallback = object
     stubbed_modules[f"{namespace}.common"].apply_finetune_config = lambda *_args, **_kwargs: (None, None)
     stubbed_modules[f"{namespace}.common"].persist_run_config_and_args = lambda *_args, **_kwargs: None
+    stubbed_modules[f"{namespace}.distributed"].has_rank_environment = lambda: any(
+        os.environ.get(name) not in (None, "") for name in ("RANK", "SLURM_PROCID", "LOCAL_RANK", "SLURM_LOCALID")
+    )
     stubbed_modules[f"{namespace}.distributed"].is_rank_zero_process = lambda: True
     for name in (
         "save_multilabel_per_disease_metrics_csv",
@@ -410,8 +414,10 @@ def test_finetune_preflight_torchelastic_restart_does_not_reuse_previous_claim(
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+@pytest.mark.parametrize("rank_env", ("RANK", "SLURM_PROCID", "LOCAL_RANK", "SLURM_LOCALID"))
 def test_finetune_external_ddp_requires_explicit_launch_identity(
     module_name: str,
+    rank_env: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -421,9 +427,13 @@ def test_finetune_external_ddp_requires_explicit_launch_identity(
         "SLURM_JOB_ID",
         "SLURM_STEP_ID",
         "TORCHELASTIC_RUN_ID",
+        "RANK",
+        "SLURM_PROCID",
+        "LOCAL_RANK",
+        "SLURM_LOCALID",
     ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv(rank_env, "0")
     monkeypatch.setenv("WORLD_SIZE", "2")
     monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
     monkeypatch.setenv("MASTER_PORT", "29500")
