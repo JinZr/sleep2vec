@@ -528,7 +528,7 @@ def _selected_candidate_rows(
             checkpoint_sha256 = str(derived.get("checkpoint_sha256") or "")
             if not checkpoint_path or not checkpoint_sha256:
                 raise ValueError(f"Test-selected candidate is missing frozen checkpoint_sha256: {key[0]} / {key[1]}")
-            # Caller rows are only selectors; checkpoint identity remains owned by hparam-select outputs.
+            # Caller rows are selectors; frozen selection provenance remains owned by hparam-select outputs.
             frozen_ranking = frozen_ranking_by_key.get(key)
             if frozen_ranking is None:
                 raise ValueError(
@@ -544,6 +544,7 @@ def _selected_candidate_rows(
                     raise ValueError(
                         f"Test-selected candidate {field} differs from frozen hparam selection: {key[0]} / {key[1]}"
                     )
+            derived.update(frozen_ranking)
         managed_rows.append({**derived, **run, "status": workspace_by_key[key].get("status", "")})
     if not all_candidates and (type(top_k) is not int or top_k <= 0):
         raise ValueError("top_k must be a positive integer.")

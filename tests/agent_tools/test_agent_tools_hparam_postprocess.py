@@ -942,6 +942,42 @@ def test_test_selected_candidate_must_match_frozen_hparam_selection_before_rehas
     assert rehash_calls == []
 
 
+def test_test_selected_postprocess_manifests_use_frozen_ranking_provenance(tmp_path: Path):
+    recipe = _test_selected_hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr or result.stdout
+    _run_row, _checkpoints, frozen = _freeze_test_selected_candidate(plan_dir)
+    selected = plan_dir / "selected.csv"
+    tampered = {
+        **frozen,
+        "metric": "fabricated_metric",
+        "score": "999",
+        "epoch": "999",
+        "checkpoint_rank": "999",
+        "source": "fabricated_source",
+        "val_predictions_path": str(tmp_path / "caller-val.csv"),
+    }
+    pd.DataFrame([tampered]).to_csv(selected, index=False)
+
+    hparam_postprocess.generate_external_eval(plan_dir, selected, unlock_final_test=True)
+    logits_manifest = hparam_postprocess.export_hparam_logits(
+        plan_dir,
+        selected,
+        unlock_final_test=True,
+        skip_test=True,
+    )
+
+    for row in (
+        _read_table(plan_dir / "external_eval_manifest.tsv")[0],
+        _read_table(logits_manifest)[0],
+    ):
+        assert {field: row[field] for field in ("metric", "score", "epoch", "checkpoint_rank", "source")} == {
+            field: frozen[field] for field in ("metric", "score", "epoch", "checkpoint_rank", "source")
+        }
+        assert row["val_predictions_path"] == str(tmp_path / "caller-val.csv")
+
+
 def test_test_selected_candidate_rank_must_match_frozen_hparam_ranking_before_top_k(
     tmp_path: Path,
     monkeypatch,
