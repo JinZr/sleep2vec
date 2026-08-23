@@ -158,6 +158,8 @@ def supervised(args, config_bundle):
         raise ValueError("--test-all-checkpoints-after-fit requires --test-after-fit.")
     if args.test_all_checkpoints_after_fit and args.epochs <= 0:
         raise ValueError("--test-all-checkpoints-after-fit requires --epochs greater than 0.")
+    if args.test_all_checkpoints_after_fit and args.ckpt_every_n_epochs != 1:
+        raise ValueError("--test-all-checkpoints-after-fit requires --ckpt-every-n-epochs 1.")
 
     model_config = config_bundle.model
     averaging_config = config_bundle.averaging

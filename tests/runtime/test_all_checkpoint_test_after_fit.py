@@ -602,11 +602,13 @@ def test_all_checkpoint_mode_fails_on_incomplete_checkpoint_evidence(
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)
-def test_all_checkpoint_mode_requires_test_after_fit_and_positive_epochs(
+def test_all_checkpoint_mode_requires_test_after_fit_positive_epochs_and_every_epoch_checkpoints(
     module_name: str, monkeypatch: pytest.MonkeyPatch
 ):
     finetune_mod = _load_finetune_module(module_name, monkeypatch)
     bundle = SimpleNamespace(model=object(), averaging=None, finetune=None)
+    preflight_calls = []
+    monkeypatch.setattr(finetune_mod, "_preflight_finetune_run_directory", lambda *_args: preflight_calls.append(True))
 
     with pytest.raises(ValueError, match="requires --test-after-fit"):
         finetune_mod.supervised(
@@ -618,6 +620,17 @@ def test_all_checkpoint_mode_requires_test_after_fit_and_positive_epochs(
             argparse.Namespace(test_after_fit=True, test_all_checkpoints_after_fit=True, epochs=0),
             bundle,
         )
+    with pytest.raises(ValueError, match="requires --ckpt-every-n-epochs 1"):
+        finetune_mod.supervised(
+            argparse.Namespace(
+                test_after_fit=True,
+                test_all_checkpoints_after_fit=True,
+                epochs=1,
+                ckpt_every_n_epochs=2,
+            ),
+            bundle,
+        )
+    assert preflight_calls == []
 
 
 @pytest.mark.parametrize("package_name", RESULT_PACKAGES)

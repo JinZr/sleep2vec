@@ -621,7 +621,7 @@ def test_negative_epochs_fail_before_run_directory(tmp_path: Path, monkeypatch, 
     assert not (tmp_path / "log-finetune" / version_name).exists()
 
 
-def test_all_checkpoint_mode_requires_test_after_fit_and_positive_epochs(tmp_path: Path):
+def test_all_checkpoint_mode_requires_test_after_fit_positive_epochs_and_every_epoch_checkpoints(tmp_path: Path):
     config = tmp_path / "config.yaml"
     args = _runtime_args(config, tmp_path, version_name="invalid-all-checkpoints", test_after_fit=False)
     args.test_all_checkpoints_after_fit = True
@@ -632,6 +632,13 @@ def test_all_checkpoint_mode_requires_test_after_fit_and_positive_epochs(tmp_pat
     args.epochs = 0
     with pytest.raises(ValueError, match="requires --epochs greater than 0"):
         baseline_runtime.train_and_save(args, object())
+
+    args.epochs = 1
+    args.ckpt_every_n_epochs = 2
+    with pytest.raises(ValueError, match="requires --ckpt-every-n-epochs 1"):
+        baseline_runtime.train_and_save(args, object())
+
+    assert not (tmp_path / "log-finetune" / "invalid-all-checkpoints").exists()
 
 
 @pytest.mark.parametrize("ckpt_every_n_epochs", [0, -1])

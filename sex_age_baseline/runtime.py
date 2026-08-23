@@ -76,6 +76,11 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         raise ValueError("--test-all-checkpoints-after-fit requires --test-after-fit.")
     if args.test_all_checkpoints_after_fit and args.epochs <= 0:
         raise ValueError("--test-all-checkpoints-after-fit requires --epochs greater than 0.")
+    ckpt_every_n_epochs = int(getattr(args, "ckpt_every_n_epochs", 1))
+    if ckpt_every_n_epochs <= 0:
+        raise ValueError("--ckpt-every-n-epochs must be positive for sex_age_baseline.")
+    if args.test_all_checkpoints_after_fit and ckpt_every_n_epochs != 1:
+        raise ValueError("--test-all-checkpoints-after-fit requires --ckpt-every-n-epochs 1.")
     configure_result_args(args, cfg)
     args.version = build_version_name(args, cfg)
     epochs = int(args.epochs)
@@ -83,9 +88,6 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         raise ValueError("--epochs must be non-negative for sex_age_baseline.")
     if epochs == 0 and not args.ckpt_path:
         raise ValueError("--epochs 0 requires --ckpt-path for sex_age_baseline evaluation.")
-    ckpt_every_n_epochs = int(getattr(args, "ckpt_every_n_epochs", 1))
-    if ckpt_every_n_epochs <= 0:
-        raise ValueError("--ckpt-every-n-epochs must be positive for sex_age_baseline.")
     _seed_everything(getattr(args, "seed", 4523))
 
     device = torch.device(args.device)
