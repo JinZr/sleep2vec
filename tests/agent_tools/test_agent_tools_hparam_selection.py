@@ -521,6 +521,7 @@ def test_hparam_select_rebuilds_test_ranking_from_new_registered_plan(tmp_path: 
         config_monitor="val_ahi_pearson",
     )
     plans = []
+    first_checkpoint_ranking = b""
     for index, score in enumerate((0.8, 0.9), start=1):
         plan_dir = tmp_path / f"plan-{index}"
         assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
@@ -549,15 +550,71 @@ def test_hparam_select_rebuilds_test_ranking_from_new_registered_plan(tmp_path: 
         )
         hparam_selection.select_hparam_candidates(plan_dir)
         plans.append(plan_dir)
+        if index == 1:
+            first_checkpoint_ranking = (plan_dir / "checkpoint_test_ranking.csv").read_bytes()
 
     ranking = _read_table(_ranking_path(plans[-1]))
     assert [(row["run_id"], row["score"]) for row in ranking] == [("run-001", "0.9"), ("run-000", "0.8")]
     checkpoint_ranking = _read_table(plans[-1] / "checkpoint_test_ranking.csv")
-    assert [(row["run_id"], row["score"]) for row in checkpoint_ranking] == [
-        ("run-001", "0.9"),
-        ("run-000", "0.8"),
-    ]
+    assert [(row["run_id"], row["score"]) for row in checkpoint_ranking] == [("run-001", "0.9")]
     assert len(_read_table(plans[0] / "checkpoint_test_ranking.csv")) == 1
+
+    hparam_selection.select_hparam_candidates(plans[0])
+
+    assert (plans[0] / "checkpoint_test_ranking.csv").read_bytes() == first_checkpoint_ranking
+    ranking = _read_table(_ranking_path(plans[0]))
+    assert [(row["run_id"], row["score"]) for row in ranking] == [("run-001", "0.9"), ("run-000", "0.8")]
+
+
+def test_hparam_select_rejects_a_plan_local_audit_missing_an_owned_run(tmp_path: Path):
+    recipe = _hparam_recipe(
+        tmp_path,
+        selection_metric="test_ahi_pearson",
+        selection_split="test",
+        config_monitor="val_ahi_pearson",
+        max_runs=2,
+    )
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    for index, run in enumerate(plan["runs"]):
+        checkpoint_dir = Path(run["checkpoint_dir"])
+        checkpoint_dir.mkdir(parents=True)
+        checkpoint = checkpoint_dir / "epoch=1.ckpt"
+        checkpoint.write_text(f"checkpoint-{index}")
+        (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+            json.dumps(
+                {
+                    "test_all_checkpoints_after_fit": True,
+                    "checkpoint_test_results": [
+                        {
+                            "checkpoint_path": str(checkpoint),
+                            "epoch": 1,
+                            "metrics": {"test_ahi_pearson": 0.9 - index * 0.1},
+                        }
+                    ],
+                }
+            )
+        )
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "completed"} for run in plan["runs"]],
+    )
+    ranking = hparam_selection.select_hparam_candidates(plan_dir)
+    checkpoint_ranking = plan_dir / "checkpoint_test_ranking.csv"
+    events = tmp_path / "events.jsonl"
+    ranking_before = ranking.read_bytes()
+    events_before = events.read_bytes()
+    checkpoint_rows = read_rows(checkpoint_ranking, require_managed_identity=True)
+    write_rows(checkpoint_ranking, [row for row in checkpoint_rows if row["run_id"] != "run-001"])
+    truncated_audit = checkpoint_ranking.read_bytes()
+
+    with pytest.raises(ValueError, match="Frozen checkpoint test ranking differs"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert checkpoint_ranking.read_bytes() == truncated_audit
+    assert ranking.read_bytes() == ranking_before
+    assert events.read_bytes() == events_before
 
 
 def test_hparam_select_rejects_incomplete_checkpoint_test_results_before_writing(tmp_path: Path):

@@ -33,6 +33,7 @@ def select_hparam_candidates(
 ) -> Path:
     root = Path(run_dir)
     plan = artifacts.read_hparam_plan(root)
+    plan_run_keys = {managed_run_key(run) for run in plan["runs"]}
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     frozen_metric = evaluation.get("selection_metric")
@@ -265,10 +266,13 @@ def select_hparam_candidates(
         raise ValueError(f"No valid {metric} scores are available for hparam selection.")
     if selection_split == "test":
         validate_managed_run_rows(ranked, source="checkpoint test ranking", cardinality="many_per_run")
-        if existing_checkpoint_ranked and _checkpoint_ranking_signature(existing_checkpoint_ranked) != (
-            _checkpoint_ranking_signature(ranked)
-        ):
-            raise ValueError("Frozen checkpoint test ranking differs from current checkpoint test evidence.")
+        plan_checkpoint_rows = [row for row in rows if managed_run_key(row) in plan_run_keys]
+        plan_checkpoint_ranked = artifacts.assign_ranks(plan_checkpoint_rows, key="score", reverse=reverse)
+        if existing_checkpoint_ranked:
+            if _checkpoint_ranking_signature(existing_checkpoint_ranked) != _checkpoint_ranking_signature(
+                plan_checkpoint_ranked
+            ):
+                raise ValueError("Frozen checkpoint test ranking differs from current checkpoint test evidence.")
         best_by_run = {}
         for row in ranked:
             candidate = dict(row)
@@ -290,7 +294,8 @@ def select_hparam_candidates(
         raise ValueError("Frozen hparam ranking differs from current checkpoint test evidence.")
     all_ranked = preserved + step_ranked
     if selection_split == "test" and not existing_checkpoint_ranked:
-        write_rows(checkpoint_out, ranked)
+        # Keep the immutable audit plan-local while the workspace ranking spans compatible plans.
+        write_rows(checkpoint_out, plan_checkpoint_ranked)
     write_rows(out, all_ranked)
     merge_run_manifest(
         workspace,
