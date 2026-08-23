@@ -197,7 +197,8 @@ def supervised(args, config_bundle):
 
         checkpoint_kwargs = {}
         if args.test_all_checkpoints_after_fit:
-            checkpoint_kwargs["save_on_train_epoch_end"] = False
+            # Test-selection snapshots must be saved independently of validation cadence.
+            checkpoint_kwargs["save_on_train_epoch_end"] = True
         checkpoint_callback = ModelCheckpoint(
             dirpath=f"log-finetune/{version}/checkpoints",  # ← 你想要的目录
             save_top_k=-1,  # 保留全部 checkpoint

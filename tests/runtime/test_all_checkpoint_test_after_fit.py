@@ -83,6 +83,8 @@ def _run_supervised(
     artifact_failure: str | None = None,
     emit_artifacts: bool = False,
     event_log: list[str] | None = None,
+    epochs: int = 3,
+    check_val_every_n_epoch: int = 1,
 ):
     finetune_mod = _load_finetune_module(module_name, monkeypatch)
     checkpoints = []
@@ -151,10 +153,10 @@ def _run_supervised(
         patience=1,
         ckpt_every_n_epochs=1,
         devices=[0],
-        epochs=3,
+        epochs=epochs,
         gradient_clip_val=0.0,
         precision=32,
-        check_val_every_n_epoch=1,
+        check_val_every_n_epoch=check_val_every_n_epoch,
         print_diagnostics=False,
         ckpt_path="",
         results_csv_path=tmp_path / "results.csv",
@@ -438,6 +440,8 @@ def test_all_checkpoint_mode_tests_every_regular_checkpoint_and_keeps_best_last(
         tmp_path,
         monkeypatch,
         checkpoint_names=("epoch=00.ckpt", "epoch=01.ckpt", "epoch=02.ckpt"),
+        epochs=1,
+        check_val_every_n_epoch=2,
     )
 
     checkpoint_dir = (tmp_path / "log-finetune" / "unit-test" / "checkpoints").resolve()
@@ -446,7 +450,7 @@ def test_all_checkpoint_mode_tests_every_regular_checkpoint_and_keeps_best_last(
         str(checkpoint_dir / "epoch=02.ckpt"),
         str(checkpoint_dir / "epoch=01.ckpt"),
     ]
-    assert checkpoints[0].kwargs["save_on_train_epoch_end"] is False
+    assert checkpoints[0].kwargs["save_on_train_epoch_end"] is True
     assert test_calls == expected_paths
     assert [path for path, _metrics in result_rows] == expected_paths
     assert args.ckpt_path == ""
