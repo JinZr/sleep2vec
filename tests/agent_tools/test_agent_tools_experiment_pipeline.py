@@ -280,6 +280,11 @@ def test_dry_run_does_not_freeze_or_mutate_workspace(tmp_path: Path, monkeypatch
     spec_path.write_text(yaml.safe_dump(_spec(root), sort_keys=False))
     before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
     monkeypatch.setattr(
+        experiment_pipeline.artifacts,
+        "read_hparam_plan",
+        lambda *_args, **_kwargs: {"recipe": {"execution": {"target": "local"}}},
+    )
+    monkeypatch.setattr(
         experiment_pipeline,
         "_inspect_sources",
         lambda *_args, **_kwargs: [
@@ -300,6 +305,34 @@ def test_dry_run_does_not_freeze_or_mutate_workspace(tmp_path: Path, monkeypatch
     assert result["status"] == "ready"
     assert result["dry_run"] is True
     assert before == after
+    assert not (root / "pipelines").exists()
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_external_pipeline_rejects_ssh_source_plan_before_outputs(tmp_path: Path, monkeypatch, execute: bool):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    spec_path = tmp_path / "external.yaml"
+    spec_path.write_text(yaml.safe_dump(_spec(root), sort_keys=False))
+    monkeypatch.setattr(
+        experiment_pipeline.artifacts,
+        "read_hparam_plan",
+        lambda *_args, **_kwargs: {
+            "recipe": {"execution": {"target": "ssh", "host": "unit-host"}},
+        },
+    )
+    before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match=r"checkpoint_sources\.age\.plan.*SSH execution target"):
+        experiment_pipeline.run_experiment_pipeline(
+            root,
+            spec_path,
+            unlock_final_test=execute,
+            execute=execute,
+        )
+
+    after = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    assert after == before
     assert not (root / "pipelines").exists()
 
 
@@ -324,6 +357,11 @@ def test_second_pipeline_runner_is_rejected_by_exclusive_lock(tmp_path: Path, mo
     (pipeline_dir / "pipeline.json").write_text("{}\n")
     spec_path = tmp_path / "external.yaml"
     spec_path.write_text(yaml.safe_dump(_spec(root), sort_keys=False))
+    monkeypatch.setattr(
+        experiment_pipeline.artifacts,
+        "read_hparam_plan",
+        lambda *_args, **_kwargs: {"recipe": {"execution": {"target": "local"}}},
+    )
     monkeypatch.setattr(
         experiment_pipeline,
         "_validate_experiment",

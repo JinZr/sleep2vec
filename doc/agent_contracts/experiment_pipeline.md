@@ -55,6 +55,9 @@ successfully before checkpoint selection. Selection reuses the managed
 hparam-ranking owner and requires an exact metric and mode match. The
 pipeline freezes the selected score, config, checkpoint path, and content
 hashes before any external job starts.
+Schema v1 has no remote source-artifact staging boundary, so it accepts only
+local source plans and rejects an SSH-owned source before creating pipeline
+state or other outputs.
 If interruption leaves `checkpoints.json` before its hash reaches pipeline
 state, resume reruns the hparam-ranking owner and accepts the orphan only
 when every selected field still matches; it never adopts the file by hashing

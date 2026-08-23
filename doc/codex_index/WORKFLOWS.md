@@ -301,6 +301,8 @@ and collects results.
 It validates the strict spec without launching in dry-run mode, waits for
 successful managed sources, freezes source-ranked checkpoints, preflights every
 external recipe, and runs package-local inference in isolated result roots.
+Schema v1 has no SSH source-artifact staging boundary and rejects SSH-owned
+source plans before creating pipeline state or outputs.
 Existing state resumes only with its exact frozen identity. Only explicit
 retryable canonical failures receive a fresh attempt; uncertain identity or
 result-manifest validation failure does not. External metrics remain report-only,

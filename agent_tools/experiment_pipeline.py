@@ -122,6 +122,16 @@ def run_experiment_pipeline(
     pipeline_dir = root / "pipelines" / pipeline_id
     lock_path = pipeline_dir.parent / f".{pipeline_id}.runner.lock"
     exp_io.validate_managed_output_paths(root, [pipeline_dir / "pipeline.json", lock_path])
+    for source_id, source in spec["checkpoint_sources"].items():
+        source_plan = artifacts.read_hparam_plan(Path(source["plan"]))
+        source_recipe = source_plan.get("recipe") if isinstance(source_plan.get("recipe"), dict) else {}
+        source_execution = source_recipe.get("execution") if isinstance(source_recipe.get("execution"), dict) else {}
+        # Schema v1 reads source artifacts on the manager and has no SSH staging boundary.
+        if str(source_execution.get("target") or "local") == "ssh":
+            raise ValueError(
+                f"checkpoint_sources.{source_id}.plan uses an SSH execution target; "
+                "schema v1 external pipelines require local source plans."
+            )
 
     if not execute:
         if resume:
