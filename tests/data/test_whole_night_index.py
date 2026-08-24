@@ -29,6 +29,19 @@ def test_validate_whole_night_index_resolves_sample_paths_from_explicit_base(tmp
     }
 
 
+def test_validate_whole_night_index_resolves_relative_index_from_explicit_base(tmp_path: Path):
+    (tmp_path / "night.npz").touch()
+    _write_index(tmp_path / "shhs-index.csv", [("night.npz", "test", "30")])
+
+    assert validate_whole_night_index(
+        ["shhs-index.csv"],
+        eval_split="test",
+        max_source_tokens=2,
+        path_base=tmp_path,
+        sources=["shhs"],
+    ) == {"night.npz": 1}
+
+
 def test_validate_whole_night_index_rejects_empty_split(tmp_path: Path):
     index = _write_index(tmp_path / "index.csv", [("unused.npz", "train", "30")])
 
@@ -54,6 +67,16 @@ def test_validate_whole_night_index_rejects_duplicate_headers(tmp_path: Path):
     index.write_text(f"path,split,duration,path\n{first},test,30,{second}\n")
 
     with pytest.raises(ValueError, match="duplicate columns.*path"):
+        validate_whole_night_index([index], eval_split="test", max_source_tokens=2)
+
+
+def test_validate_whole_night_index_rejects_surplus_row_values(tmp_path: Path):
+    sample = tmp_path / "night.npz"
+    sample.touch()
+    index = tmp_path / "index.csv"
+    index.write_text(f"path,split,duration\n{sample},test,30,unexpected\n")
+
+    with pytest.raises(ValueError, match="unexpected extra values"):
         validate_whole_night_index([index], eval_split="test", max_source_tokens=2)
 
 
@@ -88,6 +111,17 @@ def test_validate_whole_night_index_accepts_matching_configured_source(tmp_path:
     sample.touch()
     index = tmp_path / "index.csv"
     index.write_text(f"path,split,duration,source\n{sample},test,30,shhs-v1\n")
+
+    assert validate_whole_night_index([index], eval_split="test", max_source_tokens=2, sources=["shhs"]) == {
+        str(sample): 1
+    }
+
+
+def test_validate_whole_night_index_uses_blank_source_fallback(tmp_path: Path):
+    sample = tmp_path / "night.npz"
+    sample.touch()
+    index = tmp_path / "shhs-index.csv"
+    index.write_text(f"path,split,duration,source\n{sample},test,30,\n")
 
     assert validate_whole_night_index([index], eval_split="test", max_source_tokens=2, sources=["shhs"]) == {
         str(sample): 1

@@ -410,6 +410,18 @@ def test_plan_rejects_duplicate_whole_night_index_headers(tmp_path: Path):
     assert not Path(payload["experiment"]["root"]).exists()
 
 
+def test_plan_rejects_surplus_whole_night_index_values(tmp_path: Path):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    sample = tmp_path / "night.npz"
+    Path(payload["inputs"]["data_index"][0]).write_text(f"path,split,duration\n{sample},val,60,unexpected\n")
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("unexpected extra values" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
 def test_nonempty_embedding_output_fails_before_workspace(tmp_path: Path):
     recipe, plan_dir, payload = _write_recipe(tmp_path)
     embedding_dir = Path(payload["artifacts"]["embedding_dir"])
@@ -438,6 +450,29 @@ def test_plan_and_embedding_directories_cannot_contain_one_another_while_unresol
     assert report.exit_code == 1
     assert any("must not contain one another" in issue.message for issue in report.blocking_issues())
     assert not Path(payload["experiment"]["root"]).exists()
+
+
+@pytest.mark.parametrize("managed_dir", ["plans", "reports", "steps"])
+def test_embedding_output_rejects_experiment_managed_directories(tmp_path: Path, managed_dir: str):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    payload["artifacts"]["embedding_dir"] = str(Path(payload["experiment"]["root"]) / managed_dir / "embeddings")
+    _rewrite(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("experiment-managed" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
+def test_embedding_output_allows_dedicated_experiment_directory(tmp_path: Path):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    payload["artifacts"]["embedding_dir"] = str(Path(payload["experiment"]["root"]) / "embeddings")
+    _rewrite(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 0
 
 
 def test_strict_runtime_loader_rejects_non_model_yaml(tmp_path: Path):
@@ -525,6 +560,23 @@ def test_plan_accepts_rows_retained_by_config_source_filter(tmp_path: Path):
     recipe, plan_dir, payload = _write_recipe(tmp_path, config=str(config))
     sample = tmp_path / "night.npz"
     Path(payload["inputs"]["data_index"][0]).write_text(f"path,split,duration,source\n{sample},val,60,shhs-v1\n")
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 0
+
+
+def test_plan_uses_index_path_as_missing_source_fallback(tmp_path: Path):
+    config_data = yaml.safe_load((REPO_ROOT / FINETUNE_CONFIG).read_text())
+    config_data["data"]["train_dataset_names"] = ["shhs"]
+    config = tmp_path / "ppg_finetune.yaml"
+    config.write_text(yaml.safe_dump(config_data, sort_keys=False))
+    recipe, plan_dir, payload = _write_recipe(tmp_path, config=str(config))
+    sample = tmp_path / "night.npz"
+    index = tmp_path / "shhs-index.csv"
+    index.write_text(f"path,split,duration\n{sample},val,60\n")
+    payload["inputs"]["data_index"] = [str(index)]
+    _rewrite(recipe, payload)
 
     report = build_plan(recipe_path=recipe, output_dir=plan_dir)
 

@@ -8,7 +8,7 @@ import typing as t
 
 
 def validate_whole_night_index(
-    index_paths: t.Iterable[Path],
+    index_paths: t.Iterable[str | Path],
     *,
     eval_split: str,
     max_source_tokens: int,
@@ -18,7 +18,10 @@ def validate_whole_night_index(
     expected_tokens_by_path: dict[str, int] = {}
     selected_sources = tuple(sources)
     for index_path in index_paths:
-        with Path(index_path).open(newline="") as csv_file:
+        index_file = Path(index_path)
+        if not index_file.is_absolute() and path_base is not None:
+            index_file = path_base / index_file
+        with index_file.open(newline="") as csv_file:
             reader = csv.DictReader(csv_file)
             fieldnames = reader.fieldnames or []
             duplicates = sorted(name for name, count in Counter(fieldnames).items() if count > 1)
@@ -28,17 +31,14 @@ def validate_whole_night_index(
             missing = sorted(required - set(fieldnames))
             if missing:
                 raise ValueError(f"Whole-night index {index_path} is missing required columns: {missing}")
-            if selected_sources and "source" not in fieldnames:
-                raise ValueError(
-                    f"Whole-night index {index_path} requires a source column for configured sources: "
-                    f"{list(selected_sources)}"
-                )
             for row in reader:
+                if None in row:
+                    raise ValueError(f"Whole-night index {index_path} contains unexpected extra values.")
                 if row["split"] != eval_split:
                     continue
                 path = str(row["path"])
-                source = row.get("source")
-                if selected_sources and (source is None or not any(name in str(source) for name in selected_sources)):
+                source = row.get("source") or str(index_path)
+                if selected_sources and not any(name in str(source) for name in selected_sources):
                     raise ValueError(
                         f"Whole-night path {path} source {source!r} does not match configured sources: "
                         f"{list(selected_sources)}"

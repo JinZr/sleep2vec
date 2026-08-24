@@ -8,6 +8,7 @@ from typing import Any
 from data.whole_night_index import validate_whole_night_index
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
+from ..experiment_workspace import experiment_root
 from ..models import REPO_ROOT, SUPPORTED_VARIANTS, coerce_list, resolve_repo_path
 from ..plan_rendering import render_command, variant_module
 from .base import TaskAdapter
@@ -288,14 +289,15 @@ class EmbeddingExtractionAdapter(TaskAdapter):
             or not 1 <= max_source_tokens <= 4095
         ):
             return []
-        index_paths = [resolve_repo_path(path) for path in coerce_list(raw_indices)]
+        authored_index_paths = coerce_list(raw_indices)
+        index_paths = [resolve_repo_path(path) for path in authored_index_paths]
         if not index_paths or any(path is None or not path.is_file() for path in index_paths):
             return []
         try:
             data = (config_summary or {}).get("data") or {}
             source_field = "test_dataset_names" if eval_split == "test" else "train_dataset_names"
             validate_whole_night_index(
-                [path for path in index_paths if path is not None],
+                authored_index_paths,
                 eval_split=str(eval_split),
                 max_source_tokens=max_source_tokens,
                 path_base=REPO_ROOT,
@@ -330,15 +332,30 @@ class EmbeddingExtractionAdapter(TaskAdapter):
                 overlaps = True
             except ValueError:
                 overlaps = False
-        if not overlaps:
-            return []
-        return [
-            _fail(
-                "artifacts.embedding_dir",
-                "Embedding output and agent plan directories must not contain one another.",
-                embedding_dir,
-            )
-        ]
+        if overlaps:
+            return [
+                _fail(
+                    "artifacts.embedding_dir",
+                    "Embedding output and agent plan directories must not contain one another.",
+                    embedding_dir,
+                )
+            ]
+        root = experiment_root(recipe)
+        if root is not None:
+            try:
+                relative_output = embedding_path.relative_to(root)
+            except ValueError:
+                pass
+            else:
+                if relative_output.parts and relative_output.parts[0] in {"plans", "reports", "steps"}:
+                    return [
+                        _fail(
+                            "artifacts.embedding_dir",
+                            "Embedding output must not use an experiment-managed plans, reports, or steps directory.",
+                            embedding_dir,
+                        )
+                    ]
+        return []
 
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
         inputs = _mapping(recipe, "inputs")
