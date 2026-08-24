@@ -18,6 +18,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Build downstream features and heads | `Sleep2vecDownstreamModel` and [`sleep2vec/downstreams/`](../../sleep2vec/downstreams/) | finetune/infer entrypoints |
 | Temporal pooling | `build_temporal_aggregator` and `mean`, `attn`, `lstm` implementations in [`sleep2vec/downstreams/temporal_aggregation/`](../../sleep2vec/downstreams/temporal_aggregation/) | task-specific trainers |
 | Validate preset samples | `filter_valid_sample_indices` in [`data/utils.py`](../../data/utils.py) | preprocessing scripts or samplers |
+| Validate whole-night NPZ indexes | `validate_whole_night_index` in [`data/whole_night_index.py`](../../data/whole_night_index.py) | variant extractors or agent adapters |
 | Select batch channels and collate | `DefaultDataset` in [`data/default_dataset.py`](../../data/default_dataset.py) | NPZ/Kaldi-specific collate functions |
 | Pair-first and pair-eval scheduling | samplers in [`data/samplers.py`](../../data/samplers.py) | entrypoints or callbacks |
 | Kaldi matrix access | `KaldiPSGDataset` and `KaldiReaderPool` in [`data/`](../../data/) | a second dataset stack |

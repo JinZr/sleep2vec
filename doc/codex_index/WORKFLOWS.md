@@ -153,6 +153,14 @@ in `results.py` and `sleep2vec_inference.py`, not in a new evaluation script.
 
 ## Variant Embedding Extraction
 
+For agent-managed local whole-night NPZ export, use
+`task=embedding_extraction` and the
+[`embedding_extraction` skill](../../skills/embedding_extraction/SKILL.md).
+Planning freezes a pretrain or finetune config, validates the explicit index
+and fresh output topology, then routes to the selected package-local entrypoint.
+Config-window, preset, Kaldi, source-override, remote, and alternate-runtime
+workflows are outside this v1 task contract.
+
 The package-local `sleep2vec.extract_embeddings`, `sleep2vec2.extract_embeddings`,
 and `sleep2expert.extract_embeddings` entrypoints build and strictly load their
 complete model configs while allowing an explicit model-channel subset for data

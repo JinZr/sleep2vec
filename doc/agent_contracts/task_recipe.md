@@ -87,6 +87,7 @@ canonicalization, step registration, and lifecycle ownership belong to
 | `preset_prepare` | `sleep2vec`, `sleep2vec2`, `sleep2expert` | package-local `preprocess/save_dataset_presets.py` |
 | `finetune`, `hparam_tune` | `sleep2vec`, `sleep2vec2`, `sleep2expert`, `sex_age_baseline` | `<variant>.finetune` |
 | `infer`, `evaluate` | `sleep2vec`, `sleep2vec2`, `sleep2expert`, `sex_age_baseline` | `<variant>.infer` |
+| `embedding_extraction` | `sleep2vec`, `sleep2vec2`, `sleep2expert` | `<variant>.extract_embeddings` |
 
 Preset preparation routes each variant to its package-local script. Variant
 scripts reject root-only `manifest_output` and `write_sidecar_manifest` fields
@@ -97,10 +98,35 @@ preset generation.
 task-recipe values because agent tools have no renderer for them. Missing or
 unsupported routing blocks command generation.
 
+### Whole-night embedding extraction
+
+The `embedding_extraction` task intentionally exposes only local whole-night
+NPZ-index export. It accepts pretrain and finetune model YAML, freezes the
+validated config bytes, and routes the generated command to the selected
+package-local extractor in the current checkout. It does not accept an
+`execution` block, config-window mode, presets, Kaldi, dataset source overrides,
+or a configurable batch size.
+
+The recipe supplies explicit `config`, `ckpt_path`, non-empty `data_index`, and
+`eval_split`; unique model `channels`; `embedding_kind: both`, `layer_index: -1`,
+`output_format: npz`, `sequence_mode: whole-night`, and `max_source_tokens` in
+`[1, 4095]`; optional `device` and `num_workers` in `[0, 8]`; and an absolute,
+fresh `embedding_dir` with `overwrite: false`. Test rows additionally require
+`external_test_locked: false` and `final_test_unlocked: true`.
+
+Planning shares the runtime's static index validator for required columns,
+non-empty split selection, duplicate paths, finite 30-second-aligned durations,
+token cap, and NPZ existence. The embedding directory and plan directory may
+not contain one another. The package-local extractor remains authoritative for
+model, checkpoint, and dataset loading semantics. Its terminal NPZ manifest
+binds the config, checkpoint, extractor, and index hashes; there is no
+Kaldi/preset hash promise in this task.
+
 ### Runtime paths and data inputs
 
-Runnable non-hparam scripts use an explicit absolute `execution.workdir` for
-cwd and PYTHONPATH, otherwise `REPO_ROOT`. Relative runtime-semantic dataset
+Except for `embedding_extraction`, runnable non-hparam scripts use an explicit
+absolute `execution.workdir` for cwd and PYTHONPATH, otherwise `REPO_ROOT`.
+Relative runtime-semantic dataset
 and checkpoint paths are validated from that same cwd while their authored
 strings remain unchanged. Runtime `~` home-directory shorthand is rejected;
 use an absolute or workdir-relative path.
