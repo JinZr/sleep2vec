@@ -151,9 +151,9 @@ jobs:
 
           if os.environ["RECIPE_MODE"] == "changed":
               nodes = json.loads(os.environ["RECIPE_NODES_JSON"])
-              command = ["pytest", "-q", *nodes]
+              command = ["pytest", "-q", "-n", "auto", *nodes]
           else:
-              command = ["pytest", "-q", "tests/agent_tools/test_agent_tools_recipes.py"]
+              command = ["pytest", "-q", "-n", "auto", "tests/agent_tools/test_agent_tools_recipes.py"]
           sys.exit(subprocess.run(command).returncode)
           PY
 
@@ -195,7 +195,7 @@ jobs:
       # module (and thus torch) in the invoking python.
       - name: Run agent tools kernel tests
         run: |
-          pytest -q tests/agent_tools \
+          pytest -q -n auto tests/agent_tools \
             --ignore=tests/agent_tools/test_agent_run_manifest.py \
             --ignore=tests/agent_tools/test_agent_tools_sleep2stat.py \
             --ignore=tests/agent_tools/test_agent_sex_age_baseline.py \
@@ -237,7 +237,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          pytest -q \
+          pytest -q -n auto \
             tests/config/test_metadata_task_validation.py \
             tests/config/test_config_loading.py \
             tests/config/test_common_finetune_apply.py \
