@@ -60,7 +60,7 @@ class PresetPrepareAdapter(TaskAdapter):
                 raw_source_decision.get("value") if isinstance(raw_source_decision, dict) else raw_source_decision
             )
             if any(
-                value not in (None, "", []) and value != config_value
+                value not in (None, "", [], "ASK_USER") and value != config_value
                 for value in (source_recipe_value, source_decision_value, recipe_value, decision_value)
             ):
                 issues.append(

@@ -2877,6 +2877,56 @@ def test_preset_plan_routes_to_variant_local_script(tmp_path: Path, variant: str
 
 
 @pytest.mark.parametrize(
+    ("field", "preset_field"),
+    [("required_channels", "channels"), ("min_channels", "min_channels")],
+)
+@pytest.mark.parametrize("ask_user_source", ["preset", "decision"])
+def test_preset_plan_accepts_config_owned_user_decision_for_ask_user(
+    tmp_path: Path,
+    field: str,
+    preset_field: str,
+    ask_user_source: str,
+):
+    source_dir = tmp_path / "source"
+    base = write_finetune_recipe(source_dir)
+    config = yaml.safe_load(base.read_text())["inputs"]["config"]
+    config_payload = yaml.safe_load(Path(config).read_text())
+    config_value = config_payload["preset_build"][field]
+    index = source_dir / "preset_index.csv"
+    index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
+    recipe = _write_preset_recipe(source_dir, config=config, index=index)
+    payload = yaml.safe_load(recipe.read_text())
+    if ask_user_source == "preset":
+        payload["preset"][preset_field] = "ASK_USER"
+    else:
+        payload["decisions"][field] = {"value": "ASK_USER", "source": "explicit_recipe"}
+    write_yaml(recipe, payload)
+    user_decisions = write_yaml(
+        source_dir / "user_decisions.yaml",
+        {"decisions": {field: {"value": config_value, "source": "explicit_user"}}},
+    )
+    output_dir = source_dir / "plan"
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(user_decisions),
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    script = (output_dir / "run.sh").read_text()
+    assert "--channels" not in script
+    assert "--min-channels" not in script
+    resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
+    assert preset_field not in resolved["preset"]
+    assert resolved["decisions"][field] == {"value": config_value, "source": "explicit_user"}
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("required_channels", ["ahi", "ppg", "stage5"]),
