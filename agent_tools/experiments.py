@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from . import experiment_io as exp_io, experiment_tracking as tracking
+from . import experiment_io as exp_io, experiment_tracking as tracking, run_artifacts as artifacts
 from .experiment_workspace import (
     RESEARCH_LOG_NAME,
     TERMINAL_STATUSES,
@@ -19,6 +19,7 @@ from .experiment_workspace import (
     managed_run_key,
     merge_run_manifest,
     read_managed_yaml_mapping,
+    read_registered_steps,
     read_run_manifest,
     validate_existing_experiment_manifest,
     validate_frozen_run_update,
@@ -340,6 +341,55 @@ def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> dic
     report = tracking.monitor_report(committed)
     exp_io.write_text_at(report_path, report, remote=remote)
     return {"run_dir": str(root), "runs": committed, "report": str(report_path)}
+
+
+def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict[str, Any]:
+    root = _target_root(run_dir, remote)
+    experiment, rows = _managed_workspace(root, remote=remote, allow_completed=True)
+    step_manifests = read_registered_steps(root, experiment_id=str(experiment["id"]), remote=remote)
+    step_ids = {str(manifest["step"]["id"]) for manifest in step_manifests}
+    orphaned_steps = sorted({str(row["step_id"]) for row in rows} - step_ids)
+    if orphaned_steps:
+        raise ValueError(f"run_manifest.tsv references unregistered steps: {', '.join(orphaned_steps)}")
+
+    plan_owners = {}
+    for manifest in step_manifests:
+        step_id = str(manifest["step"]["id"])
+        for plan_path in manifest["plans"]:
+            owner = plan_owners.setdefault(str(plan_path), step_id)
+            if owner != step_id:
+                raise ValueError(f"Registered plan belongs to more than one managed step: {plan_path}")
+
+    registered_steps = []
+    for manifest in step_manifests:
+        step_id = str(manifest["step"]["id"])
+        step_rows = [row for row in rows if str(row["step_id"]) == step_id]
+        plans = []
+        plan_keys = []
+        for plan_path in manifest["plans"]:
+            plan = artifacts.read_registered_plan(
+                plan_path,
+                workspace=root,
+                step_manifest=manifest,
+                workspace_rows=rows,
+                remote=remote,
+            )
+            plans.append(plan)
+            plan_keys.extend(tuple(key) for key in plan["run_keys"])
+        if len(plan_keys) != len(set(plan_keys)):
+            raise ValueError(f"Managed step registers duplicate run keys across plans: {step_id}")
+        canonical_keys = {managed_run_key(row) for row in step_rows}
+        if set(plan_keys) != canonical_keys:
+            raise ValueError(f"Managed step plans differ from canonical run keys: {step_id}")
+        registered_steps.append({"manifest": manifest, "plans": plans})
+
+    return tracking.experiment_status_snapshot(
+        experiment,
+        registered_steps,
+        rows,
+        root=root,
+        remote=remote,
+    )
 
 
 def rank_experiment_candidates(run_dir: str | Path, *, metric: str, mode: str, remote: str | None = None) -> Path:

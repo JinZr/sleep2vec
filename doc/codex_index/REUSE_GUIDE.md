@@ -48,13 +48,13 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Agent task extension | adapter protocol/registry in [`agent_tools/adapters/`](../../agent_tools/adapters/) | kernel task-name branches |
 | Recipe loading | [`agent_tools/recipes.py`](../../agent_tools/recipes.py) | individual commands |
 | Managed workspace identity | canonical read/merge/CAS owners in [`agent_tools/experiment_workspace.py`](../../agent_tools/experiment_workspace.py) | hparam, planning, or monitoring-local tables and manifest writers |
-| Local/SSH managed I/O | [`agent_tools/experiment_io.py`](../../agent_tools/experiment_io.py) | each experiment command |
+| Local/SSH managed I/O | [`agent_tools/experiment_io.py`](../../agent_tools/experiment_io.py), including strict read-only managed-directory and control-bundle reads | each experiment command |
 | Managed direct process identity and stopping | [`agent_tools/run_evidence.py`](../../agent_tools/run_evidence.py) through [`agent_tools/hparam.py`](../../agent_tools/hparam.py) | PID-only checks or caller-local signals |
 | Managed scheduler lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py) with Slurm primitives in [`agent_tools/slurm.py`](../../agent_tools/slurm.py) | hparam- or pipeline-local capacity, scheduler commands, observation, reconciliation, snapshot, start, or stop implementations |
-| Frozen hparam plan reads | `read_hparam_plan` in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) | launcher/postprocess-specific parsing |
+| Registered plan reads | `read_registered_plan` for local/SSH control bundles and `read_hparam_plan` for stronger local launch-time validation in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) | status, launcher, or postprocess-specific parsing |
 | Public hparam operations | [`agent_tools/hparam.py`](../../agent_tools/hparam.py) facade with responsibility modules behind it | direct private cross-module imports |
 | Adaptive agent proposal validation | [`agent_tools/adaptive_proposals.py`](../../agent_tools/adaptive_proposals.py) for canonical snapshots, parameter envelopes, and submission validation; [`agent_tools/adaptive_hparam.py`](../../agent_tools/adaptive_hparam.py) for orchestration | provider callbacks, latest-digest lookup during apply, or lifecycle mutation in the proposal kernel |
-| Public experiment operations | [`agent_tools/experiments.py`](../../agent_tools/experiments.py) facade with I/O/tracking owners behind it | skills or CLI handlers |
+| Public experiment operations | [`agent_tools/experiments.py`](../../agent_tools/experiments.py) facade, including canonical-only `experiment_status`, with I/O/tracking owners behind it | skills or CLI handlers |
 | Resumable external evaluation | [`agent_tools/experiment_pipeline.py`](../../agent_tools/experiment_pipeline.py) through the `experiments` facade | shell loops that wait for training, select checkpoints, launch inference, or finalize |
 | Index/config/preset summaries | [`agent_tools/domain/`](../../agent_tools/domain/) through stable top-level facades | shell parsing templates |
 | MoE routing and experts | [`sleep2expert/backbones/roformer/moe.py`](../../sleep2expert/backbones/roformer/moe.py) | trainer-local routing branches |

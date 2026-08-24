@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections import Counter
 import csv
 import io
 import json
 import math
 from pathlib import Path
 import re
+import shlex
 import stat
 import subprocess
 from typing import Any
@@ -18,6 +20,7 @@ from . import (
     transport,
 )
 from .experiment_workspace import (
+    TERMINAL_STATUSES,
     managed_run_key,
     merge_run_row,
     read_managed_yaml_mapping,
@@ -529,6 +532,416 @@ def monitor_report(rows: list[dict[str, Any]]) -> str:
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def experiment_status_snapshot(
+    experiment: dict[str, Any],
+    registered_steps: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    *,
+    root: Path,
+    remote: str | None = None,
+) -> dict[str, Any]:
+    allowed_statuses = TERMINAL_STATUSES | managed_scheduler.ACTIVE_STATUSES | managed_scheduler.LAUNCHABLE_STATUSES
+    for row in rows:
+        status = row.get("status")
+        if status not in allowed_statuses:
+            raise ValueError(
+                f"run_manifest.tsv contains an unsupported status: {row.get('step_id')} / "
+                f"{row.get('run_id')}: {status}"
+            )
+    completed = experiment.get("status") == "completed"
+    if completed and (not rows or any(row["status"] not in TERMINAL_STATUSES for row in rows)):
+        raise ValueError("Completed experiment metadata conflicts with canonical run lifecycle state.")
+
+    sorted_rows = sorted(rows, key=lambda row: (str(row["step_id"]), str(row["run_id"])))
+    row_payloads = [_status_run_payload(row) for row in sorted_rows]
+    step_payloads = []
+    for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
+        manifest = registered["manifest"]
+        step_id = str(manifest["step"]["id"])
+        step_rows = [row for row in sorted_rows if str(row["step_id"]) == step_id]
+        step_payloads.append(
+            {
+                "id": step_id,
+                "phase": str(manifest["step"]["phase"]),
+                "purpose": str(manifest["step"]["purpose"]),
+                "plans": [plan["path"] for plan in registered["plans"]],
+                "status_counts": _status_counts(step_rows),
+            }
+        )
+
+    blockers = []
+    decision = {
+        "manual_choice_required": False,
+        "recommended_next": None,
+        "other_legal_actions": [],
+        "blocked_actions": [],
+    }
+    if completed:
+        state = "completed"
+    elif not rows:
+        state = "empty"
+        blockers.append(
+            _status_blocker(
+                "no_managed_runs",
+                "The experiment has no canonical managed runs. No plan or launch command can be inferred.",
+            )
+        )
+        decision["manual_choice_required"] = True
+    else:
+        uncertain = [
+            row
+            for row in sorted_rows
+            if row["status"] in {"unknown_scheduler", "unknown_remote", "missing_pid", "submitting"}
+        ]
+        active = [row for row in sorted_rows if row["status"] in managed_scheduler.ACTIVE_STATUSES]
+        if uncertain:
+            state = "blocked"
+            for status in sorted({str(row["status"]) for row in uncertain}):
+                matching = [row for row in uncertain if row["status"] == status]
+                blockers.append(
+                    _status_blocker(
+                        status,
+                        _status_reason(matching),
+                        rows=matching,
+                        blocked_actions=["adaptive_advance", "finalize", "resubmit"],
+                    )
+                )
+            decision["recommended_next"] = _monitor_action(root, remote)
+        elif active:
+            state = "in_progress"
+            blockers.append(
+                _status_blocker(
+                    "active_runs",
+                    "Canonical runs are still active. Refresh recorded evidence before another lifecycle decision.",
+                    rows=active,
+                    blocked_actions=["adaptive_advance", "finalize", "launch", "resubmit"],
+                )
+            )
+            decision["recommended_next"] = _monitor_action(root, remote)
+        elif all(row["status"] in TERMINAL_STATUSES for row in sorted_rows):
+            state = "ready_to_finalize"
+            finalize = _status_action(
+                "experiment-finalize",
+                "Publish a non-empty final report after human review.",
+                [
+                    "python",
+                    "-m",
+                    "agent_tools",
+                    "experiment-finalize",
+                    "--run-dir",
+                    str(root),
+                    "--report",
+                    "{report_path}",
+                    *(["--remote", remote] if remote else []),
+                ],
+                execution_host=remote,
+            )
+            finalize["required_inputs"] = ["report_path"]
+            blockers.append(
+                _status_blocker(
+                    "final_report_required",
+                    "Finalization requires a user-selected non-empty report path.",
+                    rows=sorted_rows,
+                )
+            )
+            decision["manual_choice_required"] = True
+            decision["other_legal_actions"] = [finalize]
+        else:
+            state, launch_blockers, candidates = _launch_decision(registered_steps, sorted_rows)
+            blockers.extend(launch_blockers)
+            if len(candidates) == 1:
+                decision["recommended_next"] = candidates[0]
+            elif len(candidates) > 1:
+                decision["manual_choice_required"] = True
+                decision["other_legal_actions"] = candidates
+            else:
+                decision["manual_choice_required"] = True
+
+    blocker_codes_by_key = {(str(row["step_id"]), str(row["run_id"])): [] for row in sorted_rows}
+    for blocker in blockers:
+        for key in blocker_codes_by_key:
+            if key[1] in blocker["run_ids"] and blocker["step_id"] in (None, key[0]):
+                blocker_codes_by_key[key].append(blocker["code"])
+    for payload in row_payloads:
+        payload["blockers"] = sorted(blocker_codes_by_key[(payload["step_id"], payload["run_id"])])
+    decision["blocked_actions"] = sorted(
+        {
+            *decision["blocked_actions"],
+            *(action for blocker in blockers for action in blocker["blocked_actions"]),
+        }
+    )
+
+    return {
+        "schema_version": 1,
+        "experiment": {
+            "id": str(experiment["id"]),
+            "title": str(experiment["title"]),
+            "root": str(root),
+            "status": "completed" if completed else "active",
+            "remote": remote,
+        },
+        "lifecycle_source": str(root / "run_manifest.tsv"),
+        "live_observation": False,
+        "summary": {
+            "state": state,
+            "run_count": len(sorted_rows),
+            "status_counts": _status_counts(sorted_rows),
+        },
+        "steps": step_payloads,
+        "runs": row_payloads,
+        "blockers": sorted(
+            blockers,
+            key=lambda blocker: (blocker["code"], blocker["step_id"] or "", blocker["run_ids"]),
+        ),
+        "decision": decision,
+    }
+
+
+def format_experiment_status(snapshot: dict[str, Any]) -> str:
+    experiment = snapshot["experiment"]
+    lines = [
+        f"# Experiment Status: {experiment['title']}",
+        "",
+        f"- Experiment: `{experiment['id']}`",
+        f"- Root: `{experiment['root']}`",
+        f"- State: `{snapshot['summary']['state']}`",
+        f"- Lifecycle source: `{snapshot['lifecycle_source']}`",
+        "- Evidence mode: recorded evidence, not live",
+        "",
+    ]
+    if snapshot["runs"]:
+        lines.extend(
+            [
+                "| Run | Canonical | Scheduler | Process | Checkpoints | Test evidence | Blocker |",
+                "|---|---|---|---|---:|---|---|",
+            ]
+        )
+        for run in snapshot["runs"]:
+            scheduler = run["scheduler"]
+            scheduler_text = " ".join(
+                f"{name}={value}"
+                for name, value in (
+                    ("job", scheduler["job_id"]),
+                    ("state", scheduler["raw_state"]),
+                    ("reason", scheduler["reason"]),
+                    ("observed", scheduler["observed_at"]),
+                )
+                if value is not None
+            )
+            process = run["process"]
+            process_text = " ".join(
+                f"{name}={value}"
+                for name, value in (
+                    ("pid", process["pid"]),
+                    ("pgid", process["process_group_id"]),
+                    ("error", process["identity_error"]),
+                    ("observed", process["monitored_at"]),
+                )
+                if value is not None
+            )
+            lines.append(
+                "| {run_id} | {status} | {scheduler} | {process} | {checkpoints} | {test} | {blocker} |".format(
+                    run_id=_table_text(f"{run['step_id']} / {run['run_id']} — {run['run_name']}"),
+                    status=_table_text(run["status"]),
+                    scheduler=_table_text(scheduler_text),
+                    process=_table_text(process_text),
+                    checkpoints=_table_text(run["evidence"]["checkpoint_count"]),
+                    test=_table_text(run["evidence"]["run_manifest"]),
+                    blocker=_table_text(", ".join(run["blockers"])),
+                )
+            )
+        lines.append("")
+    else:
+        lines.extend(["No canonical managed runs.", ""])
+
+    if snapshot["blockers"]:
+        lines.extend(["## Blockers", ""])
+        for blocker in snapshot["blockers"]:
+            lines.append(f"- `{blocker['code']}`: {blocker['message']}")
+        lines.append("")
+
+    lines.extend(["## Next legal action", ""])
+    decision = snapshot["decision"]
+    actions = []
+    if decision["recommended_next"] is not None:
+        actions.append(decision["recommended_next"])
+    actions.extend(decision["other_legal_actions"])
+    if decision["manual_choice_required"]:
+        lines.append("Manual choice required.")
+    if actions:
+        for action in actions:
+            lines.append(f"- `{action['id']}`: `{shlex.join(action['argv'])}` — {action['reason']}")
+            if action.get("required_inputs"):
+                lines.append(f"  Required inputs: {', '.join(action['required_inputs'])}")
+    else:
+        lines.append("No advisory command is available from the current canonical state.")
+    if decision["blocked_actions"]:
+        lines.append("Blocked actions: " + ", ".join(decision["blocked_actions"]))
+    lines.extend(["", "Advisory only; this output does not authorize execution.", ""])
+    return "\n".join(lines)
+
+
+def _launch_decision(
+    registered_steps: list[dict[str, Any]], rows: list[dict[str, Any]]
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    rows_by_key = {managed_run_key(row): row for row in rows}
+    blockers = []
+    candidates = []
+    for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
+        step_id = str(registered["manifest"]["step"]["id"])
+        for plan in registered["plans"]:
+            plan_rows = [rows_by_key[tuple(key)] for key in plan["run_keys"]]
+            if not any(row["status"] in managed_scheduler.LAUNCHABLE_STATUSES for row in plan_rows):
+                continue
+            if plan["adaptive"]:
+                blockers.append(
+                    _status_blocker(
+                        "adaptive_phase_deferred",
+                        "Status v1 does not interpret adaptive workflow eligibility.",
+                        rows=plan_rows,
+                        blocked_actions=["adaptive_advance", "launch"],
+                    )
+                )
+                continue
+            if plan["pipeline"]:
+                blockers.append(
+                    _status_blocker(
+                        "pipeline_phase_deferred",
+                        "Status v1 does not interpret external-pipeline attempt eligibility.",
+                        rows=plan_rows,
+                        blocked_actions=["launch", "pipeline_advance"],
+                    )
+                )
+                continue
+            hosts = sorted({str(row["host"]) for row in plan_rows if row.get("host") not in (None, "")})
+            if plan["task"] == "hparam_tune":
+                argv = [
+                    "python",
+                    "-m",
+                    "agent_tools",
+                    "hparam-run-queue",
+                    "--plan-dir",
+                    plan["path"],
+                    "--execute",
+                ]
+                action_id = "hparam-run-queue"
+            else:
+                argv = ["bash", plan["launch_script"]]
+                action_id = "run-plan"
+            candidates.append(
+                _status_action(
+                    action_id,
+                    "Launch only after explicit user authorization and the command's own preflight succeeds.",
+                    argv,
+                    step_id=step_id,
+                    execution_host=hosts[0] if len(hosts) == 1 else None,
+                )
+            )
+    candidates.sort(key=lambda action: (action["step_id"] or "", action["id"], action["argv"]))
+    state = "ready_to_launch" if candidates else "blocked"
+    return state, blockers, candidates
+
+
+def _status_run_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "step_id": str(row["step_id"]),
+        "run_id": str(row["run_id"]),
+        "run_name": str(row.get("run_name") or ""),
+        "parameter_summary": str(row.get("parameter_summary") or ""),
+        "status": str(row["status"]),
+        "scheduler": {
+            "type": _optional_text(row.get("scheduler_type")),
+            "job_id": _optional_text(row.get("scheduler_job_id")),
+            "cluster": _optional_text(row.get("scheduler_cluster")),
+            "raw_state": _optional_text(row.get("scheduler_raw_state")),
+            "reason": _optional_text(row.get("scheduler_reason")),
+            "observed_at": _optional_text(row.get("scheduler_observed_at")),
+        },
+        "process": {
+            "pid": _optional_text(row.get("pid")),
+            "process_group_id": _optional_text(row.get("process_group_id")),
+            "identity_error": _optional_text(row.get("process_identity_error")),
+            "monitored_at": _optional_text(row.get("monitored_at")),
+        },
+        "evidence": {
+            "health_status": _optional_text(row.get("health_status")),
+            "gpu_summary": _optional_text(row.get("gpu_summary")),
+            "log_age_seconds": _optional_text(row.get("log_age_seconds")),
+            "checkpoint_dir": _optional_text(row.get("checkpoint_dir")),
+            "checkpoint_count": _optional_text(row.get("checkpoint_count")),
+            "run_manifest": _optional_text(row.get("run_manifest")),
+        },
+        "blockers": [],
+    }
+
+
+def _status_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return dict(sorted(Counter(str(row["status"]) for row in rows).items()))
+
+
+def _status_reason(rows: list[dict[str, Any]]) -> str:
+    reasons = sorted({str(row["scheduler_reason"]) for row in rows if row.get("scheduler_reason") not in (None, "")})
+    return "; ".join(reasons) if reasons else "Canonical execution identity is uncertain and must be refreshed."
+
+
+def _status_blocker(
+    code: str,
+    message: str,
+    *,
+    rows: list[dict[str, Any]] | None = None,
+    blocked_actions: list[str] | None = None,
+) -> dict[str, Any]:
+    rows = rows or []
+    step_ids = sorted({str(row["step_id"]) for row in rows})
+    return {
+        "code": code,
+        "step_id": step_ids[0] if len(step_ids) == 1 else None,
+        "run_ids": sorted(str(row["run_id"]) for row in rows),
+        "message": message,
+        "blocked_actions": sorted(blocked_actions or []),
+    }
+
+
+def _monitor_action(root: Path, remote: str | None) -> dict[str, Any]:
+    argv = ["python", "-m", "agent_tools", "experiment-monitor", "--run-dir", str(root)]
+    if remote:
+        argv.extend(["--remote", remote])
+    return _status_action(
+        "experiment-monitor",
+        "Refresh canonical lifecycle evidence.",
+        argv,
+        execution_host=remote,
+    )
+
+
+def _status_action(
+    action_id: str,
+    reason: str,
+    argv: list[str],
+    *,
+    step_id: str | None = None,
+    execution_host: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": action_id,
+        "step_id": step_id,
+        "execution_host": execution_host,
+        "reason": reason,
+        "advisory": True,
+        "mutates": True,
+        "requires_authorization": True,
+        "argv": argv,
+    }
+
+
+def _optional_text(value: Any) -> str | None:
+    return None if value in (None, "") else str(value)
+
+
+def _table_text(value: Any) -> str:
+    return "" if value is None else str(value).replace("|", "/")
 
 
 def write_wandb_report(root: Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> None:

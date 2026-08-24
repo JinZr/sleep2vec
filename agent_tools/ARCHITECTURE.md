@@ -67,16 +67,16 @@ embedding_extraction.
 The guard freezes this set: adding a module here requires updating `layering.py`
 and this table, so a module can't silently slide into "mixed".
 
-## CLI command triage (34 subcommands)
+## CLI command triage (35 subcommands)
 
-`cli_contract` freezes the 34 names; this is the ownership read.
+`cli_contract` freezes the 35 names; this is the ownership read.
 
-- **Kernel (23)**: repo-summary, collect-runs, hparam-launch, hparam-run-queue,
+- **Kernel (24)**: repo-summary, collect-runs, hparam-launch, hparam-run-queue,
   hparam-monitor, hparam-stop, hparam-select, hparam-checkpoint-scan,
   hparam-digest, hparam-suggest, hparam-adaptive-init, hparam-adaptive-step,
   hparam-adaptive-loop, progress, experiment-init, experiment-note,
   experiment-register-step, experiment-finalize, experiment-wandb-sync,
-  experiment-index-checkpoints, experiment-monitor, experiment-rank,
+  experiment-index-checkpoints, experiment-monitor, experiment-status, experiment-rank,
   experiment-run.
 - **Domain (7)**: config-summary, index-summary, preset-summary,
   hparam-external-eval, hparam-export-logits, hparam-threshold, hparam-ensemble.

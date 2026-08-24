@@ -224,6 +224,12 @@ Experiment checkpoint indexing follows each row's frozen runtime/checkpoint pair
 
 ## Consumer requirements
 
+`experiment-status` consumes lifecycle state only from this canonical table.
+It may display scheduler, process, health, checkpoint, and runtime-manifest
+fields already recorded in a row, but it does not refresh them and never reads
+`run_status.tsv`, `launch_manifest.tsv`, reports, events, runtime manifests,
+logs, or W&B as alternate lifecycle evidence.
+
 Every hparam mutation first validates workspace ownership, step registration, frozen run hashes, the independent `recipe.resolved.yaml` byte digest recorded by `plan.json`, and equality between the two complete effective recipe copies. Missing or partial canonical state fails rather than being repaired by launch, selection, collection, or postprocess.
 
 Selected-candidate postprocessing refreshes lifecycle status from the current canonical manifest rather than trusting ranking or candidate-table status. For test selection, caller-provided rank, checkpoint path, and SHA-256 must match both the frozen workspace ranking and canonical run row before top-k filtering. Physical SHA-256 revalidation then covers only candidates retained by top-k, or every candidate under `all_candidates`. `hparam-external-eval` accepts only `completed` or `finished` runs; it and `hparam-export-logits` reject SSH-owned candidates before writing outputs because these direct helpers have no remote config-staging and result-collection protocol.

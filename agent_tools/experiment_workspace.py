@@ -116,6 +116,7 @@ RESEARCH_LOG_MARKER_RE = re.compile(
     r'^<!-- agent-tools-research-entry id="([a-z0-9][a-z0-9._-]{0,127})" sha256="([0-9a-f]{64})" -->\n',
     re.MULTILINE,
 )
+STEP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 RESEARCH_LOG_ENTRY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -427,6 +428,27 @@ def read_step_manifest(
             return None
         raise FileNotFoundError(f"Managed step manifest does not exist: {path}")
     return _validated_step_manifest(exp_io.read_text_at(path, remote=remote), path, str(step_id))
+
+
+def read_registered_steps(
+    root: str | Path,
+    *,
+    experiment_id: str,
+    remote: str | None = None,
+) -> list[dict[str, Any]]:
+    root = Path(root)
+    step_ids = exp_io.list_managed_subdirectories_at(root, root / "steps", remote=remote)
+    manifests = []
+    for step_id in step_ids:
+        if STEP_ID_RE.fullmatch(step_id) is None:
+            raise ValueError(f"Managed step directory has an invalid id: {step_id}")
+        path = root / "steps" / step_id / "step.yaml"
+        files = exp_io.read_managed_files_at(root, [path], remote=remote)
+        manifest = _validated_step_manifest(files[str(path)]["text"], path, step_id)
+        if str(manifest["experiment_id"]) != str(experiment_id):
+            raise ValueError(f"Managed step belongs to a different experiment: {path}")
+        manifests.append(manifest)
+    return manifests
 
 
 def commit_step_manifest(

@@ -120,6 +120,248 @@ except OSError as exc:
     return True
 
 
+def list_managed_subdirectories_at(
+    root: str | Path,
+    directory: str | Path,
+    *,
+    remote: str | None = None,
+) -> list[str]:
+    root = Path(root)
+    directory = Path(directory)
+    _validate_raw_managed_path(root, directory)
+    if remote:
+        script = """
+import json
+import os
+import stat
+import sys
+
+root, directory = json.loads(sys.argv[1])
+
+def reject(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(2)
+
+def validate_directory(path):
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        reject(f"Managed directory is missing or aliased: {path}")
+    return True
+
+if not validate_directory(root):
+    reject(f"Managed workspace root is missing: {root}")
+relative = os.path.relpath(directory, root)
+current = root
+for part in [] if relative == "." else relative.split(os.sep):
+    current = os.path.join(current, part)
+    if not validate_directory(current):
+        print("[]")
+        raise SystemExit(0)
+
+names = []
+try:
+    entries = list(os.scandir(directory))
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+for entry in entries:
+    try:
+        info = entry.stat(follow_symlinks=False)
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        reject(f"Managed directory contains a non-directory entry: {entry.path}")
+    names.append(entry.name)
+print(json.dumps(sorted(names)))
+"""
+        payload = json.dumps([str(root), str(directory)])
+        result = transport.run_ssh(
+            remote,
+            transport.remote_python_command(script, payload),
+            text=True,
+        )
+        if result.returncode == 2:
+            raise ValueError(result.stderr.strip() or f"Managed directory is invalid: {directory}")
+        if result.returncode != 0:
+            detail = result.stderr.strip() or f"exit code {result.returncode}"
+            raise RuntimeError(f"SSH directory read failed for {directory} on {remote}: {detail}")
+        return json.loads(result.stdout)
+
+    try:
+        root_info = os.lstat(root)
+    except FileNotFoundError as exc:
+        raise ValueError(f"Managed workspace root is missing: {root}") from exc
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        raise ValueError(f"Managed workspace root is missing or aliased: {root}")
+    relative = directory.relative_to(root)
+    current = root
+    for part in relative.parts:
+        current /= part
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            return []
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"Managed directory is missing or aliased: {current}")
+    names = []
+    for entry in os.scandir(directory):
+        info = entry.stat(follow_symlinks=False)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"Managed directory contains a non-directory entry: {entry.path}")
+        names.append(entry.name)
+    return sorted(names)
+
+
+def read_managed_files_at(
+    root: str | Path,
+    paths: list[str | Path],
+    *,
+    remote: str | None = None,
+) -> dict[str, dict[str, str]]:
+    root = Path(root)
+    targets = [Path(path) for path in paths]
+    for target in targets:
+        _validate_raw_managed_path(root, target)
+    if len(targets) != len(set(targets)):
+        raise ValueError("Managed file paths must be unique.")
+    if remote:
+        script = """
+import hashlib
+import json
+import os
+import stat
+import sys
+
+root, targets = json.loads(sys.argv[1])
+
+def reject(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(2)
+
+def directory_info(path):
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        reject(f"Managed directory is missing: {path}")
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        reject(f"Managed directory is missing or aliased: {path}")
+
+directory_info(root)
+seen_inodes = set()
+payload = {}
+for target in targets:
+    relative = os.path.relpath(target, root)
+    current = root
+    for part in relative.split(os.sep)[:-1]:
+        current = os.path.join(current, part)
+        directory_info(current)
+    try:
+        before = os.lstat(target)
+    except FileNotFoundError:
+        reject(f"Managed file is missing: {target}")
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        reject(f"Managed file is missing or aliased: {target}")
+    inode = (before.st_dev, before.st_ino)
+    if inode in seen_inodes:
+        reject(f"Managed files must be independent regular files: {target}")
+    seen_inodes.add(inode)
+    try:
+        with open(target, "rb") as file_obj:
+            opened = os.fstat(file_obj.fileno())
+            data = file_obj.read()
+            after = os.fstat(file_obj.fileno())
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if (opened.st_dev, opened.st_ino) != inode or (after.st_dev, after.st_ino) != inode:
+        reject(f"Managed file changed while it was read: {target}")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeError:
+        reject(f"Managed file is not valid UTF-8: {target}")
+    payload[target] = {"text": text, "sha256": hashlib.sha256(data).hexdigest()}
+print(json.dumps(payload, sort_keys=True))
+"""
+        request = json.dumps([str(root), [str(path) for path in targets]])
+        result = transport.run_ssh(
+            remote,
+            transport.remote_python_command(script, request),
+            text=True,
+        )
+        if result.returncode == 2:
+            raise ValueError(result.stderr.strip() or "Managed control bundle is invalid.")
+        if result.returncode != 0:
+            detail = result.stderr.strip() or f"exit code {result.returncode}"
+            raise RuntimeError(f"SSH managed-file read failed on {remote}: {detail}")
+        return json.loads(result.stdout)
+
+    try:
+        root_info = os.lstat(root)
+    except FileNotFoundError as exc:
+        raise ValueError(f"Managed workspace root is missing: {root}") from exc
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        raise ValueError(f"Managed workspace root is missing or aliased: {root}")
+    seen_inodes = set()
+    payload = {}
+    for target in targets:
+        relative = target.relative_to(root)
+        current = root
+        for part in relative.parts[:-1]:
+            current /= part
+            try:
+                info = os.lstat(current)
+            except FileNotFoundError as exc:
+                raise ValueError(f"Managed directory is missing: {current}") from exc
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise ValueError(f"Managed directory is missing or aliased: {current}")
+        try:
+            before = os.lstat(target)
+        except FileNotFoundError as exc:
+            raise ValueError(f"Managed file is missing: {target}") from exc
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ValueError(f"Managed file is missing or aliased: {target}")
+        inode = (before.st_dev, before.st_ino)
+        if inode in seen_inodes:
+            raise ValueError(f"Managed files must be independent regular files: {target}")
+        seen_inodes.add(inode)
+        with target.open("rb") as file_obj:
+            opened = os.fstat(file_obj.fileno())
+            data = file_obj.read()
+            after = os.fstat(file_obj.fileno())
+        if (opened.st_dev, opened.st_ino) != inode or (after.st_dev, after.st_ino) != inode:
+            raise ValueError(f"Managed file changed while it was read: {target}")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeError as exc:
+            raise ValueError(f"Managed file is not valid UTF-8: {target}") from exc
+        payload[str(target)] = {"text": text, "sha256": hashlib.sha256(data).hexdigest()}
+    return payload
+
+
+def _validate_raw_managed_path(root: Path, target: Path) -> None:
+    if not root.is_absolute() or not target.is_absolute():
+        raise ValueError("Managed control paths must be absolute.")
+    if ".." in root.parts or ".." in target.parts:
+        raise ValueError("Managed control paths must not contain '..' components.")
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"Managed control path is outside its workspace: {target}") from exc
+
+
 def read_rows_at(
     path: str | Path,
     *,

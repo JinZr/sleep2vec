@@ -207,8 +207,9 @@ The control flow is:
 3. `plan` freezes the resolved recipe, commands, hashes, experiment, step, and
    run identities;
 4. explicit launch commands execute the existing runtime entrypoints;
-5. monitor and summary commands observe canonical artifacts but do not launch
-   pending work;
+5. `experiment-status` explains already-recorded canonical state without live
+   observation or writes; monitor commands explicitly refresh evidence but do
+   not launch pending work;
 6. `experiment-note` reads one local YAML entry file and appends the
    evidence-backed research milestone without changing lifecycle state;
 7. finalization requires no active runs and a non-empty report.
@@ -233,6 +234,10 @@ authority.
 
 `run_manifest.tsv` is the only lifecycle and execution-identity owner; status
 tables, events, reports, and `RESEARCH_LOG.md` are projections or narrative.
+`experiment-status` also validates registered step manifests and frozen plan
+control bundles, but ignores those projections and never queries Slurm,
+processes, GPUs, checkpoints, or W&B. Its argv suggestions remain advisory and
+require the same explicit authorization as invoking the underlying command.
 Managed direct and Slurm follow-up always uses frozen canonical identity.
 Slurm terminal truth normally combines scheduler and sidecar evidence; a purged
 job with explicitly disabled accounting has one narrow authenticated recovery

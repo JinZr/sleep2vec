@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
 import stat
 from typing import Any, Iterator
 
+from . import experiment_io as exp_io
 from .experiment_workspace import (
+    EXECUTION_IDENTITY_FIELDS,
     SCHEDULER_PLAN_IDENTITY_FIELDS,
     experiment_metadata_issues,
     experiment_root,
@@ -24,6 +27,209 @@ from .manifests import read_json
 from .models import REPO_ROOT
 
 RUN_METADATA_FIELDS = ("experiment_id", "run_name", "version")
+REGISTERED_PLAN_IDENTITY_FIELDS = (
+    "experiment_id",
+    "step_id",
+    "run_id",
+    "run_name",
+    "version",
+    "config",
+    "config_sha256",
+    "script",
+    "script_sha256",
+    "run_dir",
+    "artifacts",
+    "runtime_dir",
+    "checkpoint_dir",
+    "terminal_status_owner",
+    *sorted(EXECUTION_IDENTITY_FIELDS),
+    *sorted(SCHEDULER_PLAN_IDENTITY_FIELDS),
+)
+
+
+def _read_plan_documents(
+    plan_dir: Path,
+    *,
+    workspace: Path | None = None,
+    remote: str | None = None,
+    strict_control_bundle: bool = False,
+    require_resolved_sha256: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    plan_path = plan_dir / "plan.json"
+    resolved_recipe_path = plan_dir / "recipe.resolved.yaml"
+    if strict_control_bundle:
+        if workspace is None:
+            raise ValueError("Strict registered-plan reads require a workspace root.")
+        files = exp_io.read_managed_files_at(
+            workspace,
+            [plan_path, resolved_recipe_path],
+            remote=remote,
+        )
+        try:
+            plan = json.loads(files[str(plan_path)]["text"])
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Registered plan manifest is corrupt: {plan_path}") from exc
+        resolved_recipe_text = files[str(resolved_recipe_path)]["text"]
+        resolved_recipe_sha256 = files[str(resolved_recipe_path)]["sha256"]
+    else:
+        if not plan_path.exists():
+            raise FileNotFoundError(f"Missing hparam plan: {plan_path}")
+        plan = read_json(plan_path)
+        if isinstance(plan, dict) and "trials" in plan:
+            raise ValueError(f"Legacy hparam plan is read-only and cannot be managed: {plan_path}")
+        if not resolved_recipe_path.exists():
+            raise FileNotFoundError(f"Missing frozen hparam recipe: {resolved_recipe_path}")
+        resolved_recipe_bytes = resolved_recipe_path.read_bytes()
+        resolved_recipe_text = resolved_recipe_bytes.decode()
+        resolved_recipe_sha256 = hashlib.sha256(resolved_recipe_bytes).hexdigest()
+    if not isinstance(plan, dict):
+        raise ValueError(f"Registered plan manifest must be a mapping: {plan_path}")
+    if "trials" in plan:
+        raise ValueError(f"Legacy hparam plan is read-only and cannot be managed: {plan_path}")
+    expected_resolved_sha256 = plan.get("resolved_recipe_sha256")
+    if require_resolved_sha256 and expected_resolved_sha256 != resolved_recipe_sha256:
+        raise ValueError(f"Frozen hparam recipe SHA-256 is missing or changed: {resolved_recipe_path}")
+    if (
+        strict_control_bundle
+        and expected_resolved_sha256 not in (None, "")
+        and expected_resolved_sha256 != resolved_recipe_sha256
+    ):
+        raise ValueError(f"Frozen registered recipe SHA-256 changed: {resolved_recipe_path}")
+    resolved_recipe = read_managed_yaml_mapping(
+        resolved_recipe_text,
+        source=f"Frozen registered recipe {resolved_recipe_path}",
+    )
+    return plan, resolved_recipe
+
+
+def read_registered_plan(
+    plan_dir: str | Path,
+    *,
+    workspace: str | Path,
+    step_manifest: dict[str, Any],
+    workspace_rows: list[dict[str, Any]],
+    remote: str | None = None,
+) -> dict[str, Any]:
+    plan_dir = Path(plan_dir)
+    workspace = Path(workspace)
+    registered_paths = [str(path) for path in step_manifest.get("plans") or []]
+    if str(plan_dir) not in registered_paths:
+        raise ValueError(f"Plan is not registered by its managed step: {plan_dir}")
+
+    plan_path = plan_dir / "plan.json"
+    resolved_recipe_path = plan_dir / "recipe.resolved.yaml"
+    plan, resolved_recipe = _read_plan_documents(
+        plan_dir,
+        workspace=workspace,
+        remote=remote,
+        strict_control_bundle=True,
+    )
+    legacy_status = plan_dir / "trial_status.tsv"
+    if exp_io.path_exists_at(legacy_status, remote=remote):
+        raise ValueError(f"Legacy hparam status is read-only and cannot be managed: {legacy_status}")
+    if plan.get("status") != "PASS":
+        raise ValueError(f"Registered plan must have status PASS: {plan_path}")
+
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else None
+    if recipe is None:
+        raise ValueError(f"Registered plan is missing its recipe: {plan_path}")
+    frozen_recipe = {key: value for key, value in recipe.items() if not str(key).startswith("_")}
+    if frozen_recipe != resolved_recipe:
+        raise ValueError(f"Registered plan recipe differs from recipe.resolved.yaml: {resolved_recipe_path}")
+
+    metadata_issues = experiment_metadata_issues(recipe)
+    if metadata_issues:
+        raise ValueError("Invalid registered plan binding: " + "; ".join(issue["message"] for issue in metadata_issues))
+    experiment = recipe["experiment"]
+    step = recipe["step"]
+    if str(experiment.get("root") or "") != str(workspace):
+        raise ValueError(f"Registered plan belongs to a different experiment root: {plan_dir}")
+    if str(experiment.get("id") or "") != str(step_manifest.get("experiment_id") or ""):
+        raise ValueError(f"Registered plan belongs to a different experiment: {plan_dir}")
+    if step != step_manifest.get("step"):
+        raise ValueError(f"Registered plan step metadata differs from its managed step: {plan_dir}")
+
+    runs = plan.get("runs")
+    if not isinstance(runs, list) or not runs:
+        raise ValueError(f"Registered plan must define a non-empty runs list: {plan_path}")
+    validate_run_rows(runs, source=str(plan_path), require_artifact_paths=True)
+    plan_keys = [managed_run_key(run) for run in runs]
+    if len(plan_keys) != len(set(plan_keys)):
+        raise ValueError(f"Registered plan contains duplicate managed run keys: {plan_path}")
+    canonical_by_key = {managed_run_key(row): row for row in workspace_rows}
+    for run in runs:
+        key = managed_run_key(run)
+        canonical = canonical_by_key.get(key)
+        if canonical is None:
+            raise ValueError(f"Workspace run_manifest.tsv is missing registered plan run: {key[0]} / {key[1]}")
+        if canonical.get("status") in (None, ""):
+            raise ValueError(f"Workspace run manifest is missing status: {key[0]} / {key[1]}")
+        for field in REGISTERED_PLAN_IDENTITY_FIELDS:
+            if field not in run:
+                continue
+            if _text_value(canonical.get(field)) != _text_value(run.get(field)):
+                raise ValueError(f"Workspace run manifest differs from plan field {field}: {key[0]} / {key[1]}")
+        plan_parameters = managed_run_parameters(run)
+        canonical_parameters = managed_run_parameters(canonical)
+        if set(plan_parameters) != {field for field, value in canonical_parameters.items() if value not in (None, "")}:
+            raise ValueError(f"Workspace run parameters differ from plan: {key[0]} / {key[1]}")
+        for field, value in plan_parameters.items():
+            if _text_value(canonical_parameters.get(field)) != _text_value(value):
+                raise ValueError(f"Workspace run manifest differs from plan field {field}: {key[0]} / {key[1]}")
+
+    task = str(recipe.get("task") or "")
+    bundle_paths = []
+    hash_expectations = {}
+    for run in runs:
+        for path_field, hash_field in (
+            ("config", "config_sha256"),
+            ("script", "script_sha256"),
+            ("scheduler_script", "scheduler_script_sha256"),
+        ):
+            path = run.get(path_field)
+            expected = run.get(hash_field)
+            if path not in (None, ""):
+                bundle_paths.append(Path(str(path)))
+                if expected not in (None, ""):
+                    hash_expectations[str(path)] = str(expected)
+        bundle_paths.append(Path(str(run["artifacts"])))
+
+    launch_script = plan_dir / ("run_all.sh" if task == "hparam_tune" else "run.sh")
+    bundle_paths.append(launch_script)
+    final_eval_config = plan.get("final_eval_config")
+    if isinstance(final_eval_config, dict) and final_eval_config.get("path") not in (None, ""):
+        final_path = Path(str(final_eval_config["path"]))
+        bundle_paths.append(final_path)
+        if final_eval_config.get("sha256") not in (None, ""):
+            hash_expectations[str(final_path)] = str(final_eval_config["sha256"])
+
+    bundle = exp_io.read_managed_files_at(
+        workspace,
+        list(dict.fromkeys(bundle_paths)),
+        remote=remote,
+    )
+    for path, expected in hash_expectations.items():
+        if bundle[path]["sha256"] != expected:
+            raise ValueError(f"Registered plan frozen file SHA-256 changed: {path}")
+    if task != "hparam_tune":
+        if len(runs) != 1:
+            raise ValueError(f"Generic registered plan must contain exactly one run: {plan_path}")
+        if bundle[str(launch_script)]["sha256"] != str(runs[0].get("script_sha256") or ""):
+            raise ValueError(f"Registered plan run.sh differs from its frozen launch script: {launch_script}")
+
+    matching_rows = [canonical_by_key[key] for key in plan_keys]
+    return {
+        "path": str(plan_dir),
+        "task": task,
+        "adaptive": (recipe.get("adaptive") or {}).get("enabled") is True,
+        "pipeline": any(row.get("pipeline_id") not in (None, "") for row in matching_rows),
+        "run_keys": plan_keys,
+        "launch_script": str(launch_script),
+    }
+
+
+def _text_value(value: Any) -> str:
+    return "" if value is None else str(value)
 
 
 def read_hparam_plan(
@@ -33,23 +239,11 @@ def read_hparam_plan(
     require_adaptive_commit: bool = True,
 ) -> dict[str, Any]:
     plan_path = run_dir / "plan.json"
-    if not plan_path.exists():
-        raise FileNotFoundError(f"Missing hparam plan: {plan_path}")
-    plan = read_json(plan_path)
-    if "trials" in plan:
-        raise ValueError(f"Legacy hparam plan is read-only and cannot be managed: {plan_path}")
+    resolved_recipe_path = run_dir / "recipe.resolved.yaml"
+    plan, resolved_recipe = _read_plan_documents(run_dir, require_resolved_sha256=True)
     legacy_status = run_dir / "trial_status.tsv"
     if legacy_status.exists():
         raise ValueError(f"Legacy hparam status is read-only and cannot be managed: {legacy_status}")
-    resolved_recipe_path = run_dir / "recipe.resolved.yaml"
-    if not resolved_recipe_path.exists():
-        raise FileNotFoundError(f"Missing frozen hparam recipe: {resolved_recipe_path}")
-    resolved_recipe_bytes = resolved_recipe_path.read_bytes()
-    if plan.get("resolved_recipe_sha256") != hashlib.sha256(resolved_recipe_bytes).hexdigest():
-        raise ValueError(f"Frozen hparam recipe SHA-256 is missing or changed: {resolved_recipe_path}")
-    resolved_recipe = read_managed_yaml_mapping(
-        resolved_recipe_bytes.decode(), source=f"Frozen hparam recipe {resolved_recipe_path}"
-    )
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs:
         raise ValueError(f"Hparam plan must define a non-empty runs list: {plan_path}")

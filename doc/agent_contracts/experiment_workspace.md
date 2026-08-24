@@ -172,6 +172,13 @@ invalid and are not repaired in place.
 - `hparam-adaptive-*` appends rounds and commits replacements through the canonical owner.
 - `experiment-note` atomically appends one evidence-backed research-log entry and never changes lifecycle state.
 - `experiment-run` is the explicit, resumable external-evaluation launcher. Dry-run starts nothing; execute waits for successful source plans, freezes checkpoints selected by each source plan's registered ranking, and manages the declared job matrix.
+- `experiment-status` strictly validates the experiment owner, every registered
+  step and frozen plan control bundle, and the canonical `run_manifest.tsv`,
+  then prints a deterministic read-only snapshot. It never reads projections
+  as lifecycle evidence, refreshes runtime observations, or writes workspace
+  state. Suggested commands are advisory argv arrays and do not authorize a
+  launch or mutation. Valid blockers return success; corrupt canonical control
+  state or local/SSH read failure returns non-zero.
 - `experiment-rank` writes experiment-wide ranking.
 - `experiment-finalize` requires no active runs and a non-empty final report.
 
