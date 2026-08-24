@@ -410,6 +410,25 @@ def test_plan_rejects_duplicate_whole_night_index_headers(tmp_path: Path):
     assert not Path(payload["experiment"]["root"]).exists()
 
 
+def test_plan_rejects_duplicate_whole_night_sample_keys(tmp_path: Path):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    first = tmp_path / "first" / "set" / "night.npz"
+    second = tmp_path / "second" / "set" / "night.npz"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.touch()
+    second.touch()
+    Path(payload["inputs"]["data_index"][0]).write_text(
+        "path,split,duration,source\n" f"{first},val,60,mesa\n" f"{second},val,60,mesa\n"
+    )
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("Duplicate embedding sample_key" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
 def test_plan_rejects_surplus_whole_night_index_values(tmp_path: Path):
     recipe, plan_dir, payload = _write_recipe(tmp_path)
     sample = tmp_path / "night.npz"

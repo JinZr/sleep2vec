@@ -22,7 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from data.kaldi_psg_dataset import KaldiPSGDataset
 from data.psg_pretrain_dataset import PSGPretrainDataset
-from data.whole_night_index import validate_whole_night_index
+from data.whole_night_index import build_embedding_sample_key, validate_whole_night_index
 from preprocess.save_dataset_presets import (
     _load_preset_build_block,
     _resolve_effective_min_channels,
@@ -690,10 +690,11 @@ def _sample_key(
 ) -> str:
     if isinstance(sample_id, str) and _KALDI_SAMPLE_KEY_RE.match(sample_id):
         return sample_id
-    return (
-        f"{_sanitize_key_part(source_value)}_"
-        f"{_record_key_from_metadata(record_key_value, session_id_value, path_value)}_"
-        f"{token_start:06d}_{token_end:06d}"
+    return build_embedding_sample_key(
+        source_value=source_value,
+        record_key=_record_key_from_metadata(record_key_value, session_id_value, path_value),
+        token_start=token_start,
+        token_end=token_end,
     )
 
 

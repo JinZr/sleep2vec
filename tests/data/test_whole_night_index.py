@@ -58,6 +58,20 @@ def test_validate_whole_night_index_rejects_duplicate_paths(tmp_path: Path):
         validate_whole_night_index([index], eval_split="test", max_source_tokens=2)
 
 
+def test_validate_whole_night_index_rejects_duplicate_sample_keys(tmp_path: Path):
+    first = tmp_path / "first" / "set" / "night.npz"
+    second = tmp_path / "second" / "set" / "night.npz"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.touch()
+    second.touch()
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration,source\n" f"{first},test,30,mesa\n" f"{second},test,30,mesa\n")
+
+    with pytest.raises(ValueError, match="Duplicate embedding sample_key"):
+        validate_whole_night_index([index], eval_split="test", max_source_tokens=2)
+
+
 def test_validate_whole_night_index_rejects_duplicate_headers(tmp_path: Path):
     first = tmp_path / "first.npz"
     second = tmp_path / "second.npz"

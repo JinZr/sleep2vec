@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from data.whole_night_index import validate_whole_night_index
+from data.whole_night_index import build_embedding_sample_key, validate_whole_night_index
 from sleep2vec2.checkpoints import get_state_dict_from_checkpoint, load_checkpoint
 from sleep2vec2.common import apply_data_backend_args, apply_model_config_args
 from sleep2vec2.config import load_finetune_config, load_pretrain_config
@@ -690,10 +690,11 @@ def _sample_key(
 ) -> str:
     if isinstance(sample_id, str) and _KALDI_SAMPLE_KEY_RE.match(sample_id):
         return sample_id
-    return (
-        f"{_sanitize_key_part(source_value)}_"
-        f"{_record_key_from_metadata(record_key_value, session_id_value, path_value)}_"
-        f"{token_start:06d}_{token_end:06d}"
+    return build_embedding_sample_key(
+        source_value=source_value,
+        record_key=_record_key_from_metadata(record_key_value, session_id_value, path_value),
+        token_start=token_start,
+        token_end=token_end,
     )
 
 
