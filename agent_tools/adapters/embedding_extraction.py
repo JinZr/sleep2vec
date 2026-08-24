@@ -135,6 +135,14 @@ class EmbeddingExtractionAdapter(TaskAdapter):
                 issues.append(
                     _fail("extraction.channels", "extraction.channels must contain non-empty strings.", channels)
                 )
+            elif any(Path(item).name != item or item in {".", ".."} for item in channel_list):
+                issues.append(
+                    _fail(
+                        "extraction.channels",
+                        "extraction.channels must contain single safe path components.",
+                        channels,
+                    )
+                )
             elif len(channel_list) != len(set(channel_list)):
                 issues.append(
                     _fail("extraction.channels", "extraction.channels must be non-empty and unique.", channels)
@@ -205,11 +213,14 @@ class EmbeddingExtractionAdapter(TaskAdapter):
                         embedding_dir,
                     )
                 )
-            elif output.is_symlink():
+            elif output.is_symlink() or any(
+                (parent.exists() or parent.is_symlink()) and not parent.is_dir() for parent in output.parents
+            ):
                 issues.append(
                     _fail(
                         "artifacts.embedding_dir",
-                        f"Embedding output directory must not be a symlink: {embedding_dir}",
+                        f"Embedding output path must not be a symlink or traverse a non-directory ancestor: "
+                        f"{embedding_dir}",
                         embedding_dir,
                     )
                 )

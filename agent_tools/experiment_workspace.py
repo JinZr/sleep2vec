@@ -52,6 +52,7 @@ FROZEN_RUN_FIELDS = (
         "config_sha256",
         "script",
         "script_sha256",
+        "input_snapshots",
         "run_dir",
         "artifacts",
         "runtime_dir",

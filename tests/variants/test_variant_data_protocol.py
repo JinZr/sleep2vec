@@ -82,14 +82,17 @@ class _DummyDatasetWithSamples:
 @pytest.mark.parametrize("module_name", DATASET_MODULES)
 def test_psg_dataset_preserves_source_identifiers_and_blank_fallback(tmp_path: Path, module_name: str):
     dataset_module = importlib.import_module(module_name)
-    numeric_sample = tmp_path / "numeric.npz"
+    source_values = ["001", "nan", "NA", "null"]
+    rows = []
+    for index, source in enumerate(source_values):
+        sample = tmp_path / f"source-{index}.npz"
+        np.savez(sample, stage5=np.array([0.0, 1.0], dtype=np.float32))
+        rows.append(f"{sample},test,60,{source}")
     fallback_sample = tmp_path / "fallback.npz"
-    np.savez(numeric_sample, stage5=np.array([0.0, 1.0], dtype=np.float32))
     np.savez(fallback_sample, stage5=np.array([0.0, 1.0], dtype=np.float32))
     index_path = tmp_path / "fallback-index.csv"
-    index_path.write_text(
-        "path,split,duration,source\n" f"{numeric_sample},test,60,001\n" f"{fallback_sample},test,60,\n"
-    )
+    rows.append(f"{fallback_sample},test,60,")
+    index_path.write_text("path,split,duration,source\n" + "\n".join(rows) + "\n")
 
     dataset = dataset_module.PSGPretrainDataset(
         channel_names=["stage5"],
@@ -98,7 +101,7 @@ def test_psg_dataset_preserves_source_identifiers_and_blank_fallback(tmp_path: P
         load_preset_path=None,
         index=str(index_path),
         split=["test"],
-        sources=["001", "fallback-index"],
+        sources=[*source_values, "fallback-index"],
         max_tokens=2,
         mask_rate=0.0,
         randomly_select_channels=False,
@@ -107,7 +110,7 @@ def test_psg_dataset_preserves_source_identifiers_and_blank_fallback(tmp_path: P
         num_workers=0,
     )
 
-    assert [sample.metadata["source"] for sample in dataset.data] == ["001", str(index_path)]
+    assert [sample.metadata["source"] for sample in dataset.data] == [*source_values, str(index_path)]
 
 
 @pytest.mark.parametrize("package_name", VARIANT_PACKAGES)

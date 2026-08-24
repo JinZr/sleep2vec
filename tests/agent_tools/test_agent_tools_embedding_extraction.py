@@ -453,15 +453,39 @@ def test_nonempty_embedding_output_fails_before_workspace(tmp_path: Path):
     assert not Path(payload["experiment"]["root"]).exists()
 
 
-def test_dangling_embedding_output_symlink_fails_before_workspace(tmp_path: Path):
+@pytest.mark.parametrize("symlink_position", ["output", "ancestor"])
+def test_dangling_embedding_output_symlink_fails_before_workspace(tmp_path: Path, symlink_position: str):
     recipe, plan_dir, payload = _write_recipe(tmp_path)
     embedding_dir = Path(payload["artifacts"]["embedding_dir"])
-    embedding_dir.symlink_to(tmp_path / "missing", target_is_directory=True)
+    if symlink_position == "output":
+        embedding_dir.symlink_to(tmp_path / "missing", target_is_directory=True)
+    else:
+        parent = tmp_path / "link"
+        parent.symlink_to(tmp_path / "missing", target_is_directory=True)
+        payload["artifacts"]["embedding_dir"] = str(parent / "embeddings")
+        _rewrite(recipe, payload)
 
     report = build_plan(recipe_path=recipe, output_dir=plan_dir)
 
     assert report.exit_code == 1
     assert any("must not be a symlink" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
+@pytest.mark.parametrize("channel", ["/tmp/export", "../escape"])
+def test_plan_rejects_unsafe_extraction_channels(tmp_path: Path, channel: str):
+    config = yaml.safe_load((REPO_ROOT / PRETRAIN_CONFIG).read_text())
+    config["model"]["channels"][0]["name"] = channel
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    recipe, plan_dir, payload = _write_recipe(tmp_path, config=str(config_path))
+    payload["extraction"]["channels"] = [channel]
+    _rewrite(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("single safe path components" in issue.message for issue in report.blocking_issues())
     assert not Path(payload["experiment"]["root"]).exists()
 
 

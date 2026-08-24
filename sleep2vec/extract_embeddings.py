@@ -106,6 +106,13 @@ def _load_config_bundle(args: argparse.Namespace):
         )
     if not selected_channels:
         raise ValueError("--channels must select at least one model channel.")
+    unsafe_channels = [
+        name
+        for name in selected_channels
+        if not isinstance(name, str) or not name or Path(name).name != name or name in {".", ".."}
+    ]
+    if unsafe_channels:
+        raise ValueError(f"--channels must contain single safe path components: {unsafe_channels}.")
     args.channel_names = selected_channels
     args.channel_input_dims = {name: args.model_channel_input_dims[name] for name in selected_channels}
     args.channel_aliases = {name: alias for name, alias in args.channel_aliases.items() if name in selected_channels}
@@ -208,8 +215,12 @@ def _sha256_path(path: Path) -> str:
 
 
 def _preflight_output_dir(output_dir: Path) -> None:
-    if output_dir.is_symlink():
-        raise ValueError(f"Embedding output directory must not be a symlink: {output_dir}")
+    if output_dir.is_symlink() or any(
+        (parent.exists() or parent.is_symlink()) and not parent.is_dir() for parent in output_dir.parents
+    ):
+        raise ValueError(
+            f"Embedding output path must not be a symlink or traverse a non-directory ancestor: {output_dir}"
+        )
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError(f"Embedding output directory must be empty: {output_dir}")
 
