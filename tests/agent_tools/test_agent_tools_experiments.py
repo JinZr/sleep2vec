@@ -122,6 +122,35 @@ def test_experiment_note_cli_reports_append_and_idempotent_retry(tmp_path: Path)
     assert f"Research log {root / 'RESEARCH_LOG.md'}: obs-cli already present" in second.stdout
 
 
+@pytest.mark.parametrize("entry_kind", ["missing", "inline", "directory", "stdin"])
+@pytest.mark.parametrize("remote", [None, "unreachable-host"])
+def test_experiment_note_cli_rejects_non_file_entry_without_mutation(
+    tmp_path: Path,
+    entry_kind: str,
+    remote: str | None,
+):
+    root = tmp_path / "workspace"
+    experiments.init_experiment(root, _experiment_spec(tmp_path))
+    before = _workspace_files(root)
+    entry = {
+        "missing": str(tmp_path / "missing-entry.yaml"),
+        "inline": "id: obs-inline",
+        "directory": str(tmp_path),
+        "stdin": "-",
+    }[entry_kind]
+    args = ["experiment-note", "--run-dir", str(root), "--entry", entry]
+    if remote is not None:
+        args.extend(["--remote", remote])
+
+    result = _run(*args)
+
+    assert result.returncode == 2
+    assert "--entry must be an existing local YAML file path" in result.stderr
+    assert "Traceback" not in result.stdout
+    assert "Traceback" not in result.stderr
+    assert _workspace_files(root) == before
+
+
 def test_experiment_note_rejects_same_id_with_different_content_without_writing(tmp_path: Path):
     root = tmp_path / "workspace"
     experiments.init_experiment(root, _experiment_spec(tmp_path))

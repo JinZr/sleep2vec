@@ -39,6 +39,8 @@ Preset payloads remain `list[SampleIndex]`; missing-channel presets preserve
 `payload["available_channels"]`. Kaldi changes storage discovery and loading,
 not the collated batch shape. Split policy, label selection, required channels,
 and preset regeneration are high-impact decisions and must not be inferred.
+When config defines `preset_build`, it exclusively owns required-channel and
+minimum-channel runtime policy; otherwise the preset recipe owns those CLI fields.
 
 Built-in arousal preset generation consumes existing canonical
 `arousal_event` targets rather than building labels from source event files.
@@ -121,6 +123,9 @@ window and explicitly named episode denominators separate.
 External or final test data stays locked until the recorded decision allows it.
 Hyperparameter ranking uses the split and metric frozen in the recipe; test
 evidence is eligible only when tuning explicitly unlocks and evaluates test.
+Direct finetune cannot select checkpoints on test; a fixed test-selected
+configuration uses a one-configuration hparam plan so every epoch checkpoint
+is evaluated, ranked, and hash-bound.
 
 ## Inference And Evaluation
 
@@ -174,8 +179,8 @@ The control flow is:
 4. explicit launch commands execute the existing runtime entrypoints;
 5. monitor and summary commands observe canonical artifacts but do not launch
    pending work;
-6. `experiment-note` appends evidence-backed research milestones without
-   changing lifecycle state;
+6. `experiment-note` reads one local YAML entry file and appends the
+   evidence-backed research milestone without changing lifecycle state;
 7. finalization requires no active runs and a non-empty report.
 
 Runnable plans use the exact config bytes accepted by consultation and freeze
@@ -231,7 +236,9 @@ finalization requires one verified success per declared job. See the
 
 Adaptive tuning keeps external-agent suggestions inside authenticated proposal
 snapshots and parameter envelopes; planning, preflight, launch, and lifecycle
-mutation remain tool-owned. `agent_proposal` is terminal-only, while automatic
+mutation remain tool-owned. Recipes with `adaptive.enabled=true` enter through
+`hparam-adaptive-init`; the generic `plan` command does not publish incomplete
+adaptive workspaces. `agent_proposal` is terminal-only, while automatic
 neighborhood suggestions and active replacement require explicit
 `best_neighborhood`. See the [task recipe contract](../agent_contracts/task_recipe.md)
 and [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md).

@@ -1589,6 +1589,44 @@ def test_adaptive_init_preflight_leaves_blocked_root_untouched_then_retries(tmp_
     assert (workspace / "adaptive" / "rounds" / "round_000" / "plan.json").exists()
 
 
+def test_generic_plan_rejects_adaptive_recipe_before_workspace_mutation(tmp_path: Path):
+    source = tmp_path / "source"
+    recipe = _adaptive_recipe(source)
+    workspace = tmp_path / "adaptive-workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--output-dir",
+        str(workspace / "plans" / "generic"),
+    )
+
+    assert result.returncode == 1
+    assert "Adaptive recipes must be initialized with hparam-adaptive-init" in result.stdout
+    assert not workspace.exists()
+
+
+def test_generic_plan_allows_disabled_adaptive_block(tmp_path: Path):
+    source = tmp_path / "source"
+    recipe = _adaptive_recipe(source)
+    workspace = tmp_path / "static-workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    payload["adaptive"]["enabled"] = False
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    output_dir = workspace / "plans" / "static"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert (output_dir / "plan.json").exists()
+    assert not (workspace / "adaptive" / "workflow.json").exists()
+
+
 def test_adaptive_init_creates_round_zero_without_modifying_original_recipe(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     before = recipe.read_text()
@@ -1865,7 +1903,7 @@ def test_adaptive_rounds_keep_frozen_runtime_identity_and_allow_capacity_updates
     round_recipe = adaptive_hparam._write_round_recipe(
         adaptive_hparam.load_recipe_with_base(suggestion), suggestion, next_dir, 1
     )
-    report = plans.build_plan(recipe_path=round_recipe, output_dir=next_dir)
+    report = plans.build_plan(recipe_path=round_recipe, output_dir=next_dir, allow_adaptive_workflow=True)
 
     assert report.exit_code == 0
     assert suggested["execution"]["max_concurrent"] == 2

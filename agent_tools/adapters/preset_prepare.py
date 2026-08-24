@@ -26,6 +26,64 @@ class PresetPrepareAdapter(TaskAdapter):
     requires_survival_sidecars = True
     requires_multilabel_sidecars = True
 
+    def bind_effective_recipe(
+        self,
+        recipe: dict[str, Any],
+        config_summary: dict[str, Any] | None,
+        *,
+        source_recipe: dict[str, Any] | None = None,
+    ) -> list[DecisionIssue]:
+        preset_build = (config_summary or {}).get("preset_build") or {}
+        if not preset_build:
+            return []
+
+        preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
+        decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
+        source_preset = source_recipe.get("preset") if isinstance((source_recipe or {}).get("preset"), dict) else {}
+        source_decisions = (
+            source_recipe.get("decisions") if isinstance((source_recipe or {}).get("decisions"), dict) else {}
+        )
+        issues: list[DecisionIssue] = []
+        for decision_field, preset_field, config_field in (
+            ("required_channels", "channels", "required_channels"),
+            ("min_channels", "min_channels", "min_channels"),
+        ):
+            config_value = preset_build.get(config_field)
+            if config_value is None:
+                continue
+            recipe_value = preset.get(preset_field)
+            raw_decision = decisions.get(decision_field)
+            decision_value = raw_decision.get("value") if isinstance(raw_decision, dict) else raw_decision
+            source_recipe_value = source_preset.get(preset_field)
+            raw_source_decision = source_decisions.get(decision_field)
+            source_decision_value = (
+                raw_source_decision.get("value") if isinstance(raw_source_decision, dict) else raw_source_decision
+            )
+            if any(
+                value not in (None, "", [], "ASK_USER") and value != config_value
+                for value in (source_recipe_value, source_decision_value, recipe_value, decision_value)
+            ):
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        decision_field,
+                        f"{decision_field} differs from config preset_build.{config_field}.",
+                        None,
+                        {
+                            "source_recipe": source_recipe_value,
+                            "source_decision": source_decision_value,
+                            "recipe": recipe_value,
+                            "decision": decision_value,
+                            "config": config_value,
+                            "preflight_before_workspace": True,
+                        },
+                    )
+                )
+                continue
+            preset.pop(preset_field, None)
+        recipe["preset"] = preset
+        return issues
+
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
         return [("index", path) for path in inputs.get("index") or []]
@@ -57,7 +115,12 @@ class PresetPrepareAdapter(TaskAdapter):
                         {"recipe": value},
                     )
                 )
-        if preset.get("allow_missing_channels") is True and preset.get("min_channels") is None:
+        config_min_channels = ((config_summary or {}).get("preset_build") or {}).get("min_channels")
+        if (
+            preset.get("allow_missing_channels") is True
+            and preset.get("min_channels") is None
+            and config_min_channels is None
+        ):
             issues.append(
                 needs_issue("min_channels", "min_channels is required when missing channels are allowed.", high_impact)
             )

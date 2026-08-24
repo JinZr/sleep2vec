@@ -102,6 +102,16 @@ class TaskAdapter:
         original override position (after index issues)."""
         return None
 
+    def bind_effective_recipe(
+        self,
+        recipe: dict[str, Any],
+        config_summary: dict[str, Any] | None,
+        *,
+        source_recipe: dict[str, Any] | None = None,
+    ) -> list[DecisionIssue]:
+        """Bind config-owned fields into the in-memory effective recipe."""
+        return []
+
     def preflight_issues(
         self, recipe: dict[str, Any], config_summary: dict[str, Any] | None, *, unlock_final_test: bool
     ) -> list[DecisionIssue]:

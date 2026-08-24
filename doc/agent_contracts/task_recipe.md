@@ -46,6 +46,10 @@ Materialization follows these rules:
   recipe sections.
 - For finetune and hparam tasks, an explicit `required_channels` decision must
   match `preset_build.required_channels` in the selected config.
+- For preset preparation, a config `preset_build` block exclusively owns
+  `required_channels` and `min_channels`. Matching recipe decisions retain
+  provenance, but the effective preset omits the duplicate CLI fields. Without
+  `preset_build`, those decisions materialize into the preset CLI fields.
 - For hparam, `inputs.ckpt_path` is reserved for the selected final-evaluation
   checkpoint and is not rendered into tuning finetune commands.
 - Empty or null rendered decisions remain unresolved instead of falling back
@@ -265,6 +269,10 @@ Frozen per-run execution identity and its canonical owner are defined in
 
 The optional `adaptive` block defines append-only rounds bounded by
 `adaptive.max_runs_total`.
+
+An authored recipe with `adaptive.enabled=true` must enter through
+`hparam-adaptive-init`. The generic `plan` command rejects it before workspace
+mutation; only the adaptive workflow owner may materialize round plans.
 
 - Control flags must be YAML booleans; run, round, and poll budgets must be
   positive YAML integers; replacement grace and margin values must be finite

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
+from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status, needs_issue
 from ..decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
 from ..models import REPO_ROOT, coerce_list, recipe_name
 from ..plan_rendering import (
@@ -161,6 +161,29 @@ class FinetuneAdapter(TaskAdapter):
                 )
             )
         return issues
+
+    def preflight_issues(
+        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None, *, unlock_final_test: bool
+    ) -> list[DecisionIssue]:
+        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+        if evaluation.get("selection_split") != "test":
+            return []
+        return [
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "evaluation_policy.selection_split",
+                "Direct finetune cannot select checkpoints on test. Use task=hparam_tune with one configuration "
+                "and max_runs: 1 to test and rank every saved epoch checkpoint.",
+                None,
+                {"selection_split": "test", "preflight_before_workspace": True},
+            )
+        ]
+
+    def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
+        if report.exit_code != 0:
+            return report
+        issues = [*report.issues, *self.preflight_issues(recipe, None, unlock_final_test=False)]
+        return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
 
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
         inputs = _inputs(recipe)

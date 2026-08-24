@@ -90,6 +90,8 @@ def test_experiment_note_cli_contract():
 
     assert {name for name, action in actions.items() if action.required} == {"run_dir", "entry"}
     assert args.remote is None
+    assert "local YAML file path" in actions["entry"].help
+    assert "inline text is not accepted" in actions["entry"].help
 
 
 def test_experiment_run_cli_contract():

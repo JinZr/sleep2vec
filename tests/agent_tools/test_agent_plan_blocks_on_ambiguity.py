@@ -205,6 +205,18 @@ def _write_preset_recipe(
     name: str = "unit_preset",
 ) -> Path:
     preset = preset or {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False}
+    config_payload = yaml.safe_load(Path(config).read_text())
+    preset_build = config_payload.get("preset_build") or {}
+    required_channels = preset.get("channels")
+    required_channels_source = "explicit_recipe"
+    if required_channels is None and preset_build.get("required_channels") is not None:
+        required_channels = preset_build["required_channels"]
+        required_channels_source = "explicit_config"
+    min_channels = preset.get("min_channels")
+    min_channels_source = "explicit_recipe"
+    if min_channels is None and preset_build.get("min_channels") is not None:
+        min_channels = preset_build["min_channels"]
+        min_channels_source = "explicit_config"
     payload = {
         "name": name,
         "task": "preset_prepare",
@@ -215,8 +227,11 @@ def _write_preset_recipe(
             "task": {"value": "preset_prepare", "source": "explicit_recipe"},
             "preset_regeneration": {"value": True, "source": "explicit_recipe"},
             "overwrite_policy": {"value": bool(preset.get("overwrite", False)), "source": "explicit_recipe"},
-            "required_channels": {"value": preset.get("channels", ["ppg"]), "source": "explicit_recipe"},
-            "min_channels": {"value": preset.get("min_channels", 1), "source": "explicit_recipe"},
+            "required_channels": {
+                "value": required_channels if required_channels is not None else ["ppg"],
+                "source": required_channels_source,
+            },
+            "min_channels": {"value": min_channels if min_channels is not None else 1, "source": min_channels_source},
         },
     }
     if execution is not None:
@@ -930,6 +945,56 @@ def test_finetune_plan_materializes_test_after_fit_policy_default(tmp_path: Path
         assert frozen["evaluation_policy"]["test_after_fit"] is True
         assert frozen["decisions"]["test_after_fit"]["value"] is True
         assert frozen["decisions"]["test_after_fit"]["source"] == "policy_default"
+
+
+@pytest.mark.parametrize("test_after_fit", [False, True])
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_finetune_doctor_and_plan_reject_test_selection_before_workspace_mutation(
+    tmp_path: Path,
+    variant: str,
+    test_after_fit: bool,
+):
+    source_dir = tmp_path / "source"
+    recipe = write_finetune_recipe(source_dir, variant=variant)
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    payload["evaluation_policy"].update(
+        {
+            "selection_split": "test",
+            "external_test_locked": False,
+            "test_after_fit": test_after_fit,
+        }
+    )
+    payload["decisions"].update(
+        {
+            "train_val_test_policy": {"value": "test", "source": "explicit_user"},
+            "external_test_locked": {"value": False, "source": "explicit_user"},
+            "test_after_fit": {"value": test_after_fit, "source": "explicit_user"},
+        }
+    )
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    source_recipe_bytes = recipe.read_bytes()
+    config = Path(payload["inputs"]["config"])
+    source_config_bytes = config.read_bytes()
+
+    doctor = _run("doctor", "--recipe", str(recipe))
+    planned = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--output-dir",
+        str(workspace / "plans" / "direct-finetune"),
+    )
+
+    for result in (doctor, planned):
+        assert result.returncode == 1
+        assert "Direct finetune cannot select checkpoints on test" in result.stdout
+        assert "task=hparam_tune" in result.stdout
+        assert "max_runs: 1" in result.stdout
+    assert not workspace.exists()
+    assert recipe.read_bytes() == source_recipe_bytes
+    assert config.read_bytes() == source_config_bytes
 
 
 def test_finetune_lock_does_not_silently_disable_default_test_after_fit(tmp_path: Path):
@@ -2328,7 +2393,7 @@ def test_hparam_plan_materializes_test_after_fit_policy_default_for_test_selecti
             "meaning": "Run the configured test split after each trial unless the recipe or user explicitly opts out.",
         }
     script = Path(plan["runs"][0]["script"]).read_text()
-    assert f"python -m {variant}.finetune" in script
+    assert f"{shlex_quote(sys.executable)} -m {variant}.finetune" in script
     assert "--test-after-fit" in script
     assert "--no-test-after-fit" not in script
     assert "--test-all-checkpoints-after-fit" in script
@@ -2674,6 +2739,9 @@ def test_generated_commands_quote_paths_with_spaces(tmp_path: Path):
 def test_preset_plan_includes_explicit_preset_args(tmp_path: Path):
     base = write_finetune_recipe(tmp_path)
     config = yaml.safe_load(base.read_text())["inputs"]["config"]
+    config_payload = yaml.safe_load(Path(config).read_text())
+    config_payload.pop("preset_build")
+    write_yaml(Path(config), config_payload)
     index = tmp_path / "preset_index.csv"
     index.write_text("path,split,duration,ppg_mask,ah_event_mask\nx.npz,train,60,1,1\n")
     output_template = tmp_path / "{dataset}_{split}_{tokens}.pkl"
@@ -2726,6 +2794,9 @@ def test_preset_plan_includes_explicit_preset_args(tmp_path: Path):
 def test_preset_plan_materializes_rendered_recipe_decisions(tmp_path: Path):
     base = write_finetune_recipe(tmp_path)
     config = yaml.safe_load(base.read_text())["inputs"]["config"]
+    config_payload = yaml.safe_load(Path(config).read_text())
+    config_payload.pop("preset_build")
+    write_yaml(Path(config), config_payload)
     index = tmp_path / "preset_index.csv"
     index.write_text("path,split,duration,ppg_mask,ah_event_mask,stage_mask\nx.npz,train,60,1,1,1\n")
     recipe = _write_preset_recipe(
@@ -2776,15 +2847,146 @@ def test_preset_plan_materializes_rendered_recipe_decisions(tmp_path: Path):
 def test_preset_plan_routes_to_variant_local_script(tmp_path: Path, variant: str, expected_script: str):
     base = write_finetune_recipe(tmp_path, variant=variant)
     config = yaml.safe_load(base.read_text())["inputs"]["config"]
+    config_bytes = Path(config).read_bytes()
     index = tmp_path / "preset_index.csv"
     index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
-    recipe = _write_preset_recipe(tmp_path, config=config, index=index, variant=variant)
+    recipe = _write_preset_recipe(
+        tmp_path,
+        config=config,
+        index=index,
+        variant=variant,
+        preset={"n_tokens": 128, "split": ["train"], "allow_missing_channels": True},
+    )
     output_dir = tmp_path / "plan"
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr or result.stdout
-    assert expected_script in (output_dir / "run.sh").read_text()
+    script = (output_dir / "run.sh").read_text()
+    assert expected_script in script
+    assert "--channels" not in script
+    assert "--min-channels" not in script
+    resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
+    assert "channels" not in resolved["preset"]
+    assert "min_channels" not in resolved["preset"]
+    assert resolved["decisions"]["required_channels"] == {
+        "value": ["ppg", "ahi", "stage5"],
+        "source": "explicit_config",
+    }
+    assert resolved["decisions"]["min_channels"] == {"value": 3, "source": "explicit_config"}
+    assert Path(config).read_bytes() == config_bytes
+    assert Path(_first_run(output_dir)["config"]).read_bytes() == config_bytes
+
+
+@pytest.mark.parametrize(
+    ("field", "preset_field"),
+    [("required_channels", "channels"), ("min_channels", "min_channels")],
+)
+@pytest.mark.parametrize("ask_user_source", ["preset", "decision"])
+def test_preset_plan_accepts_config_owned_user_decision_for_ask_user(
+    tmp_path: Path,
+    field: str,
+    preset_field: str,
+    ask_user_source: str,
+):
+    source_dir = tmp_path / "source"
+    base = write_finetune_recipe(source_dir)
+    config = yaml.safe_load(base.read_text())["inputs"]["config"]
+    config_payload = yaml.safe_load(Path(config).read_text())
+    config_value = config_payload["preset_build"][field]
+    index = source_dir / "preset_index.csv"
+    index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
+    recipe = _write_preset_recipe(source_dir, config=config, index=index)
+    payload = yaml.safe_load(recipe.read_text())
+    if ask_user_source == "preset":
+        payload["preset"][preset_field] = "ASK_USER"
+    else:
+        payload["decisions"][field] = {"value": "ASK_USER", "source": "explicit_recipe"}
+    write_yaml(recipe, payload)
+    user_decisions = write_yaml(
+        source_dir / "user_decisions.yaml",
+        {"decisions": {field: {"value": config_value, "source": "explicit_user"}}},
+    )
+    output_dir = source_dir / "plan"
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(user_decisions),
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    script = (output_dir / "run.sh").read_text()
+    assert "--channels" not in script
+    assert "--min-channels" not in script
+    resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
+    assert preset_field not in resolved["preset"]
+    assert resolved["decisions"][field] == {"value": config_value, "source": "explicit_user"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("required_channels", ["ahi", "ppg", "stage5"]),
+        ("min_channels", 1),
+    ],
+)
+def test_preset_plan_rejects_config_owned_channel_conflict_before_workspace(
+    tmp_path: Path,
+    field: str,
+    value: list[str] | int,
+):
+    source_dir = tmp_path / "source"
+    base = write_finetune_recipe(source_dir)
+    config = yaml.safe_load(base.read_text())["inputs"]["config"]
+    index = source_dir / "preset_index.csv"
+    index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
+    recipe = _write_preset_recipe(source_dir, config=config, index=index)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"][field] = {"value": value, "source": "explicit_recipe"}
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert f"{field} differs from config preset_build.{field}" in result.stdout
+    assert not output_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "preset_field", "value"),
+    [
+        ("required_channels", "channels", ["ppg"]),
+        ("min_channels", "min_channels", 1),
+    ],
+)
+def test_preset_plan_rejects_authored_recipe_conflict_when_decision_matches_config(
+    tmp_path: Path,
+    field: str,
+    preset_field: str,
+    value: list[str] | int,
+):
+    source_dir = tmp_path / "source"
+    base = write_finetune_recipe(source_dir)
+    config = yaml.safe_load(base.read_text())["inputs"]["config"]
+    index = source_dir / "preset_index.csv"
+    index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
+    recipe = _write_preset_recipe(source_dir, config=config, index=index)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["preset"][preset_field] = value
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert f"{field} differs from config preset_build.{field}" in result.stdout
+    assert not output_dir.exists()
 
 
 @pytest.mark.parametrize(
@@ -2841,8 +3043,11 @@ def test_preset_plan_checks_inputs_index_even_when_config_has_finetune_preset(tm
                 "task": {"value": "preset_prepare", "source": "explicit_recipe"},
                 "preset_regeneration": {"value": True, "source": "explicit_recipe"},
                 "overwrite_policy": {"value": False, "source": "explicit_recipe"},
-                "required_channels": {"value": ["ppg"], "source": "explicit_recipe"},
-                "min_channels": {"value": 1, "source": "explicit_recipe"},
+                "required_channels": {
+                    "value": ["ppg", "ahi", "stage5"],
+                    "source": "explicit_config",
+                },
+                "min_channels": {"value": 3, "source": "explicit_config"},
             },
         },
     )
@@ -2973,8 +3178,11 @@ def test_preset_plan_skips_local_index_summary_for_remote_deferred_index(tmp_pat
                 "task": {"value": "preset_prepare", "source": "explicit_recipe"},
                 "preset_regeneration": {"value": True, "source": "explicit_recipe"},
                 "overwrite_policy": {"value": False, "source": "explicit_recipe"},
-                "required_channels": {"value": ["ppg"], "source": "explicit_recipe"},
-                "min_channels": {"value": 1, "source": "explicit_recipe"},
+                "required_channels": {
+                    "value": ["ppg", "ahi", "stage5"],
+                    "source": "explicit_config",
+                },
+                "min_channels": {"value": 3, "source": "explicit_config"},
             },
         },
     )

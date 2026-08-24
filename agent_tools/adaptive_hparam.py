@@ -82,6 +82,7 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
         recipe_path=recipe_path,
         output_dir=round_dir,
         allow_existing_output_artifacts=recovering,
+        allow_adaptive_workflow=True,
     )
     if preflight.exit_code != 0:
         raise AdaptivePreflightError(preflight)
@@ -301,7 +302,9 @@ def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | No
     workflow = _workflow(root)
     next_round = _next_round_index(root)
     next_dir = _round_dir(root, next_round)
-    recipe, _, source_preflight = preflight_plan(recipe_path=workflow["recipe_path"], output_dir=next_dir)
+    recipe, _, source_preflight = preflight_plan(
+        recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
+    )
     if source_preflight.exit_code != 0:
         details = "; ".join(f"{issue.field}: {issue.message}" for issue in source_preflight.blocking_issues())
         raise RuntimeError(
@@ -350,7 +353,9 @@ def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | No
     with TemporaryDirectory(prefix="agent-tools-adaptive-") as temp_dir:
         candidate_path = Path(temp_dir) / "suggested.yaml"
         candidate_path.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
-        _, _, candidate_preflight = preflight_plan(recipe_path=candidate_path, output_dir=next_dir)
+        _, _, candidate_preflight = preflight_plan(
+            recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
+        )
     if candidate_preflight.exit_code != 0:
         details = "; ".join(f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues())
         raise RuntimeError(
@@ -951,7 +956,9 @@ def adaptive_step(
     workflow = _workflow(root)
     next_round = _next_round_index(root)
     next_dir = _round_dir(root, next_round)
-    recipe, _, source_preflight = preflight_plan(recipe_path=workflow["recipe_path"], output_dir=next_dir)
+    recipe, _, source_preflight = preflight_plan(
+        recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
+    )
     if source_preflight.exit_code != 0:
         details = "; ".join(f"{issue.field}: {issue.message}" for issue in source_preflight.blocking_issues())
         raise RuntimeError(
@@ -987,14 +994,18 @@ def adaptive_step(
         with TemporaryDirectory(prefix="agent-tools-agent-proposal-") as temp_dir:
             candidate_path = Path(temp_dir) / "suggested.yaml"
             candidate_path.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
-            next_recipe, _, candidate_preflight = preflight_plan(recipe_path=candidate_path, output_dir=next_dir)
+            next_recipe, _, candidate_preflight = preflight_plan(
+                recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
+            )
         if candidate_preflight.exit_code != 0:
             details = "; ".join(f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues())
             raise RuntimeError(
                 f"Agent proposal failed preflight with exit code {candidate_preflight.exit_code}: {details}"
             )
         workflow = _workflow(root)
-        recipe, _, current_preflight = preflight_plan(recipe_path=workflow["recipe_path"], output_dir=next_dir)
+        recipe, _, current_preflight = preflight_plan(
+            recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
+        )
         if current_preflight.exit_code != 0:
             details = "; ".join(f"{issue.field}: {issue.message}" for issue in current_preflight.blocking_issues())
             raise RuntimeError(
@@ -1012,7 +1023,9 @@ def adaptive_step(
             with TemporaryDirectory(prefix="agent-tools-agent-proposal-") as temp_dir:
                 candidate_path = Path(temp_dir) / "suggested.yaml"
                 candidate_path.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
-                next_recipe, _, candidate_preflight = preflight_plan(recipe_path=candidate_path, output_dir=next_dir)
+                next_recipe, _, candidate_preflight = preflight_plan(
+                    recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
+                )
             if candidate_preflight.exit_code != 0:
                 details = "; ".join(
                     f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues()
@@ -1106,7 +1119,9 @@ def adaptive_step(
         exp_io.validate_managed_output_paths(workspace, targets)
         digest = digest_hparam_run(round_dir)
         suggestion = suggest_next_round(root)
-        next_recipe, _, preflight = preflight_plan(recipe_path=suggestion, output_dir=next_dir)
+        next_recipe, _, preflight = preflight_plan(
+            recipe_path=suggestion, output_dir=next_dir, allow_adaptive_workflow=True
+        )
         if preflight.exit_code != 0:
             raise RuntimeError(f"Round {next_round:03d} plan failed preflight with exit code {preflight.exit_code}.")
         next_run_count = _hparam_count(next_recipe)
@@ -1144,6 +1159,7 @@ def adaptive_step(
             source_config_sha256=bound_config_sha256,
             expected_recipe=expected_recipe,
             expected_base_recipe=expected_base_recipe,
+            allow_adaptive_workflow=True,
         )
         if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
             raise ValueError("Agent proposal frozen source config changed during plan materialization.")
@@ -1389,6 +1405,7 @@ def _stage_initial_round(
                 staging_dir=staging_dir,
                 defer_commit=True,
                 registered_recipe_path=round_dir / "round_recipe.yaml",
+                allow_adaptive_workflow=True,
             )
         if report.exit_code != 0:
             raise RuntimeError(f"Round 000 plan failed with exit code {report.exit_code}.")
