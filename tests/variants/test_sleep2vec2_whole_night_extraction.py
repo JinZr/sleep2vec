@@ -51,7 +51,7 @@ def _parse_whole_night_args(tmp_path: Path) -> argparse.Namespace:
     )
 
 
-def _mock_config_loading(monkeypatch: pytest.MonkeyPatch) -> None:
+def _mock_config_loading(monkeypatch: pytest.MonkeyPatch, *, preset_build=(None, None)) -> None:
     bundle = SimpleNamespace(
         data=SimpleNamespace(max_tokens=180, backend="npz"),
         model=SimpleNamespace(backbone=SimpleNamespace(name="roformer", config_overrides={})),
@@ -70,7 +70,7 @@ def _mock_config_loading(monkeypatch: pytest.MonkeyPatch) -> None:
         "apply_data_backend_args",
         lambda args, _data_cfg, preset_attr: setattr(args, "data_backend", "npz"),
     )
-    monkeypatch.setattr(extract_embeddings, "_load_preset_build_block", lambda _config: (None, None))
+    monkeypatch.setattr(extract_embeddings, "_load_preset_build_block", lambda _config: preset_build)
 
 
 def test_whole_night_cli_keeps_model_channels_and_selects_two_signal_channels(tmp_path: Path, monkeypatch):
@@ -84,6 +84,28 @@ def test_whole_night_cli_keeps_model_channels_and_selects_two_signal_channels(tm
     assert args.dataset_channel_names == ["heartbeat", "breath"]
     assert args.training_max_tokens == 180
     assert args.max_tokens == 2880
+
+
+def test_config_windows_without_channels_keeps_config_owned_preset_channels(tmp_path: Path, monkeypatch):
+    args = _parse_whole_night_args(tmp_path)
+    args.sequence_mode = "config-windows"
+    args.embedding_kind = "token"
+    args.selected_channels = None
+    _mock_config_loading(monkeypatch, preset_build=(["heartbeat", "breath"], 2))
+
+    extract_embeddings._load_config_bundle(args)
+
+    assert args.channel_names == MODEL_CHANNELS
+    assert args.dataset_channel_names == MODEL_CHANNELS
+
+
+def test_config_windows_rejects_dual_export(tmp_path: Path, monkeypatch):
+    args = _parse_whole_night_args(tmp_path)
+    args.sequence_mode = "config-windows"
+    _mock_config_loading(monkeypatch)
+
+    with pytest.raises(ValueError, match="both requires --sequence-mode whole-night"):
+        extract_embeddings._load_config_bundle(args)
 
 
 @pytest.mark.parametrize(
@@ -163,21 +185,40 @@ def test_whole_night_loader_constructs_one_unclipped_sample(tmp_path: Path):
     assert batch["tokens"]["breath"].shape == (1, num_tokens, frames_per_token)
 
 
-@pytest.mark.parametrize("invalid_channel", ["missing", "dtype", "length", "nonfinite"])
-def test_whole_night_preflight_rejects_invalid_source_channel(tmp_path: Path, invalid_channel: str):
-    heartbeat = np.ones(240, dtype=np.float32)
-    breath = np.ones(240, dtype=np.float32)
-    if invalid_channel == "dtype":
-        breath = breath.astype(np.float64)
-    elif invalid_channel == "length":
-        breath = breath[:-1]
-    elif invalid_channel == "nonfinite":
-        breath[0] = np.nan
-    arrays = {"heartbeat": heartbeat, "breath": breath}
-    if invalid_channel == "missing":
-        arrays.pop("breath")
+def test_whole_night_loader_rejects_channel_filtered_coverage(tmp_path: Path):
     npz_path = tmp_path / "night.npz"
-    np.savez(npz_path, **arrays)
+    np.savez(npz_path, heartbeat=np.ones(240, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame([{"path": str(npz_path), "split": "train", "duration": 60}]).to_csv(index_path, index=False)
+    args = argparse.Namespace(
+        channel_names=["heartbeat", "breath"],
+        dataset_channel_names=["heartbeat", "breath"],
+        dataset_channel_input_dims={"heartbeat": 120, "breath": 120},
+        channel_input_dims={"heartbeat": 120, "breath": 120},
+        channel_aliases={},
+        max_tokens=2880,
+        max_source_tokens=2880,
+        sequence_mode="whole-night",
+        eval_split="train",
+        override_dataset_names=[],
+        data_backend="npz",
+        kaldi_data_root=None,
+        kaldi_manifest=None,
+        preset_path=None,
+        data_index=[index_path],
+        batch_size=1,
+        num_workers=0,
+        device="cpu",
+    )
+    extract_embeddings._preflight_whole_night_index(args)
+
+    with pytest.raises(ValueError, match="coverage changed during channel validation"):
+        extract_embeddings._build_extraction_loader(args, SimpleNamespace(), "pretrain")
+
+
+def test_whole_night_preflight_validates_index_without_reading_npz(tmp_path: Path, monkeypatch):
+    npz_path = tmp_path / "night.npz"
+    np.savez(npz_path, heartbeat=np.ones(240, dtype=np.float32), breath=np.ones(240, dtype=np.float32))
     index_path = tmp_path / "index.csv"
     pd.DataFrame([{"path": str(npz_path), "split": "train", "duration": 60}]).to_csv(index_path, index=False)
     args = argparse.Namespace(
@@ -188,8 +229,22 @@ def test_whole_night_preflight_rejects_invalid_source_channel(tmp_path: Path, in
         channel_aliases={},
         channel_input_dims={"heartbeat": 120, "breath": 120},
     )
+    monkeypatch.setattr(extract_embeddings.np, "load", lambda *_args, **_kwargs: pytest.fail("unexpected NPZ read"))
 
-    with pytest.raises(ValueError):
+    extract_embeddings._preflight_whole_night_index(args)
+
+    assert args.expected_tokens_by_path == {str(npz_path): 2}
+
+
+@pytest.mark.parametrize("duration", [45, 60.5])
+def test_whole_night_preflight_rejects_fractional_tokens(tmp_path: Path, duration: float):
+    npz_path = tmp_path / "night.npz"
+    np.savez(npz_path, heartbeat=np.ones(240, dtype=np.float32), breath=np.ones(240, dtype=np.float32))
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame([{"path": str(npz_path), "split": "train", "duration": duration}]).to_csv(index_path, index=False)
+    args = argparse.Namespace(data_index=[index_path], eval_split="train", max_source_tokens=2880)
+
+    with pytest.raises(ValueError, match="aligned to 30-second tokens"):
         extract_embeddings._preflight_whole_night_index(args)
 
 
@@ -316,6 +371,12 @@ def test_both_npz_export_writes_exact_keys_and_manifest_invariants(tmp_path: Pat
         expected_total_tokens=3,
         observed_min_source_tokens=3,
         observed_max_source_tokens=3,
+        input_hashes={
+            "config_sha256": "config-hash",
+            "checkpoint_sha256": "checkpoint-hash",
+            "extractor_sha256": "extractor-hash",
+            "index_sha256": {str(index_path): "index-hash"},
+        },
     )
     model_cfg = SimpleNamespace(backbone=SimpleNamespace(hidden_size=2, num_hidden_layers=1))
     model = _BothBackbone()
@@ -337,6 +398,7 @@ def test_both_npz_export_writes_exact_keys_and_manifest_invariants(tmp_path: Pat
     assert manifest["model_channels"] == MODEL_CHANNELS
     assert manifest["resolved_layer_index"] == 1
     assert manifest["splits"]["train"]["sample_count"] == 1
+    assert manifest["hashes"] == args.input_hashes
 
     with (tmp_path / "output" / "manifests" / "train.csv").open(newline="") as csv_file:
         rows = list(csv.DictReader(csv_file))

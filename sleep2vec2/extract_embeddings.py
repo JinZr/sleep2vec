@@ -145,7 +145,10 @@ def _load_config_bundle(args: argparse.Namespace):
         raise ValueError("--kaldi-data-root/--kaldi-manifest require YAML data.backend=kaldi.")
 
     apply_data_backend_args(args, data_cfg, preset_attr="preset_path")
-    if getattr(args, "sequence_mode", "config-windows") == "whole-night":
+    sequence_mode = getattr(args, "sequence_mode", "config-windows")
+    if args.embedding_kind == "both" and sequence_mode != "whole-night":
+        raise ValueError("--embedding-kind both requires --sequence-mode whole-night.")
+    if sequence_mode == "whole-night":
         if args.embedding_kind != "both":
             raise ValueError("--sequence-mode whole-night requires --embedding-kind both.")
         if args.layer_index != -1:
@@ -165,12 +168,10 @@ def _load_config_bundle(args: argparse.Namespace):
         if args.preset_path is not None or not args.data_index:
             raise ValueError("--sequence-mode whole-night requires --data-index and does not accept --preset-path.")
         if model_cfg.backbone.name != "roformer":
-            raise ValueError("--sequence-mode whole-night is implemented only for the sleep2vec2 RoFormer backbone.")
+            raise ValueError("--sequence-mode whole-night is implemented only for RoFormer backbones.")
 
         position_overrides = dict(model_cfg.backbone.config_overrides or {})
         args.training_position_capacity = int(position_overrides.get("max_position_embeddings", 1536))
-        position_overrides["max_position_embeddings"] = WHOLE_NIGHT_POSITION_CAPACITY
-        model_cfg.backbone.config_overrides = position_overrides
         args.effective_position_capacity = WHOLE_NIGHT_POSITION_CAPACITY
         args.max_tokens = int(args.max_source_tokens)
         args.dataset_channel_names = list(args.channel_names)
@@ -186,7 +187,7 @@ def _load_config_bundle(args: argparse.Namespace):
             model_channels=list(args.model_channel_names),
             channel_input_dims=dict(args.model_channel_input_dims),
             preset_required_channels=preset_required_channels,
-            selected_channels=list(args.channel_names),
+            selected_channels=(list(args.selected_channels) if args.selected_channels is not None else None),
         )
         _resolve_effective_min_channels(
             channel_names=preset_channels,
@@ -233,7 +234,12 @@ def _preflight_whole_night_index(args: argparse.Namespace) -> None:
                     raise ValueError(f"Invalid duration for whole-night path {path}: {row['duration']!r}") from exc
                 if not math.isfinite(duration):
                     raise ValueError(f"Non-finite duration for whole-night path {path}: {duration}")
-                num_tokens = int(duration // 30)
+                duration_tokens = duration / 30
+                if not duration_tokens.is_integer():
+                    raise ValueError(
+                        f"Whole-night path {path} duration must be aligned to 30-second tokens: {duration}."
+                    )
+                num_tokens = int(duration_tokens)
                 if num_tokens < 1 or num_tokens > args.max_source_tokens:
                     raise ValueError(
                         f"Whole-night path {path} has {num_tokens} source tokens; "
@@ -241,34 +247,6 @@ def _preflight_whole_night_index(args: argparse.Namespace) -> None:
                     )
                 if not Path(path).is_file():
                     raise FileNotFoundError(f"Whole-night NPZ path not found: {path}")
-                channel_token_counts = []
-                with np.load(path, allow_pickle=False) as source:
-                    for channel in args.channel_names:
-                        alias = args.channel_aliases.get(channel)
-                        source_key = channel if channel in source else alias
-                        if source_key is None or source_key not in source:
-                            raise ValueError(f"Whole-night NPZ {path} is missing channel {channel!r}.")
-                        values = source[source_key]
-                        if values.dtype != np.float32 or values.ndim != 1:
-                            raise ValueError(
-                                f"Whole-night channel {channel!r} in {path} must be one-dimensional float32; "
-                                f"got dtype={values.dtype}, shape={values.shape}."
-                            )
-                        if not np.isfinite(values).all():
-                            raise ValueError(f"Whole-night channel {channel!r} in {path} contains non-finite values.")
-                        frames_per_token = int(args.channel_input_dims[channel])
-                        expected_frames = duration * frames_per_token / 30
-                        if not expected_frames.is_integer() or len(values) != int(expected_frames):
-                            raise ValueError(
-                                f"Whole-night channel {channel!r} in {path} has {len(values)} frames; "
-                                f"expected {expected_frames} from duration={duration}."
-                            )
-                        channel_token_counts.append(len(values) // frames_per_token)
-                if set(channel_token_counts) != {num_tokens}:
-                    raise ValueError(
-                        f"Whole-night channels in {path} do not share the duration-derived token count {num_tokens}: "
-                        f"{channel_token_counts}."
-                    )
                 expected_tokens_by_path[path] = num_tokens
                 selected_rows += 1
 
@@ -516,6 +494,18 @@ def _load_backbone_checkpoint(
         ckpt_path,
     )
     return load_plan
+
+
+def _extend_roformer_position_capacity(model: Sleep2vecPretrainModel, capacity: int) -> int:
+    encoder = model.get_encoder() if hasattr(model, "get_encoder") else model.encoder
+    position_embeddings = encoder.encoder.embed_positions
+    training_capacity = int(position_embeddings.weight.shape[0])
+    embedding_dim = int(position_embeddings.weight.shape[1])
+    encoder.encoder.embed_positions = type(position_embeddings)(capacity, embedding_dim).to(
+        device=position_embeddings.weight.device
+    )
+    encoder.config.max_position_embeddings = capacity
+    return training_capacity
 
 
 def _finetune_adapters_enabled(bundle: t.Any, config_kind: str) -> bool:
@@ -964,12 +954,7 @@ def _extract_and_write_embeddings(
             }
         },
         "channels": channel_names,
-        "hashes": {
-            "config_sha256": _sha256_path(Path(args.config)),
-            "checkpoint_sha256": _sha256_path(Path(args.ckpt_path)),
-            "extractor_sha256": _sha256_path(Path(__file__)),
-            "index_sha256": {str(path): _sha256_path(Path(path)) for path in (args.data_index or [])},
-        },
+        "hashes": dict(args.input_hashes),
     }
     if getattr(args, "sequence_mode", "config-windows") == "whole-night":
         manifest["whole_night"] = {
@@ -1002,7 +987,14 @@ def run_extraction(args: argparse.Namespace, *, namespace: str = PACKAGE_NAMESPA
     if not args.ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {args.ckpt_path}")
 
+    input_hashes = {
+        "config_sha256": _sha256_path(args.config),
+        "checkpoint_sha256": _sha256_path(args.ckpt_path),
+        "extractor_sha256": _sha256_path(Path(__file__)),
+    }
     bundle, model_cfg, config_kind = _load_config_bundle(args)
+    input_hashes["index_sha256"] = {str(path): _sha256_path(Path(path)) for path in (args.data_index or [])}
+    args.input_hashes = input_hashes
     if getattr(args, "sequence_mode", "config-windows") == "whole-night":
         _preflight_whole_night_index(args)
     dataloader = _build_extraction_loader(args, bundle, config_kind)
@@ -1014,6 +1006,13 @@ def run_extraction(args: argparse.Namespace, *, namespace: str = PACKAGE_NAMESPA
         args.device,
         adapters_enabled=adapters_enabled,
     )
+    if getattr(args, "sequence_mode", "config-windows") == "whole-night":
+        training_capacity = _extend_roformer_position_capacity(model, args.effective_position_capacity)
+        if training_capacity != args.training_position_capacity:
+            raise ValueError(
+                "Configured and constructed RoFormer position capacities differ: "
+                f"config={args.training_position_capacity}, model={training_capacity}."
+            )
     _validate_embedding_kind_compatible(model, args.embedding_kind)
     return _extract_and_write_embeddings(args, model, dataloader, model_cfg, load_plan, namespace=namespace)
 
@@ -1035,7 +1034,7 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
         type=str,
         default="token",
         choices=("token", "cls", "both"),
-        help="Whether to save token-level or CLS-level embeddings. cls requires a CLS-enabled checkpoint/config.",
+        help="Save token or CLS embeddings; both is reserved for whole-night CLS-enabled extraction.",
     )
     parser.add_argument(
         "--channels",
