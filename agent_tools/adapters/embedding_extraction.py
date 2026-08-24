@@ -205,6 +205,14 @@ class EmbeddingExtractionAdapter(TaskAdapter):
                         embedding_dir,
                     )
                 )
+            elif output.is_symlink():
+                issues.append(
+                    _fail(
+                        "artifacts.embedding_dir",
+                        f"Embedding output directory must not be a symlink: {embedding_dir}",
+                        embedding_dir,
+                    )
+                )
             elif output.exists() and (not output.is_dir() or any(output.iterdir())):
                 issues.append(
                     _fail(

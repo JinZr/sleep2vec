@@ -208,6 +208,8 @@ def _sha256_path(path: Path) -> str:
 
 
 def _preflight_output_dir(output_dir: Path) -> None:
+    if output_dir.is_symlink():
+        raise ValueError(f"Embedding output directory must not be a symlink: {output_dir}")
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError(f"Embedding output directory must be empty: {output_dir}")
 

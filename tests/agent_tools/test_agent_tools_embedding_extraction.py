@@ -453,6 +453,18 @@ def test_nonempty_embedding_output_fails_before_workspace(tmp_path: Path):
     assert not Path(payload["experiment"]["root"]).exists()
 
 
+def test_dangling_embedding_output_symlink_fails_before_workspace(tmp_path: Path):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    embedding_dir = Path(payload["artifacts"]["embedding_dir"])
+    embedding_dir.symlink_to(tmp_path / "missing", target_is_directory=True)
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("must not be a symlink" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
 @pytest.mark.parametrize("embedding_position", ["ancestor", "descendant"])
 def test_plan_and_embedding_directories_cannot_contain_one_another_while_unresolved(
     tmp_path: Path, embedding_position: str

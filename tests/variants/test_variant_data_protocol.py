@@ -9,6 +9,10 @@ import pandas as pd
 import pytest
 
 VARIANT_PACKAGES = ["sleep2vec2", "sleep2expert"]
+DATASET_MODULES = [
+    "data.psg_pretrain_dataset",
+    *(f"{package}.data.psg_pretrain_dataset" for package in VARIANT_PACKAGES),
+]
 
 
 def _write_ahi_npz(path: Path) -> None:
@@ -73,6 +77,37 @@ class _DummyDatasetWithSamples:
     def dataloader(self, device="cpu"):
         type(self).last_device = device
         return {"device": device}
+
+
+@pytest.mark.parametrize("module_name", DATASET_MODULES)
+def test_psg_dataset_preserves_source_identifiers_and_blank_fallback(tmp_path: Path, module_name: str):
+    dataset_module = importlib.import_module(module_name)
+    numeric_sample = tmp_path / "numeric.npz"
+    fallback_sample = tmp_path / "fallback.npz"
+    np.savez(numeric_sample, stage5=np.array([0.0, 1.0], dtype=np.float32))
+    np.savez(fallback_sample, stage5=np.array([0.0, 1.0], dtype=np.float32))
+    index_path = tmp_path / "fallback-index.csv"
+    index_path.write_text(
+        "path,split,duration,source\n" f"{numeric_sample},test,60,001\n" f"{fallback_sample},test,60,\n"
+    )
+
+    dataset = dataset_module.PSGPretrainDataset(
+        channel_names=["stage5"],
+        channel_input_dims={},
+        save_preset_path=None,
+        load_preset_path=None,
+        index=str(index_path),
+        split=["test"],
+        sources=["001", "fallback-index"],
+        max_tokens=2,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    assert [sample.metadata["source"] for sample in dataset.data] == ["001", str(index_path)]
 
 
 @pytest.mark.parametrize("package_name", VARIANT_PACKAGES)

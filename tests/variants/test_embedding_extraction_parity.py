@@ -100,6 +100,16 @@ def test_variant_whole_night_rejects_fractional_tokens(variant: str, tmp_path: P
         module._preflight_whole_night_index(args)
 
 
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_variant_preflight_rejects_dangling_output_symlink(variant: str, tmp_path: Path):
+    module = _extractor(variant)
+    output_dir = tmp_path / "output"
+    output_dir.symlink_to(tmp_path / "missing", target_is_directory=True)
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        module._preflight_output_dir(output_dir)
+
+
 class _PositionEmbedding(torch.nn.Module):
     def __init__(self, capacity: int, embedding_dim: int):
         super().__init__()
