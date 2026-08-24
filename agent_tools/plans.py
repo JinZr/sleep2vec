@@ -486,7 +486,11 @@ def evaluate_recipe(
     selected_config_value = (
         raw_config_decision.get("value") if isinstance(raw_config_decision, dict) else raw_config_decision
     )
-    selected_config = recipe_adapter is not None and recipe_adapter.uses_finetune_config and "config" in user_decisions
+    selected_config = (
+        recipe_adapter is not None
+        and (recipe_adapter.uses_finetune_config or recipe_adapter.accepts_pretrain_config)
+        and "config" in user_decisions
+    )
     if selected_config and selected_config_value in (None, "", "ASK_USER"):
         report = _append_issues(
             report,
@@ -505,8 +509,16 @@ def evaluate_recipe(
         )
     elif selected_config:
         blocking_config_issues = cfg.get("blocking_issues", []) if cfg is not None else []
-        if config_error or cfg is None or cfg.get("is_finetune") is not True or blocking_config_issues:
-            message = config_error or "Selected config must be a readable finetune config without blocking issues."
+        config_kind_valid = cfg is not None and (
+            cfg.get("is_finetune") is True
+            or (recipe_adapter.accepts_pretrain_config and cfg.get("is_pretrain") is True)
+        )
+        if config_error or not config_kind_valid or blocking_config_issues:
+            message = config_error or (
+                "Selected config must be a readable pretrain or finetune model config without blocking issues."
+                if recipe_adapter.accepts_pretrain_config
+                else "Selected config must be a readable finetune model config without blocking issues."
+            )
             report = _append_issues(
                 report,
                 [
@@ -969,8 +981,15 @@ def preflight_plan(
                     ],
                 )
     preflight_adapter = get_adapter(recipe.get("task"))
-    if report.exit_code == 0 and preflight_adapter is not None:
-        adapter_preflight = preflight_adapter.preflight_issues(recipe, cfg, unlock_final_test=unlock_final_test)
+    if preflight_adapter is not None and (
+        report.exit_code == 0 or (report.exit_code == 2 and preflight_adapter.preflight_on_unresolved)
+    ):
+        adapter_preflight = preflight_adapter.preflight_issues(
+            recipe,
+            cfg,
+            unlock_final_test=unlock_final_test,
+            output_dir=out,
+        )
         if adapter_preflight:
             report = _append_issues(report, adapter_preflight)
     if report.exit_code == 0 and not (preflight_adapter is not None and preflight_adapter.materializes_plan):

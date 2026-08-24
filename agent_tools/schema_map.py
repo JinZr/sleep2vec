@@ -68,6 +68,12 @@ BASE_RECIPE_FIELDS: dict[str, RecipeField] = {
     "config": RecipeField((("inputs", "config"),), ("inputs", "config")),
     "ckpt_path": RecipeField((("inputs", "ckpt_path"),), ("inputs", "ckpt_path")),
     "eval_split": RecipeField((("inputs", "eval_split"),), ("inputs", "eval_split")),
+    "embedding_channels": RecipeField((("extraction", "channels"),)),
+    "embedding_kind": RecipeField((("extraction", "embedding_kind"),)),
+    "layer_index": RecipeField((("extraction", "layer_index"),)),
+    "max_source_tokens": RecipeField((("extraction", "max_source_tokens"),)),
+    "output_format": RecipeField((("extraction", "output_format"),)),
+    "sequence_mode": RecipeField((("extraction", "sequence_mode"),)),
     "final_eval_config_path": RecipeField(
         (("inputs", "final_eval_config_path"),),
         ("inputs", "final_eval_config_path"),

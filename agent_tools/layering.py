@@ -67,6 +67,7 @@ DOMAIN_MODULES: frozenset[str] = frozenset(
         "domain.presets",
         "domain.index_csv",
         "index_csv",  # top-level re-export shim for domain.index_csv
+        "adapters.embedding_extraction",
         "adapters.sleep2stat",
         "adapters.preset_prepare",
         "adapters.finetune",

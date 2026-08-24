@@ -111,8 +111,8 @@ def finetune_summary_body(
     summary = {
         "config_path": repo_relative(resolved),
         "variant_guess": guess_variant(resolved),
-        "is_finetune": bool(finetune),
-        "is_pretrain": not bool(finetune),
+        "is_finetune": isinstance(data.get(CONFIG_FINETUNE_SECTION), dict),
+        "is_pretrain": not isinstance(data.get(CONFIG_FINETUNE_SECTION), dict),
         "data_backend": backend,
         "model": {
             "backbone": (model.get("backbone") or {}).get("name") if isinstance(model.get("backbone"), dict) else None,

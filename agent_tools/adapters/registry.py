@@ -4,6 +4,7 @@ from typing import Any
 
 from ..models import VARIANTLESS_TASKS
 from .base import TaskAdapter
+from .embedding_extraction import EMBEDDING_EXTRACTION_ADAPTER
 
 # Registration order is the probing order for config-shape claims
 # (index_summary_inputs_override / matches_config_data): config-probing
@@ -16,6 +17,7 @@ from .sleep2stat import SLEEP2STAT_ADAPTER
 
 _REGISTERED_ADAPTERS = (
     SLEEP2STAT_ADAPTER,
+    EMBEDDING_EXTRACTION_ADAPTER,
     PRESET_PREPARE_ADAPTER,
     INFER_ADAPTER,
     EVALUATE_ADAPTER,

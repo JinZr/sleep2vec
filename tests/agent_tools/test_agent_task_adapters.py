@@ -24,7 +24,15 @@ KERNEL_MODULES = (
     "configs.py",
 )
 
-ALL_TASKS = ("sleep2stat", "preset_prepare", "infer", "evaluate", "finetune", "hparam_tune")
+ALL_TASKS = (
+    "sleep2stat",
+    "embedding_extraction",
+    "preset_prepare",
+    "infer",
+    "evaluate",
+    "finetune",
+    "hparam_tune",
+)
 
 
 def _kernel_dir() -> Path:

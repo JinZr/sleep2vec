@@ -11,10 +11,7 @@ def task_recipe_contract_issues(task: str, recipe: dict, *, source_layer: str) -
     adapter = get_adapter(task)
     if adapter is None:
         return issues
-    sections = {
-        section: adapter.contract_sections.get(section) for section in ("inputs", "evaluation_policy", "preset")
-    }
-    for section, allowed_fields in sections.items():
+    for section, allowed_fields in adapter.contract_sections.items():
         if section not in recipe or allowed_fields is None:
             continue
         value = recipe[section]

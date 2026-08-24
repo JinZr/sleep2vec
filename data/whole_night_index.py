@@ -7,7 +7,7 @@ import typing as t
 
 
 def validate_whole_night_index(
-    index_paths: t.Iterable[Path], *, eval_split: str, max_source_tokens: int
+    index_paths: t.Iterable[Path], *, eval_split: str, max_source_tokens: int, path_base: Path | None = None
 ) -> dict[str, int]:
     expected_tokens_by_path: dict[str, int] = {}
     for index_path in index_paths:
@@ -40,7 +40,10 @@ def validate_whole_night_index(
                         f"Whole-night path {path} has {num_tokens} source tokens; "
                         f"expected [1, {max_source_tokens}]."
                     )
-                if not Path(path).is_file():
+                sample_path = Path(path)
+                if not sample_path.is_absolute() and path_base is not None:
+                    sample_path = path_base / sample_path
+                if not sample_path.is_file():
                     raise FileNotFoundError(f"Whole-night NPZ path not found: {path}")
                 expected_tokens_by_path[path] = num_tokens
 

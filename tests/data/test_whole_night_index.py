@@ -20,6 +20,15 @@ def test_validate_whole_night_index_returns_selected_token_counts(tmp_path: Path
     assert validate_whole_night_index([index], eval_split="test", max_source_tokens=2) == {str(sample): 2}
 
 
+def test_validate_whole_night_index_resolves_sample_paths_from_explicit_base(tmp_path: Path):
+    (tmp_path / "night.npz").touch()
+    index = _write_index(tmp_path / "index.csv", [("night.npz", "test", "30")])
+
+    assert validate_whole_night_index([index], eval_split="test", max_source_tokens=2, path_base=tmp_path) == {
+        "night.npz": 1
+    }
+
+
 def test_validate_whole_night_index_rejects_empty_split(tmp_path: Path):
     index = _write_index(tmp_path / "index.csv", [("unused.npz", "train", "30")])
 

@@ -316,7 +316,7 @@ def path_issues(
     issues: list[DecisionIssue] = []
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     required_paths: list[tuple[str, Any, bool]] = []
-    if inputs.get("config"):
+    if inputs.get("config") not in (None, "", "ASK_USER"):
         required_paths.append(("config", inputs.get("config"), False))
     required_paths.extend((field, path, True) for field, path in required_input_paths or [])
 

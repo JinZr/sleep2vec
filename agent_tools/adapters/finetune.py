@@ -63,10 +63,7 @@ class FinetuneAdapter(TaskAdapter):
     ) -> list[DecisionIssue]:
         issues: list[DecisionIssue] = []
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-        inputs = _inputs(recipe)
 
-        if not inputs.get("config"):
-            issues.append(needs_issue("config", "Config path is required for finetune.", high_impact))
         if config_summary:
             for issue in config_summary.get("blocking_issues", []):
                 issues.append(
@@ -163,7 +160,12 @@ class FinetuneAdapter(TaskAdapter):
         return issues
 
     def preflight_issues(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None, *, unlock_final_test: bool
+        self,
+        recipe: dict[str, Any],
+        config_summary: dict[str, Any] | None,
+        *,
+        unlock_final_test: bool,
+        output_dir: Path | None = None,
     ) -> list[DecisionIssue]:
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
         if evaluation.get("selection_split") != "test":
