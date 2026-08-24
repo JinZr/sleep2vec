@@ -87,6 +87,7 @@ class DefaultDataset(BaseDataset):
         channel_aliases: t.Mapping[str, str] | None = None,
         seed: int = 42,
         filter_max_workers: int | None = None,
+        channel_length_tolerance: int = 1,
     ) -> None:
         """
         Args:
@@ -115,6 +116,7 @@ class DefaultDataset(BaseDataset):
         self.multilabel_output_dim = multilabel_output_dim
         self.multilabel_key_column = multilabel_key_column
         self.channel_aliases = {str(name): str(alias) for name, alias in (channel_aliases or {}).items()}
+        self.channel_length_tolerance = channel_length_tolerance
         # self.collators = collators
         self.dataloader_config = dataloader_config
 
@@ -177,7 +179,7 @@ class DefaultDataset(BaseDataset):
             allow_missing_channels=bool(self.allow_missing_channels),
             channel_names=self.channel_names,
             min_channels=self.min_channels,
-            tolerance=1,
+            tolerance=self.channel_length_tolerance,
             max_workers=filter_max_workers,
             channel_aliases=self.channel_aliases,
         )

@@ -15,6 +15,7 @@ follow the consultation and experiment-management policy in
 | Adaptation | `sleep2vec.adapt` | runtime orchestration and model integration |
 | Finetuning | `sleep2vec.finetune` | runtime, config/task, model integration |
 | Inference and evaluation | `sleep2vec.infer` | runtime orchestration and artifact owners |
+| Variant embedding extraction | package-local `extract_embeddings` modules | runtime and variant maintainers |
 | Derived analysis | `sleep2stat` | sleep2stat config, pipeline, and bundle writer |
 | Agent planning and experiments | `agent_tools` | agent tooling and managed experiment owners |
 | Standalone variants | `sleep2vec2`, `sleep2expert`, `sex_age_baseline` | package-local maintainers |
@@ -149,6 +150,23 @@ Arousal inference emits the `arousal_sequence` record family with four-column
 truth, probability, and prediction timelines plus total-union and ArI summaries;
 it does not create a parallel prediction NPZ. Result paths and CSV schemas belong
 in `results.py` and `sleep2vec_inference.py`, not in a new evaluation script.
+
+## Variant Embedding Extraction
+
+The package-local `sleep2vec.extract_embeddings`, `sleep2vec2.extract_embeddings`,
+and `sleep2expert.extract_embeddings` entrypoints build and strictly load their
+complete model configs while allowing an explicit model-channel subset for data
+loading and export. Whole-night extraction is an NPZ-only, one-sample-per-path
+RoFormer mode with a caller-supplied hard source-token cap; it rejects clipping,
+filtered coverage, non-final-layer dual export, and non-empty output roots.
+
+`embedding-kind=both` obtains final-layer CLS and token matrices from the same
+per-channel encoder forward and writes the two arrays under explicit NPZ keys.
+The terminal manifest distinguishes full model channels from selected channels
+and records input hashes, source-token coverage, and the extraction-only RoFormer
+position capacity. Checkpoints load at their training position capacity before
+the deterministic sinusoidal table is extended for extraction. The extractors do
+not own subject pooling, downstream model selection, or sealed-test authorization.
 
 ## sleep2stat
 

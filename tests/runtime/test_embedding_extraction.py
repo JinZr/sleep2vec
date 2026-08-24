@@ -237,6 +237,9 @@ def test_trim_hidden_cls_returns_one_row_per_sample():
 class _DummyBackbone:
     cls_embedding = None
 
+    def __init__(self):
+        self.tokenizer_mapping = {"ppg": torch.nn.Identity()}
+
     def eval(self):
         return self
 
@@ -262,6 +265,7 @@ class _AdapterBackbone(_DummyBackbone):
     _extract_separate_adapters = True
 
     def __init__(self):
+        super().__init__()
         self.encoder = _AdapterEncoder()
 
     def get_encoder(self):
@@ -284,7 +288,7 @@ def test_encode_channel_sets_separate_adapter():
 
     assert resolved == 1
     assert model.encoder.active_adapter == "ch_ppg"
-    assert matrices[0].shape == (2, 2)
+    assert matrices["embedding"][0].shape == (2, 2)
 
 
 class _FakeCls:
@@ -298,6 +302,7 @@ class _FakeCls:
 
 class _DummyClsBackbone(_DummyBackbone):
     def __init__(self):
+        super().__init__()
         self.cls_embedding = _FakeCls()
 
 
@@ -312,6 +317,17 @@ def _dummy_args(tmp_path: Path, output_format: str, embedding_kind: str = "token
         config=Path("config.yaml"),
         ckpt_path=Path("model.ckpt"),
         embedding_kind=embedding_kind,
+        sequence_mode="config-windows",
+        training_max_tokens=2,
+        model_channel_names=["ppg"],
+        selected_channels=None,
+        data_index=None,
+        input_hashes={
+            "config_sha256": "config-hash",
+            "checkpoint_sha256": "checkpoint-hash",
+            "extractor_sha256": "extractor-hash",
+            "index_sha256": {},
+        },
     )
 
 
