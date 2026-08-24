@@ -7,7 +7,6 @@ import hashlib
 import inspect
 import json
 import logging
-import math
 from pathlib import Path
 import re
 import sys
@@ -23,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from data.kaldi_psg_dataset import KaldiPSGDataset
 from data.psg_pretrain_dataset import PSGPretrainDataset
+from data.whole_night_index import validate_whole_night_index
 from preprocess.save_dataset_presets import (
     _load_preset_build_block,
     _resolve_effective_min_channels,
@@ -213,47 +213,11 @@ def _preflight_output_dir(output_dir: Path) -> None:
 
 
 def _preflight_whole_night_index(args: argparse.Namespace) -> None:
-    expected_tokens_by_path: dict[str, int] = {}
-    selected_rows = 0
-    for index_path in args.data_index:
-        with Path(index_path).open(newline="") as csv_file:
-            reader = csv.DictReader(csv_file)
-            required = {"path", "split", "duration"}
-            missing = sorted(required - set(reader.fieldnames or []))
-            if missing:
-                raise ValueError(f"Whole-night index {index_path} is missing required columns: {missing}")
-            for row in reader:
-                if row["split"] != args.eval_split:
-                    continue
-                path = str(row["path"])
-                if path in expected_tokens_by_path:
-                    raise ValueError(f"Duplicate whole-night path in selected split: {path}")
-                try:
-                    duration = float(row["duration"])
-                except (TypeError, ValueError) as exc:
-                    raise ValueError(f"Invalid duration for whole-night path {path}: {row['duration']!r}") from exc
-                if not math.isfinite(duration):
-                    raise ValueError(f"Non-finite duration for whole-night path {path}: {duration}")
-                duration_tokens = duration / 30
-                if not duration_tokens.is_integer():
-                    raise ValueError(
-                        f"Whole-night path {path} duration must be aligned to 30-second tokens: {duration}."
-                    )
-                num_tokens = int(duration_tokens)
-                if num_tokens < 1 or num_tokens > args.max_source_tokens:
-                    raise ValueError(
-                        f"Whole-night path {path} has {num_tokens} source tokens; "
-                        f"expected [1, {args.max_source_tokens}]."
-                    )
-                if not Path(path).is_file():
-                    raise FileNotFoundError(f"Whole-night NPZ path not found: {path}")
-                expected_tokens_by_path[path] = num_tokens
-                selected_rows += 1
-
-    if selected_rows == 0:
-        raise ValueError(f"No whole-night rows found for split {args.eval_split!r}.")
+    expected_tokens_by_path = validate_whole_night_index(
+        args.data_index, eval_split=args.eval_split, max_source_tokens=args.max_source_tokens
+    )
     args.expected_tokens_by_path = expected_tokens_by_path
-    args.expected_sample_count = selected_rows
+    args.expected_sample_count = len(expected_tokens_by_path)
     args.expected_total_tokens = int(sum(expected_tokens_by_path.values()))
     args.observed_min_source_tokens = int(min(expected_tokens_by_path.values()))
     args.observed_max_source_tokens = int(max(expected_tokens_by_path.values()))
