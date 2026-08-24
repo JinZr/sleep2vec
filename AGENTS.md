@@ -82,7 +82,7 @@ python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml \
 ## Agent Stop-And-Consult Policy
 Agents must not silently guess high-impact experiment decisions.
 
-Before generating runnable commands for preset preparation, finetuning, inference, evaluation, or hyper-parameter tuning, run the relevant agent consultation checks through `agent_tools doctor` or `agent_tools plan`. `agent_tools context` is diagnostic-only and does not authorize runnable commands.
+Before generating runnable commands for preset preparation, finetuning, inference, evaluation, embedding extraction, or hyper-parameter tuning, run the relevant agent consultation checks through `agent_tools doctor` or `agent_tools plan`. `agent_tools context` is diagnostic-only and does not authorize runnable commands.
 
 If the tool returns `NEEDS_USER_INPUT`, stop and ask the user the generated questions. Do not run training. Do not generate executable scripts. Do not evaluate external test data.
 

@@ -48,7 +48,8 @@ and exposes it through the `experiments` facade.
 ### Domain — sleep2vec-specific
 `domain/` (sidecar_summaries, finetune_summary, sex_age_summary, presets,
 index_csv), the top-level `index_csv` re-export shim, and the per-task adapters
-sleep2stat / preset_prepare / finetune / infer_evaluate / hparam_tune.
+sleep2stat / preset_prepare / finetune / infer_evaluate / hparam_tune /
+embedding_extraction.
 
 ### Mixed bridges (9) — generic orchestration with tolerated domain coupling
 | Module | Domain coupling (tolerated) |
