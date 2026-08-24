@@ -228,6 +228,49 @@ def test_unresolved_required_choices_return_consultation_status(tmp_path: Path, 
     assert not (plan_dir / "plan.json").exists()
 
 
+@pytest.mark.parametrize(
+    ("section", "field", "decision_field"),
+    [
+        ("inputs", "config", "config"),
+        ("inputs", "ckpt_path", "ckpt_path"),
+        ("inputs", "eval_split", "eval_split"),
+        ("extraction", "channels", "embedding_channels"),
+        ("extraction", "embedding_kind", "embedding_kind"),
+        ("extraction", "layer_index", "layer_index"),
+        ("extraction", "max_source_tokens", "max_source_tokens"),
+        ("extraction", "output_format", "output_format"),
+        ("extraction", "sequence_mode", "sequence_mode"),
+        ("artifacts", "overwrite", "overwrite_policy"),
+    ],
+)
+@pytest.mark.parametrize("value", [None, ""])
+def test_blank_required_recipe_choices_return_consultation_status(
+    tmp_path: Path, section: str, field: str, decision_field: str, value: object
+):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    payload[section][field] = value
+    _rewrite(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 2
+    assert any(issue.field == decision_field for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
+@pytest.mark.parametrize("channels", [["heartbeat", 1], ["heartbeat", None], ["heartbeat", ""]])
+def test_invalid_channel_values_fail_without_exception(tmp_path: Path, channels: list[object]):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    payload["extraction"]["channels"] = channels
+    _rewrite(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("non-empty strings" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
 def test_test_split_requires_both_unlocks(tmp_path: Path):
     recipe, plan_dir, _payload = _write_recipe(tmp_path, eval_split="test")
 

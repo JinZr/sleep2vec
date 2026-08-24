@@ -106,16 +106,15 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         channels = extraction.get("channels")
         if channels not in (None, "", "ASK_USER"):
             channel_list = coerce_list(channels)
-            if (
-                not channel_list
-                or len(channel_list) != len(set(channel_list))
-                or any(not str(item) for item in channel_list)
-            ):
+            if not channel_list or any(not isinstance(item, str) or not item for item in channel_list):
+                issues.append(
+                    _fail("extraction.channels", "extraction.channels must contain non-empty strings.", channels)
+                )
+            elif len(channel_list) != len(set(channel_list)):
                 issues.append(
                     _fail("extraction.channels", "extraction.channels must be non-empty and unique.", channels)
                 )
-            unknown = sorted(set(channel_list) - model_channels) if model_channels else []
-            if unknown:
+            elif model_channels and (unknown := sorted(set(channel_list) - model_channels)):
                 issues.append(
                     _fail(
                         "extraction.channels",
