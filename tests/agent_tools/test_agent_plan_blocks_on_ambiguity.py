@@ -949,7 +949,7 @@ def test_finetune_plan_materializes_test_after_fit_policy_default(tmp_path: Path
 
 @pytest.mark.parametrize("test_after_fit", [False, True])
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
-def test_finetune_plan_rejects_test_selection_before_workspace_mutation(
+def test_finetune_doctor_and_plan_reject_test_selection_before_workspace_mutation(
     tmp_path: Path,
     variant: str,
     test_after_fit: bool,
@@ -978,7 +978,8 @@ def test_finetune_plan_rejects_test_selection_before_workspace_mutation(
     config = Path(payload["inputs"]["config"])
     source_config_bytes = config.read_bytes()
 
-    result = _run(
+    doctor = _run("doctor", "--recipe", str(recipe))
+    planned = _run(
         "plan",
         "--recipe",
         str(recipe),
@@ -986,10 +987,11 @@ def test_finetune_plan_rejects_test_selection_before_workspace_mutation(
         str(workspace / "plans" / "direct-finetune"),
     )
 
-    assert result.returncode == 1
-    assert "Direct finetune cannot select checkpoints on test" in result.stdout
-    assert "task=hparam_tune" in result.stdout
-    assert "max_runs: 1" in result.stdout
+    for result in (doctor, planned):
+        assert result.returncode == 1
+        assert "Direct finetune cannot select checkpoints on test" in result.stdout
+        assert "task=hparam_tune" in result.stdout
+        assert "max_runs: 1" in result.stdout
     assert not workspace.exists()
     assert recipe.read_bytes() == source_recipe_bytes
     assert config.read_bytes() == source_config_bytes
