@@ -218,6 +218,15 @@ class EmbeddingExtractionAdapter(TaskAdapter):
             backbone = model.get("backbone")
             if backbone not in (None, "roformer"):
                 issues.append(_fail("config", "Whole-night extraction requires a RoFormer config.", backbone))
+            cls_embedding_type = (model.get("cls") or {}).get("embedding_type")
+            if cls_embedding_type != "bert":
+                issues.append(
+                    _fail(
+                        "config",
+                        "Whole-night dual embedding extraction requires model.cls.embedding_type=bert.",
+                        cls_embedding_type,
+                    )
+                )
             if config_summary.get("is_finetune") is True:
                 data = config_summary.get("data") or {}
                 if data.get("finetune_preset_path"):

@@ -12,7 +12,8 @@ from agent_tools.models import REPO_ROOT
 from agent_tools.plans import build_plan
 
 VARIANTS = ("sleep2vec", "sleep2vec2", "sleep2expert")
-PRETRAIN_CONFIG = "configs/sleep2vec_dense_pretrain.yaml"
+PRETRAIN_CONFIG = "configs/sleep2vec_dense_pretrain_cls.yaml"
+NON_CLS_PRETRAIN_CONFIG = "configs/sleep2vec_dense_pretrain.yaml"
 FINETUNE_CONFIG = "configs/ppg_ahi_finetune.yaml"
 
 
@@ -149,6 +150,17 @@ def test_plan_accepts_pretrain_and_finetune_configs(tmp_path: Path, config: str)
     report = build_plan(recipe_path=recipe, output_dir=plan_dir)
 
     assert report.exit_code == 0
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_plan_rejects_config_without_cls_embedding(tmp_path: Path, variant: str):
+    recipe, plan_dir, payload = _write_recipe(tmp_path, variant=variant, config=NON_CLS_PRETRAIN_CONFIG)
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("model.cls.embedding_type=bert" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
 
 
 def test_repo_relative_config_loads_outside_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
