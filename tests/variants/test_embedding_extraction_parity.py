@@ -40,7 +40,9 @@ def _config_args(module, tmp_path: Path, *, embedding_kind: str = "token") -> ar
     )
 
 
-def _mock_config_loading(module, monkeypatch: pytest.MonkeyPatch, *, preset_build=(None, None)) -> None:
+def _mock_config_loading(
+    module, monkeypatch: pytest.MonkeyPatch, *, preset_build=(None, None), model_channels=MODEL_CHANNELS
+) -> None:
     bundle = SimpleNamespace(
         data=SimpleNamespace(max_tokens=180, backend="npz"),
         model=SimpleNamespace(backbone=SimpleNamespace(name="roformer", config_overrides={})),
@@ -49,8 +51,8 @@ def _mock_config_loading(module, monkeypatch: pytest.MonkeyPatch, *, preset_buil
     monkeypatch.setattr(module, "load_pretrain_config", lambda _path: bundle)
 
     def apply_model_config_args(args, _model_cfg):
-        args.channel_names = list(MODEL_CHANNELS)
-        args.channel_input_dims = {channel: 120 for channel in MODEL_CHANNELS}
+        args.channel_names = list(model_channels)
+        args.channel_input_dims = {channel: 120 for channel in model_channels}
         args.channel_aliases = {}
 
     monkeypatch.setattr(module, "apply_model_config_args", apply_model_config_args)
@@ -98,6 +100,34 @@ def test_variant_whole_night_rejects_fractional_tokens(variant: str, tmp_path: P
 
     with pytest.raises(ValueError, match="aligned to 30-second tokens"):
         module._preflight_whole_night_index(args)
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+@pytest.mark.parametrize("symlink_position", ["output", "ancestor"])
+def test_variant_preflight_rejects_dangling_output_symlink(variant: str, symlink_position: str, tmp_path: Path):
+    module = _extractor(variant)
+    output_dir = tmp_path / "output"
+    if symlink_position == "output":
+        output_dir.symlink_to(tmp_path / "missing", target_is_directory=True)
+    else:
+        parent = tmp_path / "link"
+        parent.symlink_to(tmp_path / "missing", target_is_directory=True)
+        output_dir = parent / "output"
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        module._preflight_output_dir(output_dir)
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_variant_rejects_unsafe_extraction_channels(variant: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    module = _extractor(variant)
+    channel = "/tmp/export"
+    args = _config_args(module, tmp_path)
+    args.selected_channels = [channel]
+    _mock_config_loading(module, monkeypatch, model_channels=[channel])
+
+    with pytest.raises(ValueError, match="single safe path components"):
+        module._load_config_bundle(args)
 
 
 class _PositionEmbedding(torch.nn.Module):

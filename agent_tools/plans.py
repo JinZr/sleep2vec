@@ -444,7 +444,15 @@ def evaluate_recipe(
                 ],
             )
     override_issues = None
-    if cfg is not None and cfg.get("is_finetune") is True and not cfg.get("blocking_issues"):
+    accepts_config = cfg is not None and (
+        (cfg.get("is_finetune") is True and not cfg.get("blocking_issues"))
+        or (
+            recipe_adapter is not None
+            and recipe_adapter.accepts_pretrain_config
+            and (cfg.get("is_pretrain") is True or cfg.get("is_finetune") is True)
+        )
+    )
+    if accepts_config:
         override_issues = recipe_adapter.config_override_issues(recipe, cfg) if recipe_adapter is not None else None
     if (
         override_issues is None
@@ -486,7 +494,11 @@ def evaluate_recipe(
     selected_config_value = (
         raw_config_decision.get("value") if isinstance(raw_config_decision, dict) else raw_config_decision
     )
-    selected_config = recipe_adapter is not None and recipe_adapter.uses_finetune_config and "config" in user_decisions
+    selected_config = (
+        recipe_adapter is not None
+        and (recipe_adapter.uses_finetune_config or recipe_adapter.accepts_pretrain_config)
+        and "config" in user_decisions
+    )
     if selected_config and selected_config_value in (None, "", "ASK_USER"):
         report = _append_issues(
             report,
@@ -504,9 +516,19 @@ def evaluate_recipe(
             ],
         )
     elif selected_config:
-        blocking_config_issues = cfg.get("blocking_issues", []) if cfg is not None else []
-        if config_error or cfg is None or cfg.get("is_finetune") is not True or blocking_config_issues:
-            message = config_error or "Selected config must be a readable finetune config without blocking issues."
+        blocking_config_issues = (
+            cfg.get("blocking_issues", []) if cfg is not None and not recipe_adapter.accepts_pretrain_config else []
+        )
+        config_kind_valid = cfg is not None and (
+            cfg.get("is_finetune") is True
+            or (recipe_adapter.accepts_pretrain_config and cfg.get("is_pretrain") is True)
+        )
+        if config_error or not config_kind_valid or blocking_config_issues:
+            message = config_error or (
+                "Selected config must be a readable pretrain or finetune model config without blocking issues."
+                if recipe_adapter.accepts_pretrain_config
+                else "Selected config must be a readable finetune model config without blocking issues."
+            )
             report = _append_issues(
                 report,
                 [
@@ -756,6 +778,46 @@ def build_plan(
 
     task = recipe.get("task")
     plan_adapter = get_adapter(task)
+    input_snapshots = []
+    if plan_adapter is not None:
+        input_paths = plan_adapter.frozen_input_paths(recipe)
+        try:
+            input_snapshots = [
+                {"field": field, "path": str(path), "sha256": file_sha256(path)} for field, path in input_paths
+            ]
+            report = _append_issues(report, plan_adapter.configured_input_issues(recipe, cfg))
+            current_snapshots = [
+                {"field": field, "path": str(path), "sha256": file_sha256(path)} for field, path in input_paths
+            ]
+        except OSError as exc:
+            report = _append_issues(
+                report,
+                [
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "inputs",
+                        f"Failed to bind planned input files: {exc}",
+                        None,
+                        {"preflight_before_workspace": True},
+                    )
+                ],
+            )
+        else:
+            if input_snapshots != current_snapshots:
+                report = _append_issues(
+                    report,
+                    [
+                        DecisionIssue(
+                            DecisionStatus.FAIL,
+                            "inputs",
+                            "An input file changed while the final plan snapshot was validating it.",
+                            None,
+                            {"preflight_before_workspace": True},
+                        )
+                    ],
+                )
+        if report.exit_code != 0:
+            return report
     ensure_experiment_workspace(recipe, out, register_step=False)
 
     write_out = out
@@ -838,6 +900,8 @@ def build_plan(
             "runtime_dir": str(runtime_dir) if runtime_dir is not None else "",
             "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir is not None else "",
         }
+        if input_snapshots:
+            run["input_snapshots"] = input_snapshots
         write_text(write_out / "plan.md", context.plan_markdown(report, commands))
         write_text(
             write_out / "run.sh",
@@ -850,6 +914,7 @@ def build_plan(
                     run_id=run_id,
                     lifecycle_python=runtime_identity.get("python"),
                     expected_runtime_commit=runtime_identity.get("runtime_commit"),
+                    input_snapshots=input_snapshots,
                 )
             )
             + "\n",
@@ -969,8 +1034,15 @@ def preflight_plan(
                     ],
                 )
     preflight_adapter = get_adapter(recipe.get("task"))
-    if report.exit_code == 0 and preflight_adapter is not None:
-        adapter_preflight = preflight_adapter.preflight_issues(recipe, cfg, unlock_final_test=unlock_final_test)
+    if preflight_adapter is not None and (
+        report.exit_code == 0 or (report.exit_code == 2 and preflight_adapter.preflight_on_unresolved)
+    ):
+        adapter_preflight = preflight_adapter.preflight_issues(
+            recipe,
+            cfg,
+            unlock_final_test=unlock_final_test,
+            output_dir=out,
+        )
         if adapter_preflight:
             report = _append_issues(report, adapter_preflight)
     if report.exit_code == 0 and not (preflight_adapter is not None and preflight_adapter.materializes_plan):

@@ -87,6 +87,10 @@ class TaskAdapter:
     materializes_plan: bool = False
     #: Task accepts a frozen Python/workdir/commit execution identity.
     supports_runtime_identity: bool = False
+    #: Task accepts either a pretrain or finetune model config.
+    accepts_pretrain_config: bool = False
+    #: Run preflight_issues while consultation choices remain unresolved.
+    preflight_on_unresolved: bool = False
 
     def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
         """Full replacement for the kernel's per-section recipe contract walk
@@ -113,7 +117,12 @@ class TaskAdapter:
         return []
 
     def preflight_issues(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None, *, unlock_final_test: bool
+        self,
+        recipe: dict[str, Any],
+        config_summary: dict[str, Any] | None,
+        *,
+        unlock_final_test: bool,
+        output_dir: Path | None = None,
     ) -> list[DecisionIssue]:
         """Extra issues evaluated only during preflight_plan (not doctor)."""
         return []
@@ -164,6 +173,10 @@ class TaskAdapter:
         """Task-specific required input paths, validated by
         decision_paths.path_issues; passed through decisions.py because
         decision_paths cannot import the registry."""
+        return []
+
+    def frozen_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Path]]:
+        """Local external inputs whose content identity is frozen in the plan."""
         return []
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:

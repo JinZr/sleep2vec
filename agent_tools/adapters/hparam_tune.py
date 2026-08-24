@@ -74,7 +74,12 @@ class HparamTuneAdapter(TaskAdapter):
         return plan_hparam.hparam_yaml_override_issues(recipe, config_bytes=config_bytes)
 
     def preflight_issues(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None, *, unlock_final_test: bool
+        self,
+        recipe: dict[str, Any],
+        config_summary: dict[str, Any] | None,
+        *,
+        unlock_final_test: bool,
+        output_dir: Path | None = None,
     ) -> list[DecisionIssue]:
         from .. import plan_hparam
 

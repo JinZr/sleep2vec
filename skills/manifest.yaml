@@ -35,6 +35,13 @@ skills:
     owners: [runtime-orchestrator, agent-tooling-maintainer]
     relevant_index:
       - doc/codex_index/WORKFLOWS.md
+  embedding_extraction:
+    path: skills/embedding_extraction/SKILL.md
+    task_types: [embedding_extraction]
+    owners: [agent-tooling-maintainer, runtime-orchestrator, variant-maintainer, regression-guard]
+    relevant_index:
+      - doc/codex_index/WORKFLOWS.md
+      - doc/codex_index/REUSE_GUIDE.md
   sleep2stat:
     path: skills/sleep2stat/SKILL.md
     task_types: [sleep2stat]

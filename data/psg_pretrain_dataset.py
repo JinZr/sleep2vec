@@ -152,13 +152,12 @@ class PSGPretrainDataset(DefaultDataset):
             if multilabel_labels is not None:
                 multilabel_key_column = multilabel_labels.key_column
             read_csv_kwargs: dict[str, t.Any] = {"low_memory": False}
-            key_converters = {}
+            key_converters = {"path": str, "source": lambda value: value or None}
             if survival_key_column is not None:
-                key_converters[str(survival_key_column)] = str
+                key_converters.setdefault(str(survival_key_column), str)
             if multilabel_key_column is not None:
-                key_converters[str(multilabel_key_column)] = str
-            if key_converters:
-                read_csv_kwargs["converters"] = key_converters
+                key_converters.setdefault(str(multilabel_key_column), str)
+            read_csv_kwargs["converters"] = key_converters
 
             # --- 关键改动：读取一个或多个 CSV 并合并 ---
             def _load_index_df(

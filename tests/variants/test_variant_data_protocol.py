@@ -9,6 +9,10 @@ import pandas as pd
 import pytest
 
 VARIANT_PACKAGES = ["sleep2vec2", "sleep2expert"]
+DATASET_MODULES = [
+    "data.psg_pretrain_dataset",
+    *(f"{package}.data.psg_pretrain_dataset" for package in VARIANT_PACKAGES),
+]
 
 
 def _write_ahi_npz(path: Path) -> None:
@@ -73,6 +77,45 @@ class _DummyDatasetWithSamples:
     def dataloader(self, device="cpu"):
         type(self).last_device = device
         return {"device": device}
+
+
+@pytest.mark.parametrize("module_name", DATASET_MODULES)
+def test_psg_dataset_preserves_source_identifiers_and_blank_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_name: str
+):
+    monkeypatch.chdir(tmp_path)
+    dataset_module = importlib.import_module(module_name)
+    source_values = ["001", "nan", "NA", "null"]
+    rows = []
+    for index, source in enumerate(source_values):
+        sample = Path("001") if index == 0 else tmp_path / f"source-{index}.npz"
+        with sample.open("wb") as sample_file:
+            np.savez(sample_file, stage5=np.array([0.0, 1.0], dtype=np.float32))
+        rows.append(f"{sample},test,60,{source}")
+    fallback_sample = tmp_path / "fallback.npz"
+    np.savez(fallback_sample, stage5=np.array([0.0, 1.0], dtype=np.float32))
+    index_path = tmp_path / "fallback-index.csv"
+    rows.append(f"{fallback_sample},test,60,")
+    index_path.write_text("path,split,duration,source\n" + "\n".join(rows) + "\n")
+
+    dataset = dataset_module.PSGPretrainDataset(
+        channel_names=["stage5"],
+        channel_input_dims={},
+        save_preset_path=None,
+        load_preset_path=None,
+        index=str(index_path),
+        split=["test"],
+        sources=[*source_values, "fallback-index"],
+        max_tokens=2,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    assert [sample.metadata["source"] for sample in dataset.data] == [*source_values, str(index_path)]
+    assert dataset.data[0].path == "001"
 
 
 @pytest.mark.parametrize("package_name", VARIANT_PACKAGES)

@@ -7,7 +7,6 @@ import hashlib
 import inspect
 import json
 import logging
-import math
 from pathlib import Path
 import re
 import sys
@@ -21,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from data.whole_night_index import build_embedding_sample_key, validate_whole_night_index
 from sleep2vec2.checkpoints import get_state_dict_from_checkpoint, load_checkpoint
 from sleep2vec2.common import apply_data_backend_args, apply_model_config_args
 from sleep2vec2.config import load_finetune_config, load_pretrain_config
@@ -106,6 +106,13 @@ def _load_config_bundle(args: argparse.Namespace):
         )
     if not selected_channels:
         raise ValueError("--channels must select at least one model channel.")
+    unsafe_channels = [
+        name
+        for name in selected_channels
+        if not isinstance(name, str) or not name or Path(name).name != name or name in {".", ".."}
+    ]
+    if unsafe_channels:
+        raise ValueError(f"--channels must contain single safe path components: {unsafe_channels}.")
     args.channel_names = selected_channels
     args.channel_input_dims = {name: args.model_channel_input_dims[name] for name in selected_channels}
     args.channel_aliases = {name: alias for name, alias in args.channel_aliases.items() if name in selected_channels}
@@ -208,52 +215,22 @@ def _sha256_path(path: Path) -> str:
 
 
 def _preflight_output_dir(output_dir: Path) -> None:
+    if output_dir.is_symlink() or any(
+        (parent.exists() or parent.is_symlink()) and not parent.is_dir() for parent in output_dir.parents
+    ):
+        raise ValueError(
+            f"Embedding output path must not be a symlink or traverse a non-directory ancestor: {output_dir}"
+        )
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError(f"Embedding output directory must be empty: {output_dir}")
 
 
 def _preflight_whole_night_index(args: argparse.Namespace) -> None:
-    expected_tokens_by_path: dict[str, int] = {}
-    selected_rows = 0
-    for index_path in args.data_index:
-        with Path(index_path).open(newline="") as csv_file:
-            reader = csv.DictReader(csv_file)
-            required = {"path", "split", "duration"}
-            missing = sorted(required - set(reader.fieldnames or []))
-            if missing:
-                raise ValueError(f"Whole-night index {index_path} is missing required columns: {missing}")
-            for row in reader:
-                if row["split"] != args.eval_split:
-                    continue
-                path = str(row["path"])
-                if path in expected_tokens_by_path:
-                    raise ValueError(f"Duplicate whole-night path in selected split: {path}")
-                try:
-                    duration = float(row["duration"])
-                except (TypeError, ValueError) as exc:
-                    raise ValueError(f"Invalid duration for whole-night path {path}: {row['duration']!r}") from exc
-                if not math.isfinite(duration):
-                    raise ValueError(f"Non-finite duration for whole-night path {path}: {duration}")
-                duration_tokens = duration / 30
-                if not duration_tokens.is_integer():
-                    raise ValueError(
-                        f"Whole-night path {path} duration must be aligned to 30-second tokens: {duration}."
-                    )
-                num_tokens = int(duration_tokens)
-                if num_tokens < 1 or num_tokens > args.max_source_tokens:
-                    raise ValueError(
-                        f"Whole-night path {path} has {num_tokens} source tokens; "
-                        f"expected [1, {args.max_source_tokens}]."
-                    )
-                if not Path(path).is_file():
-                    raise FileNotFoundError(f"Whole-night NPZ path not found: {path}")
-                expected_tokens_by_path[path] = num_tokens
-                selected_rows += 1
-
-    if selected_rows == 0:
-        raise ValueError(f"No whole-night rows found for split {args.eval_split!r}.")
+    expected_tokens_by_path = validate_whole_night_index(
+        args.data_index, eval_split=args.eval_split, max_source_tokens=args.max_source_tokens
+    )
     args.expected_tokens_by_path = expected_tokens_by_path
-    args.expected_sample_count = selected_rows
+    args.expected_sample_count = len(expected_tokens_by_path)
     args.expected_total_tokens = int(sum(expected_tokens_by_path.values()))
     args.observed_min_source_tokens = int(min(expected_tokens_by_path.values()))
     args.observed_max_source_tokens = int(max(expected_tokens_by_path.values()))
@@ -726,10 +703,11 @@ def _sample_key(
 ) -> str:
     if isinstance(sample_id, str) and _KALDI_SAMPLE_KEY_RE.match(sample_id):
         return sample_id
-    return (
-        f"{_sanitize_key_part(source_value)}_"
-        f"{_record_key_from_metadata(record_key_value, session_id_value, path_value)}_"
-        f"{token_start:06d}_{token_end:06d}"
+    return build_embedding_sample_key(
+        source_value=source_value,
+        record_key=_record_key_from_metadata(record_key_value, session_id_value, path_value),
+        token_start=token_start,
+        token_end=token_end,
     )
 
 

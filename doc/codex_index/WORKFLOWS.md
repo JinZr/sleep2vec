@@ -153,6 +153,18 @@ in `results.py` and `sleep2vec_inference.py`, not in a new evaluation script.
 
 ## Variant Embedding Extraction
 
+For agent-managed local whole-night NPZ export, use
+`task=embedding_extraction` and the
+[`embedding_extraction` skill](../../skills/embedding_extraction/SKILL.md).
+Planning freezes a RoFormer pretrain or finetune config with BERT-style CLS,
+validates the explicit index and fresh output topology, binds checkpoint and
+index CSV hashes for pre-launch verification, then routes to the selected
+package-local entrypoint. Missing row sources use the authored index path, and
+embedding output cannot occupy the experiment-managed `plans`, `reports`, or
+`steps` namespaces.
+Config-window, preset, Kaldi, source-override, remote, and alternate-runtime
+workflows are outside this v1 task contract.
+
 The package-local `sleep2vec.extract_embeddings`, `sleep2vec2.extract_embeddings`,
 and `sleep2expert.extract_embeddings` entrypoints build and strictly load their
 complete model configs while allowing an explicit model-channel subset for data

@@ -254,14 +254,23 @@ def evaluate_consultation_gates(
             continue
         decision = _resolve_decision(decision_field, recipe, config_summary, cli_args, user_decisions)
         decisions[decision_field] = decision
-        if decision.value == "ASK_USER":
+        unresolved_recipe_value = decision.value in (None, "") and "recipe" in decision.evidence
+        if decision.value == "ASK_USER" or unresolved_recipe_value:
+            evidence = dict(decision.evidence)
+            if unresolved_recipe_value and task_adapter is not None and task_adapter.preflight_on_unresolved:
+                evidence["preflight_before_workspace"] = True
+            message = (
+                f"{decision_field} is marked ASK_USER."
+                if decision.value == "ASK_USER"
+                else f"{decision_field} is not explicitly resolved."
+            )
             issues.append(
                 DecisionIssue(
                     DecisionStatus.NEEDS_USER_INPUT,
                     decision_field,
-                    f"{decision_field} is marked ASK_USER.",
+                    message,
                     decision.evidence.get("question") or rule.get("question"),
-                    decision.evidence,
+                    evidence,
                 )
             )
             continue

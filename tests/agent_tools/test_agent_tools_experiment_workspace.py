@@ -1504,6 +1504,21 @@ def test_merge_run_manifest_rejects_frozen_field_changes_before_writing(
     assert (tmp_path / "run_manifest.tsv").read_bytes() == before
 
 
+def test_merge_run_manifest_rejects_input_snapshot_changes_before_writing(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    identity = {"experiment_id": "unit", "step_id": "train", "run_id": "run-000"}
+    snapshots = [{"field": "inputs.ckpt_path", "path": "/tmp/model.ckpt", "sha256": "a" * 64}]
+    merge_run_manifest(tmp_path, [{**identity, "input_snapshots": snapshots, "status": "planned"}])
+    before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    changed = [{**snapshots[0], "sha256": "b" * 64}]
+    with pytest.raises(ValueError, match="input_snapshots"):
+        merge_run_manifest(tmp_path, [{**identity, "input_snapshots": changed, "status": "running"}])
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+
+
 def test_frozen_validator_only_allows_trusted_execution_identity_initialization():
     existing = {"step_id": "train", "run_id": "run-000", "status": "planned"}
     incoming = {"step_id": "train", "run_id": "run-000", "target": "ssh", "host": "foreign-host"}

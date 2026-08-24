@@ -111,8 +111,8 @@ def finetune_summary_body(
     summary = {
         "config_path": repo_relative(resolved),
         "variant_guess": guess_variant(resolved),
-        "is_finetune": bool(finetune),
-        "is_pretrain": not bool(finetune),
+        "is_finetune": isinstance(data.get(CONFIG_FINETUNE_SECTION), dict),
+        "is_pretrain": not isinstance(data.get(CONFIG_FINETUNE_SECTION), dict),
         "data_backend": backend,
         "model": {
             "backbone": (model.get("backbone") or {}).get("name") if isinstance(model.get("backbone"), dict) else None,
@@ -167,6 +167,8 @@ def finetune_summary_body(
             "data_channel_names": list(data_channel_names or []),
             "finetune_data_index": data_block.get("finetune_data_index"),
             "finetune_preset_path": data_block.get("finetune_preset_path"),
+            "train_dataset_names": list(data_block.get("train_dataset_names") or []),
+            "test_dataset_names": list(data_block.get("test_dataset_names") or []),
             "kaldi_data_root": data_block.get("kaldi_data_root"),
             "kaldi_manifest": data_block.get("kaldi_manifest"),
         },

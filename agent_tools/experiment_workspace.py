@@ -52,6 +52,7 @@ FROZEN_RUN_FIELDS = (
         "config_sha256",
         "script",
         "script_sha256",
+        "input_snapshots",
         "run_dir",
         "artifacts",
         "runtime_dir",
@@ -1039,6 +1040,11 @@ def verify_run_snapshot(run: dict[str, Any]) -> None:
         expected = run.get(hash_field)
         if path and expected and file_sha256(path) != expected:
             raise ValueError(f"Run snapshot hash changed after planning: {path}")
+    for snapshot in run.get("input_snapshots") or []:
+        path = snapshot.get("path")
+        expected = snapshot.get("sha256")
+        if path and expected and file_sha256(path) != expected:
+            raise ValueError(f"Run input snapshot hash changed after planning: {snapshot.get('field')}: {path}")
 
 
 def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
