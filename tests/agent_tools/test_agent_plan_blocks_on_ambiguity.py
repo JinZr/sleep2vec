@@ -2393,7 +2393,7 @@ def test_hparam_plan_materializes_test_after_fit_policy_default_for_test_selecti
             "meaning": "Run the configured test split after each trial unless the recipe or user explicitly opts out.",
         }
     script = Path(plan["runs"][0]["script"]).read_text()
-    assert f"python -m {variant}.finetune" in script
+    assert f"{shlex_quote(sys.executable)} -m {variant}.finetune" in script
     assert "--test-after-fit" in script
     assert "--no-test-after-fit" not in script
     assert "--test-all-checkpoints-after-fit" in script
