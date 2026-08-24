@@ -119,11 +119,11 @@ The model config must use a RoFormer backbone. A finetune config must not set
 `model.channels`, and every selected index row must satisfy the effective
 `train_dataset_names` or `test_dataset_names` filter when that filter is non-empty.
 
-Planning shares the runtime's static index validator for required columns,
-non-empty split selection, duplicate paths, finite 30-second-aligned durations,
-token cap, and NPZ existence. The embedding directory and plan directory may
-not contain one another. The package-local extractor remains authoritative for
-model, checkpoint, and dataset loading semantics. Its terminal NPZ manifest
+Planning shares the runtime's static index validator for required and unique
+columns, non-empty split selection, duplicate paths, finite 30-second-aligned
+durations, token cap, and NPZ existence. The embedding directory and plan
+directory may not contain one another. The package-local extractor remains
+authoritative for model, checkpoint, and dataset loading semantics. Its terminal NPZ manifest
 binds the config, checkpoint, extractor, and index hashes; there is no
 Kaldi/preset hash promise in this task.
 

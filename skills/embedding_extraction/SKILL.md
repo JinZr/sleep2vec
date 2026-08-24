@@ -26,7 +26,7 @@ The fresh embedding directory receives NPZ files and terminal `manifest.json`. T
 Planning strictly loads the selected pretrain or finetune config, validates the selected index rows and token cap, checks every referenced NPZ file, and rejects non-empty or plan-overlapping output directories. Finetune configs must not own a preset, their data channels must match model channels, and every selected index row must satisfy any config-owned dataset-source filter. Inspect the frozen config and command before launch.
 
 ## Common failure modes
-Unsupported config-window, preset, Kaldi, source-override, remote-runtime, or alternate-workdir fields; empty split; duplicate paths; non-30-second duration; missing NPZ; token-cap overflow; locked test split; or a reused output directory.
+Unsupported config-window, preset, Kaldi, source-override, remote-runtime, or alternate-workdir fields; empty split; duplicate headers or paths; non-30-second duration; missing NPZ; token-cap overflow; locked test split; or a reused output directory.
 
 ## Relevant owners and index pages
 Owners: `agent-tooling-maintainer`, `runtime-orchestrator`, `variant-maintainer`, `regression-guard`. Index: `doc/codex_index/WORKFLOWS.md` and `doc/codex_index/REUSE_GUIDE.md`.

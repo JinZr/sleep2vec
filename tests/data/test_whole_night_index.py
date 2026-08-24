@@ -45,6 +45,18 @@ def test_validate_whole_night_index_rejects_duplicate_paths(tmp_path: Path):
         validate_whole_night_index([index], eval_split="test", max_source_tokens=2)
 
 
+def test_validate_whole_night_index_rejects_duplicate_headers(tmp_path: Path):
+    first = tmp_path / "first.npz"
+    second = tmp_path / "second.npz"
+    first.touch()
+    second.touch()
+    index = tmp_path / "index.csv"
+    index.write_text(f"path,split,duration,path\n{first},test,30,{second}\n")
+
+    with pytest.raises(ValueError, match="duplicate columns.*path"):
+        validate_whole_night_index([index], eval_split="test", max_source_tokens=2)
+
+
 @pytest.mark.parametrize("duration", ["45", "nan"])
 def test_validate_whole_night_index_rejects_invalid_duration(tmp_path: Path, duration: str):
     sample = tmp_path / "night.npz"

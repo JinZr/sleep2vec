@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import csv
 import math
 from pathlib import Path
@@ -19,11 +20,15 @@ def validate_whole_night_index(
     for index_path in index_paths:
         with Path(index_path).open(newline="") as csv_file:
             reader = csv.DictReader(csv_file)
+            fieldnames = reader.fieldnames or []
+            duplicates = sorted(name for name, count in Counter(fieldnames).items() if count > 1)
+            if duplicates:
+                raise ValueError(f"Whole-night index {index_path} has duplicate columns: {duplicates}")
             required = {"path", "split", "duration"}
-            missing = sorted(required - set(reader.fieldnames or []))
+            missing = sorted(required - set(fieldnames))
             if missing:
                 raise ValueError(f"Whole-night index {index_path} is missing required columns: {missing}")
-            if selected_sources and "source" not in (reader.fieldnames or []):
+            if selected_sources and "source" not in fieldnames:
                 raise ValueError(
                     f"Whole-night index {index_path} requires a source column for configured sources: "
                     f"{list(selected_sources)}"

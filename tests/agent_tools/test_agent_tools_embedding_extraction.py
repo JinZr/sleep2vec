@@ -239,6 +239,20 @@ def test_plan_rejects_invalid_whole_night_index(tmp_path: Path, rows: list[str],
     assert not Path(payload["experiment"]["root"]).exists()
 
 
+def test_plan_rejects_duplicate_whole_night_index_headers(tmp_path: Path):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    first = tmp_path / "night.npz"
+    second = tmp_path / "other.npz"
+    second.touch()
+    Path(payload["inputs"]["data_index"][0]).write_text(f"path,split,duration,path\n{first},val,60,{second}\n")
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("duplicate columns" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
 def test_nonempty_embedding_output_fails_before_workspace(tmp_path: Path):
     recipe, plan_dir, payload = _write_recipe(tmp_path)
     embedding_dir = Path(payload["artifacts"]["embedding_dir"])
