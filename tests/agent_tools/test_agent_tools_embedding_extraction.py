@@ -472,6 +472,22 @@ def test_dangling_embedding_output_symlink_fails_before_workspace(tmp_path: Path
     assert not Path(payload["experiment"]["root"]).exists()
 
 
+def test_existing_embedding_output_symlink_ancestor_fails_before_workspace(tmp_path: Path):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    parent = tmp_path / "link"
+    parent.symlink_to(target, target_is_directory=True)
+    payload["artifacts"]["embedding_dir"] = str(parent / "embeddings")
+    _rewrite(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("must not be a symlink" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
 @pytest.mark.parametrize("channel", ["/tmp/export", "../escape"])
 def test_plan_rejects_unsafe_extraction_channels(tmp_path: Path, channel: str):
     config = yaml.safe_load((REPO_ROOT / PRETRAIN_CONFIG).read_text())

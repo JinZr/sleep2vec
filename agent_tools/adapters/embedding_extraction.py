@@ -214,7 +214,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
                     )
                 )
             elif output.is_symlink() or any(
-                (parent.exists() or parent.is_symlink()) and not parent.is_dir() for parent in output.parents
+                parent.is_symlink() or (parent.exists() and not parent.is_dir()) for parent in output.parents
             ):
                 issues.append(
                     _fail(
