@@ -114,6 +114,11 @@ The recipe supplies explicit `config`, `ckpt_path`, non-empty `data_index`, and
 fresh `embedding_dir` with `overwrite: false`. Test rows additionally require
 `external_test_locked: false` and `final_test_unlocked: true`.
 
+The model config must use a RoFormer backbone. A finetune config must not set
+`data.finetune_preset_path`, its effective `data.data_channel_names` must match
+`model.channels`, and every selected index row must satisfy the effective
+`train_dataset_names` or `test_dataset_names` filter when that filter is non-empty.
+
 Planning shares the runtime's static index validator for required columns,
 non-empty split selection, duplicate paths, finite 30-second-aligned durations,
 token cap, and NPZ existence. The embedding directory and plan directory may

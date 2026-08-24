@@ -7,9 +7,15 @@ import typing as t
 
 
 def validate_whole_night_index(
-    index_paths: t.Iterable[Path], *, eval_split: str, max_source_tokens: int, path_base: Path | None = None
+    index_paths: t.Iterable[Path],
+    *,
+    eval_split: str,
+    max_source_tokens: int,
+    path_base: Path | None = None,
+    sources: t.Iterable[str] = (),
 ) -> dict[str, int]:
     expected_tokens_by_path: dict[str, int] = {}
+    selected_sources = tuple(sources)
     for index_path in index_paths:
         with Path(index_path).open(newline="") as csv_file:
             reader = csv.DictReader(csv_file)
@@ -17,10 +23,21 @@ def validate_whole_night_index(
             missing = sorted(required - set(reader.fieldnames or []))
             if missing:
                 raise ValueError(f"Whole-night index {index_path} is missing required columns: {missing}")
+            if selected_sources and "source" not in (reader.fieldnames or []):
+                raise ValueError(
+                    f"Whole-night index {index_path} requires a source column for configured sources: "
+                    f"{list(selected_sources)}"
+                )
             for row in reader:
                 if row["split"] != eval_split:
                     continue
                 path = str(row["path"])
+                source = row.get("source")
+                if selected_sources and (source is None or not any(name in str(source) for name in selected_sources)):
+                    raise ValueError(
+                        f"Whole-night path {path} source {source!r} does not match configured sources: "
+                        f"{list(selected_sources)}"
+                    )
                 if path in expected_tokens_by_path:
                     raise ValueError(f"Duplicate whole-night path in selected split: {path}")
                 try:

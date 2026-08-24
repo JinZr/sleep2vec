@@ -4,7 +4,7 @@
 Use for a local `embedding_extraction` plan that exports whole-night NPZ embeddings from a pretrain or finetune checkpoint.
 
 ## Required inputs
-Requires a `sleep2vec`, `sleep2vec2`, or `sleep2expert` variant; model config; checkpoint; explicit NPZ index CSV; eval split; unique model channels; fresh absolute embedding directory; and the fixed whole-night contract (`both`, final layer, NPZ output, batch size 1).
+Requires a `sleep2vec`, `sleep2vec2`, or `sleep2expert` variant; RoFormer model config; checkpoint; explicit NPZ index CSV; eval split; unique model channels; fresh absolute embedding directory; and the fixed whole-night contract (`both`, final layer, NPZ output, batch size 1).
 
 ## First information-gathering commands
 - `python -m agent_tools config-summary --config <config> --json`
@@ -23,7 +23,7 @@ Run `python -m agent_tools plan --recipe <recipe> --output-dir <plan-dir>`, then
 The fresh embedding directory receives NPZ files and terminal `manifest.json`. The manifest records hashes for the frozen config, checkpoint, package-local extractor, and effective index files.
 
 ## Validation gates
-Planning strictly loads the selected pretrain or finetune config, validates the selected index rows and token cap, checks every referenced NPZ file, and rejects non-empty or plan-overlapping output directories. Inspect the frozen config and command before launch.
+Planning strictly loads the selected pretrain or finetune config, validates the selected index rows and token cap, checks every referenced NPZ file, and rejects non-empty or plan-overlapping output directories. Finetune configs must not own a preset, their data channels must match model channels, and every selected index row must satisfy any config-owned dataset-source filter. Inspect the frozen config and command before launch.
 
 ## Common failure modes
 Unsupported config-window, preset, Kaldi, source-override, remote-runtime, or alternate-workdir fields; empty split; duplicate paths; non-30-second duration; missing NPZ; token-cap overflow; locked test split; or a reused output directory.

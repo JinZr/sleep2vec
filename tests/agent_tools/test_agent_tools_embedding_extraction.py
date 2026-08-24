@@ -281,6 +281,85 @@ def test_strict_runtime_loader_rejects_non_model_yaml(tmp_path: Path):
     assert any("strict runtime loading" in issue.message for issue in report.blocking_issues())
 
 
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_plan_rejects_non_roformer_config(tmp_path: Path, variant: str):
+    config_data = yaml.safe_load((REPO_ROOT / PRETRAIN_CONFIG).read_text())
+    config_data["model"]["backbone"]["name"] = "hf_bert"
+    config = tmp_path / "hf_bert_pretrain.yaml"
+    config.write_text(yaml.safe_dump(config_data, sort_keys=False))
+    recipe, plan_dir, payload = _write_recipe(tmp_path, variant=variant, config=str(config))
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("requires a RoFormer config" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
+def test_plan_rejects_finetune_config_owned_preset(tmp_path: Path):
+    config_data = yaml.safe_load((REPO_ROOT / FINETUNE_CONFIG).read_text())
+    config_data["data"]["finetune_preset_path"] = "preset.pkl"
+    config = tmp_path / "ppg_finetune.yaml"
+    config.write_text(yaml.safe_dump(config_data, sort_keys=False))
+    recipe, plan_dir, payload = _write_recipe(tmp_path, config=str(config))
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("finetune_preset_path must be null" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
+def test_plan_rejects_finetune_data_model_channel_mismatch(tmp_path: Path):
+    config_data = yaml.safe_load((REPO_ROOT / FINETUNE_CONFIG).read_text())
+    config_data["data"]["data_channel_names"] = ["heartbeat"]
+    config = tmp_path / "ppg_finetune.yaml"
+    config.write_text(yaml.safe_dump(config_data, sort_keys=False))
+    recipe, plan_dir, payload = _write_recipe(tmp_path, config=str(config))
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("data.data_channel_names must match" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
+@pytest.mark.parametrize(
+    ("eval_split", "source_field"), [("val", "train_dataset_names"), ("test", "test_dataset_names")]
+)
+def test_plan_rejects_rows_excluded_by_config_source_filter(tmp_path: Path, eval_split: str, source_field: str):
+    config_data = yaml.safe_load((REPO_ROOT / FINETUNE_CONFIG).read_text())
+    config_data["data"][source_field] = ["shhs"]
+    config = tmp_path / "ppg_finetune.yaml"
+    config.write_text(yaml.safe_dump(config_data, sort_keys=False))
+    recipe, plan_dir, payload = _write_recipe(tmp_path, config=str(config), eval_split=eval_split)
+    sample = tmp_path / "night.npz"
+    Path(payload["inputs"]["data_index"][0]).write_text(f"path,split,duration,source\n{sample},{eval_split},60,mesa\n")
+    if eval_split == "test":
+        payload["evaluation_policy"] = {"external_test_locked": False, "final_test_unlocked": True}
+        _rewrite(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("does not match configured sources" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
+
+
+def test_plan_accepts_rows_retained_by_config_source_filter(tmp_path: Path):
+    config_data = yaml.safe_load((REPO_ROOT / FINETUNE_CONFIG).read_text())
+    config_data["data"]["train_dataset_names"] = ["shhs"]
+    config = tmp_path / "ppg_finetune.yaml"
+    config.write_text(yaml.safe_dump(config_data, sort_keys=False))
+    recipe, plan_dir, payload = _write_recipe(tmp_path, config=str(config))
+    sample = tmp_path / "night.npz"
+    Path(payload["inputs"]["data_index"][0]).write_text(f"path,split,duration,source\n{sample},val,60,shhs-v1\n")
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 0
+
+
 @pytest.mark.parametrize("task", ["finetune", "infer", "evaluate"])
 def test_other_model_tasks_keep_unresolved_config_in_consultation(tmp_path: Path, task: str):
     recipe, plan_dir, payload = _write_recipe(tmp_path)

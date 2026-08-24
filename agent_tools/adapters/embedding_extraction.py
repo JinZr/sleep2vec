@@ -78,6 +78,10 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         runtime = _mapping(recipe, "runtime")
         artifacts = _mapping(recipe, "artifacts")
         evaluation = _mapping(recipe, "evaluation_policy")
+        model = (config_summary or {}).get("model") or {}
+        model_channels = {
+            item.get("name") for item in model.get("channels", []) if isinstance(item, dict) and item.get("name")
+        }
 
         data_index = inputs.get("data_index")
         if data_index in (None, "", "ASK_USER") or not coerce_list(data_index):
@@ -102,11 +106,6 @@ class EmbeddingExtractionAdapter(TaskAdapter):
                 issues.append(
                     _fail("extraction.channels", "extraction.channels must be non-empty and unique.", channels)
                 )
-            model_channels = {
-                item.get("name")
-                for item in ((config_summary or {}).get("model") or {}).get("channels", [])
-                if isinstance(item, dict) and item.get("name")
-            }
             unknown = sorted(set(channel_list) - model_channels) if model_channels else []
             if unknown:
                 issues.append(
@@ -208,6 +207,30 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         if config_summary is not None:
             if config_summary.get("data_backend") != "npz":
                 issues.append(_fail("config", "Whole-night extraction requires config data.backend=npz."))
+            backbone = model.get("backbone")
+            if backbone not in (None, "roformer"):
+                issues.append(_fail("config", "Whole-night extraction requires a RoFormer config.", backbone))
+            if config_summary.get("is_finetune") is True:
+                data = config_summary.get("data") or {}
+                if data.get("finetune_preset_path"):
+                    issues.append(
+                        _fail(
+                            "config",
+                            "Whole-night extraction requires recipe-owned data_index; "
+                            "config data.finetune_preset_path must be null.",
+                            data.get("finetune_preset_path"),
+                        )
+                    )
+                data_channels = set(data.get("data_channel_names") or [])
+                if model_channels and data_channels and data_channels != model_channels:
+                    issues.append(
+                        _fail(
+                            "config",
+                            "Finetune config data.data_channel_names must match model.channels for "
+                            "whole-night extraction.",
+                            sorted(data_channels),
+                        )
+                    )
             issues.extend(self._strict_config_issues(recipe, config_summary))
         return issues
 
@@ -248,11 +271,14 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         if not index_paths or any(path is None or not path.is_file() for path in index_paths):
             return []
         try:
+            data = (config_summary or {}).get("data") or {}
+            source_field = "test_dataset_names" if eval_split == "test" else "train_dataset_names"
             validate_whole_night_index(
                 [path for path in index_paths if path is not None],
                 eval_split=str(eval_split),
                 max_source_tokens=max_source_tokens,
                 path_base=REPO_ROOT,
+                sources=coerce_list(data.get(source_field)) if (config_summary or {}).get("is_finetune") else (),
             )
         except (OSError, ValueError) as exc:
             return [_fail("inputs.data_index", str(exc), raw_indices)]

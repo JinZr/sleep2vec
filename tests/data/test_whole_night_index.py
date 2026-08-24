@@ -69,3 +69,24 @@ def test_validate_whole_night_index_rejects_missing_npz(tmp_path: Path):
 
     with pytest.raises(FileNotFoundError, match="Whole-night NPZ path not found"):
         validate_whole_night_index([index], eval_split="test", max_source_tokens=2)
+
+
+def test_validate_whole_night_index_accepts_matching_configured_source(tmp_path: Path):
+    sample = tmp_path / "night.npz"
+    sample.touch()
+    index = tmp_path / "index.csv"
+    index.write_text(f"path,split,duration,source\n{sample},test,30,shhs-v1\n")
+
+    assert validate_whole_night_index([index], eval_split="test", max_source_tokens=2, sources=["shhs"]) == {
+        str(sample): 1
+    }
+
+
+def test_validate_whole_night_index_rejects_configured_source_mismatch(tmp_path: Path):
+    sample = tmp_path / "night.npz"
+    sample.touch()
+    index = tmp_path / "index.csv"
+    index.write_text(f"path,split,duration,source\n{sample},test,30,mesa\n")
+
+    with pytest.raises(ValueError, match="does not match configured sources"):
+        validate_whole_night_index([index], eval_split="test", max_source_tokens=2, sources=["shhs"])
