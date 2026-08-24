@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 from contextlib import ExitStack
 import csv
+import hashlib
 import inspect
 import json
 import logging
+import math
 from pathlib import Path
 import re
 import sys
@@ -15,7 +17,6 @@ import numpy as np
 import torch
 import yaml
 
-# Make sure the repository root is importable when running this file directly.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -45,10 +46,12 @@ MANIFEST_COLUMNS = (
     "token_end",
     "num_tokens",
     "matrix_rows",
+    "cls_matrix_rows",
     "available_channels",
 )
 
 _KALDI_SAMPLE_KEY_RE = re.compile(r".*_\d{6}_\d{6}$")
+WHOLE_NIGHT_POSITION_CAPACITY = 4096
 
 
 class CheckpointLoadPlan(t.NamedTuple):
@@ -90,13 +93,30 @@ def _load_config_bundle(args: argparse.Namespace):
     model_cfg = bundle.model
     data_cfg = bundle.data
     apply_model_config_args(args, model_cfg)
-    args.max_tokens = data_cfg.max_tokens
+    args.model_channel_names = list(args.channel_names)
+    args.model_channel_input_dims = dict(args.channel_input_dims)
+    selected_channels = list(getattr(args, "selected_channels", None) or args.model_channel_names)
+    if len(selected_channels) != len(set(selected_channels)):
+        raise ValueError("--channels must not contain duplicates.")
+    unknown_channels = sorted(set(selected_channels) - set(args.model_channel_names))
+    if unknown_channels:
+        raise ValueError(
+            f"--channels contains channels absent from model.channels: {unknown_channels}. "
+            f"Model channels: {args.model_channel_names}."
+        )
+    if not selected_channels:
+        raise ValueError("--channels must select at least one model channel.")
+    args.channel_names = selected_channels
+    args.channel_input_dims = {name: args.model_channel_input_dims[name] for name in selected_channels}
+    args.channel_aliases = {name: alias for name, alias in args.channel_aliases.items() if name in selected_channels}
+    args.training_max_tokens = int(data_cfg.max_tokens)
+    args.max_tokens = args.training_max_tokens
     if config_kind == "finetune":
-        args.data_channel_names = data_cfg.data_channel_names or args.channel_names
-        if set(args.data_channel_names) != set(args.channel_names):
+        args.data_channel_names = data_cfg.data_channel_names or args.model_channel_names
+        if set(args.data_channel_names) != set(args.model_channel_names):
             raise ValueError(
                 "data.data_channel_names in YAML must match model.channels for embedding extraction. "
-                f"Model channels: {args.channel_names}; data channels: {args.data_channel_names}."
+                f"Model channels: {args.model_channel_names}; data channels: {args.data_channel_names}."
             )
 
     if args.preset_path is not None and args.data_index is not None:
@@ -125,16 +145,49 @@ def _load_config_bundle(args: argparse.Namespace):
         raise ValueError("--kaldi-data-root/--kaldi-manifest require YAML data.backend=kaldi.")
 
     apply_data_backend_args(args, data_cfg, preset_attr="preset_path")
+    sequence_mode = getattr(args, "sequence_mode", "config-windows")
+    if args.embedding_kind == "both" and sequence_mode != "whole-night":
+        raise ValueError("--embedding-kind both requires --sequence-mode whole-night.")
+    if sequence_mode == "whole-night":
+        if args.embedding_kind != "both":
+            raise ValueError("--sequence-mode whole-night requires --embedding-kind both.")
+        if args.layer_index != -1:
+            raise ValueError("--embedding-kind both only supports --layer-index -1.")
+        if args.output_format != "npz":
+            raise ValueError("--embedding-kind both only supports --output-format npz.")
+        if args.batch_size != 1:
+            raise ValueError("--sequence-mode whole-night requires --batch-size 1.")
+        if args.num_workers < 0 or args.num_workers > 8:
+            raise ValueError("--sequence-mode whole-night requires --num-workers in [0, 8].")
+        if args.max_source_tokens is None or args.max_source_tokens <= 0:
+            raise ValueError("--sequence-mode whole-night requires a positive --max-source-tokens.")
+        if args.max_source_tokens + 1 > WHOLE_NIGHT_POSITION_CAPACITY:
+            raise ValueError(f"--max-source-tokens plus CLS must not exceed {WHOLE_NIGHT_POSITION_CAPACITY}.")
+        if args.data_backend != "npz":
+            raise ValueError("--sequence-mode whole-night requires the NPZ data backend.")
+        if args.preset_path is not None or not args.data_index:
+            raise ValueError("--sequence-mode whole-night requires --data-index and does not accept --preset-path.")
+        if model_cfg.backbone.name != "roformer":
+            raise ValueError("--sequence-mode whole-night is implemented only for RoFormer backbones.")
+
+        position_overrides = dict(model_cfg.backbone.config_overrides or {})
+        args.training_position_capacity = int(position_overrides.get("max_position_embeddings", 1536))
+        args.effective_position_capacity = WHOLE_NIGHT_POSITION_CAPACITY
+        args.max_tokens = int(args.max_source_tokens)
+        args.dataset_channel_names = list(args.channel_names)
+        args.dataset_channel_input_dims = dict(args.channel_input_dims)
+        return bundle, model_cfg, config_kind
+
     preset_required_channels, preset_min_channels = _load_preset_build_block(config_data)
     if preset_required_channels is None:
         args.dataset_channel_names = list(args.channel_names)
         args.dataset_channel_input_dims = dict(args.channel_input_dims)
     else:
         preset_channels, preset_dims = _resolve_validation_channels(
-            model_channels=list(args.channel_names),
-            channel_input_dims=dict(args.channel_input_dims),
+            model_channels=list(args.model_channel_names),
+            channel_input_dims=dict(args.model_channel_input_dims),
             preset_required_channels=preset_required_channels,
-            selected_channels=None,
+            selected_channels=(list(args.selected_channels) if args.selected_channels is not None else None),
         )
         _resolve_effective_min_channels(
             channel_names=preset_channels,
@@ -144,6 +197,89 @@ def _load_config_bundle(args: argparse.Namespace):
         args.dataset_channel_names = list(dict.fromkeys([*args.channel_names, *preset_channels]))
         args.dataset_channel_input_dims = {**dict(args.channel_input_dims), **preset_dims}
     return bundle, model_cfg, config_kind
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _preflight_output_dir(output_dir: Path) -> None:
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise ValueError(f"Embedding output directory must be empty: {output_dir}")
+
+
+def _preflight_whole_night_index(args: argparse.Namespace) -> None:
+    expected_tokens_by_path: dict[str, int] = {}
+    selected_rows = 0
+    for index_path in args.data_index:
+        with Path(index_path).open(newline="") as csv_file:
+            reader = csv.DictReader(csv_file)
+            required = {"path", "split", "duration"}
+            missing = sorted(required - set(reader.fieldnames or []))
+            if missing:
+                raise ValueError(f"Whole-night index {index_path} is missing required columns: {missing}")
+            for row in reader:
+                if row["split"] != args.eval_split:
+                    continue
+                path = str(row["path"])
+                if path in expected_tokens_by_path:
+                    raise ValueError(f"Duplicate whole-night path in selected split: {path}")
+                try:
+                    duration = float(row["duration"])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"Invalid duration for whole-night path {path}: {row['duration']!r}") from exc
+                if not math.isfinite(duration):
+                    raise ValueError(f"Non-finite duration for whole-night path {path}: {duration}")
+                duration_tokens = duration / 30
+                if not duration_tokens.is_integer():
+                    raise ValueError(
+                        f"Whole-night path {path} duration must be aligned to 30-second tokens: {duration}."
+                    )
+                num_tokens = int(duration_tokens)
+                if num_tokens < 1 or num_tokens > args.max_source_tokens:
+                    raise ValueError(
+                        f"Whole-night path {path} has {num_tokens} source tokens; "
+                        f"expected [1, {args.max_source_tokens}]."
+                    )
+                if not Path(path).is_file():
+                    raise FileNotFoundError(f"Whole-night NPZ path not found: {path}")
+                expected_tokens_by_path[path] = num_tokens
+                selected_rows += 1
+
+    if selected_rows == 0:
+        raise ValueError(f"No whole-night rows found for split {args.eval_split!r}.")
+    args.expected_tokens_by_path = expected_tokens_by_path
+    args.expected_sample_count = selected_rows
+    args.expected_total_tokens = int(sum(expected_tokens_by_path.values()))
+    args.observed_min_source_tokens = int(min(expected_tokens_by_path.values()))
+    args.observed_max_source_tokens = int(max(expected_tokens_by_path.values()))
+
+
+def _validate_whole_night_dataset(dataset: t.Any, args: argparse.Namespace) -> None:
+    data = list(getattr(dataset, "data", []) or [])
+    if len(data) != args.expected_sample_count:
+        raise ValueError(
+            "Whole-night dataset coverage changed during channel validation: "
+            f"expected {args.expected_sample_count}, got {len(data)}."
+        )
+    seen_paths: set[str] = set()
+    for sample in data:
+        path = str(sample.path)
+        expected_tokens = args.expected_tokens_by_path.get(path)
+        if expected_tokens is None:
+            raise ValueError(f"Whole-night dataset emitted an unexpected path: {path}")
+        if path in seen_paths:
+            raise ValueError(f"Whole-night dataset emitted a duplicate path: {path}")
+        if int(sample.start) != 0 or int(sample.end) != expected_tokens:
+            raise ValueError(
+                f"Whole-night sample for {path} must span [0, {expected_tokens}], "
+                f"got [{sample.start}, {sample.end}]."
+            )
+        seen_paths.add(path)
 
 
 def _sources_for_extraction(args: argparse.Namespace, bundle: t.Any, config_kind: str) -> list[str]:
@@ -212,6 +348,11 @@ def _build_extraction_loader(args: argparse.Namespace, bundle: t.Any, config_kin
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
+        filter_max_workers=(
+            min(max(args.num_workers, 1), 8)
+            if getattr(args, "sequence_mode", "config-windows") == "whole-night"
+            else None
+        ),
     )
 
     if getattr(args, "data_backend", "npz") == "kaldi":
@@ -230,9 +371,11 @@ def _build_extraction_loader(args: argparse.Namespace, bundle: t.Any, config_kin
         save_preset_path=None,
         load_preset_path=args.preset_path,
         index=args.data_index,
-        stride_tokens=args.max_tokens,
+        stride_tokens=0 if getattr(args, "sequence_mode", "config-windows") == "whole-night" else args.max_tokens,
         channel_aliases=getattr(args, "channel_aliases", {}),
     )
+    if getattr(args, "sequence_mode", "config-windows") == "whole-night":
+        _validate_whole_night_dataset(dataset, args)
     return _attach_metadata_lookup(dataset.dataloader(device=args.device), dataset, args)
 
 
@@ -296,9 +439,9 @@ def _cls_state_keys(keys: t.Iterable[str]) -> list[str]:
 
 def _validate_embedding_kind_compatible(model: Sleep2vecPretrainModel, embedding_kind: str) -> None:
     cls_embedding = getattr(model, "cls_embedding", None)
-    if embedding_kind == "cls" and (cls_embedding is None or not getattr(cls_embedding, "has_cls", False)):
+    if embedding_kind in {"cls", "both"} and (cls_embedding is None or not getattr(cls_embedding, "has_cls", False)):
         raise ValueError(
-            "Requested --embedding-kind cls, but the loaded checkpoint/config is not CLS-enabled. "
+            f"Requested --embedding-kind {embedding_kind}, but the loaded checkpoint/config is not CLS-enabled. "
             "Use a checkpoint and config trained with model.cls.embedding_type=bert, or export token embeddings."
         )
 
@@ -351,6 +494,18 @@ def _load_backbone_checkpoint(
         ckpt_path,
     )
     return load_plan
+
+
+def _extend_roformer_position_capacity(model: Sleep2vecPretrainModel, capacity: int) -> int:
+    encoder = model.get_encoder() if hasattr(model, "get_encoder") else model.encoder
+    position_embeddings = encoder.encoder.embed_positions
+    training_capacity = int(position_embeddings.weight.shape[0])
+    embedding_dim = int(position_embeddings.weight.shape[1])
+    encoder.encoder.embed_positions = type(position_embeddings)(capacity, embedding_dim).to(
+        device=position_embeddings.weight.device
+    )
+    encoder.config.max_position_embeddings = capacity
+    return training_capacity
 
 
 def _finetune_adapters_enabled(bundle: t.Any, config_kind: str) -> bool:
@@ -474,8 +629,8 @@ def _encode_channel(
     num_hidden_layers: int,
     *,
     embedding_kind: str,
-) -> tuple[list[np.ndarray], int]:
-    kwargs: dict[str, t.Any] = {"return_hidden_states": True}
+) -> tuple[dict[str, list[np.ndarray]], int]:
+    kwargs: dict[str, t.Any] = {"return_hidden_states": embedding_kind != "both"}
     params = inspect.signature(model._token_embeddings_to_hidden).parameters
     if "modality_name" in params:
         kwargs["modality_name"] = channel_name
@@ -486,16 +641,38 @@ def _encode_channel(
             raise ValueError("Configured separate adapters, but the backbone encoder does not support set_adapter.")
         encoder.set_adapter(f"ch_{channel_name}")
 
-    _, attention_mask, hidden_states = model._token_embeddings_to_hidden(token_embeddings, batch, **kwargs)
+    hidden, attention_mask, hidden_states = model._token_embeddings_to_hidden(token_embeddings, batch, **kwargs)
+    if embedding_kind == "both":
+        return (
+            {
+                "cls_embedding": _trim_hidden_to_numpy(
+                    model,
+                    hidden,
+                    attention_mask,
+                    batch["length"],
+                    embedding_kind="cls",
+                ),
+                "token_embedding": _trim_hidden_to_numpy(
+                    model,
+                    hidden,
+                    attention_mask,
+                    batch["length"],
+                    embedding_kind="token",
+                ),
+            },
+            num_hidden_layers,
+        )
     selected_state, resolved_layer_index = _select_layer_state(hidden_states, layer_index, num_hidden_layers)
     return (
-        _trim_hidden_to_numpy(
-            model,
-            selected_state,
-            attention_mask,
-            batch["length"],
-            embedding_kind=embedding_kind,
-        ),
+        {
+            "embedding": _trim_hidden_to_numpy(
+                model,
+                selected_state,
+                attention_mask,
+                batch["length"],
+                embedding_kind=embedding_kind,
+            )
+        },
         resolved_layer_index,
     )
 
@@ -614,6 +791,8 @@ def _extract_and_write_embeddings(
             (output_dir / "channels" / split / channel).mkdir(parents=True, exist_ok=True)
 
     sample_count = 0
+    total_source_tokens = 0
+    total_array_bytes = 0
     resolved_layer_index = None
     seen_sample_keys: set[str] = set()
     metadata_by_id = getattr(dataloader, "_embedding_metadata_by_id", {})
@@ -630,8 +809,10 @@ def _extract_and_write_embeddings(
         with torch.no_grad():
             for raw_batch in dataloader:
                 batch = move_to_device(raw_batch, args.device)
-                token_embeddings_by_channel = model._tokenize_all(batch["tokens"])
-                channel_matrices: dict[str, list[np.ndarray]] = {}
+                token_embeddings_by_channel = {
+                    channel: model.tokenizer_mapping[channel](batch["tokens"][channel]) for channel in channel_names
+                }
+                channel_matrices: dict[str, dict[str, list[np.ndarray]]] = {}
                 for channel in channel_names:
                     matrices, current_layer_index = _encode_channel(
                         model,
@@ -654,9 +835,10 @@ def _extract_and_write_embeddings(
                 ids = list(batch["id"])
 
                 for sample_idx in range(batch_size):
-                    matrix_rows = int(channel_matrices[channel_names[0]][sample_idx].shape[0])
                     source_num_tokens = int(source_lengths[sample_idx])
-                    num_tokens = source_num_tokens if args.embedding_kind == "cls" else matrix_rows
+                    primary_key = "token_embedding" if args.embedding_kind == "both" else "embedding"
+                    matrix_rows = int(channel_matrices[channel_names[0]][primary_key][sample_idx].shape[0])
+                    num_tokens = source_num_tokens
                     token_start = int(token_starts[sample_idx])
                     token_end = token_start + num_tokens
                     source_value = source_values[sample_idx]
@@ -664,6 +846,13 @@ def _extract_and_write_embeddings(
                     sample_metadata = metadata_by_id.get(str(ids[sample_idx]), {})
                     source_value = _metadata_value(sample_metadata, "source", source_value)
                     path_value = _metadata_value(sample_metadata, "path", path_value)
+                    if getattr(args, "sequence_mode", "config-windows") == "whole-night":
+                        expected_tokens = args.expected_tokens_by_path.get(str(path_value))
+                        if expected_tokens != source_num_tokens:
+                            raise ValueError(
+                                f"Whole-night token count mismatch for {path_value}: "
+                                f"expected {expected_tokens}, got {source_num_tokens}."
+                            )
                     dataset_value = _metadata_value(sample_metadata, "dataset", dataset_values[sample_idx])
                     if not _metadata_value_present(dataset_value):
                         dataset_value = source_value
@@ -681,14 +870,30 @@ def _extract_and_write_embeddings(
                     seen_sample_keys.add(sample_key)
 
                     for channel in channel_names:
-                        matrix = channel_matrices[channel][sample_idx]
-                        if matrix.shape[0] != matrix_rows:
-                            raise ValueError(f"Channel {channel!r} produced a mismatched token count for {sample_key}.")
+                        matrices = {key: rows[sample_idx] for key, rows in channel_matrices[channel].items()}
+                        if args.embedding_kind == "both":
+                            if matrices["token_embedding"].shape != (source_num_tokens, hidden_size):
+                                raise ValueError(
+                                    f"Channel {channel!r} produced token shape "
+                                    f"{matrices['token_embedding'].shape} for {sample_key}; "
+                                    f"expected {(source_num_tokens, hidden_size)}."
+                                )
+                            if matrices["cls_embedding"].shape != (1, hidden_size):
+                                raise ValueError(
+                                    f"Channel {channel!r} produced CLS shape "
+                                    f"{matrices['cls_embedding'].shape} for {sample_key}."
+                                )
+                        elif matrices["embedding"].shape[0] != matrix_rows:
+                            raise ValueError(f"Channel {channel!r} produced a mismatched row count for {sample_key}.")
+                        for matrix in matrices.values():
+                            if matrix.dtype != np.float32 or not np.isfinite(matrix).all():
+                                raise ValueError(f"Channel {channel!r} produced invalid values for {sample_key}.")
+                            total_array_bytes += int(matrix.nbytes)
                         if args.output_format == "kaldi":
-                            kaldi_writers[channel].write(sample_key, matrix)
+                            kaldi_writers[channel].write(sample_key, matrices["embedding"])
                         else:
                             npz_path = output_dir / "channels" / split / channel / f"{sample_key}.npz"
-                            np.savez(npz_path, embedding=matrix)
+                            np.savez(npz_path, **matrices)
 
                     manifest_writer.writerow(
                         {
@@ -701,13 +906,22 @@ def _extract_and_write_embeddings(
                             "token_end": token_end,
                             "num_tokens": num_tokens,
                             "matrix_rows": matrix_rows,
+                            "cls_matrix_rows": 1 if args.embedding_kind in {"cls", "both"} else 0,
                             "available_channels": json.dumps(channel_names),
                         }
                     )
                     sample_count += 1
+                    total_source_tokens += source_num_tokens
 
     if sample_count == 0:
         raise ValueError("No samples were exported.")
+    if getattr(args, "sequence_mode", "config-windows") == "whole-night":
+        if sample_count != args.expected_sample_count or total_source_tokens != args.expected_total_tokens:
+            raise ValueError(
+                "Whole-night export coverage mismatch: "
+                f"samples={sample_count}/{args.expected_sample_count}, "
+                f"tokens={total_source_tokens}/{args.expected_total_tokens}."
+            )
 
     manifest = {
         "namespace": namespace,
@@ -717,9 +931,18 @@ def _extract_and_write_embeddings(
         "checkpoint_prefix": load_plan.checkpoint_prefix,
         "output_format": args.output_format,
         "embedding_kind": args.embedding_kind,
+        "sequence_mode": getattr(args, "sequence_mode", "config-windows"),
         "layer_index": int(args.layer_index),
         "resolved_layer_index": int(resolved_layer_index if resolved_layer_index is not None else args.layer_index),
         "hidden_size": hidden_size,
+        "training_max_tokens": int(args.training_max_tokens),
+        "model_channels": list(args.model_channel_names),
+        "selected_channels": channel_names,
+        "projection_applied": False,
+        "output_keys": ["cls_embedding", "token_embedding"] if args.embedding_kind == "both" else ["embedding"],
+        "output_dtype": "float32",
+        "source_tokens": total_source_tokens,
+        "array_bytes": total_array_bytes,
         "splits": {
             split: {
                 "manifest": (Path("manifests") / f"{split}.csv").as_posix(),
@@ -731,7 +954,20 @@ def _extract_and_write_embeddings(
             }
         },
         "channels": channel_names,
+        "hashes": dict(args.input_hashes),
     }
+    if getattr(args, "sequence_mode", "config-windows") == "whole-night":
+        manifest["whole_night"] = {
+            "declared_max_source_tokens": int(args.max_source_tokens),
+            "declared_max_encoder_tokens": int(args.max_source_tokens) + 1,
+            "observed_min_source_tokens": int(args.observed_min_source_tokens),
+            "observed_max_source_tokens": int(args.observed_max_source_tokens),
+            "observed_max_encoder_tokens": int(args.observed_max_source_tokens) + 1,
+            "training_position_capacity": int(args.training_position_capacity),
+            "effective_position_capacity": int(args.effective_position_capacity),
+            "one_sample_per_path": True,
+            "stride_tokens": 0,
+        }
     manifest_json_path = output_dir / "manifest.json"
     manifest_json_path.write_text(json.dumps(manifest, indent=2) + "\n")
     return manifest_json_path
@@ -744,12 +980,23 @@ def run_extraction(args: argparse.Namespace, *, namespace: str = PACKAGE_NAMESPA
     args.preset_path = Path(args.preset_path).expanduser() if args.preset_path is not None else None
     args.data_index = [Path(path).expanduser() for path in args.data_index] if args.data_index is not None else None
 
+    _preflight_output_dir(args.output_dir)
+
     if not args.config.exists():
         raise FileNotFoundError(f"Config YAML not found: {args.config}")
     if not args.ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {args.ckpt_path}")
 
+    input_hashes = {
+        "config_sha256": _sha256_path(args.config),
+        "checkpoint_sha256": _sha256_path(args.ckpt_path),
+        "extractor_sha256": _sha256_path(Path(__file__)),
+    }
     bundle, model_cfg, config_kind = _load_config_bundle(args)
+    input_hashes["index_sha256"] = {str(path): _sha256_path(Path(path)) for path in (args.data_index or [])}
+    args.input_hashes = input_hashes
+    if getattr(args, "sequence_mode", "config-windows") == "whole-night":
+        _preflight_whole_night_index(args)
     dataloader = _build_extraction_loader(args, bundle, config_kind)
     adapters_enabled = _finetune_adapters_enabled(bundle, config_kind)
     model = _build_backbone(model_cfg, args.device, bundle=bundle, config_kind=config_kind)
@@ -759,6 +1006,13 @@ def run_extraction(args: argparse.Namespace, *, namespace: str = PACKAGE_NAMESPA
         args.device,
         adapters_enabled=adapters_enabled,
     )
+    if getattr(args, "sequence_mode", "config-windows") == "whole-night":
+        training_capacity = _extend_roformer_position_capacity(model, args.effective_position_capacity)
+        if training_capacity != args.training_position_capacity:
+            raise ValueError(
+                "Configured and constructed RoFormer position capacities differ: "
+                f"config={args.training_position_capacity}, model={training_capacity}."
+            )
     _validate_embedding_kind_compatible(model, args.embedding_kind)
     return _extract_and_write_embeddings(args, model, dataloader, model_cfg, load_plan, namespace=namespace)
 
@@ -779,8 +1033,28 @@ def parse_args(argv: t.Sequence[str] | None = None) -> argparse.Namespace:
         "--embedding-kind",
         type=str,
         default="token",
-        choices=("token", "cls"),
-        help="Whether to save token-level or CLS-level embeddings. cls requires a CLS-enabled checkpoint/config.",
+        choices=("token", "cls", "both"),
+        help="Save token or CLS embeddings; both is reserved for whole-night CLS-enabled extraction.",
+    )
+    parser.add_argument(
+        "--channels",
+        dest="selected_channels",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Model-channel subset to read and export; the full model config is still loaded strictly.",
+    )
+    parser.add_argument(
+        "--sequence-mode",
+        choices=("config-windows", "whole-night"),
+        default="config-windows",
+        help="Use configured windows or one untruncated sample per indexed recording.",
+    )
+    parser.add_argument(
+        "--max-source-tokens",
+        type=int,
+        default=None,
+        help="Required hard source-token cap for --sequence-mode whole-night.",
     )
     parser.add_argument("--eval-split", choices=["train", "val", "test"], default="test", help="Split to export.")
     parser.add_argument("--batch-size", type=int, default=12, help="Extraction dataloader batch size.")
