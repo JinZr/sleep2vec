@@ -112,6 +112,7 @@ class PSGPretrainDataset(DefaultDataset):
         generative: bool = False,
         is_train_set: bool = True,
         filter_max_workers: int | None = None,
+        channel_length_tolerance: int = 1,
         channel_aliases: t.Mapping[str, str] | None = None,
         **kwargs: t.Any,
     ) -> None:
@@ -288,4 +289,5 @@ class PSGPretrainDataset(DefaultDataset):
             dataloader_config=kwargs,
             channel_aliases=channel_aliases,
             filter_max_workers=filter_max_workers,
+            channel_length_tolerance=channel_length_tolerance,
         )

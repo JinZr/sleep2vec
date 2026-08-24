@@ -366,6 +366,8 @@ def _build_extraction_loader(args: argparse.Namespace, bundle: t.Any, config_kin
     if args.preset_path is None and not args.data_index:
         raise ValueError("NPZ extraction requires --data-index or --preset-path.")
 
+    if getattr(args, "sequence_mode", "config-windows") == "whole-night":
+        dataset_kwargs["channel_length_tolerance"] = 0
     dataset = PSGPretrainDataset(
         **dataset_kwargs,
         save_preset_path=None,
@@ -883,8 +885,15 @@ def _extract_and_write_embeddings(
                                     f"Channel {channel!r} produced CLS shape "
                                     f"{matrices['cls_embedding'].shape} for {sample_key}."
                                 )
-                        elif matrices["embedding"].shape[0] != matrix_rows:
-                            raise ValueError(f"Channel {channel!r} produced a mismatched row count for {sample_key}.")
+                        else:
+                            expected_shape = (
+                                (source_num_tokens, hidden_size) if args.embedding_kind == "token" else (1, hidden_size)
+                            )
+                            if matrices["embedding"].shape != expected_shape:
+                                raise ValueError(
+                                    f"Channel {channel!r} produced shape {matrices['embedding'].shape} "
+                                    f"for {sample_key}; expected {expected_shape}."
+                                )
                         for matrix in matrices.values():
                             if matrix.dtype != np.float32 or not np.isfinite(matrix).all():
                                 raise ValueError(f"Channel {channel!r} produced invalid values for {sample_key}.")
@@ -994,6 +1003,8 @@ def run_extraction(args: argparse.Namespace, *, namespace: str = PACKAGE_NAMESPA
     }
     bundle, model_cfg, config_kind = _load_config_bundle(args)
     input_hashes["index_sha256"] = {str(path): _sha256_path(Path(path)) for path in (args.data_index or [])}
+    if args.preset_path is not None:
+        input_hashes["preset_sha256"] = _sha256_path(args.preset_path)
     args.input_hashes = input_hashes
     if getattr(args, "sequence_mode", "config-windows") == "whole-night":
         _preflight_whole_night_index(args)

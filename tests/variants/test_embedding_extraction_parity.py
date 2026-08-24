@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -120,6 +121,60 @@ def test_variant_position_extension_updates_capacity(variant: str):
     assert training_capacity == 4
     assert encoder.encoder.embed_positions.weight.shape == (8, 2)
     assert encoder.config.max_position_embeddings == 8
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_variant_run_hashes_preset_before_loading_data(variant: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    module = _extractor(variant)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("model: {}\n")
+    checkpoint_path = tmp_path / "model.ckpt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    preset_path = tmp_path / "preset.pkl"
+    preset_path.write_bytes(b"preset")
+    expected_preset_hash = hashlib.sha256(b"preset").hexdigest()
+    args = module.parse_args(
+        [
+            "--config",
+            str(config_path),
+            "--ckpt-path",
+            str(checkpoint_path),
+            "--output-dir",
+            str(tmp_path / "output"),
+            "--output-format",
+            "npz",
+            "--preset-path",
+            str(preset_path),
+        ]
+    )
+    model_cfg = SimpleNamespace(backbone=SimpleNamespace())
+    model = SimpleNamespace()
+    captured_hashes = {}
+    monkeypatch.setattr(module, "_load_config_bundle", lambda _args: (SimpleNamespace(), model_cfg, "pretrain"))
+
+    def build_loader(*_args, **_kwargs):
+        preset_path.write_bytes(b"changed")
+        return []
+
+    monkeypatch.setattr(module, "_build_extraction_loader", build_loader)
+    monkeypatch.setattr(module, "_finetune_adapters_enabled", lambda *_args: False)
+    monkeypatch.setattr(module, "_build_backbone", lambda *_args, **_kwargs: model)
+    monkeypatch.setattr(
+        module,
+        "_load_backbone_checkpoint",
+        lambda *_args, **_kwargs: module.CheckpointLoadPlan("pretrain", "ema_model."),
+    )
+    monkeypatch.setattr(module, "_validate_embedding_kind_compatible", lambda *_args: None)
+
+    def extract(args, *_args, **_kwargs):
+        captured_hashes.update(args.input_hashes)
+        return args.output_dir / "manifest.json"
+
+    monkeypatch.setattr(module, "_extract_and_write_embeddings", extract)
+
+    module.run_extraction(args)
+
+    assert captured_hashes["preset_sha256"] == expected_preset_hash
 
 
 @pytest.mark.parametrize("variant", STANDALONE_VARIANTS)

@@ -187,7 +187,11 @@ def test_whole_night_loader_constructs_one_unclipped_sample(tmp_path: Path):
 
 def test_whole_night_loader_rejects_channel_filtered_coverage(tmp_path: Path):
     npz_path = tmp_path / "night.npz"
-    np.savez(npz_path, heartbeat=np.ones(240, dtype=np.float32))
+    np.savez(
+        npz_path,
+        heartbeat=np.ones(240, dtype=np.float32),
+        breath=np.ones(120, dtype=np.float32),
+    )
     index_path = tmp_path / "index.csv"
     pd.DataFrame([{"path": str(npz_path), "split": "train", "duration": 60}]).to_csv(index_path, index=False)
     args = argparse.Namespace(
@@ -287,6 +291,23 @@ class _BothBackbone:
         hidden = torch.cat([cls, token_embeddings.to(torch.float32) + channel_offset], dim=1)
         attention_mask = torch.ones(hidden.shape[:2], dtype=torch.bool)
         return hidden, attention_mask, None
+
+
+class _ShortTokenBackbone:
+    cls_embedding = None
+
+    def __init__(self):
+        self.tokenizer_mapping = {"heartbeat": torch.nn.Identity()}
+
+    def eval(self):
+        return self
+
+    def _token_embeddings_to_hidden(self, token_embeddings, _batch, *, return_hidden_states=False, modality_name=None):
+        assert return_hidden_states is True
+        assert modality_name == "heartbeat"
+        hidden = token_embeddings[:, :1].to(torch.float32)
+        attention_mask = torch.ones(hidden.shape[:2], dtype=torch.bool)
+        return hidden, attention_mask, (hidden,)
 
 
 def _both_batch():
@@ -419,3 +440,45 @@ def test_both_npz_export_writes_exact_keys_and_manifest_invariants(tmp_path: Pat
             assert npz["token_embedding"].shape == (3, 2)
 
     assert model.forward_channels == ["heartbeat", "breath"]
+
+
+def test_token_export_rejects_matrix_shorter_than_source_span(tmp_path: Path):
+    args = argparse.Namespace(
+        output_dir=tmp_path / "output",
+        output_format="npz",
+        eval_split="train",
+        channel_names=["heartbeat"],
+        model_channel_names=["heartbeat"],
+        selected_channels=["heartbeat"],
+        layer_index=-1,
+        device="cpu",
+        config=tmp_path / "config.yaml",
+        ckpt_path=tmp_path / "model.ckpt",
+        data_index=None,
+        embedding_kind="token",
+        sequence_mode="config-windows",
+        training_max_tokens=180,
+        input_hashes={
+            "config_sha256": "config-hash",
+            "checkpoint_sha256": "checkpoint-hash",
+            "extractor_sha256": "extractor-hash",
+            "index_sha256": {},
+        },
+    )
+    batch = {
+        "id": [0],
+        "length": torch.tensor([2]),
+        "token_start": torch.tensor([0]),
+        "metadata": {"source": ["cohorts"], "path": ["/tmp/night.npz"]},
+        "tokens": {"heartbeat": torch.ones(1, 2, 2)},
+    }
+    model_cfg = SimpleNamespace(backbone=SimpleNamespace(hidden_size=2, num_hidden_layers=1))
+
+    with pytest.raises(ValueError, match=r"produced shape \(1, 2\).+expected \(2, 2\)"):
+        extract_embeddings._extract_and_write_embeddings(
+            args,
+            _ShortTokenBackbone(),
+            [batch],
+            model_cfg,
+            extract_embeddings.CheckpointLoadPlan("pretrain", "ema_model."),
+        )
