@@ -80,13 +80,17 @@ class _DummyDatasetWithSamples:
 
 
 @pytest.mark.parametrize("module_name", DATASET_MODULES)
-def test_psg_dataset_preserves_source_identifiers_and_blank_fallback(tmp_path: Path, module_name: str):
+def test_psg_dataset_preserves_source_identifiers_and_blank_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_name: str
+):
+    monkeypatch.chdir(tmp_path)
     dataset_module = importlib.import_module(module_name)
     source_values = ["001", "nan", "NA", "null"]
     rows = []
     for index, source in enumerate(source_values):
-        sample = tmp_path / f"source-{index}.npz"
-        np.savez(sample, stage5=np.array([0.0, 1.0], dtype=np.float32))
+        sample = Path("001") if index == 0 else tmp_path / f"source-{index}.npz"
+        with sample.open("wb") as sample_file:
+            np.savez(sample_file, stage5=np.array([0.0, 1.0], dtype=np.float32))
         rows.append(f"{sample},test,60,{source}")
     fallback_sample = tmp_path / "fallback.npz"
     np.savez(fallback_sample, stage5=np.array([0.0, 1.0], dtype=np.float32))
@@ -111,6 +115,7 @@ def test_psg_dataset_preserves_source_identifiers_and_blank_fallback(tmp_path: P
     )
 
     assert [sample.metadata["source"] for sample in dataset.data] == [*source_values, str(index_path)]
+    assert dataset.data[0].path == "001"
 
 
 @pytest.mark.parametrize("package_name", VARIANT_PACKAGES)
