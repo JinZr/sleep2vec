@@ -768,6 +768,12 @@ def build_plan(
 
     task = recipe.get("task")
     plan_adapter = get_adapter(task)
+    input_snapshots = []
+    if plan_adapter is not None:
+        input_snapshots = [
+            {"field": field, "path": str(path), "sha256": file_sha256(path)}
+            for field, path in plan_adapter.frozen_input_paths(recipe)
+        ]
     ensure_experiment_workspace(recipe, out, register_step=False)
 
     write_out = out
@@ -850,6 +856,8 @@ def build_plan(
             "runtime_dir": str(runtime_dir) if runtime_dir is not None else "",
             "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir is not None else "",
         }
+        if input_snapshots:
+            run["input_snapshots"] = input_snapshots
         write_text(write_out / "plan.md", context.plan_markdown(report, commands))
         write_text(
             write_out / "run.sh",
@@ -862,6 +870,7 @@ def build_plan(
                     run_id=run_id,
                     lifecycle_python=runtime_identity.get("python"),
                     expected_runtime_commit=runtime_identity.get("runtime_commit"),
+                    input_snapshots=input_snapshots,
                 )
             )
             + "\n",

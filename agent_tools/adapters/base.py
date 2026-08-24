@@ -175,6 +175,10 @@ class TaskAdapter:
         decision_paths cannot import the registry."""
         return []
 
+    def frozen_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Path]]:
+        """Local external inputs whose content identity is frozen in the plan."""
+        return []
+
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         """Allowed ``runtime.*`` fields; variant-sensitive for some tasks."""
         return frozenset()

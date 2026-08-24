@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import shlex
 import sys
@@ -220,6 +221,7 @@ def script_lines(
     run_id: str | None = None,
     lifecycle_python: str | Path | None = None,
     expected_runtime_commit: str | None = None,
+    input_snapshots: list[dict[str, str]] | None = None,
 ) -> list[str]:
     cwd_lines = []
     if run_cwd is not None:
@@ -241,7 +243,7 @@ def script_lines(
         commit_command = (
             render_command([lifecycle_interpreter, "-c", commit_code, experiment_root, step_id, run_id]) + ' "$1"'
         )
-        runtime_identity_lines = []
+        prelaunch_verification_lines = []
         if expected_runtime_commit is not None:
             runtime_commit_code = (
                 "import subprocess, sys; "
@@ -250,10 +252,29 @@ def script_lines(
                 "sys.exit('Target runtime commit differs from the frozen plan: expected ' "
                 "+ sys.argv[1] + ', observed ' + observed)"
             )
-            runtime_identity_lines = [
+            prelaunch_verification_lines = [
                 render_command([lifecycle_interpreter, "-c", runtime_commit_code, expected_runtime_commit]),
                 "",
             ]
+        if input_snapshots:
+            input_snapshot_code = (
+                "import json, sys; "
+                "from agent_tools.experiment_workspace import verify_run_snapshot; "
+                "verify_run_snapshot({'input_snapshots': json.loads(sys.argv[1])})"
+            )
+            prelaunch_verification_lines.extend(
+                [
+                    render_command(
+                        [
+                            lifecycle_interpreter,
+                            "-c",
+                            input_snapshot_code,
+                            json.dumps(input_snapshots, sort_keys=True, separators=(",", ":")),
+                        ]
+                    ),
+                    "",
+                ]
+            )
         lifecycle_lines = [
             "_agent_commit_status() {",
             f"  {commit_command}",
@@ -275,7 +296,7 @@ def script_lines(
             '  exit "$_agent_commit_status_code"',
             "}",
             "",
-            *runtime_identity_lines,
+            *prelaunch_verification_lines,
             "_agent_commit_status running",
             # The trap is installed only after the owner accepts running, so terminal runs never execute again.
             "trap _agent_finish_run EXIT",

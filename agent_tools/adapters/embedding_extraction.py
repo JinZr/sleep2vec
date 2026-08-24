@@ -65,6 +65,14 @@ class EmbeddingExtractionAdapter(TaskAdapter):
             paths.append((f"data_index[{index}]", path))
         return paths
 
+    def frozen_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Path]]:
+        paths: list[tuple[str, Path]] = []
+        for field, path in self.required_input_paths(recipe):
+            resolved = resolve_repo_path(path)
+            if resolved is not None:
+                paths.append((f"inputs.{field}", resolved))
+        return paths
+
     def task_issues(
         self,
         recipe: dict[str, Any],

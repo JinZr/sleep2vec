@@ -20,7 +20,7 @@ Stop when any required value is missing or `ASK_USER`. Test extraction requires 
 Run `python -m agent_tools plan --recipe <recipe> --output-dir <plan-dir>`, then use the frozen plan. The generated command routes to `<variant>.extract_embeddings` in the current checkout with NPZ, whole-night, `--embedding-kind both`, `--layer-index -1`, and `--batch-size 1`.
 
 ## Expected artifacts
-The fresh embedding directory receives NPZ files and terminal `manifest.json`. The manifest records hashes for the frozen config, checkpoint, package-local extractor, and effective index files.
+The plan records checkpoint and index CSV hashes and verifies them immediately before launch. The fresh embedding directory receives NPZ files and terminal `manifest.json`, whose hashes record the actual frozen config, checkpoint, package-local extractor, and effective index files.
 
 ## Validation gates
 Planning strictly loads the selected pretrain or finetune config, validates the selected index rows and token cap, checks every referenced NPZ file, and rejects non-empty or plan-overlapping output directories. Finetune configs must not own a preset, their data channels must match model channels, and every selected index row must satisfy any config-owned dataset-source filter. Inspect the frozen config and command before launch.

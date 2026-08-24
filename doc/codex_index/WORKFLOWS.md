@@ -157,7 +157,8 @@ For agent-managed local whole-night NPZ export, use
 `task=embedding_extraction` and the
 [`embedding_extraction` skill](../../skills/embedding_extraction/SKILL.md).
 Planning freezes a pretrain or finetune config, validates the explicit index
-and fresh output topology, then routes to the selected package-local entrypoint.
+and fresh output topology, binds checkpoint and index CSV hashes for pre-launch
+verification, then routes to the selected package-local entrypoint.
 Config-window, preset, Kaldi, source-override, remote, and alternate-runtime
 workflows are outside this v1 task contract.
 

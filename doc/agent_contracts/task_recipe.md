@@ -123,9 +123,12 @@ Planning shares the runtime's static index validator for required and unique
 columns, non-empty split selection, duplicate paths, finite 30-second-aligned
 durations, token cap, and NPZ existence. The embedding directory and plan
 directory may not contain one another. The package-local extractor remains
-authoritative for model, checkpoint, and dataset loading semantics. Its terminal NPZ manifest
-binds the config, checkpoint, extractor, and index hashes; there is no
-Kaldi/preset hash promise in this task.
+authoritative for model, checkpoint, and dataset loading semantics. Its terminal
+NPZ manifest binds the config, checkpoint, extractor, and index hashes; there is
+no Kaldi/preset hash promise in this task.
+The plan also freezes checkpoint and index CSV hashes and verifies those external
+inputs before committing the run to `running`; referenced NPZ contents remain
+runtime-owned and are not hashed during planning.
 
 ### Runtime paths and data inputs
 

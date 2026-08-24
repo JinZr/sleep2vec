@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 import yaml
 
+from agent_tools.experiment_workspace import file_sha256, read_run_manifest
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import build_plan
 
@@ -76,6 +78,7 @@ def test_plan_routes_each_variant_and_freezes_config(tmp_path: Path, variant: st
     assert report.exit_code == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
     command = plan["commands"][0]
+    run = plan["runs"][0]
     frozen_config = plan_dir / "runs" / "run-000--whole-night-extraction" / "config.yaml"
     assert command.startswith(f"python -m {variant}.extract_embeddings ")
     assert f"--config {frozen_config}" in command
@@ -83,6 +86,51 @@ def test_plan_routes_each_variant_and_freezes_config(tmp_path: Path, variant: st
     assert "--sequence-mode whole-night" in command
     assert "--batch-size 1" in command
     assert "--data-backend npz" in command
+    snapshots = {item["field"]: item for item in run["input_snapshots"]}
+    checkpoint = Path(_payload["inputs"]["ckpt_path"])
+    index = Path(_payload["inputs"]["data_index"][0])
+    assert snapshots == {
+        "inputs.ckpt_path": {
+            "field": "inputs.ckpt_path",
+            "path": str(checkpoint),
+            "sha256": file_sha256(checkpoint),
+        },
+        "inputs.data_index[0]": {
+            "field": "inputs.data_index[0]",
+            "path": str(index),
+            "sha256": file_sha256(index),
+        },
+    }
+    run_json = json.loads((Path(run["run_dir"]) / "run.json").read_text())
+    assert run_json["input_snapshots"] == run["input_snapshots"]
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_launch_rejects_checkpoint_changed_after_planning(tmp_path: Path, variant: str):
+    recipe, plan_dir, payload = _write_recipe(tmp_path, variant=variant)
+    assert build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    Path(payload["inputs"]["ckpt_path"]).write_bytes(b"replacement checkpoint")
+
+    result = subprocess.run(["bash", str(plan_dir / "run.sh")], text=True, capture_output=True)
+
+    assert result.returncode != 0
+    assert "inputs.ckpt_path" in result.stderr
+    assert not Path(payload["artifacts"]["embedding_dir"]).exists()
+    assert read_run_manifest(Path(payload["experiment"]["root"]))[0]["status"] == "planned"
+
+
+def test_launch_rejects_index_changed_after_planning(tmp_path: Path):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    assert build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    sample = tmp_path / "night.npz"
+    Path(payload["inputs"]["data_index"][0]).write_text(f"path,split,duration\n{sample},val,30\n")
+
+    result = subprocess.run(["bash", str(plan_dir / "run.sh")], text=True, capture_output=True)
+
+    assert result.returncode != 0
+    assert "inputs.data_index[0]" in result.stderr
+    assert not Path(payload["artifacts"]["embedding_dir"]).exists()
+    assert read_run_manifest(Path(payload["experiment"]["root"]))[0]["status"] == "planned"
 
 
 def test_plan_rejects_sex_age_baseline_variant(tmp_path: Path):
