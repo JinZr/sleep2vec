@@ -172,7 +172,11 @@ def test_repo_relative_config_loads_outside_repo(tmp_path: Path, monkeypatch: py
     assert report.exit_code == 0
 
 
-def test_user_decisions_materialize_pretrain_config_and_channels(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("config", "channels"),
+    [(PRETRAIN_CONFIG, ["heartbeat", "breath"]), (FINETUNE_CONFIG, ["ppg"])],
+)
+def test_user_decisions_materialize_config_and_channels(tmp_path: Path, config: str, channels: list[str]):
     recipe, plan_dir, payload = _write_recipe(tmp_path)
     payload["inputs"]["config"] = "ASK_USER"
     payload["extraction"]["channels"] = "ASK_USER"
@@ -182,8 +186,8 @@ def test_user_decisions_materialize_pretrain_config_and_channels(tmp_path: Path)
         yaml.safe_dump(
             {
                 "decisions": {
-                    "config": {"value": PRETRAIN_CONFIG, "source": "explicit_user"},
-                    "embedding_channels": {"value": ["heartbeat", "breath"], "source": "explicit_user"},
+                    "config": {"value": config, "source": "explicit_user"},
+                    "embedding_channels": {"value": channels, "source": "explicit_user"},
                 }
             }
         )
@@ -193,8 +197,58 @@ def test_user_decisions_materialize_pretrain_config_and_channels(tmp_path: Path)
 
     assert report.exit_code == 0
     resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
-    assert resolved["inputs"]["config"] == PRETRAIN_CONFIG
-    assert resolved["extraction"]["channels"] == ["heartbeat", "breath"]
+    assert resolved["inputs"]["config"] == config
+    assert resolved["extraction"]["channels"] == channels
+
+
+def test_strict_runtime_loader_uses_bound_config_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from sleep2vec import config as runtime_config
+
+    source_config = tmp_path / "ppg_pretrain.yaml"
+    original_bytes = (REPO_ROOT / PRETRAIN_CONFIG).read_bytes()
+    source_config.write_bytes(original_bytes)
+    recipe, plan_dir, _payload = _write_recipe(tmp_path, config=str(source_config))
+    original_loader = runtime_config.load_pretrain_config
+    loaded_paths: list[Path] = []
+
+    def load_pretrain_config(path: str | Path):
+        loaded_paths.append(Path(path))
+        source_config.write_text("not: a valid model config\n")
+        return original_loader(path)
+
+    monkeypatch.setattr(runtime_config, "load_pretrain_config", load_pretrain_config)
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 0
+    assert loaded_paths and all(path != source_config for path in loaded_paths)
+    frozen_config = plan_dir / "runs" / "run-000--whole-night-extraction" / "config.yaml"
+    assert frozen_config.read_bytes() == original_bytes
+
+
+def test_plan_rejects_index_changed_during_final_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from agent_tools.adapters.embedding_extraction import EmbeddingExtractionAdapter
+
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    index = Path(payload["inputs"]["data_index"][0])
+    original_check = EmbeddingExtractionAdapter.configured_input_issues
+    checks = 0
+
+    def configured_input_issues(self, recipe_payload, config_summary):
+        nonlocal checks
+        checks += 1
+        issues = original_check(self, recipe_payload, config_summary)
+        if checks == 2:
+            index.write_text(index.read_text().replace(",60", ",30"))
+        return issues
+
+    monkeypatch.setattr(EmbeddingExtractionAdapter, "configured_input_issues", configured_input_issues)
+
+    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert any("changed while the final plan snapshot" in issue.message for issue in report.blocking_issues())
+    assert not Path(payload["experiment"]["root"]).exists()
 
 
 @pytest.mark.parametrize(

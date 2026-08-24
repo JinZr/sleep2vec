@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 from data.whole_night_index import validate_whole_night_index
@@ -72,6 +73,29 @@ class EmbeddingExtractionAdapter(TaskAdapter):
             if resolved is not None:
                 paths.append((f"inputs.{field}", resolved))
         return paths
+
+    def config_override_issues(
+        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+    ) -> list[DecisionIssue] | None:
+        variant = recipe.get("variant")
+        config_bytes = (config_summary or {}).get("_source_config_bytes")
+        if variant not in SUPPORTED_VARIANTS or not isinstance(config_bytes, bytes):
+            return [_fail("config", "Extraction config validation requires bound source config bytes.")]
+        if (config_summary or {}).get("is_finetune") is True:
+            loader_name = "load_finetune_config"
+        elif (config_summary or {}).get("is_pretrain") is True:
+            loader_name = "load_pretrain_config"
+        else:
+            return [_fail("config", "Extraction config must be a pretrain or finetune model YAML.")]
+        try:
+            loader = getattr(importlib.import_module(f"{variant}.config"), loader_name)
+            with NamedTemporaryFile(suffix=".yaml") as config_file:
+                config_file.write(config_bytes)
+                config_file.flush()
+                loader(config_file.name)
+        except Exception as exc:
+            return [_fail("config", f"Extraction config failed strict runtime loading: {exc}")]
+        return []
 
     def task_issues(
         self,
@@ -247,26 +271,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
                             sorted(data_channels),
                         )
                     )
-            issues.extend(self._strict_config_issues(recipe, config_summary))
         return issues
-
-    def _strict_config_issues(self, recipe: dict[str, Any], config_summary: dict[str, Any]) -> list[DecisionIssue]:
-        variant = recipe.get("variant")
-        config_path = resolve_repo_path(_mapping(recipe, "inputs").get("config"))
-        if variant not in SUPPORTED_VARIANTS or config_path is None or not config_path.is_file():
-            return []
-        if config_summary.get("is_finetune") is True:
-            loader_name = "load_finetune_config"
-        elif config_summary.get("is_pretrain") is True:
-            loader_name = "load_pretrain_config"
-        else:
-            return [_fail("config", "Extraction config must be a pretrain or finetune model YAML.")]
-        try:
-            loader = getattr(importlib.import_module(f"{variant}.config"), loader_name)
-            loader(config_path)
-        except Exception as exc:
-            return [_fail("config", f"Extraction config failed strict runtime loading: {exc}", str(config_path))]
-        return []
 
     def configured_input_issues(
         self, recipe: dict[str, Any], config_summary: dict[str, Any] | None

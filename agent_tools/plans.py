@@ -444,7 +444,15 @@ def evaluate_recipe(
                 ],
             )
     override_issues = None
-    if cfg is not None and cfg.get("is_finetune") is True and not cfg.get("blocking_issues"):
+    accepts_config = cfg is not None and (
+        (cfg.get("is_finetune") is True and not cfg.get("blocking_issues"))
+        or (
+            recipe_adapter is not None
+            and recipe_adapter.accepts_pretrain_config
+            and (cfg.get("is_pretrain") is True or cfg.get("is_finetune") is True)
+        )
+    )
+    if accepts_config:
         override_issues = recipe_adapter.config_override_issues(recipe, cfg) if recipe_adapter is not None else None
     if (
         override_issues is None
@@ -508,7 +516,9 @@ def evaluate_recipe(
             ],
         )
     elif selected_config:
-        blocking_config_issues = cfg.get("blocking_issues", []) if cfg is not None else []
+        blocking_config_issues = (
+            cfg.get("blocking_issues", []) if cfg is not None and not recipe_adapter.accepts_pretrain_config else []
+        )
         config_kind_valid = cfg is not None and (
             cfg.get("is_finetune") is True
             or (recipe_adapter.accepts_pretrain_config and cfg.get("is_pretrain") is True)
@@ -770,10 +780,44 @@ def build_plan(
     plan_adapter = get_adapter(task)
     input_snapshots = []
     if plan_adapter is not None:
-        input_snapshots = [
-            {"field": field, "path": str(path), "sha256": file_sha256(path)}
-            for field, path in plan_adapter.frozen_input_paths(recipe)
-        ]
+        input_paths = plan_adapter.frozen_input_paths(recipe)
+        try:
+            input_snapshots = [
+                {"field": field, "path": str(path), "sha256": file_sha256(path)} for field, path in input_paths
+            ]
+            report = _append_issues(report, plan_adapter.configured_input_issues(recipe, cfg))
+            current_snapshots = [
+                {"field": field, "path": str(path), "sha256": file_sha256(path)} for field, path in input_paths
+            ]
+        except OSError as exc:
+            report = _append_issues(
+                report,
+                [
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "inputs",
+                        f"Failed to bind planned input files: {exc}",
+                        None,
+                        {"preflight_before_workspace": True},
+                    )
+                ],
+            )
+        else:
+            if input_snapshots != current_snapshots:
+                report = _append_issues(
+                    report,
+                    [
+                        DecisionIssue(
+                            DecisionStatus.FAIL,
+                            "inputs",
+                            "An input file changed while the final plan snapshot was validating it.",
+                            None,
+                            {"preflight_before_workspace": True},
+                        )
+                    ],
+                )
+        if report.exit_code != 0:
+            return report
     ensure_experiment_workspace(recipe, out, register_step=False)
 
     write_out = out
