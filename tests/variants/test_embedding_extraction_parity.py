@@ -131,6 +131,17 @@ def test_variant_preflight_rejects_existing_directory_symlink_ancestor(variant: 
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
+def test_variant_preflight_rejects_parent_path_component(variant: str, tmp_path: Path):
+    module = _extractor(variant)
+    target = tmp_path / "target"
+    target.mkdir()
+    (tmp_path / "link").symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="must not contain '\\.\\.'"):
+        module._preflight_output_dir(tmp_path / "new" / ".." / "link" / "output")
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
 def test_variant_rejects_unsafe_extraction_channels(variant: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     module = _extractor(variant)
     channel = "/tmp/export"

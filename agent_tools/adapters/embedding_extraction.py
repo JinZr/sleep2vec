@@ -213,6 +213,14 @@ class EmbeddingExtractionAdapter(TaskAdapter):
                         embedding_dir,
                     )
                 )
+            elif ".." in output.parts:
+                issues.append(
+                    _fail(
+                        "artifacts.embedding_dir",
+                        "artifacts.embedding_dir must not contain '..' path components.",
+                        embedding_dir,
+                    )
+                )
             elif output.is_symlink() or any(
                 parent.is_symlink() or (parent.exists() and not parent.is_dir()) for parent in output.parents
             ):

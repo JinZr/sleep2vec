@@ -215,6 +215,8 @@ def _sha256_path(path: Path) -> str:
 
 
 def _preflight_output_dir(output_dir: Path) -> None:
+    if ".." in output_dir.parts:
+        raise ValueError(f"Embedding output path must not contain '..' path components: {output_dir}")
     if output_dir.is_symlink() or any(
         parent.is_symlink() or (parent.exists() and not parent.is_dir()) for parent in output_dir.parents
     ):
