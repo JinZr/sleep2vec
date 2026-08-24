@@ -939,13 +939,7 @@ def test_agent_proposal_explicit_control_fields_block_before_workspace_writes(
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     before = _snapshot(source)
 
-    result = _run(
-        "plan",
-        "--recipe",
-        str(recipe),
-        "--output-dir",
-        str(workflow / "plans" / "agent-proposal-explicit-fields"),
-    )
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
 
     assert result.returncode == 2
     assert "Status: NEEDS_USER_INPUT" in result.stdout
@@ -989,13 +983,7 @@ def test_agent_proposal_invalid_objective_blocks_before_workspace_writes(
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     before = _snapshot(source)
 
-    result = _run(
-        "plan",
-        "--recipe",
-        str(recipe),
-        "--output-dir",
-        str(workflow / "plans" / "agent-proposal-objective-type"),
-    )
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
 
     assert result.returncode == expected_exit_code
     assert f"Status: {expected_status}" in result.stdout
