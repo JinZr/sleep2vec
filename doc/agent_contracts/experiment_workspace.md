@@ -184,7 +184,7 @@ invalid and are not repaired in place.
   do not authorize a launch or mutation.
   Active adaptive and pipeline plans produce plan-scoped blockers for their
   controller-owned advance/finalize actions without blocking an unrelated
-  ordinary plan launch. Because the v1 read-set contains no controller
+  ordinary plan launch. Because the status read-set contains no controller
   completion proof, completed experiment metadata with any adaptive or
   pipeline plan fails as corrupt canonical control state. A registered step
   with no materialized plan and no canonical rows likewise blocks finalization;

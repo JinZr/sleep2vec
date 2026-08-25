@@ -233,7 +233,7 @@ lifecycle evidence. It validates frozen recipe structure through
 `decision_rules` without consultation, config/path probing, or runtime
 preflight. Active adaptive and pipeline plans remain legal plan-scoped blockers;
 their controller-owned advance and finalize actions are not inferred. If
-`experiment.yaml` is already completed, the v1 read-set accepts only ordinary
+`experiment.yaml` is already completed, the status read-set accepts only ordinary
 plans with terminal canonical rows and rejects any adaptive or pipeline plan
 because controller completion cannot be proven. A registered step without a
 materialized plan or canonical rows is also an explicit finalize blocker and a

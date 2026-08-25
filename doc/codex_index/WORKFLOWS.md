@@ -242,7 +242,7 @@ reuses the pure `decision_rules` recipe structure owner without consultation or
 external input probes. Active adaptive and pipeline plans defer only their
 controller-owned advance/finalize actions, so an unrelated ordinary candidate
 may still be shown. Completed metadata fails closed when either kind of
-controller-deferred plan exists because the v1 read-set cannot prove controller
+controller-deferred plan exists because the status read-set cannot prove controller
 completion. A registered step whose plan and canonical rows have not yet been
 materialized also blocks finalization instead of being treated as completed.
 Managed direct and Slurm follow-up always uses frozen canonical identity.

@@ -560,8 +560,8 @@ def experiment_status_snapshot(
             raise ValueError("Completed experiment metadata conflicts with canonical run lifecycle state.")
         if plan_blockers:
             raise ValueError(
-                "Completed experiment metadata cannot be verified for adaptive or pipeline plans by status v1, "
-                "or for unmaterialized registered steps."
+                "Completed experiment metadata cannot be verified for adaptive or pipeline plans, or for "
+                "unmaterialized registered steps."
             )
     row_payloads = [_status_run_payload(row) for row in sorted_rows]
     step_payloads = []
@@ -697,7 +697,6 @@ def experiment_status_snapshot(
     )
 
     return {
-        "schema_version": 1,
         "experiment": {
             "id": str(experiment["id"]),
             "title": str(experiment["title"]),
@@ -823,8 +822,8 @@ def _plan_advice(
             blockers.append(
                 _status_blocker(
                     "unmaterialized_step",
-                    "The registered step has no materialized plan or canonical runs; status v1 cannot prove "
-                    "controller completion.",
+                    "The registered step has no materialized plan or canonical runs; experiment-status cannot "
+                    "prove controller completion.",
                     step_id=step_id,
                     blocked_actions=["finalize"],
                 )
@@ -836,7 +835,7 @@ def _plan_advice(
                 blockers.append(
                     _status_blocker(
                         "adaptive_phase_deferred",
-                        "Status v1 cannot verify adaptive controller completion or interpret its eligibility.",
+                        "Experiment-status cannot verify adaptive controller completion or interpret its eligibility.",
                         rows=plan_rows,
                         blocked_actions=["adaptive_advance", "finalize"],
                     )
@@ -846,7 +845,7 @@ def _plan_advice(
                 blockers.append(
                     _status_blocker(
                         "pipeline_phase_deferred",
-                        "Status v1 cannot verify pipeline controller completion or interpret its eligibility.",
+                        "Experiment-status cannot verify pipeline controller completion or interpret its eligibility.",
                         rows=plan_rows,
                         blocked_actions=["finalize", "pipeline_advance"],
                     )

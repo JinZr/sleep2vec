@@ -517,7 +517,6 @@ def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence
 
     assert first == second
     assert set(first) == {
-        "schema_version",
         "experiment",
         "lifecycle_source",
         "live_observation",
@@ -527,6 +526,7 @@ def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence
         "blockers",
         "decision",
     }
+    assert "schema_version" not in first
     assert "generated_at" not in first
     assert first["summary"] == {"state": "blocked", "run_count": 1, "status_counts": {"unknown_scheduler": 1}}
     assert first["runs"][0]["scheduler"]["observed_at"] == "2026-08-25T01:02:03Z"
@@ -700,6 +700,7 @@ def test_experiment_status_does_not_infer_adaptive_or_pipeline_launch(tmp_path, 
     assert snapshot["summary"]["state"] == "blocked"
     assert snapshot["decision"]["recommended_next"] is None
     assert snapshot["blockers"][0]["code"] == code
+    assert "v1" not in snapshot["blockers"][0]["message"]
 
 
 def test_experiment_status_scopes_deferred_plans_away_from_ordinary_launch(tmp_path):
@@ -748,8 +749,8 @@ def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tm
             "code": "unmaterialized_step",
             "step_id": "evaluate",
             "run_ids": [],
-            "message": "The registered step has no materialized plan or canonical runs; status v1 cannot prove "
-            "controller completion.",
+            "message": "The registered step has no materialized plan or canonical runs; experiment-status cannot "
+            "prove controller completion.",
             "blocked_actions": ["finalize"],
         }
     ]
@@ -829,8 +830,9 @@ def test_experiment_status_defers_terminal_pipeline_finalization(tmp_path):
     manifest = yaml.safe_load((root / "experiment.yaml").read_text())
     manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
     (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
-    with pytest.raises(ValueError, match="cannot be verified for adaptive or pipeline plans"):
+    with pytest.raises(ValueError, match="cannot be verified for adaptive or pipeline plans") as exc_info:
         experiments.experiment_status(root)
+    assert "v1" not in str(exc_info.value)
 
 
 def test_experiment_status_rejects_completed_pipeline_with_successful_attempt(tmp_path):
