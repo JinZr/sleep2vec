@@ -107,6 +107,26 @@ def _read_plan_documents(
     return plan, resolved_recipe
 
 
+def is_registered_blocked_plan(
+    plan_dir: str | Path,
+    *,
+    workspace: str | Path,
+    remote: str | None = None,
+) -> bool:
+    plan_dir = Path(plan_dir)
+    plan_path = plan_dir / "plan.json"
+    if exp_io.path_exists_at(plan_path, remote=remote):
+        return False
+    blocked_path = plan_dir / "plan.blocked.md"
+    resolved_recipe_path = plan_dir / "recipe.resolved.yaml"
+    if not exp_io.path_exists_at(blocked_path, remote=remote) or exp_io.path_exists_at(
+        resolved_recipe_path, remote=remote
+    ):
+        return False
+    exp_io.read_managed_files_at(workspace, [blocked_path], remote=remote)
+    return True
+
+
 def read_registered_plan(
     plan_dir: str | Path,
     *,
@@ -204,7 +224,8 @@ def read_registered_plan(
         raise ValueError(f"Registered plan experiment metadata differs from the managed workspace: {plan_dir}")
     if str(experiment.get("id") or "") != str(step_manifest.get("experiment_id") or ""):
         raise ValueError(f"Registered plan belongs to a different experiment: {plan_dir}")
-    if step != step_manifest.get("step"):
+    managed_step = {field: step_manifest["step"][field] for field in ("id", "phase", "purpose")}
+    if step != managed_step:
         raise ValueError(f"Registered plan step metadata differs from its managed step: {plan_dir}")
     # recipe_path owns the first plan; adaptive and pipeline controllers may append plans with their own frozen recipes.
     if str(plan_dir) == registered_paths[0] and recipe.get("_recipe_path", "") != step_manifest.get("recipe_path", ""):
@@ -573,10 +594,9 @@ def iter_registered_hparam_plans(
         registered_root = Path(str(registered_plan_dir))
         registered_plan_path = registered_root / "plan.json"
         resolved_recipe_path = registered_root / "recipe.resolved.yaml"
+        if is_registered_blocked_plan(registered_root, workspace=workspace):
+            continue
         if not registered_plan_path.exists():
-            blocked_path = registered_root / "plan.blocked.md"
-            if blocked_path.is_file() and not blocked_path.is_symlink() and not resolved_recipe_path.exists():
-                continue
             raise FileNotFoundError(f"Registered plan is missing plan.json: {registered_plan_path}")
         registered_plan = read_json(registered_plan_path)
         registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}

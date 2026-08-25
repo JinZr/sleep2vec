@@ -235,6 +235,77 @@ def test_experiment_status_accepts_public_finetune_plan(tmp_path):
     assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(plan_dir / "run.sh")]
 
 
+def test_experiment_status_skips_registered_blocked_plan_after_successful_retry(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = write_finetune_recipe(root, include_label=False)
+    blocked_dir = root / "plans" / "blocked"
+
+    blocked = plans.build_plan(recipe_path=recipe, output_dir=blocked_dir)
+
+    assert blocked.exit_code == 2
+    blocked_path = blocked_dir / "plan.blocked.md"
+    assert blocked_path.exists()
+    assert not (blocked_dir / "plan.json").exists()
+    assert not (blocked_dir / "recipe.resolved.yaml").exists()
+    decisions_path = write_yaml(
+        root / "decisions.yaml",
+        {"decisions": {"label_name": {"value": "ahi", "source": "explicit_user"}}},
+    )
+    retry_dir = root / "plans" / "retry"
+    retry = plans.build_plan(
+        recipe_path=recipe,
+        output_dir=retry_dir,
+        user_decisions_path=decisions_path,
+    )
+    assert retry.exit_code == 0
+    before = _workspace_files(root)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert snapshot["steps"][0]["plans"] == [str(retry_dir)]
+    assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(retry_dir / "run.sh")]
+    assert _workspace_files(root) == before
+
+    blocked_target = blocked_dir / "plan.blocked.real.md"
+    blocked_path.rename(blocked_target)
+    blocked_path.symlink_to(blocked_target.name)
+    with pytest.raises(ValueError, match="missing or aliased"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_preserves_registered_step_io_metadata(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = write_finetune_recipe(root)
+    recipe_payload = yaml.safe_load(recipe.read_text())
+    step_spec = write_yaml(
+        root / "step-spec.yaml",
+        {
+            **recipe_payload["step"],
+            "inputs": ["config.yaml"],
+            "outputs": ["reports/ranking.csv"],
+        },
+    )
+    experiments.register_experiment_step(root, step_spec)
+    plan_dir = root / "plans" / "train"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    before = _workspace_files(root)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert _workspace_files(root) == before
+    step_path = root / "steps" / recipe_payload["step"]["id"] / "step.yaml"
+    step_manifest = yaml.safe_load(step_path.read_text())
+    assert step_manifest["step"]["inputs"] == ["config.yaml"]
+    assert step_manifest["step"]["outputs"] == ["reports/ranking.csv"]
+
+    step_manifest["step"]["purpose"] = "Different purpose."
+    step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
+    with pytest.raises(ValueError, match="step metadata differs"):
+        experiments.experiment_status(root)
+
+
 def test_experiment_status_rejects_supported_task_relabel_with_foreign_command(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -1307,6 +1378,10 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
         calls.append(("steps", candidate, experiment_id, remote))
         return [manifest]
 
+    def registered_blocked_plan(candidate, *, workspace, remote):
+        calls.append(("blocked", candidate, workspace, remote))
+        return False
+
     def registered_plan(candidate, *, workspace, workspace_experiment, step_manifest, workspace_rows, remote):
         calls.append(("plan", candidate, workspace, workspace_experiment, step_manifest, workspace_rows, remote))
         candidate_path = Path(candidate)
@@ -1321,6 +1396,7 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
 
     monkeypatch.setattr(experiments, "_managed_workspace", managed_workspace)
     monkeypatch.setattr(experiments, "read_registered_steps", registered_steps)
+    monkeypatch.setattr(experiments.artifacts, "is_registered_blocked_plan", registered_blocked_plan)
     monkeypatch.setattr(experiments.artifacts, "read_registered_plan", registered_plan)
 
     def unexpected_write(*_args, **_kwargs):
@@ -1340,8 +1416,9 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
 
     assert calls[0] == ("workspace", root, "baichuan3", True)
     assert calls[1] == ("steps", root, "status-unit", "baichuan3")
-    assert calls[2][3] == experiment
-    assert calls[2][-1] == "baichuan3"
+    assert calls[2] == ("blocked", str(root / "plans" / "train"), root, "baichuan3")
+    assert calls[3][3] == experiment
+    assert calls[3][-1] == "baichuan3"
     assert snapshot["experiment"]["remote"] == "baichuan3"
     action = snapshot["decision"]["recommended_next"]
     assert action["execution_host"] is None

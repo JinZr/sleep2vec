@@ -367,6 +367,8 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict
         plans = []
         plan_keys = []
         for plan_path in manifest["plans"]:
+            if artifacts.is_registered_blocked_plan(plan_path, workspace=root, remote=remote):
+                continue
             plan = artifacts.read_registered_plan(
                 plan_path,
                 workspace=root,

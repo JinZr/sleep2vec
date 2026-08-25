@@ -182,6 +182,11 @@ invalid and are not repaired in place.
   recipes validate both source layers plus any effective-only overlay produced
   after their canonical merge. Suggested commands are advisory argv arrays and
   do not authorize a launch or mutation.
+  A registered directory containing exactly the managed `plan.blocked.md`
+  envelope is a non-runnable planning outcome and is skipped; partial or
+  aliased envelopes fail closed. A plan binds to the registered step's core
+  `id`, `phase`, and `purpose`, while manifest-owned `inputs` and `outputs`
+  remain valid step metadata.
   Active adaptive and pipeline plans produce plan-scoped blockers for their
   controller-owned advance/finalize actions without blocking an unrelated
   ordinary plan launch. Because the status read-set contains no controller
