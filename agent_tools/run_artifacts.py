@@ -233,7 +233,8 @@ def read_registered_plan(
     assert adapter is not None
 
     if adapter.materializes_plan:
-        contract = adapter.compile_plan_contract(
+        contract = _compile_registered_plan_contract(
+            adapter,
             recipe,
             plan_dir,
             run_index_offset=run_index_offset,
@@ -336,7 +337,8 @@ def read_registered_plan(
         remote=remote,
     )
     if adapter.materializes_plan:
-        contract = adapter.compile_plan_contract(
+        contract = _compile_registered_plan_contract(
+            adapter,
             recipe,
             plan_dir,
             run_index_offset=run_index_offset,
@@ -356,7 +358,8 @@ def read_registered_plan(
             raise ValueError(f"Registered final external-test script differs from its frozen recipe: {final_script}")
     else:
         config_bytes = bundle[layout["config"]]["text"].encode()
-        contract = adapter.compile_plan_contract(
+        contract = _compile_registered_plan_contract(
+            adapter,
             recipe,
             plan_dir,
             run_index_offset=run_index_offset,
@@ -410,6 +413,25 @@ def read_registered_plan(
         "run_keys": plan_keys,
         "launch_script": str(launch_script),
     }
+
+
+def _compile_registered_plan_contract(
+    adapter: Any,
+    recipe: dict[str, Any],
+    plan_dir: Path,
+    *,
+    run_index_offset: int,
+    config_bytes: bytes,
+) -> dict[str, Any]:
+    try:
+        return adapter.compile_plan_contract(
+            recipe,
+            plan_dir,
+            run_index_offset=run_index_offset,
+            config_bytes=config_bytes,
+        )
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError(f"Registered plan frozen config is corrupt: {exc}") from exc
 
 
 def _validate_plan_contract_runs(

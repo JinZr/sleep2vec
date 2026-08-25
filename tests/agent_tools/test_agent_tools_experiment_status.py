@@ -1737,6 +1737,55 @@ def test_experiment_status_cli_returns_one_for_non_mapping_adaptive(tmp_path, ca
 
 
 @pytest.mark.parametrize(
+    ("parameter", "mutation"),
+    [
+        ("yaml:/finetune/task/output_dim", "missing_key"),
+        ("yaml:/data/data_channel_names/0", "missing_index"),
+        ("yaml:/finetune/task/output_dim", "wrong_parent_type"),
+    ],
+)
+def test_experiment_status_cli_converts_corrupt_frozen_hparam_config_errors(
+    tmp_path,
+    capsys,
+    parameter,
+    mutation,
+):
+    root = tmp_path / "experiment"
+    recipe = _write_public_hparam_recipe(root, {parameter: [31 if parameter.endswith("output_dim") else "ppg"]})
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+
+    source_config = plan_dir / "config.source.yaml"
+    config = yaml.safe_load(source_config.read_text())
+    if mutation == "missing_key":
+        del config["finetune"]["task"]
+    elif mutation == "missing_index":
+        config["data"]["data_channel_names"] = []
+    else:
+        config["finetune"] = 1
+    source_config.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    source_sha256 = _sha256(source_config)
+    for snapshot in plan["recipe"]["input_snapshots"]:
+        if snapshot["field"] == "inputs.config":
+            snapshot["sha256"] = source_sha256
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text())
+    resolved["input_snapshots"] = plan["recipe"]["input_snapshots"]
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    plan["resolved_recipe_sha256"] = _sha256(resolved_path)
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+
+    assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Registered plan frozen config is corrupt" in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
     "drift",
     ["config", "run_script", "resolved_recipe", "plan_alias", "plan_escape", "canonical_run"],
 )
