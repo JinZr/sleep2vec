@@ -614,7 +614,7 @@ def experiment_status_snapshot(
                         status,
                         _status_reason(matching),
                         rows=matching,
-                        blocked_actions=["adaptive_advance", "finalize", "resubmit"],
+                        blocked_actions=["adaptive_advance", "finalize", "launch", "resubmit"],
                     )
                 )
             uncertain_keys = {managed_run_key(row) for row in uncertain}
@@ -736,7 +736,7 @@ def format_experiment_status(snapshot: dict[str, Any]) -> str:
     if snapshot["runs"]:
         lines.extend(
             [
-                "| Run | Canonical | Scheduler | Process | Checkpoints | Test evidence | Blocker |",
+                "| Run | Canonical | Scheduler | Process | Checkpoints | Runtime manifest | Blocker |",
                 "|---|---|---|---|---:|---|---|",
             ]
         )

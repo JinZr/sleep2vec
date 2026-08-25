@@ -533,7 +533,7 @@ def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence
     assert first["runs"][0]["process"]["pid"] is None
     assert first["runs"][0]["evidence"]["checkpoint_count"] == "50"
     assert first["decision"]["recommended_next"]["id"] == "experiment-monitor"
-    assert first["decision"]["blocked_actions"] == ["adaptive_advance", "finalize", "resubmit"]
+    assert first["decision"]["blocked_actions"] == ["adaptive_advance", "finalize", "launch", "resubmit"]
 
 
 def test_experiment_status_snapshot_is_independent_of_input_order():
@@ -596,17 +596,18 @@ def test_experiment_status_rejects_process_identity_on_launchable_direct_runs(tm
 
 
 @pytest.mark.parametrize("status", ["unknown_scheduler", "unknown_remote", "missing_pid", "submitting"])
-def test_experiment_status_uncertain_states_recommend_only_monitor(tmp_path, status):
+def test_experiment_status_uncertain_states_block_planned_launch_and_recommend_only_monitor(tmp_path, status):
     root = tmp_path / "experiment"
     _init_workspace(root)
     _add_plan(root, step_id="train", status=status)
+    _add_plan(root, step_id="planned", status="planned")
 
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "blocked"
     assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
     assert snapshot["decision"]["other_legal_actions"] == []
-    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize", "resubmit"]
+    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize", "launch", "resubmit"]
 
 
 @pytest.mark.parametrize("status", ["queued", "launched", "running", "stopping"])
@@ -999,6 +1000,8 @@ def test_experiment_status_human_output_quotes_advisory_argv(tmp_path):
     rendered = experiment_tracking.format_experiment_status(experiments.experiment_status(root))
 
     assert "recorded evidence, not live" in rendered
+    assert "| Run | Canonical | Scheduler | Process | Checkpoints | Runtime manifest | Blocker |" in rendered
+    assert "Test evidence" not in rendered
     assert "Next legal action" in rendered
     assert "'" in rendered
     assert "execution host:" not in rendered
