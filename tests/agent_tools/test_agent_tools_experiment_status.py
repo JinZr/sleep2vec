@@ -1545,6 +1545,32 @@ def test_experiment_status_contract_error_is_zero_write(tmp_path, monkeypatch, c
     assert "Traceback" not in capsys.readouterr().err
 
 
+def test_experiment_status_does_not_use_following_read_for_experiment_manifest(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train")
+    manifest = root / "experiment.yaml"
+    outside = tmp_path / "outside-experiment.yaml"
+    outside.write_bytes(manifest.read_bytes())
+    real_read = experiment_io.read_text_at
+    followed = False
+
+    def swap_then_read(path, *, remote=None):
+        nonlocal followed
+        if Path(path) == manifest:
+            manifest.unlink()
+            manifest.symlink_to(outside)
+            followed = True
+        return real_read(path, remote=remote)
+
+    monkeypatch.setattr(experiment_io, "read_text_at", swap_then_read)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["experiment"]["id"] == "status-unit"
+    assert not followed
+
+
 def test_experiment_status_human_output_quotes_advisory_argv(tmp_path):
     root = tmp_path / "experiment with spaces"
     _init_workspace(root)

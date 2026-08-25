@@ -502,12 +502,12 @@ def initialize_run_manifest(root: str | Path, *, remote: str | None = None) -> P
 
 
 def read_run_manifest(root: str | Path, *, remote: str | None = None) -> list[dict[str, str]]:
-    path = Path(root) / "run_manifest.tsv"
-    # The canonical path itself is part of the ownership proof; aliases are not managed state.
-    exp_io.validate_managed_output_paths(root, [path], remote=remote)
+    root = Path(root)
+    path = root / "run_manifest.tsv"
     if not exp_io.path_exists_at(path, remote=remote):
         raise FileNotFoundError(f"Managed run manifest is missing: {path}")
-    text = exp_io.read_text_at(path, remote=remote)
+    files = exp_io.read_managed_files_at(root, [path], remote=remote)
+    text = files[str(path)]["text"]
     return _parse_run_manifest(text, path)
 
 

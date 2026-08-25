@@ -462,10 +462,10 @@ def _managed_workspace(
     allow_completed: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     manifest_path = root / "experiment.yaml"
-    exp_io.validate_managed_output_paths(root, [manifest_path], remote=remote)
-    experiment_text = exp_io.read_text_at(manifest_path, remote=remote)
-    if not experiment_text:
+    if not exp_io.path_exists_at(manifest_path, remote=remote):
         raise ValueError("experiment.yaml is missing. Initialize the experiment first.")
+    files = exp_io.read_managed_files_at(root, [manifest_path], remote=remote)
+    experiment_text = files[str(manifest_path)]["text"]
     manifest = read_managed_yaml_mapping(experiment_text, source=f"Managed experiment manifest {manifest_path}")
     experiment = manifest.get("experiment") if isinstance(manifest, dict) else None
     validated_experiment = experiment

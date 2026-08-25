@@ -878,6 +878,55 @@ def test_read_run_manifest_distinguishes_missing_from_valid_header_only(tmp_path
     assert read_run_manifest(tmp_path) == []
 
 
+def test_read_run_manifest_rejects_alias_swapped_after_exists_check(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    manifest = root / "run_manifest.tsv"
+    manifest.write_text("step_id\trun_id\n")
+    outside = tmp_path / "outside.tsv"
+    outside.write_text("experiment_id\tstep_id\trun_id\tstatus\nforeign\tb\trun-999\tcompleted\n")
+    real_exists = experiment_io.path_exists_at
+
+    def exists_then_swap(path, *, remote=None):
+        exists = real_exists(path, remote=remote)
+        if Path(path) == manifest:
+            manifest.unlink()
+            manifest.symlink_to(outside)
+        return exists
+
+    monkeypatch.setattr(experiment_io, "path_exists_at", exists_then_swap)
+
+    with pytest.raises(ValueError, match="missing or aliased"):
+        read_run_manifest(root)
+
+
+def test_remote_run_manifest_uses_managed_single_read(monkeypatch):
+    calls = []
+    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
+
+    def read_managed(root, paths, *, remote=None):
+        calls.append((root, paths, remote))
+        return {
+            "/remote/workspace/run_manifest.tsv": {
+                "text": "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tplanned\n",
+                "sha256": "a" * 64,
+            }
+        }
+
+    monkeypatch.setattr(experiment_io, "read_managed_files_at", read_managed)
+
+    rows = read_run_manifest("/remote/workspace", remote="unit-host")
+
+    assert rows[0]["run_id"] == "run-000"
+    assert calls == [
+        (
+            Path("/remote/workspace"),
+            [Path("/remote/workspace/run_manifest.tsv")],
+            "unit-host",
+        )
+    ]
+
+
 @pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
 def test_read_run_manifest_rejects_aliased_canonical_table(tmp_path: Path, alias_kind: str):
     outside = tmp_path / "outside.tsv"
@@ -888,7 +937,7 @@ def test_read_run_manifest_rejects_aliased_canonical_table(tmp_path: Path, alias
     else:
         manifest.hardlink_to(outside)
 
-    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
+    with pytest.raises(ValueError, match="missing or aliased"):
         read_run_manifest(tmp_path)
 
 
