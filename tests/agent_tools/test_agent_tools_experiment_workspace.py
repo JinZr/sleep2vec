@@ -1753,7 +1753,7 @@ def test_step_manifest_merge_preserves_registered_fields_and_appends_plans():
             "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
             "experiment_id": "experiment",
             "plan_controller": "ordinary",
-            "recipe_path": "recipes/second.yaml",
+            "recipe_path": "recipes/first.yaml",
             "plans": ["/workspace/plan-a", "/workspace/plan-b"],
         },
     )
@@ -1762,6 +1762,63 @@ def test_step_manifest_merge_preserves_registered_fields_and_appends_plans():
     assert merged["step"]["outputs"] == ["ranking.csv"]
     assert merged["recipe_path"] == "recipes/first.yaml"
     assert merged["plans"] == ["/workspace/plan-a", "/workspace/plan-b"]
+
+
+def test_step_manifest_merge_rejects_ordinary_recipe_path_change():
+    existing = {
+        "step": {"id": "train", "phase": "train", "purpose": "Train the model."},
+        "experiment_id": "experiment",
+        "plan_controller": "ordinary",
+        "recipe_path": "/workspace/first.yaml",
+        "plans": ["/workspace/plan-a"],
+    }
+
+    with pytest.raises(ValueError, match="recipe_path differs"):
+        merge_step_manifest(
+            existing,
+            {
+                **existing,
+                "recipe_path": "/workspace/second.yaml",
+                "plans": ["/workspace/plan-b"],
+            },
+        )
+
+
+@pytest.mark.parametrize("controller", ["adaptive", "pipeline"])
+def test_step_manifest_merge_allows_controller_recipe_path_change(controller: str):
+    existing = {
+        "step": {"id": "train", "phase": "train", "purpose": "Train the model."},
+        "experiment_id": "experiment",
+        "plan_controller": controller,
+        "recipe_path": "/workspace/first.yaml",
+        "plans": ["/workspace/plan-a"],
+    }
+
+    merged = merge_step_manifest(
+        existing,
+        {
+            **existing,
+            "recipe_path": "/workspace/second.yaml",
+            "plans": ["/workspace/plan-b"],
+        },
+    )
+
+    assert merged["recipe_path"] == "/workspace/first.yaml"
+    assert merged["plans"] == ["/workspace/plan-a", "/workspace/plan-b"]
+
+
+def test_second_ordinary_recipe_is_rejected_before_plan_output(tmp_path: Path):
+    first_recipe = write_finetune_recipe(tmp_path)
+    second_recipe = tmp_path / "second-recipe.yaml"
+    second_recipe.write_text(first_recipe.read_text())
+    first_plan = tmp_path / "plans" / "first"
+    second_plan = tmp_path / "plans" / "second"
+
+    assert plans.build_plan(recipe_path=first_recipe, output_dir=first_plan).exit_code == 0
+    with pytest.raises(ValueError, match="recipe_path differs"):
+        plans.build_plan(recipe_path=second_recipe, output_dir=second_plan)
+
+    assert not second_plan.exists()
 
 
 def test_concurrent_step_manifest_commits_preserve_both_plans(tmp_path: Path, monkeypatch):
