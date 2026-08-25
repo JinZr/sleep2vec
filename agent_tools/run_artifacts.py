@@ -9,6 +9,8 @@ import re
 import stat
 from typing import Any, Iterator
 
+import yaml
+
 from . import decision_rules as task_rules, experiment_io as exp_io, plan_contract
 from .adapters import get_adapter
 from .experiment_workspace import (
@@ -430,7 +432,7 @@ def _compile_registered_plan_contract(
             run_index_offset=run_index_offset,
             config_bytes=config_bytes,
         )
-    except (KeyError, IndexError, TypeError) as exc:
+    except (KeyError, IndexError, TypeError, yaml.YAMLError) as exc:
         raise ValueError(f"Registered plan frozen config is corrupt: {exc}") from exc
 
 

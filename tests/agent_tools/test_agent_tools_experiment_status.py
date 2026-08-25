@@ -1742,6 +1742,7 @@ def test_experiment_status_cli_returns_one_for_non_mapping_adaptive(tmp_path, ca
         ("yaml:/finetune/task/output_dim", "missing_key"),
         ("yaml:/data/data_channel_names/0", "missing_index"),
         ("yaml:/finetune/task/output_dim", "wrong_parent_type"),
+        ("yaml:/finetune/task/output_dim", "malformed_yaml"),
     ],
 )
 def test_experiment_status_cli_converts_corrupt_frozen_hparam_config_errors(
@@ -1756,14 +1757,17 @@ def test_experiment_status_cli_converts_corrupt_frozen_hparam_config_errors(
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
 
     source_config = plan_dir / "config.source.yaml"
-    config = yaml.safe_load(source_config.read_text())
-    if mutation == "missing_key":
-        del config["finetune"]["task"]
-    elif mutation == "missing_index":
-        config["data"]["data_channel_names"] = []
+    if mutation == "malformed_yaml":
+        source_config.write_text("[unclosed")
     else:
-        config["finetune"] = 1
-    source_config.write_text(yaml.safe_dump(config, sort_keys=False))
+        config = yaml.safe_load(source_config.read_text())
+        if mutation == "missing_key":
+            del config["finetune"]["task"]
+        elif mutation == "missing_index":
+            config["data"]["data_channel_names"] = []
+        else:
+            config["finetune"] = 1
+        source_config.write_text(yaml.safe_dump(config, sort_keys=False))
 
     plan_path = plan_dir / "plan.json"
     plan = json.loads(plan_path.read_text())
@@ -1778,11 +1782,42 @@ def test_experiment_status_cli_converts_corrupt_frozen_hparam_config_errors(
     plan["resolved_recipe_sha256"] = _sha256(resolved_path)
     plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
 
+    before = _workspace_files(root)
     assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "Registered plan frozen config is corrupt" in captured.err
     assert "Traceback" not in captured.err
+    assert _workspace_files(root) == before
+
+
+def test_experiment_status_cli_converts_malformed_sleep2stat_config_error(tmp_path, capsys):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, canonical = _add_plan(root, step_id="analyze", task="sleep2stat")
+    config_path = Path(canonical["config"])
+    config_path.write_text("[unclosed")
+    config_sha256 = _sha256(config_path)
+
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"]["input_snapshots"][0]["sha256"] = config_sha256
+    plan["runs"][0]["config_sha256"] = config_sha256
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text())
+    resolved["input_snapshots"] = plan["recipe"]["input_snapshots"]
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    canonical["config_sha256"] = config_sha256
+    write_rows(root / "run_manifest.tsv", [canonical])
+
+    before = _workspace_files(root)
+    assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Registered plan frozen config is corrupt" in captured.err
+    assert "Traceback" not in captured.err
+    assert _workspace_files(root) == before
 
 
 @pytest.mark.parametrize(
