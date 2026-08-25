@@ -190,6 +190,7 @@ class HparamTuneAdapter(TaskAdapter):
         return {
             "runs": [contract["row"] for contract in contracts],
             "run_files": contracts,
+            "launch_script_text": plan_hparam.compile_hparam_run_all_script(recipe, out),
             "final_command": final_command,
             "final_script_text": (
                 plan_hparam.render_hparam_final_script(recipe, final_command) if final_command is not None else None

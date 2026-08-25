@@ -48,7 +48,8 @@ live observation.
 run identities, paths, derived config bytes, complete executable scripts, and
 final-evaluation requirements shared by plan publication and registered-plan
 validation. Task adapters may derive that contract only from the frozen recipe,
-including its input snapshots, and plan-owned config bytes.
+including its strict creator-host plan context and input snapshots, and
+plan-owned config bytes.
 
 `managed_scheduler` owns backend selection plus the reusable direct
 GPU-capacity/process lifecycle and Slurm submit/observe lifecycle shared by

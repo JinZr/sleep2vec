@@ -12,7 +12,7 @@ from agent_tool_test_helpers import survival_config_payload, write_finetune_reci
 import pytest
 import yaml
 
-from agent_tools import configs, experiments, plan_context, plan_hparam, plans
+from agent_tools import configs, experiments, plan_context, plan_contract, plan_hparam, plans
 from agent_tools.adapters.hparam_tune import HparamTuneAdapter
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
@@ -3938,6 +3938,7 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
         "purpose": "Exercise managed non-hparam lifecycle.",
     }
     recipe["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     marker = tmp_path / "runtime.txt"
@@ -3986,6 +3987,7 @@ def test_infer_plan_uses_frozen_runtime_python_for_workload_and_lifecycle(tmp_pa
         "python": runtime_python,
         "runtime_commit": _RUNTIME_COMMIT,
     }
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     command = f"{runtime_python} -m sleep2vec.infer --unit-runtime-identity"
@@ -4023,6 +4025,7 @@ def test_infer_runtime_commit_mismatch_fails_before_running_or_payload(tmp_path:
         "python": sys.executable,
         "runtime_commit": "0" * 40,
     }
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     payload_code = "from pathlib import Path; Path(__import__('sys').argv[1]).write_text('ran')"
@@ -4046,6 +4049,7 @@ def test_non_hparam_run_script_records_failure_and_preserves_runtime_exit_code(t
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
     recipe["experiment"]["root"] = str(workspace)
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", "import sys; sys.exit(7)"))
@@ -4066,6 +4070,7 @@ def test_non_hparam_run_script_propagates_terminal_commit_failure(tmp_path: Path
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
     recipe["experiment"]["root"] = str(workspace)
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     runtime_code = "import sys; from pathlib import Path; (Path(sys.argv[1]) / 'run_manifest.tsv').unlink()"
@@ -4087,6 +4092,7 @@ def test_non_hparam_run_script_refuses_to_execute_terminal_run(tmp_path: Path, m
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
     recipe["experiment"]["root"] = str(workspace)
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     marker = tmp_path / "runtime.txt"

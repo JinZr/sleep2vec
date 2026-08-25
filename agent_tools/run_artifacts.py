@@ -28,7 +28,6 @@ from .experiment_workspace import (
     verify_run_snapshot,
 )
 from .manifests import read_json
-from .models import REPO_ROOT
 from .recipes import merge_recipe_layers
 
 RUN_METADATA_FIELDS = ("experiment_id", "run_name", "version")
@@ -183,7 +182,7 @@ def read_registered_plan(
         raise ValueError(f"Registered plan is missing its recipe: {plan_path}")
     task = recipe.get("task")
     adapter = get_adapter(task if isinstance(task, str) else None)
-    allowed_internal_fields = {"_recipe_path"}
+    allowed_internal_fields = {"_plan_context", "_recipe_path"}
     if adapter is not None and adapter.base_task is not None:
         allowed_internal_fields.update({"_base_recipe", "_local_recipe"})
     unexpected_internal_fields = sorted(
@@ -348,6 +347,8 @@ def read_registered_plan(
         )
         expected_runs = contract["runs"]
         _validate_plan_contract_runs(runs, expected_runs, plan_path)
+        if bundle[str(launch_script)]["text"] != contract["launch_script_text"]:
+            raise ValueError(f"Registered plan launch script differs from its frozen recipe: {launch_script}")
         for run, run_files in zip(runs, contract["run_files"]):
             if bundle[run["config"]]["text"].encode() != run_files["config_bytes"]:
                 raise ValueError(f"Registered plan config differs from its frozen recipe: {run['run_id']}")
@@ -609,7 +610,7 @@ def read_hparam_plan(
     workdir = execution.get("workdir")
     if workdir not in (None, "") and not Path(str(workdir)).is_absolute():
         raise ValueError("execution.workdir must be an absolute path when set.")
-    run_cwd = Path(str(workdir or REPO_ROOT))
+    run_cwd = Path(str(workdir or plan_contract.frozen_plan_context(recipe)["repo_root"]))
     for run in runs:
         expected_runtime_dir = run_cwd / "log-finetune" / str(run["version"])
         expected_checkpoint_dir = expected_runtime_dir / "checkpoints"
@@ -668,6 +669,9 @@ def _validate_local_hparam_plan_contract(
         config_bytes=source_config.read_bytes(),
     )
     _validate_plan_contract_runs(runs, contract["runs"], plan_path)
+    launch_script = resolved_plan_dir / "run_all.sh"
+    if not launch_script.is_file() or launch_script.read_text() != contract["launch_script_text"]:
+        raise ValueError(f"Hparam plan launch script differs from its frozen recipe: {launch_script}")
     for run, run_files in zip(runs, contract["run_files"]):
         if Path(run["config"]).read_bytes() != run_files["config_bytes"]:
             raise ValueError(f"Hparam plan config differs from its frozen recipe: {run['run_id']}")

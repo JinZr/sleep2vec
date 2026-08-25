@@ -436,6 +436,7 @@ def compile_hparam_run_contracts(
     *,
     source_config_bytes: bytes | None = None,
 ) -> list[dict[str, Any]]:
+    plan_context = plan_contract.frozen_plan_context(recipe)
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     if execution.get("python") in (None, "", "ASK_USER") or execution.get("runtime_commit") in (
         None,
@@ -450,14 +451,14 @@ def compile_hparam_run_contracts(
     slurm_resources = (
         slurm.normalize_resources(scheduler, execution.get("gpus_per_run", 1)) if scheduler_type == "slurm" else None
     )
-    run_cwd = Path(str(execution.get("workdir") or REPO_ROOT))
+    run_cwd = Path(str(execution.get("workdir") or plan_context["repo_root"]))
     if not run_cwd.is_absolute():
         raise ValueError("execution.workdir must be an absolute path when set.")
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     base_config = None
     if source_config_bytes is not None:
         source_sha256 = hashlib.sha256(source_config_bytes).hexdigest()
-        source_path = resolve_repo_path(inputs.get("config"))
+        source_path = plan_contract.resolve_frozen_repo_path(recipe, inputs.get("config"))
         source_snapshot = plan_contract.frozen_input_snapshot(recipe, "inputs.config")
         if (
             source_path is None
@@ -638,6 +639,7 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
 
 
 def render_hparam_final_script(recipe: dict[str, Any], command: str) -> str:
+    plan_context = plan_contract.frozen_plan_context(recipe)
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     return (
@@ -646,7 +648,7 @@ def render_hparam_final_script(recipe: dict[str, Any], command: str) -> str:
                 [command],
                 selection_split=str(evaluation.get("selection_split") or ""),
                 final_external_test=True,
-                run_cwd=Path(str(execution.get("workdir") or REPO_ROOT)),
+                run_cwd=Path(str(execution.get("workdir") or plan_context["repo_root"])),
             )
         )
         + "\n"
@@ -732,6 +734,34 @@ def freeze_hparam_execution(recipe: dict) -> dict:
         execution.setdefault("gpus_per_run", 1)
     recipe["execution"] = execution
     return recipe
+
+
+def compile_hparam_run_all_script(recipe: dict[str, Any], out: Path) -> str:
+    plan_context = plan_contract.frozen_plan_context(recipe)
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    return (
+        "\n".join(
+            rendering.hparam_script_lines(
+                [
+                    rendering.render_command(
+                        [
+                            plan_context["python"],
+                            "-m",
+                            "agent_tools",
+                            "hparam-run-queue",
+                            "--plan-dir",
+                            out,
+                            "--execute",
+                        ]
+                    )
+                ],
+                test_after_fit=evaluation["test_after_fit"],
+                selection_split=str(evaluation.get("selection_split") or ""),
+                run_cwd=Path(plan_context["repo_root"]),
+            )
+        )
+        + "\n"
+    )
 
 
 def write_hparam_plan(
@@ -851,23 +881,7 @@ def write_hparam_plan(
                 "external_artifacts": True,
             },
         )
-    write_text(
-        physical_out / "run_all.sh",
-        "\n".join(
-            rendering.hparam_script_lines(
-                [
-                    rendering.render_command(
-                        [sys.executable, "-m", "agent_tools", "hparam-run-queue", "--plan-dir", out, "--execute"]
-                    )
-                ],
-                test_after_fit=test_after_fit,
-                selection_split=selection_split,
-                run_cwd=REPO_ROOT,
-            )
-        )
-        + "\n",
-        executable=True,
-    )
+    write_text(physical_out / "run_all.sh", compile_hparam_run_all_script(recipe, out), executable=True)
     write_text(
         physical_out / "validation.sh",
         "\n".join(

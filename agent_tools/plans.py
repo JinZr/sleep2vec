@@ -834,7 +834,7 @@ def build_plan(
             write_out / "plan.json",
             {"status": report.status.value, "commands": commands, "runs": [planned_run], "recipe": recipe},
         )
-        resolved_recipe = {key: value for key, value in recipe.items() if not str(key).startswith("_")}
+        resolved_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
         (write_out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
         if defer_commit:
             return report
@@ -945,6 +945,8 @@ def preflight_plan(
         if not commands:
             report = _unsupported_command_report(report, str(recipe.get("task")))
     successful_plan = report.exit_code == 0
+    if successful_plan:
+        plan_contract.bind_plan_context(recipe)
     report = _guard_existing_outputs(
         report,
         _planned_plan_paths(recipe, out, report, allow_unresolved, unlock_final_test),

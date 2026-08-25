@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shlex
-import sys
 from typing import Any
 
 from .experiment_workspace import MONITOR_EXIT_CODE_PREFIX
@@ -229,7 +228,8 @@ def script_lines(
         cwd_lines = [f"cd {root}", f"export PYTHONPATH={root}${{PYTHONPATH:+:$PYTHONPATH}}", ""]
     lifecycle_lines = []
     if experiment_root is not None:
-        lifecycle_interpreter = lifecycle_python or sys.executable
+        if lifecycle_python is None:
+            raise ValueError("Lifecycle scripts require an explicit Python interpreter.")
         commit_code = (
             "import sys; "
             "from agent_tools.experiment_workspace import merge_run_manifest; "
@@ -241,7 +241,7 @@ def script_lines(
             "sys.exit('Canonical run status did not commit as ' + sys.argv[4])"
         )
         commit_command = (
-            render_command([lifecycle_interpreter, "-c", commit_code, experiment_root, step_id, run_id]) + ' "$1"'
+            render_command([lifecycle_python, "-c", commit_code, experiment_root, step_id, run_id]) + ' "$1"'
         )
         prelaunch_verification_lines = []
         if expected_runtime_commit is not None:
@@ -253,7 +253,7 @@ def script_lines(
                 "+ sys.argv[1] + ', observed ' + observed)"
             )
             prelaunch_verification_lines = [
-                render_command([lifecycle_interpreter, "-c", runtime_commit_code, expected_runtime_commit]),
+                render_command([lifecycle_python, "-c", runtime_commit_code, expected_runtime_commit]),
                 "",
             ]
         if input_snapshots:
@@ -266,7 +266,7 @@ def script_lines(
                 [
                     render_command(
                         [
-                            lifecycle_interpreter,
+                            lifecycle_python,
                             "-c",
                             input_snapshot_code,
                             json.dumps(input_snapshots, sort_keys=True, separators=(",", ":")),

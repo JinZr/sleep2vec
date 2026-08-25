@@ -146,6 +146,10 @@ use an absolute or workdir-relative path.
 Local relative `inputs.config` values remain planning-source locators under
 `REPO_ROOT`. The planner freezes their bytes and gives the runtime a plan-local
 absolute config path.
+Successful plans also freeze an internal `_plan_context` containing the creator
+home, manager Python, and repository root. Registered-plan recompilation uses
+that exact context for relative source locators and implicit script defaults;
+it never substitutes the status reader's host environment.
 
 - Generic and variant-local Kaldi inference requires a `kaldi_data_root`
   directory plus a `kaldi_manifest` file and rejects NPZ preset overrides.

@@ -248,7 +248,9 @@ materialized also blocks finalization instead of being treated as completed.
 Registered plan rows, configs, complete executable scripts, and canonical rows
 must additionally match the same recipe-derived contract used by publication;
 recipe-owned input snapshots bind source config bytes, and mutual agreement
-among mutable plan artifacts alone is not semantic authority.
+among mutable plan artifacts alone is not semantic authority. Recompilation
+uses the frozen creator-host plan context rather than the reader's Python or
+repository root.
 Managed direct and Slurm follow-up always uses frozen canonical identity.
 Slurm terminal truth normally combines scheduler and sidecar evidence; a purged
 job with explicitly disabled accounting has one narrow authenticated recovery

@@ -1279,13 +1279,15 @@ def _validate_attempt_plan(row: dict[str, Any], canonical_run: dict[str, Any]) -
         resolved_recipe_path.read_text(), source=f"Pipeline resolved recipe {resolved_recipe_path}"
     )
     plan_recipe = plan.get("recipe")
-    public_plan_recipe = (
-        {key: value for key, value in plan_recipe.items() if not str(key).startswith("_")}
+    frozen_plan_recipe = (
+        {key: value for key, value in plan_recipe.items() if key != "_recipe_path"}
         if isinstance(plan_recipe, dict)
         else None
     )
-    authored_recipe = {key: value for key, value in resolved_recipe.items() if key != "input_snapshots"}
-    if source_recipe != authored_recipe or public_plan_recipe != resolved_recipe:
+    authored_recipe = {
+        key: value for key, value in resolved_recipe.items() if key not in {"_plan_context", "input_snapshots"}
+    }
+    if source_recipe != authored_recipe or frozen_plan_recipe != resolved_recipe:
         raise ValueError(f"Pipeline attempt recipe drifted: {recipe_path}")
 
 

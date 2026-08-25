@@ -71,9 +71,11 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         return paths
 
     def frozen_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Path]]:
+        from .. import plan_contract
+
         paths: list[tuple[str, Path]] = []
         for field, path in self.required_input_paths(recipe):
-            resolved = resolve_repo_path(path)
+            resolved = plan_contract.resolve_frozen_repo_path(recipe, path)
             if resolved is not None:
                 paths.append((f"inputs.{field}", resolved))
         return paths

@@ -22,6 +22,7 @@ from agent_tools import (
     hparam_runtime,
     managed_scheduler,
     manifests,
+    plan_contract,
     plan_hparam,
     plan_rendering,
     plans,
@@ -755,6 +756,20 @@ def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path:
     Path(run["scheduler_script"]).write_text(batch_script + "# changed\n")
     with pytest.raises(ValueError, match="snapshot hash changed"):
         run_artifacts.read_hparam_plan(slurm_plan_dir)
+
+
+def test_hparam_reader_uses_frozen_context_for_implicit_workdir(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path, execution={})
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr
+
+    monkeypatch.setattr(plan_contract, "REPO_ROOT", Path("/controller/repo"))
+    monkeypatch.setattr(plan_hparam, "REPO_ROOT", Path("/controller/repo"))
+
+    plan = run_artifacts.read_hparam_plan(plan_dir)
+
+    assert plan["recipe"]["execution"].get("workdir") in (None, "")
 
 
 def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: Path, monkeypatch):

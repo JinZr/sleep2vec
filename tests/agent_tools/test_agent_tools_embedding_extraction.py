@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 
 import pytest
 import yaml
 
-from agent_tools import experiments
+from agent_tools import experiments, plan_contract
 from agent_tools.experiment_workspace import file_sha256, read_run_manifest
 from agent_tools.manifests import write_rows
 from agent_tools.models import REPO_ROOT
@@ -168,6 +169,20 @@ def test_status_does_not_rehash_frozen_external_inputs(tmp_path: Path):
     recipe, plan_dir, payload = _write_recipe(tmp_path)
     assert build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     Path(payload["inputs"]["ckpt_path"]).write_bytes(b"changed after planning")
+
+    snapshot = experiments.experiment_status(Path(payload["experiment"]["root"]))
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+
+
+def test_status_recompiles_relative_inputs_with_frozen_creator_root(tmp_path: Path, monkeypatch):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    payload["inputs"]["ckpt_path"] = os.path.relpath(tmp_path / "model.ckpt", REPO_ROOT)
+    payload["inputs"]["data_index"] = [os.path.relpath(tmp_path / "index.csv", REPO_ROOT)]
+    _rewrite(recipe, payload)
+    assert build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+
+    monkeypatch.setattr(plan_contract, "REPO_ROOT", Path("/controller/repo"))
 
     snapshot = experiments.experiment_status(Path(payload["experiment"]["root"]))
 

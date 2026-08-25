@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 import re
+import sys
 from typing import Any
 
 from . import plan_rendering as rendering
@@ -11,6 +12,42 @@ from .models import REPO_ROOT, recipe_name
 
 FROZEN_FINAL_EVAL_CONFIG_NAME = "config.final_eval.yaml"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_PLAN_CONTEXT_FIELDS = {"home", "python", "repo_root"}
+
+
+def bind_plan_context(recipe: dict[str, Any]) -> None:
+    recipe["_plan_context"] = {
+        "home": str(Path.home()),
+        "python": sys.executable,
+        "repo_root": str(REPO_ROOT),
+    }
+
+
+def frozen_plan_context(recipe: dict[str, Any]) -> dict[str, str]:
+    context = recipe.get("_plan_context")
+    if (
+        not isinstance(context, dict)
+        or set(context) != _PLAN_CONTEXT_FIELDS
+        or any(not isinstance(context[field], str) or not context[field] for field in _PLAN_CONTEXT_FIELDS)
+        or not Path(context["home"]).is_absolute()
+        or not Path(context["python"]).is_absolute()
+        or not Path(context["repo_root"]).is_absolute()
+    ):
+        raise ValueError("Frozen recipe must define an exact absolute _plan_context.")
+    return dict(context)
+
+
+def resolve_frozen_repo_path(recipe: dict[str, Any], path: Any) -> Path | None:
+    if path in (None, ""):
+        return None
+    context = frozen_plan_context(recipe)
+    text = str(path)
+    if text == "~":
+        return Path(context["home"])
+    if text.startswith("~/"):
+        return Path(context["home"]) / text[2:]
+    candidate = Path(text)
+    return candidate if candidate.is_absolute() else Path(context["repo_root"]) / candidate
 
 
 def frozen_input_snapshots(recipe: dict[str, Any]) -> list[dict[str, str]]:
@@ -61,12 +98,14 @@ def generic_run_contract(
     run_index: int,
     adapter: Any,
 ) -> dict[str, Any]:
+    context = frozen_plan_context(recipe)
     declared_name = safe_artifact_name((recipe.get("artifacts") or {}).get("version_name") or recipe_name(recipe))
     identity = run_identity(recipe, run_index, {}, run_name=declared_name)
     run_dir = plan_dir / "runs" / f"{identity['run_id']}--{identity['run_name']}"
     runtime_recipe = copy.deepcopy(recipe)
     runtime_recipe.setdefault("inputs", {})["config"] = str(run_dir / "config.yaml")
     runtime_recipe.setdefault("artifacts", {})["version_name"] = identity["version"]
+    runtime_recipe.setdefault("execution", {}).setdefault("workdir", context["repo_root"])
     runtime_dir = adapter.managed_runtime_dir(runtime_recipe, identity["version"])
     checkpoint_dir = runtime_dir / "checkpoints" if runtime_dir is not None else None
     return {
@@ -101,6 +140,7 @@ def generic_script_text(
     commands: list[str],
     input_snapshots: list[dict[str, str]],
 ) -> str:
+    context = frozen_plan_context(recipe)
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     runtime_identity = (
         execution
@@ -113,11 +153,11 @@ def generic_script_text(
         "\n".join(
             rendering.script_lines(
                 commands,
-                run_cwd=Path(str(execution.get("workdir") or REPO_ROOT)),
+                run_cwd=Path(str(execution.get("workdir") or context["repo_root"])),
                 experiment_root=Path(str(experiment.get("root"))),
                 step_id=run["step_id"],
                 run_id=run["run_id"],
-                lifecycle_python=runtime_identity.get("python"),
+                lifecycle_python=runtime_identity.get("python") or context["python"],
                 expected_runtime_commit=runtime_identity.get("runtime_commit"),
                 input_snapshots=input_snapshots,
             )

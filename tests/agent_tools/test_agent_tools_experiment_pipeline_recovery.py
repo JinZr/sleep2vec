@@ -10,7 +10,7 @@ from agent_tool_test_helpers import write_finetune_recipe
 import pytest
 import yaml
 
-from agent_tools import experiment_pipeline, experiments, managed_scheduler, plans
+from agent_tools import experiment_pipeline, experiments, managed_scheduler, plan_contract, plans
 from agent_tools.experiment_workspace import file_sha256, read_run_manifest
 from agent_tools.manifests import write_rows
 
@@ -249,6 +249,7 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
         "_source_config_bytes": config_bytes,
         "_source_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
     }
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     command = "/runtime/python -m sleep2vec2.infer --config frozen.yaml"
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, bound_config, report))

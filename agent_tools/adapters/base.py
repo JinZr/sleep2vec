@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..decision_models import DecisionIssue, DecisionReport, ResolvedDecision
-from ..models import resolve_repo_path
 
 
 class TaskAdapter:
@@ -236,7 +235,7 @@ class TaskAdapter:
         from .. import plan_contract
 
         frozen_inputs = plan_contract.frozen_input_snapshots(recipe)
-        source_config = resolve_repo_path((recipe.get("inputs") or {}).get("config"))
+        source_config = plan_contract.resolve_frozen_repo_path(recipe, (recipe.get("inputs") or {}).get("config"))
         if source_config is None:
             raise ValueError("Frozen generic input snapshots differ from required recipe inputs.")
         expected_input_paths = [("inputs.config", str(source_config))]

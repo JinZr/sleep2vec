@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -17,10 +18,12 @@ from agent_tools import (
     experiment_tracking,
     experiments,
     plan_context,
+    plan_contract,
+    plan_hparam,
     plans,
     recipes,
 )
-from agent_tools.adapters import all_adapters, get_adapter
+from agent_tools.adapters import all_adapters, finetune as finetune_adapter, get_adapter
 from agent_tools.manifests import write_rows
 from agent_tools.models import REPO_ROOT
 
@@ -125,6 +128,7 @@ def _add_plan(
             "sha256": hashlib.sha256(config_bytes).hexdigest(),
         }
     ]
+    plan_contract.bind_plan_context(recipe)
     adapter = get_adapter(task)
     assert adapter is not None
     contract = adapter.compile_plan_contract(
@@ -165,7 +169,7 @@ def _add_plan(
     plan = {"status": "PASS", "recipe": recipe, "runs": [plan_run]}
     if task == "hparam_tune":
         plan["resolved_recipe_sha256"] = _sha256(resolved_path)
-        (plan_dir / "run_all.sh").write_text("#!/bin/sh\ntrue\n")
+        (plan_dir / "run_all.sh").write_text(contract["launch_script_text"])
     else:
         plan["commands"] = commands
         (plan_dir / "run.sh").write_text(script_path.read_text())
@@ -281,6 +285,89 @@ def test_experiment_status_accepts_public_finetune_plan(tmp_path):
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
     assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(plan_dir / "run.sh")]
+
+
+def test_experiment_status_recompiles_relative_generic_plan_without_controller_host_defaults(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    recipe = write_finetune_recipe(root)
+    recipe_payload = yaml.safe_load(recipe.read_text())
+    recipe_payload["inputs"]["config"] = os.path.relpath(root / "config.yaml", REPO_ROOT)
+    recipe.write_text(yaml.safe_dump(recipe_payload, sort_keys=False))
+    plan_dir = root / "plans" / "train"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    before = _workspace_files(root)
+
+    monkeypatch.setattr(plan_contract, "REPO_ROOT", Path("/controller/repo"))
+    monkeypatch.setattr(plan_hparam, "REPO_ROOT", Path("/controller/repo"))
+    monkeypatch.setattr(finetune_adapter, "REPO_ROOT", Path("/controller/repo"))
+    monkeypatch.setattr(plan_contract.sys, "executable", "/controller/bin/python")
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert _workspace_files(root) == before
+
+
+def test_experiment_status_recompiles_relative_hparam_plan_without_controller_host_defaults(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    recipe = _write_public_hparam_recipe(root, {"runtime.lr": [1e-6]})
+    recipe_payload = yaml.safe_load(recipe.read_text())
+    base_recipe = Path(recipe_payload["base_recipe"])
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["inputs"]["config"] = os.path.relpath(root / "config.yaml", REPO_ROOT)
+    base_recipe.write_text(yaml.safe_dump(base_payload, sort_keys=False))
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    before = _workspace_files(root)
+
+    monkeypatch.setattr(plan_contract, "REPO_ROOT", Path("/controller/repo"))
+    monkeypatch.setattr(plan_hparam, "REPO_ROOT", Path("/controller/repo"))
+    monkeypatch.setattr(plan_contract.sys, "executable", "/controller/bin/python")
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert _workspace_files(root) == before
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        None,
+        {"home": "/creator/home", "python": "/creator/python", "repo_root": "/creator/repo", "extra": "x"},
+        {"home": "/creator/home", "python": "python", "repo_root": "/creator/repo"},
+        {"home": "/creator/home", "python": "/creator/python", "repo_root": "relative/repo"},
+    ],
+)
+def test_experiment_status_rejects_invalid_frozen_plan_context(tmp_path, context):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="train")
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text())
+    if context is None:
+        plan["recipe"].pop("_plan_context")
+        resolved.pop("_plan_context")
+    else:
+        plan["recipe"]["_plan_context"] = context
+        resolved["_plan_context"] = context
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+
+    with pytest.raises(ValueError, match="exact absolute _plan_context"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_rejects_tampered_hparam_run_all_script(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="tune", task="hparam_tune")
+    (plan_dir / "run_all.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+
+    with pytest.raises(ValueError, match="launch script differs from its frozen recipe"):
+        experiments.experiment_status(root)
 
 
 @pytest.mark.parametrize("allow_unresolved", [False, True])

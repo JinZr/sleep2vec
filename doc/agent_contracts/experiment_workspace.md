@@ -188,7 +188,10 @@ invalid and are not repaired in place.
   recipes validate both source layers plus any effective-only overlay produced
   after their canonical merge. The frozen config bytes may be parsed by a pure
   adapter hook solely to reproduce the planner's commands; no source config or
-  other external input is reopened. Suggested commands are advisory argv arrays and
+  other external input is reopened. The frozen plan context, not the status
+  reader's repository root or Python interpreter, reproduces relative source
+  paths and complete launch scripts across creator and controller hosts.
+  Suggested commands are advisory argv arrays and
   do not authorize a launch or mutation.
   A registered directory containing exactly `questions.json`, `questions.md`,
   `plan.blocked.md`, and optional `plan.draft.json` is a non-runnable planning
