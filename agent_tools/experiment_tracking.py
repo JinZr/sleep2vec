@@ -676,11 +676,11 @@ def experiment_status_snapshot(
                     ],
                 )
                 finalize["required_inputs"] = ["report_path"]
+                # The report is experiment-wide human input, not evidence attached to any managed run.
                 blockers.append(
                     _status_blocker(
                         "final_report_required",
                         "Finalization requires a user-selected non-empty report path.",
-                        rows=sorted_rows,
                     )
                 )
                 decision["manual_choice_required"] = True

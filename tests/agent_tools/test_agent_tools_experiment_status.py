@@ -1649,6 +1649,20 @@ def test_experiment_status_terminal_and_completed_contract(tmp_path):
         experiments.experiment_status(root)
 
 
+def test_experiment_status_keeps_final_report_blocker_experiment_wide(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="prepare", status="completed")
+    _add_plan(root, step_id="evaluate", status="failed")
+
+    snapshot = experiments.experiment_status(root)
+
+    blocker = next(item for item in snapshot["blockers"] if item["code"] == "final_report_required")
+    assert blocker["step_id"] is None
+    assert blocker["run_ids"] == []
+    assert all("final_report_required" not in run["blockers"] for run in snapshot["runs"])
+
+
 def test_experiment_status_blocks_finalize_for_stopped_run_without_reason(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
