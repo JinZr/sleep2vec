@@ -356,7 +356,12 @@ def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> dic
 
 def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict[str, Any]:
     root = _target_root(run_dir, remote)
-    experiment, rows = _managed_workspace(root, remote=remote, allow_completed=True)
+    experiment, rows = _managed_workspace(
+        root,
+        remote=remote,
+        allow_completed=True,
+        validate_experiment_index=False,
+    )
     step_manifests = read_registered_steps(root, experiment_id=str(experiment["id"]), remote=remote)
     step_ids = {str(manifest["step"]["id"]) for manifest in step_manifests}
     orphaned_steps = sorted({str(row["step_id"]) for row in rows} - step_ids)
@@ -469,6 +474,7 @@ def _managed_workspace(
     *,
     remote: str | None,
     allow_completed: bool = False,
+    validate_experiment_index: bool = True,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     manifest_path = root / "experiment.yaml"
     if not exp_io.path_exists_at(manifest_path, remote=remote):
@@ -509,7 +515,7 @@ def _managed_workspace(
             raise ValueError(f"Historical experiment artifacts are read-only: {legacy_path}")
 
     experiment_manifest = root / "experiment_manifest.tsv"
-    if exp_io.path_exists_at(experiment_manifest, remote=remote):
+    if validate_experiment_index and exp_io.path_exists_at(experiment_manifest, remote=remote):
         manifest_rows = exp_io.read_rows_at(experiment_manifest, remote=remote, strict=True)
         if len(manifest_rows) != 1:
             raise ValueError("experiment_manifest.tsv must contain exactly one row.")

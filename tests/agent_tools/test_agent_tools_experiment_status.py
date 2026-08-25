@@ -1716,6 +1716,7 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
     baseline = experiments.experiment_status(root)
     assert _workspace_files(root) == before
 
+    (root / "experiment_manifest.tsv").write_text("not\ta\tvalid\tprojection\n")
     (root / "run_status.tsv").write_text("not\ta\tvalid\tprojection\n")
     (plan_dir / "launch_manifest.tsv").write_text("status\ncompleted\n")
     (root / "reports").mkdir()
@@ -2241,8 +2242,8 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
     }
     calls = []
 
-    def managed_workspace(candidate, *, remote, allow_completed):
-        calls.append(("workspace", candidate, remote, allow_completed))
+    def managed_workspace(candidate, *, remote, allow_completed, validate_experiment_index):
+        calls.append(("workspace", candidate, remote, allow_completed, validate_experiment_index))
         return experiment, [row]
 
     def registered_steps(candidate, *, experiment_id, remote):
@@ -2305,7 +2306,7 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
 
     snapshot = experiments.experiment_status(root, remote="baichuan3")
 
-    assert calls[0] == ("workspace", root, "baichuan3", True)
+    assert calls[0] == ("workspace", root, "baichuan3", True, False)
     assert calls[1] == ("steps", root, "status-unit", "baichuan3")
     assert calls[2] == ("blocked", str(root / "plans" / "train"), root, "baichuan3")
     assert calls[3][3] == experiment
