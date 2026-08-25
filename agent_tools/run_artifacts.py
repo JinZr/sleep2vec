@@ -431,7 +431,7 @@ def _compile_registered_plan_contract(
             run_index_offset=run_index_offset,
             config_bytes=config_bytes,
         )
-    except (KeyError, IndexError, TypeError, yaml.YAMLError) as exc:
+    except (AttributeError, KeyError, IndexError, TypeError, yaml.YAMLError) as exc:
         raise ValueError(f"Registered plan frozen config is corrupt: {exc}") from exc
 
 

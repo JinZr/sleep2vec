@@ -2014,12 +2014,21 @@ def test_experiment_status_cli_converts_corrupt_frozen_hparam_config_errors(
     assert _workspace_files(root) == before
 
 
-def test_experiment_status_cli_converts_malformed_sleep2stat_config_error(tmp_path, capsys):
+@pytest.mark.parametrize("mutation", ["malformed_yaml", "invalid_analyzer"])
+def test_experiment_status_cli_converts_corrupt_sleep2stat_config_error(tmp_path, capsys, mutation):
     root = tmp_path / "experiment"
     _init_workspace(root)
     plan_dir, canonical = _add_plan(root, step_id="analyze", task="sleep2stat")
     config_path = Path(canonical["config"])
-    config_path.write_text("[unclosed")
+    if mutation == "malformed_yaml":
+        config_path.write_text("[unclosed")
+    else:
+        config_path.write_text(
+            yaml.safe_dump(
+                {"run": {"output_dir": str(root / "analysis")}, "analyzers": ["invalid"], "reducers": []},
+                sort_keys=False,
+            )
+        )
     config_sha256 = _sha256(config_path)
 
     plan_path = plan_dir / "plan.json"
