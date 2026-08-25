@@ -976,6 +976,15 @@ def _materialize_attempt(
     run = dict(runs[0])
     base_run = {field: value for field, value in run.items() if field != "command"}
     _validate_physical_attempt_plan(spec, job, selection, recipe_path, plan_dir, base_run)
+    enrichment = {
+        "step_id": run["step_id"],
+        "run_id": run["run_id"],
+        "pipeline_id": spec["pipeline"]["id"],
+        "job_id": job["id"],
+        "attempt": attempt,
+        "result_root": str(result_root),
+        "terminal_status_owner": "script",
+    }
     canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(root)}
     canonical = canonical_by_key.get(managed_run_key(run))
     if canonical is None:
@@ -989,23 +998,14 @@ def _materialize_attempt(
                 "plans": [str(plan_dir.resolve())],
             },
         )
-        committed = merge_run_manifest(root, [{**base_run, "parameter_summary": "single resolved recipe"}])
-        canonical = {managed_run_key(row): row for row in committed}[managed_run_key(run)]
+        update = {**base_run, "parameter_summary": "single resolved recipe", **enrichment}
     else:
         _validate_attempt_plan(
             {"step_id": run["step_id"], "run_id": run["run_id"], "recipe": str(recipe_path), "plan_dir": str(plan_dir)},
             canonical,
         )
-    enrichment = {
-        "step_id": run["step_id"],
-        "run_id": run["run_id"],
-        "pipeline_id": spec["pipeline"]["id"],
-        "job_id": job["id"],
-        "attempt": attempt,
-        "result_root": str(result_root),
-        "terminal_status_owner": "script",
-    }
-    committed = merge_run_manifest(root, [enrichment])
+        update = enrichment
+    committed = merge_run_manifest(root, [update])
     canonical = {managed_run_key(row): row for row in committed}[managed_run_key(run)]
     projection = _attempt_projection(job, selection, canonical, recipe_path=recipe_path, plan_dir=plan_dir)
     _validate_attempt_plan(projection, canonical)
