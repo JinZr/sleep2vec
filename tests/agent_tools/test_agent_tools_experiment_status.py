@@ -669,6 +669,30 @@ def test_experiment_status_rejects_layered_hparam_structure_drift(tmp_path, laye
         experiments.experiment_status(root)
 
 
+@pytest.mark.parametrize(
+    ("layer", "binding"),
+    [("_base_recipe", "experiment"), ("_local_recipe", "step")],
+)
+def test_experiment_status_rejects_layered_hparam_binding_drift(tmp_path, layer, binding):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="tune", task="hparam_tune")
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"][layer][binding] = "invalid"
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text())
+    resolved[layer][binding] = "invalid"
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    plan["resolved_recipe_sha256"] = _sha256(resolved_path)
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match=f"Invalid registered .* recipe binding: {binding} must be a mapping"):
+        experiments.experiment_status(root)
+    assert _workspace_files(root) == before
+
+
 @pytest.mark.parametrize("section", [None, "execution"])
 def test_experiment_status_rejects_layered_hparam_effective_structure_drift(tmp_path, section):
     root = tmp_path / "experiment"

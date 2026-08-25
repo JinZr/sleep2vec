@@ -220,6 +220,14 @@ def read_registered_plan(
             if layer.get("task") != layer_task:
                 raise ValueError(f"Registered {layer_name} recipe task differs from its adapter owner: {plan_path}")
             structure_issues.extend(task_rules.recipe_structure_issues(layer_task, layer, source_layer=layer_name))
+            layer_metadata_issues = experiment_metadata_issues(
+                layer,
+                require_values=False,
+                source_layer=layer_name,
+            )
+            if layer_metadata_issues:
+                messages = "; ".join(issue["message"] for issue in layer_metadata_issues)
+                raise ValueError(f"Invalid registered {layer_name} recipe binding: {messages}")
         effective_recipe = {key: value for key, value in recipe.items() if key not in {"_base_recipe", "_local_recipe"}}
         effective_overlay = _mapping_overlay(merge_recipe_layers(base_recipe, local_recipe), effective_recipe)
         effective_overlay.update({"task": task, "variant": recipe.get("variant")})
