@@ -193,6 +193,9 @@ def read_registered_plan(
         raise ValueError(
             f"Registered plan recipe has unsupported internal fields: {', '.join(unexpected_internal_fields)}"
         )
+    recipe_path = recipe.get("_recipe_path")
+    if not isinstance(recipe_path, str) or not Path(recipe_path).is_absolute():
+        raise ValueError(f"Registered plan recipe path must be absolute: {plan_path}")
     if adapter is not None and adapter.materializes_plan and plan.get("resolved_recipe_sha256") in (None, ""):
         raise ValueError(f"Frozen hparam recipe SHA-256 is missing or changed: {resolved_recipe_path}")
     frozen_recipe = _resolved_recipe_view(recipe)

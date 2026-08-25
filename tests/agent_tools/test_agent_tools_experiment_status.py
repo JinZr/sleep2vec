@@ -457,6 +457,30 @@ def test_experiment_status_rejects_recipe_path_drift_on_ordinary_retry(tmp_path)
         experiments.experiment_status(root)
 
 
+@pytest.mark.parametrize("missing_from", ["step", "plan"])
+def test_experiment_status_rejects_missing_registered_recipe_provenance(tmp_path, missing_from):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="train")
+    if missing_from == "step":
+        step_path = root / "steps" / "train" / "step.yaml"
+        step = yaml.safe_load(step_path.read_text())
+        step["recipe_path"] = ""
+        step_path.write_text(yaml.safe_dump(step, sort_keys=False))
+        error = "recipe path differs from its managed step"
+    else:
+        plan_path = plan_dir / "plan.json"
+        plan = json.loads(plan_path.read_text())
+        del plan["recipe"]["_recipe_path"]
+        plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+        error = "recipe path must be absolute"
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match=error):
+        experiments.experiment_status(root)
+    assert _workspace_files(root) == before
+
+
 def test_experiment_status_allows_later_ordinary_plan_from_new_recipe(tmp_path):
     root = tmp_path / "experiment"
     first_recipe = write_finetune_recipe(root)
