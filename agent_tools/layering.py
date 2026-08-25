@@ -53,6 +53,7 @@ KERNEL_MODULES: frozenset[str] = frozenset(
         "skills",
         "decisions",
         "plans",
+        "plan_contract",
         "decision_rules",
     }
 )

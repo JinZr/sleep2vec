@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from ..decision_paths import path_context, path_validation, validate_input_path
 from ..models import REPO_ROOT, coerce_list, repo_relative, resolve_repo_path
@@ -402,6 +404,19 @@ class Sleep2statAdapter(TaskAdapter):
             append_list_option(plot_cmd, "--adjust-covariates", runtime.get("plot_adjust_covariates"))
             commands.append(render_command(plot_cmd))
         return commands
+
+    def frozen_commands(self, recipe: dict[str, Any], config_bytes: bytes) -> list[str]:
+        config = yaml.safe_load(config_bytes)
+        if not isinstance(config, dict):
+            raise ValueError("Frozen sleep2stat config must be a mapping.")
+        summary = {
+            "is_sleep2stat": True,
+            "sleep2stat": {
+                "run": config.get("run") or {},
+                "analyzers": config.get("analyzers") or [],
+            },
+        }
+        return self.commands(recipe, summary)
 
     def validation_commands(self, recipe: dict[str, Any]) -> list[str] | None:
         inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}

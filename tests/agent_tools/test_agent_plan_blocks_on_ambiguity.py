@@ -3949,6 +3949,7 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
     )
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", runtime_code, workspace, marker))
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
 
     assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
@@ -3989,6 +3990,7 @@ def test_infer_plan_uses_frozen_runtime_python_for_workload_and_lifecycle(tmp_pa
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     command = f"{runtime_python} -m sleep2vec.infer --unit-runtime-identity"
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
 
     assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
@@ -4026,6 +4028,7 @@ def test_infer_runtime_commit_mismatch_fails_before_running_or_payload(tmp_path:
     payload_code = "from pathlib import Path; Path(__import__('sys').argv[1]).write_text('ran')"
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", payload_code, marker))
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
 
     assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
@@ -4047,6 +4050,7 @@ def test_non_hparam_run_script_records_failure_and_preserves_runtime_exit_code(t
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", "import sys; sys.exit(7)"))
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
     plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
 
@@ -4067,6 +4071,7 @@ def test_non_hparam_run_script_propagates_terminal_commit_failure(tmp_path: Path
     runtime_code = "import sys; from pathlib import Path; (Path(sys.argv[1]) / 'run_manifest.tsv').unlink()"
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", runtime_code, workspace))
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
     plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
 
@@ -4090,6 +4095,7 @@ def test_non_hparam_run_script_refuses_to_execute_terminal_run(tmp_path: Path, m
         for value in (sys.executable, "-c", "import sys; from pathlib import Path; Path(sys.argv[1]).touch()", marker)
     )
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
     plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
     run = _first_run(plan_dir)

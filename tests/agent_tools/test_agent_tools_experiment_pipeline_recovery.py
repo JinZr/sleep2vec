@@ -254,6 +254,7 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, bound_config, report))
     monkeypatch.setattr(plans, "config_summary", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plans" / "attempt-001"
     staging_dir = workspace / "plans" / ".attempt-001.staging"
 

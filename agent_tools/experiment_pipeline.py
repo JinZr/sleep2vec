@@ -1284,7 +1284,8 @@ def _validate_attempt_plan(row: dict[str, Any], canonical_run: dict[str, Any]) -
         if isinstance(plan_recipe, dict)
         else None
     )
-    if source_recipe != resolved_recipe or public_plan_recipe != resolved_recipe:
+    authored_recipe = {key: value for key, value in resolved_recipe.items() if key != "input_snapshots"}
+    if source_recipe != authored_recipe or public_plan_recipe != resolved_recipe:
         raise ValueError(f"Pipeline attempt recipe drifted: {recipe_path}")
 
 

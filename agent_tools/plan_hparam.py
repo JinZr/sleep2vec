@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from . import plan_context, plan_rendering as rendering, slurm, transport
+from . import plan_context, plan_contract, plan_rendering as rendering, slurm, transport
 from .decision_models import DecisionIssue, DecisionStatus
 from .decision_paths import (
     inference_checkpoint_averaging_issue,
@@ -30,6 +30,7 @@ from .experiment_workspace import (
     experiment_root,
     file_sha256,
     managed_run_key,
+    managed_run_parameters,
     merge_run_manifest,
     next_run_index,
     parameter_summary,
@@ -40,7 +41,7 @@ from .manifests import write_json, write_text
 from .models import REPO_ROOT, coerce_list, resolve_repo_path
 from .repo import repo_summary
 
-FROZEN_FINAL_EVAL_CONFIG_NAME = "config.final_eval.yaml"
+FROZEN_FINAL_EVAL_CONFIG_NAME = plan_contract.FROZEN_FINAL_EVAL_CONFIG_NAME
 _FINAL_EVAL_CONFIG_SNAPSHOT = "_final_eval_config_snapshot"
 
 
@@ -428,14 +429,234 @@ def hparam_combos(recipe: dict) -> list[dict[str, Any]]:
     return combos[:max_runs]
 
 
-def apply_search_overrides(config: dict[str, Any], combo: dict[str, Any]) -> dict[str, Any]:
-    runtime: dict[str, Any] = {}
+def compile_hparam_run_contracts(
+    recipe: dict[str, Any],
+    out: Path,
+    run_index_offset: int,
+    *,
+    source_config_bytes: bytes | None = None,
+) -> list[dict[str, Any]]:
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    if execution.get("python") in (None, "", "ASK_USER") or execution.get("runtime_commit") in (
+        None,
+        "",
+        "ASK_USER",
+    ):
+        raise ValueError("Frozen hparam plan lacks execution.python or execution.runtime_commit; create a new plan.")
+    scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+    scheduler_type = str(scheduler.get("type") or "direct")
+    if scheduler_type not in {"direct", "slurm"}:
+        raise ValueError("execution.scheduler.type must be direct or slurm.")
+    slurm_resources = (
+        slurm.normalize_resources(scheduler, execution.get("gpus_per_run", 1)) if scheduler_type == "slurm" else None
+    )
+    run_cwd = Path(str(execution.get("workdir") or REPO_ROOT))
+    if not run_cwd.is_absolute():
+        raise ValueError("execution.workdir must be an absolute path when set.")
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    base_config = None
+    if source_config_bytes is not None:
+        source_sha256 = hashlib.sha256(source_config_bytes).hexdigest()
+        source_path = resolve_repo_path(inputs.get("config"))
+        source_snapshot = plan_contract.frozen_input_snapshot(recipe, "inputs.config")
+        if (
+            source_path is None
+            or source_snapshot["path"] != str(source_path)
+            or source_snapshot["sha256"] != source_sha256
+        ):
+            raise ValueError("Frozen hparam source config differs from its recipe digest.")
+        base_config = yaml.safe_load(source_config_bytes)
+        if not isinstance(base_config, dict):
+            raise ValueError("Frozen hparam source config must be a mapping.")
+    run_inputs = {key: value for key, value in inputs.items() if key != "ckpt_path"}
+    runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    test_after_fit = evaluation["test_after_fit"]
+    selection_split = str(evaluation.get("selection_split") or "")
+    contracts = []
+    for layout in hparam_run_layouts(recipe, out, run_index_offset):
+        identity = layout["identity"]
+        combo = layout["parameters"]
+        run_dir = layout["run_dir"]
+        runtime_overrides = {key.split(".", 1)[1]: value for key, value in combo.items() if key.startswith("runtime.")}
+        runtime = {**runtime_defaults, **runtime_overrides}
+        if scheduler_type == "slurm":
+            runtime["devices"] = list(range(slurm_resources["gpus_per_run"]))
+        elif execution.get("gpu_pool") or "gpus_per_run" in execution:
+            gpus_per_run = (
+                int(execution["gpus_per_run"])
+                if "gpus_per_run" in execution
+                else len(coerce_list(runtime_defaults.get("devices"))) or 1
+            )
+            runtime["devices"] = list(range(gpus_per_run))
+        run_module = rendering.variant_module(recipe, "finetune")
+        command_parts = [
+            execution["python"],
+            "-m",
+            run_module,
+            "--config",
+            run_dir / "config.yaml",
+            "--label-name",
+            inputs.get("label_name"),
+            "--version-name",
+            identity["version"],
+            "--results-csv-path",
+            plan_output_path(out, artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
+            *rendering.runtime_cli_args(runtime, variant=str(recipe.get("variant"))),
+            *rendering.finetune_input_cli_args(run_inputs, variant=str(recipe.get("variant"))),
+        ]
+        if recipe.get("variant") != "sex_age_baseline":
+            rendering.append_option(command_parts, "--wandb-project", execution.get("wandb_project"))
+            rendering.append_option(command_parts, "--wandb-group", execution.get("wandb_group"))
+        command_parts.append("--test-after-fit" if test_after_fit else "--no-test-after-fit")
+        if selection_split == "test":
+            command_parts.append("--test-all-checkpoints-after-fit")
+        runtime_dir = run_cwd / "log-finetune" / identity["version"]
+        row = {
+            "experiment_id": (recipe.get("experiment") or {}).get("id"),
+            "step_id": (recipe.get("step") or {}).get("id"),
+            **identity,
+            "parameter_summary": parameter_summary(combo),
+            "run_dir": str(run_dir),
+            "config": str(run_dir / "config.yaml"),
+            "script": str(run_dir / "launch.sh"),
+            "command": rendering.render_command(command_parts),
+            "terminal_status_owner": "monitor",
+            "scheduler_type": scheduler_type,
+            "artifacts": str(run_dir / "artifacts.json"),
+            "runtime_dir": str(runtime_dir),
+            "checkpoint_dir": str(runtime_dir / "checkpoints"),
+            **combo,
+        }
+        if scheduler_type == "slurm":
+            row.update(
+                {
+                    "scheduler_direct_controller": str(slurm_resources["direct_controller"]).lower(),
+                    "scheduler_script": str(run_dir / "job.sbatch"),
+                    "scheduler_result_path": str(run_dir / "slurm_terminal.json"),
+                    "allocation_identity_path": str(run_dir / "allocation_identity.json"),
+                    "log_path": str(run_dir / "slurm.log"),
+                    "terminal_status_owner": "scheduler_sidecar",
+                }
+            )
+        contract = {"row": row}
+        if base_config is not None:
+            run_config = copy.deepcopy(base_config)
+            apply_search_overrides(run_config, combo)
+            config_bytes = yaml.safe_dump(run_config).encode()
+            script_commands = [row["command"]]
+            if selection_split == "test":
+                script_commands.insert(
+                    0,
+                    rendering.render_command(["export", f"_SLEEP2VEC_FROZEN_CHECKPOINT_DIR={row['checkpoint_dir']}"]),
+                )
+            script_text = (
+                "\n".join(
+                    rendering.hparam_script_lines(
+                        script_commands,
+                        test_after_fit=test_after_fit,
+                        selection_split=selection_split,
+                        record_exit_code=True,
+                        run_cwd=run_cwd,
+                    )
+                )
+                + "\n"
+            )
+            row.update(
+                {
+                    "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+                    "script_sha256": hashlib.sha256(script_text.encode()).hexdigest(),
+                }
+            )
+            contract.update({"config_bytes": config_bytes, "script_text": script_text})
+            if scheduler_type == "slurm":
+                token = slurm.submit_token(row, slurm_resources, execution["runtime_commit"])
+                scheduler_script_text = slurm.render_batch_script(
+                    run=row,
+                    execution={**execution, "workdir": str(run_cwd)},
+                    resources=slurm_resources,
+                    token=token,
+                    result_path=row["scheduler_result_path"],
+                    allocation_identity_path=row["allocation_identity_path"],
+                    execution_snapshot_path=out / "execution_snapshot.json",
+                    log_path=row["log_path"],
+                    module=run_module,
+                )
+                row.update(
+                    {
+                        "scheduler_submit_token": token,
+                        "scheduler_script_sha256": hashlib.sha256(scheduler_script_text.encode()).hexdigest(),
+                    }
+                )
+                contract["scheduler_script_text"] = scheduler_script_text
+        contracts.append(contract)
+    return contracts
+
+
+def hparam_run_layouts(recipe: dict[str, Any], out: Path, run_index_offset: int) -> list[dict[str, Any]]:
+    layouts = []
+    for index, combo in enumerate(hparam_combos(recipe), start=run_index_offset):
+        identity = run_identity(recipe, index, combo)
+        layouts.append(
+            {
+                "identity": identity,
+                "parameters": combo,
+                "run_dir": out / "runs" / f"{identity['run_id']}--{identity['run_name']}",
+            }
+        )
+    return layouts
+
+
+def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | None:
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    if not final_script_allowed(recipe, evaluation, False):
+        return None
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    config_path = (
+        out / FROZEN_FINAL_EVAL_CONFIG_NAME if has_explicit_final_eval_config(recipe) else out / "config.source.yaml"
+    )
+    return rendering.render_command(
+        [
+            execution["python"],
+            "-m",
+            rendering.variant_module(recipe, "infer"),
+            "--config",
+            config_path,
+            "--ckpt-path",
+            resolved_ckpt_path(recipe),
+            "--label-name",
+            inputs.get("label_name"),
+            "--eval-split",
+            "test",
+            *rendering.infer_runtime_cli_args(runtime),
+            *rendering.infer_input_cli_args(inputs, variant=str(recipe.get("variant"))),
+        ]
+    )
+
+
+def render_hparam_final_script(recipe: dict[str, Any], command: str) -> str:
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    return (
+        "\n".join(
+            rendering.hparam_script_lines(
+                [command],
+                selection_split=str(evaluation.get("selection_split") or ""),
+                final_external_test=True,
+                run_cwd=Path(str(execution.get("workdir") or REPO_ROOT)),
+            )
+        )
+        + "\n"
+    )
+
+
+def apply_search_overrides(config: dict[str, Any], combo: dict[str, Any]) -> None:
     for key, value in combo.items():
-        if key.startswith("runtime."):
-            runtime[key.split(".", 1)[1]] = value
-        elif key.startswith("yaml:/"):
+        if key.startswith("yaml:/"):
             set_json_pointer(config, key.removeprefix("yaml:"), value)
-    return runtime
 
 
 def set_json_pointer(config: Any, pointer: str, value: Any) -> None:
@@ -529,6 +750,10 @@ def write_hparam_plan(
     if not physical_out.is_absolute():
         physical_out = physical_out.resolve()
     recipe = freeze_hparam_execution(recipe)
+    if unlock_final_test:
+        evaluation = dict(recipe.get("evaluation_policy") or {})
+        evaluation.update({"external_test_locked": False, "final_test_unlocked": True})
+        recipe["evaluation_policy"] = evaluation
     execution = recipe["execution"]
     scheduler = execution.get("scheduler") or {}
     if not isinstance(scheduler, dict):
@@ -536,18 +761,9 @@ def write_hparam_plan(
     scheduler_type = str(scheduler.get("type") or "direct")
     if scheduler_type not in {"direct", "slurm"}:
         raise ValueError("execution.scheduler.type must be direct or slurm.")
-    slurm_resources = None
-    if scheduler_type == "slurm":
-        slurm_resources = slurm.normalize_resources(scheduler, execution.get("gpus_per_run", 1))
-    run_cwd = Path(str(execution.get("workdir") or REPO_ROOT))
-    if not run_cwd.is_absolute():
-        raise ValueError("execution.workdir must be an absolute path when set.")
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    run_inputs = {key: value for key, value in inputs.items() if key != "ckpt_path"}
-    runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
     evaluation = recipe.get("evaluation_policy") or {}
-    final_allowed = final_script_allowed(recipe, evaluation, unlock_final_test)
+    final_allowed = final_script_allowed(recipe, evaluation, False)
     frozen_final_eval_config = out / FROZEN_FINAL_EVAL_CONFIG_NAME
     write_frozen_final_eval_config = physical_out / FROZEN_FINAL_EVAL_CONFIG_NAME
     final_config_snapshot = final_eval_config_snapshot(recipe)
@@ -560,15 +776,34 @@ def write_hparam_plan(
             raise ValueError("Bound final evaluation config is incomplete.")
         if hashlib.sha256(final_config_bytes).hexdigest() != final_config_sha256:
             raise ValueError("Final evaluation config bytes do not match their bound SHA-256.")
-    source_config_path = inputs.get("config")
-    if not source_config_path:
+    if not inputs.get("config"):
         raise FileNotFoundError("Config path is required.")
     if hashlib.sha256(source_config_bytes).hexdigest() != source_config_sha256:
         raise ValueError("Hparam source config does not match the bound SHA-256.")
-    base_config = yaml.safe_load(source_config_bytes)
-    if not isinstance(base_config, dict):
-        raise ValueError(f"YAML must be a mapping: {source_config_path}")
-    frozen_source_config = out / "config.source.yaml"
+    source_config_path = resolve_repo_path(inputs.get("config"))
+    if source_config_path is None:
+        raise ValueError("Hparam source config path is required.")
+    plan_contract.bind_frozen_input_snapshot(
+        recipe,
+        "inputs.config",
+        source_config_path,
+        source_config_sha256,
+    )
+    if final_allowed and has_explicit_final_eval_config(recipe):
+        plan_contract.bind_frozen_input_snapshot(
+            recipe,
+            "inputs.final_eval_config_path",
+            final_config_snapshot["source_path"],
+            final_config_sha256,
+        )
+    else:
+        snapshots = recipe.get("input_snapshots")
+        if isinstance(snapshots, list):
+            recipe["input_snapshots"] = [
+                snapshot
+                for snapshot in snapshots
+                if not isinstance(snapshot, dict) or snapshot.get("field") != "inputs.final_eval_config_path"
+            ]
     write_frozen_source_config = physical_out / "config.source.yaml"
     physical_out.mkdir(parents=True, exist_ok=True)
     write_frozen_source_config.write_bytes(source_config_bytes)
@@ -576,142 +811,30 @@ def write_hparam_plan(
         write_frozen_final_eval_config.write_bytes(final_config_bytes)
     elif write_frozen_final_eval_config.exists():
         write_frozen_final_eval_config.unlink()
-    combos = hparam_combos(recipe)
     runs = []
     test_after_fit = evaluation["test_after_fit"]
     selection_split = str(evaluation.get("selection_split") or "")
     run_index_offset = next_run_index(recipe)
-    for idx, combo in enumerate(combos):
-        identity = run_identity(recipe, run_index_offset + idx, combo)
-        run_id = identity["run_id"]
-        run_name = identity["run_name"]
-        run_dir = out / "runs" / f"{run_id}--{run_name}"
-        write_run_dir = physical_out / "runs" / f"{run_id}--{run_name}"
+    for contract in compile_hparam_run_contracts(
+        recipe,
+        out,
+        run_index_offset,
+        source_config_bytes=source_config_bytes,
+    ):
+        run = dict(contract["row"])
+        run_dir = Path(run["run_dir"])
+        write_run_dir = physical_out / run_dir.relative_to(out)
         write_run_dir.mkdir(parents=True, exist_ok=True)
-        cfg_copy = run_dir / "config.yaml"
         write_cfg_copy = write_run_dir / "config.yaml"
-        run_config = copy.deepcopy(base_config)
-        runtime_overrides = apply_search_overrides(run_config, combo)
-        with write_cfg_copy.open("w") as file_obj:
-            yaml.safe_dump(run_config, file_obj)
-        version = identity["version"]
-        runtime = {**runtime_defaults, **runtime_overrides}
-        if scheduler_type == "slurm":
-            runtime["devices"] = list(range(slurm_resources["gpus_per_run"]))
-        elif execution.get("gpu_pool") or "gpus_per_run" in execution:
-            gpus_per_run = (
-                int(execution["gpus_per_run"])
-                if "gpus_per_run" in execution
-                else len(coerce_list(runtime_defaults.get("devices"))) or 1
-            )
-            runtime["devices"] = list(range(gpus_per_run))
-        run_module = rendering.variant_module(recipe, "finetune")
-        command_parts = [
-            execution["python"],
-            "-m",
-            run_module,
-            "--config",
-            cfg_copy,
-            "--label-name",
-            inputs.get("label_name"),
-            "--version-name",
-            version,
-            "--results-csv-path",
-            plan_output_path(out, artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
-            *rendering.runtime_cli_args(runtime, variant=str(recipe.get("variant"))),
-            *rendering.finetune_input_cli_args(
-                run_inputs,
-                variant=str(recipe.get("variant")),
-            ),
-        ]
-        if recipe.get("variant") != "sex_age_baseline":
-            rendering.append_option(command_parts, "--wandb-project", execution.get("wandb_project"))
-            rendering.append_option(command_parts, "--wandb-group", execution.get("wandb_group"))
-        command_parts.append("--test-after-fit" if test_after_fit else "--no-test-after-fit")
-        if selection_split == "test":
-            command_parts.append("--test-all-checkpoints-after-fit")
-        command = rendering.render_command(command_parts)
-        runtime_dir = run_cwd / "log-finetune" / version
-        checkpoint_dir = runtime_dir / "checkpoints"
-        script_path = run_dir / "launch.sh"
+        write_cfg_copy.write_bytes(contract["config_bytes"])
+        runtime_dir = Path(run["runtime_dir"])
+        checkpoint_dir = Path(run["checkpoint_dir"])
         write_script_path = write_run_dir / "launch.sh"
-        script_commands = [command]
-        if selection_split == "test":
-            script_commands.insert(
-                0,
-                rendering.render_command(["export", f"_SLEEP2VEC_FROZEN_CHECKPOINT_DIR={checkpoint_dir}"]),
-            )
-        write_text(
-            write_script_path,
-            "\n".join(
-                rendering.hparam_script_lines(
-                    script_commands,
-                    test_after_fit=test_after_fit,
-                    selection_split=selection_split,
-                    record_exit_code=True,
-                    run_cwd=run_cwd,
-                )
-            )
-            + "\n",
-            executable=True,
-        )
-        run = {
-            "experiment_id": (recipe.get("experiment") or {}).get("id"),
-            "step_id": (recipe.get("step") or {}).get("id"),
-            "run_id": run_id,
-            "run_name": run_name,
-            "parameter_summary": parameter_summary(combo),
-            "version": version,
-            "run_dir": str(run_dir),
-            "config": str(cfg_copy),
-            "script": str(script_path),
-            "command": command,
-            "config_sha256": file_sha256(write_cfg_copy),
-            "script_sha256": file_sha256(write_script_path),
-            "terminal_status_owner": "monitor",
-            "scheduler_type": scheduler_type,
-            **combo,
-        }
+        write_text(write_script_path, contract["script_text"], executable=True)
         if scheduler_type == "slurm":
-            scheduler_script = run_dir / "job.sbatch"
             write_scheduler_script = write_run_dir / "job.sbatch"
-            scheduler_result_path = run_dir / "slurm_terminal.json"
-            allocation_identity_path = run_dir / "allocation_identity.json"
-            log_path = run_dir / "slurm.log"
-            token = slurm.submit_token(run, slurm_resources, execution["runtime_commit"])
-            write_text(
-                write_scheduler_script,
-                slurm.render_batch_script(
-                    run=run,
-                    execution={**execution, "workdir": str(run_cwd)},
-                    resources=slurm_resources,
-                    token=token,
-                    result_path=scheduler_result_path,
-                    allocation_identity_path=allocation_identity_path,
-                    execution_snapshot_path=out / "execution_snapshot.json",
-                    log_path=log_path,
-                    module=run_module,
-                ),
-                executable=True,
-            )
-            run.update(
-                {
-                    "scheduler_type": "slurm",
-                    "scheduler_direct_controller": str(slurm_resources["direct_controller"]).lower(),
-                    "scheduler_submit_token": token,
-                    "scheduler_script": str(scheduler_script),
-                    "scheduler_script_sha256": file_sha256(write_scheduler_script),
-                    "scheduler_result_path": str(scheduler_result_path),
-                    "allocation_identity_path": str(allocation_identity_path),
-                    "log_path": str(log_path),
-                    "terminal_status_owner": "scheduler_sidecar",
-                }
-            )
-        artifacts_path = run_dir / "artifacts.json"
+            write_text(write_scheduler_script, contract["scheduler_script_text"], executable=True)
         write_artifacts_path = write_run_dir / "artifacts.json"
-        run["artifacts"] = str(artifacts_path)
-        run["runtime_dir"] = str(runtime_dir)
-        run["checkpoint_dir"] = str(checkpoint_dir)
         runs.append(run)
         write_json(
             write_run_dir / "run.json",
@@ -758,7 +881,7 @@ def write_hparam_plan(
     }
     (physical_out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
     final_script_path = physical_out / "final_external_test.sh"
-    final_unlocked = final_test_unlocked(evaluation, unlock_final_test)
+    final_unlocked = final_test_unlocked(evaluation, False)
     plan_lines = [
         "# Hyper-Parameter Plan",
         "",
@@ -772,41 +895,10 @@ def write_hparam_plan(
         f"Candidate selection uses the frozen {selection_split} split metric.",
     ]
     if final_allowed:
-        ckpt_path = resolved_ckpt_path(recipe)
-        final_config_path = frozen_final_eval_config if has_explicit_final_eval_config(recipe) else frozen_source_config
-        final_command = rendering.render_command(
-            [
-                execution["python"],
-                "-m",
-                rendering.variant_module(recipe, "infer"),
-                "--config",
-                final_config_path,
-                "--ckpt-path",
-                ckpt_path,
-                "--label-name",
-                inputs.get("label_name"),
-                "--eval-split",
-                "test",
-                *rendering.infer_runtime_cli_args(runtime_defaults),
-                *rendering.infer_input_cli_args(
-                    inputs,
-                    variant=str(recipe.get("variant")),
-                ),
-            ]
-        )
-        write_text(
-            final_script_path,
-            "\n".join(
-                rendering.hparam_script_lines(
-                    [final_command],
-                    selection_split=selection_split,
-                    final_external_test=True,
-                    run_cwd=run_cwd,
-                )
-            )
-            + "\n",
-            executable=True,
-        )
+        final_command = compile_hparam_final_command(recipe, out)
+        assert final_command is not None
+        final_script_text = render_hparam_final_script(recipe, final_command)
+        write_text(final_script_path, final_script_text, executable=True)
         plan_lines.append("Final external-test script generated because final test was explicitly unlocked.")
     else:
         if final_script_path.exists():
@@ -873,9 +965,7 @@ def commit_hparam_plan(out: str | Path, *, emit_event: bool = True) -> dict[str,
 
 
 def _hparam_manifest_rows(plan: dict[str, Any]) -> list[dict[str, Any]]:
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     runs = plan.get("runs") if isinstance(plan.get("runs"), list) else []
-    parameter_keys = {key for combo in hparam_combos(recipe) for key in combo}
     rows = []
     for run in runs:
         row = {
@@ -900,7 +990,7 @@ def _hparam_manifest_rows(plan: dict[str, Any]) -> list[dict[str, Any]]:
         for field in sorted(SCHEDULER_PLAN_IDENTITY_FIELDS | {"log_path"}):
             if field in run:
                 row[field] = run[field]
-        row.update({key: run.get(key) for key in parameter_keys})
+        row.update(managed_run_parameters(run))
         rows.append(row)
     return rows
 

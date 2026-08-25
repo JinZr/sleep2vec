@@ -371,6 +371,7 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict
         step_rows = [row for row in rows if str(row["step_id"]) == step_id]
         plans = []
         plan_keys = []
+        run_index_offset = 0
         for plan_path in manifest["plans"]:
             if artifacts.is_registered_blocked_plan(plan_path, workspace=root, remote=remote):
                 continue
@@ -381,9 +382,11 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict
                 step_manifest=manifest,
                 workspace_rows=rows,
                 remote=remote,
+                run_index_offset=run_index_offset,
             )
             plans.append(plan)
             plan_keys.extend(tuple(key) for key in plan["run_keys"])
+            run_index_offset += len(plan["run_keys"])
         if len(plan_keys) != len(set(plan_keys)):
             raise ValueError(f"Managed step registers duplicate run keys across plans: {step_id}")
         canonical_keys = {managed_run_key(row) for row in step_rows}

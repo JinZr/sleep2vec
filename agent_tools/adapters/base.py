@@ -21,10 +21,12 @@ machine-readable partition in ../layering.py.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
 from ..decision_models import DecisionIssue, DecisionReport, ResolvedDecision
+from ..models import resolve_repo_path
 
 
 class TaskAdapter:
@@ -218,6 +220,48 @@ class TaskAdapter:
         """Runnable commands for this task; [] means the recipe cannot be
         rendered (the kernel reports it as unsupported)."""
         return []
+
+    def frozen_commands(self, recipe: dict[str, Any], config_bytes: bytes) -> list[str]:
+        """Rebuild commands from a frozen plan-owned config snapshot."""
+        return self.commands(recipe, None)
+
+    def compile_plan_contract(
+        self,
+        recipe: dict[str, Any],
+        out: Path,
+        *,
+        run_index_offset: int,
+        config_bytes: bytes,
+    ) -> dict[str, Any]:
+        from .. import plan_contract
+
+        frozen_inputs = plan_contract.frozen_input_snapshots(recipe)
+        config_snapshot = plan_contract.frozen_input_snapshot(recipe, "inputs.config")
+        source_config = resolve_repo_path((recipe.get("inputs") or {}).get("config"))
+        config_sha256 = hashlib.sha256(config_bytes).hexdigest()
+        if (
+            source_config is None
+            or config_snapshot["path"] != str(source_config)
+            or config_sha256 != config_snapshot["sha256"]
+        ):
+            raise ValueError("Frozen generic config differs from its recipe digest.")
+        run = plan_contract.generic_run_contract(recipe, out, run_index_offset, self)
+        input_snapshots = [snapshot for snapshot in frozen_inputs if snapshot["field"] != "inputs.config"]
+        run["config_sha256"] = config_sha256
+        if input_snapshots:
+            run["input_snapshots"] = input_snapshots
+        commands = plan_contract.generic_commands(recipe, run, self, config_bytes)
+        return {
+            "runs": [run],
+            "commands": commands,
+            "script_text": plan_contract.generic_script_text(
+                recipe,
+                run,
+                self,
+                commands,
+                input_snapshots,
+            ),
+        }
 
     def validation_commands(self, recipe: dict[str, Any]) -> list[str] | None:
         """Full replacement for the kernel's generic validation command list;

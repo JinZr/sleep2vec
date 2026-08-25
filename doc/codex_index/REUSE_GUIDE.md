@@ -44,6 +44,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Analysis bundle output | `AnalysisBundleWriter` in [`sleep2stat/io/writers.py`](../../sleep2stat/io/writers.py) | analyzers or CLI branches |
 | Analysis plotting | `plot_record`, `plot_cohort` in [`sleep2stat/plot.py`](../../sleep2stat/plot.py) | scripts that inspect analyzer internals |
 | Static recipe structure | `recipe_structure_issues` in [`agent_tools/decision_rules.py`](../../agent_tools/decision_rules.py) for registered task/variant and section closure | planner- or status-local copies of recipe structure validation |
+| Frozen plan semantics | [`agent_tools/plan_contract.py`](../../agent_tools/plan_contract.py), `compile_plan_contract` adapter hooks, and hparam compilers in [`agent_tools/plan_hparam.py`](../../agent_tools/plan_hparam.py) for recipe-derived run matrices, configs, complete executable scripts, and final-evaluation requirements | writer/status copies or validation derived from mutable manifests |
 | Agent consultation | `evaluate_consultation_gates` through [`agent_tools/decisions.py`](../../agent_tools/decisions.py) | command renderers |
 | Agent context and plan publication | `build_context`, `build_plan`, `preflight_plan` through [`agent_tools/plans.py`](../../agent_tools/plans.py); `plan_tree_sha256` in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) for deterministic staged-plan comparison | skills, adapters, or adaptive/pipeline callers |
 | Agent task extension | adapter protocol/registry in [`agent_tools/adapters/`](../../agent_tools/adapters/) | kernel task-name branches |
@@ -124,6 +125,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Extend tasks through adapters and declarations; keep the reusable kernel free of new sleep-specific branches.
 - Run consultation before runnable plans and stop on `NEEDS_USER_INPUT`.
 - Keep `experiment-status` on the static frozen-recipe and canonical-manifest read-set; it must not rerun consultation or runtime/input probes.
+- Recompile registered plan semantics through `plan_contract` and the task adapter, including recipe-owned input snapshots; agreement among edited manifests and scripts does not replace agreement with the frozen recipe.
 - Treat `run_manifest.tsv` as authoritative managed state; mirrors and reports are projections.
 - Reuse `hparam_selection.select_hparam_candidates` for recipe-frozen hparam ranking. Test-selected plans consume complete per-epoch evidence from terminal run manifests, keep the many-checkpoint audit plan-local, and project only each run's best checkpoint into workspace lifecycle reports.
 - Reuse `experiments.append_experiment_note` and the workspace research-log owner for semantic notes; do not append Markdown directly or infer lifecycle state from narrative.

@@ -20,7 +20,7 @@ from agent_tools import (
     plans,
     recipes,
 )
-from agent_tools.adapters import all_adapters
+from agent_tools.adapters import all_adapters, get_adapter
 from agent_tools.manifests import write_rows
 from agent_tools.models import REPO_ROOT
 
@@ -51,12 +51,22 @@ def _add_plan(
     experiment = yaml.safe_load((root / "experiment.yaml").read_text())["experiment"]
     step = {"id": step_id, "phase": "train", "purpose": f"Run {step_id}."}
     plan_dir = root / "plans" / step_id
-    run_dir = plan_dir / "runs" / "run-000--default"
-    run_dir.mkdir(parents=True)
-    config_path = run_dir / "config.yaml"
-    script_path = run_dir / "launch.sh"
-    artifacts_path = run_dir / "artifacts.json"
-    recipe = {"task": task, "experiment": experiment, "step": step}
+    recipe_path = root / f"{step_id}.yaml"
+    recipe = {
+        "name": "default",
+        "task": task,
+        "experiment": experiment,
+        "step": step,
+        "inputs": {"config": str(recipe_path), "label_name": "unit"},
+        "runtime": {},
+        "artifacts": {},
+        "execution": {},
+        "evaluation_policy": {"test_after_fit": False},
+        "_recipe_path": str(recipe_path),
+    }
+    if task == "sleep2stat":
+        recipe["inputs"] = {"config": str(recipe_path)}
+        recipe["evaluation_policy"] = {"external_test_locked": True}
     if task != "sleep2stat":
         recipe["variant"] = "sleep2vec"
     if task == "hparam_tune":
@@ -76,50 +86,88 @@ def _add_plan(
         recipe.update(
             {
                 "base_recipe": "base.yaml",
+                "search": {"method": "grid", "max_runs": 1, "parameters": {}},
+                "execution": {
+                    "python": "python",
+                    "runtime_commit": "0" * 40,
+                    "workdir": str(root),
+                    "scheduler": {"type": "direct"},
+                },
+                "evaluation_policy": {
+                    "selection_metric": "val_loss",
+                    "selection_mode": "min",
+                    "selection_split": "val",
+                    "final_eval_split": "test",
+                    "external_test_locked": True,
+                    "test_after_fit": False,
+                    "final_test_unlocked": False,
+                    "require_manual_unlock_for_final_test": True,
+                },
                 "_base_recipe": base_recipe,
                 "_local_recipe": local_recipe,
             }
         )
-    command = "python -m sleep2stat" if task == "sleep2stat" else "python -m sleep2vec.finetune"
-    config_path.write_text("model: unit\n")
-    script_path.write_text(f"#!/bin/sh\n{command}\n")
-    artifacts_path.write_text("{}\n")
-    config_sha256 = _sha256(config_path)
-    script_sha256 = _sha256(script_path)
-    run = {
-        "experiment_id": experiment["id"],
-        "step_id": step_id,
-        "run_id": "run-000",
-        "run_name": "default",
-        "version": f"status-unit-{step_id}-run-000-default",
-        "status": "planned",
-        "config": str(config_path),
-        "config_sha256": config_sha256,
-        "script": str(script_path),
-        "script_sha256": script_sha256,
-        "run_dir": str(run_dir),
-        "artifacts": str(artifacts_path),
-        "runtime_dir": str(root / "runtime" / step_id),
-        "checkpoint_dir": str(root / "runtime" / step_id / "checkpoints"),
-    }
-    if task == "hparam_tune":
-        run["parameter_summary"] = "single resolved recipe"
-    if host is not None:
-        run["host"] = host
     if adaptive:
         recipe["adaptive"] = {"enabled": True, "suggest": {"strategy": "best_neighborhood"}}
         if task == "hparam_tune":
             recipe["_local_recipe"]["adaptive"] = recipe["adaptive"]
-    resolved_text = yaml.safe_dump(recipe, sort_keys=False)
+    if task == "sleep2stat":
+        config_bytes = yaml.safe_dump(
+            {"run": {"output_dir": str(root / "analysis")}, "analyzers": [], "reducers": []},
+            sort_keys=False,
+        ).encode()
+    else:
+        config_bytes = b"model: unit\n"
+    recipe["input_snapshots"] = [
+        {
+            "field": "inputs.config",
+            "path": str(recipe_path),
+            "sha256": hashlib.sha256(config_bytes).hexdigest(),
+        }
+    ]
+    adapter = get_adapter(task)
+    assert adapter is not None
+    contract = adapter.compile_plan_contract(
+        recipe,
+        plan_dir,
+        run_index_offset=0,
+        config_bytes=config_bytes,
+    )
+    run = dict(contract["runs"][0])
+    run_dir = Path(run["run_dir"])
+    run_dir.mkdir(parents=True)
+    config_path = Path(run["config"])
+    script_path = Path(run["script"])
+    artifacts_path = Path(run["artifacts"])
+    if task == "hparam_tune":
+        run_files = contract["run_files"][0]
+        config_path.write_bytes(run_files["config_bytes"])
+        script_path.write_text(run_files["script_text"])
+        (plan_dir / "config.source.yaml").write_bytes(config_bytes)
+        commands = [run["command"]]
+    else:
+        config_path.write_bytes(config_bytes)
+        script_path.write_text(contract["script_text"])
+        commands = contract["commands"]
+    artifacts_path.write_text("{}\n")
+    run.update({"config_sha256": _sha256(config_path), "script_sha256": _sha256(script_path)})
+    if task != "hparam_tune":
+        run["status"] = "planned"
+    if host is not None:
+        run["host"] = host
+    resolved_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
+    resolved_text = yaml.safe_dump(resolved_recipe, sort_keys=False)
     resolved_path = plan_dir / "recipe.resolved.yaml"
     resolved_path.write_text(resolved_text)
-    plan_run = {**run, "command": command}
+    plan_run = dict(run)
+    if task != "hparam_tune" and len(commands) == 1:
+        plan_run["command"] = commands[0]
     plan = {"status": "PASS", "recipe": recipe, "runs": [plan_run]}
     if task == "hparam_tune":
         plan["resolved_recipe_sha256"] = _sha256(resolved_path)
-        (plan_dir / "run_all.sh").write_text(f"#!/bin/sh\n{command}\n")
+        (plan_dir / "run_all.sh").write_text("#!/bin/sh\ntrue\n")
     else:
-        plan["commands"] = [command]
+        plan["commands"] = commands
         (plan_dir / "run.sh").write_text(script_path.read_text())
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
 
@@ -130,7 +178,7 @@ def _add_plan(
             {
                 "step": step,
                 "experiment_id": experiment["id"],
-                "recipe_path": "",
+                "recipe_path": str(recipe_path),
                 "plans": [str(plan_dir)],
             },
             sort_keys=False,
@@ -274,6 +322,40 @@ def test_experiment_status_skips_registered_blocked_plan_after_successful_retry(
     assert _workspace_files(root) == before
 
 
+def test_experiment_status_skips_registered_blocked_plan_after_successful_plan(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = write_finetune_recipe(root)
+    successful_dir = root / "plans" / "successful"
+    assert plans.build_plan(recipe_path=recipe, output_dir=successful_dir).exit_code == 0
+
+    payload = yaml.safe_load(recipe.read_text())
+    del payload["inputs"]["label_name"]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    blocked_dir = root / "plans" / "blocked"
+    assert plans.build_plan(recipe_path=recipe, output_dir=blocked_dir).exit_code == 2
+    before = _workspace_files(root)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert snapshot["steps"][0]["plans"] == [str(successful_dir)]
+    assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(successful_dir / "run.sh")]
+    assert _workspace_files(root) == before
+
+
+def test_experiment_status_rejects_blocked_artifacts_beside_pass_plan(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = write_finetune_recipe(root)
+    plan_dir = root / "plans" / "train"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    (plan_dir / "plan.blocked.md").write_text("blocked\n")
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="both PASS and blocked"):
+        experiments.experiment_status(root)
+    assert _workspace_files(root) == before
+
+
 @pytest.mark.parametrize(
     "mutation",
     ["missing_questions_json", "missing_questions_md", "launch_script", "config", "runs"],
@@ -366,7 +448,7 @@ def test_experiment_status_rejects_supported_task_relabel_with_foreign_command(t
     resolved["task"] = "infer"
     (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
 
-    with pytest.raises(ValueError, match="task-owned entrypoint"):
+    with pytest.raises(ValueError, match="Invalid registered plan recipe|frozen recipe"):
         experiments.experiment_status(root)
 
 
@@ -527,6 +609,41 @@ def test_experiment_status_requires_hparam_resolved_recipe_digest(tmp_path, caps
     assert "hparam-run-queue" not in captured.err
 
 
+@pytest.mark.parametrize("search_kind", ["grid", "configurations"])
+def test_experiment_status_rejects_hparam_parameter_drift_shared_by_plan_and_canonical_rows(tmp_path, search_kind):
+    root = tmp_path / "experiment"
+    recipe = _write_public_hparam_recipe(root, {"runtime.lr": [1e-6, 2e-6]})
+    if search_kind == "configurations":
+        payload = yaml.safe_load(recipe.read_text())
+        payload["search"] = {
+            "method": "grid",
+            "max_runs": 2,
+            "configurations": [{"runtime.lr": 1e-6}, {"runtime.lr": 2e-6}],
+        }
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    else:
+        payload = yaml.safe_load(recipe.read_text())
+        payload["search"]["max_runs"] = 2
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["runs"][0]["runtime.lr"] = 9e-6
+    plan["runs"][0]["parameter_summary"] = "runtime.lr=9e-06"
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    rows = _read_manifest_rows(root)
+    rows[0]["runtime.lr"] = "9e-06"
+    rows[0]["parameter_summary"] = "runtime.lr=9e-06"
+    write_rows(root / "run_manifest.tsv", rows)
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="parameter|canonical"):
+        experiments.experiment_status(root)
+    assert _workspace_files(root) == before
+
+
 def test_experiment_status_rejects_missing_declared_blank_hparam_key(tmp_path):
     root = tmp_path / "experiment"
     parameter = "yaml:/data/finetune_preset_path"
@@ -561,33 +678,261 @@ def test_experiment_status_allows_unrelated_blank_parameter_columns(tmp_path):
 @pytest.mark.parametrize(
     ("drift", "error"),
     [
+        ("missing_member", "missing final_eval_config"),
+        ("missing_bundle", "missing final_eval_config"),
         ("missing_sha256", "final_eval_config must define"),
         ("file_drift", "frozen file SHA-256 changed"),
+        ("coherent_file_drift", "frozen recipe digest"),
+        ("extra_script_command", "final external-test script differs"),
     ],
 )
 def test_experiment_status_requires_final_eval_config_integrity(tmp_path, drift, error):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    plan_dir, _row = _add_plan(root, step_id="tune", task="hparam_tune")
-    final_config = plan_dir / "final_eval_config.frozen.yaml"
-    final_config.write_text("model: unit\n")
-    plan = json.loads((plan_dir / "plan.json").read_text())
-    plan["final_eval_config"] = {
-        "path": str(final_config),
-        "sha256": _sha256(final_config),
-        "source_path": str(final_config),
-    }
-    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    recipe = _write_public_hparam_recipe(root, {"yaml:/finetune/task/output_dim": [31]})
+    payload = yaml.safe_load(recipe.read_text())
+    base_recipe = yaml.safe_load(Path(payload["base_recipe"]).read_text())
+    final_config_path = root / "selected-final-config.yaml"
+    final_config = yaml.safe_load(Path(base_recipe["inputs"]["config"]).read_text())
+    final_config["model"]["head"].update({"channel_agg": {"name": "mean"}, "temporal_agg": {"name": "mean"}})
+    final_config_path.write_text(yaml.safe_dump(final_config, sort_keys=False))
+    checkpoint = root / "selected.ckpt"
+    checkpoint.write_text("checkpoint\n")
+    payload["inputs"].update({"ckpt_path": str(checkpoint), "final_eval_config_path": str(final_config_path)})
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir, unlock_final_test=True).exit_code == 0
     assert experiments.experiment_status(root)["summary"]["state"] == "ready_to_launch"
 
-    if drift == "missing_sha256":
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    frozen_config = Path(plan["final_eval_config"]["path"])
+    if drift in {"missing_member", "missing_bundle"}:
+        del plan["final_eval_config"]
+        if drift == "missing_bundle":
+            frozen_config.unlink()
+            (plan_dir / "final_external_test.sh").unlink()
+        plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    elif drift == "missing_sha256":
         del plan["final_eval_config"]["sha256"]
-        (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+        plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    elif drift == "file_drift":
+        frozen_config.write_text("model: changed\n")
+    elif drift == "coherent_file_drift":
+        frozen_config.write_text("model: changed\n")
+        plan["final_eval_config"]["sha256"] = _sha256(frozen_config)
+        plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
     else:
-        final_config.write_text("model: changed\n")
+        final_script = plan_dir / "final_external_test.sh"
+        final_script.write_text(final_script.read_text() + "echo injected\n")
+
+    before = _workspace_files(root)
 
     with pytest.raises(ValueError, match=error):
         experiments.experiment_status(root)
+    assert _workspace_files(root) == before
+
+
+def test_experiment_status_rejects_coherent_registered_command_drift(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = _write_public_hparam_recipe(root, {"runtime.lr": [1e-6]})
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    run = plan["runs"][0]
+    command = run["command"]
+    tokens = command.split()
+    lr_index = tokens.index("--lr") + 1
+    changed_command = command.replace(f"--lr {tokens[lr_index]}", "--lr 9e-06", 1)
+    assert changed_command != command
+    script_path = Path(run["script"])
+    script_path.write_text(script_path.read_text().replace(command, changed_command, 1))
+    run["command"] = changed_command
+    run["script_sha256"] = _sha256(script_path)
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    rows = _read_manifest_rows(root)
+    rows[0]["script_sha256"] = run["script_sha256"]
+    write_rows(root / "run_manifest.tsv", rows)
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="command"):
+        experiments.experiment_status(root)
+    assert _workspace_files(root) == before
+
+
+def test_experiment_status_rejects_coherent_generic_command_drift(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = write_finetune_recipe(root)
+    plan_dir = root / "plans" / "train"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    old_command = plan["commands"][0]
+    tokens = old_command.split()
+    label_index = tokens.index("--label-name") + 1
+    changed_command = old_command.replace(f"--label-name {tokens[label_index]}", "--label-name changed", 1)
+    assert changed_command != old_command
+    run = plan["runs"][0]
+    run["command"] = changed_command
+    plan["commands"] = [changed_command]
+    for script_path in (plan_dir / "run.sh", Path(run["script"])):
+        script_path.write_text(script_path.read_text().replace(old_command, changed_command, 1))
+    run["script_sha256"] = _sha256(Path(run["script"]))
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    rows = _read_manifest_rows(root)
+    rows[0]["script_sha256"] = run["script_sha256"]
+    write_rows(root / "run_manifest.tsv", rows)
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="commands differ from its frozen recipe"):
+        experiments.experiment_status(root)
+    assert _workspace_files(root) == before
+
+
+@pytest.mark.parametrize("task", ["finetune", "hparam_tune"])
+def test_experiment_status_rejects_extra_frozen_script_command(tmp_path, task):
+    root = tmp_path / "experiment"
+    if task == "hparam_tune":
+        recipe = _write_public_hparam_recipe(root, {"runtime.lr": [1e-6]})
+        plan_dir = root / "plans" / "tune"
+    else:
+        recipe = write_finetune_recipe(root)
+        plan_dir = root / "plans" / "train"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    run = plan["runs"][0]
+    script_path = Path(run["script"])
+    script_path.write_text(script_path.read_text() + "echo injected\n")
+    if task == "finetune":
+        (plan_dir / "run.sh").write_text(script_path.read_text())
+    run["script_sha256"] = _sha256(script_path)
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    rows = _read_manifest_rows(root)
+    rows[0]["script_sha256"] = run["script_sha256"]
+    write_rows(root / "run_manifest.tsv", rows)
+
+    with pytest.raises(
+        ValueError,
+        match="script differs from its frozen recipe|run.sh differs from its frozen recipe|script_sha256",
+    ):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_rejects_missing_hparam_source_config(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = _write_public_hparam_recipe(root, {"runtime.lr": [1e-6]})
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    (plan_dir / "config.source.yaml").unlink()
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="config.source.yaml"):
+        experiments.experiment_status(root)
+    assert _workspace_files(root) == before
+
+
+def test_experiment_status_rejects_coherent_hparam_config_drift(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = _write_public_hparam_recipe(root, {"yaml:/finetune/task/output_dim": [31]})
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    run = plan["runs"][0]
+    config_path = Path(run["config"])
+    config = yaml.safe_load(config_path.read_text())
+    config["finetune"]["task"]["output_dim"] = 32
+    config_path.write_text(yaml.safe_dump(config))
+    run["config_sha256"] = _sha256(config_path)
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    rows = _read_manifest_rows(root)
+    rows[0]["config_sha256"] = run["config_sha256"]
+    write_rows(root / "run_manifest.tsv", rows)
+
+    with pytest.raises(
+        ValueError, match="config differs from its frozen recipe|canonical expected runs field config_sha256"
+    ):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_rejects_coherent_generic_config_drift(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = write_finetune_recipe(root)
+    plan_dir = root / "plans" / "train"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    run = plan["runs"][0]
+    config_path = Path(run["config"])
+    config_path.write_text(config_path.read_text() + "\n")
+    run["config_sha256"] = _sha256(config_path)
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    rows = _read_manifest_rows(root)
+    rows[0]["config_sha256"] = run["config_sha256"]
+    write_rows(root / "run_manifest.tsv", rows)
+
+    with pytest.raises(ValueError, match="Frozen generic config differs from its recipe digest"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_rejects_coherent_slurm_script_drift(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = _write_public_hparam_recipe(root, {"runtime.lr": [1e-6]})
+    payload = yaml.safe_load(recipe.read_text())
+    payload.setdefault("execution", {}).update(
+        {
+            "gpus_per_run": 1,
+            "scheduler": {
+                "type": "slurm",
+                "partition": "gpu",
+                "cpus_per_task": 8,
+                "memory": "64G",
+                "walltime": "01:00:00",
+                "nice": 0,
+            },
+        }
+    )
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    run = plan["runs"][0]
+    script_path = Path(run["scheduler_script"])
+    script_path.write_text(script_path.read_text() + "echo injected\n")
+    run["scheduler_script_sha256"] = _sha256(script_path)
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    rows = _read_manifest_rows(root)
+    rows[0]["scheduler_script_sha256"] = run["scheduler_script_sha256"]
+    write_rows(root / "run_manifest.tsv", rows)
+
+    with pytest.raises(ValueError, match="Slurm script differs from its frozen recipe|scheduler_script_sha256"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_rejects_hparam_run_omission_shared_by_plan_and_canonical_rows(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = _write_public_hparam_recipe(root, {"runtime.lr": [1e-6, 2e-6]})
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 2
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["runs"] = plan["runs"][:1]
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    write_rows(root / "run_manifest.tsv", _read_manifest_rows(root)[:1])
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="canonical expected runs"):
+        experiments.experiment_status(root)
+    assert _workspace_files(root) == before
 
 
 @pytest.mark.parametrize(
@@ -597,7 +942,12 @@ def test_experiment_status_requires_final_eval_config_integrity(tmp_path, drift,
 def test_experiment_status_rejects_incomplete_registered_plan_identity(tmp_path, drift):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    task = "hparam_tune" if drift in {"hparam_parameter_summary", "command"} else "sleep2stat"
+    if drift in {"hparam_parameter_summary", "command"}:
+        task = "hparam_tune"
+    elif drift == "partial_runtime":
+        task = "finetune"
+    else:
+        task = "sleep2stat"
     plan_dir, canonical = _add_plan(root, step_id="train", task=task)
     plan = json.loads((plan_dir / "plan.json").read_text())
     if drift == "partial_runtime":
@@ -1472,8 +1822,28 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
         calls.append(("blocked", candidate, workspace, remote))
         return False
 
-    def registered_plan(candidate, *, workspace, workspace_experiment, step_manifest, workspace_rows, remote):
-        calls.append(("plan", candidate, workspace, workspace_experiment, step_manifest, workspace_rows, remote))
+    def registered_plan(
+        candidate,
+        *,
+        workspace,
+        workspace_experiment,
+        step_manifest,
+        workspace_rows,
+        remote,
+        run_index_offset,
+    ):
+        calls.append(
+            (
+                "plan",
+                candidate,
+                workspace,
+                workspace_experiment,
+                step_manifest,
+                workspace_rows,
+                remote,
+                run_index_offset,
+            )
+        )
         candidate_path = Path(candidate)
         return {
             "path": str(candidate),
@@ -1508,7 +1878,7 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
     assert calls[1] == ("steps", root, "status-unit", "baichuan3")
     assert calls[2] == ("blocked", str(root / "plans" / "train"), root, "baichuan3")
     assert calls[3][3] == experiment
-    assert calls[3][-1] == "baichuan3"
+    assert calls[3][-2:] == ("baichuan3", 0)
     assert snapshot["experiment"]["remote"] == "baichuan3"
     action = snapshot["decision"]["recommended_next"]
     assert action["execution_host"] is None

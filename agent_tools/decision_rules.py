@@ -7,7 +7,7 @@ from .adapters import SUPPORTED_TASKS, all_adapters, get_adapter
 from .decision_models import DecisionIssue, DecisionStatus
 from .models import SUPPORTED_VARIANTS
 
-_COMMON_RECIPE_FIELDS = frozenset({"decisions", "experiment", "name", "step", "task", "variant"})
+_COMMON_RECIPE_FIELDS = frozenset({"decisions", "experiment", "input_snapshots", "name", "step", "task", "variant"})
 
 
 def recipe_structure_issues(task: Any, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue]:

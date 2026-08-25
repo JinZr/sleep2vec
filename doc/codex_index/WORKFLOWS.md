@@ -223,7 +223,7 @@ authority.
 
 | Concern | Canonical owner | Authoritative contract |
 | --- | --- | --- |
-| Recipe structure, consultation, and plan publication | [`agent_tools/decision_rules.py`](../../agent_tools/decision_rules.py), [`agent_tools/decisions.py`](../../agent_tools/decisions.py), [`agent_tools/plans.py`](../../agent_tools/plans.py) | [task recipe](../agent_contracts/task_recipe.md) |
+| Recipe structure, frozen plan semantics, consultation, and publication | [`agent_tools/decision_rules.py`](../../agent_tools/decision_rules.py), [`agent_tools/plan_contract.py`](../../agent_tools/plan_contract.py), adapter `compile_plan_contract` hooks, [`agent_tools/decisions.py`](../../agent_tools/decisions.py), and [`agent_tools/plans.py`](../../agent_tools/plans.py) | [task recipe](../agent_contracts/task_recipe.md) |
 | Workspace state, launch, and monitoring | [`agent_tools/experiment_workspace.py`](../../agent_tools/experiment_workspace.py), [`agent_tools/hparam.py`](../../agent_tools/hparam.py) | [experiment workspace](../agent_contracts/experiment_workspace.md), [run manifest](../agent_contracts/run_manifest.md) |
 | Hparam ranking and test access | [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py) | [task recipe](../agent_contracts/task_recipe.md), [external test locking](../agent_contracts/external_test_locking.md) |
 | Direct and Slurm lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py), [`agent_tools/slurm.py`](../../agent_tools/slurm.py) | [run manifest](../agent_contracts/run_manifest.md) |
@@ -245,6 +245,10 @@ may still be shown. Completed metadata fails closed when either kind of
 controller-deferred plan exists because the status read-set cannot prove controller
 completion. A registered step whose plan and canonical rows have not yet been
 materialized also blocks finalization instead of being treated as completed.
+Registered plan rows, configs, complete executable scripts, and canonical rows
+must additionally match the same recipe-derived contract used by publication;
+recipe-owned input snapshots bind source config bytes, and mutual agreement
+among mutable plan artifacts alone is not semantic authority.
 Managed direct and Slurm follow-up always uses frozen canonical identity.
 Slurm terminal truth normally combines scheduler and sidecar evidence; a purged
 job with explicitly disabled accounting has one narrow authenticated recovery

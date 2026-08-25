@@ -231,7 +231,13 @@ fields already recorded in a row, but it does not refresh them and never reads
 logs, W&B, pipeline controller state, or adaptive controller state as alternate
 lifecycle evidence. It validates frozen recipe structure through
 `decision_rules` without consultation, config/path probing, or runtime
-preflight. Active adaptive and pipeline plans remain legal plan-scoped blockers;
+preflight. It then recompiles each registered plan's expected run matrix,
+paths, derived configs, complete executable scripts, and final-evaluation requirement through the same pure
+`plan_contract`/adapter owner used by plan publication. Canonical rows and
+frozen scripts may agree with one another but still fail when they differ from
+that recipe-derived contract. Source configs and explicit hparam final-evaluation
+configs are recorded in the resolved recipe's input snapshots rather than
+trusted from a file descriptor that could be edited with the file. Active adaptive and pipeline plans remain legal plan-scoped blockers;
 their controller-owned advance and finalize actions are not inferred. If
 `experiment.yaml` is already completed, the status read-set accepts only ordinary
 plans with terminal canonical rows and rejects any adaptive or pipeline plan

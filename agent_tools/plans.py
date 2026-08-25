@@ -13,6 +13,7 @@ from . import (
     decision_rules as task_rules,
     experiment_io as exp_io,
     plan_context as context,
+    plan_contract,
     plan_rendering as rendering,
     repo as repo_tools,
     run_artifacts as artifacts,
@@ -39,14 +40,12 @@ from .experiment_workspace import (
     merge_run_manifest,
     next_run_index,
     read_run_manifest,
-    run_identity,
-    safe_artifact_name,
     validate_plan_output,
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
 from .models import REPO_ROOT, resolve_repo_path
-from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
+from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions
 
 
 def _resolve_write_targets(task: str | None) -> dict[str, tuple[str, str]]:
@@ -746,6 +745,16 @@ def build_plan(
                 )
         if report.exit_code != 0:
             return report
+    source_config_path = resolve_repo_path((recipe.get("inputs") or {}).get("config"))
+    if source_config_path is None:
+        raise ValueError("Successful plan preflight did not bind the source config path.")
+    recipe["input_snapshots"] = input_snapshots
+    plan_contract.bind_frozen_input_snapshot(
+        recipe,
+        "inputs.config",
+        source_config_path,
+        validated_config_sha256,
+    )
     ensure_experiment_workspace(recipe, out, register_step=False)
 
     write_out = out
@@ -785,69 +794,27 @@ def build_plan(
         root = experiment_root(recipe)
         if root is None:
             raise ValueError("experiment.root is required.")
-        declared_name = safe_artifact_name((recipe.get("artifacts") or {}).get("version_name") or recipe_name(recipe))
-        identity = run_identity(recipe, next_run_index(recipe), {}, run_name=declared_name)
-        run_id = identity["run_id"]
-        run_name = identity["run_name"]
-        version = identity["version"]
-        run_dir = out / "runs" / f"{run_id}--{run_name}"
+        run_adapter = get_adapter(task)
+        assert run_adapter is not None
+        run_index = next_run_index(recipe)
+        run = plan_contract.generic_run_contract(recipe, out, run_index, run_adapter)
+        run_id = run["run_id"]
+        run_name = run["run_name"]
         write_run_dir = write_out / "runs" / f"{run_id}--{run_name}"
         write_run_dir.mkdir(parents=True, exist_ok=True)
-        config_path = run_dir / "config.yaml"
         write_config_path = write_run_dir / "config.yaml"
         write_config_path.write_bytes(validated_config_bytes)
-        runtime_recipe = copy.deepcopy(recipe)
-        runtime_recipe.setdefault("inputs", {})["config"] = str(config_path)
-        runtime_recipe.setdefault("artifacts", {})["version_name"] = version
-        runtime_cfg = config_summary(write_config_path, variant=recipe.get("variant"))
-        commands = _commands_for_recipe(runtime_recipe, runtime_cfg)
-        run_adapter = get_adapter(task)
-        runtime_dir = run_adapter.managed_runtime_dir(runtime_recipe, version) if run_adapter is not None else None
-        checkpoint_dir = runtime_dir / "checkpoints" if runtime_dir is not None else None
-        artifacts_path = run_dir / "artifacts.json"
-        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-        runtime_identity = (
-            execution
-            if run_adapter is not None
-            and run_adapter.supports_runtime_identity
-            and all(field in execution for field in ("python", "runtime_commit", "workdir"))
-            else {}
+        contract = run_adapter.compile_plan_contract(
+            recipe,
+            out,
+            run_index_offset=run_index,
+            config_bytes=validated_config_bytes,
         )
-        run = {
-            "experiment_id": (recipe.get("experiment") or {}).get("id"),
-            "step_id": (recipe.get("step") or {}).get("id"),
-            "run_id": run_id,
-            "run_name": run_name,
-            "version": version,
-            "status": "planned",
-            "config": str(config_path),
-            "config_sha256": file_sha256(write_config_path),
-            "script": str(run_dir / "launch.sh"),
-            "run_dir": str(run_dir),
-            "artifacts": str(artifacts_path),
-            "runtime_dir": str(runtime_dir) if runtime_dir is not None else "",
-            "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir is not None else "",
-        }
-        if input_snapshots:
-            run["input_snapshots"] = input_snapshots
+        run = contract["runs"][0]
+        commands = contract["commands"]
+        run.update({"status": "planned", "config_sha256": file_sha256(write_config_path)})
         write_text(write_out / "plan.md", context.plan_markdown(report, commands))
-        write_text(
-            write_out / "run.sh",
-            "\n".join(
-                rendering.script_lines(
-                    commands,
-                    run_cwd=Path(str(execution.get("workdir") or REPO_ROOT)),
-                    experiment_root=root,
-                    step_id=run["step_id"],
-                    run_id=run_id,
-                    lifecycle_python=runtime_identity.get("python"),
-                    expected_runtime_commit=runtime_identity.get("runtime_commit"),
-                    input_snapshots=input_snapshots,
-                )
-            )
-            + "\n",
-            executable=True,
-        )
+        write_text(write_out / "run.sh", contract["script_text"], executable=True)
         write_launch_path = write_run_dir / "launch.sh"
         write_text(write_launch_path, (write_out / "run.sh").read_text(), executable=True)
         run["script_sha256"] = file_sha256(write_launch_path)
@@ -1159,9 +1126,9 @@ def _planned_plan_paths(
         if allow_unresolved and report.exit_code == 2:
             paths.append(out / "plan.draft.json")
         return paths
-    declared_name = safe_artifact_name((recipe.get("artifacts") or {}).get("version_name") or recipe_name(recipe))
-    identity = run_identity(recipe, next_run_index(recipe), {}, run_name=declared_name)
-    run_dir = out / "runs" / f"{identity['run_id']}--{identity['run_name']}"
+    assert adapter is not None
+    run = plan_contract.generic_run_contract(recipe, out, next_run_index(recipe), adapter)
+    run_dir = Path(run["run_dir"])
     return [
         out / "plan.json",
         out / "plan.md",

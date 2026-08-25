@@ -147,6 +147,12 @@ final plan directory while all bytes are written to a hidden sibling on the
 same filesystem. `plan.json` is written only after the rest of the frozen
 bundle, the complete directory is published by one rename, and only then are
 the step manifest and all planned `run_manifest.tsv` rows committed.
+Plan publication and status validation share the adapter-owned deterministic
+plan contract for run identities, paths, derived configs, complete executable
+scripts, search combinations, and required final-evaluation snapshots;
+synchronized edits to a manifest and its artifacts cannot redefine the frozen
+recipe. Resolved recipes retain the source-config snapshot and hparam recipes
+also retain the explicit final-evaluation config snapshot when applicable.
 
 Adaptive round 000 adds one final commit boundary: its registry is validated
 and its README is written after canonical plan registration, then
@@ -180,7 +186,9 @@ invalid and are not repaired in place.
   `decision_rules` owner used by planning; status does not rerun consultation,
   policy decisions, config loading, or external input/path probes. Layered
   recipes validate both source layers plus any effective-only overlay produced
-  after their canonical merge. Suggested commands are advisory argv arrays and
+  after their canonical merge. The frozen config bytes may be parsed by a pure
+  adapter hook solely to reproduce the planner's commands; no source config or
+  other external input is reopened. Suggested commands are advisory argv arrays and
   do not authorize a launch or mutation.
   A registered directory containing exactly `questions.json`, `questions.md`,
   `plan.blocked.md`, and optional `plan.draft.json` is a non-runnable planning

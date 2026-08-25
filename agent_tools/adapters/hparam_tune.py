@@ -164,6 +164,40 @@ class HparamTuneAdapter(TaskAdapter):
 
         plan_hparam.commit_hparam_plan(out)
 
+    def compile_plan_contract(
+        self,
+        recipe: dict[str, Any],
+        out: Path,
+        *,
+        run_index_offset: int,
+        config_bytes: bytes,
+    ) -> dict[str, Any]:
+        from .. import plan_contract, plan_hparam
+
+        contracts = plan_hparam.compile_hparam_run_contracts(
+            recipe,
+            out,
+            run_index_offset,
+            source_config_bytes=config_bytes or None,
+        )
+        final_command = plan_hparam.compile_hparam_final_command(recipe, out)
+        final_config_required = final_command is not None and plan_hparam.has_explicit_final_eval_config(recipe)
+        final_snapshot = None
+        if final_config_required:
+            final_snapshot = plan_contract.frozen_input_snapshot(recipe, "inputs.final_eval_config_path")
+            if final_snapshot["path"] != str((recipe.get("inputs") or {}).get("final_eval_config_path") or ""):
+                raise ValueError("Frozen final evaluation config differs from its recipe path.")
+        return {
+            "runs": [contract["row"] for contract in contracts],
+            "run_files": contracts,
+            "final_command": final_command,
+            "final_script_text": (
+                plan_hparam.render_hparam_final_script(recipe, final_command) if final_command is not None else None
+            ),
+            "final_eval_config_required": final_config_required,
+            "final_eval_config_sha256": final_snapshot["sha256"] if final_snapshot is not None else None,
+        }
+
     def planned_plan_paths(
         self,
         recipe: dict[str, Any],
@@ -174,7 +208,7 @@ class HparamTuneAdapter(TaskAdapter):
         unlock_final_test: bool,
     ) -> list[Path] | None:
         from .. import plan_hparam
-        from ..experiment_workspace import next_run_index, run_identity
+        from ..experiment_workspace import next_run_index
 
         if report.exit_code != 0:
             paths = [out / "questions.json", out / "questions.md", out / "plan.blocked.md"]
@@ -198,11 +232,9 @@ class HparamTuneAdapter(TaskAdapter):
             out / "config.source.yaml",
             out / plan_hparam.FROZEN_FINAL_EVAL_CONFIG_NAME,
         ]
-        offset = next_run_index(recipe)
         scheduler = (recipe.get("execution") or {}).get("scheduler") or {}
-        for idx, combo in enumerate(plan_hparam.hparam_combos(recipe)):
-            identity = run_identity(recipe, offset + idx, combo)
-            run_dir = out / "runs" / f"{identity['run_id']}--{identity['run_name']}"
+        for layout in plan_hparam.hparam_run_layouts(recipe, out, next_run_index(recipe)):
+            run_dir = layout["run_dir"]
             paths.extend(
                 [run_dir / "launch.sh", run_dir / "config.yaml", run_dir / "run.json", run_dir / "artifacts.json"]
             )
