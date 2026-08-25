@@ -1733,7 +1733,7 @@ def test_hparam_select_rejects_invalid_owner_target_before_ranking_write(tmp_pat
     matrix.hardlink_to(tmp_path / "run_manifest.tsv")
     before = {path.relative_to(tmp_path): path.read_bytes() if path.is_file() else None for path in tmp_path.rglob("*")}
 
-    with pytest.raises(ValueError, match="Managed output"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         hparam_selection.select_hparam_candidates(plan_dir)
 
     assert not ranking.exists()

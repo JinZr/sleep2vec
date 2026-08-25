@@ -2670,7 +2670,7 @@ def test_adaptive_suggest_preflights_outputs_before_writing(tmp_path: Path):
     manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
     events_before = (tmp_path / "events.jsonl").read_bytes()
 
-    with pytest.raises(ValueError, match="Managed output"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         adaptive_hparam.suggest_next_round(workflow_dir)
 
     assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
@@ -2867,7 +2867,7 @@ def test_supersede_preflights_round_mirrors_before_canonical_commit(tmp_path: Pa
     manifest_path = tmp_path / "run_manifest.tsv"
     before = manifest_path.read_bytes()
 
-    with pytest.raises(ValueError, match="Managed output"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         adaptive_hparam._supersede_pending_runs(workflow_dir, round_dir)
 
     assert manifest_path.read_bytes() == before
