@@ -1212,6 +1212,43 @@ def test_experiment_status_rejects_registered_plan_drift(tmp_path, drift):
         experiments.experiment_status(root)
 
 
+@pytest.mark.parametrize("field", ["title", "objective", "baseline"])
+def test_experiment_status_rejects_coherent_registered_plan_experiment_drift(tmp_path, field):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="train")
+
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"]["experiment"][field] = f"foreign {field}"
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text())
+    resolved["experiment"][field] = f"foreign {field}"
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(ValueError, match="experiment metadata differs from the managed workspace"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_rejects_registered_plan_recipe_path_drift(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="train")
+
+    step_path = root / "steps" / "train" / "step.yaml"
+    step_manifest = yaml.safe_load(step_path.read_text())
+    step_manifest["recipe_path"] = str(root / "registered-recipe.yaml")
+    step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"]["_recipe_path"] = str(root / "foreign-recipe.yaml")
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(ValueError, match="recipe path differs from its managed step"):
+        experiments.experiment_status(root)
+
+
 def test_experiment_status_rejects_plan_registered_by_multiple_steps(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -1267,8 +1304,8 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
         calls.append(("steps", candidate, experiment_id, remote))
         return [manifest]
 
-    def registered_plan(candidate, *, workspace, step_manifest, workspace_rows, remote):
-        calls.append(("plan", candidate, workspace, step_manifest, workspace_rows, remote))
+    def registered_plan(candidate, *, workspace, workspace_experiment, step_manifest, workspace_rows, remote):
+        calls.append(("plan", candidate, workspace, workspace_experiment, step_manifest, workspace_rows, remote))
         candidate_path = Path(candidate)
         return {
             "path": str(candidate),
@@ -1300,6 +1337,7 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
 
     assert calls[0] == ("workspace", root, "baichuan3", True)
     assert calls[1] == ("steps", root, "status-unit", "baichuan3")
+    assert calls[2][3] == experiment
     assert calls[2][-1] == "baichuan3"
     assert snapshot["experiment"]["remote"] == "baichuan3"
     action = snapshot["decision"]["recommended_next"]

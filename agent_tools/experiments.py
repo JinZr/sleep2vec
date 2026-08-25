@@ -370,6 +370,7 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict
             plan = artifacts.read_registered_plan(
                 plan_path,
                 workspace=root,
+                workspace_experiment=experiment,
                 step_manifest=manifest,
                 workspace_rows=rows,
                 remote=remote,

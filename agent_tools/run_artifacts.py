@@ -111,6 +111,7 @@ def read_registered_plan(
     plan_dir: str | Path,
     *,
     workspace: str | Path,
+    workspace_experiment: dict[str, Any],
     step_manifest: dict[str, Any],
     workspace_rows: list[dict[str, Any]],
     remote: str | None = None,
@@ -196,12 +197,18 @@ def read_registered_plan(
         raise ValueError("Invalid registered plan binding: " + "; ".join(issue["message"] for issue in metadata_issues))
     experiment = recipe["experiment"]
     step = recipe["step"]
-    if str(experiment.get("root") or "") != str(workspace):
-        raise ValueError(f"Registered plan belongs to a different experiment root: {plan_dir}")
+    expected_experiment = {
+        field: workspace_experiment.get(field) for field in ("id", "title", "objective", "root", "baseline")
+    }
+    if experiment != expected_experiment:
+        raise ValueError(f"Registered plan experiment metadata differs from the managed workspace: {plan_dir}")
     if str(experiment.get("id") or "") != str(step_manifest.get("experiment_id") or ""):
         raise ValueError(f"Registered plan belongs to a different experiment: {plan_dir}")
     if step != step_manifest.get("step"):
         raise ValueError(f"Registered plan step metadata differs from its managed step: {plan_dir}")
+    # recipe_path owns the first plan; adaptive and pipeline controllers may append plans with their own frozen recipes.
+    if str(plan_dir) == registered_paths[0] and recipe.get("_recipe_path", "") != step_manifest.get("recipe_path", ""):
+        raise ValueError(f"Registered plan recipe path differs from its managed step: {plan_dir}")
 
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs or any(not isinstance(run, dict) for run in runs):

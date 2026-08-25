@@ -2919,6 +2919,7 @@ def test_adaptive_step_execute_resolves_relative_base_recipe_for_next_round(tmp_
         == "superseded"
     )
     assert launched == [(workflow_dir / "adaptive" / "rounds" / "round_001", False)]
+    assert experiments.experiment_status(tmp_path)["summary"]["state"] == "in_progress"
 
 
 def test_adaptive_step_preflights_next_round_before_stop_or_supersede(tmp_path: Path, monkeypatch):
