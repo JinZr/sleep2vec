@@ -1561,6 +1561,30 @@ def test_experiment_status_human_output_quotes_advisory_argv(tmp_path):
     assert "Advisory only; this output does not authorize execution." in rendered
 
 
+def test_experiment_status_human_output_scopes_same_code_blockers(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    for step_id in ("first", "second"):
+        step_dir = root / "steps" / step_id
+        step_dir.mkdir(parents=True)
+        (step_dir / "step.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "step": {"id": step_id, "phase": "evaluate", "purpose": f"Run {step_id}."},
+                    "experiment_id": "status-unit",
+                    "recipe_path": "",
+                    "plans": [],
+                },
+                sort_keys=False,
+            )
+        )
+
+    rendered = experiment_tracking.format_experiment_status(experiments.experiment_status(root))
+
+    assert "`unmaterialized_step` [step=first]" in rendered
+    assert "`unmaterialized_step` [step=second]" in rendered
+
+
 def test_experiment_status_renders_remote_launch_execution_host():
     root = Path("/remote/experiment")
     row = {

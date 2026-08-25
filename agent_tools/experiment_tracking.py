@@ -794,7 +794,13 @@ def format_experiment_status(snapshot: dict[str, Any]) -> str:
     if snapshot["blockers"]:
         lines.extend(["## Blockers", ""])
         for blocker in snapshot["blockers"]:
-            lines.append(f"- `{blocker['code']}`: {blocker['message']}")
+            scope = []
+            if blocker["step_id"] is not None:
+                scope.append(f"step={blocker['step_id']}")
+            if blocker["run_ids"]:
+                scope.append(f"runs={', '.join(blocker['run_ids'])}")
+            scope_text = f" [{'; '.join(scope)}]" if scope else ""
+            lines.append(f"- `{blocker['code']}`{scope_text}: {blocker['message']}")
         lines.append("")
 
     lines.extend(["## Next legal action", ""])
