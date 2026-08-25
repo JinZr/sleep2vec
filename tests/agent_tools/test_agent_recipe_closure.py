@@ -9,10 +9,55 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import plans
+from agent_tools import decision_rules, plans
+from agent_tools.adapters import SUPPORTED_TASKS
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import evaluate_recipe
 from agent_tools.recipes import load_recipe_with_base, load_yaml_file
+
+
+@pytest.mark.parametrize("task", sorted(SUPPORTED_TASKS))
+def test_recipe_structure_accepts_minimal_registered_adapter_recipe(task):
+    recipe = {"task": task}
+    if task != "sleep2stat":
+        recipe["variant"] = "sleep2vec"
+
+    assert decision_rules.recipe_structure_issues(task, recipe, source_layer="unit") == []
+
+
+@pytest.mark.parametrize(
+    ("task", "recipe", "field"),
+    [
+        ("unknown", {"task": "unknown"}, "task"),
+        ("finetune", {"task": "finetune"}, "variant"),
+        ("finetune", {"task": "finetune", "variant": "unknown"}, "variant"),
+        ("sleep2stat", {"task": "sleep2stat", "variant": "sleep2vec"}, "variant"),
+        (
+            "preset_prepare",
+            {"task": "preset_prepare", "variant": "sex_age_baseline"},
+            "variant",
+        ),
+        (
+            "embedding_extraction",
+            {"task": "embedding_extraction", "variant": "sex_age_baseline"},
+            "variant",
+        ),
+        (
+            "finetune",
+            {"task": "finetune", "variant": "sleep2vec", "adaptive": {}},
+            "adaptive",
+        ),
+        (
+            "finetune",
+            {"task": "finetune", "variant": "sleep2vec", "decisions": []},
+            "decisions",
+        ),
+    ],
+)
+def test_recipe_structure_rejects_static_contract_errors(task, recipe, field):
+    issues = decision_rules.recipe_structure_issues(task, recipe, source_layer="unit")
+
+    assert any(issue.field == field for issue in issues)
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:

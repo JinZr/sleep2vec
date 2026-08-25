@@ -224,6 +224,31 @@ Experiment checkpoint indexing follows each row's frozen runtime/checkpoint pair
 
 ## Consumer requirements
 
+`experiment-status` consumes lifecycle state only from this canonical table.
+Step controller classification is separately owned by
+`steps/<step.id>/step.yaml.plan_controller`; it is not duplicated in this
+table. Pipeline identity columns must agree with that step owner.
+It may display scheduler, process, health, checkpoint, and runtime-manifest
+fields already recorded in a row, but it does not refresh them and never reads
+`run_status.tsv`, `launch_manifest.tsv`, reports, events, runtime manifests,
+logs, W&B, pipeline controller state, or adaptive controller state as alternate
+lifecycle evidence. It validates frozen recipe structure through
+`decision_rules` without consultation, config/path probing, or runtime
+preflight. It then recompiles each registered plan's expected run matrix,
+paths, derived configs, complete executable scripts, and final-evaluation requirement through the same pure
+`plan_contract`/adapter owner used by plan publication. Canonical rows and
+frozen scripts may agree with one another but still fail when they differ from
+that recipe-derived contract. Source configs and explicit hparam final-evaluation
+configs are recorded in the resolved recipe's input snapshots rather than
+trusted from a file descriptor that could be edited with the file. Active adaptive and pipeline plans remain legal plan-scoped blockers;
+their controller-owned advance and finalize actions are not inferred. If
+`experiment.yaml` is already completed, the status read-set accepts only ordinary
+plans with terminal canonical rows and rejects any adaptive or pipeline plan
+because controller completion cannot be proven. A registered step without a
+materialized plan or canonical rows is also an explicit finalize blocker and a
+completed-metadata contract error, rather than evidence that the declared work
+is absent.
+
 Every hparam mutation first validates workspace ownership, step registration, frozen run hashes, the independent `recipe.resolved.yaml` byte digest recorded by `plan.json`, and equality between the two complete effective recipe copies. Missing or partial canonical state fails rather than being repaired by launch, selection, collection, or postprocess.
 
 Selected-candidate postprocessing refreshes lifecycle status from the current canonical manifest rather than trusting ranking or candidate-table status. For test selection, caller-provided rank, checkpoint path, and SHA-256 must match both the frozen workspace ranking and canonical run row before top-k filtering. Physical SHA-256 revalidation then covers only candidates retained by top-k, or every candidate under `all_candidates`. `hparam-external-eval` accepts only `completed` or `finished` runs; it and `hparam-export-logits` reject SSH-owned candidates before writing outputs because these direct helpers have no remote config-staging and result-collection protocol.

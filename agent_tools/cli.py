@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -16,8 +17,10 @@ from .adaptive_hparam import (
 )
 from .configs import config_summary
 from .domain.presets import preset_summary
+from .experiment_tracking import format_experiment_status
 from .experiments import (
     append_experiment_note,
+    experiment_status,
     finalize_experiment,
     index_checkpoints,
     init_experiment,
@@ -204,6 +207,12 @@ def _build_parser() -> argparse.ArgumentParser:
     experiment_monitor.add_argument("--remote")
     experiment_monitor.add_argument("--json", action="store_true")
     experiment_monitor.set_defaults(func=_cmd_experiment_monitor)
+
+    experiment_status_parser = sub.add_parser("experiment-status")
+    experiment_status_parser.add_argument("--run-dir", required=True)
+    experiment_status_parser.add_argument("--remote")
+    experiment_status_parser.add_argument("--json", action="store_true")
+    experiment_status_parser.set_defaults(func=_cmd_experiment_status)
 
     experiment_rank = sub.add_parser("experiment-rank")
     experiment_rank.add_argument("--run-dir", required=True)
@@ -507,6 +516,19 @@ def _cmd_experiment_monitor(args: argparse.Namespace) -> int:
         _emit(result, as_json=True)
     else:
         print(f"Wrote {result['report']}")
+    return 0
+
+
+def _cmd_experiment_status(args: argparse.Namespace) -> int:
+    try:
+        snapshot = experiment_status(args.run_dir, remote=args.remote)
+    except (OSError, UnicodeError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        _emit(snapshot, as_json=True)
+    else:
+        print(format_experiment_status(snapshot), end="")
     return 0
 
 

@@ -53,7 +53,11 @@ An experiment workspace is the durable, human-readable record for related prepar
 explicit baseline. Experiment and step ids use lowercase letters, digits,
 hyphens, and underscores. Step phase is one of `prepare`, `train`, `evaluate`,
 or `analyze`. Every step file uses the shared
-`{step, experiment_id, recipe_path, plans}` envelope.
+`{step, experiment_id, plan_controller, recipe_path, plans}` envelope.
+`plan_controller` is the only owner of whether the step is `ordinary`,
+`adaptive`, or `pipeline`. `experiment-register-step` initially records
+`unassigned` with no recipe or plans; the first planner or pipeline freeze may
+bind it to one concrete owner, and that binding cannot later change.
 
 Existing experiment and step metadata are read through the workspace owner and
 merged through their reducers. Missing files may be created only by their
@@ -147,6 +151,12 @@ final plan directory while all bytes are written to a hidden sibling on the
 same filesystem. `plan.json` is written only after the rest of the frozen
 bundle, the complete directory is published by one rename, and only then are
 the step manifest and all planned `run_manifest.tsv` rows committed.
+Plan publication and status validation share the adapter-owned deterministic
+plan contract for run identities, paths, derived configs, complete executable
+scripts, search combinations, and required final-evaluation snapshots;
+synchronized edits to a manifest and its artifacts cannot redefine the frozen
+recipe. Resolved recipes retain the source-config snapshot and hparam recipes
+also retain the explicit final-evaluation config snapshot when applicable.
 
 Adaptive round 000 adds one final commit boundary: its registry is validated
 and its README is written after canonical plan registration, then
@@ -172,6 +182,41 @@ invalid and are not repaired in place.
 - `hparam-adaptive-*` appends rounds and commits replacements through the canonical owner.
 - `experiment-note` atomically appends one evidence-backed research-log entry and never changes lifecycle state.
 - `experiment-run` is the explicit, resumable external-evaluation launcher. Dry-run starts nothing; execute waits for successful source plans, freezes checkpoints selected by each source plan's registered ranking, and manages the declared job matrix.
+- `experiment-status` strictly validates the experiment owner, every registered
+  step and frozen plan control bundle, and the canonical `run_manifest.tsv`,
+  then prints a deterministic read-only snapshot. It never reads projections
+  as lifecycle evidence, refreshes runtime observations, or writes workspace
+  state. Frozen recipe structure is validated by the same dictionary-only
+  `decision_rules` owner used by planning; status does not rerun consultation,
+  policy decisions, config loading, or external input/path probes. Layered
+  recipes validate both source layers plus any effective-only overlay produced
+  after their canonical merge. The frozen config bytes may be parsed by a pure
+  adapter hook solely to reproduce the planner's commands; no source config or
+  other external input is reopened. The frozen plan context, not the status
+  reader's repository root or Python interpreter, reproduces relative source
+  paths and complete launch scripts across creator and controller hosts.
+  Suggested commands are advisory argv arrays and
+  do not authorize a launch or mutation.
+  A registered directory containing exactly `questions.json`, `questions.md`,
+  `plan.blocked.md`, and optional `plan.draft.json` is a non-runnable planning
+  outcome and is skipped; missing, extra, or aliased entries fail closed. A
+  plan binds to the registered step's core `id`, `phase`, and `purpose`, while
+  manifest-owned `inputs` and `outputs` remain valid step metadata.
+  Status classifies launch advice and controller-deferred blockers only from
+  the step manifest's frozen `plan_controller`; the frozen recipe and canonical
+  pipeline identity must agree with that owner and cannot replace it.
+  Active adaptive and pipeline plans produce plan-scoped blockers for their
+  controller-owned advance/finalize actions without blocking an unrelated
+  ordinary plan launch. Because the status read-set contains no controller
+  completion proof, completed experiment metadata with any adaptive or
+  pipeline plan fails as corrupt canonical control state. A registered step
+  with no materialized plan and no canonical rows likewise blocks finalization;
+  completed metadata cannot prove that controller-deferred work was completed.
+  A canonical `stopped` row without a non-empty `stop_reason` blocks the
+  finalize advisory, and completed metadata containing such a row is corrupt.
+  `experiment-finalize` independently enforces the same stop-reason boundary.
+  Valid blockers return success; corrupt canonical control state or local/SSH
+  read failure returns non-zero.
 - `experiment-rank` writes experiment-wide ranking.
 - `experiment-finalize` requires no active runs and a non-empty final report.
 

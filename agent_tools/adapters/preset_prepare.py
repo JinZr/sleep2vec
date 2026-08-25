@@ -26,6 +26,14 @@ class PresetPrepareAdapter(TaskAdapter):
     requires_survival_sidecars = True
     requires_multilabel_sidecars = True
 
+    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
+        preset_script = {
+            "sleep2vec": "preprocess/save_dataset_presets.py",
+            "sleep2vec2": "sleep2vec2/preprocess/save_dataset_presets.py",
+            "sleep2expert": "sleep2expert/preprocess/save_dataset_presets.py",
+        }[str(recipe.get("variant"))]
+        return ("python", preset_script)
+
     def bind_effective_recipe(
         self,
         recipe: dict[str, Any],
@@ -163,16 +171,10 @@ class PresetPrepareAdapter(TaskAdapter):
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
         inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
         preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
-        preset_script = {
-            "sleep2vec": "preprocess/save_dataset_presets.py",
-            "sleep2vec2": "sleep2vec2/preprocess/save_dataset_presets.py",
-            "sleep2expert": "sleep2expert/preprocess/save_dataset_presets.py",
-        }[str(recipe.get("variant"))]
         return [
             render_command(
                 [
-                    "python",
-                    preset_script,
+                    *self.frozen_command_prefix(recipe),
                     "--config",
                     inputs.get("config"),
                     "--index",

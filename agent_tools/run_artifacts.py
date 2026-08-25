@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
+import re
 import stat
 from typing import Any, Iterator
 
+import yaml
+
+from . import decision_rules as task_rules, experiment_io as exp_io, plan_contract
+from .adapters import get_adapter
 from .experiment_workspace import (
     SCHEDULER_PLAN_IDENTITY_FIELDS,
     experiment_metadata_issues,
     experiment_root,
+    file_sha256,
     managed_run_key,
     managed_run_parameters,
     merge_step_manifest,
@@ -21,9 +28,519 @@ from .experiment_workspace import (
     verify_run_snapshot,
 )
 from .manifests import read_json
-from .models import REPO_ROOT
+from .recipes import merge_recipe_layers
 
 RUN_METADATA_FIELDS = ("experiment_id", "run_name", "version")
+REGISTERED_PLAN_IDENTITY_FIELDS = (
+    "experiment_id",
+    "step_id",
+    "run_id",
+    "run_name",
+    "version",
+    "config",
+    "config_sha256",
+    "script",
+    "script_sha256",
+    "run_dir",
+    "artifacts",
+    "runtime_dir",
+    "checkpoint_dir",
+    *sorted(SCHEDULER_PLAN_IDENTITY_FIELDS),
+)
+
+
+def _json_object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"duplicate JSON key: {key}")
+        payload[key] = value
+    return payload
+
+
+def _resolved_recipe_view(recipe: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in recipe.items() if key != "_recipe_path"}
+
+
+def _read_plan_documents(
+    plan_dir: Path,
+    *,
+    workspace: Path | None = None,
+    remote: str | None = None,
+    strict_control_bundle: bool = False,
+    require_resolved_sha256: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    plan_path = plan_dir / "plan.json"
+    resolved_recipe_path = plan_dir / "recipe.resolved.yaml"
+    if strict_control_bundle:
+        if workspace is None:
+            raise ValueError("Strict registered-plan reads require a workspace root.")
+        files = exp_io.read_managed_files_at(
+            workspace,
+            [plan_path, resolved_recipe_path],
+            remote=remote,
+        )
+        try:
+            plan = json.loads(
+                files[str(plan_path)]["text"],
+                object_pairs_hook=_json_object_without_duplicate_keys,
+            )
+        except ValueError as exc:
+            raise ValueError(f"Registered plan manifest is corrupt: {plan_path}: {exc}") from exc
+        resolved_recipe_text = files[str(resolved_recipe_path)]["text"]
+        resolved_recipe_sha256 = files[str(resolved_recipe_path)]["sha256"]
+    else:
+        if not plan_path.exists():
+            raise FileNotFoundError(f"Missing hparam plan: {plan_path}")
+        plan = read_json(plan_path)
+        if isinstance(plan, dict) and "trials" in plan:
+            raise ValueError(f"Legacy hparam plan is read-only and cannot be managed: {plan_path}")
+        if not resolved_recipe_path.exists():
+            raise FileNotFoundError(f"Missing frozen hparam recipe: {resolved_recipe_path}")
+        resolved_recipe_bytes = resolved_recipe_path.read_bytes()
+        resolved_recipe_text = resolved_recipe_bytes.decode()
+        resolved_recipe_sha256 = hashlib.sha256(resolved_recipe_bytes).hexdigest()
+    if not isinstance(plan, dict):
+        raise ValueError(f"Registered plan manifest must be a mapping: {plan_path}")
+    if "trials" in plan:
+        raise ValueError(f"Legacy hparam plan is read-only and cannot be managed: {plan_path}")
+    expected_resolved_sha256 = plan.get("resolved_recipe_sha256")
+    if require_resolved_sha256 and expected_resolved_sha256 != resolved_recipe_sha256:
+        raise ValueError(f"Frozen hparam recipe SHA-256 is missing or changed: {resolved_recipe_path}")
+    if (
+        strict_control_bundle
+        and expected_resolved_sha256 not in (None, "")
+        and expected_resolved_sha256 != resolved_recipe_sha256
+    ):
+        raise ValueError(f"Frozen registered recipe SHA-256 changed: {resolved_recipe_path}")
+    resolved_recipe = read_managed_yaml_mapping(
+        resolved_recipe_text,
+        source=f"Frozen registered recipe {resolved_recipe_path}",
+    )
+    return plan, resolved_recipe
+
+
+def is_registered_blocked_plan(
+    plan_dir: str | Path,
+    *,
+    workspace: str | Path,
+    remote: str | None = None,
+) -> bool:
+    plan_dir = Path(plan_dir)
+    workspace = Path(workspace)
+    # Reject corrupt registrations before probing paths outside the canonical workspace.
+    if not workspace.is_absolute() or not plan_dir.is_absolute() or ".." in workspace.parts or ".." in plan_dir.parts:
+        raise ValueError(f"Registered plan must use an absolute canonical workspace path: {plan_dir}")
+    try:
+        plan_dir.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError(f"Registered plan is outside its managed workspace: {plan_dir}") from exc
+    plan_path = plan_dir / "plan.json"
+    resolved_recipe_path = plan_dir / "recipe.resolved.yaml"
+    blocked_only_paths = [
+        plan_dir / "questions.json",
+        plan_dir / "questions.md",
+        plan_dir / "plan.blocked.md",
+        plan_dir / "plan.draft.json",
+    ]
+    # Existence checks may follow local aliases, so validate every possible control file's ancestry first.
+    try:
+        exp_io.validate_managed_output_paths(
+            workspace,
+            [plan_path, resolved_recipe_path, *blocked_only_paths],
+            remote=remote,
+        )
+    except ValueError as exc:
+        raise ValueError(f"Registered plan control bundle is missing or aliased: {plan_dir}") from exc
+    plan_exists = exp_io.path_exists_at(plan_path, remote=remote)
+    blocked_entries = [path for path in blocked_only_paths if exp_io.path_exists_at(path, remote=remote)]
+    if plan_exists:
+        if blocked_entries:
+            raise ValueError(f"Registered plan contains both PASS and blocked planning artifacts: {plan_dir}")
+        return False
+    blocked_path = plan_dir / "plan.blocked.md"
+    if not exp_io.path_exists_at(blocked_path, remote=remote) or exp_io.path_exists_at(
+        resolved_recipe_path, remote=remote
+    ):
+        return False
+    blocked_files = [plan_dir / "questions.json", plan_dir / "questions.md", blocked_path]
+    draft_path = plan_dir / "plan.draft.json"
+    if draft_path in blocked_entries:
+        blocked_files.append(draft_path)
+    exp_io.read_managed_files_at(
+        workspace,
+        blocked_files,
+        remote=remote,
+        exact_directory_entries=True,
+    )
+    return True
+
+
+def read_registered_plan(
+    plan_dir: str | Path,
+    *,
+    workspace: str | Path,
+    workspace_experiment: dict[str, Any],
+    step_manifest: dict[str, Any],
+    workspace_rows: list[dict[str, Any]],
+    expected_recipe_path: str | None,
+    remote: str | None = None,
+    run_index_offset: int = 0,
+) -> dict[str, Any]:
+    plan_dir = Path(plan_dir)
+    workspace = Path(workspace)
+    registered_paths = [str(path) for path in step_manifest.get("plans") or []]
+    if str(plan_dir) not in registered_paths:
+        raise ValueError(f"Plan is not registered by its managed step: {plan_dir}")
+
+    plan_path = plan_dir / "plan.json"
+    resolved_recipe_path = plan_dir / "recipe.resolved.yaml"
+    plan, resolved_recipe = _read_plan_documents(
+        plan_dir,
+        workspace=workspace,
+        remote=remote,
+        strict_control_bundle=True,
+    )
+    legacy_status = plan_dir / "trial_status.tsv"
+    if exp_io.path_exists_at(legacy_status, remote=remote):
+        raise ValueError(f"Legacy hparam status is read-only and cannot be managed: {legacy_status}")
+    if plan.get("status") != "PASS":
+        raise ValueError(f"Registered plan must have status PASS: {plan_path}")
+
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else None
+    if recipe is None:
+        raise ValueError(f"Registered plan is missing its recipe: {plan_path}")
+    task = recipe.get("task")
+    adapter = get_adapter(task if isinstance(task, str) else None)
+    allowed_internal_fields = {"_plan_context", "_recipe_path"}
+    if adapter is not None and adapter.base_task is not None:
+        allowed_internal_fields.update({"_base_recipe", "_local_recipe"})
+    unexpected_internal_fields = sorted(
+        str(field) for field in recipe if str(field).startswith("_") and field not in allowed_internal_fields
+    )
+    if unexpected_internal_fields:
+        raise ValueError(
+            f"Registered plan recipe has unsupported internal fields: {', '.join(unexpected_internal_fields)}"
+        )
+    recipe_path = recipe.get("_recipe_path")
+    if not isinstance(recipe_path, str) or not Path(recipe_path).is_absolute():
+        raise ValueError(f"Registered plan recipe path must be absolute: {plan_path}")
+    if adapter is not None and adapter.materializes_plan and plan.get("resolved_recipe_sha256") in (None, ""):
+        raise ValueError(f"Frozen hparam recipe SHA-256 is missing or changed: {resolved_recipe_path}")
+    frozen_recipe = _resolved_recipe_view(recipe)
+    if frozen_recipe != resolved_recipe:
+        raise ValueError(f"Registered plan recipe differs from recipe.resolved.yaml: {resolved_recipe_path}")
+
+    structure_issues = []
+    if adapter is not None and adapter.base_task is not None:
+        base_recipe = recipe.get("_base_recipe")
+        local_recipe = recipe.get("_local_recipe")
+        if not isinstance(base_recipe, dict) or not isinstance(local_recipe, dict):
+            raise ValueError(f"Registered composite plan is missing frozen base/local recipe layers: {plan_path}")
+        for layer_name, layer_task, layer in (
+            ("base", adapter.base_task, base_recipe),
+            ("local", adapter.task, local_recipe),
+        ):
+            unexpected_layer_fields = sorted(
+                str(field) for field in layer if str(field).startswith("_") and field != "_recipe_path"
+            )
+            if unexpected_layer_fields:
+                raise ValueError(
+                    f"Registered {layer_name} recipe has unsupported internal fields: "
+                    + ", ".join(unexpected_layer_fields)
+                )
+            if layer.get("task") != layer_task:
+                raise ValueError(f"Registered {layer_name} recipe task differs from its adapter owner: {plan_path}")
+            structure_issues.extend(task_rules.recipe_structure_issues(layer_task, layer, source_layer=layer_name))
+            layer_metadata_issues = experiment_metadata_issues(
+                layer,
+                require_values=False,
+                source_layer=layer_name,
+            )
+            if layer_metadata_issues:
+                messages = "; ".join(issue["message"] for issue in layer_metadata_issues)
+                raise ValueError(f"Invalid registered {layer_name} recipe binding: {messages}")
+        effective_recipe = {key: value for key, value in recipe.items() if key not in {"_base_recipe", "_local_recipe"}}
+        effective_overlay = _mapping_overlay(merge_recipe_layers(base_recipe, local_recipe), effective_recipe)
+        effective_overlay.update({"task": task, "variant": recipe.get("variant")})
+        structure_issues.extend(task_rules.recipe_structure_issues(task, effective_overlay, source_layer="effective"))
+        for field in ("task", "variant", "adaptive"):
+            if recipe.get(field) != local_recipe.get(field):
+                raise ValueError(f"Registered composite recipe field differs from its local layer: {field}")
+    else:
+        structure_issues.extend(task_rules.recipe_structure_issues(task, recipe, source_layer="effective"))
+    if structure_issues:
+        messages = "; ".join(f"{issue.field}: {issue.message}" for issue in structure_issues)
+        raise ValueError(f"Invalid registered plan recipe: {messages}")
+    assert adapter is not None
+
+    metadata_issues = experiment_metadata_issues(recipe)
+    if metadata_issues:
+        raise ValueError("Invalid registered plan binding: " + "; ".join(issue["message"] for issue in metadata_issues))
+    experiment = recipe["experiment"]
+    step = recipe["step"]
+    expected_experiment = {
+        field: workspace_experiment.get(field) for field in ("id", "title", "objective", "root", "baseline")
+    }
+    if experiment != expected_experiment:
+        raise ValueError(f"Registered plan experiment metadata differs from the managed workspace: {plan_dir}")
+    if str(experiment.get("id") or "") != str(step_manifest.get("experiment_id") or ""):
+        raise ValueError(f"Registered plan belongs to a different experiment: {plan_dir}")
+    managed_step = {field: step_manifest["step"][field] for field in ("id", "phase", "purpose")}
+    if step != managed_step:
+        raise ValueError(f"Registered plan step metadata differs from its managed step: {plan_dir}")
+
+    if adapter.materializes_plan:
+        contract = _compile_registered_plan_contract(
+            adapter,
+            recipe,
+            plan_dir,
+            run_index_offset=run_index_offset,
+            config_bytes=b"",
+        )
+    else:
+        layout = plan_contract.generic_run_contract(recipe, plan_dir, run_index_offset, adapter)
+        contract = None
+
+    plan_controller = step_manifest["plan_controller"]
+    adaptive_enabled = isinstance(recipe.get("adaptive"), dict) and recipe["adaptive"].get("enabled") is True
+    if plan_controller == "unassigned" or (plan_controller == "adaptive") != adaptive_enabled:
+        raise ValueError(f"Registered plan controller differs from its frozen recipe: {plan_dir}")
+    runs = plan.get("runs")
+    if not isinstance(runs, list) or not runs or any(not isinstance(run, dict) for run in runs):
+        raise ValueError(f"Registered plan must define a non-empty runs list of mappings: {plan_path}")
+    validate_run_rows(
+        runs,
+        source=str(plan_path),
+        require_artifact_paths=True,
+        allow_empty_runtime_paths=task not in {"finetune", "hparam_tune"},
+    )
+    expected_runs = contract["runs"] if contract is not None else [layout]
+    _validate_plan_contract_runs(runs, expected_runs, plan_path)
+    plan_keys = [managed_run_key(run) for run in runs]
+    if len(plan_keys) != len(set(plan_keys)):
+        raise ValueError(f"Registered plan contains duplicate managed run keys: {plan_path}")
+    canonical_by_key = {managed_run_key(row): row for row in workspace_rows}
+    for run in runs:
+        key = managed_run_key(run)
+        canonical = canonical_by_key.get(key)
+        if canonical is None:
+            raise ValueError(f"Workspace run_manifest.tsv is missing registered plan run: {key[0]} / {key[1]}")
+        if canonical.get("status") in (None, ""):
+            raise ValueError(f"Workspace run manifest is missing status: {key[0]} / {key[1]}")
+        pipeline_fields = ("pipeline_id", "job_id", "attempt", "result_root")
+        pipeline_values = [_text_value(canonical.get(field)) for field in pipeline_fields]
+        if plan_controller == "pipeline":
+            if task == "hparam_tune" or not all(pipeline_values) or canonical.get("terminal_status_owner") != "script":
+                raise ValueError(f"Workspace pipeline run identity is incomplete: {key[0]} / {key[1]}")
+        elif any(pipeline_values):
+            raise ValueError(f"Workspace run pipeline identity conflicts with its managed step: {key[0]} / {key[1]}")
+        identity_fields = list(REGISTERED_PLAN_IDENTITY_FIELDS)
+        if task == "hparam_tune":
+            identity_fields.extend(("parameter_summary", "terminal_status_owner"))
+        else:
+            identity_fields.append("input_snapshots")
+            if _text_value(canonical.get("parameter_summary")) != "single resolved recipe":
+                raise ValueError(
+                    f"Workspace run manifest differs from plan field parameter_summary: {key[0]} / {key[1]}"
+                )
+            if plan_controller != "pipeline":
+                identity_fields.append("terminal_status_owner")
+        if run.get("scheduler_type") == "slurm":
+            identity_fields.append("log_path")
+        for field in identity_fields:
+            if _text_value(canonical.get(field)) != _text_value(run.get(field)):
+                raise ValueError(f"Workspace run manifest differs from plan field {field}: {key[0]} / {key[1]}")
+        _validate_registered_run_parameters(recipe, run, canonical)
+
+    bundle_paths = []
+    for run, expected_run in zip(runs, expected_runs):
+        for path_field in ("config", "script", "scheduler_script"):
+            path = expected_run.get(path_field)
+            if path not in (None, ""):
+                bundle_paths.append(Path(str(path)))
+        bundle_paths.append(Path(str(expected_run["artifacts"])))
+    source_config = plan_dir / "config.source.yaml"
+    if adapter.materializes_plan:
+        bundle_paths.append(source_config)
+
+    launch_script = plan_dir / ("run_all.sh" if adapter.materializes_plan else "run.sh")
+    bundle_paths.append(launch_script)
+    final_path, expected_final_command = plan_contract.validate_final_eval_contract(
+        plan, recipe, plan_dir, contract or {}
+    )
+    if final_path is not None:
+        bundle_paths.append(final_path)
+
+    final_script = plan_dir / "final_external_test.sh"
+    final_script_present = exp_io.path_exists_at(final_script, remote=remote)
+    if (expected_final_command is not None) != final_script_present:
+        requirement = "missing" if expected_final_command is not None else "unexpected"
+        raise ValueError(f"Registered plan has {requirement} final external-test script: {final_script}")
+    if expected_final_command is not None:
+        bundle_paths.append(final_script)
+
+    bundle = exp_io.read_managed_files_at(
+        workspace,
+        list(dict.fromkeys(bundle_paths)),
+        remote=remote,
+    )
+    if adapter.materializes_plan:
+        contract = _compile_registered_plan_contract(
+            adapter,
+            recipe,
+            plan_dir,
+            run_index_offset=run_index_offset,
+            config_bytes=bundle[str(source_config)]["text"].encode(),
+        )
+        expected_runs = contract["runs"]
+        _validate_plan_contract_runs(runs, expected_runs, plan_path)
+        if bundle[str(launch_script)]["text"] != contract["launch_script_text"]:
+            raise ValueError(f"Registered plan launch script differs from its frozen recipe: {launch_script}")
+        for run, run_files in zip(runs, contract["run_files"]):
+            if bundle[run["config"]]["text"].encode() != run_files["config_bytes"]:
+                raise ValueError(f"Registered plan config differs from its frozen recipe: {run['run_id']}")
+            if bundle[run["script"]]["text"] != run_files["script_text"]:
+                raise ValueError(f"Registered plan script differs from its frozen recipe: {run['run_id']}")
+            scheduler_text = run_files.get("scheduler_script_text")
+            if scheduler_text is not None and bundle[run["scheduler_script"]]["text"] != scheduler_text:
+                raise ValueError(f"Registered Slurm script differs from its frozen recipe: {run['run_id']}")
+        if expected_final_command is not None and bundle[str(final_script)]["text"] != contract["final_script_text"]:
+            raise ValueError(f"Registered final external-test script differs from its frozen recipe: {final_script}")
+    else:
+        config_bytes = bundle[layout["config"]]["text"].encode()
+        contract = _compile_registered_plan_contract(
+            adapter,
+            recipe,
+            plan_dir,
+            run_index_offset=run_index_offset,
+            config_bytes=config_bytes,
+        )
+        expected_runs = contract["runs"]
+        _validate_plan_contract_runs(runs, expected_runs, plan_path)
+        commands = plan.get("commands")
+        if (
+            not isinstance(commands, list)
+            or not commands
+            or any(not isinstance(command, str) or not command for command in commands)
+        ):
+            raise ValueError(f"Registered plan commands are invalid: {plan_path}")
+        if len(runs) != 1:
+            raise ValueError(f"Generic registered plan must contain exactly one run: {plan_path}")
+        if commands != contract["commands"]:
+            raise ValueError(f"Registered plan commands differ from its frozen recipe: {plan_path}")
+        if bundle[str(launch_script)]["text"] != contract["script_text"]:
+            raise ValueError(f"Registered plan run.sh differs from its frozen recipe: {launch_script}")
+        if bundle[runs[0]["script"]]["text"] != contract["script_text"]:
+            raise ValueError(f"Registered plan launch script differs from its frozen recipe: {runs[0]['script']}")
+
+    for run, expected_run in zip(runs, expected_runs):
+        for path_field, hash_field in (
+            ("config", "config_sha256"),
+            ("script", "script_sha256"),
+            ("scheduler_script", "scheduler_script_sha256"),
+        ):
+            path = expected_run.get(path_field)
+            expected = expected_run.get(hash_field, run.get(hash_field))
+            if path not in (None, "") and expected not in (None, "") and bundle[str(path)]["sha256"] != expected:
+                raise ValueError(f"Registered plan frozen file SHA-256 changed: {path}")
+    if final_path is not None and bundle[str(final_path)]["sha256"] != contract["final_eval_config_sha256"]:
+        raise ValueError(f"Registered plan frozen file SHA-256 changed: {final_path}")
+
+    if expected_recipe_path is not None and recipe.get("_recipe_path", "") != expected_recipe_path:
+        raise ValueError(f"Registered plan recipe path differs from its managed step: {plan_dir}")
+    return {
+        "path": str(plan_dir),
+        "task": task,
+        "run_keys": plan_keys,
+        "launch_script": str(launch_script),
+    }
+
+
+def _compile_registered_plan_contract(
+    adapter: Any,
+    recipe: dict[str, Any],
+    plan_dir: Path,
+    *,
+    run_index_offset: int,
+    config_bytes: bytes,
+) -> dict[str, Any]:
+    try:
+        return adapter.compile_plan_contract(
+            recipe,
+            plan_dir,
+            run_index_offset=run_index_offset,
+            config_bytes=config_bytes,
+        )
+    except (AttributeError, KeyError, IndexError, TypeError, yaml.YAMLError) as exc:
+        raise ValueError(f"Registered plan frozen config is corrupt: {exc}") from exc
+
+
+def _validate_plan_contract_runs(
+    runs: list[dict[str, Any]],
+    expected_runs: list[dict[str, Any]],
+    plan_path: Path,
+) -> None:
+    if len(runs) != len(expected_runs):
+        raise ValueError(f"Registered plan differs from canonical expected runs: {plan_path}")
+    for run, expected in zip(runs, expected_runs):
+        for field, value in expected.items():
+            if run.get(field) != value:
+                raise ValueError(
+                    f"Registered plan differs from canonical expected runs field {field}: "
+                    f"{run.get('step_id')} / {run.get('run_id')}"
+                )
+        if managed_run_parameters(run) != managed_run_parameters(expected):
+            raise ValueError(
+                "Workspace run parameters differ from plan and canonical expected runs: "
+                f"{run.get('step_id')} / {run.get('run_id')}"
+            )
+
+
+def _text_value(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _mapping_overlay(base: dict[str, Any], effective: dict[str, Any]) -> dict[str, Any]:
+    overlay = {}
+    for field, value in effective.items():
+        base_value = base.get(field)
+        if isinstance(value, dict) and isinstance(base_value, dict):
+            nested = _mapping_overlay(base_value, value)
+            if nested:
+                overlay[field] = nested
+        elif field not in base or value != base_value:
+            overlay[field] = value
+    return overlay
+
+
+def _validate_registered_run_parameters(
+    recipe: dict[str, Any],
+    plan_run: dict[str, Any],
+    canonical_run: dict[str, Any],
+) -> None:
+    plan_parameters = managed_run_parameters(plan_run)
+    canonical_parameters = managed_run_parameters(canonical_run)
+    declared_parameters = set()
+    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    parameters = search.get("parameters")
+    if isinstance(parameters, dict):
+        declared_parameters = {str(field) for field in parameters}
+    plan_parameter_keys = set(plan_parameters)
+    canonical_parameter_keys = set(canonical_parameters)
+    missing_parameters = plan_parameter_keys - canonical_parameter_keys
+    missing_declared = (declared_parameters - plan_parameter_keys) | (declared_parameters - canonical_parameter_keys)
+    nonempty_extra_parameters = {
+        field
+        for field in canonical_parameter_keys - plan_parameter_keys
+        if canonical_parameters[field] not in (None, "")
+    }
+    key = managed_run_key(plan_run)
+    if missing_parameters or missing_declared or nonempty_extra_parameters:
+        raise ValueError(f"Workspace run parameters differ from plan: {key[0]} / {key[1]}")
+    for field, value in plan_parameters.items():
+        if _text_value(canonical_parameters.get(field)) != _text_value(value):
+            raise ValueError(f"Workspace run manifest differs from plan field {field}: {key[0]} / {key[1]}")
 
 
 def read_hparam_plan(
@@ -33,23 +550,11 @@ def read_hparam_plan(
     require_adaptive_commit: bool = True,
 ) -> dict[str, Any]:
     plan_path = run_dir / "plan.json"
-    if not plan_path.exists():
-        raise FileNotFoundError(f"Missing hparam plan: {plan_path}")
-    plan = read_json(plan_path)
-    if "trials" in plan:
-        raise ValueError(f"Legacy hparam plan is read-only and cannot be managed: {plan_path}")
+    resolved_recipe_path = run_dir / "recipe.resolved.yaml"
+    plan, resolved_recipe = _read_plan_documents(run_dir, require_resolved_sha256=True)
     legacy_status = run_dir / "trial_status.tsv"
     if legacy_status.exists():
         raise ValueError(f"Legacy hparam status is read-only and cannot be managed: {legacy_status}")
-    resolved_recipe_path = run_dir / "recipe.resolved.yaml"
-    if not resolved_recipe_path.exists():
-        raise FileNotFoundError(f"Missing frozen hparam recipe: {resolved_recipe_path}")
-    resolved_recipe_bytes = resolved_recipe_path.read_bytes()
-    if plan.get("resolved_recipe_sha256") != hashlib.sha256(resolved_recipe_bytes).hexdigest():
-        raise ValueError(f"Frozen hparam recipe SHA-256 is missing or changed: {resolved_recipe_path}")
-    resolved_recipe = read_managed_yaml_mapping(
-        resolved_recipe_bytes.decode(), source=f"Frozen hparam recipe {resolved_recipe_path}"
-    )
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs:
         raise ValueError(f"Hparam plan must define a non-empty runs list: {plan_path}")
@@ -93,6 +598,11 @@ def read_hparam_plan(
             {
                 "step": recipe["step"],
                 "experiment_id": experiment_id,
+                "plan_controller": (
+                    "adaptive"
+                    if isinstance(recipe.get("adaptive"), dict) and recipe["adaptive"].get("enabled") is True
+                    else "ordinary"
+                ),
                 "recipe_path": recipe.get("_recipe_path", ""),
                 "plans": [str(run_dir.resolve())],
             },
@@ -137,30 +647,14 @@ def read_hparam_plan(
                 raise ValueError(
                     f"Workspace run manifest differs from plan field log_path: {run['step_id']} / {run['run_id']}"
                 )
-            plan_parameters = managed_run_parameters(run)
-            workspace_parameters = managed_run_parameters(workspace_row)
-            missing_parameters = set(plan_parameters) - set(workspace_parameters)
-            nonempty_extra_parameters = {
-                field
-                for field in set(workspace_parameters) - set(plan_parameters)
-                if workspace_parameters[field] not in (None, "")
-            }
-            if missing_parameters or nonempty_extra_parameters:
-                raise ValueError(f"Workspace run parameters differ from plan: {run['step_id']} / {run['run_id']}")
-            for field, value in plan_parameters.items():
-                expected_value = "" if value is None else str(value)
-                actual_value = "" if workspace_parameters[field] is None else str(workspace_parameters[field])
-                if actual_value != expected_value:
-                    raise ValueError(
-                        f"Workspace run manifest differs from plan field {field}: {run['step_id']} / {run['run_id']}"
-                    )
+            _validate_registered_run_parameters(recipe, run, workspace_row)
     search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
     workdir = execution.get("workdir")
     if workdir not in (None, "") and not Path(str(workdir)).is_absolute():
         raise ValueError("execution.workdir must be an absolute path when set.")
-    run_cwd = Path(str(workdir or REPO_ROOT))
+    run_cwd = Path(str(workdir or plan_contract.frozen_plan_context(recipe)["repo_root"]))
     for run in runs:
         expected_runtime_dir = run_cwd / "log-finetune" / str(run["version"])
         expected_checkpoint_dir = expected_runtime_dir / "checkpoints"
@@ -179,14 +673,67 @@ def read_hparam_plan(
     ]
     if legacy_fields:
         raise ValueError(f"Legacy hparam fields are read-only and unsupported: {', '.join(legacy_fields)}")
-    frozen_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
+    frozen_recipe = _resolved_recipe_view(recipe)
     if frozen_recipe != resolved_recipe:
         raise ValueError(f"Hparam plan recipe differs from recipe.resolved.yaml: {resolved_recipe_path}")
     for run in runs:
         verify_run_snapshot(run)
+    typed_plan = recipe.get("task") == "hparam_tune"
+    pass_plan = plan.get("status") == "PASS"
+    if typed_plan != pass_plan:
+        raise ValueError(f"Hparam plan has an incomplete static contract: {plan_path}")
+    if typed_plan:
+        _validate_local_hparam_plan_contract(plan, recipe, run_dir, runs)
     if require_adaptive_commit:
         _validate_adaptive_workflow_commit(run_dir, recipe)
     return plan
+
+
+def _validate_local_hparam_plan_contract(
+    plan: dict[str, Any],
+    recipe: dict[str, Any],
+    run_dir: Path,
+    runs: list[dict[str, Any]],
+) -> None:
+    plan_path = run_dir / "plan.json"
+    resolved_plan_dir = run_dir.resolve()
+    first_run_id = str(runs[0].get("run_id") or "")
+    match = re.fullmatch(r"run-(\d+)", first_run_id)
+    if match is None:
+        raise ValueError(f"Hparam plan has an invalid first run id: {first_run_id}")
+    adapter = get_adapter("hparam_tune")
+    assert adapter is not None
+    source_config = resolved_plan_dir / "config.source.yaml"
+    if not source_config.is_file():
+        raise FileNotFoundError(f"Missing frozen hparam source config: {source_config}")
+    contract = adapter.compile_plan_contract(
+        recipe,
+        resolved_plan_dir,
+        run_index_offset=int(match.group(1)),
+        config_bytes=source_config.read_bytes(),
+    )
+    _validate_plan_contract_runs(runs, contract["runs"], plan_path)
+    launch_script = resolved_plan_dir / "run_all.sh"
+    if not launch_script.is_file() or launch_script.read_text() != contract["launch_script_text"]:
+        raise ValueError(f"Hparam plan launch script differs from its frozen recipe: {launch_script}")
+    for run, run_files in zip(runs, contract["run_files"]):
+        if Path(run["config"]).read_bytes() != run_files["config_bytes"]:
+            raise ValueError(f"Hparam plan config differs from its frozen recipe: {run['run_id']}")
+        if Path(run["script"]).read_text() != run_files["script_text"]:
+            raise ValueError(f"Hparam plan script differs from its frozen recipe: {run['run_id']}")
+        scheduler_text = run_files.get("scheduler_script_text")
+        if scheduler_text is not None and Path(run["scheduler_script"]).read_text() != scheduler_text:
+            raise ValueError(f"Hparam Slurm script differs from its frozen recipe: {run['run_id']}")
+    final_path, final_command = plan_contract.validate_final_eval_contract(plan, recipe, resolved_plan_dir, contract)
+    if final_path is not None:
+        if not final_path.is_file() or file_sha256(final_path) != plan["final_eval_config"]["sha256"]:
+            raise ValueError(f"Frozen final evaluation config changed after planning: {final_path}")
+    final_script = resolved_plan_dir / "final_external_test.sh"
+    if (final_command is not None) != final_script.is_file():
+        requirement = "missing" if final_command is not None else "unexpected"
+        raise ValueError(f"Hparam plan has {requirement} final external-test script: {final_script}")
+    if final_command is not None and final_script.read_text() != contract["final_script_text"]:
+        raise ValueError(f"Hparam final external-test script differs from its frozen recipe: {final_script}")
 
 
 def plan_tree_sha256(root: Path) -> str:
@@ -243,10 +790,9 @@ def iter_registered_hparam_plans(
         registered_root = Path(str(registered_plan_dir))
         registered_plan_path = registered_root / "plan.json"
         resolved_recipe_path = registered_root / "recipe.resolved.yaml"
+        if is_registered_blocked_plan(registered_root, workspace=workspace):
+            continue
         if not registered_plan_path.exists():
-            blocked_path = registered_root / "plan.blocked.md"
-            if blocked_path.is_file() and not blocked_path.is_symlink() and not resolved_recipe_path.exists():
-                continue
             raise FileNotFoundError(f"Registered plan is missing plan.json: {registered_plan_path}")
         registered_plan = read_json(registered_plan_path)
         registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
@@ -283,6 +829,7 @@ def validate_run_rows(
     *,
     source: str,
     require_artifact_paths: bool = False,
+    allow_empty_runtime_paths: bool = False,
 ) -> None:
     validate_managed_run_rows(rows, source=source, cardinality="one_per_run")
     versions = set()
@@ -293,8 +840,6 @@ def validate_run_rows(
                 field
                 for field in (
                     "run_dir",
-                    "runtime_dir",
-                    "checkpoint_dir",
                     "config",
                     "config_sha256",
                     "script",
@@ -303,13 +848,19 @@ def validate_run_rows(
                 )
                 if row.get(field) in (None, "")
             )
+            if allow_empty_runtime_paths:
+                missing.extend(field for field in ("runtime_dir", "checkpoint_dir") if field not in row)
+                if bool(row.get("runtime_dir")) != bool(row.get("checkpoint_dir")):
+                    raise ValueError(f"Managed run row {index} in {source} has partial runtime artifact paths.")
+            else:
+                missing.extend(field for field in ("runtime_dir", "checkpoint_dir") if row.get(field) in (None, ""))
         if missing:
             raise ValueError(f"Managed run row {index} in {source} is missing: {', '.join(missing)}")
         if require_artifact_paths:
             relative_paths = [
                 field
                 for field in ("run_dir", "runtime_dir", "checkpoint_dir", "config", "script", "artifacts")
-                if not Path(str(row[field])).is_absolute()
+                if row.get(field) not in (None, "") and not Path(str(row[field])).is_absolute()
             ]
             if relative_paths:
                 raise ValueError(

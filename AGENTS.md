@@ -41,6 +41,7 @@ bash utils/style_check.sh
 - Treat paths and external identifiers exactly as the contract states. If a value should be passed through as provided, do not expand, resolve, normalize, infer a base directory, or silently rewrite it.
 - Make semantic choices explicit and fail fast at boundaries. Defaults are acceptable for operational convenience, but model/data semantics, label sources, thresholds, stage sources, and output contracts should not be guessed.
 - Name outputs by their real unit and denominator. If both ratio and percent are emitted, both names must say so; do not also emit ambiguous historical aliases.
+- Do not introduce product-style generation or schema markers such as `schema_version`, `v0`, or `v1` into new research-facing datasets, configs, manifests, snapshots, or reports. Preserve reproducibility with semantic fields, source revisions, hashes, and runtime or dependency versions instead. Existing fields in explicitly versioned transport or controller protocols must not be copied into new surfaces; changing those established protocols requires an explicit migration request.
 - Let tests pin removals as well as additions. When deleting legacy behavior, test that hidden fallbacks and ambiguous legacy entrypoints fail validation or disappear from outputs; do not add tests that require special rejection of ordinary bad values unless they would otherwise produce misleading results.
 
 ## Runtime Failure & Output Directory Policy

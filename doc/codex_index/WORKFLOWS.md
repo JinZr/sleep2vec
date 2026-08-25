@@ -207,8 +207,9 @@ The control flow is:
 3. `plan` freezes the resolved recipe, commands, hashes, experiment, step, and
    run identities;
 4. explicit launch commands execute the existing runtime entrypoints;
-5. monitor and summary commands observe canonical artifacts but do not launch
-   pending work;
+5. `experiment-status` explains already-recorded canonical state without live
+   observation or writes; monitor commands explicitly refresh evidence but do
+   not launch pending work;
 6. `experiment-note` reads one local YAML entry file and appends the
    evidence-backed research milestone without changing lifecycle state;
 7. finalization requires no active runs and a non-empty report.
@@ -222,7 +223,7 @@ authority.
 
 | Concern | Canonical owner | Authoritative contract |
 | --- | --- | --- |
-| Consultation and plan publication | [`agent_tools/decisions.py`](../../agent_tools/decisions.py), [`agent_tools/plans.py`](../../agent_tools/plans.py) | [task recipe](../agent_contracts/task_recipe.md) |
+| Recipe structure, frozen plan semantics, consultation, and publication | [`agent_tools/decision_rules.py`](../../agent_tools/decision_rules.py), [`agent_tools/plan_contract.py`](../../agent_tools/plan_contract.py), adapter `compile_plan_contract` hooks, [`agent_tools/decisions.py`](../../agent_tools/decisions.py), and [`agent_tools/plans.py`](../../agent_tools/plans.py) | [task recipe](../agent_contracts/task_recipe.md) |
 | Workspace state, launch, and monitoring | [`agent_tools/experiment_workspace.py`](../../agent_tools/experiment_workspace.py), [`agent_tools/hparam.py`](../../agent_tools/hparam.py) | [experiment workspace](../agent_contracts/experiment_workspace.md), [run manifest](../agent_contracts/run_manifest.md) |
 | Hparam ranking and test access | [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py) | [task recipe](../agent_contracts/task_recipe.md), [external test locking](../agent_contracts/external_test_locking.md) |
 | Direct and Slurm lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py), [`agent_tools/slurm.py`](../../agent_tools/slurm.py) | [run manifest](../agent_contracts/run_manifest.md) |
@@ -233,6 +234,26 @@ authority.
 
 `run_manifest.tsv` is the only lifecycle and execution-identity owner; status
 tables, events, reports, and `RESEARCH_LOG.md` are projections or narrative.
+`experiment-status` also validates registered step manifests and frozen plan
+control bundles, but ignores those projections and never queries Slurm,
+processes, GPUs, checkpoints, or W&B. Its argv suggestions remain advisory and
+require the same explicit authorization as invoking the underlying command. It
+uses the step manifest's one-way `plan_controller` binding as the sole
+ordinary/adaptive/pipeline classification owner; frozen recipes and pipeline
+row identity are consistency guards rather than alternate owners. It
+reuses the pure `decision_rules` recipe structure owner without consultation or
+external input probes. Active adaptive and pipeline plans defer only their
+controller-owned advance/finalize actions, so an unrelated ordinary candidate
+may still be shown. Completed metadata fails closed when either kind of
+controller-deferred plan exists because the status read-set cannot prove controller
+completion. A registered step whose plan and canonical rows have not yet been
+materialized also blocks finalization instead of being treated as completed.
+Registered plan rows, configs, complete executable scripts, and canonical rows
+must additionally match the same recipe-derived contract used by publication;
+recipe-owned input snapshots bind source config bytes, and mutual agreement
+among mutable plan artifacts alone is not semantic authority. Recompilation
+uses the frozen creator-host plan context rather than the reader's Python or
+repository root.
 Managed direct and Slurm follow-up always uses frozen canonical identity.
 Slurm terminal truth normally combines scheduler and sidecar evidence; a purged
 job with explicitly disabled accounting has one narrow authenticated recovery

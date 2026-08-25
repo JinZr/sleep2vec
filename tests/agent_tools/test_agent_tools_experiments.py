@@ -407,7 +407,7 @@ def test_experiment_note_rejects_aliased_log_or_lock_before_writing(tmp_path: Pa
     os.link(root / "run_manifest.tsv", target)
     before = _workspace_files(root)
 
-    with pytest.raises(ValueError, match="independent regular files"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         experiments.append_experiment_note(root, _research_entry(tmp_path, "obs-alias"))
 
     assert _workspace_files(root) == before
@@ -503,7 +503,7 @@ def test_experiment_note_rejects_aliased_scoped_step_before_reading_it(tmp_path:
     os.link(root / "run_manifest.tsv", step_manifest)
     before = (root / "RESEARCH_LOG.md").read_bytes()
 
-    with pytest.raises(ValueError, match="independent regular files"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         experiments.append_experiment_note(
             root,
             _research_entry(tmp_path, "obs-step-alias", scope={"step_id": "train-model"}),
@@ -820,7 +820,7 @@ def test_experiment_reinit_rejects_readme_alias_before_writing(tmp_path: Path):
     os.link(run_manifest, readme)
     before = _workspace_files(tmp_path)
 
-    with pytest.raises(ValueError, match="independent regular files"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         experiments.init_experiment(tmp_path, spec)
 
     assert _workspace_files(tmp_path) == before
@@ -837,7 +837,7 @@ def test_experiment_finalize_rejects_report_alias_before_writing(tmp_path: Path)
     report.write_text("# Final\n\nValidation-selected result.\n")
     before = _workspace_files(tmp_path)
 
-    with pytest.raises(ValueError, match="independent regular files"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         experiments.finalize_experiment(tmp_path, report)
 
     assert _workspace_files(tmp_path) == before
@@ -1010,6 +1010,56 @@ def test_experiment_finalize_rejects_missing_pid_status(tmp_path: Path):
     assert "status: completed" not in (tmp_path / "experiment.yaml").read_text()
 
 
+def test_experiment_finalize_requires_stop_reason_before_writing(tmp_path: Path):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    run_manifest = tmp_path / "run_manifest.tsv"
+    run_manifest.write_text("experiment_id\tstep_id\trun_id\tstatus\tstop_reason\n" "unit\ttrain\trun-000\tstopped\t\n")
+    report = tmp_path.parent / "stopped_final.md"
+    report.write_text("# Final\n")
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="missing required stop_reason"):
+        experiments.finalize_experiment(tmp_path, report)
+
+    assert _workspace_files(tmp_path) == before
+    rows = _read_table(run_manifest)
+    rows[0]["stop_reason"] = "manual stop after invalid labels"
+    experiment_io.write_rows_at(run_manifest, rows)
+    target = experiments.finalize_experiment(tmp_path, report)
+    assert target.read_text() == report.read_text()
+    assert "status: completed" in (tmp_path / "experiment.yaml").read_text()
+
+
+def test_experiment_remote_finalize_checks_stop_reason_before_report_read_or_writes(monkeypatch):
+    root = Path("/remote/experiment")
+    calls = []
+
+    def managed_rows(candidate, *, remote):
+        calls.append((candidate, remote))
+        return [
+            {
+                "experiment_id": "unit",
+                "step_id": "train",
+                "run_id": "run-000",
+                "status": "stopped",
+                "stop_reason": "",
+            }
+        ]
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("remote finalize read the report or attempted a write")
+
+    monkeypatch.setattr(experiments, "_managed_rows", managed_rows)
+    monkeypatch.setattr(experiment_io, "read_text_at", unexpected)
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", unexpected)
+    monkeypatch.setattr(experiment_io, "append_event_at", unexpected)
+
+    with pytest.raises(ValueError, match="missing required stop_reason"):
+        experiments.finalize_experiment(root, "/remote/final.md", remote="baichuan3")
+
+    assert calls == [(root, "baichuan3")]
+
+
 def test_experiment_finalize_rejects_workspace_without_managed_runs(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
     assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
@@ -1100,7 +1150,7 @@ def test_experiment_mutation_rejects_experiment_manifest_alias_before_writing(tm
     )
     before = _workspace_files(tmp_path)
 
-    with pytest.raises(ValueError, match="independent regular files"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         experiments.monitor_experiment(tmp_path)
 
     assert observation_calls == []
@@ -1111,20 +1161,22 @@ def test_experiment_remote_mutation_preflights_manifest_before_reading_workspace
     root = Path("/wujidata/remote_run")
     reads = []
 
-    def _reject_alias(root_arg, paths, *, remote=None):
+    def _reject_alias(root_arg, paths, *, remote=None, exact_directory_entries=False):
         assert root_arg == root
         assert paths == [root / "experiment.yaml"]
         assert remote == "baichuan3"
-        raise ValueError("Managed output paths must be independent regular files")
+        assert exact_directory_entries is False
+        raise ValueError("Managed file is missing or aliased")
 
-    monkeypatch.setattr(experiments.exp_io, "validate_managed_output_paths", _reject_alias)
+    monkeypatch.setattr(experiments.exp_io, "path_exists_at", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(experiments.exp_io, "read_managed_files_at", _reject_alias)
     monkeypatch.setattr(
         experiments.exp_io,
         "read_text_at",
         lambda *args, **kwargs: reads.append((args, kwargs)) or "",
     )
 
-    with pytest.raises(ValueError, match="independent regular files"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         experiments.monitor_experiment(root, remote="baichuan3")
 
     assert reads == []

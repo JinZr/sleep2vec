@@ -21,6 +21,7 @@ from agent_tools import experiment_io, experiment_workspace, experiments, hparam
 from agent_tools.experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     MANAGED_RUN_PATH_FIELDS,
+    PROCESS_IDENTITY_FIELDS,
     SCHEDULER_BINDING_FIELDS,
     append_event,
     canonical_local_experiment_root,
@@ -160,6 +161,8 @@ def test_registered_step_is_extended_by_plan_and_allows_dry_run_launch(tmp_path:
     assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(experiment_spec)).returncode == 0
     registered = _run("experiment-register-step", "--run-dir", str(tmp_path), "--spec", str(step_spec))
     assert registered.returncode == 0, registered.stderr
+    registered_manifest = yaml.safe_load((tmp_path / "steps" / recipe_payload["step"]["id"] / "step.yaml").read_text())
+    assert registered_manifest["plan_controller"] == "unassigned"
     plan_dir = tmp_path / "plans" / "registered"
     planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert planned.returncode == 0, planned.stderr
@@ -167,14 +170,34 @@ def test_registered_step_is_extended_by_plan_and_allows_dry_run_launch(tmp_path:
     assert launched.returncode == 0, launched.stderr
 
     step_manifest = yaml.safe_load((tmp_path / "steps" / recipe_payload["step"]["id"] / "step.yaml").read_text())
-    assert set(step_manifest) == {"step", "experiment_id", "recipe_path", "plans"}
+    assert set(step_manifest) == {"step", "experiment_id", "plan_controller", "recipe_path", "plans"}
     assert step_manifest["step"]["inputs"] == ["config.yaml"]
     assert step_manifest["step"]["outputs"] == ["reports/ranking.csv"]
     assert step_manifest["experiment_id"] == recipe_payload["experiment"]["id"]
+    assert step_manifest["plan_controller"] == "ordinary"
     assert step_manifest["recipe_path"]
     assert step_manifest["plans"] == [str(plan_dir.resolve())]
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert sum(event["event_type"] == "step_registered" for event in events) == 1
+
+
+def test_ordinary_step_rejects_new_primary_recipe_after_blocked_attempt(tmp_path: Path):
+    blocked_recipe = write_finetune_recipe(tmp_path, include_label=False)
+    blocked_dir = tmp_path / "plans" / "blocked"
+    assert plans.build_plan(recipe_path=blocked_recipe, output_dir=blocked_dir).exit_code == 2
+
+    recipe_payload = yaml.safe_load(blocked_recipe.read_text())
+    recipe_payload["inputs"]["label_name"] = "ahi"
+    successful_recipe = write_yaml(tmp_path / "successful-recipe.yaml", recipe_payload)
+    successful_dir = tmp_path / "plans" / "successful"
+
+    with pytest.raises(ValueError, match="primary recipe cannot change"):
+        plans.build_plan(recipe_path=successful_recipe, output_dir=successful_dir)
+
+    assert not successful_dir.exists()
+    step = yaml.safe_load((tmp_path / "steps" / "unit-finetune" / "step.yaml").read_text())
+    assert step["recipe_path"] == str(blocked_recipe)
+    assert step["plans"] == [str(blocked_dir)]
 
 
 def test_init_plan_and_mutation_share_canonical_absolute_root(tmp_path: Path):
@@ -877,6 +900,55 @@ def test_read_run_manifest_distinguishes_missing_from_valid_header_only(tmp_path
     assert read_run_manifest(tmp_path) == []
 
 
+def test_read_run_manifest_rejects_alias_swapped_after_exists_check(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    manifest = root / "run_manifest.tsv"
+    manifest.write_text("step_id\trun_id\n")
+    outside = tmp_path / "outside.tsv"
+    outside.write_text("experiment_id\tstep_id\trun_id\tstatus\nforeign\tb\trun-999\tcompleted\n")
+    real_exists = experiment_io.path_exists_at
+
+    def exists_then_swap(path, *, remote=None):
+        exists = real_exists(path, remote=remote)
+        if Path(path) == manifest:
+            manifest.unlink()
+            manifest.symlink_to(outside)
+        return exists
+
+    monkeypatch.setattr(experiment_io, "path_exists_at", exists_then_swap)
+
+    with pytest.raises(ValueError, match="missing or aliased"):
+        read_run_manifest(root)
+
+
+def test_remote_run_manifest_uses_managed_single_read(monkeypatch):
+    calls = []
+    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
+
+    def read_managed(root, paths, *, remote=None):
+        calls.append((root, paths, remote))
+        return {
+            "/remote/workspace/run_manifest.tsv": {
+                "text": "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tplanned\n",
+                "sha256": "a" * 64,
+            }
+        }
+
+    monkeypatch.setattr(experiment_io, "read_managed_files_at", read_managed)
+
+    rows = read_run_manifest("/remote/workspace", remote="unit-host")
+
+    assert rows[0]["run_id"] == "run-000"
+    assert calls == [
+        (
+            Path("/remote/workspace"),
+            [Path("/remote/workspace/run_manifest.tsv")],
+            "unit-host",
+        )
+    ]
+
+
 @pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
 def test_read_run_manifest_rejects_aliased_canonical_table(tmp_path: Path, alias_kind: str):
     outside = tmp_path / "outside.tsv"
@@ -887,7 +959,7 @@ def test_read_run_manifest_rejects_aliased_canonical_table(tmp_path: Path, alias
     else:
         manifest.hardlink_to(outside)
 
-    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
+    with pytest.raises(ValueError, match="missing or aliased"):
         read_run_manifest(tmp_path)
 
 
@@ -900,6 +972,7 @@ def test_read_step_manifest_rejects_invalid_phase(tmp_path: Path):
         "  phase: invalid\n"
         "  purpose: Train the model.\n"
         "experiment_id: unit\n"
+        "plan_controller: unassigned\n"
         "recipe_path: ''\n"
         "plans: []\n"
     )
@@ -1492,7 +1565,8 @@ def test_merge_run_manifest_rejects_frozen_field_changes_before_writing(
     changed = str(tmp_path / "changed") if field in MANAGED_RUN_PATH_FIELDS and incoming_value else incoming_value
     workspace_experiment_id = original if field == "experiment_id" else identity["experiment_id"]
     (tmp_path / "experiment.yaml").write_text(f"experiment:\n  id: {workspace_experiment_id}\n")
-    initial = {**identity, field: original, "status": "planned"}
+    status = "launched" if field in PROCESS_IDENTITY_FIELDS else "planned"
+    initial = {**identity, field: original, "status": status}
     if field in EXECUTION_IDENTITY_FIELDS and field != "target":
         initial["target"] = "local"
     merge_run_manifest(tmp_path, [initial])
@@ -1687,6 +1761,7 @@ def test_step_manifest_merge_preserves_registered_fields_and_appends_plans():
             "outputs": ["ranking.csv"],
         },
         "experiment_id": "experiment",
+        "plan_controller": "ordinary",
         "recipe_path": "recipes/first.yaml",
         "plans": ["/workspace/plan-a"],
     }
@@ -1696,6 +1771,7 @@ def test_step_manifest_merge_preserves_registered_fields_and_appends_plans():
         {
             "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
             "experiment_id": "experiment",
+            "plan_controller": "ordinary",
             "recipe_path": "recipes/second.yaml",
             "plans": ["/workspace/plan-a", "/workspace/plan-b"],
         },
@@ -1711,6 +1787,7 @@ def test_concurrent_step_manifest_commits_preserve_both_plans(tmp_path: Path, mo
     base_payload = {
         "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
         "experiment_id": "experiment",
+        "plan_controller": "ordinary",
         "recipe_path": "/workspace/recipe.yaml",
         "plans": ["/workspace/plan-base"],
     }
@@ -1740,6 +1817,7 @@ def test_concurrent_step_manifest_commits_preserve_both_plans(tmp_path: Path, mo
                 {
                     "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
                     "experiment_id": "experiment",
+                    "plan_controller": "ordinary",
                     "recipe_path": "/workspace/recipe.yaml",
                     "plans": [plan],
                 },
@@ -1766,12 +1844,87 @@ def test_step_manifest_merge_rejects_metadata_drift():
     existing = {
         "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
         "experiment_id": "experiment",
+        "plan_controller": "unassigned",
         "recipe_path": "",
         "plans": [],
     }
 
     with pytest.raises(ValueError, match="phase"):
         merge_step_manifest(existing, {"step": {"phase": "analyze"}})
+
+
+@pytest.mark.parametrize("controller", ["ordinary", "adaptive", "pipeline"])
+def test_step_manifest_plan_controller_binds_once(controller: str):
+    existing = {
+        "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
+        "experiment_id": "experiment",
+        "plan_controller": "unassigned",
+        "recipe_path": "",
+        "plans": [],
+    }
+    incoming = {
+        "step": existing["step"],
+        "experiment_id": "experiment",
+        "plan_controller": controller,
+        "recipe_path": "/workspace/recipe.yaml",
+        "plans": ["/workspace/plan"],
+    }
+
+    bound = merge_step_manifest(existing, incoming)
+
+    assert bound["plan_controller"] == controller
+    conflicting = ({"ordinary", "adaptive", "pipeline"} - {controller}).pop()
+    for replacement in ("unassigned", conflicting):
+        with pytest.raises(ValueError, match="plan_controller differs"):
+            merge_step_manifest(bound, {**incoming, "plan_controller": replacement})
+
+
+@pytest.mark.parametrize("field", ["recipe_path", "plans"])
+def test_unassigned_step_manifest_rejects_registered_plan_artifacts(field: str):
+    payload = {
+        "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
+        "experiment_id": "experiment",
+        "plan_controller": "unassigned",
+        "recipe_path": "",
+        "plans": [],
+    }
+    payload[field] = "/workspace/recipe.yaml" if field == "recipe_path" else ["/workspace/plan"]
+
+    with pytest.raises(ValueError, match="Unassigned step manifests"):
+        merge_step_manifest({}, payload)
+
+
+def test_step_manifest_commit_rejects_missing_controller_without_writing(tmp_path: Path):
+    step = {"id": "train", "phase": "train", "purpose": "Tune the model."}
+    step_dir = tmp_path / "steps" / "train"
+    step_dir.mkdir(parents=True)
+    step_path = step_dir / "step.yaml"
+    step_path.write_text(
+        yaml.safe_dump(
+            {
+                "step": step,
+                "experiment_id": "experiment",
+                "recipe_path": "",
+                "plans": [],
+            },
+            sort_keys=False,
+        )
+    )
+    before = step_path.read_bytes()
+
+    with pytest.raises(ValueError, match="incomplete canonical envelope"):
+        commit_step_manifest(
+            tmp_path,
+            {
+                "step": step,
+                "experiment_id": "experiment",
+                "plan_controller": "ordinary",
+                "recipe_path": "/workspace/recipe.yaml",
+                "plans": ["/workspace/plan"],
+            },
+        )
+
+    assert step_path.read_bytes() == before
 
 
 @pytest.mark.parametrize(

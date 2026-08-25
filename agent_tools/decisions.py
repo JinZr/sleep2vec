@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import decision_paths as paths, plan_rendering as rendering, schema_map
+from . import decision_paths as paths, decision_rules as task_rules, schema_map
 from .adapters import SUPPORTED_TASKS, all_adapters, get_adapter
 from .decision_models import (
     DecisionIssue,
@@ -14,7 +14,6 @@ from .decision_models import (
     question_for,
 )
 from .experiment_workspace import experiment_metadata_issues
-from .models import SUPPORTED_VARIANTS, task_requires_variant
 
 __all__ = [
     "DecisionIssue",
@@ -36,40 +35,26 @@ def consultation_contract_issues(
     *,
     source_layer: str,
 ) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    runtime_value = recipe.get("runtime")
-    if "runtime" in recipe:
-        if not isinstance(runtime_value, dict):
-            issues.append(_contract_issue("runtime", "runtime must be a mapping.", runtime_value, source_layer))
-        else:
-            allowed_runtime = _runtime_fields_for_task(task, recipe.get("variant"))
-            for field in sorted(set(runtime_value) - allowed_runtime):
-                issues.append(
-                    _contract_issue(
-                        f"runtime.{field}",
-                        f"Unknown runtime field for task={task}: {field}.",
-                        runtime_value[field],
-                        source_layer,
-                    )
-                )
-            if "avg_ckpts" in runtime_value and (
-                type(runtime_value["avg_ckpts"]) is not int or runtime_value["avg_ckpts"] < 1
-            ):
-                issues.append(
-                    _contract_issue(
-                        "runtime.avg_ckpts",
-                        "runtime.avg_ckpts must be a positive integer.",
-                        runtime_value["avg_ckpts"],
-                        source_layer,
-                    )
-                )
-
+    issues = task_rules.runtime_structure_issues(task, recipe, source_layer=source_layer)
     decisions_value = recipe.get("decisions")
-    if "decisions" not in recipe:
-        return issues
-    if not isinstance(decisions_value, dict):
+    if "decisions" in recipe and not isinstance(decisions_value, dict):
         issues.append(_contract_issue("decisions", "decisions must be a mapping.", decisions_value, source_layer))
         return issues
+    issues.extend(decision_entry_contract_issues(task, recipe, policy, source_layer=source_layer))
+    return issues
+
+
+def decision_entry_contract_issues(
+    task: str | None,
+    recipe: dict,
+    policy: dict,
+    *,
+    source_layer: str,
+) -> list[DecisionIssue]:
+    decisions_value = recipe.get("decisions")
+    if not isinstance(decisions_value, dict):
+        return []
+    issues = []
     allowed_decisions = _decision_fields_for_task(task, policy)
     for field, value in decisions_value.items():
         if field not in allowed_decisions:
@@ -94,18 +79,6 @@ def consultation_contract_issues(
                 )
             )
     return issues
-
-
-def _runtime_fields_for_task(task: str | None, variant: Any) -> frozenset[str]:
-    adapter = get_adapter(task)
-    if adapter is not None:
-        return adapter.runtime_fields(variant)
-    if task is not None:
-        return frozenset()
-    union = rendering.FINETUNE_RUNTIME_FIELDS | rendering.INFER_RUNTIME_FIELDS
-    for registered in all_adapters():
-        union = union | registered.runtime_fields(variant)
-    return union
 
 
 def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
@@ -193,38 +166,7 @@ def evaluate_consultation_gates(
         )
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=decisions)
     task_adapter = get_adapter(str(task_value))
-    variant = recipe.get("variant")
-    if task_requires_variant(str(task_value)):
-        if variant not in SUPPORTED_VARIANTS:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    "variant",
-                    "Recipe variant is missing or unsupported.",
-                    "Which variant should this task use: sleep2vec, sleep2vec2, sleep2expert, or sex_age_baseline?",
-                    {"variant": variant, "allowed_values": list(SUPPORTED_VARIANTS)},
-                )
-            )
-    elif variant not in (None, ""):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "variant",
-                f"task={task_value} must omit variant or set it to null; {task_value} is not a model variant.",
-                None,
-                {"variant": variant},
-            )
-        )
-    if task_adapter is not None and isinstance(variant, str) and variant in task_adapter.unsupported_variants:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "variant",
-                f"{variant} does not support {task_value}.",
-                None,
-                {"variant": variant, "task": task_value},
-            )
-        )
+    issues.extend(task_rules.variant_structure_issues(str(task_value), recipe.get("variant"), source_layer="effective"))
 
     issues.extend(consultation_contract_issues(str(task_value), recipe, policy, source_layer="effective"))
 
@@ -507,7 +449,9 @@ def _base_task_issues(
     base_gate = {key: value for key, value in recipe.items() if not key.startswith("_")}
     base_gate["task"] = base_task
     if isinstance(base_gate.get("runtime"), dict):
-        base_runtime_fields = _runtime_fields_for_task(base_task, recipe.get("variant"))
+        base_adapter = get_adapter(base_task)
+        assert base_adapter is not None
+        base_runtime_fields = base_adapter.runtime_fields(recipe.get("variant"))
         base_gate["runtime"] = {
             field: value for field, value in base_gate["runtime"].items() if field in base_runtime_fields
         }

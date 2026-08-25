@@ -486,6 +486,9 @@ def test_agent_proposal_waits_for_terminal_round_then_writes_deterministic_snaps
     workflow_dir = tmp_path / "workflow"
     result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
+    step_manifests = list((tmp_path / "steps").glob("*/step.yaml"))
+    assert len(step_manifests) == 1
+    assert yaml.safe_load(step_manifests[0].read_text())["plan_controller"] == "adaptive"
 
     assert adaptive_hparam.adaptive_step(workflow_dir) is None
     assert not (workflow_dir / "adaptive" / "proposal_inputs").exists()
@@ -2667,7 +2670,7 @@ def test_adaptive_suggest_preflights_outputs_before_writing(tmp_path: Path):
     manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
     events_before = (tmp_path / "events.jsonl").read_bytes()
 
-    with pytest.raises(ValueError, match="Managed output"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         adaptive_hparam.suggest_next_round(workflow_dir)
 
     assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
@@ -2864,7 +2867,7 @@ def test_supersede_preflights_round_mirrors_before_canonical_commit(tmp_path: Pa
     manifest_path = tmp_path / "run_manifest.tsv"
     before = manifest_path.read_bytes()
 
-    with pytest.raises(ValueError, match="Managed output"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         adaptive_hparam._supersede_pending_runs(workflow_dir, round_dir)
 
     assert manifest_path.read_bytes() == before
@@ -2919,6 +2922,7 @@ def test_adaptive_step_execute_resolves_relative_base_recipe_for_next_round(tmp_
         == "superseded"
     )
     assert launched == [(workflow_dir / "adaptive" / "rounds" / "round_001", False)]
+    assert experiments.experiment_status(tmp_path)["summary"]["state"] == "in_progress"
 
 
 def test_adaptive_step_preflights_next_round_before_stop_or_supersede(tmp_path: Path, monkeypatch):

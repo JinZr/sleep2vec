@@ -43,18 +43,20 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Model-derived AHI decoding | `decode_ahi_logits` in [`sleep2stat/analyzers/model_downstream.py`](../../sleep2stat/analyzers/model_downstream.py) | reducers or plotting |
 | Analysis bundle output | `AnalysisBundleWriter` in [`sleep2stat/io/writers.py`](../../sleep2stat/io/writers.py) | analyzers or CLI branches |
 | Analysis plotting | `plot_record`, `plot_cohort` in [`sleep2stat/plot.py`](../../sleep2stat/plot.py) | scripts that inspect analyzer internals |
+| Static recipe structure | `recipe_structure_issues` in [`agent_tools/decision_rules.py`](../../agent_tools/decision_rules.py) for registered task/variant and section closure | planner- or status-local copies of recipe structure validation |
+| Frozen plan semantics | [`agent_tools/plan_contract.py`](../../agent_tools/plan_contract.py), `compile_plan_contract` adapter hooks, and hparam compilers in [`agent_tools/plan_hparam.py`](../../agent_tools/plan_hparam.py) for creator-host context, recipe-derived run matrices, configs, complete executable scripts, and final-evaluation requirements | writer/status copies, reader-host defaults, or validation derived from mutable manifests |
 | Agent consultation | `evaluate_consultation_gates` through [`agent_tools/decisions.py`](../../agent_tools/decisions.py) | command renderers |
 | Agent context and plan publication | `build_context`, `build_plan`, `preflight_plan` through [`agent_tools/plans.py`](../../agent_tools/plans.py); `plan_tree_sha256` in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) for deterministic staged-plan comparison | skills, adapters, or adaptive/pipeline callers |
 | Agent task extension | adapter protocol/registry in [`agent_tools/adapters/`](../../agent_tools/adapters/) | kernel task-name branches |
-| Recipe loading | [`agent_tools/recipes.py`](../../agent_tools/recipes.py) | individual commands |
+| Recipe loading and layer merge | `load_recipe_with_base` and `merge_recipe_layers` in [`agent_tools/recipes.py`](../../agent_tools/recipes.py) | individual commands or alternate base/local merge logic |
 | Managed workspace identity | canonical read/merge/CAS owners in [`agent_tools/experiment_workspace.py`](../../agent_tools/experiment_workspace.py) | hparam, planning, or monitoring-local tables and manifest writers |
-| Local/SSH managed I/O | [`agent_tools/experiment_io.py`](../../agent_tools/experiment_io.py) | each experiment command |
+| Local/SSH managed I/O | [`agent_tools/experiment_io.py`](../../agent_tools/experiment_io.py), including strict read-only managed-directory and control-bundle reads | each experiment command |
 | Managed direct process identity and stopping | [`agent_tools/run_evidence.py`](../../agent_tools/run_evidence.py) through [`agent_tools/hparam.py`](../../agent_tools/hparam.py) | PID-only checks or caller-local signals |
 | Managed scheduler lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py) with Slurm primitives in [`agent_tools/slurm.py`](../../agent_tools/slurm.py) | hparam- or pipeline-local capacity, scheduler commands, observation, reconciliation, snapshot, start, or stop implementations |
-| Frozen hparam plan reads | `read_hparam_plan` in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) | launcher/postprocess-specific parsing |
+| Registered plan reads | `is_registered_blocked_plan` for exact local/SSH blocked-plan envelopes, `read_registered_plan` for materialized control bundles reusing the static recipe structure owner, and `read_hparam_plan` for stronger local launch-time validation in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) | status, launcher, or postprocess-specific parsing |
 | Public hparam operations | [`agent_tools/hparam.py`](../../agent_tools/hparam.py) facade with responsibility modules behind it | direct private cross-module imports |
 | Adaptive agent proposal validation | [`agent_tools/adaptive_proposals.py`](../../agent_tools/adaptive_proposals.py) for canonical snapshots, parameter envelopes, and submission validation; [`agent_tools/adaptive_hparam.py`](../../agent_tools/adaptive_hparam.py) for orchestration | provider callbacks, latest-digest lookup during apply, or lifecycle mutation in the proposal kernel |
-| Public experiment operations | [`agent_tools/experiments.py`](../../agent_tools/experiments.py) facade with I/O/tracking owners behind it | skills or CLI handlers |
+| Public experiment operations | [`agent_tools/experiments.py`](../../agent_tools/experiments.py) facade, including canonical-only `experiment_status`, with I/O/tracking owners behind it | skills or CLI handlers |
 | Resumable external evaluation | [`agent_tools/experiment_pipeline.py`](../../agent_tools/experiment_pipeline.py) through the `experiments` facade | shell loops that wait for training, select checkpoints, launch inference, or finalize |
 | Index/config/preset summaries | [`agent_tools/domain/`](../../agent_tools/domain/) through stable top-level facades | shell parsing templates |
 | MoE routing and experts | [`sleep2expert/backbones/roformer/moe.py`](../../sleep2expert/backbones/roformer/moe.py) | trainer-local routing branches |
@@ -122,6 +124,9 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Treat `decisions.py`, `plans.py`, `hparam.py`, and `experiments.py` as public facades.
 - Extend tasks through adapters and declarations; keep the reusable kernel free of new sleep-specific branches.
 - Run consultation before runnable plans and stop on `NEEDS_USER_INPUT`.
+- Keep `experiment-status` on the static frozen-recipe and canonical-manifest read-set; it must not rerun consultation or runtime/input probes.
+- Recompile registered plan semantics through `plan_contract` and the task adapter, including recipe-owned input snapshots; agreement among edited manifests and scripts does not replace agreement with the frozen recipe.
+- Reuse `experiment_workspace.merge_step_manifest` for the one-way `plan_controller` binding; `step.yaml` is the only ordinary/adaptive/pipeline classification owner.
 - Treat `run_manifest.tsv` as authoritative managed state; mirrors and reports are projections.
 - Reuse `hparam_selection.select_hparam_candidates` for recipe-frozen hparam ranking. Test-selected plans consume complete per-epoch evidence from terminal run manifests, keep the many-checkpoint audit plan-local, and project only each run's best checkpoint into workspace lifecycle reports.
 - Reuse `experiments.append_experiment_note` and the workspace research-log owner for semantic notes; do not append Markdown directly or infer lifecycle state from narrative.

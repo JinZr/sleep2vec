@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 
 import pytest
 import yaml
 
+from agent_tools import experiments, plan_contract
 from agent_tools.experiment_workspace import file_sha256, read_run_manifest
+from agent_tools.manifests import write_rows
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import build_plan
 
@@ -132,6 +135,58 @@ def test_launch_rejects_index_changed_after_planning(tmp_path: Path):
     assert "inputs.data_index[0]" in result.stderr
     assert not Path(payload["artifacts"]["embedding_dir"]).exists()
     assert read_run_manifest(Path(payload["experiment"]["root"]))[0]["status"] == "planned"
+
+
+def test_status_rejects_frozen_input_snapshot_omission(tmp_path: Path):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    assert build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"]["input_snapshots"] = [
+        snapshot for snapshot in plan["recipe"]["input_snapshots"] if snapshot["field"] != "inputs.ckpt_path"
+    ]
+    plan["runs"][0]["input_snapshots"] = [
+        snapshot for snapshot in plan["runs"][0]["input_snapshots"] if snapshot["field"] != "inputs.ckpt_path"
+    ]
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text())
+    resolved["input_snapshots"] = plan["recipe"]["input_snapshots"]
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+
+    root = Path(payload["experiment"]["root"])
+    rows = read_run_manifest(root)
+    rows[0]["input_snapshots"] = plan["runs"][0]["input_snapshots"]
+    write_rows(root / "run_manifest.tsv", rows)
+
+    with pytest.raises(ValueError, match="input snapshots differ from required recipe inputs"):
+        experiments.experiment_status(root)
+
+
+def test_status_does_not_rehash_frozen_external_inputs(tmp_path: Path):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    assert build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    Path(payload["inputs"]["ckpt_path"]).write_bytes(b"changed after planning")
+
+    snapshot = experiments.experiment_status(Path(payload["experiment"]["root"]))
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+
+
+def test_status_recompiles_relative_inputs_with_frozen_creator_root(tmp_path: Path, monkeypatch):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    payload["inputs"]["ckpt_path"] = os.path.relpath(tmp_path / "model.ckpt", REPO_ROOT)
+    payload["inputs"]["data_index"] = [os.path.relpath(tmp_path / "index.csv", REPO_ROOT)]
+    _rewrite(recipe, payload)
+    assert build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+
+    monkeypatch.setattr(plan_contract, "REPO_ROOT", Path("/controller/repo"))
+
+    snapshot = experiments.experiment_status(Path(payload["experiment"]["root"]))
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
 
 
 def test_plan_rejects_sex_age_baseline_variant(tmp_path: Path):

@@ -10,8 +10,8 @@ from agent_tool_test_helpers import write_finetune_recipe
 import pytest
 import yaml
 
-from agent_tools import experiment_pipeline, managed_scheduler, plans
-from agent_tools.experiment_workspace import file_sha256, read_run_manifest
+from agent_tools import experiment_pipeline, experiments, managed_scheduler, plan_contract, plans
+from agent_tools.experiment_workspace import commit_step_manifest, file_sha256, read_run_manifest
 from agent_tools.manifests import write_rows
 
 
@@ -249,11 +249,13 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
         "_source_config_bytes": config_bytes,
         "_source_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
     }
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     command = "/runtime/python -m sleep2vec2.infer --config frozen.yaml"
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, bound_config, report))
     monkeypatch.setattr(plans, "config_summary", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plans" / "attempt-001"
     staging_dir = workspace / "plans" / ".attempt-001.staging"
 
@@ -323,8 +325,12 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     assert snapshot["required_options"] == ["--config"]
 
 
-@pytest.mark.parametrize("tamper", [False, True])
-def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path, tamper: bool):
+@pytest.mark.parametrize("outcome", ["success", "tamper", "interrupt_after_commit"])
+def test_uncommitted_attempt_plan_is_deterministically_validated(
+    tmp_path: Path,
+    monkeypatch,
+    outcome: str,
+):
     root = tmp_path / "workspace"
     root.mkdir()
     experiment = {
@@ -366,6 +372,16 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path,
     recipe_path.parent.mkdir(parents=True)
     recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     staging_dir = plan_dir.parent / ".attempt-001.crash-window"
+    commit_step_manifest(
+        root,
+        {
+            "step": spec["pipeline"]["step"],
+            "experiment_id": experiment["id"],
+            "plan_controller": "pipeline",
+            "recipe_path": "",
+            "plans": [],
+        },
+    )
 
     report = plans.build_plan(
         recipe_path=recipe_path,
@@ -373,12 +389,13 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path,
         unlock_final_test=True,
         staging_dir=staging_dir,
         defer_commit=True,
+        plan_controller="pipeline",
     )
     assert report.exit_code == 0
     plan_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir.replace(plan_dir)
     step_manifest = root / "steps" / spec["pipeline"]["step"]["id"] / "step.yaml"
-    assert not step_manifest.exists()
+    assert yaml.safe_load(step_manifest.read_text())["plans"] == []
     assert read_run_manifest(root) == []
     frozen_plan = json.loads((plan_dir / "plan.json").read_text())
     frozen_identity = {
@@ -396,7 +413,7 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path,
     helper_index = launch_lines.index("_agent_commit_status() {")
     assert launch_lines[helper_index + 1].startswith(f"  {spec['runtime']['python']} -c ")
 
-    if tamper:
+    if outcome == "tamper":
         (plan_dir / "plan.md").write_text("tampered\n")
         with pytest.raises(ValueError, match="differs from deterministic regeneration"):
             experiment_pipeline._materialize_attempt(
@@ -410,7 +427,45 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path,
                 result_root=result_root,
             )
         assert read_run_manifest(root) == []
-        assert not step_manifest.exists()
+        assert yaml.safe_load(step_manifest.read_text())["plans"] == []
+        return
+
+    if outcome == "interrupt_after_commit":
+        real_merge = experiment_pipeline.merge_run_manifest
+
+        def merge_then_interrupt(*args, **kwargs):
+            real_merge(*args, **kwargs)
+            raise RuntimeError("simulated interruption after canonical commit")
+
+        monkeypatch.setattr(experiment_pipeline, "merge_run_manifest", merge_then_interrupt)
+        with pytest.raises(RuntimeError, match="simulated interruption"):
+            experiment_pipeline._materialize_attempt(
+                root,
+                spec,
+                spec["jobs"][0],
+                selection,
+                1,
+                recipe_path=recipe_path,
+                plan_dir=plan_dir,
+                result_root=result_root,
+            )
+
+        canonical = read_run_manifest(root)
+        assert canonical[0]["pipeline_id"] == "external-v1"
+        assert canonical[0]["terminal_status_owner"] == "script"
+        workspace = yaml.safe_load((root / "experiment.yaml").read_text())
+        workspace["experiment"].pop("status")
+        (root / "experiment.yaml").write_text(yaml.safe_dump(workspace, sort_keys=False))
+        snapshot = experiments.experiment_status(root)
+        assert snapshot["decision"]["recommended_next"] is None
+        assert snapshot["decision"]["other_legal_actions"] == []
+        assert snapshot["decision"]["blocked_actions"] == ["finalize", "pipeline_advance"]
+
+        write_rows(root / "run_manifest.tsv", [{**canonical[0], "status": "failed"}])
+        terminal = experiments.experiment_status(root)
+        assert terminal["decision"]["recommended_next"] is None
+        assert terminal["decision"]["other_legal_actions"] == []
+        assert terminal["decision"]["blocked_actions"] == ["finalize", "pipeline_advance"]
         return
 
     row = experiment_pipeline._materialize_attempt(
@@ -429,9 +484,35 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(tmp_path: Path,
     assert row["job_id"] == "age-hsp-i2-psg"
     assert canonical[0]["pipeline_id"] == "external-v1"
     assert canonical[0]["terminal_status_owner"] == "script"
-    assert yaml.safe_load(step_manifest.read_text())["plans"] == [str(plan_dir.resolve())]
+    step_payload = yaml.safe_load(step_manifest.read_text())
+    assert step_payload["plan_controller"] == "pipeline"
+    assert step_payload["plans"] == [str(plan_dir.resolve())]
     assert launch_path.read_bytes() == launch_before
     assert not list(plan_dir.parent.glob(".attempt-001.*.staging"))
+
+    ownership_fields = {"pipeline_id", "job_id", "attempt", "result_root", "terminal_status_owner"}
+    write_rows(
+        root / "run_manifest.tsv",
+        [{key: value for key, value in canonical[0].items() if key not in ownership_fields}],
+    )
+
+    experiment_pipeline._materialize_attempt(
+        root,
+        spec,
+        spec["jobs"][0],
+        selection,
+        1,
+        recipe_path=recipe_path,
+        plan_dir=plan_dir,
+        result_root=result_root,
+    )
+
+    repaired = read_run_manifest(root)[0]
+    assert repaired["pipeline_id"] == "external-v1"
+    assert repaired["job_id"] == "age-hsp-i2-psg"
+    assert repaired["attempt"] == "1"
+    assert repaired["result_root"] == str(result_root)
+    assert repaired["terminal_status_owner"] == "script"
 
 
 def test_attempt_config_drift_fails_before_plan_publication(tmp_path: Path):

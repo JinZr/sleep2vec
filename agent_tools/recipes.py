@@ -38,7 +38,7 @@ def load_recipe_with_base(path: str | Path) -> dict[str, Any]:
     if not isinstance(base_path, (str, Path)):
         raise ValueError("base_recipe must be a path string.")
     base = load_recipe(_resolve_base_recipe_path(base_path, recipe_path))
-    merged = _deep_merge(base, recipe)
+    merged = merge_recipe_layers(base, recipe)
     merged["_base_recipe"] = base
     merged["_local_recipe"] = recipe
     merged["_recipe_path"] = recipe["_recipe_path"]
@@ -62,13 +62,13 @@ def load_consultation_policy() -> dict[str, Any]:
     return load_yaml_file("agent_policies/consultation_policy.yaml")
 
 
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+def merge_recipe_layers(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in override.items():
         if key.startswith("_"):
             continue
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
+            merged[key] = merge_recipe_layers(merged[key], value)
         else:
             merged[key] = value
     return merged

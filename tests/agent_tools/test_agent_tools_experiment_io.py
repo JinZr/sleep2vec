@@ -1,6 +1,7 @@
 import errno
 import fcntl
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -72,6 +73,115 @@ def test_remote_read_preserves_exact_line_endings(monkeypatch):
     )
 
     assert experiment_io.read_text_at("/remote/file", remote="host") == "a\r\nb\r\n"
+
+
+def test_local_managed_control_reads_reject_aliases_and_non_directory_entries(tmp_path):
+    root = tmp_path / "workspace"
+    steps = root / "steps"
+    step = steps / "train"
+    step.mkdir(parents=True)
+    manifest = step / "step.yaml"
+    manifest.write_text("step: train\n")
+
+    assert experiment_io.list_managed_subdirectories_at(root, steps) == ["train"]
+    assert experiment_io.read_managed_files_at(root, [manifest])[str(manifest)]["text"] == "step: train\n"
+
+    manifest.rename(step / "step.real.yaml")
+    manifest.symlink_to("step.real.yaml")
+    with pytest.raises(ValueError, match="missing or aliased"):
+        experiment_io.read_managed_files_at(root, [manifest])
+
+    (steps / "unexpected.txt").write_text("unexpected\n")
+    with pytest.raises(ValueError, match="non-directory entry"):
+        experiment_io.list_managed_subdirectories_at(root, steps)
+
+
+def test_managed_control_reads_reject_dot_dot_before_resolution(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+
+    with pytest.raises(ValueError, match="must not contain '..'"):
+        experiment_io.read_managed_files_at(root, [root / "missing" / ".." / "file"])
+
+
+def test_remote_managed_control_reads_use_one_read_only_probe(monkeypatch):
+    calls = []
+    payload = {"/remote/workspace/step.yaml": {"text": "step: train\n", "sha256": "a" * 64}}
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
+
+    result = experiment_io.read_managed_files_at(
+        "/remote/workspace",
+        ["/remote/workspace/step.yaml"],
+        remote="host",
+    )
+
+    assert result == payload
+    assert len(calls) == 1
+    assert 'open(target, "rb")' in calls[0][0][-1]
+    assert "mkdir" not in calls[0][0][-1]
+
+
+def test_local_managed_control_bundle_requires_exact_directory_entries(tmp_path):
+    root = tmp_path / "workspace"
+    bundle = root / "bundle"
+    bundle.mkdir(parents=True)
+    paths = [bundle / "questions.json", bundle / "questions.md", bundle / "plan.blocked.md"]
+    for path in paths:
+        path.write_text(f"{path.name}\n")
+
+    experiment_io.read_managed_files_at(root, paths, exact_directory_entries=True)
+    (bundle / "run.sh").write_text("partial launch\n")
+
+    with pytest.raises(ValueError, match="directory entries differ"):
+        experiment_io.read_managed_files_at(root, paths, exact_directory_entries=True)
+
+
+def test_remote_exact_managed_control_bundle_uses_one_read_only_probe(monkeypatch):
+    calls = []
+    paths = [
+        "/remote/workspace/plan/questions.json",
+        "/remote/workspace/plan/questions.md",
+        "/remote/workspace/plan/plan.blocked.md",
+    ]
+    payload = {path: {"text": "blocked\n", "sha256": "a" * 64} for path in paths}
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
+
+    result = experiment_io.read_managed_files_at(
+        "/remote/workspace",
+        paths,
+        remote="host",
+        exact_directory_entries=True,
+    )
+
+    assert result == payload
+    assert len(calls) == 1
+    assert "os.listdir(parent)" in calls[0][0][-1]
+    assert "mkdir" not in calls[0][0][-1]
+
+
+def test_remote_managed_control_read_fails_closed_on_transport_error(monkeypatch):
+    monkeypatch.setattr(
+        experiment_io.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 255, "", "transport failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="SSH managed-file read failed"):
+        experiment_io.read_managed_files_at(
+            "/remote/workspace",
+            ["/remote/workspace/step.yaml"],
+            remote="host",
+        )
 
 
 def test_local_conditional_replace_requires_expected_digest(tmp_path: Path):

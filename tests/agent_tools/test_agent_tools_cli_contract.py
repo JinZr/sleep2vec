@@ -31,6 +31,7 @@ SUBCOMMANDS = {
     "experiment-wandb-sync",
     "experiment-index-checkpoints",
     "experiment-monitor",
+    "experiment-status",
     "experiment-rank",
     "hparam-stop",
     "hparam-select",
@@ -76,11 +77,22 @@ def _actions(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
     return {action.dest: action for action in parser._actions if action.option_strings}
 
 
-def test_cli_has_exactly_34_subcommands():
+def test_cli_has_exactly_35_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == SUBCOMMANDS
-    assert len(subcommands) == 34
+    assert len(subcommands) == 35
+
+
+def test_experiment_status_cli_contract():
+    parser, subcommands = _parser_contract()
+    actions = _actions(subcommands["experiment-status"])
+    args = parser.parse_args(["experiment-status", "--run-dir", "experiment"])
+
+    assert {name for name, action in actions.items() if action.required} == {"run_dir"}
+    assert set(actions) - {"help"} == {"run_dir", "remote", "json"}
+    assert args.remote is None
+    assert args.json is False
 
 
 def test_experiment_note_cli_contract():

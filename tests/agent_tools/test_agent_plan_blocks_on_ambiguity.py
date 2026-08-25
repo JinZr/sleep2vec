@@ -12,7 +12,7 @@ from agent_tool_test_helpers import survival_config_payload, write_finetune_reci
 import pytest
 import yaml
 
-from agent_tools import configs, experiments, plan_context, plan_hparam, plans
+from agent_tools import configs, experiments, plan_context, plan_contract, plan_hparam, plans
 from agent_tools.adapters.hparam_tune import HparamTuneAdapter
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
@@ -2123,11 +2123,11 @@ def test_finetune_plan_freezes_config_bytes_validated_before_workspace_setup(tmp
     validated_bytes = config.read_bytes()
     real_ensure_workspace = plans.ensure_experiment_workspace
 
-    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path, *, register_step: bool = True):
+    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path, **workspace_options):
         payload = yaml.safe_load(config.read_text())
         payload["finetune"]["task"].update({"monitor": "val_loss", "monitor_mod": "min"})
         config.write_text(yaml.safe_dump(payload, sort_keys=False))
-        return real_ensure_workspace(recipe_payload, output_dir, register_step=register_step)
+        return real_ensure_workspace(recipe_payload, output_dir, **workspace_options)
 
     monkeypatch.setattr(plans, "ensure_experiment_workspace", mutate_source_after_preflight)
     output_dir = tmp_path / "plan"
@@ -2174,11 +2174,11 @@ def test_hparam_plan_materializes_config_validated_before_workspace_setup(tmp_pa
     validated_bytes = config.read_bytes()
     real_ensure_workspace = plans.ensure_experiment_workspace
 
-    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path, *, register_step: bool = True):
+    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path, **workspace_options):
         payload = yaml.safe_load(config.read_text())
         payload["finetune"]["task"].update({"monitor": "val_loss", "monitor_mod": "min"})
         config.write_text(yaml.safe_dump(payload, sort_keys=False))
-        return real_ensure_workspace(recipe_payload, output_dir, register_step=register_step)
+        return real_ensure_workspace(recipe_payload, output_dir, **workspace_options)
 
     monkeypatch.setattr(plans, "ensure_experiment_workspace", mutate_source_after_preflight)
     output_dir = tmp_path / "plan"
@@ -3938,6 +3938,7 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
         "purpose": "Exercise managed non-hparam lifecycle.",
     }
     recipe["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     marker = tmp_path / "runtime.txt"
@@ -3949,6 +3950,7 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
     )
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", runtime_code, workspace, marker))
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
 
     assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
@@ -3985,10 +3987,12 @@ def test_infer_plan_uses_frozen_runtime_python_for_workload_and_lifecycle(tmp_pa
         "python": runtime_python,
         "runtime_commit": _RUNTIME_COMMIT,
     }
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     command = f"{runtime_python} -m sleep2vec.infer --unit-runtime-identity"
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
 
     assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
@@ -4021,11 +4025,13 @@ def test_infer_runtime_commit_mismatch_fails_before_running_or_payload(tmp_path:
         "python": sys.executable,
         "runtime_commit": "0" * 40,
     }
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     payload_code = "from pathlib import Path; Path(__import__('sys').argv[1]).write_text('ran')"
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", payload_code, marker))
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
 
     assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
@@ -4043,10 +4049,12 @@ def test_non_hparam_run_script_records_failure_and_preserves_runtime_exit_code(t
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
     recipe["experiment"]["root"] = str(workspace)
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", "import sys; sys.exit(7)"))
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
     plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
 
@@ -4062,11 +4070,13 @@ def test_non_hparam_run_script_propagates_terminal_commit_failure(tmp_path: Path
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
     recipe["experiment"]["root"] = str(workspace)
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     runtime_code = "import sys; from pathlib import Path; (Path(sys.argv[1]) / 'run_manifest.tsv').unlink()"
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", runtime_code, workspace))
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
     plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
 
@@ -4082,6 +4092,7 @@ def test_non_hparam_run_script_refuses_to_execute_terminal_run(tmp_path: Path, m
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
     recipe["experiment"]["root"] = str(workspace)
+    plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
     marker = tmp_path / "runtime.txt"
@@ -4090,6 +4101,7 @@ def test_non_hparam_run_script_refuses_to_execute_terminal_run(tmp_path: Path, m
         for value in (sys.executable, "-c", "import sys; from pathlib import Path; Path(sys.argv[1]).touch()", marker)
     )
     monkeypatch.setattr(plans, "_commands_for_recipe", lambda *_args, **_kwargs: [command])
+    monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
     plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
     run = _first_run(plan_dir)

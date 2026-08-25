@@ -57,6 +57,9 @@ class EmbeddingExtractionAdapter(TaskAdapter):
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         return frozenset({"device", "num_workers"})
 
+    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
+        return ("python", "-m", variant_module(recipe, "extract_embeddings"))
+
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         inputs = _mapping(recipe, "inputs")
         paths: list[tuple[str, Any]] = []
@@ -68,9 +71,11 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         return paths
 
     def frozen_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Path]]:
+        from .. import plan_contract
+
         paths: list[tuple[str, Path]] = []
         for field, path in self.required_input_paths(recipe):
-            resolved = resolve_repo_path(path)
+            resolved = plan_contract.resolve_frozen_repo_path(recipe, path)
             if resolved is not None:
                 paths.append((f"inputs.{field}", resolved))
         return paths
@@ -392,9 +397,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         return [
             render_command(
                 [
-                    "python",
-                    "-m",
-                    variant_module(recipe, "extract_embeddings"),
+                    *self.frozen_command_prefix(recipe),
                     "--config",
                     inputs.get("config"),
                     "--ckpt-path",

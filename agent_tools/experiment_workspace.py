@@ -17,7 +17,10 @@ from . import experiment_io as exp_io, transport
 from .models import REPO_ROOT, json_ready
 
 PHASES = {"prepare", "train", "evaluate", "analyze"}
+PLAN_CONTROLLERS = {"unassigned", "ordinary", "adaptive", "pipeline"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
+SUCCESS_STATUSES = frozenset({"completed", "finished"})
+LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
 MONITOR_EXIT_CODE_PREFIX = "AGENT_TOOLS_EXIT_CODE="
 PROCESS_IDENTITY_FIELDS = {"pid", "process_group_id", "process_start_token"}
 SCHEDULER_PLAN_IDENTITY_FIELDS = {
@@ -116,6 +119,7 @@ RESEARCH_LOG_MARKER_RE = re.compile(
     r'^<!-- agent-tools-research-entry id="([a-z0-9][a-z0-9._-]{0,127})" sha256="([0-9a-f]{64})" -->\n',
     re.MULTILINE,
 )
+STEP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 RESEARCH_LOG_ENTRY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -285,7 +289,10 @@ def read_managed_yaml_mapping(text: str, *, source: str | Path) -> dict[str, Any
     label = str(source)
     if not text.strip():
         raise ValueError(f"{label} is empty.")
-    document = yaml.compose(text)
+    try:
+        document = yaml.compose(text)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{label} is invalid YAML.") from exc
     pending = [(document, False)]
     active_nodes = set()
     visited_nodes = set()
@@ -314,7 +321,10 @@ def read_managed_yaml_mapping(text: str, *, source: str | Path) -> dict[str, Any
                 pending.append((value_node, False))
         elif isinstance(node, yaml.SequenceNode):
             pending.extend((item, False) for item in node.value)
-    payload = yaml.safe_load(text)
+    try:
+        payload = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{label} is invalid YAML.") from exc
     if not isinstance(payload, dict) or not payload:
         raise ValueError(f"{label} must contain a non-empty mapping.")
     return payload
@@ -347,7 +357,7 @@ def validate_plan_output(recipe: dict[str, Any], output_dir: str | Path) -> str 
 
 
 def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
-    allowed_fields = {"step", "experiment_id", "recipe_path", "plans"}
+    allowed_fields = {"step", "experiment_id", "plan_controller", "recipe_path", "plans"}
     for source, payload in (("existing", existing), ("incoming", incoming)):
         if not isinstance(payload, dict):
             raise ValueError(f"{source} step manifest must be a mapping.")
@@ -358,6 +368,9 @@ def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> d
             raise ValueError(f"{source} step manifest step must be a mapping.")
         if "plans" in payload and not isinstance(payload["plans"], list):
             raise ValueError(f"{source} step manifest plans must be a list.")
+        controller = payload.get("plan_controller")
+        if controller not in (None, "") and controller not in PLAN_CONTROLLERS:
+            raise ValueError(f"{source} step manifest has invalid plan_controller: {controller}")
 
     merged_step = dict(existing.get("step") or {})
     for field, value in (incoming.get("step") or {}).items():
@@ -383,10 +396,27 @@ def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> d
         if path not in plans:
             plans.append(path)
 
+    existing_controller = existing.get("plan_controller")
+    incoming_controller = incoming.get("plan_controller")
+    if existing_controller not in (None, "", "unassigned") and incoming_controller not in (
+        None,
+        "",
+        existing_controller,
+    ):
+        raise ValueError("Step plan_controller differs from the existing step manifest.")
+    if existing_controller in (None, "", "unassigned"):
+        controller = incoming_controller or existing_controller or ""
+    else:
+        controller = existing_controller
+    recipe_path = existing.get("recipe_path") or incoming.get("recipe_path") or ""
+    if controller == "unassigned" and (recipe_path or plans):
+        raise ValueError("Unassigned step manifests cannot register a recipe or plan.")
+
     return {
         "step": merged_step,
         "experiment_id": existing_experiment_id or incoming_experiment_id or "",
-        "recipe_path": existing.get("recipe_path") or incoming.get("recipe_path") or "",
+        "plan_controller": controller,
+        "recipe_path": recipe_path,
         "plans": plans,
     }
 
@@ -397,15 +427,25 @@ def _validated_step_manifest(text: str, path: Path, step_id: str) -> dict[str, A
     if normalized != payload:
         raise ValueError(f"Managed step manifest has an incomplete canonical envelope: {path}")
     step = payload["step"]
+    step_issues = experiment_metadata_issues(
+        {"step": step},
+        require_values=False,
+        allow_step_io=True,
+    )
+    if step_issues:
+        raise ValueError(
+            f"Managed step manifest has invalid step metadata: {path}: "
+            + "; ".join(issue["message"] for issue in step_issues)
+        )
     for field in ("id", "phase", "purpose"):
         if not str(step.get(field) or "").strip():
             raise ValueError(f"Managed step manifest is missing step.{field}: {path}")
-    if step["phase"] not in PHASES:
-        raise ValueError(f"Managed step manifest has invalid step.phase: {path}")
     if str(step["id"]) != str(step_id):
         raise ValueError(f"Managed step manifest id differs from its directory: {path}")
     if not str(payload["experiment_id"] or "").strip():
         raise ValueError(f"Managed step manifest is missing experiment_id: {path}")
+    if payload["plan_controller"] not in PLAN_CONTROLLERS:
+        raise ValueError(f"Managed step manifest has invalid plan_controller: {path}")
     recipe_path = payload["recipe_path"]
     if not isinstance(recipe_path, str) or (recipe_path and not Path(recipe_path).is_absolute()):
         raise ValueError(f"Managed step manifest recipe_path must be empty or absolute: {path}")
@@ -427,6 +467,27 @@ def read_step_manifest(
             return None
         raise FileNotFoundError(f"Managed step manifest does not exist: {path}")
     return _validated_step_manifest(exp_io.read_text_at(path, remote=remote), path, str(step_id))
+
+
+def read_registered_steps(
+    root: str | Path,
+    *,
+    experiment_id: str,
+    remote: str | None = None,
+) -> list[dict[str, Any]]:
+    root = Path(root)
+    step_ids = exp_io.list_managed_subdirectories_at(root, root / "steps", remote=remote)
+    manifests = []
+    for step_id in step_ids:
+        if STEP_ID_RE.fullmatch(step_id) is None:
+            raise ValueError(f"Managed step directory has an invalid id: {step_id}")
+        path = root / "steps" / step_id / "step.yaml"
+        files = exp_io.read_managed_files_at(root, [path], remote=remote)
+        manifest = _validated_step_manifest(files[str(path)]["text"], path, step_id)
+        if str(manifest["experiment_id"]) != str(experiment_id):
+            raise ValueError(f"Managed step belongs to a different experiment: {path}")
+        manifests.append(manifest)
+    return manifests
 
 
 def commit_step_manifest(
@@ -472,12 +533,12 @@ def initialize_run_manifest(root: str | Path, *, remote: str | None = None) -> P
 
 
 def read_run_manifest(root: str | Path, *, remote: str | None = None) -> list[dict[str, str]]:
-    path = Path(root) / "run_manifest.tsv"
-    # The canonical path itself is part of the ownership proof; aliases are not managed state.
-    exp_io.validate_managed_output_paths(root, [path], remote=remote)
+    root = Path(root)
+    path = root / "run_manifest.tsv"
     if not exp_io.path_exists_at(path, remote=remote):
         raise FileNotFoundError(f"Managed run manifest is missing: {path}")
-    text = exp_io.read_text_at(path, remote=remote)
+    files = exp_io.read_managed_files_at(root, [path], remote=remote)
+    text = files[str(path)]["text"]
     return _parse_run_manifest(text, path)
 
 
@@ -810,7 +871,11 @@ def write_initial_experiment_manifest(root: Path, experiment: dict[str, Any], *,
 
 
 def ensure_experiment_workspace(
-    recipe: dict[str, Any], output_dir: str | Path, *, register_step: bool = True
+    recipe: dict[str, Any],
+    output_dir: str | Path,
+    *,
+    register_step: bool = True,
+    plan_controller: str | None = None,
 ) -> tuple[Path, Path]:
     root = experiment_root(recipe)
     if root is None:
@@ -821,11 +886,15 @@ def ensure_experiment_workspace(
     recipe["experiment"]["root"] = str(root)
     experiment = _public_mapping(recipe.get("experiment") or {})
     step = _public_mapping(recipe.get("step") or {})
+    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+    controller = plan_controller or ("adaptive" if adaptive.get("enabled") is True else "ordinary")
     manifest_path = root / "experiment.yaml"
     manifest_exists = manifest_path.exists()
+    workspace_rows = []
     if manifest_exists:
         validate_existing_experiment_manifest(manifest_path.read_text(), experiment, root)
-        for row in read_run_manifest(root):
+        workspace_rows = read_run_manifest(root)
+        for row in workspace_rows:
             if row["experiment_id"] != experiment["id"]:
                 raise ValueError("run_manifest.tsv contains a run owned by a different experiment.")
     plan_path = Path(output_dir).expanduser()
@@ -836,6 +905,7 @@ def ensure_experiment_workspace(
     step_payload = {
         "step": step,
         "experiment_id": experiment["id"],
+        "plan_controller": controller,
         "recipe_path": recipe.get("_recipe_path", ""),
         "plans": [str(plan_path)],
     }
@@ -854,6 +924,17 @@ def ensure_experiment_workspace(
     existing_step = read_step_manifest(root, step["id"], allow_missing=True)
     if existing_step is not None:
         merge_step_manifest(existing_step, step_payload)
+        existing_recipe_path = existing_step["recipe_path"]
+        incoming_recipe_path = step_payload["recipe_path"]
+        # Before its first canonical run, an ordinary step's initial recipe remains the retry provenance owner.
+        if (
+            existing_step["plan_controller"] == "ordinary"
+            and controller == "ordinary"
+            and existing_recipe_path
+            and incoming_recipe_path not in (None, "", existing_recipe_path)
+            and not any(str(row["step_id"]) == str(step["id"]) for row in workspace_rows)
+        ):
+            raise ValueError("Ordinary step primary recipe cannot change before its first canonical run.")
 
     root.mkdir(parents=True, exist_ok=True)
     (root / "reports").mkdir(exist_ok=True)
@@ -897,6 +978,10 @@ def managed_run_key(row: dict[str, Any]) -> tuple[str, str] | None:
     if not step_id.strip() or not run_id.strip():
         return None
     return step_id, run_id
+
+
+def stopped_runs_without_reason(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if row.get("status") == "stopped" and not str(row.get("stop_reason") or "").strip()]
 
 
 def managed_run_parameters(row: dict[str, Any]) -> dict[str, Any]:
@@ -1164,6 +1249,8 @@ def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
     if backend == "direct":
         if populated_scheduler:
             raise ValueError("Direct managed run cannot define Slurm scheduler identity.")
+        if row.get("status") in LAUNCHABLE_STATUSES and populated_process:
+            raise ValueError("Launchable direct managed run cannot define PID process identity.")
         return
     if populated_process:
         raise ValueError("Slurm managed run cannot define PID process identity.")

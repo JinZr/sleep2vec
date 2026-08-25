@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from . import experiment_io as exp_io, experiment_tracking as tracking
+from . import experiment_io as exp_io, experiment_tracking as tracking, run_artifacts as artifacts
 from .experiment_workspace import (
     RESEARCH_LOG_NAME,
     TERMINAL_STATUSES,
@@ -19,7 +19,9 @@ from .experiment_workspace import (
     managed_run_key,
     merge_run_manifest,
     read_managed_yaml_mapping,
+    read_registered_steps,
     read_run_manifest,
+    stopped_runs_without_reason,
     validate_existing_experiment_manifest,
     validate_frozen_run_update,
     validate_managed_run_rows,
@@ -174,7 +176,13 @@ def register_experiment_step(run_dir: str | Path, spec_path: str | Path, *, remo
     exp_io.validate_managed_output_paths(root, [path, root / "events.jsonl"], remote=remote)
     _merged, created = commit_step_manifest(
         root,
-        {"step": step, "experiment_id": experiment["id"], "recipe_path": "", "plans": []},
+        {
+            "step": step,
+            "experiment_id": experiment["id"],
+            "plan_controller": "unassigned",
+            "recipe_path": "",
+            "plans": [],
+        },
         remote=remote,
     )
     if created:
@@ -192,6 +200,10 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     unresolved = [row["run_id"] for row in rows if row.get("status") not in TERMINAL_STATUSES]
     if unresolved:
         raise ValueError(f"Experiment still has unresolved runs: {unresolved}")
+    missing_stop_reasons = stopped_runs_without_reason(rows)
+    if missing_stop_reasons:
+        run_ids = [f"{row['step_id']} / {row['run_id']}" for row in missing_stop_reasons]
+        raise ValueError(f"Stopped runs are missing required stop_reason: {run_ids}")
     report_text = exp_io.read_text_at(report_path, remote=remote)
     if not report_text.strip():
         raise ValueError("Final report is missing or empty.")
@@ -342,6 +354,69 @@ def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> dic
     return {"run_dir": str(root), "runs": committed, "report": str(report_path)}
 
 
+def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict[str, Any]:
+    root = _target_root(run_dir, remote)
+    experiment, rows = _managed_workspace(
+        root,
+        remote=remote,
+        allow_completed=True,
+        validate_experiment_index=False,
+    )
+    step_manifests = read_registered_steps(root, experiment_id=str(experiment["id"]), remote=remote)
+    step_ids = {str(manifest["step"]["id"]) for manifest in step_manifests}
+    orphaned_steps = sorted({str(row["step_id"]) for row in rows} - step_ids)
+    if orphaned_steps:
+        raise ValueError(f"run_manifest.tsv references unregistered steps: {', '.join(orphaned_steps)}")
+
+    plan_owners = {}
+    for manifest in step_manifests:
+        step_id = str(manifest["step"]["id"])
+        for plan_path in manifest["plans"]:
+            owner = plan_owners.setdefault(str(plan_path), step_id)
+            if owner != step_id:
+                raise ValueError(f"Registered plan belongs to more than one managed step: {plan_path}")
+
+    registered_steps = []
+    for manifest in step_manifests:
+        step_id = str(manifest["step"]["id"])
+        step_rows = [row for row in rows if str(row["step_id"]) == step_id]
+        plans = []
+        plan_keys = []
+        run_index_offset = 0
+        for plan_path in manifest["plans"]:
+            if artifacts.is_registered_blocked_plan(plan_path, workspace=root, remote=remote):
+                continue
+            plan = artifacts.read_registered_plan(
+                plan_path,
+                workspace=root,
+                workspace_experiment=experiment,
+                step_manifest=manifest,
+                workspace_rows=rows,
+                expected_recipe_path=(
+                    manifest["recipe_path"] if manifest["plan_controller"] == "ordinary" and not plans else None
+                ),
+                remote=remote,
+                run_index_offset=run_index_offset,
+            )
+            plans.append(plan)
+            plan_keys.extend(tuple(key) for key in plan["run_keys"])
+            run_index_offset += len(plan["run_keys"])
+        if len(plan_keys) != len(set(plan_keys)):
+            raise ValueError(f"Managed step registers duplicate run keys across plans: {step_id}")
+        canonical_keys = {managed_run_key(row) for row in step_rows}
+        if set(plan_keys) != canonical_keys:
+            raise ValueError(f"Managed step plans differ from canonical run keys: {step_id}")
+        registered_steps.append({"manifest": manifest, "plans": plans})
+
+    return tracking.experiment_status_snapshot(
+        experiment,
+        registered_steps,
+        rows,
+        root=root,
+        remote=remote,
+    )
+
+
 def rank_experiment_candidates(run_dir: str | Path, *, metric: str, mode: str, remote: str | None = None) -> Path:
     root = _target_root(run_dir, remote)
     managed_rows = _managed_rows(root, remote=remote)
@@ -399,14 +474,17 @@ def _managed_workspace(
     *,
     remote: str | None,
     allow_completed: bool = False,
+    validate_experiment_index: bool = True,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     manifest_path = root / "experiment.yaml"
-    exp_io.validate_managed_output_paths(root, [manifest_path], remote=remote)
-    experiment_text = exp_io.read_text_at(manifest_path, remote=remote)
-    if not experiment_text:
+    if not exp_io.path_exists_at(manifest_path, remote=remote):
         raise ValueError("experiment.yaml is missing. Initialize the experiment first.")
+    files = exp_io.read_managed_files_at(root, [manifest_path], remote=remote)
+    experiment_text = files[str(manifest_path)]["text"]
     manifest = read_managed_yaml_mapping(experiment_text, source=f"Managed experiment manifest {manifest_path}")
-    experiment = manifest.get("experiment") if isinstance(manifest, dict) else None
+    if set(manifest) != {"experiment"}:
+        raise ValueError("experiment.yaml must contain only the experiment owner mapping.")
+    experiment = manifest.get("experiment")
     validated_experiment = experiment
     if allow_completed and isinstance(experiment, dict) and ("status" in experiment or "completed_at" in experiment):
         if set(experiment) - {"id", "title", "objective", "root", "baseline"} != {"status", "completed_at"}:
@@ -439,7 +517,7 @@ def _managed_workspace(
             raise ValueError(f"Historical experiment artifacts are read-only: {legacy_path}")
 
     experiment_manifest = root / "experiment_manifest.tsv"
-    if exp_io.path_exists_at(experiment_manifest, remote=remote):
+    if validate_experiment_index and exp_io.path_exists_at(experiment_manifest, remote=remote):
         manifest_rows = exp_io.read_rows_at(experiment_manifest, remote=remote, strict=True)
         if len(manifest_rows) != 1:
             raise ValueError("experiment_manifest.tsv must contain exactly one row.")

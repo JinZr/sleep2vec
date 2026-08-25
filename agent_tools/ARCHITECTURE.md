@@ -13,7 +13,7 @@ L0-level domain leaf.
 
 | Layer | Contents | Role |
 |---|---|---|
-| **L0 leaves** | models, decision_models, transport, manifests, schema_map, gpu_rules, repo, plan_rendering, decision_paths, decision_hparam, plan_hparam, adaptive_proposals, experiment_workspace, experiment_io, managed_scheduler, ... | No intra-package deps beyond other L0 leaves; the reusable primitives. |
+| **L0 leaves** | models, decision_models, transport, manifests, schema_map, gpu_rules, repo, plan_rendering, plan_contract, decision_paths, decision_hparam, plan_hparam, adaptive_proposals, experiment_workspace, experiment_io, managed_scheduler, ... | No intra-package deps beyond other L0 leaves; the reusable primitives. |
 | **L1 `adapters/`** | `base` (TaskAdapter protocol), `registry` (get_adapter / all_adapters / composite_adapter), 6 per-task plugins, `config_providers` | Generic plugin skeleton + domain plugins. Kernel dispatches through the registry and never hardcodes task names. |
 | **L2 kernel** | configs, decision_rules, decisions, plan_context, plans, experiment_pipeline | Orchestration over lower-layer owners and adapter declarations; authored task recipes remain governed by schema_map. |
 | **`domain/`** | sidecar_summaries, finetune_summary, sex_age_summary, presets, index_csv | sleep2vec-specific summaries/validators. L0-level leaves that must not be aggregated in `domain/__init__` (would trigger a partial-import cycle via configs). |
@@ -22,12 +22,12 @@ L0-level domain leaf.
 
 Mirrors the three frozensets in `layering.py`.
 
-### Kernel — reusable (27, zero domain signal)
+### Kernel — reusable (28, zero domain signal)
 decision_models, transport, manifests, schema_map, gpu_rules, repo,
 experiment_io, experiment_workspace, experiment_tracking, experiments,
 run_artifacts, run_evidence, hparam, hparam_runtime, hparam_selection,
 adaptive_hparam, adaptive_proposals, recipes, progress, markdown, skills,
-decisions, plans, decision_rules, managed_scheduler, slurm,
+decisions, plans, plan_contract, decision_rules, managed_scheduler, slurm,
 experiment_pipeline.
 
 These must stay domain-free — the layering guard allows them **no** domain
@@ -36,6 +36,25 @@ imports.
 `adaptive_proposals` owns the pure snapshot, parameter-envelope, and external
 submission-validation contract. `adaptive_hparam` owns the surrounding digest,
 preflight, round registration, launch, and lifecycle orchestration.
+
+`decision_rules` owns the pure, dictionary-only recipe structure contract:
+registered task and variant, top-level closure, runtime, task sections,
+execution, and artifacts. `plans` adds authored/base/local layer orchestration
+and policy-dependent decision validation; `run_artifacts` reuses the structural
+owner for frozen registered plans without consultation, config/path probes, or
+live observation.
+
+`plan_contract` and adapter `compile_plan_contract()` hooks own deterministic
+run identities, paths, derived config bytes, complete executable scripts, and
+final-evaluation requirements shared by plan publication and registered-plan
+validation. Task adapters may derive that contract only from the frozen recipe,
+including its strict creator-host plan context and input snapshots, and
+plan-owned config bytes.
+
+`experiment_workspace` owns the one-way step `plan_controller` binding used to
+classify ordinary, adaptive, and pipeline plans. `experiment_tracking` consumes
+that owner for status advice; recipe and canonical pipeline fields are only
+consistency guards, while `run_manifest.tsv` remains the lifecycle owner.
 
 `managed_scheduler` owns backend selection plus the reusable direct
 GPU-capacity/process lifecycle and Slurm submit/observe lifecycle shared by
@@ -67,16 +86,16 @@ embedding_extraction.
 The guard freezes this set: adding a module here requires updating `layering.py`
 and this table, so a module can't silently slide into "mixed".
 
-## CLI command triage (34 subcommands)
+## CLI command triage (35 subcommands)
 
-`cli_contract` freezes the 34 names; this is the ownership read.
+`cli_contract` freezes the 35 names; this is the ownership read.
 
-- **Kernel (23)**: repo-summary, collect-runs, hparam-launch, hparam-run-queue,
+- **Kernel (24)**: repo-summary, collect-runs, hparam-launch, hparam-run-queue,
   hparam-monitor, hparam-stop, hparam-select, hparam-checkpoint-scan,
   hparam-digest, hparam-suggest, hparam-adaptive-init, hparam-adaptive-step,
   hparam-adaptive-loop, progress, experiment-init, experiment-note,
   experiment-register-step, experiment-finalize, experiment-wandb-sync,
-  experiment-index-checkpoints, experiment-monitor, experiment-rank,
+  experiment-index-checkpoints, experiment-monitor, experiment-status, experiment-rank,
   experiment-run.
 - **Domain (7)**: config-summary, index-summary, preset-summary,
   hparam-external-eval, hparam-export-logits, hparam-threshold, hparam-ensemble.
