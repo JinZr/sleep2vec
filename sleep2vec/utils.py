@@ -325,12 +325,14 @@ def get_finetune_dataloaders(args):
         is_train_set=False,
     )
 
-    test_loader = _build_finetune_loader(
-        args,
-        split=["test"],
-        sources=test_dataset_names,
-        shuffle=False,
-        is_train_set=False,
-    )
+    test_loader = None
+    if getattr(args, "test_after_fit", True):
+        test_loader = _build_finetune_loader(
+            args,
+            split=["test"],
+            sources=test_dataset_names,
+            shuffle=False,
+            is_train_set=False,
+        )
 
     return train_loader, val_loader, test_loader

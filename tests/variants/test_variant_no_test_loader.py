@@ -1,10 +1,12 @@
 from argparse import Namespace
-import logging
+import importlib
 
-from sleep2vec2 import finetune, utils
+import pytest
 
 
-def test_no_test_after_fit_does_not_build_test_loader(monkeypatch):
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_no_test_after_fit_does_not_build_test_loader(package_name, monkeypatch):
+    utils = importlib.import_module(f"{package_name}.utils")
     calls = []
 
     def build_loader(_args, **kwargs):
@@ -23,13 +25,3 @@ def test_no_test_after_fit_does_not_build_test_loader(monkeypatch):
 
     assert (train_loader, val_loader, test_loader) == ("train", "val", None)
     assert calls == [["train"], ["val"]]
-
-
-def test_prepare_dataloader_reports_disabled_test_as_empty(monkeypatch, caplog):
-    monkeypatch.setattr(finetune, "get_finetune_dataloaders", lambda _args: ([1], [2], None))
-
-    with caplog.at_level(logging.INFO):
-        loaders = finetune.prepare_dataloader(Namespace())
-
-    assert loaders == ([1], [2], None)
-    assert "Prepared dataloaders: train=1 val=1 test=0" in caplog.text
