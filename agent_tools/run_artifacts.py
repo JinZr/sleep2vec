@@ -49,6 +49,15 @@ REGISTERED_PLAN_IDENTITY_FIELDS = (
 )
 
 
+def _json_object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"duplicate JSON key: {key}")
+        payload[key] = value
+    return payload
+
+
 def _resolved_recipe_view(recipe: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in recipe.items() if key != "_recipe_path"}
 
@@ -72,9 +81,12 @@ def _read_plan_documents(
             remote=remote,
         )
         try:
-            plan = json.loads(files[str(plan_path)]["text"])
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Registered plan manifest is corrupt: {plan_path}") from exc
+            plan = json.loads(
+                files[str(plan_path)]["text"],
+                object_pairs_hook=_json_object_without_duplicate_keys,
+            )
+        except ValueError as exc:
+            raise ValueError(f"Registered plan manifest is corrupt: {plan_path}: {exc}") from exc
         resolved_recipe_text = files[str(resolved_recipe_path)]["text"]
         resolved_recipe_sha256 = files[str(resolved_recipe_path)]["sha256"]
     else:

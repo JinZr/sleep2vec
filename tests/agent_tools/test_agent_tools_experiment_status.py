@@ -2195,6 +2195,24 @@ def test_experiment_status_rejects_registered_plan_drift(tmp_path, drift):
         experiments.experiment_status(root)
 
 
+def test_experiment_status_rejects_duplicate_plan_json_keys(tmp_path, capsys):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="train")
+    plan_path = plan_dir / "plan.json"
+    source = plan_path.read_text()
+    plan_path.write_text('{\n  "status": "FAIL",\n' + source.lstrip()[1:])
+    before = _workspace_files(root)
+
+    assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "duplicate JSON key: status" in captured.err
+    assert "Traceback" not in captured.err
+    assert _workspace_files(root) == before
+
+
 def test_experiment_status_rejects_plan_escape_before_external_probe(tmp_path, monkeypatch):
     root = tmp_path / "experiment"
     _init_workspace(root)
