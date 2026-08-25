@@ -2585,7 +2585,7 @@ def test_hparam_launch_rejects_invalid_canonical_output_before_start(tmp_path: P
         lambda _execution, command: started.append(command) or "launched",
     )
 
-    with pytest.raises(ValueError, match="Managed output"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
     assert started == []
@@ -3562,7 +3562,7 @@ def test_hparam_stop_rejects_invalid_canonical_output_before_kill(tmp_path: Path
     monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row, **_kwargs: 123)
     monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
-    with pytest.raises(ValueError, match="Managed output"):
+    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
 
     assert killed == []
