@@ -890,9 +890,11 @@ def ensure_experiment_workspace(
     controller = plan_controller or ("adaptive" if adaptive.get("enabled") is True else "ordinary")
     manifest_path = root / "experiment.yaml"
     manifest_exists = manifest_path.exists()
+    workspace_rows = []
     if manifest_exists:
         validate_existing_experiment_manifest(manifest_path.read_text(), experiment, root)
-        for row in read_run_manifest(root):
+        workspace_rows = read_run_manifest(root)
+        for row in workspace_rows:
             if row["experiment_id"] != experiment["id"]:
                 raise ValueError("run_manifest.tsv contains a run owned by a different experiment.")
     plan_path = Path(output_dir).expanduser()
@@ -922,6 +924,17 @@ def ensure_experiment_workspace(
     existing_step = read_step_manifest(root, step["id"], allow_missing=True)
     if existing_step is not None:
         merge_step_manifest(existing_step, step_payload)
+        existing_recipe_path = existing_step["recipe_path"]
+        incoming_recipe_path = step_payload["recipe_path"]
+        # Before its first canonical run, an ordinary step's initial recipe remains the retry provenance owner.
+        if (
+            existing_step["plan_controller"] == "ordinary"
+            and controller == "ordinary"
+            and existing_recipe_path
+            and incoming_recipe_path not in (None, "", existing_recipe_path)
+            and not any(str(row["step_id"]) == str(step["id"]) for row in workspace_rows)
+        ):
+            raise ValueError("Ordinary step primary recipe cannot change before its first canonical run.")
 
     root.mkdir(parents=True, exist_ok=True)
     (root / "reports").mkdir(exist_ok=True)

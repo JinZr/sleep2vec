@@ -181,6 +181,25 @@ def test_registered_step_is_extended_by_plan_and_allows_dry_run_launch(tmp_path:
     assert sum(event["event_type"] == "step_registered" for event in events) == 1
 
 
+def test_ordinary_step_rejects_new_primary_recipe_after_blocked_attempt(tmp_path: Path):
+    blocked_recipe = write_finetune_recipe(tmp_path, include_label=False)
+    blocked_dir = tmp_path / "plans" / "blocked"
+    assert plans.build_plan(recipe_path=blocked_recipe, output_dir=blocked_dir).exit_code == 2
+
+    recipe_payload = yaml.safe_load(blocked_recipe.read_text())
+    recipe_payload["inputs"]["label_name"] = "ahi"
+    successful_recipe = write_yaml(tmp_path / "successful-recipe.yaml", recipe_payload)
+    successful_dir = tmp_path / "plans" / "successful"
+
+    with pytest.raises(ValueError, match="primary recipe cannot change"):
+        plans.build_plan(recipe_path=successful_recipe, output_dir=successful_dir)
+
+    assert not successful_dir.exists()
+    step = yaml.safe_load((tmp_path / "steps" / "unit-finetune" / "step.yaml").read_text())
+    assert step["recipe_path"] == str(blocked_recipe)
+    assert step["plans"] == [str(blocked_dir)]
+
+
 def test_init_plan_and_mutation_share_canonical_absolute_root(tmp_path: Path):
     source = tmp_path / "source"
     recipe = _hparam_recipe(source)
