@@ -10,7 +10,6 @@ from typing import Any, Iterator
 
 from . import experiment_io as exp_io
 from .experiment_workspace import (
-    EXECUTION_IDENTITY_FIELDS,
     SCHEDULER_PLAN_IDENTITY_FIELDS,
     experiment_metadata_issues,
     experiment_root,
@@ -42,9 +41,14 @@ REGISTERED_PLAN_IDENTITY_FIELDS = (
     "runtime_dir",
     "checkpoint_dir",
     "terminal_status_owner",
-    *sorted(EXECUTION_IDENTITY_FIELDS),
     *sorted(SCHEDULER_PLAN_IDENTITY_FIELDS),
 )
+
+
+def _resolved_recipe_view(recipe: dict[str, Any], task: str) -> dict[str, Any]:
+    if task == "hparam_tune":
+        return {key: value for key, value in recipe.items() if key != "_recipe_path"}
+    return {key: value for key, value in recipe.items() if not str(key).startswith("_")}
 
 
 def _read_plan_documents(
@@ -133,7 +137,8 @@ def read_registered_plan(
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else None
     if recipe is None:
         raise ValueError(f"Registered plan is missing its recipe: {plan_path}")
-    frozen_recipe = {key: value for key, value in recipe.items() if not str(key).startswith("_")}
+    task = str(recipe.get("task") or "")
+    frozen_recipe = _resolved_recipe_view(recipe, task)
     if frozen_recipe != resolved_recipe:
         raise ValueError(f"Registered plan recipe differs from recipe.resolved.yaml: {resolved_recipe_path}")
 
@@ -152,7 +157,12 @@ def read_registered_plan(
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs:
         raise ValueError(f"Registered plan must define a non-empty runs list: {plan_path}")
-    validate_run_rows(runs, source=str(plan_path), require_artifact_paths=True)
+    validate_run_rows(
+        runs,
+        source=str(plan_path),
+        require_artifact_paths=True,
+        allow_empty_runtime_paths=task != "hparam_tune",
+    )
     plan_keys = [managed_run_key(run) for run in runs]
     if len(plan_keys) != len(set(plan_keys)):
         raise ValueError(f"Registered plan contains duplicate managed run keys: {plan_path}")
@@ -164,20 +174,34 @@ def read_registered_plan(
             raise ValueError(f"Workspace run_manifest.tsv is missing registered plan run: {key[0]} / {key[1]}")
         if canonical.get("status") in (None, ""):
             raise ValueError(f"Workspace run manifest is missing status: {key[0]} / {key[1]}")
-        for field in REGISTERED_PLAN_IDENTITY_FIELDS:
-            if field not in run:
-                continue
+        identity_fields = list(REGISTERED_PLAN_IDENTITY_FIELDS)
+        if task == "hparam_tune":
+            identity_fields.append("parameter_summary")
+        else:
+            identity_fields.append("input_snapshots")
+            if _text_value(canonical.get("parameter_summary")) != "single resolved recipe":
+                raise ValueError(
+                    f"Workspace run manifest differs from plan field parameter_summary: {key[0]} / {key[1]}"
+                )
+        if run.get("scheduler_type") == "slurm":
+            identity_fields.append("log_path")
+        for field in identity_fields:
             if _text_value(canonical.get(field)) != _text_value(run.get(field)):
                 raise ValueError(f"Workspace run manifest differs from plan field {field}: {key[0]} / {key[1]}")
         plan_parameters = managed_run_parameters(run)
         canonical_parameters = managed_run_parameters(canonical)
-        if set(plan_parameters) != {field for field, value in canonical_parameters.items() if value not in (None, "")}:
+        missing_parameters = set(plan_parameters) - set(canonical_parameters)
+        nonempty_extra_parameters = {
+            field
+            for field in set(canonical_parameters) - set(plan_parameters)
+            if canonical_parameters[field] not in (None, "")
+        }
+        if missing_parameters or nonempty_extra_parameters:
             raise ValueError(f"Workspace run parameters differ from plan: {key[0]} / {key[1]}")
         for field, value in plan_parameters.items():
             if _text_value(canonical_parameters.get(field)) != _text_value(value):
                 raise ValueError(f"Workspace run manifest differs from plan field {field}: {key[0]} / {key[1]}")
 
-    task = str(recipe.get("task") or "")
     bundle_paths = []
     hash_expectations = {}
     for run in runs:
@@ -373,7 +397,7 @@ def read_hparam_plan(
     ]
     if legacy_fields:
         raise ValueError(f"Legacy hparam fields are read-only and unsupported: {', '.join(legacy_fields)}")
-    frozen_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
+    frozen_recipe = _resolved_recipe_view(recipe, "hparam_tune")
     if frozen_recipe != resolved_recipe:
         raise ValueError(f"Hparam plan recipe differs from recipe.resolved.yaml: {resolved_recipe_path}")
     for run in runs:
@@ -477,6 +501,7 @@ def validate_run_rows(
     *,
     source: str,
     require_artifact_paths: bool = False,
+    allow_empty_runtime_paths: bool = False,
 ) -> None:
     validate_managed_run_rows(rows, source=source, cardinality="one_per_run")
     versions = set()
@@ -487,8 +512,6 @@ def validate_run_rows(
                 field
                 for field in (
                     "run_dir",
-                    "runtime_dir",
-                    "checkpoint_dir",
                     "config",
                     "config_sha256",
                     "script",
@@ -497,13 +520,19 @@ def validate_run_rows(
                 )
                 if row.get(field) in (None, "")
             )
+            if allow_empty_runtime_paths:
+                missing.extend(field for field in ("runtime_dir", "checkpoint_dir") if field not in row)
+                if bool(row.get("runtime_dir")) != bool(row.get("checkpoint_dir")):
+                    raise ValueError(f"Managed run row {index} in {source} has partial runtime artifact paths.")
+            else:
+                missing.extend(field for field in ("runtime_dir", "checkpoint_dir") if row.get(field) in (None, ""))
         if missing:
             raise ValueError(f"Managed run row {index} in {source} is missing: {', '.join(missing)}")
         if require_artifact_paths:
             relative_paths = [
                 field
                 for field in ("run_dir", "runtime_dir", "checkpoint_dir", "config", "script", "artifacts")
-                if not Path(str(row[field])).is_absolute()
+                if row.get(field) not in (None, "") and not Path(str(row[field])).is_absolute()
             ]
             if relative_paths:
                 raise ValueError(

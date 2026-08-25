@@ -7,8 +7,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import cli, experiment_io, experiment_tracking, experiments
+from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tools import cli, experiment_io, experiment_tracking, experiments, plans
 from agent_tools.manifests import write_rows
+from agent_tools.models import REPO_ROOT
 
 
 def _init_workspace(root: Path) -> None:
@@ -63,6 +65,8 @@ def _add_plan(
         "runtime_dir": str(root / "runtime" / step_id),
         "checkpoint_dir": str(root / "runtime" / step_id / "checkpoints"),
     }
+    if task == "hparam_tune":
+        run["parameter_summary"] = "single resolved recipe"
     if host is not None:
         run["host"] = host
     recipe = {"task": task, "experiment": experiment, "step": step}
@@ -95,7 +99,7 @@ def _add_plan(
     canonical = {
         **run,
         "status": status,
-        "parameter_summary": "single resolved recipe",
+        "parameter_summary": run.get("parameter_summary", "single resolved recipe"),
     }
     if pipeline:
         canonical["pipeline_id"] = "pipeline-unit"
@@ -121,15 +125,102 @@ def _workspace_files(root: Path) -> dict[str, bytes]:
     return {str(path.relative_to(root)): path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
 
 
+def _write_public_hparam_recipe(root: Path, parameters: dict) -> Path:
+    base_recipe = write_finetune_recipe(root)
+    return write_yaml(
+        root / "tune.yaml",
+        {
+            "name": "status_public_hparam",
+            "task": "hparam_tune",
+            "variant": "sleep2vec",
+            "base_recipe": str(base_recipe),
+            "inputs": {},
+            "search": {"method": "grid", "max_runs": 1, "parameters": parameters},
+            "evaluation_policy": {
+                "selection_metric": "val_ahi_pearson",
+                "selection_mode": "max",
+                "selection_split": "val",
+                "final_eval_split": "test",
+                "external_test_locked": True,
+                "test_after_fit": False,
+                "final_test_unlocked": False,
+                "require_manual_unlock_for_final_test": True,
+            },
+            "decisions": {
+                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
+                "label_name": {"value": "ahi", "source": "explicit_recipe"},
+                "external_test_locked": {"value": True, "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
+                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+
+
+def test_experiment_status_accepts_public_generic_plan_without_runtime_directories(tmp_path):
+    root = tmp_path / "experiment"
+    payload = yaml.safe_load((REPO_ROOT / "recipes/examples/tiny_fixture_sleep2stat.yaml").read_text())
+    recipe = write_yaml(root / "sleep2stat.yaml", payload)
+    plan_dir = root / "plans" / "sleep2stat"
+
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    planned = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    assert planned["runtime_dir"] == planned["checkpoint_dir"] == ""
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(plan_dir / "run.sh")]
+
+
+@pytest.mark.parametrize("parameters", [{"runtime.lr": [1e-6]}, {"yaml:/data/finetune_preset_path": [None]}])
+def test_experiment_status_accepts_public_layered_hparam_plan(tmp_path, parameters):
+    root = tmp_path / "experiment"
+    recipe = _write_public_hparam_recipe(root, parameters)
+    plan_dir = root / "plans" / "tune"
+
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
+    assert "_base_recipe" in plan["recipe"] and "_local_recipe" in resolved
+    parameter = next(iter(parameters))
+    if parameters[parameter] == [None]:
+        assert plan["runs"][0][parameter] is None
+        assert _read_manifest_rows(root)[0][parameter] == ""
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+
+
+@pytest.mark.parametrize("drift", ["partial_runtime", "hparam_parameter_summary", "input_snapshots"])
+def test_experiment_status_rejects_incomplete_registered_plan_identity(tmp_path, drift):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    task = "hparam_tune" if drift == "hparam_parameter_summary" else "sleep2stat"
+    plan_dir, canonical = _add_plan(root, step_id="train", task=task)
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    if drift == "partial_runtime":
+        plan["runs"][0]["runtime_dir"] = ""
+        canonical["runtime_dir"] = ""
+    elif drift == "hparam_parameter_summary":
+        del plan["runs"][0]["parameter_summary"]
+    else:
+        canonical["input_snapshots"] = [{"field": "inputs.config", "path": canonical["config"], "sha256": "0" * 64}]
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    write_rows(root / "run_manifest.tsv", [canonical])
+
+    with pytest.raises(ValueError):
+        experiments.experiment_status(root)
+
+
 def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
     _plan, canonical = _add_plan(root, step_id="train", status="unknown_scheduler", task="hparam_tune")
     canonical.update(
         {
-            "scheduler_type": "slurm",
-            "scheduler_job_id": "123",
-            "scheduler_cluster": "unit",
             "scheduler_raw_state": "MISSING",
             "scheduler_reason": "Scheduler identity is incomplete.",
             "scheduler_observed_at": "2026-08-25T01:02:03Z",
