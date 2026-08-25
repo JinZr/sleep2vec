@@ -340,6 +340,58 @@ def test_experiment_status_does_not_infer_adaptive_or_pipeline_launch(tmp_path, 
     assert snapshot["blockers"][0]["code"] == code
 
 
+def test_experiment_status_scopes_deferred_plans_away_from_ordinary_launch(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    ordinary, _row = _add_plan(root, step_id="ordinary")
+    _add_plan(root, step_id="adaptive", adaptive=True)
+    _add_plan(root, step_id="pipeline", pipeline=True)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(ordinary / "run.sh")]
+    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "pipeline_advance"]
+    assert {(blocker["code"], blocker["step_id"]) for blocker in snapshot["blockers"]} == {
+        ("adaptive_phase_deferred", "adaptive"),
+        ("pipeline_phase_deferred", "pipeline"),
+    }
+
+
+def test_experiment_status_attributes_blockers_by_full_managed_run_key(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="first", status="unknown_scheduler")
+    _add_plan(root, step_id="second", status="unknown_scheduler")
+    _add_plan(root, step_id="terminal", status="failed")
+
+    snapshot = experiments.experiment_status(root)
+    blockers_by_step = {run["step_id"]: run["blockers"] for run in snapshot["runs"]}
+
+    assert blockers_by_step["first"] == ["unknown_scheduler"]
+    assert blockers_by_step["second"] == ["unknown_scheduler"]
+    assert blockers_by_step["terminal"] == []
+
+
+def test_experiment_status_defers_terminal_pipeline_finalization(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="evaluate", status="failed", pipeline=True)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "blocked"
+    assert snapshot["decision"]["recommended_next"] is None
+    assert snapshot["decision"]["other_legal_actions"] == []
+    assert snapshot["decision"]["blocked_actions"] == ["finalize", "pipeline_advance"]
+    assert snapshot["blockers"][0]["code"] == "pipeline_phase_deferred"
+
+    manifest = yaml.safe_load((root / "experiment.yaml").read_text())
+    manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
+    (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+    assert experiments.experiment_status(root)["summary"]["state"] == "completed"
+
+
 def test_experiment_status_terminal_and_completed_contract(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)

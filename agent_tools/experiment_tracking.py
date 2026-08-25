@@ -555,6 +555,13 @@ def experiment_status_snapshot(
         raise ValueError("Completed experiment metadata conflicts with canonical run lifecycle state.")
 
     sorted_rows = sorted(rows, key=lambda row: (str(row["step_id"]), str(row["run_id"])))
+    rows_by_key = {managed_run_key(row): row for row in sorted_rows}
+    pipeline_plan_rows = [
+        [rows_by_key[tuple(key)] for key in plan["run_keys"]]
+        for registered in registered_steps
+        for plan in registered["plans"]
+        if plan["pipeline"]
+    ]
     row_payloads = [_status_run_payload(row) for row in sorted_rows]
     step_payloads = []
     for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
@@ -598,8 +605,9 @@ def experiment_status_snapshot(
         active = [row for row in sorted_rows if row["status"] in managed_scheduler.ACTIVE_STATUSES]
         if uncertain:
             state = "blocked"
-            for status in sorted({str(row["status"]) for row in uncertain}):
-                matching = [row for row in uncertain if row["status"] == status]
+            groups = sorted({(str(row["status"]), str(row["step_id"])) for row in uncertain})
+            for status, step_id in groups:
+                matching = [row for row in uncertain if str(row["status"]) == status and str(row["step_id"]) == step_id]
                 blockers.append(
                     _status_blocker(
                         status,
@@ -611,43 +619,57 @@ def experiment_status_snapshot(
             decision["recommended_next"] = _monitor_action(root, remote)
         elif active:
             state = "in_progress"
-            blockers.append(
-                _status_blocker(
-                    "active_runs",
-                    "Canonical runs are still active. Refresh recorded evidence before another lifecycle decision.",
-                    rows=active,
-                    blocked_actions=["adaptive_advance", "finalize", "launch", "resubmit"],
+            for step_id in sorted({str(row["step_id"]) for row in active}):
+                blockers.append(
+                    _status_blocker(
+                        "active_runs",
+                        "Canonical runs are still active. Refresh recorded evidence before another lifecycle decision.",
+                        rows=[row for row in active if str(row["step_id"]) == step_id],
+                        blocked_actions=["adaptive_advance", "finalize", "launch", "resubmit"],
+                    )
                 )
-            )
             decision["recommended_next"] = _monitor_action(root, remote)
         elif all(row["status"] in TERMINAL_STATUSES for row in sorted_rows):
-            state = "ready_to_finalize"
-            finalize = _status_action(
-                "experiment-finalize",
-                "Publish a non-empty final report after human review.",
-                [
-                    "python",
-                    "-m",
-                    "agent_tools",
+            if pipeline_plan_rows:
+                state = "blocked"
+                for plan_rows in pipeline_plan_rows:
+                    blockers.append(
+                        _status_blocker(
+                            "pipeline_phase_deferred",
+                            "Status v1 cannot verify pipeline controller completion or its declared result matrix.",
+                            rows=plan_rows,
+                            blocked_actions=["finalize", "pipeline_advance"],
+                        )
+                    )
+                decision["manual_choice_required"] = True
+            else:
+                state = "ready_to_finalize"
+                finalize = _status_action(
                     "experiment-finalize",
-                    "--run-dir",
-                    str(root),
-                    "--report",
-                    "{report_path}",
-                    *(["--remote", remote] if remote else []),
-                ],
-                execution_host=remote,
-            )
-            finalize["required_inputs"] = ["report_path"]
-            blockers.append(
-                _status_blocker(
-                    "final_report_required",
-                    "Finalization requires a user-selected non-empty report path.",
-                    rows=sorted_rows,
+                    "Publish a non-empty final report after human review.",
+                    [
+                        "python",
+                        "-m",
+                        "agent_tools",
+                        "experiment-finalize",
+                        "--run-dir",
+                        str(root),
+                        "--report",
+                        "{report_path}",
+                        *(["--remote", remote] if remote else []),
+                    ],
+                    execution_host=remote,
                 )
-            )
-            decision["manual_choice_required"] = True
-            decision["other_legal_actions"] = [finalize]
+                finalize["required_inputs"] = ["report_path"]
+                blockers.append(
+                    _status_blocker(
+                        "final_report_required",
+                        "Finalization requires a user-selected non-empty report path.",
+                        rows=sorted_rows,
+                    )
+                )
+                decision["manual_choice_required"] = True
+                decision["other_legal_actions"] = [finalize]
         else:
             state, launch_blockers, candidates = _launch_decision(registered_steps, sorted_rows)
             blockers.extend(launch_blockers)
@@ -662,7 +684,7 @@ def experiment_status_snapshot(
     blocker_codes_by_key = {(str(row["step_id"]), str(row["run_id"])): [] for row in sorted_rows}
     for blocker in blockers:
         for key in blocker_codes_by_key:
-            if key[1] in blocker["run_ids"] and blocker["step_id"] in (None, key[0]):
+            if blocker["step_id"] == key[0] and key[1] in blocker["run_ids"]:
                 blocker_codes_by_key[key].append(blocker["code"])
     for payload in row_payloads:
         payload["blockers"] = sorted(blocker_codes_by_key[(payload["step_id"], payload["run_id"])])
@@ -801,7 +823,7 @@ def _launch_decision(
                         "adaptive_phase_deferred",
                         "Status v1 does not interpret adaptive workflow eligibility.",
                         rows=plan_rows,
-                        blocked_actions=["adaptive_advance", "launch"],
+                        blocked_actions=["adaptive_advance"],
                     )
                 )
                 continue
@@ -811,7 +833,7 @@ def _launch_decision(
                         "pipeline_phase_deferred",
                         "Status v1 does not interpret external-pipeline attempt eligibility.",
                         rows=plan_rows,
-                        blocked_actions=["launch", "pipeline_advance"],
+                        blocked_actions=["pipeline_advance"],
                     )
                 )
                 continue
