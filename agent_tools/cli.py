@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -521,7 +522,7 @@ def _cmd_experiment_monitor(args: argparse.Namespace) -> int:
 def _cmd_experiment_status(args: argparse.Namespace) -> int:
     try:
         snapshot = experiment_status(args.run_dir, remote=args.remote)
-    except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+    except (OSError, UnicodeError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if args.json:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 import yaml
@@ -462,7 +463,60 @@ def test_experiment_status_human_output_quotes_advisory_argv(tmp_path):
     assert "recorded evidence, not live" in rendered
     assert "Next legal action" in rendered
     assert "'" in rendered
+    assert "execution host:" not in rendered
     assert "Advisory only; this output does not authorize execution." in rendered
+
+
+def test_experiment_status_renders_remote_launch_execution_host():
+    root = Path("/remote/experiment")
+    row = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "run_name": "default",
+        "status": "planned",
+    }
+    registered_steps = [
+        {
+            "manifest": {"step": {"id": "train", "phase": "train", "purpose": "Train."}},
+            "plans": [
+                {
+                    "path": str(root / "plans" / "train"),
+                    "task": "finetune",
+                    "adaptive": False,
+                    "pipeline": False,
+                    "run_keys": [("train", "run-000")],
+                    "launch_script": str(root / "plans" / "train" / "run.sh"),
+                }
+            ],
+        }
+    ]
+
+    snapshot = experiment_tracking.experiment_status_snapshot(
+        {"id": "status-unit", "title": "Remote status"},
+        registered_steps,
+        [row],
+        root=root,
+        remote="baichuan3",
+    )
+    action = snapshot["decision"]["recommended_next"]
+
+    assert action["execution_host"] == "baichuan3"
+    rendered = experiment_tracking.format_experiment_status(snapshot)
+    assert "execution host: `baichuan3`" in rendered
+    assert f"bash {root / 'plans' / 'train' / 'run.sh'}" in rendered
+
+
+def test_experiment_status_cli_converts_remote_timeout_to_exit_one(monkeypatch, capsys):
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(["ssh", "baichuan3"], 10)
+
+    monkeypatch.setattr(cli, "experiment_status", timeout)
+
+    assert cli.main(["experiment-status", "--run-dir", "/remote/experiment", "--remote", "baichuan3"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("error:")
+    assert "Traceback" not in captured.err
 
 
 def test_experiment_status_cli_returns_one_for_contract_errors(tmp_path, capsys):

@@ -671,7 +671,7 @@ def experiment_status_snapshot(
                 decision["manual_choice_required"] = True
                 decision["other_legal_actions"] = [finalize]
         else:
-            state, launch_blockers, candidates = _launch_decision(registered_steps, sorted_rows)
+            state, launch_blockers, candidates = _launch_decision(registered_steps, sorted_rows, remote=remote)
             blockers.extend(launch_blockers)
             if len(candidates) == 1:
                 decision["recommended_next"] = candidates[0]
@@ -794,7 +794,9 @@ def format_experiment_status(snapshot: dict[str, Any]) -> str:
         lines.append("Manual choice required.")
     if actions:
         for action in actions:
-            lines.append(f"- `{action['id']}`: `{shlex.join(action['argv'])}` — {action['reason']}")
+            execution_host = action.get("execution_host")
+            host_text = f" (execution host: `{execution_host}`)" if execution_host else ""
+            lines.append(f"- `{action['id']}`{host_text}: `{shlex.join(action['argv'])}` — {action['reason']}")
             if action.get("required_inputs"):
                 lines.append(f"  Required inputs: {', '.join(action['required_inputs'])}")
     else:
@@ -806,7 +808,10 @@ def format_experiment_status(snapshot: dict[str, Any]) -> str:
 
 
 def _launch_decision(
-    registered_steps: list[dict[str, Any]], rows: list[dict[str, Any]]
+    registered_steps: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    *,
+    remote: str | None = None,
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     rows_by_key = {managed_run_key(row): row for row in rows}
     blockers = []
@@ -858,7 +863,7 @@ def _launch_decision(
                     "Launch only after explicit user authorization and the command's own preflight succeeds.",
                     argv,
                     step_id=step_id,
-                    execution_host=hosts[0] if len(hosts) == 1 else None,
+                    execution_host=remote or (hosts[0] if len(hosts) == 1 else None),
                 )
             )
     candidates.sort(key=lambda action: (action["step_id"] or "", action["id"], action["argv"]))
