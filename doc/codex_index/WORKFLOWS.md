@@ -223,7 +223,7 @@ authority.
 
 | Concern | Canonical owner | Authoritative contract |
 | --- | --- | --- |
-| Consultation and plan publication | [`agent_tools/decisions.py`](../../agent_tools/decisions.py), [`agent_tools/plans.py`](../../agent_tools/plans.py) | [task recipe](../agent_contracts/task_recipe.md) |
+| Recipe structure, consultation, and plan publication | [`agent_tools/decision_rules.py`](../../agent_tools/decision_rules.py), [`agent_tools/decisions.py`](../../agent_tools/decisions.py), [`agent_tools/plans.py`](../../agent_tools/plans.py) | [task recipe](../agent_contracts/task_recipe.md) |
 | Workspace state, launch, and monitoring | [`agent_tools/experiment_workspace.py`](../../agent_tools/experiment_workspace.py), [`agent_tools/hparam.py`](../../agent_tools/hparam.py) | [experiment workspace](../agent_contracts/experiment_workspace.md), [run manifest](../agent_contracts/run_manifest.md) |
 | Hparam ranking and test access | [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py) | [task recipe](../agent_contracts/task_recipe.md), [external test locking](../agent_contracts/external_test_locking.md) |
 | Direct and Slurm lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py), [`agent_tools/slurm.py`](../../agent_tools/slurm.py) | [run manifest](../agent_contracts/run_manifest.md) |
@@ -237,7 +237,14 @@ tables, events, reports, and `RESEARCH_LOG.md` are projections or narrative.
 `experiment-status` also validates registered step manifests and frozen plan
 control bundles, but ignores those projections and never queries Slurm,
 processes, GPUs, checkpoints, or W&B. Its argv suggestions remain advisory and
-require the same explicit authorization as invoking the underlying command.
+require the same explicit authorization as invoking the underlying command. It
+reuses the pure `decision_rules` recipe structure owner without consultation or
+external input probes. Active adaptive and pipeline plans defer only their
+controller-owned advance/finalize actions, so an unrelated ordinary candidate
+may still be shown. Completed metadata fails closed when either kind of
+controller-deferred plan exists because the v1 read-set cannot prove controller
+completion. A registered step whose plan and canonical rows have not yet been
+materialized also blocks finalization instead of being treated as completed.
 Managed direct and Slurm follow-up always uses frozen canonical identity.
 Slurm terminal truth normally combines scheduler and sidecar evidence; a purged
 job with explicitly disabled accounting has one narrow authenticated recovery

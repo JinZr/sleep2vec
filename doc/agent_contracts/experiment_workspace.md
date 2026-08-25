@@ -176,9 +176,21 @@ invalid and are not repaired in place.
   step and frozen plan control bundle, and the canonical `run_manifest.tsv`,
   then prints a deterministic read-only snapshot. It never reads projections
   as lifecycle evidence, refreshes runtime observations, or writes workspace
-  state. Suggested commands are advisory argv arrays and do not authorize a
-  launch or mutation. Valid blockers return success; corrupt canonical control
-  state or local/SSH read failure returns non-zero.
+  state. Frozen recipe structure is validated by the same dictionary-only
+  `decision_rules` owner used by planning; status does not rerun consultation,
+  policy decisions, config loading, or external input/path probes. Layered
+  recipes validate both source layers plus any effective-only overlay produced
+  after their canonical merge. Suggested commands are advisory argv arrays and
+  do not authorize a launch or mutation.
+  Active adaptive and pipeline plans produce plan-scoped blockers for their
+  controller-owned advance/finalize actions without blocking an unrelated
+  ordinary plan launch. Because the v1 read-set contains no controller
+  completion proof, completed experiment metadata with any adaptive or
+  pipeline plan fails as corrupt canonical control state. A registered step
+  with no materialized plan and no canonical rows likewise blocks finalization;
+  completed metadata cannot prove that controller-deferred work was completed.
+  Valid blockers return success; corrupt canonical control state or local/SSH
+  read failure returns non-zero.
 - `experiment-rank` writes experiment-wide ranking.
 - `experiment-finalize` requires no active runs and a non-empty final report.
 

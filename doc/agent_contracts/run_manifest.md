@@ -228,7 +228,17 @@ Experiment checkpoint indexing follows each row's frozen runtime/checkpoint pair
 It may display scheduler, process, health, checkpoint, and runtime-manifest
 fields already recorded in a row, but it does not refresh them and never reads
 `run_status.tsv`, `launch_manifest.tsv`, reports, events, runtime manifests,
-logs, or W&B as alternate lifecycle evidence.
+logs, W&B, pipeline controller state, or adaptive controller state as alternate
+lifecycle evidence. It validates frozen recipe structure through
+`decision_rules` without consultation, config/path probing, or runtime
+preflight. Active adaptive and pipeline plans remain legal plan-scoped blockers;
+their controller-owned advance and finalize actions are not inferred. If
+`experiment.yaml` is already completed, the v1 read-set accepts only ordinary
+plans with terminal canonical rows and rejects any adaptive or pipeline plan
+because controller completion cannot be proven. A registered step without a
+materialized plan or canonical rows is also an explicit finalize blocker and a
+completed-metadata contract error, rather than evidence that the declared work
+is absent.
 
 Every hparam mutation first validates workspace ownership, step registration, frozen run hashes, the independent `recipe.resolved.yaml` byte digest recorded by `plan.json`, and equality between the two complete effective recipe copies. Missing or partial canonical state fails rather than being repaired by launch, selection, collection, or postprocess.
 

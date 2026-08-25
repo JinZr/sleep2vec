@@ -37,6 +37,13 @@ imports.
 submission-validation contract. `adaptive_hparam` owns the surrounding digest,
 preflight, round registration, launch, and lifecycle orchestration.
 
+`decision_rules` owns the pure, dictionary-only recipe structure contract:
+registered task and variant, top-level closure, runtime, task sections,
+execution, and artifacts. `plans` adds authored/base/local layer orchestration
+and policy-dependent decision validation; `run_artifacts` reuses the structural
+owner for frozen registered plans without consultation, config/path probes, or
+live observation.
+
 `managed_scheduler` owns backend selection plus the reusable direct
 GPU-capacity/process lifecycle and Slurm submit/observe lifecycle shared by
 managed launchers. `slurm` owns scheduler resource/script contracts, CLI
