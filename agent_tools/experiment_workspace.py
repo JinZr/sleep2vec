@@ -427,11 +427,19 @@ def _validated_step_manifest(text: str, path: Path, step_id: str) -> dict[str, A
     if normalized != payload:
         raise ValueError(f"Managed step manifest has an incomplete canonical envelope: {path}")
     step = payload["step"]
+    step_issues = experiment_metadata_issues(
+        {"step": step},
+        require_values=False,
+        allow_step_io=True,
+    )
+    if step_issues:
+        raise ValueError(
+            f"Managed step manifest has invalid step metadata: {path}: "
+            + "; ".join(issue["message"] for issue in step_issues)
+        )
     for field in ("id", "phase", "purpose"):
         if not str(step.get(field) or "").strip():
             raise ValueError(f"Managed step manifest is missing step.{field}: {path}")
-    if step["phase"] not in PHASES:
-        raise ValueError(f"Managed step manifest has invalid step.phase: {path}")
     if str(step["id"]) != str(step_id):
         raise ValueError(f"Managed step manifest id differs from its directory: {path}")
     if not str(payload["experiment_id"] or "").strip():

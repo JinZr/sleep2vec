@@ -616,6 +616,19 @@ def test_experiment_status_preserves_registered_step_io_metadata(tmp_path):
         experiments.experiment_status(root)
 
 
+def test_experiment_status_rejects_unknown_registered_step_metadata(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train")
+    step_path = root / "steps" / "train" / "step.yaml"
+    step_manifest = yaml.safe_load(step_path.read_text())
+    step_manifest["step"]["purpsoe"] = "typo"
+    step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
+
+    with pytest.raises(ValueError, match="Unknown step field: purpsoe"):
+        experiments.experiment_status(root)
+
+
 def test_experiment_status_rejects_supported_task_relabel_with_foreign_command(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
