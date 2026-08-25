@@ -343,6 +343,48 @@ def test_experiment_status_skips_registered_blocked_plan_after_successful_plan(t
     assert _workspace_files(root) == before
 
 
+def test_experiment_status_rejects_recipe_path_drift_on_ordinary_retry(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = write_finetune_recipe(root, include_label=False)
+    blocked_dir = root / "plans" / "blocked"
+    assert plans.build_plan(recipe_path=recipe, output_dir=blocked_dir).exit_code == 2
+
+    decisions_path = write_yaml(
+        root / "decisions.yaml",
+        {"decisions": {"label_name": {"value": "ahi", "source": "explicit_user"}}},
+    )
+    retry_dir = root / "plans" / "retry"
+    assert plans.build_plan(recipe_path=recipe, output_dir=retry_dir, user_decisions_path=decisions_path).exit_code == 0
+    plan_path = retry_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"]["_recipe_path"] = str(root / "foreign-recipe.yaml")
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(ValueError, match="recipe path differs from its managed step"):
+        experiments.experiment_status(root)
+
+
+@pytest.mark.parametrize(("adaptive", "pipeline"), [(True, False), (False, True)])
+def test_experiment_status_allows_controller_owned_recipe_path(tmp_path, adaptive, pipeline):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(
+        root,
+        step_id="train",
+        task="hparam_tune" if adaptive else "finetune",
+        adaptive=adaptive,
+        pipeline=pipeline,
+    )
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"]["_recipe_path"] = str(root / "controller-recipe.yaml")
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "blocked"
+
+
 def test_experiment_status_rejects_blocked_artifacts_beside_pass_plan(tmp_path):
     root = tmp_path / "experiment"
     recipe = write_finetune_recipe(root)

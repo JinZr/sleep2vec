@@ -258,10 +258,6 @@ def read_registered_plan(
     managed_step = {field: step_manifest["step"][field] for field in ("id", "phase", "purpose")}
     if step != managed_step:
         raise ValueError(f"Registered plan step metadata differs from its managed step: {plan_dir}")
-    # recipe_path owns the first plan; adaptive and pipeline controllers may append plans with their own frozen recipes.
-    if str(plan_dir) == registered_paths[0] and recipe.get("_recipe_path", "") != step_manifest.get("recipe_path", ""):
-        raise ValueError(f"Registered plan recipe path differs from its managed step: {plan_dir}")
-
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs or any(not isinstance(run, dict) for run in runs):
         raise ValueError(f"Registered plan must define a non-empty runs list of mappings: {plan_path}")
@@ -398,11 +394,19 @@ def read_registered_plan(
         raise ValueError(f"Registered plan frozen file SHA-256 changed: {final_path}")
 
     matching_rows = [canonical_by_key[key] for key in plan_keys]
+    adaptive_owned = recipe.get("adaptive", {}).get("enabled") is True
+    pipeline_owned = any(row.get("pipeline_id") not in (None, "") for row in matching_rows)
+    if (
+        not adaptive_owned
+        and not pipeline_owned
+        and recipe.get("_recipe_path", "") != step_manifest.get("recipe_path", "")
+    ):
+        raise ValueError(f"Registered plan recipe path differs from its managed step: {plan_dir}")
     return {
         "path": str(plan_dir),
         "task": task,
-        "adaptive": recipe.get("adaptive", {}).get("enabled") is True,
-        "pipeline": any(row.get("pipeline_id") not in (None, "") for row in matching_rows),
+        "adaptive": adaptive_owned,
+        "pipeline": pipeline_owned,
         "run_keys": plan_keys,
         "launch_script": str(launch_script),
     }
