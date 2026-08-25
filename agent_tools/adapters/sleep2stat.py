@@ -217,6 +217,9 @@ class Sleep2statAdapter(TaskAdapter):
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         return SLEEP2STAT_RUNTIME_FIELDS
 
+    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
+        return ("python", "-m", "sleep2stat")
+
     def matches_config_data(self, data: dict[str, Any]) -> bool:
         return {"run", "data", "signals", "analyzers", "reducers", "outputs"}.issubset(set(data))
 
@@ -363,22 +366,18 @@ class Sleep2statAdapter(TaskAdapter):
         run_dir = sleep2stat_config_run_dir(config_summary)
         if not run_dir:
             return []
+        prefix = self.frozen_command_prefix(recipe)
         commands = [
-            render_command(["python", "-m", "sleep2stat", "validate-config", "--config", config]),
+            render_command([*prefix, "validate-config", "--config", config]),
         ]
         if sleep2stat_has_yasa_stage(config_summary):
             commands.append(
-                render_command(
-                    ["python", "-m", "sleep2stat", "validate-config", "--config", config]
-                    + sleep2stat_record_check_args(recipe)
-                )
+                render_command([*prefix, "validate-config", "--config", config] + sleep2stat_record_check_args(recipe))
             )
         commands.append(
             render_command(
                 [
-                    "python",
-                    "-m",
-                    "sleep2stat",
+                    *prefix,
                     "run",
                     "--config",
                     config,
@@ -387,12 +386,10 @@ class Sleep2statAdapter(TaskAdapter):
             )
         )
         if runtime.get("summarize_after_run", True) and not runtime.get("dry_run"):
-            commands.append(render_command(["python", "-m", "sleep2stat", "summarize", "--run-dir", run_dir]))
+            commands.append(render_command([*prefix, "summarize", "--run-dir", run_dir]))
         if runtime.get("plot_cohort_after_run") is True and not runtime.get("dry_run"):
             plot_cmd = [
-                "python",
-                "-m",
-                "sleep2stat",
+                *prefix,
                 "plot-cohort",
                 "--run-dir",
                 run_dir,

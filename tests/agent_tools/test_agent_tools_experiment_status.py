@@ -45,8 +45,12 @@ def _add_plan(
     config_path = run_dir / "config.yaml"
     script_path = run_dir / "launch.sh"
     artifacts_path = run_dir / "artifacts.json"
+    recipe = {"task": task, "experiment": experiment, "step": step}
+    if task != "sleep2stat":
+        recipe["variant"] = "sleep2vec"
+    command = "python -m sleep2stat" if task == "sleep2stat" else "python -m sleep2vec.finetune"
     config_path.write_text("model: unit\n")
-    script_path.write_text("#!/bin/sh\nexit 0\n")
+    script_path.write_text(f"#!/bin/sh\n{command}\n")
     artifacts_path.write_text("{}\n")
     config_sha256 = _sha256(config_path)
     script_sha256 = _sha256(script_path)
@@ -70,19 +74,18 @@ def _add_plan(
         run["parameter_summary"] = "single resolved recipe"
     if host is not None:
         run["host"] = host
-    recipe = {"task": task, "experiment": experiment, "step": step}
     if adaptive:
         recipe["adaptive"] = {"enabled": True}
     resolved_text = yaml.safe_dump(recipe, sort_keys=False)
     resolved_path = plan_dir / "recipe.resolved.yaml"
     resolved_path.write_text(resolved_text)
-    plan_run = {**run, "command": "exit 0"}
+    plan_run = {**run, "command": command}
     plan = {"status": "PASS", "recipe": recipe, "runs": [plan_run]}
     if task == "hparam_tune":
         plan["resolved_recipe_sha256"] = _sha256(resolved_path)
-        (plan_dir / "run_all.sh").write_text("#!/bin/sh\nexit 0\n")
+        (plan_dir / "run_all.sh").write_text(f"#!/bin/sh\n{command}\n")
     else:
-        plan["commands"] = ["exit 0"]
+        plan["commands"] = [command]
         (plan_dir / "run.sh").write_text(script_path.read_text())
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
 
@@ -183,6 +186,24 @@ def test_experiment_status_accepts_public_generic_plan_without_runtime_directori
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
     assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(plan_dir / "run.sh")]
+
+
+def test_experiment_status_rejects_supported_task_relabel_with_foreign_command(tmp_path):
+    root = tmp_path / "experiment"
+    payload = yaml.safe_load((REPO_ROOT / "recipes/examples/tiny_fixture_sleep2stat.yaml").read_text())
+    recipe = write_yaml(root / "sleep2stat.yaml", payload)
+    plan_dir = root / "plans" / "sleep2stat"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    plan["recipe"].update({"task": "embedding_extraction", "variant": "sleep2vec"})
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
+    resolved.update({"task": "embedding_extraction", "variant": "sleep2vec"})
+    (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
+
+    with pytest.raises(ValueError, match="task-owned entrypoint"):
+        experiments.experiment_status(root)
 
 
 def test_experiment_status_rejects_finetune_plan_without_runtime_directories(tmp_path):
@@ -398,6 +419,19 @@ def test_experiment_status_rejects_contradictory_scheduler_identity(tmp_path):
         experiments.experiment_status(root)
 
 
+@pytest.mark.parametrize("status", ["planned", "pending"])
+@pytest.mark.parametrize("field", ["pid", "process_group_id", "process_start_token"])
+def test_experiment_status_rejects_process_identity_on_launchable_direct_runs(tmp_path, status, field):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _plan, canonical = _add_plan(root, step_id="train", status=status)
+    canonical[field] = "42"
+    write_rows(root / "run_manifest.tsv", [canonical])
+
+    with pytest.raises(ValueError, match="Launchable direct managed run cannot define PID process identity"):
+        experiments.experiment_status(root)
+
+
 @pytest.mark.parametrize("status", ["unknown_scheduler", "unknown_remote", "missing_pid", "submitting"])
 def test_experiment_status_uncertain_states_recommend_only_monitor(tmp_path, status):
     root = tmp_path / "experiment"
@@ -548,6 +582,18 @@ def test_experiment_status_defers_terminal_pipeline_finalization(tmp_path):
     manifest = yaml.safe_load((root / "experiment.yaml").read_text())
     manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
     (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+    with pytest.raises(ValueError, match="pipeline jobs without a successful canonical attempt"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_accepts_completed_pipeline_with_successful_attempt(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="evaluate", status="completed", pipeline=True)
+    manifest = yaml.safe_load((root / "experiment.yaml").read_text())
+    manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
+    (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+
     assert experiments.experiment_status(root)["summary"]["state"] == "completed"
 
 
@@ -788,6 +834,25 @@ def test_experiment_status_cli_returns_one_for_non_mapping_plan_run(tmp_path, ca
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("error:")
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize("adaptive", [None, False, "invalid", ["invalid"]])
+def test_experiment_status_cli_returns_one_for_non_mapping_adaptive(tmp_path, capsys, adaptive):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="train")
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    plan["recipe"]["adaptive"] = adaptive
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
+    resolved["adaptive"] = adaptive
+    (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
+
+    assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "adaptive must be a mapping" in captured.err
     assert "Traceback" not in captured.err
 
 

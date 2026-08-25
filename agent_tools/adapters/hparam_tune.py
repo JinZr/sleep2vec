@@ -8,7 +8,7 @@ from .. import slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
 from ..models import coerce_list
-from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, finetune_loaded_split_values
+from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, finetune_loaded_split_values, variant_module
 from .base import TaskAdapter
 
 
@@ -41,6 +41,10 @@ class HparamTuneAdapter(TaskAdapter):
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         return FINETUNE_RUNTIME_FIELDS | INFER_RUNTIME_FIELDS
+
+    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        return (str(execution.get("python") or "python"), "-m", variant_module(recipe, "finetune"))
 
     def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
         return hparam_recipe_contract_issues(recipe, source_layer=source_layer)

@@ -43,6 +43,9 @@ class FinetuneAdapter(TaskAdapter):
             fields = fields - {"wandb_mode"}
         return fields
 
+    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
+        return ("python", "-m", variant_module(recipe, "finetune"))
+
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         inputs = _inputs(recipe)
         required: list[tuple[str, Any]] = []
@@ -194,9 +197,7 @@ class FinetuneAdapter(TaskAdapter):
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
         test_after_fit = evaluation["test_after_fit"]
         pieces = [
-            "python",
-            "-m",
-            variant_module(recipe, "finetune"),
+            *self.frozen_command_prefix(recipe),
             "--config",
             inputs.get("config"),
             "--label-name",

@@ -21,6 +21,7 @@ from agent_tools import experiment_io, experiment_workspace, experiments, hparam
 from agent_tools.experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     MANAGED_RUN_PATH_FIELDS,
+    PROCESS_IDENTITY_FIELDS,
     SCHEDULER_BINDING_FIELDS,
     append_event,
     canonical_local_experiment_root,
@@ -1492,7 +1493,8 @@ def test_merge_run_manifest_rejects_frozen_field_changes_before_writing(
     changed = str(tmp_path / "changed") if field in MANAGED_RUN_PATH_FIELDS and incoming_value else incoming_value
     workspace_experiment_id = original if field == "experiment_id" else identity["experiment_id"]
     (tmp_path / "experiment.yaml").write_text(f"experiment:\n  id: {workspace_experiment_id}\n")
-    initial = {**identity, field: original, "status": "planned"}
+    status = "launched" if field in PROCESS_IDENTITY_FIELDS else "planned"
+    initial = {**identity, field: original, "status": status}
     if field in EXECUTION_IDENTITY_FIELDS and field != "target":
         initial["target"] = "local"
     merge_run_manifest(tmp_path, [initial])

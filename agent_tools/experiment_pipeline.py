@@ -17,6 +17,7 @@ import yaml
 
 from . import experiment_io as exp_io, managed_scheduler, run_artifacts as artifacts
 from .experiment_workspace import (
+    SUCCESS_STATUSES,
     TERMINAL_STATUSES,
     append_event,
     canonical_local_experiment_root,
@@ -34,7 +35,6 @@ from .plans import build_plan, preflight_plan
 
 SCHEMA_VERSION = 1
 PIPELINE_KIND = "external_matrix"
-SUCCESS_STATUSES = {"completed", "finished"}
 SOURCE_MANIFEST_SUCCESS_STATUSES = SUCCESS_STATUSES | {"skipped_test"}
 ACTIVE_STATUSES = {"launched", "running"}
 UNCERTAIN_STATUSES = {"missing_pid", "unknown_remote"}

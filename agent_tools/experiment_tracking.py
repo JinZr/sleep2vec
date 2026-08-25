@@ -20,6 +20,7 @@ from . import (
     transport,
 )
 from .experiment_workspace import (
+    SUCCESS_STATUSES,
     TERMINAL_STATUSES,
     managed_run_key,
     merge_run_row,
@@ -570,6 +571,22 @@ def experiment_status_snapshot(
         for plan in registered["plans"]
         if plan["adaptive"]
     ]
+    if completed:
+        pipeline_jobs: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in (row for plan_rows in pipeline_plan_rows for row in plan_rows):
+            key = (str(row["pipeline_id"]), str(row["job_id"]))
+            pipeline_jobs.setdefault(key, []).append(row)
+        incomplete_jobs = sorted(
+            key
+            for key, job_rows in pipeline_jobs.items()
+            if not any(row["status"] in SUCCESS_STATUSES for row in job_rows)
+        )
+        if incomplete_jobs:
+            jobs = ", ".join(f"{pipeline_id} / {job_id}" for pipeline_id, job_id in incomplete_jobs)
+            raise ValueError(
+                "Completed experiment metadata conflicts with pipeline jobs without a successful canonical "
+                f"attempt: {jobs}"
+            )
     row_payloads = [_status_run_payload(row) for row in sorted_rows]
     step_payloads = []
     for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):

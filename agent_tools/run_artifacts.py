@@ -5,11 +5,12 @@ import json
 import math
 import os
 from pathlib import Path
+import shlex
 import stat
 from typing import Any, Iterator
 
 from . import experiment_io as exp_io
-from .adapters import SUPPORTED_TASKS
+from .adapters import SUPPORTED_TASKS, get_adapter
 from .experiment_workspace import (
     SCHEDULER_PLAN_IDENTITY_FIELDS,
     SHA256_RE,
@@ -141,6 +142,10 @@ def read_registered_plan(
     task = recipe.get("task")
     if not isinstance(task, str) or task not in SUPPORTED_TASKS:
         raise ValueError(f"Unsupported registered plan task: {task!r}")
+    adapter = get_adapter(task)
+    assert adapter is not None
+    if "adaptive" in recipe and not isinstance(recipe["adaptive"], dict):
+        raise ValueError(f"Registered plan adaptive must be a mapping: {plan_path}")
     if task == "hparam_tune" and plan.get("resolved_recipe_sha256") in (None, ""):
         raise ValueError(f"Frozen hparam recipe SHA-256 is missing or changed: {resolved_recipe_path}")
     frozen_recipe = _resolved_recipe_view(recipe, task)
@@ -250,6 +255,7 @@ def read_registered_plan(
             command = str(run.get("command") or "")
             if not command or command not in bundle[str(run["script"])]["text"].splitlines():
                 raise ValueError(f"Registered plan command differs from its frozen launch script: {run['run_id']}")
+            _validate_frozen_command(command, adapter.frozen_command_prefix(recipe), plan_path)
     else:
         commands = plan.get("commands")
         launch_lines = bundle[str(launch_script)]["text"].splitlines()
@@ -263,16 +269,27 @@ def read_registered_plan(
             raise ValueError(f"Generic registered plan must contain exactly one run: {plan_path}")
         if bundle[str(launch_script)]["sha256"] != str(runs[0].get("script_sha256") or ""):
             raise ValueError(f"Registered plan run.sh differs from its frozen launch script: {launch_script}")
+        for command in commands:
+            _validate_frozen_command(command, adapter.frozen_command_prefix(recipe), plan_path)
 
     matching_rows = [canonical_by_key[key] for key in plan_keys]
     return {
         "path": str(plan_dir),
         "task": task,
-        "adaptive": (recipe.get("adaptive") or {}).get("enabled") is True,
+        "adaptive": recipe.get("adaptive", {}).get("enabled") is True,
         "pipeline": any(row.get("pipeline_id") not in (None, "") for row in matching_rows),
         "run_keys": plan_keys,
         "launch_script": str(launch_script),
     }
+
+
+def _validate_frozen_command(command: str, prefix: tuple[str, ...], plan_path: Path) -> None:
+    try:
+        tokens = shlex.split(command)
+    except ValueError as exc:
+        raise ValueError(f"Registered plan command is not valid shell syntax: {plan_path}") from exc
+    if tuple(tokens[: len(prefix)]) != prefix:
+        raise ValueError(f"Registered plan command does not match task-owned entrypoint: {plan_path}")
 
 
 def _text_value(value: Any) -> str:

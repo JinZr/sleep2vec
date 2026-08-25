@@ -19,6 +19,7 @@ import yaml
 from . import experiment_io as exp_io, gpu_rules, run_evidence as evidence, slurm, transport
 from .experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
+    LAUNCHABLE_STATUSES,
     PROCESS_IDENTITY_FIELDS,
     SCHEDULER_PLAN_IDENTITY_FIELDS,
     append_event,
@@ -37,7 +38,6 @@ RunKey = tuple[str, str]
 ACTIVE_STATUSES = frozenset(
     {"submitting", "queued", "launched", "running", "stopping", "unknown_remote", "unknown_scheduler", "missing_pid"}
 )
-LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
 LAUNCH_TIMEOUT_SECONDS = 60
 EXECUTION_SNAPSHOT_NAME = "execution_snapshot.json"
 
@@ -53,6 +53,7 @@ __all__ = [
     "ACTIVE_STATUSES",
     "CapacityState",
     "EXECUTION_SNAPSHOT_NAME",
+    "LAUNCHABLE_STATUSES",
     "LAUNCH_TIMEOUT_SECONDS",
     "LaunchResult",
     "MissingPidCapacityError",

@@ -86,6 +86,10 @@ class InferEvaluateAdapter(TaskAdapter):
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         return INFER_RUNTIME_FIELDS
 
+    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        return (str(execution.get("python") or "python"), "-m", variant_module(recipe, "infer"))
+
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         inputs = _inputs(recipe)
         runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
@@ -203,13 +207,10 @@ class InferEvaluateAdapter(TaskAdapter):
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
         inputs = _inputs(recipe)
         runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
         return [
             render_command(
                 [
-                    execution.get("python") or "python",
-                    "-m",
-                    variant_module(recipe, "infer"),
+                    *self.frozen_command_prefix(recipe),
                     "--config",
                     inputs.get("config"),
                     "--ckpt-path",

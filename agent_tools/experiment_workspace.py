@@ -18,6 +18,8 @@ from .models import REPO_ROOT, json_ready
 
 PHASES = {"prepare", "train", "evaluate", "analyze"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
+SUCCESS_STATUSES = frozenset({"completed", "finished"})
+LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
 MONITOR_EXIT_CODE_PREFIX = "AGENT_TOOLS_EXIT_CODE="
 PROCESS_IDENTITY_FIELDS = {"pid", "process_group_id", "process_start_token"}
 SCHEDULER_PLAN_IDENTITY_FIELDS = {
@@ -1192,6 +1194,8 @@ def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
     if backend == "direct":
         if populated_scheduler:
             raise ValueError("Direct managed run cannot define Slurm scheduler identity.")
+        if row.get("status") in LAUNCHABLE_STATUSES and populated_process:
+            raise ValueError("Launchable direct managed run cannot define PID process identity.")
         return
     if populated_process:
         raise ValueError("Slurm managed run cannot define PID process identity.")

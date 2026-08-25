@@ -183,6 +183,10 @@ class TaskAdapter:
         """Allowed ``runtime.*`` fields; variant-sensitive for some tasks."""
         return frozenset()
 
+    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
+        """Task-owned prefix required for every command in a frozen plan."""
+        raise NotImplementedError
+
     def matches_config_data(self, data: dict[str, Any]) -> bool:
         """Whether a loaded config mapping belongs to this task's domain."""
         return False
