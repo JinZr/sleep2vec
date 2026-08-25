@@ -562,6 +562,12 @@ def experiment_status_snapshot(
         for plan in registered["plans"]
         if plan["pipeline"]
     ]
+    adaptive_plan_rows = [
+        [rows_by_key[tuple(key)] for key in plan["run_keys"]]
+        for registered in registered_steps
+        for plan in registered["plans"]
+        if plan["adaptive"]
+    ]
     row_payloads = [_status_run_payload(row) for row in sorted_rows]
     step_payloads = []
     for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
@@ -641,8 +647,17 @@ def experiment_status_snapshot(
                 )
             decision["recommended_next"] = _monitor_action(root, remote)
         elif all(row["status"] in TERMINAL_STATUSES for row in sorted_rows):
-            if pipeline_plan_rows:
+            if pipeline_plan_rows or adaptive_plan_rows:
                 state = "blocked"
+                for plan_rows in adaptive_plan_rows:
+                    blockers.append(
+                        _status_blocker(
+                            "adaptive_phase_deferred",
+                            "Status v1 cannot verify adaptive controller completion or its remaining search budget.",
+                            rows=plan_rows,
+                            blocked_actions=["adaptive_advance", "finalize"],
+                        )
+                    )
                 for plan_rows in pipeline_plan_rows:
                     blockers.append(
                         _status_blocker(

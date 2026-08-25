@@ -423,6 +423,20 @@ def test_experiment_status_defers_terminal_pipeline_finalization(tmp_path):
     assert experiments.experiment_status(root)["summary"]["state"] == "completed"
 
 
+def test_experiment_status_defers_terminal_adaptive_finalization(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", status="completed", task="hparam_tune", adaptive=True)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "blocked"
+    assert snapshot["decision"]["recommended_next"] is None
+    assert snapshot["decision"]["other_legal_actions"] == []
+    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize"]
+    assert snapshot["blockers"][0]["code"] == "adaptive_phase_deferred"
+
+
 def test_experiment_status_terminal_and_completed_contract(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
