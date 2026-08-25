@@ -129,12 +129,22 @@ def is_registered_blocked_plan(
     except ValueError as exc:
         raise ValueError(f"Registered plan is outside its managed workspace: {plan_dir}") from exc
     plan_path = plan_dir / "plan.json"
+    resolved_recipe_path = plan_dir / "recipe.resolved.yaml"
     blocked_only_paths = [
         plan_dir / "questions.json",
         plan_dir / "questions.md",
         plan_dir / "plan.blocked.md",
         plan_dir / "plan.draft.json",
     ]
+    # Existence checks may follow local aliases, so validate every possible control file's ancestry first.
+    try:
+        exp_io.validate_managed_output_paths(
+            workspace,
+            [plan_path, resolved_recipe_path, *blocked_only_paths],
+            remote=remote,
+        )
+    except ValueError as exc:
+        raise ValueError(f"Registered plan control bundle is missing or aliased: {plan_dir}") from exc
     plan_exists = exp_io.path_exists_at(plan_path, remote=remote)
     blocked_entries = [path for path in blocked_only_paths if exp_io.path_exists_at(path, remote=remote)]
     if plan_exists:
@@ -142,7 +152,6 @@ def is_registered_blocked_plan(
             raise ValueError(f"Registered plan contains both PASS and blocked planning artifacts: {plan_dir}")
         return False
     blocked_path = plan_dir / "plan.blocked.md"
-    resolved_recipe_path = plan_dir / "recipe.resolved.yaml"
     if not exp_io.path_exists_at(blocked_path, remote=remote) or exp_io.path_exists_at(
         resolved_recipe_path, remote=remote
     ):

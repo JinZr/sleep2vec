@@ -2221,6 +2221,31 @@ def test_experiment_status_rejects_plan_escape_before_external_probe(tmp_path, m
         experiments.experiment_status(root)
 
 
+def test_experiment_status_rejects_aliased_plan_directory_before_file_probe(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    alias = root / "plans" / "alias"
+    alias.symlink_to(outside, target_is_directory=True)
+    step_path = root / "steps" / "train" / "step.yaml"
+    step_manifest = yaml.safe_load(step_path.read_text())
+    step_manifest["plans"] = [str(alias)]
+    step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
+    path_exists_at = experiment_io.path_exists_at
+
+    def reject_aliased_file_probe(path, *, remote=None):
+        if Path(path).is_relative_to(alias):
+            raise AssertionError(f"status probed through an aliased plan directory: {path}")
+        return path_exists_at(path, remote=remote)
+
+    monkeypatch.setattr(experiment_io, "path_exists_at", reject_aliased_file_probe)
+
+    with pytest.raises(ValueError, match="missing or aliased"):
+        experiments.experiment_status(root)
+
+
 @pytest.mark.parametrize("field", ["title", "objective", "baseline"])
 def test_experiment_status_rejects_coherent_registered_plan_experiment_drift(tmp_path, field):
     root = tmp_path / "experiment"
