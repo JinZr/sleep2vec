@@ -9,8 +9,8 @@ import shlex
 import stat
 from typing import Any, Iterator
 
-from . import experiment_io as exp_io
-from .adapters import SUPPORTED_TASKS, get_adapter
+from . import decision_rules as task_rules, experiment_io as exp_io
+from .adapters import get_adapter
 from .experiment_workspace import (
     SCHEDULER_PLAN_IDENTITY_FIELDS,
     SHA256_RE,
@@ -27,6 +27,7 @@ from .experiment_workspace import (
 )
 from .manifests import read_json
 from .models import REPO_ROOT
+from .recipes import merge_recipe_layers
 
 RUN_METADATA_FIELDS = ("experiment_id", "run_name", "version")
 REGISTERED_PLAN_IDENTITY_FIELDS = (
@@ -47,10 +48,8 @@ REGISTERED_PLAN_IDENTITY_FIELDS = (
 )
 
 
-def _resolved_recipe_view(recipe: dict[str, Any], task: str) -> dict[str, Any]:
-    if task == "hparam_tune":
-        return {key: value for key, value in recipe.items() if key != "_recipe_path"}
-    return {key: value for key, value in recipe.items() if not str(key).startswith("_")}
+def _resolved_recipe_view(recipe: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in recipe.items() if key != "_recipe_path"}
 
 
 def _read_plan_documents(
@@ -140,17 +139,57 @@ def read_registered_plan(
     if recipe is None:
         raise ValueError(f"Registered plan is missing its recipe: {plan_path}")
     task = recipe.get("task")
-    if not isinstance(task, str) or task not in SUPPORTED_TASKS:
-        raise ValueError(f"Unsupported registered plan task: {task!r}")
-    adapter = get_adapter(task)
-    assert adapter is not None
-    if "adaptive" in recipe and not isinstance(recipe["adaptive"], dict):
-        raise ValueError(f"Registered plan adaptive must be a mapping: {plan_path}")
-    if task == "hparam_tune" and plan.get("resolved_recipe_sha256") in (None, ""):
+    adapter = get_adapter(task if isinstance(task, str) else None)
+    allowed_internal_fields = {"_recipe_path"}
+    if adapter is not None and adapter.base_task is not None:
+        allowed_internal_fields.update({"_base_recipe", "_local_recipe"})
+    unexpected_internal_fields = sorted(
+        str(field) for field in recipe if str(field).startswith("_") and field not in allowed_internal_fields
+    )
+    if unexpected_internal_fields:
+        raise ValueError(
+            f"Registered plan recipe has unsupported internal fields: {', '.join(unexpected_internal_fields)}"
+        )
+    if adapter is not None and adapter.materializes_plan and plan.get("resolved_recipe_sha256") in (None, ""):
         raise ValueError(f"Frozen hparam recipe SHA-256 is missing or changed: {resolved_recipe_path}")
-    frozen_recipe = _resolved_recipe_view(recipe, task)
+    frozen_recipe = _resolved_recipe_view(recipe)
     if frozen_recipe != resolved_recipe:
         raise ValueError(f"Registered plan recipe differs from recipe.resolved.yaml: {resolved_recipe_path}")
+
+    structure_issues = []
+    if adapter is not None and adapter.base_task is not None:
+        base_recipe = recipe.get("_base_recipe")
+        local_recipe = recipe.get("_local_recipe")
+        if not isinstance(base_recipe, dict) or not isinstance(local_recipe, dict):
+            raise ValueError(f"Registered composite plan is missing frozen base/local recipe layers: {plan_path}")
+        for layer_name, layer_task, layer in (
+            ("base", adapter.base_task, base_recipe),
+            ("local", adapter.task, local_recipe),
+        ):
+            unexpected_layer_fields = sorted(
+                str(field) for field in layer if str(field).startswith("_") and field != "_recipe_path"
+            )
+            if unexpected_layer_fields:
+                raise ValueError(
+                    f"Registered {layer_name} recipe has unsupported internal fields: "
+                    + ", ".join(unexpected_layer_fields)
+                )
+            if layer.get("task") != layer_task:
+                raise ValueError(f"Registered {layer_name} recipe task differs from its adapter owner: {plan_path}")
+            structure_issues.extend(task_rules.recipe_structure_issues(layer_task, layer, source_layer=layer_name))
+        effective_recipe = {key: value for key, value in recipe.items() if key not in {"_base_recipe", "_local_recipe"}}
+        effective_overlay = _mapping_overlay(merge_recipe_layers(base_recipe, local_recipe), effective_recipe)
+        effective_overlay.update({"task": task, "variant": recipe.get("variant")})
+        structure_issues.extend(task_rules.recipe_structure_issues(task, effective_overlay, source_layer="effective"))
+        for field in ("task", "variant", "adaptive"):
+            if recipe.get(field) != local_recipe.get(field):
+                raise ValueError(f"Registered composite recipe field differs from its local layer: {field}")
+    else:
+        structure_issues.extend(task_rules.recipe_structure_issues(task, recipe, source_layer="effective"))
+    if structure_issues:
+        messages = "; ".join(f"{issue.field}: {issue.message}" for issue in structure_issues)
+        raise ValueError(f"Invalid registered plan recipe: {messages}")
+    assert adapter is not None
 
     metadata_issues = experiment_metadata_issues(recipe)
     if metadata_issues:
@@ -223,7 +262,7 @@ def read_registered_plan(
                     hash_expectations[str(path)] = str(expected)
         bundle_paths.append(Path(str(run["artifacts"])))
 
-    launch_script = plan_dir / ("run_all.sh" if task == "hparam_tune" else "run.sh")
+    launch_script = plan_dir / ("run_all.sh" if adapter.materializes_plan else "run.sh")
     bundle_paths.append(launch_script)
     if "final_eval_config" in plan:
         final_eval_config = plan["final_eval_config"]
@@ -250,7 +289,7 @@ def read_registered_plan(
     for path, expected in hash_expectations.items():
         if bundle[path]["sha256"] != expected:
             raise ValueError(f"Registered plan frozen file SHA-256 changed: {path}")
-    if task == "hparam_tune":
+    if adapter.materializes_plan:
         for run in runs:
             command = str(run.get("command") or "")
             if not command or command not in bundle[str(run["script"])]["text"].splitlines():
@@ -296,6 +335,19 @@ def _text_value(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def _mapping_overlay(base: dict[str, Any], effective: dict[str, Any]) -> dict[str, Any]:
+    overlay = {}
+    for field, value in effective.items():
+        base_value = base.get(field)
+        if isinstance(value, dict) and isinstance(base_value, dict):
+            nested = _mapping_overlay(base_value, value)
+            if nested:
+                overlay[field] = nested
+        elif field not in base or value != base_value:
+            overlay[field] = value
+    return overlay
+
+
 def _validate_registered_run_parameters(
     recipe: dict[str, Any],
     plan_run: dict[str, Any],
@@ -304,11 +356,10 @@ def _validate_registered_run_parameters(
     plan_parameters = managed_run_parameters(plan_run)
     canonical_parameters = managed_run_parameters(canonical_run)
     declared_parameters = set()
-    if recipe.get("task") == "hparam_tune":
-        search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
-        parameters = search.get("parameters")
-        if isinstance(parameters, dict):
-            declared_parameters = {str(field) for field in parameters}
+    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    parameters = search.get("parameters")
+    if isinstance(parameters, dict):
+        declared_parameters = {str(field) for field in parameters}
     plan_parameter_keys = set(plan_parameters)
     canonical_parameter_keys = set(canonical_parameters)
     missing_parameters = plan_parameter_keys - canonical_parameter_keys
@@ -451,7 +502,7 @@ def read_hparam_plan(
     ]
     if legacy_fields:
         raise ValueError(f"Legacy hparam fields are read-only and unsupported: {', '.join(legacy_fields)}")
-    frozen_recipe = _resolved_recipe_view(recipe, "hparam_tune")
+    frozen_recipe = _resolved_recipe_view(recipe)
     if frozen_recipe != resolved_recipe:
         raise ValueError(f"Hparam plan recipe differs from recipe.resolved.yaml: {resolved_recipe_path}")
     for run in runs:

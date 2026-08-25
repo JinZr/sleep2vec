@@ -9,7 +9,18 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import cli, experiment_io, experiment_tracking, experiments, plans
+from agent_tools import (
+    cli,
+    decision_paths,
+    decisions,
+    experiment_io,
+    experiment_tracking,
+    experiments,
+    plan_context,
+    plans,
+    recipes,
+)
+from agent_tools.adapters import all_adapters
 from agent_tools.manifests import write_rows
 from agent_tools.models import REPO_ROOT
 
@@ -48,6 +59,27 @@ def _add_plan(
     recipe = {"task": task, "experiment": experiment, "step": step}
     if task != "sleep2stat":
         recipe["variant"] = "sleep2vec"
+    if task == "hparam_tune":
+        base_recipe = {
+            "task": "finetune",
+            "variant": "sleep2vec",
+            "experiment": experiment,
+            "step": step,
+        }
+        local_recipe = {
+            "task": "hparam_tune",
+            "variant": "sleep2vec",
+            "base_recipe": "base.yaml",
+            "experiment": experiment,
+            "step": step,
+        }
+        recipe.update(
+            {
+                "base_recipe": "base.yaml",
+                "_base_recipe": base_recipe,
+                "_local_recipe": local_recipe,
+            }
+        )
     command = "python -m sleep2stat" if task == "sleep2stat" else "python -m sleep2vec.finetune"
     config_path.write_text("model: unit\n")
     script_path.write_text(f"#!/bin/sh\n{command}\n")
@@ -75,7 +107,9 @@ def _add_plan(
     if host is not None:
         run["host"] = host
     if adaptive:
-        recipe["adaptive"] = {"enabled": True}
+        recipe["adaptive"] = {"enabled": True, "suggest": {"strategy": "best_neighborhood"}}
+        if task == "hparam_tune":
+            recipe["_local_recipe"]["adaptive"] = recipe["adaptive"]
     resolved_text = yaml.safe_dump(recipe, sort_keys=False)
     resolved_path = plan_dir / "recipe.resolved.yaml"
     resolved_path.write_text(resolved_text)
@@ -188,21 +222,115 @@ def test_experiment_status_accepts_public_generic_plan_without_runtime_directori
     assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(plan_dir / "run.sh")]
 
 
-def test_experiment_status_rejects_supported_task_relabel_with_foreign_command(tmp_path):
+def test_experiment_status_accepts_public_finetune_plan(tmp_path):
     root = tmp_path / "experiment"
-    payload = yaml.safe_load((REPO_ROOT / "recipes/examples/tiny_fixture_sleep2stat.yaml").read_text())
-    recipe = write_yaml(root / "sleep2stat.yaml", payload)
-    plan_dir = root / "plans" / "sleep2stat"
+    recipe = write_finetune_recipe(root)
+    plan_dir = root / "plans" / "train"
+
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
 
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(plan_dir / "run.sh")]
+
+
+def test_experiment_status_rejects_supported_task_relabel_with_foreign_command(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="train")
+
     plan = json.loads((plan_dir / "plan.json").read_text())
-    plan["recipe"].update({"task": "embedding_extraction", "variant": "sleep2vec"})
+    plan["recipe"]["task"] = "infer"
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
     resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
-    resolved.update({"task": "embedding_extraction", "variant": "sleep2vec"})
+    resolved["task"] = "infer"
     (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
 
     with pytest.raises(ValueError, match="task-owned entrypoint"):
+        experiments.experiment_status(root)
+
+
+@pytest.mark.parametrize(
+    ("task", "variant", "field"),
+    [
+        ("preset_prepare", "sex_age_baseline", "variant"),
+        ("sleep2stat", "sleep2vec", "variant"),
+    ],
+)
+def test_experiment_status_rejects_invalid_frozen_recipe_structure(tmp_path, capsys, task, variant, field):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="step")
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    plan["recipe"].update({"task": task, "variant": variant})
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
+    resolved.update({"task": task, "variant": variant})
+    (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
+
+    assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert field in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_experiment_status_rejects_unknown_frozen_internal_recipe_field(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="train")
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    plan["recipe"]["_private"] = True
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
+    resolved["_private"] = True
+    (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
+
+    with pytest.raises(ValueError, match="unsupported internal fields"):
+        experiments.experiment_status(root)
+
+
+@pytest.mark.parametrize(
+    ("layer", "field", "value"),
+    [("_base_recipe", "adaptive", {}), ("_local_recipe", "unknown", True)],
+)
+def test_experiment_status_rejects_layered_hparam_structure_drift(tmp_path, layer, field, value):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="tune", task="hparam_tune")
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    plan["recipe"][layer][field] = value
+    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
+    resolved[layer][field] = value
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    plan["resolved_recipe_sha256"] = _sha256(resolved_path)
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(ValueError, match="Invalid registered plan recipe"):
+        experiments.experiment_status(root)
+
+
+@pytest.mark.parametrize("section", [None, "execution"])
+def test_experiment_status_rejects_layered_hparam_effective_structure_drift(tmp_path, section):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="tune", task="hparam_tune")
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
+    if section is None:
+        plan["recipe"]["unknown"] = True
+        resolved["unknown"] = True
+    else:
+        plan["recipe"].setdefault(section, {})["unknown"] = True
+        resolved.setdefault(section, {})["unknown"] = True
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    plan["resolved_recipe_sha256"] = _sha256(resolved_path)
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(ValueError, match="Invalid registered plan recipe"):
         experiments.experiment_status(root)
 
 
@@ -524,7 +652,13 @@ def test_experiment_status_launch_actions_and_manual_choice(tmp_path):
 def test_experiment_status_does_not_infer_adaptive_or_pipeline_launch(tmp_path, adaptive, pipeline, code):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    _add_plan(root, step_id="train", adaptive=adaptive, pipeline=pipeline)
+    _add_plan(
+        root,
+        step_id="train",
+        task="hparam_tune" if adaptive else "finetune",
+        adaptive=adaptive,
+        pipeline=pipeline,
+    )
 
     snapshot = experiments.experiment_status(root)
 
@@ -537,7 +671,7 @@ def test_experiment_status_scopes_deferred_plans_away_from_ordinary_launch(tmp_p
     root = tmp_path / "experiment"
     _init_workspace(root)
     ordinary, _row = _add_plan(root, step_id="ordinary")
-    _add_plan(root, step_id="adaptive", adaptive=True)
+    _add_plan(root, step_id="adaptive", task="hparam_tune", adaptive=True)
     _add_plan(root, step_id="pipeline", pipeline=True)
 
     snapshot = experiments.experiment_status(root)
@@ -656,6 +790,14 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
         monkeypatch.setattr(experiment_io, name, unexpected)
     monkeypatch.setattr(experiments, "merge_run_manifest", unexpected)
     monkeypatch.setattr(experiment_tracking, "monitor_run_row", unexpected)
+    monkeypatch.setattr(plans, "evaluate_recipe", unexpected)
+    monkeypatch.setattr(decisions, "evaluate_consultation_gates", unexpected)
+    monkeypatch.setattr(recipes, "load_consultation_policy", unexpected)
+    monkeypatch.setattr(decision_paths, "path_issues", unexpected)
+    monkeypatch.setattr(plan_context, "load_config_summary_for_recipe", unexpected)
+    for adapter_type in {type(adapter) for adapter in all_adapters()}:
+        for name in ("task_issues", "preflight_issues", "configured_input_issues"):
+            monkeypatch.setattr(adapter_type, name, unexpected)
 
     baseline = experiments.experiment_status(root)
     assert _workspace_files(root) == before
@@ -841,13 +983,17 @@ def test_experiment_status_cli_returns_one_for_non_mapping_plan_run(tmp_path, ca
 def test_experiment_status_cli_returns_one_for_non_mapping_adaptive(tmp_path, capsys, adaptive):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    plan_dir, _canonical = _add_plan(root, step_id="train")
+    plan_dir, _canonical = _add_plan(root, step_id="train", task="hparam_tune")
     plan = json.loads((plan_dir / "plan.json").read_text())
     plan["recipe"]["adaptive"] = adaptive
-    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    plan["recipe"]["_local_recipe"]["adaptive"] = adaptive
     resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
     resolved["adaptive"] = adaptive
-    (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
+    resolved["_local_recipe"]["adaptive"] = adaptive
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    plan["resolved_recipe_sha256"] = _sha256(resolved_path)
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
 
     assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
     captured = capsys.readouterr()

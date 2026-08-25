@@ -10,7 +10,6 @@ from typing import Any
 import yaml
 
 from . import (
-    decision_paths as path_rules,
     decision_rules as task_rules,
     experiment_io as exp_io,
     plan_context as context,
@@ -26,6 +25,7 @@ from .decisions import (
     DecisionReport,
     DecisionStatus,
     consultation_contract_issues,
+    decision_entry_contract_issues,
     evaluate_consultation_gates,
     merge_status,
 )
@@ -47,22 +47,6 @@ from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
 from .models import REPO_ROOT, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions, recipe_name
-
-_COMMON_RECIPE_FIELDS = {"decisions", "experiment", "name", "step", "task", "variant"}
-
-
-def _recipe_fields_for_task(task: str) -> set[str] | None:
-    adapter = get_adapter(task)
-    if adapter is not None:
-        return _COMMON_RECIPE_FIELDS | adapter.recipe_extra_fields
-    return None
-
-
-def _artifact_fields_for_task(task: str) -> set[str]:
-    adapter = get_adapter(task)
-    if adapter is not None:
-        return set(adapter.artifact_fields)
-    return set()
 
 
 def _resolve_write_targets(task: str | None) -> dict[str, tuple[str, str]]:
@@ -135,28 +119,11 @@ def _source_recipe_contract_issues(
     policy: dict,
     source_layer: str,
 ) -> list[DecisionIssue]:
-    if task and task not in SUPPORTED_TASKS:
-        return [
-            _recipe_contract_issue(
-                "task",
-                f"Unsupported task: {task}",
-                task,
-                source_layer,
-            )
-        ]
-    allowed_top_level = _recipe_fields_for_task(task)
-    if allowed_top_level is None:
+    if not task:
         return []
-    issues = [
-        _recipe_contract_issue(
-            str(field),
-            f"Unknown recipe field for task={task or 'unresolved'}: {field}.",
-            recipe[field],
-            source_layer,
-        )
-        for field in sorted(set(recipe) - allowed_top_level)
-        if not str(field).startswith("_")
-    ]
+    issues = task_rules.recipe_structure_issues(task, recipe, source_layer=source_layer)
+    if task not in SUPPORTED_TASKS:
+        return issues
     for issue in experiment_metadata_issues(recipe, require_values=False, source_layer=source_layer):
         issues.append(
             DecisionIssue(
@@ -167,47 +134,8 @@ def _source_recipe_contract_issues(
                 issue.get("evidence", {}),
             )
         )
-    issues.extend(consultation_contract_issues(task or None, recipe, policy, source_layer=source_layer))
-    adapter = get_adapter(task)
-    adapter_contract = adapter.section_contract_issues(recipe, source_layer=source_layer) if adapter else None
-    if adapter_contract is not None:
-        issues.extend(adapter_contract)
-    else:
-        issues.extend(task_rules.task_recipe_contract_issues(task, recipe, source_layer=source_layer))
-        issues.extend(
-            path_rules.execution_contract_issues(
-                recipe,
-                source_layer=source_layer,
-                supports_runtime_identity=bool(adapter and adapter.supports_runtime_identity),
-            )
-        )
-    issues.extend(_artifact_contract_issues(task, recipe, source_layer))
+    issues.extend(decision_entry_contract_issues(task, recipe, policy, source_layer=source_layer))
     return issues
-
-
-def _artifact_contract_issues(task: str, recipe: dict, source_layer: str) -> list[DecisionIssue]:
-    if "artifacts" not in recipe:
-        return []
-    artifacts_value = recipe["artifacts"]
-    if not isinstance(artifacts_value, dict):
-        return [
-            _recipe_contract_issue(
-                "artifacts",
-                "artifacts must be a mapping.",
-                artifacts_value,
-                source_layer,
-            )
-        ]
-    allowed_fields = _artifact_fields_for_task(task)
-    return [
-        _recipe_contract_issue(
-            f"artifacts.{field}",
-            f"Unknown artifacts field for task={task}: {field}.",
-            artifacts_value[field],
-            source_layer,
-        )
-        for field in sorted(set(artifacts_value) - allowed_fields)
-    ]
 
 
 def _recipe_contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
