@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -20,6 +21,23 @@ def _read_table(path: Path) -> list[dict[str, str]]:
     delimiter = "\t" if path.suffix == ".tsv" else ","
     with path.open(newline="") as file_obj:
         return list(csv.DictReader(file_obj, delimiter=delimiter))
+
+
+def _mock_remote_managed_files(monkeypatch, reader) -> None:
+    def read_managed_files(root, paths, *, remote=None, exact_directory_entries=False):
+        files = {}
+        for path in paths:
+            text = reader(path, remote=remote)
+            files[str(path)] = {"text": text, "sha256": hashlib.sha256(text.encode()).hexdigest()}
+        return files
+
+    monkeypatch.setattr(experiment_io, "read_managed_files_at", read_managed_files)
+
+
+def _managed_file_payload(files: dict[str, str]) -> str:
+    return json.dumps(
+        {path: {"text": text, "sha256": hashlib.sha256(text.encode()).hexdigest()} for path, text in files.items()}
+    )
 
 
 def _experiment_spec(tmp_path: Path) -> Path:
@@ -178,11 +196,12 @@ def test_experiment_checkpoint_preflight_rejects_partial_paths_before_scan(
     )
     if remote:
         monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(
-            experiment_io,
-            "read_text_at",
-            lambda path, remote=None: Path(path).read_text() if Path(path).exists() else "",
-        )
+
+        def remote_reader(path, remote=None):
+            return Path(path).read_text() if Path(path).exists() else ""
+
+        monkeypatch.setattr(experiment_io, "read_text_at", remote_reader)
+        _mock_remote_managed_files(monkeypatch, remote_reader)
         monkeypatch.setattr(
             experiment_io,
             "path_exists_at",
@@ -1900,6 +1919,18 @@ def test_experiment_wandb_sync_remote_writes_outputs_over_ssh(monkeypatch):
         calls.append((command, kwargs))
         shell = command[-1]
         if "seen_inodes" in shell:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                _managed_file_payload(
+                    {
+                        "/wujidata/run/experiment.yaml": experiment_text,
+                        "/wujidata/run/run_manifest.tsv": run_manifest,
+                    }
+                ),
+                "",
+            )
+        if "experiment.yaml" in shell and "os.lstat" in shell and "sys.stdout.write" not in shell:
             return subprocess.CompletedProcess(command, 0, "", "")
         if "experiment.yaml" in shell and "sys.stdout.write" in shell:
             return subprocess.CompletedProcess(command, 0, experiment_text, "")
@@ -1985,11 +2016,13 @@ def test_experiment_remote_checkpoint_index_respects_manifest_epoch(monkeypatch,
 
     monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_io, "read_text_at", fake_read_text)
+    _mock_remote_managed_files(monkeypatch, fake_read_text)
     monkeypatch.setattr(
         experiment_io,
         "path_exists_at",
         lambda path, remote=None: str(path)
         in {
+            "/remote/workspace/experiment.yaml",
             "/remote/workspace/run_manifest.tsv",
             "/remote/runtime/run_a",
             "/remote/runtime/run_a/checkpoints",
@@ -2215,11 +2248,13 @@ def test_experiment_remote_checkpoint_scan_fails_closed_without_writing(tmp_path
         return ""
 
     monkeypatch.setattr(experiment_io, "read_text_at", fake_read_text)
+    _mock_remote_managed_files(monkeypatch, fake_read_text)
     monkeypatch.setattr(
         experiment_io,
         "path_exists_at",
         lambda path, remote=None: str(path)
         in {
+            str(tmp_path / "experiment.yaml"),
             str(tmp_path / "run_manifest.tsv"),
             "/remote/runtime/run_a",
             "/remote/runtime/run_a/checkpoints",
@@ -2293,6 +2328,18 @@ def test_experiment_rank_remote_reads_and_writes_over_ssh(monkeypatch):
         calls.append((command, kwargs))
         shell = command[-1]
         if "seen_inodes" in shell:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                _managed_file_payload(
+                    {
+                        "/wujidata/run/experiment.yaml": experiment_text,
+                        "/wujidata/run/run_manifest.tsv": run_manifest,
+                    }
+                ),
+                "",
+            )
+        if "experiment.yaml" in shell and "os.lstat" in shell and "sys.stdout.write" not in shell:
             return subprocess.CompletedProcess(command, 0, "", "")
         if "experiment.yaml" in shell and "sys.stdout.write" in shell:
             return subprocess.CompletedProcess(command, 0, experiment_text, "")
@@ -2366,6 +2413,18 @@ def test_experiment_rank_remote_rejects_deleted_checkpoint_on_run_host_before_wr
         calls.append((command, kwargs))
         shell = command[-1]
         if "seen_inodes" in shell:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                _managed_file_payload(
+                    {
+                        f"{root}/experiment.yaml": experiment_text,
+                        f"{root}/run_manifest.tsv": run_manifest,
+                    }
+                ),
+                "",
+            )
+        if "experiment.yaml" in shell and "os.lstat" in shell and "sys.stdout.write" not in shell:
             return subprocess.CompletedProcess(command, 0, "", "")
         if "experiment.yaml" in shell and "sys.stdout.write" in shell:
             return subprocess.CompletedProcess(command, 0, experiment_text, "")
