@@ -76,11 +76,13 @@ def _add_plan(
     resolved_text = yaml.safe_dump(recipe, sort_keys=False)
     resolved_path = plan_dir / "recipe.resolved.yaml"
     resolved_path.write_text(resolved_text)
-    plan = {"status": "PASS", "recipe": recipe, "runs": [run]}
+    plan_run = {**run, "command": "exit 0"}
+    plan = {"status": "PASS", "recipe": recipe, "runs": [plan_run]}
     if task == "hparam_tune":
         plan["resolved_recipe_sha256"] = _sha256(resolved_path)
         (plan_dir / "run_all.sh").write_text("#!/bin/sh\nexit 0\n")
     else:
+        plan["commands"] = ["exit 0"]
         (plan_dir / "run.sh").write_text(script_path.read_text())
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
 
@@ -195,11 +197,14 @@ def test_experiment_status_accepts_public_layered_hparam_plan(tmp_path, paramete
     assert snapshot["summary"]["state"] == "ready_to_launch"
 
 
-@pytest.mark.parametrize("drift", ["partial_runtime", "hparam_parameter_summary", "input_snapshots"])
+@pytest.mark.parametrize(
+    "drift",
+    ["partial_runtime", "hparam_parameter_summary", "input_snapshots", "command"],
+)
 def test_experiment_status_rejects_incomplete_registered_plan_identity(tmp_path, drift):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    task = "hparam_tune" if drift == "hparam_parameter_summary" else "sleep2stat"
+    task = "hparam_tune" if drift in {"hparam_parameter_summary", "command"} else "sleep2stat"
     plan_dir, canonical = _add_plan(root, step_id="train", task=task)
     plan = json.loads((plan_dir / "plan.json").read_text())
     if drift == "partial_runtime":
@@ -207,6 +212,8 @@ def test_experiment_status_rejects_incomplete_registered_plan_identity(tmp_path,
         canonical["runtime_dir"] = ""
     elif drift == "hparam_parameter_summary":
         del plan["runs"][0]["parameter_summary"]
+    elif drift == "command":
+        del plan["runs"][0]["command"]
     else:
         canonical["input_snapshots"] = [{"field": "inputs.config", "path": canonical["config"], "sha256": "0" * 64}]
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")

@@ -235,7 +235,20 @@ def read_registered_plan(
     for path, expected in hash_expectations.items():
         if bundle[path]["sha256"] != expected:
             raise ValueError(f"Registered plan frozen file SHA-256 changed: {path}")
-    if task != "hparam_tune":
+    if task == "hparam_tune":
+        for run in runs:
+            command = str(run.get("command") or "")
+            if not command or command not in bundle[str(run["script"])]["text"].splitlines():
+                raise ValueError(f"Registered plan command differs from its frozen launch script: {run['run_id']}")
+    else:
+        commands = plan.get("commands")
+        launch_lines = bundle[str(launch_script)]["text"].splitlines()
+        if (
+            not isinstance(commands, list)
+            or not commands
+            or any(not isinstance(command, str) or not command or command not in launch_lines for command in commands)
+        ):
+            raise ValueError(f"Registered plan commands differ from its frozen launch script: {launch_script}")
         if len(runs) != 1:
             raise ValueError(f"Generic registered plan must contain exactly one run: {plan_path}")
         if bundle[str(launch_script)]["sha256"] != str(runs[0].get("script_sha256") or ""):
