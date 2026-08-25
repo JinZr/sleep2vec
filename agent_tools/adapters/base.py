@@ -236,14 +236,18 @@ class TaskAdapter:
         from .. import plan_contract
 
         frozen_inputs = plan_contract.frozen_input_snapshots(recipe)
-        config_snapshot = plan_contract.frozen_input_snapshot(recipe, "inputs.config")
         source_config = resolve_repo_path((recipe.get("inputs") or {}).get("config"))
+        if source_config is None:
+            raise ValueError("Frozen generic input snapshots differ from required recipe inputs.")
+        expected_input_paths = [("inputs.config", str(source_config))]
+        expected_input_paths.extend((field, str(path)) for field, path in self.frozen_input_paths(recipe))
+        expected_input_paths.sort()
+        frozen_input_paths = [(snapshot["field"], snapshot["path"]) for snapshot in frozen_inputs]
+        if frozen_input_paths != expected_input_paths:
+            raise ValueError("Frozen generic input snapshots differ from required recipe inputs.")
+        config_snapshot = next(snapshot for snapshot in frozen_inputs if snapshot["field"] == "inputs.config")
         config_sha256 = hashlib.sha256(config_bytes).hexdigest()
-        if (
-            source_config is None
-            or config_snapshot["path"] != str(source_config)
-            or config_sha256 != config_snapshot["sha256"]
-        ):
+        if config_sha256 != config_snapshot["sha256"]:
             raise ValueError("Frozen generic config differs from its recipe digest.")
         run = plan_contract.generic_run_contract(recipe, out, run_index_offset, self)
         input_snapshots = [snapshot for snapshot in frozen_inputs if snapshot["field"] != "inputs.config"]
