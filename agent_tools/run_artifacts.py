@@ -9,6 +9,7 @@ import stat
 from typing import Any, Iterator
 
 from . import experiment_io as exp_io
+from .adapters import SUPPORTED_TASKS
 from .experiment_workspace import (
     SCHEDULER_PLAN_IDENTITY_FIELDS,
     SHA256_RE,
@@ -137,7 +138,11 @@ def read_registered_plan(
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else None
     if recipe is None:
         raise ValueError(f"Registered plan is missing its recipe: {plan_path}")
-    task = str(recipe.get("task") or "")
+    task = recipe.get("task")
+    if not isinstance(task, str) or task not in SUPPORTED_TASKS:
+        raise ValueError(f"Unsupported registered plan task: {task!r}")
+    if task == "hparam_tune" and plan.get("resolved_recipe_sha256") in (None, ""):
+        raise ValueError(f"Frozen hparam recipe SHA-256 is missing or changed: {resolved_recipe_path}")
     frozen_recipe = _resolved_recipe_view(recipe, task)
     if frozen_recipe != resolved_recipe:
         raise ValueError(f"Registered plan recipe differs from recipe.resolved.yaml: {resolved_recipe_path}")
@@ -155,8 +160,8 @@ def read_registered_plan(
         raise ValueError(f"Registered plan step metadata differs from its managed step: {plan_dir}")
 
     runs = plan.get("runs")
-    if not isinstance(runs, list) or not runs:
-        raise ValueError(f"Registered plan must define a non-empty runs list: {plan_path}")
+    if not isinstance(runs, list) or not runs or any(not isinstance(run, dict) for run in runs):
+        raise ValueError(f"Registered plan must define a non-empty runs list of mappings: {plan_path}")
     validate_run_rows(
         runs,
         source=str(plan_path),

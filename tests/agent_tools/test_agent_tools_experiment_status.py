@@ -200,6 +200,29 @@ def test_experiment_status_rejects_finetune_plan_without_runtime_directories(tmp
         experiments.experiment_status(root)
 
 
+def test_experiment_status_rejects_unsupported_registered_plan_task(tmp_path, capsys):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, canonical = _add_plan(root, step_id="train", task="finetune")
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    plan["recipe"]["task"] = "unsupported_task"
+    for row in (plan["runs"][0], canonical):
+        row["runtime_dir"] = ""
+        row["checkpoint_dir"] = ""
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
+    resolved["task"] = "unsupported_task"
+    (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
+    write_rows(root / "run_manifest.tsv", [canonical])
+
+    with pytest.raises(ValueError, match="(?i)unsupported.*task"):
+        experiments.experiment_status(root)
+    assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "run-plan" not in captured.err
+
+
 @pytest.mark.parametrize("parameters", [{"runtime.lr": [1e-6]}, {"yaml:/data/finetune_preset_path": [None]}])
 def test_experiment_status_accepts_public_layered_hparam_plan(tmp_path, parameters):
     root = tmp_path / "experiment"
@@ -218,6 +241,22 @@ def test_experiment_status_accepts_public_layered_hparam_plan(tmp_path, paramete
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
+
+
+def test_experiment_status_requires_hparam_resolved_recipe_digest(tmp_path, capsys):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="tune", task="hparam_tune")
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    del plan["resolved_recipe_sha256"]
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(ValueError, match="hparam recipe SHA-256"):
+        experiments.experiment_status(root)
+    assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "hparam-run-queue" not in captured.err
 
 
 def test_experiment_status_rejects_missing_declared_blank_hparam_key(tmp_path):
@@ -735,6 +774,21 @@ def test_experiment_status_cli_returns_one_for_contract_errors(tmp_path, capsys)
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "unsupported status" in captured.err
+
+
+def test_experiment_status_cli_returns_one_for_non_mapping_plan_run(tmp_path, capsys):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="train")
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    plan["runs"] = [None]
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+
+    assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("error:")
+    assert "Traceback" not in captured.err
 
 
 @pytest.mark.parametrize(
