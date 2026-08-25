@@ -2123,11 +2123,11 @@ def test_finetune_plan_freezes_config_bytes_validated_before_workspace_setup(tmp
     validated_bytes = config.read_bytes()
     real_ensure_workspace = plans.ensure_experiment_workspace
 
-    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path, *, register_step: bool = True):
+    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path, **workspace_options):
         payload = yaml.safe_load(config.read_text())
         payload["finetune"]["task"].update({"monitor": "val_loss", "monitor_mod": "min"})
         config.write_text(yaml.safe_dump(payload, sort_keys=False))
-        return real_ensure_workspace(recipe_payload, output_dir, register_step=register_step)
+        return real_ensure_workspace(recipe_payload, output_dir, **workspace_options)
 
     monkeypatch.setattr(plans, "ensure_experiment_workspace", mutate_source_after_preflight)
     output_dir = tmp_path / "plan"
@@ -2174,11 +2174,11 @@ def test_hparam_plan_materializes_config_validated_before_workspace_setup(tmp_pa
     validated_bytes = config.read_bytes()
     real_ensure_workspace = plans.ensure_experiment_workspace
 
-    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path, *, register_step: bool = True):
+    def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path, **workspace_options):
         payload = yaml.safe_load(config.read_text())
         payload["finetune"]["task"].update({"monitor": "val_loss", "monitor_mod": "min"})
         config.write_text(yaml.safe_dump(payload, sort_keys=False))
-        return real_ensure_workspace(recipe_payload, output_dir, register_step=register_step)
+        return real_ensure_workspace(recipe_payload, output_dir, **workspace_options)
 
     monkeypatch.setattr(plans, "ensure_experiment_workspace", mutate_source_after_preflight)
     output_dir = tmp_path / "plan"
