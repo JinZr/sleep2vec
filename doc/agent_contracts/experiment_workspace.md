@@ -53,7 +53,11 @@ An experiment workspace is the durable, human-readable record for related prepar
 explicit baseline. Experiment and step ids use lowercase letters, digits,
 hyphens, and underscores. Step phase is one of `prepare`, `train`, `evaluate`,
 or `analyze`. Every step file uses the shared
-`{step, experiment_id, recipe_path, plans}` envelope.
+`{step, experiment_id, plan_controller, recipe_path, plans}` envelope.
+`plan_controller` is the only owner of whether the step is `ordinary`,
+`adaptive`, or `pipeline`. `experiment-register-step` initially records
+`unassigned` with no recipe or plans; the first planner or pipeline freeze may
+bind it to one concrete owner, and that binding cannot later change.
 
 Existing experiment and step metadata are read through the workspace owner and
 merged through their reducers. Missing files may be created only by their
@@ -198,6 +202,9 @@ invalid and are not repaired in place.
   outcome and is skipped; missing, extra, or aliased entries fail closed. A
   plan binds to the registered step's core `id`, `phase`, and `purpose`, while
   manifest-owned `inputs` and `outputs` remain valid step metadata.
+  Status classifies launch advice and controller-deferred blockers only from
+  the step manifest's frozen `plan_controller`; the frozen recipe and canonical
+  pipeline identity must agree with that owner and cannot replace it.
   Active adaptive and pipeline plans produce plan-scoped blockers for their
   controller-owned advance/finalize actions without blocking an unrelated
   ordinary plan launch. Because the status read-set contains no controller

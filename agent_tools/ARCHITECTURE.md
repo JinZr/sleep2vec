@@ -51,6 +51,11 @@ validation. Task adapters may derive that contract only from the frozen recipe,
 including its strict creator-host plan context and input snapshots, and
 plan-owned config bytes.
 
+`experiment_workspace` owns the one-way step `plan_controller` binding used to
+classify ordinary, adaptive, and pipeline plans. `experiment_tracking` consumes
+that owner for status advice; recipe and canonical pipeline fields are only
+consistency guards, while `run_manifest.tsv` remains the lifecycle owner.
+
 `managed_scheduler` owns backend selection plus the reusable direct
 GPU-capacity/process lifecycle and Slurm submit/observe lifecycle shared by
 managed launchers. `slurm` owns scheduler resource/script contracts, CLI

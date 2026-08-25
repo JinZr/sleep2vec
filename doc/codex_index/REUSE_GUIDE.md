@@ -126,6 +126,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Run consultation before runnable plans and stop on `NEEDS_USER_INPUT`.
 - Keep `experiment-status` on the static frozen-recipe and canonical-manifest read-set; it must not rerun consultation or runtime/input probes.
 - Recompile registered plan semantics through `plan_contract` and the task adapter, including recipe-owned input snapshots; agreement among edited manifests and scripts does not replace agreement with the frozen recipe.
+- Reuse `experiment_workspace.merge_step_manifest` for the one-way `plan_controller` binding; `step.yaml` is the only ordinary/adaptive/pipeline classification owner.
 - Treat `run_manifest.tsv` as authoritative managed state; mirrors and reports are projections.
 - Reuse `hparam_selection.select_hparam_candidates` for recipe-frozen hparam ranking. Test-selected plans consume complete per-epoch evidence from terminal run manifests, keep the many-checkpoint audit plan-local, and project only each run's best checkpoint into workspace lifecycle reports.
 - Reuse `experiments.append_experiment_note` and the workspace research-log owner for semantic notes; do not append Markdown directly or infer lifecycle state from narrative.

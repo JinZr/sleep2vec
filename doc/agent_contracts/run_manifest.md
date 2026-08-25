@@ -225,6 +225,9 @@ Experiment checkpoint indexing follows each row's frozen runtime/checkpoint pair
 ## Consumer requirements
 
 `experiment-status` consumes lifecycle state only from this canonical table.
+Step controller classification is separately owned by
+`steps/<step.id>/step.yaml.plan_controller`; it is not duplicated in this
+table. Pipeline identity columns must agree with that step owner.
 It may display scheduler, process, health, checkpoint, and runtime-manifest
 fields already recorded in a row, but it does not refresh them and never reads
 `run_status.tsv`, `launch_manifest.tsv`, reports, events, runtime manifests,

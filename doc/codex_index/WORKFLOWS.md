@@ -238,6 +238,9 @@ tables, events, reports, and `RESEARCH_LOG.md` are projections or narrative.
 control bundles, but ignores those projections and never queries Slurm,
 processes, GPUs, checkpoints, or W&B. Its argv suggestions remain advisory and
 require the same explicit authorization as invoking the underlying command. It
+uses the step manifest's one-way `plan_controller` binding as the sole
+ordinary/adaptive/pipeline classification owner; frozen recipes and pipeline
+row identity are consistency guards rather than alternate owners. It
 reuses the pure `decision_rules` recipe structure owner without consultation or
 external input probes. Active adaptive and pipeline plans defer only their
 controller-owned advance/finalize actions, so an unrelated ordinary candidate
