@@ -270,6 +270,17 @@ def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence
     assert first["decision"]["blocked_actions"] == ["adaptive_advance", "finalize", "resubmit"]
 
 
+def test_experiment_status_rejects_contradictory_scheduler_identity(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _plan, canonical = _add_plan(root, step_id="train")
+    canonical["scheduler_job_id"] = "123"
+    write_rows(root / "run_manifest.tsv", [canonical])
+
+    with pytest.raises(ValueError, match="Direct managed run cannot define Slurm scheduler identity"):
+        experiments.experiment_status(root)
+
+
 @pytest.mark.parametrize("status", ["unknown_scheduler", "unknown_remote", "missing_pid", "submitting"])
 def test_experiment_status_uncertain_states_recommend_only_monitor(tmp_path, status):
     root = tmp_path / "experiment"

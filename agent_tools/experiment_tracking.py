@@ -32,6 +32,7 @@ from .experiment_workspace import (
     validate_checkpoint_ownership,
     validate_frozen_run_update,
     validate_managed_run_rows,
+    validate_scheduler_run_identity,
 )
 from .manifests import read_json, utc_now
 from .models import json_ready
@@ -544,6 +545,7 @@ def experiment_status_snapshot(
 ) -> dict[str, Any]:
     allowed_statuses = TERMINAL_STATUSES | managed_scheduler.ACTIVE_STATUSES | managed_scheduler.LAUNCHABLE_STATUSES
     for row in rows:
+        validate_scheduler_run_identity(row)
         status = row.get("status")
         if status not in allowed_statuses:
             raise ValueError(
