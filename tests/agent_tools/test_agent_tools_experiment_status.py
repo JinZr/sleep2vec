@@ -252,6 +252,38 @@ def test_experiment_status_allows_unrelated_blank_parameter_columns(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("drift", "error"),
+    [
+        ("missing_sha256", "final_eval_config must define"),
+        ("file_drift", "frozen file SHA-256 changed"),
+    ],
+)
+def test_experiment_status_requires_final_eval_config_integrity(tmp_path, drift, error):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _row = _add_plan(root, step_id="tune", task="hparam_tune")
+    final_config = plan_dir / "final_eval_config.frozen.yaml"
+    final_config.write_text("model: unit\n")
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    plan["final_eval_config"] = {
+        "path": str(final_config),
+        "sha256": _sha256(final_config),
+        "source_path": str(final_config),
+    }
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    assert experiments.experiment_status(root)["summary"]["state"] == "ready_to_launch"
+
+    if drift == "missing_sha256":
+        del plan["final_eval_config"]["sha256"]
+        (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    else:
+        final_config.write_text("model: changed\n")
+
+    with pytest.raises(ValueError, match=error):
+        experiments.experiment_status(root)
+
+
+@pytest.mark.parametrize(
     "drift",
     ["partial_runtime", "hparam_parameter_summary", "input_snapshots", "command"],
 )

@@ -11,6 +11,7 @@ from typing import Any, Iterator
 from . import experiment_io as exp_io
 from .experiment_workspace import (
     SCHEDULER_PLAN_IDENTITY_FIELDS,
+    SHA256_RE,
     experiment_metadata_issues,
     experiment_root,
     managed_run_key,
@@ -214,12 +215,24 @@ def read_registered_plan(
 
     launch_script = plan_dir / ("run_all.sh" if task == "hparam_tune" else "run.sh")
     bundle_paths.append(launch_script)
-    final_eval_config = plan.get("final_eval_config")
-    if isinstance(final_eval_config, dict) and final_eval_config.get("path") not in (None, ""):
+    if "final_eval_config" in plan:
+        final_eval_config = plan["final_eval_config"]
+        required_final_fields = {"path", "sha256", "source_path"}
+        if (
+            not isinstance(final_eval_config, dict)
+            or set(final_eval_config) != required_final_fields
+            or any(
+                not isinstance(final_eval_config[field], str) or not final_eval_config[field].strip()
+                for field in required_final_fields
+            )
+            or SHA256_RE.fullmatch(final_eval_config["sha256"]) is None
+        ):
+            raise ValueError(
+                f"Registered final_eval_config must define path, sha256, and source_path: {plan_path}"
+            )
         final_path = Path(str(final_eval_config["path"]))
         bundle_paths.append(final_path)
-        if final_eval_config.get("sha256") not in (None, ""):
-            hash_expectations[str(final_path)] = str(final_eval_config["sha256"])
+        hash_expectations[str(final_path)] = final_eval_config["sha256"]
 
     bundle = exp_io.read_managed_files_at(
         workspace,
