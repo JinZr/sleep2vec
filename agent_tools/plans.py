@@ -629,8 +629,10 @@ def build_plan(
     defer_commit: bool = False,
     registered_recipe_path: str | Path | None = None,
     allow_adaptive_workflow: bool = False,
+    plan_controller: str | None = None,
 ) -> DecisionReport:
     out = canonical_local_experiment_root(output_dir, Path.cwd())
+    controller_options = {"plan_controller": plan_controller} if plan_controller is not None else {}
     recipe, cfg, report = preflight_plan(
         recipe_path=recipe_path,
         output_dir=out,
@@ -693,7 +695,7 @@ def build_plan(
         )
         if preflight_failed_before_workspace:
             return report
-        ensure_experiment_workspace(recipe, out)
+        ensure_experiment_workspace(recipe, out, **controller_options)
         write_questions(out, report)
         write_text(out / "plan.blocked.md", context.blocked_plan_markdown(report, allow_unresolved))
         if allow_unresolved and report.exit_code == 2:
@@ -755,7 +757,7 @@ def build_plan(
         source_config_path,
         validated_config_sha256,
     )
-    ensure_experiment_workspace(recipe, out, register_step=False)
+    ensure_experiment_workspace(recipe, out, register_step=False, **controller_options)
 
     write_out = out
     if defer_commit and staging_dir is None:
@@ -841,7 +843,7 @@ def build_plan(
         if staging_dir is not None:
             out.parent.mkdir(parents=True, exist_ok=True)
             write_out.replace(out)
-        ensure_experiment_workspace(recipe, out)
+        ensure_experiment_workspace(recipe, out, **controller_options)
         manifest_row = {
             **run,
             "parameter_summary": "single resolved recipe",

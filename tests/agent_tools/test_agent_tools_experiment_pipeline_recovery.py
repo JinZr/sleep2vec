@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from agent_tools import experiment_pipeline, experiments, managed_scheduler, plan_contract, plans
-from agent_tools.experiment_workspace import file_sha256, read_run_manifest
+from agent_tools.experiment_workspace import commit_step_manifest, file_sha256, read_run_manifest
 from agent_tools.manifests import write_rows
 
 
@@ -372,6 +372,16 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
     recipe_path.parent.mkdir(parents=True)
     recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     staging_dir = plan_dir.parent / ".attempt-001.crash-window"
+    commit_step_manifest(
+        root,
+        {
+            "step": spec["pipeline"]["step"],
+            "experiment_id": experiment["id"],
+            "plan_controller": "pipeline",
+            "recipe_path": "",
+            "plans": [],
+        },
+    )
 
     report = plans.build_plan(
         recipe_path=recipe_path,
@@ -379,12 +389,13 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
         unlock_final_test=True,
         staging_dir=staging_dir,
         defer_commit=True,
+        plan_controller="pipeline",
     )
     assert report.exit_code == 0
     plan_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir.replace(plan_dir)
     step_manifest = root / "steps" / spec["pipeline"]["step"]["id"] / "step.yaml"
-    assert not step_manifest.exists()
+    assert yaml.safe_load(step_manifest.read_text())["plans"] == []
     assert read_run_manifest(root) == []
     frozen_plan = json.loads((plan_dir / "plan.json").read_text())
     frozen_identity = {
@@ -416,7 +427,7 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
                 result_root=result_root,
             )
         assert read_run_manifest(root) == []
-        assert not step_manifest.exists()
+        assert yaml.safe_load(step_manifest.read_text())["plans"] == []
         return
 
     if outcome == "interrupt_after_commit":
@@ -473,7 +484,9 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
     assert row["job_id"] == "age-hsp-i2-psg"
     assert canonical[0]["pipeline_id"] == "external-v1"
     assert canonical[0]["terminal_status_owner"] == "script"
-    assert yaml.safe_load(step_manifest.read_text())["plans"] == [str(plan_dir.resolve())]
+    step_payload = yaml.safe_load(step_manifest.read_text())
+    assert step_payload["plan_controller"] == "pipeline"
+    assert step_payload["plans"] == [str(plan_dir.resolve())]
     assert launch_path.read_bytes() == launch_before
     assert not list(plan_dir.parent.glob(".attempt-001.*.staging"))
 

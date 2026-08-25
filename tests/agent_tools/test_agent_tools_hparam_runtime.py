@@ -248,6 +248,7 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
             {
                 "step": step,
                 "experiment_id": experiment["id"],
+                "plan_controller": "ordinary",
                 "recipe_path": "",
                 "plans": [str(root.resolve())],
             },
@@ -2245,6 +2246,7 @@ def test_registered_step_remains_canonical_through_plan_and_dry_run_launch(tmp_p
     assert step_manifest["step"]["inputs"] == ["reports/ranking.csv"]
     assert step_manifest["step"]["outputs"] == ["reports/final.md"]
     assert step_manifest["experiment_id"] == payload["experiment"]["id"]
+    assert step_manifest["plan_controller"] == "ordinary"
     assert step_manifest["recipe_path"] == str(recipe)
     assert step_manifest["plans"] == [str(plan_dir)]
     events = [json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines()]

@@ -175,6 +175,11 @@ def _add_plan(
         (plan_dir / "run.sh").write_text(script_path.read_text())
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
 
+    plan_controller = "ordinary"
+    if adaptive:
+        plan_controller = "adaptive"
+    if pipeline:
+        plan_controller = "pipeline"
     step_dir = root / "steps" / step_id
     step_dir.mkdir(parents=True)
     (step_dir / "step.yaml").write_text(
@@ -182,6 +187,7 @@ def _add_plan(
             {
                 "step": step,
                 "experiment_id": experiment["id"],
+                "plan_controller": plan_controller,
                 "recipe_path": str(recipe_path),
                 "plans": [str(plan_dir)],
             },
@@ -1142,13 +1148,14 @@ def test_experiment_status_snapshot_is_independent_of_input_order():
     ]
     registered_steps = [
         {
-            "manifest": {"step": {"id": row["step_id"], "phase": "train", "purpose": "Run the fixture."}},
+            "manifest": {
+                "step": {"id": row["step_id"], "phase": "train", "purpose": "Run the fixture."},
+                "plan_controller": "ordinary",
+            },
             "plans": [
                 {
                     "path": str(root / "plans" / row["step_id"]),
                     "task": "finetune",
-                    "adaptive": False,
-                    "pipeline": False,
                     "run_keys": [(row["step_id"], row["run_id"])],
                     "launch_script": str(root / "plans" / row["step_id"] / "run.sh"),
                 }
@@ -1302,6 +1309,60 @@ def test_experiment_status_does_not_infer_adaptive_or_pipeline_launch(tmp_path, 
     assert "v1" not in snapshot["blockers"][0]["message"]
 
 
+def test_experiment_status_rejects_coherent_adaptive_recipe_downgrade(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="tune", task="hparam_tune", adaptive=True)
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"].pop("adaptive")
+    plan["recipe"]["_local_recipe"].pop("adaptive")
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text())
+    resolved.pop("adaptive")
+    resolved["_local_recipe"].pop("adaptive")
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    plan["resolved_recipe_sha256"] = _sha256(resolved_path)
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="controller differs from its frozen recipe"):
+        experiments.experiment_status(root)
+
+    assert _workspace_files(root) == before
+
+
+def test_experiment_status_rejects_pipeline_identity_downgrade(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _plan_dir, canonical = _add_plan(root, step_id="evaluate", pipeline=True)
+    for field in ("pipeline_id", "job_id", "attempt", "result_root"):
+        canonical.pop(field)
+    write_rows(root / "run_manifest.tsv", [canonical])
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="pipeline run identity is incomplete"):
+        experiments.experiment_status(root)
+
+    assert _workspace_files(root) == before
+
+
+def test_experiment_status_rejects_missing_step_controller_without_writing(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train")
+    step_path = root / "steps" / "train" / "step.yaml"
+    step_manifest = yaml.safe_load(step_path.read_text())
+    step_manifest.pop("plan_controller")
+    step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="incomplete canonical envelope"):
+        experiments.experiment_status(root)
+
+    assert _workspace_files(root) == before
+
+
 def test_experiment_status_scopes_deferred_plans_away_from_ordinary_launch(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -1331,6 +1392,7 @@ def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tm
             {
                 "step": {"id": "evaluate", "phase": "evaluate", "purpose": "Run external evaluation."},
                 "experiment_id": "status-unit",
+                "plan_controller": "unassigned",
                 "recipe_path": "",
                 "plans": [],
             },
@@ -1685,6 +1747,7 @@ def test_experiment_status_human_output_scopes_same_code_blockers(tmp_path):
                 {
                     "step": {"id": step_id, "phase": "evaluate", "purpose": f"Run {step_id}."},
                     "experiment_id": "status-unit",
+                    "plan_controller": "unassigned",
                     "recipe_path": "",
                     "plans": [],
                 },
@@ -1708,13 +1771,14 @@ def test_experiment_status_renders_remote_launch_execution_host():
     }
     registered_steps = [
         {
-            "manifest": {"step": {"id": "train", "phase": "train", "purpose": "Train."}},
+            "manifest": {
+                "step": {"id": "train", "phase": "train", "purpose": "Train."},
+                "plan_controller": "ordinary",
+            },
             "plans": [
                 {
                     "path": str(root / "plans" / "train"),
                     "task": "finetune",
-                    "adaptive": False,
-                    "pipeline": False,
                     "run_keys": [("train", "run-000")],
                     "launch_script": str(root / "plans" / "train" / "run.sh"),
                 }
@@ -1770,12 +1834,13 @@ def test_experiment_status_keeps_remote_finalize_on_controller():
     row = {"step_id": "train", "run_id": "run-000", "run_name": "default", "status": "completed"}
     registered_steps = [
         {
-            "manifest": {"step": {"id": "train", "phase": "train", "purpose": "Train."}},
+            "manifest": {
+                "step": {"id": "train", "phase": "train", "purpose": "Train."},
+                "plan_controller": "ordinary",
+            },
             "plans": [
                 {
                     "path": str(root / "plans" / "train"),
-                    "adaptive": False,
-                    "pipeline": False,
                     "run_keys": [("train", "run-000")],
                 }
             ],
@@ -2037,6 +2102,7 @@ def test_experiment_status_rejects_plan_registered_by_multiple_steps(tmp_path):
             {
                 "step": {"id": "evaluate", "phase": "evaluate", "purpose": "Evaluate."},
                 "experiment_id": "status-unit",
+                "plan_controller": "ordinary",
                 "recipe_path": "",
                 "plans": [str(plan_dir)],
             },
@@ -2061,6 +2127,7 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
     manifest = {
         "step": step,
         "experiment_id": "status-unit",
+        "plan_controller": "ordinary",
         "recipe_path": "",
         "plans": [str(root / "plans" / "train")],
     }
@@ -2111,8 +2178,6 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
         return {
             "path": str(candidate),
             "task": "finetune",
-            "adaptive": False,
-            "pipeline": False,
             "run_keys": [("train", "run-000")],
             "launch_script": str(candidate_path / "run.sh"),
         }

@@ -486,6 +486,9 @@ def test_agent_proposal_waits_for_terminal_round_then_writes_deterministic_snaps
     workflow_dir = tmp_path / "workflow"
     result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
+    step_manifests = list((tmp_path / "steps").glob("*/step.yaml"))
+    assert len(step_manifests) == 1
+    assert yaml.safe_load(step_manifests[0].read_text())["plan_controller"] == "adaptive"
 
     assert adaptive_hparam.adaptive_step(workflow_dir) is None
     assert not (workflow_dir / "adaptive" / "proposal_inputs").exists()

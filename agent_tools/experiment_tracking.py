@@ -836,7 +836,35 @@ def _plan_advice(
     blockers = []
     candidates = []
     for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
-        step_id = str(registered["manifest"]["step"]["id"])
+        manifest = registered["manifest"]
+        step_id = str(manifest["step"]["id"])
+        plan_controller = manifest["plan_controller"]
+        if plan_controller in {"adaptive", "pipeline"}:
+            code = f"{plan_controller}_phase_deferred"
+            message = (
+                f"Experiment-status cannot verify {plan_controller} controller completion or interpret its eligibility."
+            )
+            blocked_actions = [f"{plan_controller}_advance", "finalize"]
+            if registered["plans"]:
+                for plan in sorted(registered["plans"], key=lambda item: str(item["path"])):
+                    blockers.append(
+                        _status_blocker(
+                            code,
+                            message,
+                            rows=[rows_by_key[tuple(key)] for key in plan["run_keys"]],
+                            blocked_actions=blocked_actions,
+                        )
+                    )
+            else:
+                blockers.append(
+                    _status_blocker(
+                        code,
+                        message,
+                        step_id=step_id,
+                        blocked_actions=blocked_actions,
+                    )
+                )
+            continue
         if not registered["plans"]:
             blockers.append(
                 _status_blocker(
@@ -850,26 +878,6 @@ def _plan_advice(
             continue
         for plan in sorted(registered["plans"], key=lambda item: str(item["path"])):
             plan_rows = [rows_by_key[tuple(key)] for key in plan["run_keys"]]
-            if plan["adaptive"]:
-                blockers.append(
-                    _status_blocker(
-                        "adaptive_phase_deferred",
-                        "Experiment-status cannot verify adaptive controller completion or interpret its eligibility.",
-                        rows=plan_rows,
-                        blocked_actions=["adaptive_advance", "finalize"],
-                    )
-                )
-                continue
-            if plan["pipeline"]:
-                blockers.append(
-                    _status_blocker(
-                        "pipeline_phase_deferred",
-                        "Experiment-status cannot verify pipeline controller completion or interpret its eligibility.",
-                        rows=plan_rows,
-                        blocked_actions=["finalize", "pipeline_advance"],
-                    )
-                )
-                continue
             if not any(row["status"] in managed_scheduler.LAUNCHABLE_STATUSES for row in plan_rows):
                 continue
             if plan["task"] == "hparam_tune":

@@ -176,7 +176,13 @@ def register_experiment_step(run_dir: str | Path, spec_path: str | Path, *, remo
     exp_io.validate_managed_output_paths(root, [path, root / "events.jsonl"], remote=remote)
     _merged, created = commit_step_manifest(
         root,
-        {"step": step, "experiment_id": experiment["id"], "recipe_path": "", "plans": []},
+        {
+            "step": step,
+            "experiment_id": experiment["id"],
+            "plan_controller": "unassigned",
+            "recipe_path": "",
+            "plans": [],
+        },
         remote=remote,
     )
     if created:

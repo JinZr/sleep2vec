@@ -260,6 +260,10 @@ def read_registered_plan(
     managed_step = {field: step_manifest["step"][field] for field in ("id", "phase", "purpose")}
     if step != managed_step:
         raise ValueError(f"Registered plan step metadata differs from its managed step: {plan_dir}")
+    plan_controller = step_manifest["plan_controller"]
+    adaptive_enabled = isinstance(recipe.get("adaptive"), dict) and recipe["adaptive"].get("enabled") is True
+    if plan_controller == "unassigned" or (plan_controller == "adaptive") != adaptive_enabled:
+        raise ValueError(f"Registered plan controller differs from its frozen recipe: {plan_dir}")
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs or any(not isinstance(run, dict) for run in runs):
         raise ValueError(f"Registered plan must define a non-empty runs list of mappings: {plan_path}")
@@ -282,6 +286,13 @@ def read_registered_plan(
             raise ValueError(f"Workspace run_manifest.tsv is missing registered plan run: {key[0]} / {key[1]}")
         if canonical.get("status") in (None, ""):
             raise ValueError(f"Workspace run manifest is missing status: {key[0]} / {key[1]}")
+        pipeline_fields = ("pipeline_id", "job_id", "attempt", "result_root")
+        pipeline_values = [_text_value(canonical.get(field)) for field in pipeline_fields]
+        if plan_controller == "pipeline":
+            if task == "hparam_tune" or not all(pipeline_values) or canonical.get("terminal_status_owner") != "script":
+                raise ValueError(f"Workspace pipeline run identity is incomplete: {key[0]} / {key[1]}")
+        elif any(pipeline_values):
+            raise ValueError(f"Workspace run pipeline identity conflicts with its managed step: {key[0]} / {key[1]}")
         identity_fields = list(REGISTERED_PLAN_IDENTITY_FIELDS)
         if task == "hparam_tune":
             identity_fields.extend(("parameter_summary", "terminal_status_owner"))
@@ -291,12 +302,7 @@ def read_registered_plan(
                 raise ValueError(
                     f"Workspace run manifest differs from plan field parameter_summary: {key[0]} / {key[1]}"
                 )
-            pipeline_fields = ("pipeline_id", "job_id", "attempt", "result_root")
-            pipeline_values = [_text_value(canonical.get(field)) for field in pipeline_fields]
-            if any(pipeline_values):
-                if not all(pipeline_values) or canonical.get("terminal_status_owner") != "script":
-                    raise ValueError(f"Workspace pipeline run identity is incomplete: {key[0]} / {key[1]}")
-            else:
+            if plan_controller != "pipeline":
                 identity_fields.append("terminal_status_owner")
         if run.get("scheduler_type") == "slurm":
             identity_fields.append("log_path")
@@ -399,20 +405,11 @@ def read_registered_plan(
     if final_path is not None and bundle[str(final_path)]["sha256"] != contract["final_eval_config_sha256"]:
         raise ValueError(f"Registered plan frozen file SHA-256 changed: {final_path}")
 
-    matching_rows = [canonical_by_key[key] for key in plan_keys]
-    adaptive_owned = recipe.get("adaptive", {}).get("enabled") is True
-    pipeline_owned = any(row.get("pipeline_id") not in (None, "") for row in matching_rows)
-    if (
-        not adaptive_owned
-        and not pipeline_owned
-        and recipe.get("_recipe_path", "") != step_manifest.get("recipe_path", "")
-    ):
+    if plan_controller == "ordinary" and recipe.get("_recipe_path", "") != step_manifest.get("recipe_path", ""):
         raise ValueError(f"Registered plan recipe path differs from its managed step: {plan_dir}")
     return {
         "path": str(plan_dir),
         "task": task,
-        "adaptive": adaptive_owned,
-        "pipeline": pipeline_owned,
         "run_keys": plan_keys,
         "launch_script": str(launch_script),
     }
@@ -559,6 +556,11 @@ def read_hparam_plan(
             {
                 "step": recipe["step"],
                 "experiment_id": experiment_id,
+                "plan_controller": (
+                    "adaptive"
+                    if isinstance(recipe.get("adaptive"), dict) and recipe["adaptive"].get("enabled") is True
+                    else "ordinary"
+                ),
                 "recipe_path": recipe.get("_recipe_path", ""),
                 "plans": [str(run_dir.resolve())],
             },

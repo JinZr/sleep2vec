@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from agent_tools import experiment_pipeline
-from agent_tools.experiment_workspace import file_sha256
+from agent_tools.experiment_workspace import commit_step_manifest, file_sha256
 from agent_tools.manifests import write_rows
 
 
@@ -193,6 +193,38 @@ def test_schema_rejects_duplicate_job_ids_illegal_phase_and_missing_unlock(tmp_p
 
     with pytest.raises(ValueError, match="requires --unlock-final-test"):
         experiment_pipeline._validate_spec(spec, root, unlock_final_test=False)
+
+
+def test_freeze_pipeline_rejects_step_controller_conflict_before_writing_state(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    _write_experiment(root)
+    (root / "run_manifest.tsv").write_text("step_id\trun_id\n")
+    spec = _spec(root)
+    commit_step_manifest(
+        root,
+        {
+            "step": spec["pipeline"]["step"],
+            "experiment_id": "unit",
+            "plan_controller": "ordinary",
+            "recipe_path": str(root / "ordinary.yaml"),
+            "plans": [str(root / "plans" / "ordinary")],
+        },
+    )
+    monkeypatch.setattr(experiment_pipeline, "_source_plan_snapshots", lambda *_args: [])
+    monkeypatch.setattr(experiment_pipeline, "_preset_snapshots", lambda *_args: [])
+    pipeline_dir = root / "pipelines" / ".external-v1.staging"
+    pipeline_dir.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="plan_controller differs"):
+        experiment_pipeline._freeze_pipeline(
+            root,
+            pipeline_dir,
+            root / "pipeline.yaml",
+            yaml.safe_dump(spec, sort_keys=False),
+            spec,
+        )
+
+    assert list(pipeline_dir.iterdir()) == []
 
 
 @pytest.mark.parametrize("field", ["workdir", "python", "runtime_commit"])

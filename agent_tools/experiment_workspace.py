@@ -17,6 +17,7 @@ from . import experiment_io as exp_io, transport
 from .models import REPO_ROOT, json_ready
 
 PHASES = {"prepare", "train", "evaluate", "analyze"}
+PLAN_CONTROLLERS = {"unassigned", "ordinary", "adaptive", "pipeline"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
 SUCCESS_STATUSES = frozenset({"completed", "finished"})
 LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
@@ -356,7 +357,7 @@ def validate_plan_output(recipe: dict[str, Any], output_dir: str | Path) -> str 
 
 
 def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
-    allowed_fields = {"step", "experiment_id", "recipe_path", "plans"}
+    allowed_fields = {"step", "experiment_id", "plan_controller", "recipe_path", "plans"}
     for source, payload in (("existing", existing), ("incoming", incoming)):
         if not isinstance(payload, dict):
             raise ValueError(f"{source} step manifest must be a mapping.")
@@ -367,6 +368,9 @@ def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> d
             raise ValueError(f"{source} step manifest step must be a mapping.")
         if "plans" in payload and not isinstance(payload["plans"], list):
             raise ValueError(f"{source} step manifest plans must be a list.")
+        controller = payload.get("plan_controller")
+        if controller not in (None, "") and controller not in PLAN_CONTROLLERS:
+            raise ValueError(f"{source} step manifest has invalid plan_controller: {controller}")
 
     merged_step = dict(existing.get("step") or {})
     for field, value in (incoming.get("step") or {}).items():
@@ -392,10 +396,27 @@ def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> d
         if path not in plans:
             plans.append(path)
 
+    existing_controller = existing.get("plan_controller")
+    incoming_controller = incoming.get("plan_controller")
+    if existing_controller not in (None, "", "unassigned") and incoming_controller not in (
+        None,
+        "",
+        existing_controller,
+    ):
+        raise ValueError("Step plan_controller differs from the existing step manifest.")
+    if existing_controller in (None, "", "unassigned"):
+        controller = incoming_controller or existing_controller or ""
+    else:
+        controller = existing_controller
+    recipe_path = existing.get("recipe_path") or incoming.get("recipe_path") or ""
+    if controller == "unassigned" and (recipe_path or plans):
+        raise ValueError("Unassigned step manifests cannot register a recipe or plan.")
+
     return {
         "step": merged_step,
         "experiment_id": existing_experiment_id or incoming_experiment_id or "",
-        "recipe_path": existing.get("recipe_path") or incoming.get("recipe_path") or "",
+        "plan_controller": controller,
+        "recipe_path": recipe_path,
         "plans": plans,
     }
 
@@ -415,6 +436,8 @@ def _validated_step_manifest(text: str, path: Path, step_id: str) -> dict[str, A
         raise ValueError(f"Managed step manifest id differs from its directory: {path}")
     if not str(payload["experiment_id"] or "").strip():
         raise ValueError(f"Managed step manifest is missing experiment_id: {path}")
+    if payload["plan_controller"] not in PLAN_CONTROLLERS:
+        raise ValueError(f"Managed step manifest has invalid plan_controller: {path}")
     recipe_path = payload["recipe_path"]
     if not isinstance(recipe_path, str) or (recipe_path and not Path(recipe_path).is_absolute()):
         raise ValueError(f"Managed step manifest recipe_path must be empty or absolute: {path}")
@@ -840,7 +863,11 @@ def write_initial_experiment_manifest(root: Path, experiment: dict[str, Any], *,
 
 
 def ensure_experiment_workspace(
-    recipe: dict[str, Any], output_dir: str | Path, *, register_step: bool = True
+    recipe: dict[str, Any],
+    output_dir: str | Path,
+    *,
+    register_step: bool = True,
+    plan_controller: str | None = None,
 ) -> tuple[Path, Path]:
     root = experiment_root(recipe)
     if root is None:
@@ -851,6 +878,8 @@ def ensure_experiment_workspace(
     recipe["experiment"]["root"] = str(root)
     experiment = _public_mapping(recipe.get("experiment") or {})
     step = _public_mapping(recipe.get("step") or {})
+    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+    controller = plan_controller or ("adaptive" if adaptive.get("enabled") is True else "ordinary")
     manifest_path = root / "experiment.yaml"
     manifest_exists = manifest_path.exists()
     if manifest_exists:
@@ -866,6 +895,7 @@ def ensure_experiment_workspace(
     step_payload = {
         "step": step,
         "experiment_id": experiment["id"],
+        "plan_controller": controller,
         "recipe_path": recipe.get("_recipe_path", ""),
         "plans": [str(plan_path)],
     }

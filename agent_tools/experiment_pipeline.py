@@ -366,8 +366,6 @@ def _freeze_pipeline(root: Path, pipeline_dir: Path, spec_file: Path, source_tex
     experiment = _validate_experiment(root, spec)
     sources = _source_plan_snapshots(root, spec)
     resolved_text = yaml.safe_dump(spec, sort_keys=False)
-    _atomic_write_text(pipeline_dir / "spec.source.yaml", source_text)
-    _atomic_write_text(pipeline_dir / "spec.resolved.yaml", resolved_text)
     state = {
         "schema_version": SCHEMA_VERSION,
         "pipeline_id": spec["pipeline"]["id"],
@@ -382,16 +380,19 @@ def _freeze_pipeline(root: Path, pipeline_dir: Path, spec_file: Path, source_tex
         "created_at": utc_now(),
         "updated_at": utc_now(),
     }
-    _write_state(pipeline_dir, state)
     commit_step_manifest(
         root,
         {
             "step": spec["pipeline"]["step"],
             "experiment_id": experiment["id"],
+            "plan_controller": "pipeline",
             "recipe_path": "",
             "plans": [],
         },
     )
+    _atomic_write_text(pipeline_dir / "spec.source.yaml", source_text)
+    _atomic_write_text(pipeline_dir / "spec.resolved.yaml", resolved_text)
+    _write_state(pipeline_dir, state)
     append_event(root, "pipeline_frozen", {"pipeline_id": state["pipeline_id"], "spec": str(spec_file)})
 
 
@@ -957,6 +958,7 @@ def _materialize_attempt(
             source_config_sha256=selection["config_sha256"],
             staging_dir=staging_dir,
             defer_commit=True,
+            plan_controller="pipeline",
         )
         if report.exit_code != 0:
             raise RuntimeError(f"External job plan unexpectedly failed after preflight: {job['id']}")
@@ -987,23 +989,25 @@ def _materialize_attempt(
     }
     canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(root)}
     canonical = canonical_by_key.get(managed_run_key(run))
-    if canonical is None:
-        plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-        commit_step_manifest(
-            root,
-            {
-                "step": plan_recipe["step"],
-                "experiment_id": plan_recipe["experiment"]["id"],
-                "recipe_path": plan_recipe.get("_recipe_path", ""),
-                "plans": [str(plan_dir.resolve())],
-            },
-        )
-        update = {**base_run, "parameter_summary": "single resolved recipe", **enrichment}
-    else:
+    if canonical is not None:
         _validate_attempt_plan(
             {"step_id": run["step_id"], "run_id": run["run_id"], "recipe": str(recipe_path), "plan_dir": str(plan_dir)},
             canonical,
         )
+    plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    commit_step_manifest(
+        root,
+        {
+            "step": plan_recipe["step"],
+            "experiment_id": plan_recipe["experiment"]["id"],
+            "plan_controller": "pipeline",
+            "recipe_path": plan_recipe.get("_recipe_path", ""),
+            "plans": [str(plan_dir.resolve())],
+        },
+    )
+    if canonical is None:
+        update = {**base_run, "parameter_summary": "single resolved recipe", **enrichment}
+    else:
         update = enrichment
     committed = merge_run_manifest(root, [update])
     canonical = {managed_run_key(row): row for row in committed}[managed_run_key(run)]
