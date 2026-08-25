@@ -387,6 +387,9 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict
                 workspace_experiment=experiment,
                 step_manifest=manifest,
                 workspace_rows=rows,
+                expected_recipe_path=(
+                    manifest["recipe_path"] if manifest["plan_controller"] == "ordinary" and not plans else None
+                ),
                 remote=remote,
                 run_index_offset=run_index_offset,
             )

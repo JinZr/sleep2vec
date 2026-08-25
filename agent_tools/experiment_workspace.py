@@ -408,16 +408,7 @@ def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> d
         controller = incoming_controller or existing_controller or ""
     else:
         controller = existing_controller
-    existing_recipe_path = existing.get("recipe_path")
-    incoming_recipe_path = incoming.get("recipe_path")
-    if (
-        controller == "ordinary"
-        and existing_recipe_path not in (None, "")
-        and incoming_recipe_path not in (None, "")
-        and str(existing_recipe_path) != str(incoming_recipe_path)
-    ):
-        raise ValueError("Step recipe_path differs from the existing ordinary step manifest.")
-    recipe_path = existing_recipe_path or incoming_recipe_path or ""
+    recipe_path = existing.get("recipe_path") or incoming.get("recipe_path") or ""
     if controller == "unassigned" and (recipe_path or plans):
         raise ValueError("Unassigned step manifests cannot register a recipe or plan.")
 

@@ -457,6 +457,27 @@ def test_experiment_status_rejects_recipe_path_drift_on_ordinary_retry(tmp_path)
         experiments.experiment_status(root)
 
 
+def test_experiment_status_allows_later_ordinary_plan_from_new_recipe(tmp_path):
+    root = tmp_path / "experiment"
+    first_recipe = write_finetune_recipe(root)
+    second_recipe = root / "second-recipe.yaml"
+    second_payload = yaml.safe_load(first_recipe.read_text())
+    second_payload["artifacts"]["version_name"] = "unit-second"
+    second_recipe.write_text(yaml.safe_dump(second_payload, sort_keys=False))
+    first_plan = root / "plans" / "first"
+    second_plan = root / "plans" / "second"
+
+    assert plans.build_plan(recipe_path=first_recipe, output_dir=first_plan).exit_code == 0
+    assert plans.build_plan(recipe_path=second_recipe, output_dir=second_plan).exit_code == 0
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert snapshot["steps"][0]["plans"] == [str(first_plan), str(second_plan)]
+    assert snapshot["decision"]["manual_choice_required"] is True
+    assert len(snapshot["decision"]["other_legal_actions"]) == 2
+
+
 @pytest.mark.parametrize(("adaptive", "pipeline"), [(True, False), (False, True)])
 def test_experiment_status_allows_controller_owned_recipe_path(tmp_path, adaptive, pipeline):
     root = tmp_path / "experiment"
@@ -2159,6 +2180,7 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
         workspace_experiment,
         step_manifest,
         workspace_rows,
+        expected_recipe_path,
         remote,
         run_index_offset,
     ):
@@ -2170,6 +2192,7 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
                 workspace_experiment,
                 step_manifest,
                 workspace_rows,
+                expected_recipe_path,
                 remote,
                 run_index_offset,
             )
@@ -2206,7 +2229,7 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
     assert calls[1] == ("steps", root, "status-unit", "baichuan3")
     assert calls[2] == ("blocked", str(root / "plans" / "train"), root, "baichuan3")
     assert calls[3][3] == experiment
-    assert calls[3][-2:] == ("baichuan3", 0)
+    assert calls[3][-3:] == ("", "baichuan3", 0)
     assert snapshot["experiment"]["remote"] == "baichuan3"
     action = snapshot["decision"]["recommended_next"]
     assert action["execution_host"] is None

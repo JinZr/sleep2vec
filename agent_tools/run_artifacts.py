@@ -154,6 +154,7 @@ def read_registered_plan(
     workspace_experiment: dict[str, Any],
     step_manifest: dict[str, Any],
     workspace_rows: list[dict[str, Any]],
+    expected_recipe_path: str | None,
     remote: str | None = None,
     run_index_offset: int = 0,
 ) -> dict[str, Any]:
@@ -405,7 +406,7 @@ def read_registered_plan(
     if final_path is not None and bundle[str(final_path)]["sha256"] != contract["final_eval_config_sha256"]:
         raise ValueError(f"Registered plan frozen file SHA-256 changed: {final_path}")
 
-    if plan_controller == "ordinary" and recipe.get("_recipe_path", "") != step_manifest.get("recipe_path", ""):
+    if expected_recipe_path is not None and recipe.get("_recipe_path", "") != expected_recipe_path:
         raise ValueError(f"Registered plan recipe path differs from its managed step: {plan_dir}")
     return {
         "path": str(plan_dir),
