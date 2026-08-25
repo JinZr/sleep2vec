@@ -227,9 +227,7 @@ def read_registered_plan(
             )
             or SHA256_RE.fullmatch(final_eval_config["sha256"]) is None
         ):
-            raise ValueError(
-                f"Registered final_eval_config must define path, sha256, and source_path: {plan_path}"
-            )
+            raise ValueError(f"Registered final_eval_config must define path, sha256, and source_path: {plan_path}")
         final_path = Path(str(final_eval_config["path"]))
         bundle_paths.append(final_path)
         hash_expectations[str(final_path)] = final_eval_config["sha256"]
@@ -292,9 +290,7 @@ def _validate_registered_run_parameters(
     plan_parameter_keys = set(plan_parameters)
     canonical_parameter_keys = set(canonical_parameters)
     missing_parameters = plan_parameter_keys - canonical_parameter_keys
-    missing_declared = (declared_parameters - plan_parameter_keys) | (
-        declared_parameters - canonical_parameter_keys
-    )
+    missing_declared = (declared_parameters - plan_parameter_keys) | (declared_parameters - canonical_parameter_keys)
     nonempty_extra_parameters = {
         field
         for field in canonical_parameter_keys - plan_parameter_keys
