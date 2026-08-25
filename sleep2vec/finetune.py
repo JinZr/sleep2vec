@@ -46,7 +46,7 @@ def prepare_dataloader(args):
         "Prepared dataloaders: train=%d val=%d test=%d",
         len(train_loader),
         len(val_loader),
-        len(test_loader),
+        len(test_loader) if test_loader is not None else 0,
     )
     return train_loader, val_loader, test_loader
 

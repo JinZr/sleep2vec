@@ -2,6 +2,7 @@ import argparse
 import importlib
 import importlib.util
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -73,6 +74,18 @@ def _load_finetune_module(module_name: str, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setitem(sys.modules, loaded_name, module)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_prepare_dataloader_reports_disabled_test_as_empty(module_name, monkeypatch, caplog):
+    finetune_mod = _load_finetune_module(module_name, monkeypatch)
+    monkeypatch.setattr(finetune_mod, "get_finetune_dataloaders", lambda _args: ([1], [2], None))
+
+    with caplog.at_level(logging.INFO):
+        loaders = finetune_mod.prepare_dataloader(argparse.Namespace())
+
+    assert loaders == ([1], [2], None)
+    assert "Prepared dataloaders: train=1 val=1 test=0" in caplog.text
 
 
 def _run_supervised(
