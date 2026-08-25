@@ -234,18 +234,6 @@ def read_registered_plan(
         raise ValueError(f"Invalid registered plan recipe: {messages}")
     assert adapter is not None
 
-    if adapter.materializes_plan:
-        contract = _compile_registered_plan_contract(
-            adapter,
-            recipe,
-            plan_dir,
-            run_index_offset=run_index_offset,
-            config_bytes=b"",
-        )
-    else:
-        layout = plan_contract.generic_run_contract(recipe, plan_dir, run_index_offset, adapter)
-        contract = None
-
     metadata_issues = experiment_metadata_issues(recipe)
     if metadata_issues:
         raise ValueError("Invalid registered plan binding: " + "; ".join(issue["message"] for issue in metadata_issues))
@@ -261,6 +249,19 @@ def read_registered_plan(
     managed_step = {field: step_manifest["step"][field] for field in ("id", "phase", "purpose")}
     if step != managed_step:
         raise ValueError(f"Registered plan step metadata differs from its managed step: {plan_dir}")
+
+    if adapter.materializes_plan:
+        contract = _compile_registered_plan_contract(
+            adapter,
+            recipe,
+            plan_dir,
+            run_index_offset=run_index_offset,
+            config_bytes=b"",
+        )
+    else:
+        layout = plan_contract.generic_run_contract(recipe, plan_dir, run_index_offset, adapter)
+        contract = None
+
     plan_controller = step_manifest["plan_controller"]
     adaptive_enabled = isinstance(recipe.get("adaptive"), dict) and recipe["adaptive"].get("enabled") is True
     if plan_controller == "unassigned" or (plan_controller == "adaptive") != adaptive_enabled:

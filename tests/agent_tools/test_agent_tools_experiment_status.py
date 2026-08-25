@@ -1936,6 +1936,29 @@ def test_experiment_status_cli_returns_one_for_non_mapping_plan_run(tmp_path, ca
     assert "Traceback" not in captured.err
 
 
+@pytest.mark.parametrize("binding", ["experiment", "step"])
+def test_experiment_status_cli_returns_one_for_non_mapping_plan_binding(tmp_path, capsys, binding):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="train")
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["recipe"][binding] = "invalid"
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    resolved_path = plan_dir / "recipe.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text())
+    resolved[binding] = "invalid"
+    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+    before = _workspace_files(root)
+
+    assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"{binding} must be a mapping" in captured.err
+    assert "Traceback" not in captured.err
+    assert _workspace_files(root) == before
+
+
 @pytest.mark.parametrize("adaptive", [None, False, "invalid", ["invalid"]])
 def test_experiment_status_cli_returns_one_for_non_mapping_adaptive(tmp_path, capsys, adaptive):
     root = tmp_path / "experiment"
