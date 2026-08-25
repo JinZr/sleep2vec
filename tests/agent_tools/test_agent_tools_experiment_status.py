@@ -1969,6 +1969,18 @@ def test_experiment_status_cli_converts_malformed_yaml_to_exit_one(tmp_path, cap
     assert "Traceback" not in captured.err
 
 
+def test_experiment_status_rejects_unknown_experiment_envelope_field(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    manifest_path = root / "experiment.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["duplicate_owner"] = {"status": "completed"}
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+
+    with pytest.raises(ValueError, match="only the experiment owner mapping"):
+        experiments.experiment_status(root)
+
+
 def test_experiment_status_cli_returns_one_for_contract_errors(tmp_path, capsys):
     root = tmp_path / "experiment"
     _init_workspace(root)

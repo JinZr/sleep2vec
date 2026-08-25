@@ -482,7 +482,9 @@ def _managed_workspace(
     files = exp_io.read_managed_files_at(root, [manifest_path], remote=remote)
     experiment_text = files[str(manifest_path)]["text"]
     manifest = read_managed_yaml_mapping(experiment_text, source=f"Managed experiment manifest {manifest_path}")
-    experiment = manifest.get("experiment") if isinstance(manifest, dict) else None
+    if set(manifest) != {"experiment"}:
+        raise ValueError("experiment.yaml must contain only the experiment owner mapping.")
+    experiment = manifest.get("experiment")
     validated_experiment = experiment
     if allow_completed and isinstance(experiment, dict) and ("status" in experiment or "completed_at" in experiment):
         if set(experiment) - {"id", "title", "objective", "root", "baseline"} != {"status", "completed_at"}:
