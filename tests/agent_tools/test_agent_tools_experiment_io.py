@@ -126,6 +126,49 @@ def test_remote_managed_control_reads_use_one_read_only_probe(monkeypatch):
     assert "mkdir" not in calls[0][0][-1]
 
 
+def test_local_managed_control_bundle_requires_exact_directory_entries(tmp_path):
+    root = tmp_path / "workspace"
+    bundle = root / "bundle"
+    bundle.mkdir(parents=True)
+    paths = [bundle / "questions.json", bundle / "questions.md", bundle / "plan.blocked.md"]
+    for path in paths:
+        path.write_text(f"{path.name}\n")
+
+    experiment_io.read_managed_files_at(root, paths, exact_directory_entries=True)
+    (bundle / "run.sh").write_text("partial launch\n")
+
+    with pytest.raises(ValueError, match="directory entries differ"):
+        experiment_io.read_managed_files_at(root, paths, exact_directory_entries=True)
+
+
+def test_remote_exact_managed_control_bundle_uses_one_read_only_probe(monkeypatch):
+    calls = []
+    paths = [
+        "/remote/workspace/plan/questions.json",
+        "/remote/workspace/plan/questions.md",
+        "/remote/workspace/plan/plan.blocked.md",
+    ]
+    payload = {path: {"text": "blocked\n", "sha256": "a" * 64} for path in paths}
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
+
+    result = experiment_io.read_managed_files_at(
+        "/remote/workspace",
+        paths,
+        remote="host",
+        exact_directory_entries=True,
+    )
+
+    assert result == payload
+    assert len(calls) == 1
+    assert "os.listdir(parent)" in calls[0][0][-1]
+    assert "mkdir" not in calls[0][0][-1]
+
+
 def test_remote_managed_control_read_fails_closed_on_transport_error(monkeypatch):
     monkeypatch.setattr(
         experiment_io.subprocess,

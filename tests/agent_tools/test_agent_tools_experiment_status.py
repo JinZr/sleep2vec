@@ -235,18 +235,24 @@ def test_experiment_status_accepts_public_finetune_plan(tmp_path):
     assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(plan_dir / "run.sh")]
 
 
-def test_experiment_status_skips_registered_blocked_plan_after_successful_retry(tmp_path):
+@pytest.mark.parametrize("allow_unresolved", [False, True])
+def test_experiment_status_skips_registered_blocked_plan_after_successful_retry(tmp_path, allow_unresolved):
     root = tmp_path / "experiment"
     recipe = write_finetune_recipe(root, include_label=False)
     blocked_dir = root / "plans" / "blocked"
 
-    blocked = plans.build_plan(recipe_path=recipe, output_dir=blocked_dir)
+    blocked = plans.build_plan(
+        recipe_path=recipe,
+        output_dir=blocked_dir,
+        allow_unresolved=allow_unresolved,
+    )
 
     assert blocked.exit_code == 2
     blocked_path = blocked_dir / "plan.blocked.md"
     assert blocked_path.exists()
     assert not (blocked_dir / "plan.json").exists()
     assert not (blocked_dir / "recipe.resolved.yaml").exists()
+    assert (blocked_dir / "plan.draft.json").exists() is allow_unresolved
     decisions_path = write_yaml(
         root / "decisions.yaml",
         {"decisions": {"label_name": {"value": "ahi", "source": "explicit_user"}}},
@@ -267,9 +273,51 @@ def test_experiment_status_skips_registered_blocked_plan_after_successful_retry(
     assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(retry_dir / "run.sh")]
     assert _workspace_files(root) == before
 
-    blocked_target = blocked_dir / "plan.blocked.real.md"
-    blocked_path.rename(blocked_target)
-    blocked_path.symlink_to(blocked_target.name)
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing_questions_json", "missing_questions_md", "launch_script", "config", "runs"],
+)
+def test_experiment_status_rejects_partial_registered_blocked_plan(tmp_path, mutation):
+    root = tmp_path / "experiment"
+    recipe = write_finetune_recipe(root, include_label=False)
+    blocked_dir = root / "plans" / "blocked"
+    assert plans.build_plan(recipe_path=recipe, output_dir=blocked_dir).exit_code == 2
+
+    if mutation.startswith("missing_questions"):
+        suffix = ".json" if mutation.endswith("json") else ".md"
+        (blocked_dir / f"questions{suffix}").unlink()
+        error = "Managed file is missing"
+    elif mutation == "runs":
+        (blocked_dir / "runs").mkdir()
+        error = "directory entries differ"
+    else:
+        name = "run.sh" if mutation == "launch_script" else "config.yaml"
+        (blocked_dir / name).write_text("partial artifact\n")
+        error = "directory entries differ"
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match=error):
+        experiments.experiment_status(root)
+    assert _workspace_files(root) == before
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_experiment_status_rejects_aliased_registered_blocked_plan(tmp_path, alias_kind):
+    root = tmp_path / "experiment"
+    recipe = write_finetune_recipe(root, include_label=False)
+    blocked_dir = root / "plans" / "blocked"
+    assert plans.build_plan(recipe_path=recipe, output_dir=blocked_dir).exit_code == 2
+    blocked_path = blocked_dir / "plan.blocked.md"
+    contents = blocked_path.read_bytes()
+    blocked_path.unlink()
+    outside = root / "outside-blocked.md"
+    outside.write_bytes(contents)
+    if alias_kind == "symlink":
+        blocked_path.symlink_to(outside)
+    else:
+        blocked_path.hardlink_to(outside)
+
     with pytest.raises(ValueError, match="missing or aliased"):
         experiments.experiment_status(root)
 
@@ -976,6 +1024,48 @@ def test_experiment_status_terminal_and_completed_contract(tmp_path):
     write_rows(root / "run_manifest.tsv", rows)
     with pytest.raises(ValueError, match="Completed experiment metadata conflicts"):
         experiments.experiment_status(root)
+
+
+def test_experiment_status_blocks_finalize_for_stopped_run_without_reason(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train", status="stopped")
+    before = _workspace_files(root)
+
+    blocked = experiments.experiment_status(root)
+
+    assert _workspace_files(root) == before
+    assert blocked["summary"]["state"] == "blocked"
+    assert blocked["decision"]["recommended_next"] is None
+    assert blocked["decision"]["other_legal_actions"] == []
+    assert blocked["decision"]["blocked_actions"] == ["finalize"]
+    assert blocked["blockers"][0]["code"] == "missing_stop_reason"
+    assert blocked["blockers"][0]["run_ids"] == ["run-000"]
+    assert blocked["runs"][0]["blockers"] == ["missing_stop_reason"]
+
+    rows = _read_manifest_rows(root)
+    rows[0]["stop_reason"] = "manual stop after invalid labels"
+    write_rows(root / "run_manifest.tsv", rows)
+    ready = experiments.experiment_status(root)
+    assert ready["summary"]["state"] == "ready_to_finalize"
+    assert ready["decision"]["other_legal_actions"][0]["id"] == "experiment-finalize"
+
+
+def test_experiment_status_rejects_completed_stopped_run_without_reason(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train", status="stopped")
+    manifest = yaml.safe_load((root / "experiment.yaml").read_text())
+    manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
+    (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+
+    with pytest.raises(ValueError, match="stopped runs missing stop_reason"):
+        experiments.experiment_status(root)
+
+    rows = _read_manifest_rows(root)
+    rows[0]["stop_reason"] = "manual stop after invalid labels"
+    write_rows(root / "run_manifest.tsv", rows)
+    assert experiments.experiment_status(root)["summary"]["state"] == "completed"
 
 
 def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monkeypatch):

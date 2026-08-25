@@ -29,6 +29,7 @@ from .experiment_workspace import (
     resolve_run_row,
     scheduler_direct_controller,
     scheduler_type,
+    stopped_runs_without_reason,
     validate_checkpoint_ownership,
     validate_frozen_run_update,
     validate_managed_run_rows,
@@ -554,10 +555,13 @@ def experiment_status_snapshot(
             )
     sorted_rows = sorted(rows, key=lambda row: (str(row["step_id"]), str(row["run_id"])))
     plan_blockers, candidates = _plan_advice(registered_steps, sorted_rows, remote=remote)
+    missing_stop_reason_rows = stopped_runs_without_reason(sorted_rows)
     completed = experiment.get("status") == "completed"
     if completed:
         if not rows or any(row["status"] not in TERMINAL_STATUSES for row in rows):
             raise ValueError("Completed experiment metadata conflicts with canonical run lifecycle state.")
+        if missing_stop_reason_rows:
+            raise ValueError("Completed experiment metadata conflicts with stopped runs missing stop_reason.")
         if plan_blockers:
             raise ValueError(
                 "Completed experiment metadata cannot be verified for adaptive or pipeline plans, or for "
@@ -580,6 +584,15 @@ def experiment_status_snapshot(
         )
 
     blockers = list(plan_blockers)
+    for step_id in sorted({str(row["step_id"]) for row in missing_stop_reason_rows}):
+        blockers.append(
+            _status_blocker(
+                "missing_stop_reason",
+                "Stopped canonical runs require a non-empty recorded stop_reason before finalization.",
+                rows=[row for row in missing_stop_reason_rows if str(row["step_id"]) == step_id],
+                blocked_actions=["finalize"],
+            )
+        )
     decision = {
         "manual_choice_required": False,
         "recommended_next": None,
@@ -642,7 +655,7 @@ def experiment_status_snapshot(
                 )
             decision["recommended_next"] = _monitor_action(root, remote)
         elif all(row["status"] in TERMINAL_STATUSES for row in sorted_rows):
-            if plan_blockers:
+            if plan_blockers or missing_stop_reason_rows:
                 state = "blocked"
                 decision["manual_choice_required"] = True
             else:

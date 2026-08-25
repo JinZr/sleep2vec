@@ -929,6 +929,10 @@ def managed_run_key(row: dict[str, Any]) -> tuple[str, str] | None:
     return step_id, run_id
 
 
+def stopped_runs_without_reason(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if row.get("status") == "stopped" and not str(row.get("stop_reason") or "").strip()]
+
+
 def managed_run_parameters(row: dict[str, Any]) -> dict[str, Any]:
     legacy_fields = sorted(str(key) for key in row if str(key).startswith("param."))
     if legacy_fields:

@@ -224,6 +224,7 @@ def read_managed_files_at(
     paths: list[str | Path],
     *,
     remote: str | None = None,
+    exact_directory_entries: bool = False,
 ) -> dict[str, dict[str, str]]:
     root = Path(root)
     targets = [Path(path) for path in paths]
@@ -239,7 +240,7 @@ import os
 import stat
 import sys
 
-root, targets = json.loads(sys.argv[1])
+root, targets, exact_directory_entries = json.loads(sys.argv[1])
 
 def reject(message):
     print(message, file=sys.stderr)
@@ -293,9 +294,22 @@ for target in targets:
     except UnicodeError:
         reject(f"Managed file is not valid UTF-8: {target}")
     payload[target] = {"text": text, "sha256": hashlib.sha256(data).hexdigest()}
+if exact_directory_entries:
+    parents = {os.path.dirname(target) for target in targets}
+    if len(parents) != 1:
+        reject("Exact managed control bundle files must share one directory.")
+    parent = parents.pop()
+    try:
+        actual_entries = sorted(os.listdir(parent))
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    expected_entries = sorted(os.path.basename(target) for target in targets)
+    if actual_entries != expected_entries:
+        reject(f"Managed control bundle directory entries differ: {parent}")
 print(json.dumps(payload, sort_keys=True))
 """
-        request = json.dumps([str(root), [str(path) for path in targets]])
+        request = json.dumps([str(root), [str(path) for path in targets], exact_directory_entries])
         result = transport.run_ssh(
             remote,
             transport.remote_python_command(script, request),
@@ -348,6 +362,15 @@ print(json.dumps(payload, sort_keys=True))
         except UnicodeError as exc:
             raise ValueError(f"Managed file is not valid UTF-8: {target}") from exc
         payload[str(target)] = {"text": text, "sha256": hashlib.sha256(data).hexdigest()}
+    if exact_directory_entries:
+        parents = {target.parent for target in targets}
+        if len(parents) != 1:
+            raise ValueError("Exact managed control bundle files must share one directory.")
+        parent = parents.pop()
+        actual_entries = sorted(entry.name for entry in os.scandir(parent))
+        expected_entries = sorted(target.name for target in targets)
+        if actual_entries != expected_entries:
+            raise ValueError(f"Managed control bundle directory entries differ: {parent}")
     return payload
 
 

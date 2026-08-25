@@ -1010,6 +1010,56 @@ def test_experiment_finalize_rejects_missing_pid_status(tmp_path: Path):
     assert "status: completed" not in (tmp_path / "experiment.yaml").read_text()
 
 
+def test_experiment_finalize_requires_stop_reason_before_writing(tmp_path: Path):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    run_manifest = tmp_path / "run_manifest.tsv"
+    run_manifest.write_text("experiment_id\tstep_id\trun_id\tstatus\tstop_reason\n" "unit\ttrain\trun-000\tstopped\t\n")
+    report = tmp_path.parent / "stopped_final.md"
+    report.write_text("# Final\n")
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="missing required stop_reason"):
+        experiments.finalize_experiment(tmp_path, report)
+
+    assert _workspace_files(tmp_path) == before
+    rows = _read_table(run_manifest)
+    rows[0]["stop_reason"] = "manual stop after invalid labels"
+    experiment_io.write_rows_at(run_manifest, rows)
+    target = experiments.finalize_experiment(tmp_path, report)
+    assert target.read_text() == report.read_text()
+    assert "status: completed" in (tmp_path / "experiment.yaml").read_text()
+
+
+def test_experiment_remote_finalize_checks_stop_reason_before_report_read_or_writes(monkeypatch):
+    root = Path("/remote/experiment")
+    calls = []
+
+    def managed_rows(candidate, *, remote):
+        calls.append((candidate, remote))
+        return [
+            {
+                "experiment_id": "unit",
+                "step_id": "train",
+                "run_id": "run-000",
+                "status": "stopped",
+                "stop_reason": "",
+            }
+        ]
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("remote finalize read the report or attempted a write")
+
+    monkeypatch.setattr(experiments, "_managed_rows", managed_rows)
+    monkeypatch.setattr(experiment_io, "read_text_at", unexpected)
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", unexpected)
+    monkeypatch.setattr(experiment_io, "append_event_at", unexpected)
+
+    with pytest.raises(ValueError, match="missing required stop_reason"):
+        experiments.finalize_experiment(root, "/remote/final.md", remote="baichuan3")
+
+    assert calls == [(root, "baichuan3")]
+
+
 def test_experiment_finalize_rejects_workspace_without_managed_runs(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
     assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0

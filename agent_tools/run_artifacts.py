@@ -123,7 +123,16 @@ def is_registered_blocked_plan(
         resolved_recipe_path, remote=remote
     ):
         return False
-    exp_io.read_managed_files_at(workspace, [blocked_path], remote=remote)
+    blocked_files = [plan_dir / "questions.json", plan_dir / "questions.md", blocked_path]
+    draft_path = plan_dir / "plan.draft.json"
+    if exp_io.path_exists_at(draft_path, remote=remote):
+        blocked_files.append(draft_path)
+    exp_io.read_managed_files_at(
+        workspace,
+        blocked_files,
+        remote=remote,
+        exact_directory_entries=True,
+    )
     return True
 
 

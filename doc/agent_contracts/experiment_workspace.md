@@ -182,11 +182,11 @@ invalid and are not repaired in place.
   recipes validate both source layers plus any effective-only overlay produced
   after their canonical merge. Suggested commands are advisory argv arrays and
   do not authorize a launch or mutation.
-  A registered directory containing exactly the managed `plan.blocked.md`
-  envelope is a non-runnable planning outcome and is skipped; partial or
-  aliased envelopes fail closed. A plan binds to the registered step's core
-  `id`, `phase`, and `purpose`, while manifest-owned `inputs` and `outputs`
-  remain valid step metadata.
+  A registered directory containing exactly `questions.json`, `questions.md`,
+  `plan.blocked.md`, and optional `plan.draft.json` is a non-runnable planning
+  outcome and is skipped; missing, extra, or aliased entries fail closed. A
+  plan binds to the registered step's core `id`, `phase`, and `purpose`, while
+  manifest-owned `inputs` and `outputs` remain valid step metadata.
   Active adaptive and pipeline plans produce plan-scoped blockers for their
   controller-owned advance/finalize actions without blocking an unrelated
   ordinary plan launch. Because the status read-set contains no controller
@@ -194,6 +194,9 @@ invalid and are not repaired in place.
   pipeline plan fails as corrupt canonical control state. A registered step
   with no materialized plan and no canonical rows likewise blocks finalization;
   completed metadata cannot prove that controller-deferred work was completed.
+  A canonical `stopped` row without a non-empty `stop_reason` blocks the
+  finalize advisory, and completed metadata containing such a row is corrupt.
+  `experiment-finalize` independently enforces the same stop-reason boundary.
   Valid blockers return success; corrupt canonical control state or local/SSH
   read failure returns non-zero.
 - `experiment-rank` writes experiment-wide ranking.

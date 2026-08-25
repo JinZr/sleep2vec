@@ -21,6 +21,7 @@ from .experiment_workspace import (
     read_managed_yaml_mapping,
     read_registered_steps,
     read_run_manifest,
+    stopped_runs_without_reason,
     validate_existing_experiment_manifest,
     validate_frozen_run_update,
     validate_managed_run_rows,
@@ -193,6 +194,10 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     unresolved = [row["run_id"] for row in rows if row.get("status") not in TERMINAL_STATUSES]
     if unresolved:
         raise ValueError(f"Experiment still has unresolved runs: {unresolved}")
+    missing_stop_reasons = stopped_runs_without_reason(rows)
+    if missing_stop_reasons:
+        run_ids = [f"{row['step_id']} / {row['run_id']}" for row in missing_stop_reasons]
+        raise ValueError(f"Stopped runs are missing required stop_reason: {run_ids}")
     report_text = exp_io.read_text_at(report_path, remote=remote)
     if not report_text.strip():
         raise ValueError("Final report is missing or empty.")
