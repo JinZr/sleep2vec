@@ -185,6 +185,21 @@ def test_experiment_status_accepts_public_generic_plan_without_runtime_directori
     assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(plan_dir / "run.sh")]
 
 
+def test_experiment_status_rejects_finetune_plan_without_runtime_directories(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, canonical = _add_plan(root, step_id="train", task="finetune")
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    for row in (plan["runs"][0], canonical):
+        row["runtime_dir"] = ""
+        row["checkpoint_dir"] = ""
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    write_rows(root / "run_manifest.tsv", [canonical])
+
+    with pytest.raises(ValueError, match="runtime_dir, checkpoint_dir"):
+        experiments.experiment_status(root)
+
+
 @pytest.mark.parametrize("parameters", [{"runtime.lr": [1e-6]}, {"yaml:/data/finetune_preset_path": [None]}])
 def test_experiment_status_accepts_public_layered_hparam_plan(tmp_path, parameters):
     root = tmp_path / "experiment"

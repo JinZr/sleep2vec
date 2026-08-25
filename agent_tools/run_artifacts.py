@@ -160,7 +160,7 @@ def read_registered_plan(
         runs,
         source=str(plan_path),
         require_artifact_paths=True,
-        allow_empty_runtime_paths=task != "hparam_tune",
+        allow_empty_runtime_paths=task not in {"finetune", "hparam_tune"},
     )
     plan_keys = [managed_run_key(run) for run in runs]
     if len(plan_keys) != len(set(plan_keys)):
