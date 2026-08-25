@@ -616,6 +616,17 @@ def experiment_status_snapshot(
                         blocked_actions=["adaptive_advance", "finalize", "resubmit"],
                     )
                 )
+            uncertain_keys = {managed_run_key(row) for row in uncertain}
+            remaining_active = [row for row in active if managed_run_key(row) not in uncertain_keys]
+            for step_id in sorted({str(row["step_id"]) for row in remaining_active}):
+                blockers.append(
+                    _status_blocker(
+                        "active_runs",
+                        "Canonical runs are still active. Refresh recorded evidence before another lifecycle decision.",
+                        rows=[row for row in remaining_active if str(row["step_id"]) == step_id],
+                        blocked_actions=["adaptive_advance", "finalize", "launch", "resubmit"],
+                    )
+                )
             decision["recommended_next"] = _monitor_action(root, remote)
         elif active:
             state = "in_progress"
@@ -841,7 +852,6 @@ def _launch_decision(
                     )
                 )
                 continue
-            hosts = sorted({str(row["host"]) for row in plan_rows if row.get("host") not in (None, "")})
             if plan["task"] == "hparam_tune":
                 argv = [
                     "python",
@@ -853,16 +863,19 @@ def _launch_decision(
                     "--execute",
                 ]
                 action_id = "hparam-run-queue"
+                execution_host = remote
             else:
                 argv = ["bash", plan["launch_script"]]
                 action_id = "run-plan"
+                hosts = sorted({str(row["host"]) for row in plan_rows if row.get("host") not in (None, "")})
+                execution_host = remote or (hosts[0] if len(hosts) == 1 else None)
             candidates.append(
                 _status_action(
                     action_id,
                     "Launch only after explicit user authorization and the command's own preflight succeeds.",
                     argv,
                     step_id=step_id,
-                    execution_host=remote or (hosts[0] if len(hosts) == 1 else None),
+                    execution_host=execution_host,
                 )
             )
     candidates.sort(key=lambda action: (action["step_id"] or "", action["id"], action["argv"]))

@@ -298,6 +298,21 @@ def test_experiment_status_active_states_recommend_monitor(tmp_path, status):
     assert "launch" in snapshot["decision"]["blocked_actions"]
 
 
+def test_experiment_status_preserves_active_blockers_with_uncertain_runs(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="uncertain", status="unknown_scheduler")
+    _add_plan(root, step_id="active", status="running")
+
+    snapshot = experiments.experiment_status(root)
+    blockers_by_step = {run["step_id"]: run["blockers"] for run in snapshot["runs"]}
+
+    assert snapshot["summary"]["state"] == "blocked"
+    assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
+    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize", "launch", "resubmit"]
+    assert blockers_by_step == {"active": ["active_runs"], "uncertain": ["unknown_scheduler"]}
+
+
 def test_experiment_status_empty_workspace_does_not_guess_a_command(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -519,6 +534,34 @@ def test_experiment_status_renders_remote_launch_execution_host():
     rendered = experiment_tracking.format_experiment_status(snapshot)
     assert "execution host: `baichuan3`" in rendered
     assert f"bash {root / 'plans' / 'train' / 'run.sh'}" in rendered
+
+
+def test_experiment_status_keeps_local_hparam_queue_on_controller(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _row = _add_plan(
+        root,
+        step_id="tune",
+        task="hparam_tune",
+        status="pending",
+        host="baichuan3",
+    )
+
+    snapshot = experiments.experiment_status(root)
+    action = snapshot["decision"]["recommended_next"]
+
+    assert action["id"] == "hparam-run-queue"
+    assert action["execution_host"] is None
+    assert action["argv"] == [
+        "python",
+        "-m",
+        "agent_tools",
+        "hparam-run-queue",
+        "--plan-dir",
+        str(plan_dir),
+        "--execute",
+    ]
+    assert "execution host:" not in experiment_tracking.format_experiment_status(snapshot)
 
 
 def test_experiment_status_keeps_remote_finalize_on_controller():
