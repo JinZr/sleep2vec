@@ -105,7 +105,15 @@ def _add_plan(
         "parameter_summary": run.get("parameter_summary", "single resolved recipe"),
     }
     if pipeline:
-        canonical["pipeline_id"] = "pipeline-unit"
+        canonical.update(
+            {
+                "pipeline_id": "pipeline-unit",
+                "job_id": "job-unit",
+                "attempt": "1",
+                "result_root": str(root / "pipeline-results" / "job-unit" / "attempt-001"),
+                "terminal_status_owner": "script",
+            }
+        )
     existing = _read_manifest_rows(root)
     write_rows(root / "run_manifest.tsv", [*existing, canonical])
     return plan_dir, canonical
@@ -513,6 +521,35 @@ def test_experiment_status_renders_remote_launch_execution_host():
     assert f"bash {root / 'plans' / 'train' / 'run.sh'}" in rendered
 
 
+def test_experiment_status_keeps_remote_finalize_on_controller():
+    root = Path("/remote/experiment")
+    row = {"step_id": "train", "run_id": "run-000", "run_name": "default", "status": "completed"}
+    registered_steps = [
+        {
+            "manifest": {"step": {"id": "train", "phase": "train", "purpose": "Train."}},
+            "plans": [
+                {
+                    "path": str(root / "plans" / "train"),
+                    "pipeline": False,
+                    "run_keys": [("train", "run-000")],
+                }
+            ],
+        }
+    ]
+
+    snapshot = experiment_tracking.experiment_status_snapshot(
+        {"id": "status-unit", "title": "Remote status"},
+        registered_steps,
+        [row],
+        root=root,
+        remote="baichuan3",
+    )
+    action = snapshot["decision"]["other_legal_actions"][0]
+
+    assert action["execution_host"] is None
+    assert action["argv"][-2:] == ["--remote", "baichuan3"]
+
+
 def test_experiment_status_cli_converts_remote_timeout_to_exit_one(monkeypatch, capsys):
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired(["ssh", "baichuan3"], 10)
@@ -523,6 +560,19 @@ def test_experiment_status_cli_converts_remote_timeout_to_exit_one(monkeypatch, 
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("error:")
+    assert "Traceback" not in captured.err
+
+
+def test_experiment_status_cli_converts_malformed_yaml_to_exit_one(tmp_path, capsys):
+    root = tmp_path / "experiment"
+    root.mkdir()
+    (root / "experiment.yaml").write_text("experiment: [\n")
+    (root / "run_manifest.tsv").write_text("step_id\trun_id\n")
+
+    assert cli.main(["experiment-status", "--run-dir", str(root)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "invalid YAML" in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -649,4 +699,6 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
     assert calls[1] == ("steps", root, "status-unit", "baichuan3")
     assert calls[2][-1] == "baichuan3"
     assert snapshot["experiment"]["remote"] == "baichuan3"
-    assert snapshot["decision"]["recommended_next"]["argv"][-2:] == ["--remote", "baichuan3"]
+    action = snapshot["decision"]["recommended_next"]
+    assert action["execution_host"] is None
+    assert action["argv"][-2:] == ["--remote", "baichuan3"]

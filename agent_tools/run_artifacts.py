@@ -40,7 +40,6 @@ REGISTERED_PLAN_IDENTITY_FIELDS = (
     "artifacts",
     "runtime_dir",
     "checkpoint_dir",
-    "terminal_status_owner",
     *sorted(SCHEDULER_PLAN_IDENTITY_FIELDS),
 )
 
@@ -176,13 +175,20 @@ def read_registered_plan(
             raise ValueError(f"Workspace run manifest is missing status: {key[0]} / {key[1]}")
         identity_fields = list(REGISTERED_PLAN_IDENTITY_FIELDS)
         if task == "hparam_tune":
-            identity_fields.append("parameter_summary")
+            identity_fields.extend(("parameter_summary", "terminal_status_owner"))
         else:
             identity_fields.append("input_snapshots")
             if _text_value(canonical.get("parameter_summary")) != "single resolved recipe":
                 raise ValueError(
                     f"Workspace run manifest differs from plan field parameter_summary: {key[0]} / {key[1]}"
                 )
+            pipeline_fields = ("pipeline_id", "job_id", "attempt", "result_root")
+            pipeline_values = [_text_value(canonical.get(field)) for field in pipeline_fields]
+            if any(pipeline_values):
+                if not all(pipeline_values) or canonical.get("terminal_status_owner") != "script":
+                    raise ValueError(f"Workspace pipeline run identity is incomplete: {key[0]} / {key[1]}")
+            else:
+                identity_fields.append("terminal_status_owner")
         if run.get("scheduler_type") == "slurm":
             identity_fields.append("log_path")
         for field in identity_fields:

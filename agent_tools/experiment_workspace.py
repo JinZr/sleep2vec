@@ -286,7 +286,10 @@ def read_managed_yaml_mapping(text: str, *, source: str | Path) -> dict[str, Any
     label = str(source)
     if not text.strip():
         raise ValueError(f"{label} is empty.")
-    document = yaml.compose(text)
+    try:
+        document = yaml.compose(text)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{label} is invalid YAML.") from exc
     pending = [(document, False)]
     active_nodes = set()
     visited_nodes = set()
@@ -315,7 +318,10 @@ def read_managed_yaml_mapping(text: str, *, source: str | Path) -> dict[str, Any
                 pending.append((value_node, False))
         elif isinstance(node, yaml.SequenceNode):
             pending.extend((item, False) for item in node.value)
-    payload = yaml.safe_load(text)
+    try:
+        payload = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{label} is invalid YAML.") from exc
     if not isinstance(payload, dict) or not payload:
         raise ValueError(f"{label} must contain a non-empty mapping.")
     return payload

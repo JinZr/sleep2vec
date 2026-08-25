@@ -658,7 +658,6 @@ def experiment_status_snapshot(
                         "{report_path}",
                         *(["--remote", remote] if remote else []),
                     ],
-                    execution_host=remote,
                 )
                 finalize["required_inputs"] = ["report_path"]
                 blockers.append(
@@ -939,7 +938,6 @@ def _monitor_action(root: Path, remote: str | None) -> dict[str, Any]:
         "experiment-monitor",
         "Refresh canonical lifecycle evidence.",
         argv,
-        execution_host=remote,
     )
 
 
