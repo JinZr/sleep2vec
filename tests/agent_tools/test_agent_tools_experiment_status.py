@@ -2195,6 +2195,32 @@ def test_experiment_status_rejects_registered_plan_drift(tmp_path, drift):
         experiments.experiment_status(root)
 
 
+def test_experiment_status_rejects_plan_escape_before_external_probe(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "plan.blocked.md").write_text("blocked\n")
+    step_path = root / "steps" / "train" / "step.yaml"
+    step_manifest = yaml.safe_load(step_path.read_text())
+    step_manifest["plans"] = [str(outside)]
+    step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
+    path_exists_at = experiment_io.path_exists_at
+
+    def reject_external_probe(path, *, remote=None):
+        try:
+            Path(path).relative_to(root)
+        except ValueError as exc:
+            raise AssertionError(f"status probed outside the canonical workspace: {path}") from exc
+        return path_exists_at(path, remote=remote)
+
+    monkeypatch.setattr(experiment_io, "path_exists_at", reject_external_probe)
+
+    with pytest.raises(ValueError, match="outside its managed workspace"):
+        experiments.experiment_status(root)
+
+
 @pytest.mark.parametrize("field", ["title", "objective", "baseline"])
 def test_experiment_status_rejects_coherent_registered_plan_experiment_drift(tmp_path, field):
     root = tmp_path / "experiment"
