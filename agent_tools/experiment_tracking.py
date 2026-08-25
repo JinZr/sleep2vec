@@ -20,7 +20,6 @@ from . import (
     transport,
 )
 from .experiment_workspace import (
-    SUCCESS_STATUSES,
     TERMINAL_STATUSES,
     managed_run_key,
     merge_run_row,
@@ -553,39 +552,16 @@ def experiment_status_snapshot(
                 f"run_manifest.tsv contains an unsupported status: {row.get('step_id')} / "
                 f"{row.get('run_id')}: {status}"
             )
-    completed = experiment.get("status") == "completed"
-    if completed and (not rows or any(row["status"] not in TERMINAL_STATUSES for row in rows)):
-        raise ValueError("Completed experiment metadata conflicts with canonical run lifecycle state.")
-
     sorted_rows = sorted(rows, key=lambda row: (str(row["step_id"]), str(row["run_id"])))
-    rows_by_key = {managed_run_key(row): row for row in sorted_rows}
-    pipeline_plan_rows = [
-        [rows_by_key[tuple(key)] for key in plan["run_keys"]]
-        for registered in registered_steps
-        for plan in registered["plans"]
-        if plan["pipeline"]
-    ]
-    adaptive_plan_rows = [
-        [rows_by_key[tuple(key)] for key in plan["run_keys"]]
-        for registered in registered_steps
-        for plan in registered["plans"]
-        if plan["adaptive"]
-    ]
+    plan_blockers, candidates = _plan_advice(registered_steps, sorted_rows, remote=remote)
+    completed = experiment.get("status") == "completed"
     if completed:
-        pipeline_jobs: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        for row in (row for plan_rows in pipeline_plan_rows for row in plan_rows):
-            key = (str(row["pipeline_id"]), str(row["job_id"]))
-            pipeline_jobs.setdefault(key, []).append(row)
-        incomplete_jobs = sorted(
-            key
-            for key, job_rows in pipeline_jobs.items()
-            if not any(row["status"] in SUCCESS_STATUSES for row in job_rows)
-        )
-        if incomplete_jobs:
-            jobs = ", ".join(f"{pipeline_id} / {job_id}" for pipeline_id, job_id in incomplete_jobs)
+        if not rows or any(row["status"] not in TERMINAL_STATUSES for row in rows):
+            raise ValueError("Completed experiment metadata conflicts with canonical run lifecycle state.")
+        if plan_blockers:
             raise ValueError(
-                "Completed experiment metadata conflicts with pipeline jobs without a successful canonical "
-                f"attempt: {jobs}"
+                "Completed experiment metadata cannot be verified for adaptive or pipeline plans by status v1, "
+                "or for unmaterialized registered steps."
             )
     row_payloads = [_status_run_payload(row) for row in sorted_rows]
     step_payloads = []
@@ -598,12 +574,12 @@ def experiment_status_snapshot(
                 "id": step_id,
                 "phase": str(manifest["step"]["phase"]),
                 "purpose": str(manifest["step"]["purpose"]),
-                "plans": [plan["path"] for plan in registered["plans"]],
+                "plans": sorted(plan["path"] for plan in registered["plans"]),
                 "status_counts": _status_counts(step_rows),
             }
         )
 
-    blockers = []
+    blockers = list(plan_blockers)
     decision = {
         "manual_choice_required": False,
         "recommended_next": None,
@@ -666,26 +642,8 @@ def experiment_status_snapshot(
                 )
             decision["recommended_next"] = _monitor_action(root, remote)
         elif all(row["status"] in TERMINAL_STATUSES for row in sorted_rows):
-            if pipeline_plan_rows or adaptive_plan_rows:
+            if plan_blockers:
                 state = "blocked"
-                for plan_rows in adaptive_plan_rows:
-                    blockers.append(
-                        _status_blocker(
-                            "adaptive_phase_deferred",
-                            "Status v1 cannot verify adaptive controller completion or its remaining search budget.",
-                            rows=plan_rows,
-                            blocked_actions=["adaptive_advance", "finalize"],
-                        )
-                    )
-                for plan_rows in pipeline_plan_rows:
-                    blockers.append(
-                        _status_blocker(
-                            "pipeline_phase_deferred",
-                            "Status v1 cannot verify pipeline controller completion or its declared result matrix.",
-                            rows=plan_rows,
-                            blocked_actions=["finalize", "pipeline_advance"],
-                        )
-                    )
                 decision["manual_choice_required"] = True
             else:
                 state = "ready_to_finalize"
@@ -715,8 +673,7 @@ def experiment_status_snapshot(
                 decision["manual_choice_required"] = True
                 decision["other_legal_actions"] = [finalize]
         else:
-            state, launch_blockers, candidates = _launch_decision(registered_steps, sorted_rows, remote=remote)
-            blockers.extend(launch_blockers)
+            state = "ready_to_launch" if candidates else "blocked"
             if len(candidates) == 1:
                 decision["recommended_next"] = candidates[0]
             elif len(candidates) > 1:
@@ -851,28 +808,37 @@ def format_experiment_status(snapshot: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _launch_decision(
+def _plan_advice(
     registered_steps: list[dict[str, Any]],
     rows: list[dict[str, Any]],
     *,
     remote: str | None = None,
-) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows_by_key = {managed_run_key(row): row for row in rows}
     blockers = []
     candidates = []
     for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
         step_id = str(registered["manifest"]["step"]["id"])
-        for plan in registered["plans"]:
+        if not registered["plans"]:
+            blockers.append(
+                _status_blocker(
+                    "unmaterialized_step",
+                    "The registered step has no materialized plan or canonical runs; status v1 cannot prove "
+                    "controller completion.",
+                    step_id=step_id,
+                    blocked_actions=["finalize"],
+                )
+            )
+            continue
+        for plan in sorted(registered["plans"], key=lambda item: str(item["path"])):
             plan_rows = [rows_by_key[tuple(key)] for key in plan["run_keys"]]
-            if not any(row["status"] in managed_scheduler.LAUNCHABLE_STATUSES for row in plan_rows):
-                continue
             if plan["adaptive"]:
                 blockers.append(
                     _status_blocker(
                         "adaptive_phase_deferred",
-                        "Status v1 does not interpret adaptive workflow eligibility.",
+                        "Status v1 cannot verify adaptive controller completion or interpret its eligibility.",
                         rows=plan_rows,
-                        blocked_actions=["adaptive_advance"],
+                        blocked_actions=["adaptive_advance", "finalize"],
                     )
                 )
                 continue
@@ -880,11 +846,13 @@ def _launch_decision(
                 blockers.append(
                     _status_blocker(
                         "pipeline_phase_deferred",
-                        "Status v1 does not interpret external-pipeline attempt eligibility.",
+                        "Status v1 cannot verify pipeline controller completion or interpret its eligibility.",
                         rows=plan_rows,
-                        blocked_actions=["pipeline_advance"],
+                        blocked_actions=["finalize", "pipeline_advance"],
                     )
                 )
+                continue
+            if not any(row["status"] in managed_scheduler.LAUNCHABLE_STATUSES for row in plan_rows):
                 continue
             if plan["task"] == "hparam_tune":
                 argv = [
@@ -913,8 +881,7 @@ def _launch_decision(
                 )
             )
     candidates.sort(key=lambda action: (action["step_id"] or "", action["id"], action["argv"]))
-    state = "ready_to_launch" if candidates else "blocked"
-    return state, blockers, candidates
+    return blockers, candidates
 
 
 def _status_run_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -963,6 +930,7 @@ def _status_blocker(
     code: str,
     message: str,
     *,
+    step_id: str | None = None,
     rows: list[dict[str, Any]] | None = None,
     blocked_actions: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -970,7 +938,7 @@ def _status_blocker(
     step_ids = sorted({str(row["step_id"]) for row in rows})
     return {
         "code": code,
-        "step_id": step_ids[0] if len(step_ids) == 1 else None,
+        "step_id": step_id or (step_ids[0] if len(step_ids) == 1 else None),
         "run_ids": sorted(str(row["run_id"]) for row in rows),
         "message": message,
         "blocked_actions": sorted(blocked_actions or []),

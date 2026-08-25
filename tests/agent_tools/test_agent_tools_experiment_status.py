@@ -536,6 +536,41 @@ def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence
     assert first["decision"]["blocked_actions"] == ["adaptive_advance", "finalize", "resubmit"]
 
 
+def test_experiment_status_snapshot_is_independent_of_input_order():
+    root = Path("/experiment")
+    rows = [
+        {"step_id": step_id, "run_id": "run-000", "run_name": "default", "status": "planned"}
+        for step_id in ("second", "first")
+    ]
+    registered_steps = [
+        {
+            "manifest": {"step": {"id": row["step_id"], "phase": "train", "purpose": "Run the fixture."}},
+            "plans": [
+                {
+                    "path": str(root / "plans" / row["step_id"]),
+                    "task": "finetune",
+                    "adaptive": False,
+                    "pipeline": False,
+                    "run_keys": [(row["step_id"], row["run_id"])],
+                    "launch_script": str(root / "plans" / row["step_id"] / "run.sh"),
+                }
+            ],
+        }
+        for row in rows
+    ]
+    experiment = {"id": "status-unit", "title": "Status unit"}
+
+    first = experiment_tracking.experiment_status_snapshot(experiment, registered_steps, rows, root=root)
+    second = experiment_tracking.experiment_status_snapshot(
+        experiment,
+        list(reversed(registered_steps)),
+        list(reversed(rows)),
+        root=root,
+    )
+
+    assert first == second
+
+
 def test_experiment_status_rejects_contradictory_scheduler_identity(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -671,18 +706,96 @@ def test_experiment_status_scopes_deferred_plans_away_from_ordinary_launch(tmp_p
     root = tmp_path / "experiment"
     _init_workspace(root)
     ordinary, _row = _add_plan(root, step_id="ordinary")
-    _add_plan(root, step_id="adaptive", task="hparam_tune", adaptive=True)
-    _add_plan(root, step_id="pipeline", pipeline=True)
+    _add_plan(root, step_id="adaptive", task="hparam_tune", status="completed", adaptive=True)
+    _add_plan(root, step_id="pipeline", status="failed", pipeline=True)
 
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
     assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(ordinary / "run.sh")]
-    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "pipeline_advance"]
+    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize", "pipeline_advance"]
     assert {(blocker["code"], blocker["step_id"]) for blocker in snapshot["blockers"]} == {
         ("adaptive_phase_deferred", "adaptive"),
         ("pipeline_phase_deferred", "pipeline"),
     }
+
+
+def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="ordinary", status="completed")
+    step_dir = root / "steps" / "evaluate"
+    step_dir.mkdir(parents=True)
+    (step_dir / "step.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "step": {"id": "evaluate", "phase": "evaluate", "purpose": "Run external evaluation."},
+                "experiment_id": "status-unit",
+                "recipe_path": "",
+                "plans": [],
+            },
+            sort_keys=False,
+        )
+    )
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "blocked"
+    assert snapshot["decision"]["other_legal_actions"] == []
+    assert snapshot["decision"]["blocked_actions"] == ["finalize"]
+    assert snapshot["blockers"] == [
+        {
+            "code": "unmaterialized_step",
+            "step_id": "evaluate",
+            "run_ids": [],
+            "message": "The registered step has no materialized plan or canonical runs; status v1 cannot prove "
+            "controller completion.",
+            "blocked_actions": ["finalize"],
+        }
+    ]
+
+    manifest = yaml.safe_load((root / "experiment.yaml").read_text())
+    manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
+    (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+    with pytest.raises(ValueError, match="unmaterialized registered steps"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_keeps_multiple_ordinary_candidates_with_deferred_plan(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    first, _row = _add_plan(root, step_id="first")
+    second, _row = _add_plan(root, step_id="second")
+    _add_plan(root, step_id="pipeline", status="completed", pipeline=True)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert snapshot["decision"]["manual_choice_required"] is True
+    assert snapshot["decision"]["recommended_next"] is None
+    assert [action["argv"] for action in snapshot["decision"]["other_legal_actions"]] == [
+        ["bash", str(first / "run.sh")],
+        ["bash", str(second / "run.sh")],
+    ]
+    assert snapshot["decision"]["blocked_actions"] == ["finalize", "pipeline_advance"]
+
+
+@pytest.mark.parametrize(
+    ("status", "state"),
+    [("running", "in_progress"), ("unknown_scheduler", "blocked")],
+)
+def test_experiment_status_prioritizes_active_deferred_plan_over_ordinary_launch(tmp_path, status, state):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="ordinary")
+    _add_plan(root, step_id="adaptive", task="hparam_tune", status=status, adaptive=True)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == state
+    assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
+    assert snapshot["decision"]["other_legal_actions"] == []
+    assert "adaptive_phase_deferred" in {blocker["code"] for blocker in snapshot["blockers"]}
 
 
 def test_experiment_status_attributes_blockers_by_full_managed_run_key(tmp_path):
@@ -716,11 +829,11 @@ def test_experiment_status_defers_terminal_pipeline_finalization(tmp_path):
     manifest = yaml.safe_load((root / "experiment.yaml").read_text())
     manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
     (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
-    with pytest.raises(ValueError, match="pipeline jobs without a successful canonical attempt"):
+    with pytest.raises(ValueError, match="cannot be verified for adaptive or pipeline plans"):
         experiments.experiment_status(root)
 
 
-def test_experiment_status_accepts_completed_pipeline_with_successful_attempt(tmp_path):
+def test_experiment_status_rejects_completed_pipeline_with_successful_attempt(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
     _add_plan(root, step_id="evaluate", status="completed", pipeline=True)
@@ -728,7 +841,8 @@ def test_experiment_status_accepts_completed_pipeline_with_successful_attempt(tm
     manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
     (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
 
-    assert experiments.experiment_status(root)["summary"]["state"] == "completed"
+    with pytest.raises(ValueError, match="cannot be verified for adaptive or pipeline plans"):
+        experiments.experiment_status(root)
 
 
 def test_experiment_status_defers_terminal_adaptive_finalization(tmp_path):
@@ -743,6 +857,25 @@ def test_experiment_status_defers_terminal_adaptive_finalization(tmp_path):
     assert snapshot["decision"]["other_legal_actions"] == []
     assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize"]
     assert snapshot["blockers"][0]["code"] == "adaptive_phase_deferred"
+
+    manifest = yaml.safe_load((root / "experiment.yaml").read_text())
+    manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
+    (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+    with pytest.raises(ValueError, match="cannot be verified for adaptive or pipeline plans"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_rejects_completed_mixed_ordinary_and_deferred_plans(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="ordinary", status="completed")
+    _add_plan(root, step_id="adaptive", task="hparam_tune", status="completed", adaptive=True)
+    manifest = yaml.safe_load((root / "experiment.yaml").read_text())
+    manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
+    (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+
+    with pytest.raises(ValueError, match="cannot be verified for adaptive or pipeline plans"):
+        experiments.experiment_status(root)
 
 
 def test_experiment_status_terminal_and_completed_contract(tmp_path):
@@ -774,7 +907,14 @@ def test_experiment_status_terminal_and_completed_contract(tmp_path):
 def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monkeypatch):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    plan_dir, _row = _add_plan(root, step_id="train", status="unknown_scheduler")
+    plan_dir, _row = _add_plan(
+        root,
+        step_id="tune",
+        task="hparam_tune",
+        status="unknown_scheduler",
+        adaptive=True,
+    )
+    _add_plan(root, step_id="evaluate", pipeline=True)
     before = _workspace_files(root)
 
     def unexpected(*_args, **_kwargs):
@@ -809,8 +949,44 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
     (root / "events.jsonl").write_text("not-json\n")
     (root / "wandb").mkdir()
     (root / "wandb" / "runs.tsv").write_text("status\ncompleted\n")
+    pipeline_root = root / "pipelines" / "pipeline-unit"
+    pipeline_root.mkdir(parents=True)
+    (pipeline_root / "pipeline.json").write_text("{\n")
+    (pipeline_root / "jobs.tsv").write_text("status\ncompleted\n")
+    (root / "adaptive").mkdir()
+    (root / "adaptive" / "workflow.json").write_text('{"completed": true}\n')
 
     assert experiments.experiment_status(root) == baseline
+
+
+def test_experiment_status_contract_error_is_zero_write(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _row = _add_plan(root, step_id="train")
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    plan["recipe"]["unknown"] = True
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
+    resolved["unknown"] = True
+    (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
+    before = _workspace_files(root)
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("experiment-status attempted a write")
+
+    for name in (
+        "write_text_at",
+        "write_rows_at",
+        "conditional_atomic_replace_text_at",
+        "append_event_at",
+        "mkdir_experiment_dirs",
+    ):
+        monkeypatch.setattr(experiment_io, name, unexpected)
+    monkeypatch.setattr(experiments, "merge_run_manifest", unexpected)
+
+    assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
+    assert _workspace_files(root) == before
+    assert "Traceback" not in capsys.readouterr().err
 
 
 def test_experiment_status_human_output_quotes_advisory_argv(tmp_path):
@@ -1104,6 +1280,19 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
     monkeypatch.setattr(experiments, "_managed_workspace", managed_workspace)
     monkeypatch.setattr(experiments, "read_registered_steps", registered_steps)
     monkeypatch.setattr(experiments.artifacts, "read_registered_plan", registered_plan)
+
+    def unexpected_write(*_args, **_kwargs):
+        raise AssertionError("remote experiment-status attempted a write")
+
+    for name in (
+        "write_text_at",
+        "write_rows_at",
+        "conditional_atomic_replace_text_at",
+        "append_event_at",
+        "mkdir_experiment_dirs",
+    ):
+        monkeypatch.setattr(experiment_io, name, unexpected_write)
+    monkeypatch.setattr(experiments, "merge_run_manifest", unexpected_write)
 
     snapshot = experiments.experiment_status(root, remote="baichuan3")
 
