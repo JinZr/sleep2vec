@@ -274,9 +274,8 @@ def _validate_registered_run_parameters(
     if recipe.get("task") == "hparam_tune":
         search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
         parameters = search.get("parameters")
-        if not isinstance(parameters, dict) or not parameters:
-            raise ValueError("Registered hparam recipe must define search.parameters.")
-        declared_parameters = {str(field) for field in parameters}
+        if isinstance(parameters, dict):
+            declared_parameters = {str(field) for field in parameters}
     plan_parameter_keys = set(plan_parameters)
     canonical_parameter_keys = set(canonical_parameters)
     missing_parameters = plan_parameter_keys - canonical_parameter_keys
