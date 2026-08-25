@@ -676,6 +676,7 @@ def test_experiment_status_keeps_remote_finalize_on_controller():
             "plans": [
                 {
                     "path": str(root / "plans" / "train"),
+                    "adaptive": False,
                     "pipeline": False,
                     "run_keys": [("train", "run-000")],
                 }
