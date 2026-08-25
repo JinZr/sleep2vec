@@ -380,6 +380,7 @@ def _freeze_pipeline(root: Path, pipeline_dir: Path, spec_file: Path, source_tex
         "created_at": utc_now(),
         "updated_at": utc_now(),
     }
+    # Reserve controller ownership first so an interrupted freeze remains an unmaterialized pipeline blocker.
     commit_step_manifest(
         root,
         {
@@ -995,6 +996,7 @@ def _materialize_attempt(
             canonical,
         )
     plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    # Publish pipeline ownership before its row so a crash cannot expose the attempt as an ordinary launch candidate.
     commit_step_manifest(
         root,
         {
