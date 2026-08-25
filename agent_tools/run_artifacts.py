@@ -129,12 +129,7 @@ def is_registered_blocked_plan(
     plan_dir = Path(plan_dir)
     workspace = Path(workspace)
     # Reject corrupt registrations before probing paths outside the canonical workspace.
-    if (
-        not workspace.is_absolute()
-        or not plan_dir.is_absolute()
-        or ".." in workspace.parts
-        or ".." in plan_dir.parts
-    ):
+    if not workspace.is_absolute() or not plan_dir.is_absolute() or ".." in workspace.parts or ".." in plan_dir.parts:
         raise ValueError(f"Registered plan must use an absolute canonical workspace path: {plan_dir}")
     try:
         plan_dir.relative_to(workspace)
