@@ -194,19 +194,7 @@ def read_registered_plan(
         for field in identity_fields:
             if _text_value(canonical.get(field)) != _text_value(run.get(field)):
                 raise ValueError(f"Workspace run manifest differs from plan field {field}: {key[0]} / {key[1]}")
-        plan_parameters = managed_run_parameters(run)
-        canonical_parameters = managed_run_parameters(canonical)
-        missing_parameters = set(plan_parameters) - set(canonical_parameters)
-        nonempty_extra_parameters = {
-            field
-            for field in set(canonical_parameters) - set(plan_parameters)
-            if canonical_parameters[field] not in (None, "")
-        }
-        if missing_parameters or nonempty_extra_parameters:
-            raise ValueError(f"Workspace run parameters differ from plan: {key[0]} / {key[1]}")
-        for field, value in plan_parameters.items():
-            if _text_value(canonical_parameters.get(field)) != _text_value(value):
-                raise ValueError(f"Workspace run manifest differs from plan field {field}: {key[0]} / {key[1]}")
+        _validate_registered_run_parameters(recipe, run, canonical)
 
     bundle_paths = []
     hash_expectations = {}
@@ -273,6 +261,39 @@ def read_registered_plan(
 
 def _text_value(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _validate_registered_run_parameters(
+    recipe: dict[str, Any],
+    plan_run: dict[str, Any],
+    canonical_run: dict[str, Any],
+) -> None:
+    plan_parameters = managed_run_parameters(plan_run)
+    canonical_parameters = managed_run_parameters(canonical_run)
+    declared_parameters = set()
+    if recipe.get("task") == "hparam_tune":
+        search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+        parameters = search.get("parameters")
+        if not isinstance(parameters, dict) or not parameters:
+            raise ValueError("Registered hparam recipe must define search.parameters.")
+        declared_parameters = {str(field) for field in parameters}
+    plan_parameter_keys = set(plan_parameters)
+    canonical_parameter_keys = set(canonical_parameters)
+    missing_parameters = plan_parameter_keys - canonical_parameter_keys
+    missing_declared = (declared_parameters - plan_parameter_keys) | (
+        declared_parameters - canonical_parameter_keys
+    )
+    nonempty_extra_parameters = {
+        field
+        for field in canonical_parameter_keys - plan_parameter_keys
+        if canonical_parameters[field] not in (None, "")
+    }
+    key = managed_run_key(plan_run)
+    if missing_parameters or missing_declared or nonempty_extra_parameters:
+        raise ValueError(f"Workspace run parameters differ from plan: {key[0]} / {key[1]}")
+    for field, value in plan_parameters.items():
+        if _text_value(canonical_parameters.get(field)) != _text_value(value):
+            raise ValueError(f"Workspace run manifest differs from plan field {field}: {key[0]} / {key[1]}")
 
 
 def read_hparam_plan(
@@ -374,23 +395,7 @@ def read_hparam_plan(
                 raise ValueError(
                     f"Workspace run manifest differs from plan field log_path: {run['step_id']} / {run['run_id']}"
                 )
-            plan_parameters = managed_run_parameters(run)
-            workspace_parameters = managed_run_parameters(workspace_row)
-            missing_parameters = set(plan_parameters) - set(workspace_parameters)
-            nonempty_extra_parameters = {
-                field
-                for field in set(workspace_parameters) - set(plan_parameters)
-                if workspace_parameters[field] not in (None, "")
-            }
-            if missing_parameters or nonempty_extra_parameters:
-                raise ValueError(f"Workspace run parameters differ from plan: {run['step_id']} / {run['run_id']}")
-            for field, value in plan_parameters.items():
-                expected_value = "" if value is None else str(value)
-                actual_value = "" if workspace_parameters[field] is None else str(workspace_parameters[field])
-                if actual_value != expected_value:
-                    raise ValueError(
-                        f"Workspace run manifest differs from plan field {field}: {run['step_id']} / {run['run_id']}"
-                    )
+            _validate_registered_run_parameters(recipe, run, workspace_row)
     search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}

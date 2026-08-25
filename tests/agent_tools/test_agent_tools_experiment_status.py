@@ -220,6 +220,37 @@ def test_experiment_status_accepts_public_layered_hparam_plan(tmp_path, paramete
     assert snapshot["summary"]["state"] == "ready_to_launch"
 
 
+def test_experiment_status_rejects_missing_declared_blank_hparam_key(tmp_path):
+    root = tmp_path / "experiment"
+    parameter = "yaml:/data/finetune_preset_path"
+    recipe = _write_public_hparam_recipe(root, {parameter: [None]})
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    del plan["runs"][0][parameter]
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(ValueError, match="Workspace run parameters differ from plan"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_allows_unrelated_blank_parameter_columns(tmp_path):
+    root = tmp_path / "experiment"
+    parameter = "yaml:/data/finetune_preset_path"
+    recipe = _write_public_hparam_recipe(root, {parameter: [None]})
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    _add_plan(root, step_id="analyze", task="sleep2stat")
+
+    generic_row = next(row for row in _read_manifest_rows(root) if row["step_id"] == "analyze")
+    assert generic_row[parameter] == ""
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert snapshot["decision"]["manual_choice_required"] is True
+
+
 @pytest.mark.parametrize(
     "drift",
     ["partial_runtime", "hparam_parameter_summary", "input_snapshots", "command"],
