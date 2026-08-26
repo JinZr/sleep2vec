@@ -1314,6 +1314,7 @@ def merge_run_manifest(
         [
             path,
             lock_path,
+            root / "experiment.yaml",
             root / "run_matrix.csv",
             root / "reports" / "run_matrix.md",
             root / "events.jsonl",
@@ -1326,6 +1327,19 @@ def merge_run_manifest(
         lock_stack.enter_context(exp_io.blocking_file_lock(lock_path))
     try:
         for _attempt in range(3 if remote else 1):
+            experiment_path = root / "experiment.yaml"
+            experiment_text = exp_io.read_text_at(experiment_path, remote=remote)
+            if not experiment_text:
+                raise ValueError(f"Managed experiment manifest is missing: {experiment_path}")
+            manifest = read_managed_yaml_mapping(
+                experiment_text, source=f"Managed experiment manifest {experiment_path}"
+            )
+            experiment = manifest.get("experiment") if isinstance(manifest, dict) else None
+            workspace_experiment_id = str(experiment.get("id") or "") if isinstance(experiment, dict) else ""
+            if not workspace_experiment_id:
+                raise ValueError(f"Managed experiment manifest is missing experiment.id: {experiment_path}")
+            if experiment.get("status") == "completed":
+                raise ValueError(f"Experiment is completed and cannot update canonical runs: {root}")
             if not exp_io.path_exists_at(path, remote=remote):
                 raise FileNotFoundError(f"Managed run manifest is missing: {path}")
             current_text = exp_io.read_text_at(path, remote=remote)
@@ -1339,17 +1353,6 @@ def merge_run_manifest(
                     if not experiment_id.strip() or experiment_id != experiment_id.strip():
                         key = managed_run_key(row)
                         raise ValueError(f"New canonical run must define experiment_id: {key[0]} / {key[1]}")
-                experiment_path = root / "experiment.yaml"
-                experiment_text = exp_io.read_text_at(experiment_path, remote=remote)
-                if not experiment_text:
-                    raise ValueError(f"Managed experiment manifest is missing: {experiment_path}")
-                manifest = read_managed_yaml_mapping(
-                    experiment_text, source=f"Managed experiment manifest {experiment_path}"
-                )
-                experiment = manifest.get("experiment") if isinstance(manifest, dict) else None
-                workspace_experiment_id = str(experiment.get("id") or "") if isinstance(experiment, dict) else ""
-                if not workspace_experiment_id:
-                    raise ValueError(f"Managed experiment manifest is missing experiment.id: {experiment_path}")
                 if any(str(row["experiment_id"]) != workspace_experiment_id for row in new_rows):
                     raise ValueError("New canonical run belongs to a different experiment.")
             for row in rows:
@@ -1377,6 +1380,8 @@ def merge_run_manifest(
                 replacement,
                 expected_sha256,
                 remote=remote,
+                guard_path=experiment_path,
+                expected_guard_sha256=hashlib.sha256(experiment_text.encode()).hexdigest(),
             ):
                 break
         else:

@@ -26,7 +26,7 @@ from agent_tools import (
     recipes,
 )
 from agent_tools.adapters import all_adapters, finetune as finetune_adapter, get_adapter
-from agent_tools.experiment_workspace import FROZEN_RUN_FIELDS, managed_run_parameters
+from agent_tools.experiment_workspace import FROZEN_RUN_FIELDS, managed_run_parameters, merge_run_manifest
 from agent_tools.manifests import read_rows, write_rows
 from agent_tools.models import REPO_ROOT
 
@@ -2467,6 +2467,23 @@ def test_stale_finalizer_cannot_bind_an_overwritten_final_report(tmp_path, monke
     experiments.finalize_experiment(root, report_b)
     completed = yaml.safe_load(manifest.read_text())["experiment"]
     assert completed["final_report_sha256"] == hashlib.sha256(final_report.read_bytes()).hexdigest()
+
+
+def test_completed_experiment_rejects_late_run_manifest_merge(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train", status="completed")
+    report = tmp_path / "report.md"
+    report.write_text("# Final\n")
+    experiments.finalize_experiment(root, report)
+    before = _workspace_files(root)
+    row = _read_manifest_rows(root)[0]
+
+    with pytest.raises(ValueError, match="completed and cannot update canonical runs"):
+        merge_run_manifest(root, [{**row, "health_status": "late observation"}])
+
+    assert _workspace_files(root) == before
+    assert experiments.experiment_status(root)["summary"]["state"] == "completed"
 
 
 def test_experiment_finalize_rechecks_rows_bound_to_run_manifest_snapshot(tmp_path, monkeypatch):
