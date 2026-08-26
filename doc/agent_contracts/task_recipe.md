@@ -186,13 +186,52 @@ path-validation context; they do not provide a generic SSH launcher.
 - Search keys are explicit `runtime.<name>` fields or
   `yaml:/json/pointer/path` config overrides. Removed bare or `param.*` forms
   are rejected rather than translated.
-- `search.max_runs` is a required positive budget, and `method` remains `grid`.
-- The search space is exactly one of:
+- An explicit search requires positive `search.max_runs`, uses `method: grid`,
+  and is exactly one of:
   - `search.parameters`: a per-key candidate mapping expanded by Cartesian
     product;
   - `search.configurations`: complete joint configuration points expanded
     verbatim, one run per point.
 - Both shapes use the same key rules and `[:max_runs]` prefix truncation.
+- `search.profile: finetune_balanced` is the alternative authored intent for
+  `sleep2vec` and `sleep2vec2` finetuning labels `ahi`, `arousal`, and
+  `stage4`. It is mutually exclusive with authored `parameters` or
+  `configurations`. The hparam adapter resolves config facts and materializes
+  `method: grid`, a default `max_runs: 12`, and deterministic complete joint
+  configurations before consultation. An explicit budget override must be in
+  `[4, 32]` and cover every generated level.
+- The profile compiler, owned by
+  `agent_tools/domain/finetune_hparam_profile.py`, searches bounded technical
+  levels for learning rate, weight decay, the full LayerMix block,
+  supported dropout fields, full/head-only/LoRA adaptation arms when a
+  pretrained backbone is passed to tuning, and positive
+  scalar `pos_weight` when it exists. A complete explicit
+  `finetune.layer_mix` mapping and an explicit `finetune.lora` control mapping
+  containing both control booleans are required. Omitted non-control LoRA
+  fields retain canonical variant loader defaults; the exact generated config
+  and hashes plus runtime/repository identity preserve provenance. Disabled
+  source LayerMix must already use `layer_indices:
+  null` and `shared_across_modalities: false`; single-channel source LayerMix
+  must also disable sharing. Multi-channel enabled levels cover both shared
+  and unshared atomic mappings without spending budget on inert duplicates. It keeps
+  batch size, epochs, patience, aggregation, EMA, pretrained checkpoint,
+  channels, and class weights frozen. Its first point exactly matches the
+  source runtime and all active source config mappings. A zero source weight
+  decay uses profile-owned `1e-5` and `1e-4` positive anchors so the family is
+  genuinely searched. The remaining points
+  include normalized LayerMix off, synchronized dropout, and full/head-only/
+  LoRA arms when eligible before greedily covering missing levels and then
+  missing pairs with stable tie breaking instead of truncating a Cartesian
+  prefix.
+- The authored profile remains the only generation intent. The resolved
+  recipe and plan freeze its exact configurations, config digest, runtime/repo
+  identity, budget, searched-family coverage, metric, and split. Reports may
+  claim only the best observed candidate within that frozen search domain,
+  metric, split, and budget. This is an inventory of registered profile axes,
+  not a claim that arbitrary or unknown config fields were searched.
+- The first profile version does not support adaptive tuning. Existing
+  explicit searches and historical frozen plans are unchanged; profile
+  expansion is not retroactively required by registered-plan readers.
 - Adaptive source recipes must declare `search.parameters`, which supplies the
   envelope and neighborhood source. `search.configurations` appears only in
   derived rounds and static plans.
@@ -420,7 +459,26 @@ external agent drives the handshake through `hparam-adaptive-step`.
 
 `reports/ranking.csv` is shared across plans in the same step. Runnable hparam
 plans in that step must use the same selection metric and mode. Selection
-replaces current-plan keys and reranks the complete step.
+replaces current-plan keys, reranks the complete step, and writes deterministic
+`reports/hparam_selection.md`. The canonical manifest binds that report's path
+and hash to the selected rows; the report records metric/mode/split, evaluated
+count, winner run/checkpoint/score, parameter summary, search overrides, frozen
+config/script paths and hashes, and ranking path. For test-selected tuning,
+canonical rows additionally bind each registered plan's complete
+`checkpoint_test_ranking.csv` path and SHA-256. Status validates every bound
+audit and reconstructs the global checkpoint/run ranking; finalize rehashes
+every audited checkpoint on its frozen execution target. `experiment-status`
+therefore advances a terminal ordinary hparam step to `ready_to_select`; a
+successful selection normally writes the deterministic report and advances it
+to `ready_to_finalize`, while a missing or invalid derived report/ranking is
+`ready_to_report`. A verified selection report may serve directly as the final
+report only when every ordinary materialized plan in the experiment is a hparam
+plan and every hparam step has a selected winner. Mixed experiments and partly
+failed multi-step searches require a separate non-empty combined report.
+All-failed hparam steps skip selection and require a non-empty failure report;
+the canonical selection report cannot substitute for either report type.
+Historical completed experiments are not retroactively required to carry the
+new selection-report binding.
 
 Candidate ownership, frozen-field validation, checkpoint evidence, managed run
 identity, status, atomic commit, and projections belong to

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -10,7 +11,7 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import hparam_selection, run_artifacts, run_evidence
+from agent_tools import experiment_tracking, experiments, hparam_selection, run_artifacts, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest, read_run_manifest
 from agent_tools.manifests import read_rows, write_rows
 from agent_tools.models import REPO_ROOT
@@ -102,12 +103,143 @@ def _read_table(path: Path) -> list[dict[str, str]]:
 
 
 def _first_run(plan_dir: Path) -> dict:
-    return json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    recipe = plan["recipe"]
+    workspace = Path(recipe["experiment"]["root"])
+    merge_run_manifest(
+        workspace,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "run_name": run["run_name"],
+                "status": "completed",
+            }
+            for run in plan["runs"]
+        ],
+    )
+    return plan["runs"][0]
 
 
 def _ranking_path(plan_dir: Path) -> Path:
     recipe = json.loads((plan_dir / "plan.json").read_text())["recipe"]
     return Path(recipe["experiment"]["root"]) / "reports" / "ranking.csv"
+
+
+def _prepare_two_hparam_steps(tmp_path: Path) -> tuple[dict, Path, Path]:
+    first_recipe = _hparam_recipe(tmp_path)
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    first_run = _first_run(first_plan)
+    first_checkpoint = Path(first_run["checkpoint_dir"]) / "epoch=1.ckpt"
+    first_checkpoint.parent.mkdir(parents=True)
+    first_checkpoint.write_text("checkpoint")
+    (Path(first_run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.9},
+                "best_model_path": str(first_checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    hparam_selection.select_hparam_candidates(first_plan)
+
+    second_recipe = _hparam_recipe(tmp_path)
+    second_payload = yaml.safe_load(second_recipe.read_text())
+    second_payload["step"] = {
+        "id": "second-tune",
+        "phase": "train",
+        "purpose": "Exercise a second hparam selection step.",
+    }
+    write_yaml(second_recipe, second_payload)
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    second_run = _first_run(second_plan)
+    second_checkpoint = Path(second_run["checkpoint_dir"]) / "epoch=2.ckpt"
+    second_checkpoint.parent.mkdir(parents=True)
+    second_checkpoint.write_text("checkpoint")
+    (Path(second_run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(second_checkpoint),
+                "epoch": 2,
+            }
+        )
+    )
+    return first_run, first_plan, second_plan
+
+
+def _prepare_two_test_selected_steps(tmp_path: Path) -> list[Path]:
+    plans = []
+    for step_id, score in (("a-tune", 0.9), ("b-tune", 0.8)):
+        recipe = _hparam_recipe(
+            tmp_path,
+            selection_metric="test_ahi_pearson",
+            selection_split="test",
+            config_monitor="val_ahi_pearson",
+        )
+        payload = yaml.safe_load(recipe.read_text())
+        payload["step"] = {"id": step_id, "phase": "train", "purpose": f"Select {step_id}."}
+        write_yaml(recipe, payload)
+        plan_dir = tmp_path / f"plan-{step_id}"
+        assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+        run = _first_run(plan_dir)
+        checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_text(f"checkpoint-{step_id}")
+        (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+            json.dumps(
+                {
+                    "test_all_checkpoints_after_fit": True,
+                    "checkpoint_test_results": [
+                        {
+                            "checkpoint_path": str(checkpoint),
+                            "epoch": 1,
+                            "metrics": {"test_ahi_pearson": score},
+                        }
+                    ],
+                }
+            )
+        )
+        hparam_selection.select_hparam_candidates(plan_dir)
+        plans.append(plan_dir)
+    return plans
+
+
+def _prepare_test_selected_plan_with_two_checkpoints(tmp_path: Path) -> Path:
+    recipe = _hparam_recipe(
+        tmp_path,
+        selection_metric="test_ahi_pearson",
+        selection_split="test",
+        config_monitor="val_ahi_pearson",
+    )
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint_dir = Path(run["checkpoint_dir"])
+    checkpoint_dir.mkdir(parents=True)
+    checkpoints = [checkpoint_dir / "epoch=1.ckpt", checkpoint_dir / "epoch=2.ckpt"]
+    for checkpoint in checkpoints:
+        checkpoint.write_text(checkpoint.name)
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "test_all_checkpoints_after_fit": True,
+                "checkpoint_test_results": [
+                    {
+                        "checkpoint_path": str(checkpoint),
+                        "epoch": epoch,
+                        "metrics": {"test_ahi_pearson": score},
+                    }
+                    for checkpoint, epoch, score in zip(checkpoints, (1, 2), (0.9, 0.8))
+                ],
+            }
+        )
+    )
+    hparam_selection.select_hparam_candidates(plan_dir)
+    return plan_dir
 
 
 def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path):
@@ -155,6 +287,215 @@ def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path
     )
     assert selected["step_id"] == "unit-hparam-tune"
     assert selected["selected_run_id"] == "run-000"
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    report_text = selection_report.read_text()
+    canonical = read_run_manifest(tmp_path)[0]
+    assert "Selection metric: `val_ahi_pearson`" in report_text
+    assert "Selection split: `val`" in report_text
+    assert "Evaluated candidates: `1/1`" in report_text
+    assert "Winner run: `run-000`" in report_text
+    assert "Search overrides:" in report_text
+    assert f"Frozen config: `{canonical['config']}`" in report_text
+    assert f"Frozen config SHA-256: `{canonical['config_sha256']}`" in report_text
+    assert f"Frozen script: `{canonical['script']}`" in report_text
+    assert f"Frozen script SHA-256: `{canonical['script_sha256']}`" in report_text
+    assert "global optimum" in report_text
+    assert selected["selection_report"] == str(selection_report)
+    assert selected["selection_report_sha256"] == hashlib.sha256(report_text.encode()).hexdigest()
+    assert canonical["selection_mode"] == "max"
+    assert canonical["selection_split"] == "val"
+    assert canonical["selection_report"] == str(selection_report)
+    assert canonical["selection_report_sha256"] == selected["selection_report_sha256"]
+
+
+def test_hparam_select_rejects_completed_experiment_without_mutation(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    runtime_manifest = Path(run["runtime_dir"]) / "run_manifest.json"
+    runtime_manifest.write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    hparam_selection.select_hparam_candidates(plan_dir)
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    experiments.finalize_experiment(tmp_path, selection_report)
+    runtime_manifest.write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.9},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="completed"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_hparam_select_clears_stale_result_evidence_from_unscored_candidates(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, max_runs=2)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    first_run = _first_run(plan_dir)
+    runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
+    checkpoint = Path(first_run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    Path(first_run["runtime_dir"], "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    losing_run = runs[1]
+    failed_manifest = Path(losing_run["runtime_dir"]) / "run_manifest.json"
+    failed_manifest.parent.mkdir(parents=True)
+    failed_manifest.write_text(json.dumps({"health_status": "failed"}))
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": losing_run["step_id"],
+                "run_id": losing_run["run_id"],
+                "status": "failed",
+                "score": "0.7",
+                "rank": "2",
+                "checkpoint_path": str(Path(losing_run["checkpoint_dir"]) / "epoch=2.ckpt"),
+                "checkpoint_sha256": "b" * 64,
+                "run_manifest": str(failed_manifest),
+                "epoch": "2",
+                "checkpoint_rank": "2",
+                "source": "stale-selection",
+            }
+        ],
+    )
+
+    hparam_selection.select_hparam_candidates(plan_dir)
+
+    canonical = next(row for row in read_run_manifest(tmp_path) if row["run_id"] == losing_run["run_id"])
+    assert canonical["selection_task"] == "hparam_tune"
+    assert all(canonical.get(field) in (None, "") for field in hparam_selection.tracking.HPARAM_SELECTION_RESULT_FIELDS)
+    assert canonical["run_manifest"] == str(failed_manifest)
+
+
+@pytest.mark.parametrize(("field", "value"), [("status", "running"), ("unexpected_terminal", "value")])
+def test_hparam_select_rejects_invalid_active_experiment_owner_without_mutation(tmp_path: Path, field: str, value: str):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    manifest_path = tmp_path / "experiment.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["experiment"][field] = value
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="Invalid active experiment owner"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_hparam_select_rejects_aliased_active_experiment_owner_before_writing(tmp_path: Path, alias_kind: str):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    manifest_path = tmp_path / "experiment.yaml"
+    outside = tmp_path.parent / f"{tmp_path.name}-foreign-experiment.yaml"
+    outside.write_bytes(manifest_path.read_bytes())
+    manifest_path.unlink()
+    if alias_kind == "symlink":
+        manifest_path.symlink_to(outside)
+    else:
+        manifest_path.hardlink_to(outside)
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    outside_before = outside.read_bytes()
+
+    with pytest.raises(ValueError, match="missing or aliased"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert outside.read_bytes() == outside_before
+    if alias_kind == "symlink":
+        assert manifest_path.is_symlink()
+    else:
+        assert manifest_path.stat().st_ino == outside.stat().st_ino
+
+
+@pytest.mark.parametrize("ranking_present", [True, False])
+def test_hparam_select_preserves_frozen_val_selection_when_runtime_evidence_drifts(
+    tmp_path: Path, ranking_present: bool
+):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    runtime_manifest = Path(run["runtime_dir"]) / "run_manifest.json"
+    runtime_manifest.write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    hparam_selection.select_hparam_candidates(plan_dir)
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "epoch": "1"}],
+    )
+    hparam_selection.select_hparam_candidates(plan_dir)
+    if not ranking_present:
+        _ranking_path(plan_dir).unlink()
+    runtime_manifest.write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.9},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="Frozen canonical hparam selection"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
 def test_test_selected_plan_exports_frozen_checkpoint_path_spelling(tmp_path: Path):
@@ -259,8 +600,11 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
     for row in rows:
         assert {
             field: canonical[row["run_id"]][field]
-            for field in ("metric", "score", "epoch", "checkpoint_rank", "source")
-        } == {field: row[field] for field in ("metric", "score", "epoch", "checkpoint_rank", "source")}
+            for field in ("metric", "score", "epoch", "checkpoint_rank", "source", "run_manifest", "status")
+        } == {
+            field: row[field]
+            for field in ("metric", "score", "epoch", "checkpoint_rank", "source", "run_manifest", "status")
+        }
 
     hparam_selection.select_hparam_candidates(plan_dir)
 
@@ -278,6 +622,112 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
         hparam_selection.select_hparam_candidates(plan_dir)
     assert ranking.read_bytes() == ranking_before
     assert (plan_dir / "checkpoint_test_ranking.csv").read_bytes() == checkpoint_ranking_before
+
+
+@pytest.mark.parametrize("field", ["checkpoint_rank", "epoch", "run_manifest", "source", "status"])
+@pytest.mark.parametrize("mutation", ["tamper", "remove"])
+def test_experiment_status_rejects_test_ranking_optional_provenance_drift(tmp_path: Path, field: str, mutation: str):
+    recipe = _hparam_recipe(
+        tmp_path,
+        selection_metric="test_ahi_pearson",
+        selection_split="test",
+        config_monitor="val_ahi_pearson",
+    )
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "test_all_checkpoints_after_fit": True,
+                "checkpoint_test_results": [
+                    {
+                        "checkpoint_path": str(checkpoint),
+                        "epoch": 1,
+                        "metrics": {"test_ahi_pearson": 0.8},
+                    }
+                ],
+            }
+        )
+    )
+    ranking = hparam_selection.select_hparam_candidates(plan_dir)
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    rows = read_rows(ranking, require_managed_identity=True)
+    if mutation == "remove":
+        rows[0].pop(field)
+    else:
+        rows[0][field] = "tampered"
+    write_rows(ranking, rows)
+
+    snapshot = experiments.experiment_status(tmp_path)
+
+    assert snapshot["summary"]["state"] == "ready_to_report"
+    with pytest.raises(ValueError, match="selection report is missing or differs"):
+        experiments.finalize_experiment(tmp_path, selection_report)
+
+
+@pytest.mark.parametrize("field", ["run_manifest", "status"])
+@pytest.mark.parametrize("mutation", ["tamper", "remove"])
+def test_experiment_status_rejects_val_ranking_optional_provenance_drift(tmp_path: Path, field: str, mutation: str):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    ranking = hparam_selection.select_hparam_candidates(plan_dir)
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    rows = read_rows(ranking, require_managed_identity=True)
+    if mutation == "remove":
+        rows[0].pop(field)
+    else:
+        rows[0][field] = "tampered"
+    write_rows(ranking, rows)
+
+    assert experiments.experiment_status(tmp_path)["summary"]["state"] == "ready_to_report"
+    with pytest.raises(ValueError, match="selection report is missing or differs"):
+        experiments.finalize_experiment(tmp_path, selection_report)
+
+
+def test_experiment_status_rejects_val_ranking_with_unowned_optional_column(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    ranking = hparam_selection.select_hparam_candidates(plan_dir)
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    rows = read_rows(ranking, require_managed_identity=True)
+    rows[0]["source"] = "forged_source"
+    write_rows(ranking, rows)
+
+    assert experiments.experiment_status(tmp_path)["summary"]["state"] == "ready_to_report"
+    with pytest.raises(ValueError, match="selection report is missing or differs"):
+        experiments.finalize_experiment(tmp_path, selection_report)
 
 
 def test_checkpoint_hash_uses_ssh_execution_target(monkeypatch):
@@ -372,13 +822,8 @@ def test_hparam_select_uses_ssh_manifest_inventory_and_hash_evidence(
     assert row["run_manifest"] == str(Path(run["runtime_dir"]) / "run_manifest.json")
     assert runtime_calls and runtime_calls[0]["target"] == "ssh"
     assert runtime_calls[0]["host"] == "unit-host"
-    if selection_split == "test":
-        assert row["checkpoint_sha256"] == "b" * 64
-        assert [(call[0]["target"], call[0]["host"], call[1]) for call in hash_calls] == [
-            ("ssh", "unit-host", checkpoint)
-        ]
-    else:
-        assert hash_calls == []
+    assert row["checkpoint_sha256"] == "b" * 64
+    assert [(call[0]["target"], call[0]["host"], call[1]) for call in hash_calls] == [("ssh", "unit-host", checkpoint)]
 
 
 @pytest.mark.parametrize("selection_split", ["val", "test"])
@@ -621,6 +1066,235 @@ def test_hparam_select_does_not_rebuild_deleted_frozen_rankings_after_checkpoint
     assert events.read_bytes() == events_before
 
 
+def test_hparam_select_rebuilds_missing_shared_test_ranking_from_canonical_rows(tmp_path: Path):
+    recipe = _hparam_recipe(
+        tmp_path,
+        selection_metric="test_ahi_pearson",
+        selection_split="test",
+        config_monitor="val_ahi_pearson",
+    )
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "test_all_checkpoints_after_fit": True,
+                "checkpoint_test_results": [
+                    {
+                        "checkpoint_path": str(checkpoint),
+                        "epoch": 1,
+                        "metrics": {"test_ahi_pearson": 0.8},
+                    }
+                ],
+            }
+        )
+    )
+    ranking = hparam_selection.select_hparam_candidates(plan_dir)
+    ranking_before = ranking.read_bytes()
+    ranking.unlink()
+    assert experiments.experiment_status(tmp_path)["summary"]["state"] == "ready_to_report"
+
+    hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert ranking.read_bytes() == ranking_before
+    assert experiments.experiment_status(tmp_path)["summary"]["state"] == "ready_to_finalize"
+
+
+@pytest.mark.parametrize("mutation", ["missing", "wrong_event_path"])
+def test_hparam_select_rejects_other_test_step_audit_drift_before_rebuilding_shared_ranking(
+    tmp_path: Path,
+    mutation: str,
+):
+    first_plan, second_plan = _prepare_two_test_selected_steps(tmp_path)
+    shared_ranking = _ranking_path(first_plan)
+    shared_ranking.unlink()
+    second_audit = second_plan / "checkpoint_test_ranking.csv"
+    if mutation == "missing":
+        second_audit.unlink()
+    else:
+        bogus = tmp_path / "bogus-checkpoint-ranking.csv"
+        bogus.write_bytes(second_audit.read_bytes())
+        events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+        next(
+            event
+            for event in events
+            if event.get("event_type") == "candidate_selected" and event.get("step_id") == "b-tune"
+        )["checkpoint_ranking"] = str(bogus)
+        (tmp_path / "events.jsonl").write_text("\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n")
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="checkpoint test ranking referenced.*missing or differs"):
+        hparam_selection.select_hparam_candidates(first_plan)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_hparam_select_replays_missing_candidate_event_from_canonical_selection(tmp_path: Path):
+    first_plan, second_plan = _prepare_two_test_selected_steps(tmp_path)
+    events_path = tmp_path / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    events_path.write_text(
+        "\n".join(
+            json.dumps(event, sort_keys=True)
+            for event in events
+            if not (event.get("event_type") == "candidate_selected" and event.get("step_id") == "a-tune")
+        )
+        + "\n"
+    )
+    frozen = {
+        path: path.read_bytes()
+        for path in (
+            _ranking_path(first_plan),
+            tmp_path / "reports" / "hparam_selection.md",
+            first_plan / "checkpoint_test_ranking.csv",
+            second_plan / "checkpoint_test_ranking.csv",
+        )
+    }
+
+    hparam_selection.select_hparam_candidates(first_plan)
+
+    assert {path: path.read_bytes() for path in frozen} == frozen
+    selected = [
+        json.loads(line)
+        for line in events_path.read_text().splitlines()
+        if json.loads(line).get("event_type") == "candidate_selected"
+    ]
+    assert [event["step_id"] for event in selected] == ["b-tune", "a-tune"]
+
+
+def test_status_and_finalize_require_every_test_selection_plan_audit(tmp_path: Path):
+    plans = _prepare_two_test_selected_steps(tmp_path)
+    (plans[1] / "checkpoint_test_ranking.csv").unlink()
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="checkpoint test ranking is missing"):
+        experiments.experiment_status(tmp_path)
+    with pytest.raises(ValueError, match="checkpoint test ranking is missing"):
+        experiments.finalize_experiment(tmp_path, selection_report)
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("checkpoint_rank", "99"),
+        ("epoch", "99"),
+        ("run_manifest", "forged-runtime-manifest.json"),
+        ("source", "forged_source"),
+        ("status", "finished"),
+    ],
+)
+def test_status_and_finalize_bind_test_selection_provenance_to_plan_audit(
+    tmp_path: Path,
+    field: str,
+    value: str,
+):
+    _prepare_two_test_selected_steps(tmp_path)
+    canonical = read_rows(tmp_path / "run_manifest.tsv", require_managed_identity=True)
+    selected = next(row for row in canonical if row["step_id"] == "a-tune")
+    selected[field] = str(tmp_path / value) if field == "run_manifest" else value
+    write_rows(tmp_path / "run_manifest.tsv", canonical)
+    ranking_path = tmp_path / "reports" / "ranking.csv"
+    ranking = read_rows(ranking_path, require_managed_identity=True)
+    next(row for row in ranking if row["step_id"] == "a-tune")[field] = selected[field]
+    write_rows(ranking_path, ranking)
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="differs from frozen checkpoint test ranking"):
+        experiments.experiment_status(tmp_path)
+    with pytest.raises(ValueError, match="differs from frozen checkpoint test ranking"):
+        experiments.finalize_experiment(tmp_path, selection_report)
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_finalize_rechecks_test_selection_audits_before_terminal_commit(tmp_path: Path, monkeypatch):
+    plans = _prepare_two_test_selected_steps(tmp_path)
+    audit = plans[0] / "checkpoint_test_ranking.csv"
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    manifest = tmp_path / "experiment.yaml"
+    manifest_before = manifest.read_bytes()
+    original_replace = experiments.exp_io.conditional_atomic_replace_text_at
+
+    def publish_then_tamper(path, text, expected_sha256, *, remote=None, **kwargs):
+        committed = original_replace(path, text, expected_sha256, remote=remote, **kwargs)
+        if Path(path) == tmp_path / "reports" / "final.md" and committed:
+            audit.write_text(audit.read_text().replace("checkpoint_test_results", "forged_source", 1))
+        return committed
+
+    monkeypatch.setattr(experiments.exp_io, "conditional_atomic_replace_text_at", publish_then_tamper)
+
+    with pytest.raises(ValueError, match="checkpoint test ranking changed during finalization"):
+        experiments.finalize_experiment(tmp_path, selection_report)
+
+    assert manifest.read_bytes() == manifest_before
+    assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
+
+
+def test_status_and_finalize_reject_truncated_bound_test_selection_audit(tmp_path: Path):
+    plan_dir = _prepare_test_selected_plan_with_two_checkpoints(tmp_path)
+    audit = plan_dir / "checkpoint_test_ranking.csv"
+    write_rows(audit, read_rows(audit, require_managed_identity=True)[:1])
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="differs from frozen checkpoint test ranking"):
+        experiments.experiment_status(tmp_path)
+    with pytest.raises(ValueError, match="differs from frozen checkpoint test ranking"):
+        experiments.finalize_experiment(tmp_path, selection_report)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("run_manifest", "/forged/nonwinner.json"), ("status", "finished")],
+)
+def test_test_selection_binds_nonwinning_checkpoint_audit_provenance(
+    tmp_path: Path,
+    field: str,
+    value: str,
+):
+    plan_dir = _prepare_test_selected_plan_with_two_checkpoints(tmp_path)
+    audit = plan_dir / "checkpoint_test_ranking.csv"
+    audit_rows = read_rows(audit, require_managed_identity=True)
+    audit_rows[1][field] = value
+    write_rows(audit, audit_rows)
+    canonical = read_rows(tmp_path / "run_manifest.tsv", require_managed_identity=True)
+    canonical[0]["checkpoint_ranking_sha256"] = hashlib.sha256(audit.read_bytes()).hexdigest()
+    write_rows(tmp_path / "run_manifest.tsv", canonical)
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="differs from current checkpoint test evidence"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+    with pytest.raises(ValueError, match="differs from frozen checkpoint test ranking"):
+        experiments.experiment_status(tmp_path)
+    with pytest.raises(ValueError, match="differs from frozen checkpoint test ranking"):
+        experiments.finalize_experiment(tmp_path, selection_report)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_finalize_revalidates_every_bound_test_selection_checkpoint(tmp_path: Path):
+    plan_dir = _prepare_test_selected_plan_with_two_checkpoints(tmp_path)
+    audit_rows = read_rows(plan_dir / "checkpoint_test_ranking.csv", require_managed_identity=True)
+    Path(audit_rows[1]["checkpoint_path"]).write_text("tampered losing checkpoint")
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    assert experiments.experiment_status(tmp_path)["summary"]["state"] == "ready_to_finalize"
+    with pytest.raises(ValueError, match="Frozen checkpoint SHA-256 differs"):
+        experiments.finalize_experiment(tmp_path, selection_report)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 def test_hparam_select_rebuilds_test_ranking_from_new_registered_plan(tmp_path: Path):
     recipe = _hparam_recipe(
         tmp_path,
@@ -677,6 +1351,60 @@ def test_hparam_select_rebuilds_test_ranking_from_new_registered_plan(tmp_path: 
         ("run-000", "2"),
     ]
     assert _read_table(plans[0] / "checkpoint_test_ranking.csv")[0]["rank"] == "1"
+    selection_events = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text().splitlines()
+        if json.loads(line).get("event_type") == "candidate_selected"
+    ]
+    assert len(selection_events) == 2
+    assert selection_events[-1]["checkpoint_ranking"] == str(plans[1] / "checkpoint_test_ranking.csv")
+    assert experiments.experiment_status(tmp_path)["summary"]["state"] == "ready_to_finalize"
+    report = tmp_path / "reports" / "hparam_selection.md"
+    assert experiments.finalize_experiment(tmp_path, report).read_text() == report.read_text()
+
+
+def test_hparam_select_freezes_and_requires_every_successful_test_plan_audit(tmp_path: Path):
+    recipe = _hparam_recipe(
+        tmp_path,
+        selection_metric="test_ahi_pearson",
+        selection_split="test",
+        config_monitor="val_ahi_pearson",
+    )
+    plans = []
+    for index, score in enumerate((0.9, 0.8), start=1):
+        plan_dir = tmp_path / f"plan-{index}"
+        assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+        run = _first_run(plan_dir)
+        checkpoint = Path(run["checkpoint_dir"]) / f"epoch={index}.ckpt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_text(f"checkpoint-{index}")
+        (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+            json.dumps(
+                {
+                    "test_all_checkpoints_after_fit": True,
+                    "checkpoint_test_results": [
+                        {
+                            "checkpoint_path": str(checkpoint),
+                            "epoch": index,
+                            "metrics": {"test_ahi_pearson": score},
+                        }
+                    ],
+                }
+            )
+        )
+        plans.append(plan_dir)
+
+    shared_ranking = hparam_selection.select_hparam_candidates(plans[0])
+
+    assert all((plan_dir / "checkpoint_test_ranking.csv").is_file() for plan_dir in plans)
+    shared_ranking.unlink()
+    (plans[1] / "checkpoint_test_ranking.csv").unlink()
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="checkpoint test ranking referenced.*missing or differs"):
+        hparam_selection.select_hparam_candidates(plans[0])
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
 def test_hparam_select_rejects_a_plan_local_audit_missing_an_owned_run(tmp_path: Path):
@@ -722,12 +1450,31 @@ def test_hparam_select_rejects_a_plan_local_audit_missing_an_owned_run(tmp_path:
     write_rows(checkpoint_ranking, [row for row in checkpoint_rows if row["run_id"] != "run-001"])
     truncated_audit = checkpoint_ranking.read_bytes()
 
-    with pytest.raises(ValueError, match="Frozen checkpoint test ranking differs"):
+    with pytest.raises(ValueError, match="differs from frozen checkpoint test ranking"):
         hparam_selection.select_hparam_candidates(plan_dir)
 
     assert checkpoint_ranking.read_bytes() == truncated_audit
     assert ranking.read_bytes() == ranking_before
     assert events.read_bytes() == events_before
+
+
+def test_hparam_select_rejects_coherent_runtime_and_bound_audit_drift(tmp_path: Path):
+    plan_dir = _prepare_test_selected_plan_with_two_checkpoints(tmp_path)
+    audit = plan_dir / "checkpoint_test_ranking.csv"
+    audit_rows = read_rows(audit, require_managed_identity=True)
+    audit_rows[1]["score"] = "0.7"
+    write_rows(audit, audit_rows)
+    run = _first_run(plan_dir)
+    runtime_manifest = Path(run["runtime_dir"]) / "run_manifest.json"
+    payload = json.loads(runtime_manifest.read_text())
+    payload["checkpoint_test_results"][1]["metrics"]["test_ahi_pearson"] = 0.7
+    runtime_manifest.write_text(json.dumps(payload))
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="Canonical hparam selection differs from frozen checkpoint test ranking"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
 def test_hparam_select_rejects_incomplete_checkpoint_test_results_before_writing(tmp_path: Path):
@@ -1049,8 +1796,29 @@ def test_hparam_select_uses_canonical_status_not_runtime_manifest_status(tmp_pat
 
     result = _run("hparam-select", "--run-dir", str(plan_dir))
 
-    assert result.returncode == 0, result.stderr
-    assert _read_table(_ranking_path(plan_dir))[0]["status"] == "failed"
+    assert result.returncode == 1
+    assert "No valid val_ahi_pearson scores" in result.stderr
+    assert not _ranking_path(plan_dir).exists()
+
+
+def test_hparam_select_requires_terminal_canonical_runs_for_val_selection(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps({"metrics": {"val_ahi_pearson": 0.7}, "checkpoint_path": str(checkpoint), "epoch": 1})
+    )
+    before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    with pytest.raises(ValueError, match="requires every managed hparam run to be terminal"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+    assert not _ranking_path(plan_dir).exists()
 
 
 def test_hparam_checkpoint_scan_ranks_history_fixed_epoch_checkpoints(tmp_path: Path):
@@ -1460,7 +2228,7 @@ def test_hparam_select_rejects_unmanaged_existing_ranking_before_preserving_othe
     assert (tmp_path / "events.jsonl").read_bytes() == events_before
 
 
-def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
+def test_hparam_select_drops_unselected_canonical_other_step_ranking(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
@@ -1520,7 +2288,7 @@ def test_hparam_select_preserves_canonical_other_step_ranking(tmp_path: Path):
     hparam_selection.select_hparam_candidates(plan_dir)
 
     rows = read_rows(ranking)
-    assert any(row["step_id"] == "other-step" and row["run_id"] == "run-999" for row in rows)
+    assert {(row["step_id"], row["run_id"]) for row in rows} == {(run["step_id"], run["run_id"])}
 
 
 def test_hparam_select_rejects_hardlinked_preserved_checkpoint_before_writing(tmp_path: Path):
@@ -1820,6 +2588,59 @@ def test_hparam_select_rebuilds_ranking_from_all_registered_plans(tmp_path: Path
     ]
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("checkpoint_sha256", "", "selection evidence is invalid"),
+        ("selection_mode", "min", "selection mode differs"),
+    ],
+)
+def test_hparam_select_validates_other_selected_steps_before_writing(
+    tmp_path: Path, field: str, value: str, message: str
+):
+    first_run, _first_plan, second_plan = _prepare_two_hparam_steps(tmp_path)
+    canonical = read_run_manifest(tmp_path)
+    first_row = next(row for row in canonical if row["step_id"] == first_run["step_id"])
+    first_row[field] = value
+    write_rows(tmp_path / "run_manifest.tsv", canonical)
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match=message):
+        hparam_selection.select_hparam_candidates(second_plan)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_hparam_select_rebuilds_missing_prior_step_ranking_from_canonical_rows(tmp_path: Path):
+    first_run, first_plan, second_plan = _prepare_two_hparam_steps(tmp_path)
+    ranking = _ranking_path(second_plan)
+    ranking.write_text("step_id,run_id\n")
+
+    hparam_selection.select_hparam_candidates(second_plan)
+
+    ranking_rows = read_rows(ranking, require_managed_identity=True)
+    assert {row["step_id"] for row in ranking_rows} == {first_run["step_id"], "second-tune"}
+    assert experiments.experiment_status(tmp_path)["summary"]["state"] == "ready_to_finalize"
+    ranking_bytes = ranking.read_bytes()
+
+    hparam_selection.select_hparam_candidates(first_plan)
+
+    assert ranking.read_bytes() == ranking_bytes
+
+
+def test_experiment_status_rejects_reordered_hparam_ranking_rows(tmp_path: Path):
+    _first_run, _first_plan, second_plan = _prepare_two_hparam_steps(tmp_path)
+    ranking = hparam_selection.select_hparam_candidates(second_plan)
+    ranking_rows = read_rows(ranking, require_managed_identity=True)
+    write_rows(ranking, list(reversed(ranking_rows)))
+
+    snapshot = experiments.experiment_status(tmp_path)
+
+    assert snapshot["summary"]["state"] == "ready_to_report"
+    with pytest.raises(ValueError, match="selection report is missing or differs"):
+        experiments.finalize_experiment(tmp_path, tmp_path / "reports" / "hparam_selection.md")
+
+
 def test_hparam_select_only_preflights_registered_plans_that_own_preserved_rankings(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     first_plan = tmp_path / "plan-1"
@@ -1847,6 +2668,17 @@ def test_hparam_select_only_preflights_registered_plans_that_own_preserved_ranki
     finetune_recipe = write_yaml(tmp_path / "non-hparam.yaml", finetune_payload)
     non_hparam_plan = tmp_path / "non-hparam-plan"
     assert _run("plan", "--recipe", str(finetune_recipe), "--output-dir", str(non_hparam_plan)).returncode == 0
+    non_hparam_run = json.loads((non_hparam_plan / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": non_hparam_run["step_id"],
+                "run_id": non_hparam_run["run_id"],
+                "status": "completed",
+            }
+        ],
+    )
 
     recipe = _hparam_recipe(tmp_path)
     second_plan = tmp_path / "plan-2"
@@ -1879,6 +2711,57 @@ def test_hparam_select_only_preflights_registered_plans_that_own_preserved_ranki
 
     assert non_hparam_plan not in strict_reads
     assert {row["run_id"] for row in read_rows(_ranking_path(second_plan))} == {"run-000", "run-002"}
+    canonical = read_run_manifest(tmp_path)
+    non_hparam_row = next(
+        row
+        for row in canonical
+        if (row["step_id"], row["run_id"]) == (non_hparam_run["step_id"], non_hparam_run["run_id"])
+    )
+    assert all(
+        non_hparam_row.get(field) in (None, "") for field in experiment_tracking.HPARAM_SELECTION_METADATA_FIELDS
+    )
+    assert experiments.experiment_status(tmp_path)["summary"]["state"] == "ready_to_report"
+    combined = tmp_path / "combined.md"
+    combined.write_text("# Combined hparam and finetune report\n")
+    assert experiments.finalize_experiment(tmp_path, combined).read_text() == combined.read_text()
+
+
+def test_hparam_select_rejects_same_step_non_hparam_selection_metadata_without_writing(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "hparam-plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps({"metrics": {"val_ahi_pearson": 0.9}, "best_model_path": str(checkpoint), "epoch": 1})
+    )
+
+    finetune_recipe = write_finetune_recipe(tmp_path)
+    finetune_payload = yaml.safe_load(finetune_recipe.read_text())
+    finetune_payload["step"] = json.loads((plan_dir / "plan.json").read_text())["recipe"]["step"]
+    finetune_recipe = write_yaml(tmp_path / "non-hparam.yaml", finetune_payload)
+    non_hparam_plan = tmp_path / "non-hparam-plan"
+    assert _run("plan", "--recipe", str(finetune_recipe), "--output-dir", str(non_hparam_plan)).returncode == 0
+    non_hparam_run = json.loads((non_hparam_plan / "plan.json").read_text())["runs"][0]
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": non_hparam_run["step_id"],
+                "run_id": non_hparam_run["run_id"],
+                "selection_task": "hparam_tune",
+                "status": "completed",
+            }
+        ],
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="not owned by a registered hparam plan"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
 def test_hparam_select_skips_registered_blocked_plan_after_successful_retry(tmp_path: Path):

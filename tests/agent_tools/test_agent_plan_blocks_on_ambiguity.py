@@ -3938,6 +3938,21 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
         "purpose": "Exercise managed non-hparam lifecycle.",
     }
     recipe["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
+    if task in {"infer", "evaluate"}:
+        recipe["evaluation_policy"] = {"external_test_locked": True}
+        recipe["artifacts"] = {"overwrite": False}
+    elif task == "preset_prepare":
+        recipe.pop("artifacts")
+        recipe.pop("evaluation_policy")
+        recipe.pop("runtime")
+        recipe["inputs"] = {"config": recipe["inputs"]["config"]}
+    elif task == "sleep2stat":
+        recipe.pop("variant")
+        recipe.pop("runtime")
+        recipe["inputs"] = {"config": recipe["inputs"]["config"]}
+        recipe["evaluation_policy"] = {"external_test_locked": True}
+        recipe["artifacts"] = {"overwrite": False}
+    recipe["_recipe_path"] = str(recipe_path.resolve())
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))

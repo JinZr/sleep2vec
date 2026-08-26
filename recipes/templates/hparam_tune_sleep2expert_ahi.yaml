@@ -15,6 +15,7 @@ step:
 
 base_recipe: finetune_sleep2expert_ahi.yaml
 
+# finetune_balanced is not registered for sleep2expert; keep the search explicit.
 search:
   method: grid
   max_runs: 6

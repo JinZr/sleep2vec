@@ -7,9 +7,16 @@ from typing import Any
 
 import yaml
 
-from . import experiment_io as exp_io, experiment_tracking as tracking, run_artifacts as artifacts
+from . import (
+    experiment_io as exp_io,
+    experiment_tracking as tracking,
+    run_artifacts as artifacts,
+    run_evidence as evidence,
+)
 from .experiment_workspace import (
+    FROZEN_RUN_FIELDS,
     RESEARCH_LOG_NAME,
+    SHA256_RE,
     TERMINAL_STATUSES,
     append_research_log,
     canonical_local_experiment_root,
@@ -17,6 +24,7 @@ from .experiment_workspace import (
     experiment_metadata_issues,
     experiment_readme_text,
     managed_run_key,
+    managed_run_parameters,
     merge_run_manifest,
     read_managed_yaml_mapping,
     read_registered_steps,
@@ -190,10 +198,54 @@ def register_experiment_step(run_dir: str | Path, spec_path: str | Path, *, remo
     return path
 
 
+def _validate_hparam_checkpoints(
+    rows: list[dict[str, Any]],
+    selected_steps: list[dict[str, Any]],
+    *,
+    remote: str | None,
+) -> None:
+    canonical_by_key = {managed_run_key(row): row for row in rows}
+    checkpoint_rows_by_path = {}
+    for step in selected_steps:
+        for row in [*step["ranked"], *step.get("checkpoint_audit_rows", [])]:
+            checkpoint_rows_by_path.setdefault((*managed_run_key(row), str(row["checkpoint_path"])), row)
+    checkpoint_rows = list(checkpoint_rows_by_path.values())
+    tracking.validate_checkpoint_evidence_rows(rows, checkpoint_rows, remote=remote)
+    for row in checkpoint_rows:
+        owner = canonical_by_key[managed_run_key(row)]
+        evidence_host = tracking.checkpoint_evidence_host(owner, remote)
+        evidence_row = owner if evidence_host is None else {**owner, "target": "ssh", "host": evidence_host}
+        if evidence.checkpoint_file_sha256(evidence_row, row["checkpoint_path"]) != row["checkpoint_sha256"]:
+            raise ValueError(f"Frozen checkpoint SHA-256 differs: {row['checkpoint_path']}")
+
+
+def _validate_hparam_selection_files_unchanged(
+    root: Path,
+    selection_report: dict[str, Any],
+    checkpoint_audits: dict[str, dict[str, Any] | None],
+    *,
+    remote: str | None,
+) -> None:
+    expected = {
+        str(selection_report["path"]): selection_report["sha256"],
+        str(selection_report["ranking_path"]): selection_report["ranking_sha256"],
+        **{path: audit["sha256"] for path, audit in checkpoint_audits.items() if isinstance(audit, dict)},
+    }
+    current = exp_io.read_managed_files_at(root, [Path(path) for path in expected], remote=remote)
+    for path, sha256 in expected.items():
+        if current[path]["sha256"] != sha256:
+            if path == str(selection_report["path"]):
+                raise ValueError("The hparam selection report changed during finalization.")
+            if path == str(selection_report["ranking_path"]):
+                raise ValueError("The hparam ranking changed during finalization.")
+            raise ValueError(f"The frozen checkpoint test ranking changed during finalization: {path}")
+
+
 def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote: str | None = None) -> Path:
     if remote and not Path(report_path).is_absolute():
         raise ValueError("Remote final report path must be absolute.")
     root = _target_root(run_dir, remote)
+    run_manifest_path = root / "run_manifest.tsv"
     rows = _managed_rows(root, remote=remote)
     if not rows:
         raise ValueError("Experiment has no managed runs to finalize.")
@@ -204,37 +256,149 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     if missing_stop_reasons:
         run_ids = [f"{row['step_id']} / {row['run_id']}" for row in missing_stop_reasons]
         raise ValueError(f"Stopped runs are missing required stop_reason: {run_ids}")
-    report_text = exp_io.read_text_at(report_path, remote=remote)
-    if not report_text.strip():
-        raise ValueError("Final report is missing or empty.")
+    run_manifest_snapshot = exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[
+        str(run_manifest_path)
+    ]
+    rows = _managed_rows(root, remote=remote)
+    if not rows:
+        raise ValueError("Experiment has no managed runs to finalize.")
+    unresolved = [row["run_id"] for row in rows if row.get("status") not in TERMINAL_STATUSES]
+    if unresolved:
+        raise ValueError(f"Experiment still has unresolved runs: {unresolved}")
+    missing_stop_reasons = stopped_runs_without_reason(rows)
+    if missing_stop_reasons:
+        run_ids = [f"{row['step_id']} / {row['run_id']}" for row in missing_stop_reasons]
+        raise ValueError(f"Stopped runs are missing required stop_reason: {run_ids}")
+    if (
+        exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[str(run_manifest_path)]["sha256"]
+        != run_manifest_snapshot["sha256"]
+    ):
+        raise RuntimeError("Run manifest changed during finalization.")
     manifest_text = exp_io.read_text_at(root / "experiment.yaml", remote=remote)
     manifest = read_managed_yaml_mapping(
         manifest_text, source=f"Managed experiment manifest {root / 'experiment.yaml'}"
     )
     if not isinstance(manifest.get("experiment"), dict):
         raise ValueError("experiment.yaml is missing.")
+    registered_steps = _registered_plan_steps(
+        root,
+        manifest["experiment"],
+        rows,
+        remote=remote,
+        require_registered_rows=False,
+    )
+    selection_report = (
+        _hparam_selection_report(root, remote=remote)
+        if any(plan.get("task") == "hparam_tune" for step in registered_steps for plan in step["plans"])
+        else None
+    )
+    checkpoint_audits = _hparam_checkpoint_audits(root, registered_steps, remote=remote)
+    snapshot = tracking.experiment_status_snapshot(
+        manifest["experiment"],
+        registered_steps,
+        rows,
+        root=root,
+        remote=remote,
+        hparam_selection_report=selection_report,
+        hparam_checkpoint_audits=checkpoint_audits,
+    )
+    blocking_codes = sorted(
+        {blocker["code"] for blocker in snapshot["blockers"] if blocker["code"] == "unmaterialized_step"}
+    )
+    if blocking_codes:
+        raise ValueError("Experiment cannot be finalized with incomplete canonical steps: " + ", ".join(blocking_codes))
+    hparam = tracking.hparam_selection_lifecycle(
+        registered_steps,
+        rows,
+        root=root,
+        report=selection_report,
+        checkpoint_audits=checkpoint_audits,
+    )
+    if hparam["pending_steps"]:
+        raise ValueError("Successful hparam runs must be selected before experiment finalization.")
+    if hparam["selected_steps"] and not hparam["report_valid"]:
+        raise ValueError("The hparam selection report is missing or differs from canonical selection evidence.")
+    selection_report_path = Path(hparam["report_path"]) if hparam["selected_steps"] else None
+    if selection_report_path is not None:
+        _validate_hparam_selection_files_unchanged(root, selection_report, checkpoint_audits, remote=remote)
+    report_path_is_selection = str(Path(report_path)) == hparam["report_path"]
+    if hparam["selected_steps"]:
+        if hparam["automatic_report_final"]:
+            if not report_path_is_selection:
+                raise ValueError(f"Successful hparam experiments must finalize from {hparam['report_path']}")
+            report_text = str(selection_report["text"])
+        elif report_path_is_selection:
+            raise ValueError("The hparam selection report cannot replace the required combined experiment report.")
+    elif hparam["hparam_steps"] and report_path_is_selection:
+        raise ValueError("The hparam selection report cannot replace the required hparam failure report.")
+    if not (hparam["selected_steps"] and hparam["automatic_report_final"]):
+        report_text = exp_io.read_text_at(report_path, remote=remote)
+        report_content_is_selection = bool(
+            selection_report is not None
+            and hashlib.sha256(report_text.encode()).hexdigest() == selection_report["sha256"]
+        )
+        if hparam["selected_steps"] and report_content_is_selection:
+            raise ValueError("The hparam selection report cannot replace the required combined experiment report.")
+        if not hparam["selected_steps"] and hparam["hparam_steps"] and report_content_is_selection:
+            raise ValueError("The hparam selection report cannot replace the required hparam failure report.")
+    if not report_text.strip():
+        raise ValueError("Final report is missing or empty.")
+    if hparam["selected_steps"]:
+        _validate_hparam_checkpoints(rows, hparam["selected_steps"], remote=remote)
     target = root / "reports" / "final.md"
     exp_io.validate_managed_output_paths(
         root,
-        [target, root / "experiment.yaml", root / "events.jsonl"],
+        [
+            target,
+            root / "experiment.yaml",
+            root / "events.jsonl",
+            run_manifest_path.with_name(run_manifest_path.name + ".lock"),
+        ],
         remote=remote,
     )
     target_exists = exp_io.path_exists_at(target, remote=remote)
     target_text = exp_io.read_text_at(target, remote=remote) if target_exists else ""
     target_sha256 = hashlib.sha256(target_text.encode()).hexdigest() if target_exists else None
-    if not exp_io.conditional_atomic_replace_text_at(target, report_text, target_sha256, remote=remote):
+    manifest_sha256 = hashlib.sha256(manifest_text.encode()).hexdigest()
+    report_sha256 = hashlib.sha256(report_text.encode()).hexdigest()
+    if not exp_io.conditional_atomic_replace_text_at(
+        target,
+        report_text,
+        target_sha256,
+        remote=remote,
+        dependency_path=run_manifest_path,
+        expected_dependency_sha256=run_manifest_snapshot["sha256"],
+        guard_path=root / "experiment.yaml",
+        expected_guard_sha256=manifest_sha256,
+    ):
         raise RuntimeError(f"Final report changed during publication: {target}")
-    manifest["experiment"]["status"] = "completed"
-    manifest["experiment"]["completed_at"] = utc_now()
+    manifest["experiment"].update(
+        {
+            "status": "completed",
+            "completed_at": utc_now(),
+            "final_report": str(target),
+            "final_report_sha256": report_sha256,
+        }
+    )
+    if hparam["selected_steps"]:
+        manifest["experiment"]["selection_report_sha256"] = selection_report["sha256"]
     exp_io.append_event_at(root, "experiment_finalization_prepared", {"report": str(target)}, remote=remote)
+    if selection_report_path is not None:
+        _validate_hparam_selection_files_unchanged(root, selection_report, checkpoint_audits, remote=remote)
+    if hparam["selected_steps"]:
+        _validate_hparam_checkpoints(rows, hparam["selected_steps"], remote=remote)
     # The experiment manifest is the terminal commit, so publish it only after the report is durable.
     if not exp_io.conditional_atomic_replace_text_at(
         root / "experiment.yaml",
         yaml.safe_dump(manifest, sort_keys=False),
-        hashlib.sha256(manifest_text.encode()).hexdigest(),
+        manifest_sha256,
         remote=remote,
+        dependency_path=run_manifest_path,
+        expected_dependency_sha256=run_manifest_snapshot["sha256"],
+        guard_path=target,
+        expected_guard_sha256=report_sha256,
     ):
-        raise RuntimeError("Experiment manifest changed during finalization.")
+        raise RuntimeError("Experiment or run manifest changed during finalization.")
     return target
 
 
@@ -362,7 +526,50 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict
         allow_completed=True,
         validate_experiment_index=False,
     )
+    registered_steps = _registered_plan_steps(root, experiment, rows, remote=remote, require_registered_rows=True)
+    selection_report = (
+        _hparam_selection_report(root, remote=remote)
+        if any(plan.get("task") == "hparam_tune" for step in registered_steps for plan in step["plans"])
+        else None
+    )
+    checkpoint_audits = _hparam_checkpoint_audits(root, registered_steps, remote=remote)
+
+    return tracking.experiment_status_snapshot(
+        experiment,
+        registered_steps,
+        rows,
+        root=root,
+        remote=remote,
+        hparam_selection_report=selection_report,
+        hparam_checkpoint_audits=checkpoint_audits,
+    )
+
+
+def _registered_plan_steps(
+    root: Path,
+    experiment: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    remote: str | None,
+    require_registered_rows: bool,
+) -> list[dict[str, Any]]:
     step_manifests = read_registered_steps(root, experiment_id=str(experiment["id"]), remote=remote)
+    legacy_run_identity_fields = {"experiment_id", "step_id", "run_id", "run_name", "version"}
+    managed_plan_fields = (FROZEN_RUN_FIELDS - legacy_run_identity_fields) | tracking.HPARAM_SELECTION_METADATA_FIELDS
+    has_managed_plan_rows = any(
+        managed_run_parameters(row) or any(row.get(field) not in (None, "") for field in managed_plan_fields)
+        for row in rows
+    )
+    if not step_manifests and not require_registered_rows and not has_managed_plan_rows:
+        return []
+    if (
+        not require_registered_rows
+        and not has_managed_plan_rows
+        and not any(manifest["plans"] for manifest in step_manifests)
+    ):
+        registered_step_ids = {str(manifest["step"]["id"]) for manifest in step_manifests}
+        if not ({str(row["step_id"]) for row in rows} & registered_step_ids):
+            return []
     step_ids = {str(manifest["step"]["id"]) for manifest in step_manifests}
     orphaned_steps = sorted({str(row["step_id"]) for row in rows} - step_ids)
     if orphaned_steps:
@@ -408,13 +615,48 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict
             raise ValueError(f"Managed step plans differ from canonical run keys: {step_id}")
         registered_steps.append({"manifest": manifest, "plans": plans})
 
-    return tracking.experiment_status_snapshot(
-        experiment,
-        registered_steps,
-        rows,
-        root=root,
-        remote=remote,
+    return registered_steps
+
+
+def _hparam_selection_report(root: Path, *, remote: str | None) -> dict[str, Any] | None:
+    path = root / "reports" / "hparam_selection.md"
+    ranking_path = root / "reports" / "ranking.csv"
+    exp_io.validate_managed_output_paths(root, [path, ranking_path], remote=remote)
+    if not exp_io.path_exists_at(path, remote=remote):
+        return None
+    read_paths = [path]
+    if exp_io.path_exists_at(ranking_path, remote=remote):
+        read_paths.append(ranking_path)
+    files = exp_io.read_managed_files_at(root, read_paths, remote=remote)
+    return {
+        "path": str(path),
+        **files[str(path)],
+        "ranking_path": str(ranking_path),
+        "ranking_text": files.get(str(ranking_path), {}).get("text"),
+        "ranking_sha256": files.get(str(ranking_path), {}).get("sha256"),
+    }
+
+
+def _hparam_checkpoint_audits(
+    root: Path,
+    registered_steps: list[dict[str, Any]],
+    *,
+    remote: str | None,
+) -> dict[str, dict[str, Any] | None]:
+    checkpoint_audit_paths = sorted(
+        {
+            Path(plan["path"]) / "checkpoint_test_ranking.csv"
+            for registered in registered_steps
+            for plan in registered["plans"]
+            if plan.get("task") == "hparam_tune" and (plan.get("selection") or {}).get("split") == "test"
+        }
     )
+    if not checkpoint_audit_paths:
+        return {}
+    exp_io.validate_managed_output_paths(root, checkpoint_audit_paths, remote=remote)
+    existing = [path for path in checkpoint_audit_paths if exp_io.path_exists_at(path, remote=remote)]
+    files = exp_io.read_managed_files_at(root, existing, remote=remote)
+    return {str(path): files.get(str(path)) for path in checkpoint_audit_paths}
 
 
 def rank_experiment_candidates(run_dir: str | Path, *, metric: str, mode: str, remote: str | None = None) -> Path:
@@ -486,9 +728,22 @@ def _managed_workspace(
         raise ValueError("experiment.yaml must contain only the experiment owner mapping.")
     experiment = manifest.get("experiment")
     validated_experiment = experiment
+    completed_bindings: list[Path] = []
     if allow_completed and isinstance(experiment, dict) and ("status" in experiment or "completed_at" in experiment):
-        if set(experiment) - {"id", "title", "objective", "root", "baseline"} != {"status", "completed_at"}:
-            raise ValueError("Completed experiment metadata must define only status and completed_at.")
+        terminal_fields = set(experiment) - {"id", "title", "objective", "root", "baseline"}
+        allowed_terminal_fields = (
+            {"status", "completed_at"},
+            {"status", "completed_at", "final_report", "final_report_sha256"},
+            {
+                "status",
+                "completed_at",
+                "final_report",
+                "final_report_sha256",
+                "selection_report_sha256",
+            },
+        )
+        if terminal_fields not in allowed_terminal_fields:
+            raise ValueError("Completed experiment metadata has incomplete or unexpected terminal fields.")
         completed_at = experiment.get("completed_at")
         if experiment.get("status") != "completed" or not isinstance(completed_at, str):
             raise ValueError("Completed experiment metadata is invalid.")
@@ -498,9 +753,19 @@ def _managed_workspace(
             raise ValueError("Completed experiment completed_at must be an ISO timestamp.") from exc
         if completed_time.tzinfo is None or completed_time.utcoffset() != timezone.utc.utcoffset(completed_time):
             raise ValueError("Completed experiment completed_at must be in UTC.")
-        validated_experiment = {
-            field: value for field, value in experiment.items() if field not in {"status", "completed_at"}
-        }
+        if "final_report" in experiment:
+            final_report = root / "reports" / "final.md"
+            if experiment["final_report"] != str(final_report) or not SHA256_RE.fullmatch(
+                str(experiment["final_report_sha256"])
+            ):
+                raise ValueError("Completed experiment final report binding is invalid.")
+            completed_bindings.append(final_report)
+            selection_sha256 = experiment.get("selection_report_sha256")
+            if selection_sha256 is not None:
+                if not SHA256_RE.fullmatch(str(selection_sha256)):
+                    raise ValueError("Completed experiment selection report binding is invalid.")
+                completed_bindings.append(root / "reports" / "hparam_selection.md")
+        validated_experiment = {field: value for field, value in experiment.items() if field not in terminal_fields}
     issues = experiment_metadata_issues(
         {
             "experiment": validated_experiment,
@@ -511,6 +776,15 @@ def _managed_workspace(
         raise ValueError("; ".join(issue["message"] for issue in issues))
     if str(experiment["root"]) != str(root):
         raise ValueError(f"experiment.root differs from the target workspace: {root}")
+
+    if completed_bindings:
+        bound_files = exp_io.read_managed_files_at(root, completed_bindings, remote=remote)
+        if bound_files[str(completed_bindings[0])]["sha256"] != experiment["final_report_sha256"]:
+            raise ValueError("Completed experiment final report differs from its terminal binding.")
+        if len(completed_bindings) == 2 and (
+            bound_files[str(completed_bindings[1])]["sha256"] != experiment["selection_report_sha256"]
+        ):
+            raise ValueError("Completed experiment selection report differs from its terminal binding.")
 
     for legacy_path in (root / "trial_status.tsv", root / "adaptive" / "trial_registry.tsv"):
         if exp_io.path_exists_at(legacy_path, remote=remote):

@@ -887,12 +887,12 @@ def test_experiment_finalize_records_preparation_before_manifest_conflict(tmp_pa
     before = manifest.read_bytes()
     real_commit = experiment_io.conditional_atomic_replace_text_at
 
-    def conflict_manifest(path, text, expected_sha256, *, remote=None):
+    def conflict_manifest(path, text, expected_sha256, *, remote=None, **kwargs):
         if Path(path) == manifest:
             events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
             assert events[-1]["event_type"] == "experiment_finalization_prepared"
             return False
-        return real_commit(path, text, expected_sha256, remote=remote)
+        return real_commit(path, text, expected_sha256, remote=remote, **kwargs)
 
     monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", conflict_manifest)
 

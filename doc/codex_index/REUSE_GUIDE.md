@@ -44,6 +44,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Analysis bundle output | `AnalysisBundleWriter` in [`sleep2stat/io/writers.py`](../../sleep2stat/io/writers.py) | analyzers or CLI branches |
 | Analysis plotting | `plot_record`, `plot_cohort` in [`sleep2stat/plot.py`](../../sleep2stat/plot.py) | scripts that inspect analyzer internals |
 | Static recipe structure | `recipe_structure_issues` in [`agent_tools/decision_rules.py`](../../agent_tools/decision_rules.py) for registered task/variant and section closure | planner- or status-local copies of recipe structure validation |
+| Automatic finetune hparam profile | `compile_finetune_balanced_profile` in [`agent_tools/domain/finetune_hparam_profile.py`](../../agent_tools/domain/finetune_hparam_profile.py), invoked through the hparam adapter binding hook | kernel branches, skills, or templates that duplicate technical candidate generation |
+| Hparam selection lifecycle and report | canonical selection fields written by [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py), with pure validation/rendering in [`agent_tools/experiment_tracking.py`](../../agent_tools/experiment_tracking.py) | event-, ranking-, status-, or finalizer-local lifecycle state |
 | Frozen plan semantics | [`agent_tools/plan_contract.py`](../../agent_tools/plan_contract.py), `compile_plan_contract` adapter hooks, and hparam compilers in [`agent_tools/plan_hparam.py`](../../agent_tools/plan_hparam.py) for creator-host context, recipe-derived run matrices, configs, complete executable scripts, and final-evaluation requirements | writer/status copies, reader-host defaults, or validation derived from mutable manifests |
 | Agent consultation | `evaluate_consultation_gates` through [`agent_tools/decisions.py`](../../agent_tools/decisions.py) | command renderers |
 | Agent context and plan publication | `build_context`, `build_plan`, `preflight_plan` through [`agent_tools/plans.py`](../../agent_tools/plans.py); `plan_tree_sha256` in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) for deterministic staged-plan comparison | skills, adapters, or adaptive/pipeline callers |
@@ -124,6 +126,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Treat `decisions.py`, `plans.py`, `hparam.py`, and `experiments.py` as public facades.
 - Extend tasks through adapters and declarations; keep the reusable kernel free of new sleep-specific branches.
 - Run consultation before runnable plans and stop on `NEEDS_USER_INPUT`.
+- Reuse the finetune hparam profile compiler for supported bounded automatic tuning; the authored profile is the generation intent and the resolved complete configurations are its frozen executable expansion.
 - Keep `experiment-status` on the static frozen-recipe and canonical-manifest read-set; it must not rerun consultation or runtime/input probes.
 - Recompile registered plan semantics through `plan_contract` and the task adapter, including recipe-owned input snapshots; agreement among edited manifests and scripts does not replace agreement with the frozen recipe.
 - Reuse `experiment_workspace.merge_step_manifest` for the one-way `plan_controller` binding; `step.yaml` is the only ordinary/adaptive/pipeline classification owner.

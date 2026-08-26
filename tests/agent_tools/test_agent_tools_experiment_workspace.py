@@ -784,10 +784,12 @@ def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch
 
     def fake_read(path, *, remote=None):
         reads.append((Path(path).name, remote))
+        if Path(path).name == "experiment.yaml":
+            return "experiment:\n  id: unit\n"
         return "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tfailed\n"
 
-    def fake_commit(path, text, _expected_sha256, *, remote=None):
-        writes[Path(path).name] = (text, remote)
+    def fake_commit(path, text, _expected_sha256, *, remote=None, **kwargs):
+        writes[Path(path).name] = (text, remote, kwargs)
         return True
 
     def fake_projection(_root, rows, manifest_text, remote):
@@ -807,9 +809,11 @@ def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch
     )
 
     assert committed == existing
-    assert reads and set(reads) == {("run_manifest.tsv", "baichuan3")}
+    assert reads and set(reads) == {("experiment.yaml", "baichuan3"), ("run_manifest.tsv", "baichuan3")}
     assert "unit\trun-000\tfailed\ttrain" in writes["run_manifest.tsv"][0]
     assert writes["run_manifest.tsv"][1] == "baichuan3"
+    assert writes["run_manifest.tsv"][2]["guard_path"] == Path("/remote/workspace/experiment.yaml")
+    assert len(writes["run_manifest.tsv"][2]["expected_guard_sha256"]) == 64
     assert writes["projection"][0] == existing
     assert "unit\trun-000\tfailed\ttrain" in writes["projection"][1]
     assert writes["projection"][2] == "baichuan3"
@@ -860,7 +864,7 @@ def test_merge_run_manifest_remote_new_key_checks_workspace_owner_before_writing
             remote="baichuan3",
         )
 
-    assert reads == [("run_manifest.tsv", "baichuan3"), ("experiment.yaml", "baichuan3")]
+    assert reads == [("experiment.yaml", "baichuan3"), ("run_manifest.tsv", "baichuan3")]
     assert writes == []
 
 
@@ -994,6 +998,8 @@ def test_managed_yaml_reader_rejects_recursive_alias_without_hanging():
 
 
 def test_merge_run_manifest_never_recreates_missing_canonical_table(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+
     with pytest.raises(FileNotFoundError, match="run_manifest.tsv"):
         merge_run_manifest(tmp_path, [{"step_id": "train", "run_id": "run-000", "status": "planned"}])
 
@@ -1001,6 +1007,7 @@ def test_merge_run_manifest_never_recreates_missing_canonical_table(tmp_path: Pa
 
 
 def test_empty_canonical_commit_preserves_the_valid_identity_header(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
     initialize_run_manifest(tmp_path)
 
     assert merge_run_manifest(tmp_path, []) == []
@@ -1013,13 +1020,19 @@ def test_empty_canonical_commit_preserves_the_valid_identity_header(tmp_path: Pa
 def test_empty_remote_canonical_commit_preserves_the_valid_matrix_identity_header(monkeypatch):
     writes = {}
 
+    def fake_read(path, *, remote=None):
+        if Path(path).name == "experiment.yaml":
+            return "experiment:\n  id: unit\n"
+        return "step_id\trun_id\n"
+
     monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_io, "read_text_at", lambda *_args, **_kwargs: "step_id\trun_id\n")
+    monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
     monkeypatch.setattr(
         experiment_io,
         "conditional_atomic_replace_text_at",
-        lambda path, text, _expected_sha256, *, remote=None: writes.update({Path(path).name: (text, remote)}) is None,
+        lambda path, text, _expected_sha256, *, remote=None, **_kwargs: writes.update({Path(path).name: (text, remote)})
+        is None,
     )
     monkeypatch.setattr(
         experiment_workspace,
@@ -1226,7 +1239,7 @@ def test_remote_manifest_commit_retries_after_digest_conflict_without_losing_row
             return "experiment:\n  id: unit\n"
         return state["text"]
 
-    def fake_commit(_path, text, _expected_sha256, *, remote=None):
+    def fake_commit(_path, text, _expected_sha256, *, remote=None, **_kwargs):
         state["attempts"] += 1
         if state["attempts"] == 1:
             state["text"] = "experiment_id\tstatus\tstep_id\trun_id\n" "unit\tplanned\ttrain\trun-001\n"
@@ -1262,7 +1275,7 @@ def test_remote_projection_replays_when_canonical_manifest_advances(monkeypatch)
             return "experiment:\n  id: unit\n"
         return state["text"]
 
-    def fake_commit(_path, text, _expected_sha256, *, remote=None):
+    def fake_commit(_path, text, _expected_sha256, *, remote=None, **_kwargs):
         state["text"] = text
         return True
 
@@ -1323,7 +1336,7 @@ def test_remote_projection_conflicts_never_publish_a_stale_matrix(monkeypatch):
             return "experiment:\n  id: unit\n"
         return state["text"]
 
-    def fake_commit(_path, text, _expected_sha256, *, remote=None):
+    def fake_commit(_path, text, _expected_sha256, *, remote=None, **_kwargs):
         state["text"] = text
         return True
 
@@ -1354,9 +1367,15 @@ def test_remote_projection_conflicts_never_publish_a_stale_matrix(monkeypatch):
 
 def test_remote_manifest_commit_fails_after_three_digest_conflicts(monkeypatch):
     attempts = []
+
+    def fake_read(path, *, remote=None):
+        if Path(path).name == "experiment.yaml":
+            return "experiment:\n  id: unit\n"
+        return "step_id\trun_id\n"
+
     monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_io, "read_text_at", lambda *_args, **_kwargs: "step_id\trun_id\n")
+    monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
     monkeypatch.setattr(
         experiment_io,
         "conditional_atomic_replace_text_at",
@@ -2026,9 +2045,7 @@ def test_completed_experiment_rejects_new_plan(tmp_path: Path):
     first = tmp_path / "plans" / "first"
     second = tmp_path / "plans" / "second"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tstatus\nunit-experiment\tunit-finetune\trun-000\tfinished\n"
-    )
+    merge_run_manifest(tmp_path, [{**read_run_manifest(tmp_path)[0], "status": "finished"}])
     report = tmp_path / "final_source.md"
     report.write_text("# Final\n")
     assert _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report)).returncode == 0

@@ -1579,6 +1579,7 @@ def test_postprocess_rejects_same_step_selection_contract_drift_before_writing(
             }
         )
     )
+    _set_run_status(owner_plan_dir, owner_run)
     selected = _run("hparam-select", "--run-dir", str(owner_plan_dir))
     assert selected.returncode == 0, selected.stderr
     ranking = _ranking_path(owner_plan_dir)

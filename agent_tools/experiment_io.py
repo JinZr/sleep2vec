@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import csv
 import ctypes
 import errno
@@ -636,13 +636,40 @@ def conditional_atomic_replace_text_at(
     expected_sha256: str | None,
     *,
     remote: str | None = None,
+    dependency_path: str | Path | None = None,
+    expected_dependency_sha256: str | None = None,
+    guard_path: str | Path | None = None,
+    expected_guard_sha256: str | None = None,
 ) -> bool:
     target = Path(str(path))
+    if (dependency_path is None) != (expected_dependency_sha256 is None):
+        raise ValueError("Dependency path and expected SHA-256 must be provided together.")
+    if (guard_path is None) != (expected_guard_sha256 is None):
+        raise ValueError("Guard path and expected SHA-256 must be provided together.")
+    dependency = Path(str(dependency_path)) if dependency_path is not None else None
+    guard = Path(str(guard_path)) if guard_path is not None else None
     payload = text.encode()
     if not remote:
         target.parent.mkdir(parents=True, exist_ok=True)
         lock_path = target.with_name(f".{target.name}.cas.lock")
-        with blocking_file_lock(lock_path):
+        with ExitStack() as lock_stack:
+            if dependency is not None:
+                dependency_lock = dependency.with_name(dependency.name + ".lock")
+                lock_stack.enter_context(blocking_file_lock(dependency_lock))
+                try:
+                    dependency_bytes = dependency.read_bytes()
+                except FileNotFoundError:
+                    return False
+                if hashlib.sha256(dependency_bytes).hexdigest() != expected_dependency_sha256:
+                    return False
+            lock_stack.enter_context(blocking_file_lock(lock_path))
+            if guard is not None:
+                try:
+                    guard_bytes = guard.read_bytes()
+                except FileNotFoundError:
+                    return False
+                if hashlib.sha256(guard_bytes).hexdigest() != expected_guard_sha256:
+                    return False
             if expected_sha256 is None:
                 if os.path.lexists(target):
                     return False
@@ -693,6 +720,7 @@ def conditional_atomic_replace_text_at(
         return True
 
     script = f"""
+from contextlib import ExitStack
 import ctypes
 import errno
 import fcntl
@@ -704,13 +732,35 @@ import tempfile
 
 path = sys.argv[1]
 expected = sys.argv[2]
+dependency_path = sys.argv[3]
+dependency_expected = sys.argv[4]
+guard_path = sys.argv[5]
+guard_expected = sys.argv[6]
 expect_missing = not expected
-lock_path = path + ".lock"
 parent = os.path.dirname(path) or "."
 os.makedirs(parent, exist_ok=True)
 
-with open(lock_path, "a+") as lock_file:
-    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+lock_paths = ([dependency_path + ".lock"] if dependency_path else []) + [path + ".lock"]
+with ExitStack() as lock_stack:
+    for lock_path in dict.fromkeys(lock_paths):
+        lock_file = lock_stack.enter_context(open(lock_path, "a+"))
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    if dependency_path:
+        try:
+            with open(dependency_path, "rb") as file_obj:
+                dependency_current = file_obj.read()
+        except FileNotFoundError:
+            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
+        if hashlib.sha256(dependency_current).hexdigest() != dependency_expected:
+            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
+    if guard_path:
+        try:
+            with open(guard_path, "rb") as file_obj:
+                guard_current = file_obj.read()
+        except FileNotFoundError:
+            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
+        if hashlib.sha256(guard_current).hexdigest() != guard_expected:
+            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
     if expect_missing:
         if os.path.lexists(path):
             raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
@@ -764,7 +814,15 @@ with open(lock_path, "a+") as lock_file:
 """
     result = transport.run_ssh(
         remote,
-        transport.remote_python_command(script, str(target), expected_sha256 or ""),
+        transport.remote_python_command(
+            script,
+            str(target),
+            expected_sha256 or "",
+            str(dependency) if dependency is not None else "",
+            expected_dependency_sha256 or "",
+            str(guard) if guard is not None else "",
+            expected_guard_sha256 or "",
+        ),
         input=payload,
     )
     if result.returncode == REMOTE_CONFLICT_RETURN_CODE:

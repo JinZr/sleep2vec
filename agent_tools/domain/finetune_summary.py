@@ -58,10 +58,15 @@ def finetune_summary_body(
     )
     preset_build = data.get("preset_build") if isinstance(data.get("preset_build"), dict) else {}
     head = model.get("head") if isinstance(model.get("head"), dict) else {}
+    raw_head_kwargs = head.get("kwargs") if isinstance(head.get("kwargs"), dict) else {}
+    head_kwargs = {
+        field: raw_head_kwargs[field] for field in ("attn_dropout", "temporal_dropout") if field in raw_head_kwargs
+    }
     temporal_agg = head.get("temporal_agg") if isinstance(head.get("temporal_agg"), dict) else {}
     channel_agg = head.get("channel_agg") if isinstance(head.get("channel_agg"), dict) else {}
     layer_mix = finetune.get("layer_mix") if isinstance(finetune.get("layer_mix"), dict) else {}
     lora = finetune.get("lora") if isinstance(finetune.get("lora"), dict) else {}
+    backbone = model.get("backbone") if isinstance(model.get("backbone"), dict) else {}
     averaging = data.get("model_averaging") if isinstance(data.get("model_averaging"), dict) else None
     channels_raw = model.get("channels") if isinstance(model.get("channels"), list) else []
     channels = [_channel_summary(item) for item in channels_raw if isinstance(item, dict)]
@@ -101,6 +106,7 @@ def finetune_summary_body(
             "monitor_mod": task.get("monitor_mod"),
         },
         "lora": lora,
+        "lora_present": isinstance(finetune.get("lora"), dict),
         "loss": finetune.get("loss") if isinstance(finetune.get("loss"), dict) else {},
     }
     if survival is not None:
@@ -119,6 +125,7 @@ def finetune_summary_body(
             "hidden_size": (
                 (model.get("backbone") or {}).get("hidden_size") if isinstance(model.get("backbone"), dict) else None
             ),
+            "backbone_depth": backbone.get("num_hidden_layers"),
             "channels": channels,
             "cls": {
                 "embedding_type": (
@@ -133,6 +140,7 @@ def finetune_summary_body(
                 "name": head.get("name"),
                 "dropout": head.get("dropout"),
                 "hidden_dim": head.get("hidden_dim"),
+                "kwargs": head_kwargs,
                 "channel_agg": {
                     "name": channel_agg.get("name"),
                     "kwargs": channel_agg.get("kwargs") if isinstance(channel_agg.get("kwargs"), dict) else {},
@@ -142,11 +150,8 @@ def finetune_summary_body(
                     "kwargs": temporal_agg.get("kwargs") if isinstance(temporal_agg.get("kwargs"), dict) else {},
                 },
             },
-            "layer_mix": {
-                "enabled": layer_mix.get("enabled"),
-                "shared_across_modalities": layer_mix.get("shared_across_modalities"),
-                "layer_indices": layer_mix.get("layer_indices"),
-            },
+            "layer_mix_present": isinstance(finetune.get("layer_mix"), dict),
+            "layer_mix": layer_mix,
             "freeze": {
                 "freeze_tokenizer": finetune.get("freeze_tokenizer"),
                 "freeze_backbone_and_insert_lora": lora.get("freeze_backbone_and_insert_lora"),

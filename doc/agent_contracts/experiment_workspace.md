@@ -14,6 +14,7 @@ An experiment workspace is the durable, human-readable record for related prepar
 ├── reports/
 │   ├── status.md
 │   ├── ranking.csv
+│   ├── hparam_selection.md
 │   ├── experiment_ranking.csv
 │   └── final.md
 ├── pipelines/<pipeline-id>/  # optional managed external-evaluation state
@@ -76,6 +77,40 @@ SSH roots and locators remain exact remote strings. User-authored semantic data
 and checkpoint paths are not normalized by this management rule.
 
 A new plan must be contained by its experiment root and registered in its step manifest. A non-empty unmanaged root is rejected rather than adopted, and a completed experiment cannot accept another plan. Historical workspaces are not migrated or renamed.
+
+For ordinary hparam steps, `run_manifest.tsv` remains the lifecycle owner for
+selection metric/mode/split, score, rank, winner checkpoint, and the bound path
+and hash of deterministic `reports/hparam_selection.md`. The Markdown file is a
+derived audit report written by `hparam-select`, not a second lifecycle source.
+Successful terminal hparam runs must be selected before finalization. Pure
+ordinary-hparam experiments may finalize directly from the verified selection
+report only when every hparam step has a selected winner. Mixed experiments and
+partly failed multi-step searches require a separate combined report, and
+all-failed hparam experiments may close with a non-empty failure report. The
+canonical selection report cannot substitute for a combined or failure report.
+Once canonical selection rows carry checkpoint hashes, rerunning
+`hparam-select` may only reproduce the same score and checkpoint evidence;
+deleting `reports/ranking.csv` does not authorize replacing the canonical
+selection from changed runtime evidence. The projection may be rebuilt only
+from the unchanged canonical selection. For test-selected tuning, every
+successful canonical row also binds its registered plan-local
+`checkpoint_test_ranking.csv` path and complete file SHA-256. Status validates
+those frozen audit bytes and reconstructs the step-wide checkpoint and run
+ranks without reopening runtime manifests or checkpoint contents. Finalization
+rehashes every checkpoint named by the bound audits on its canonical execution
+host, then holds the canonical run-manifest lock while it verifies the same
+manifest snapshot and commits terminal experiment metadata.
+
+New finalization commits `status: completed` only with the canonical
+`reports/final.md` path and SHA-256. When ordinary hparam selection exists, the
+terminal metadata also freezes the verified selection-report SHA-256. Status
+validates these bound bytes so report deletion, tampering, or a concurrent
+selection commit becomes visible as corrupt terminal evidence. Historical
+completed manifests without report bindings remain readable and are not
+retroactively migrated. A selection report path alias or byte-identical copy
+cannot substitute for the required mixed-experiment combined report or
+all-failed hparam report; pure ordinary-hparam automatic finalization still
+requires the canonical `reports/hparam_selection.md` path.
 
 ## Research log
 
@@ -184,9 +219,12 @@ invalid and are not repaired in place.
 - `experiment-run` is the explicit, resumable external-evaluation launcher. Dry-run starts nothing; execute waits for successful source plans, freezes checkpoints selected by each source plan's registered ranking, and manages the declared job matrix.
 - `experiment-status` strictly validates the experiment owner, every registered
   step and frozen plan control bundle, and the canonical `run_manifest.tsv`,
-  then prints a deterministic read-only snapshot. It never reads projections
-  as lifecycle evidence, refreshes runtime observations, or writes workspace
-  state. Frozen recipe structure is validated by the same dictionary-only
+  then prints a deterministic read-only snapshot. Derived reports and rankings
+  never become lifecycle owners; modern hparam selection reports, shared
+  rankings, and plan-local checkpoint audits are read only as hash-bound
+  consistency evidence for canonical selection rows. Status never refreshes
+  runtime observations, reads checkpoint contents, or writes workspace state.
+  Frozen recipe structure is validated by the same dictionary-only
   `decision_rules` owner used by planning; status does not rerun consultation,
   policy decisions, config loading, or external input/path probes. Layered
   recipes validate both source layers plus any effective-only overlay produced
@@ -212,6 +250,11 @@ invalid and are not repaired in place.
   pipeline plan fails as corrupt canonical control state. A registered step
   with no materialized plan and no canonical rows likewise blocks finalization;
   completed metadata cannot prove that controller-deferred work was completed.
+  These read-only status blockers do not revoke the existing adaptive or
+  pipeline controller callback contract: after the controller validates its
+  own frozen terminal state, it may call `experiment-finalize`. The direct
+  finalizer rejects an unmaterialized registered step but does not reinterpret
+  status's deliberately incomplete controller read-set as a completion proof.
   A canonical `stopped` row without a non-empty `stop_reason` blocks the
   finalize advisory, and completed metadata containing such a row is corrupt.
   `experiment-finalize` independently enforces the same stop-reason boundary.

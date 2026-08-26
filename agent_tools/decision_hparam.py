@@ -87,7 +87,7 @@ _HPARAM_INPUT_FIELDS = {
     "override_dataset_names",
     "pretrained_backbone_path",
 }
-_HPARAM_SEARCH_FIELDS = {"configurations", "max_runs", "max_trials", "method", "parameters"}
+_HPARAM_SEARCH_FIELDS = {"configurations", "max_runs", "max_trials", "method", "parameters", "profile"}
 
 
 def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
@@ -272,6 +272,7 @@ def hparam_tune_issues(
     issues = hparam_recipe_contract_issues(recipe, source_layer="effective")
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    profile_mode = "profile" in search
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
     adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
@@ -350,9 +351,9 @@ def hparam_tune_issues(
                 {"max_trials": search.get("max_trials")},
             )
         )
-    if not search.get("method"):
+    if not search.get("method") and not profile_mode:
         issues.append(needs_issue("search_method", "search.method is required.", high_impact))
-    elif search.get("method") != "grid":
+    elif search.get("method") not in (None, "grid"):
         issues.append(
             DecisionIssue(
                 DecisionStatus.FAIL,
@@ -375,9 +376,9 @@ def hparam_tune_issues(
         )
     elif "configurations" in search:
         issues.extend(_hparam_search_configurations_issues(configurations))
-    elif not search.get("parameters"):
+    elif not search.get("parameters") and not profile_mode:
         issues.append(needs_issue("hparam_search_space", "search.parameters is required.", high_impact))
-    else:
+    elif "parameters" in search:
         issues.extend(_hparam_search_parameter_issues(search.get("parameters")))
     issues.extend(
         _hparam_execution_issues(
@@ -387,11 +388,12 @@ def hparam_tune_issues(
             variant=str(recipe.get("variant") or ""),
         )
     )
-    issues.extend(_hparam_adaptive_issues(adaptive))
+    if not (profile_mode and adaptive.get("enabled") is True):
+        issues.extend(_hparam_adaptive_issues(adaptive))
     max_runs = search.get("max_runs")
-    if max_runs in (None, ""):
+    if max_runs in (None, "") and not profile_mode:
         issues.append(needs_issue("hparam_budget", "search.max_runs is required.", high_impact))
-    elif type(max_runs) is not int or max_runs <= 0:
+    elif max_runs not in (None, "") and (type(max_runs) is not int or max_runs <= 0):
         issues.append(
             DecisionIssue(
                 DecisionStatus.FAIL,

@@ -128,6 +128,38 @@ Direct finetune cannot select checkpoints on test; a fixed test-selected
 configuration uses a one-configuration hparam plan so every epoch checkpoint
 is evaluated, ranked, and hash-bound.
 
+For supported `sleep2vec` and `sleep2vec2` finetuning, an explicit
+`search.profile: finetune_balanced` is compiled before consultation by
+[`agent_tools/domain/finetune_hparam_profile.py`](../../agent_tools/domain/finetune_hparam_profile.py).
+The compiler derives a bounded, task-aware set of complete joint configurations
+from explicit LayerMix and LoRA source blocks plus registered config facts,
+places the exact source point first, expands multi-channel LayerMix shared modes
+atomically, rejects inert disabled or single-channel shared source states, and
+balances level then pair coverage. The resolved recipe and plan freeze the exact points and audit
+view; selection is only the best observed candidate within the frozen domain,
+metric, split, and budget. This profile does not enter the adaptive controller.
+It does not recursively inventory or claim coverage of unknown config fields.
+
+After all ordinary hparam runs are terminal, `experiment-status` recommends
+`hparam-select`. Selection writes canonical rank/winner fields plus a
+hash-bound deterministic `reports/hparam_selection.md`. Pure ordinary-hparam
+experiments can finalize from that fixed report only when every hparam step has
+a selected winner; mixed or partly failed multi-step experiments still need a
+combined report, and all-failed searches need a failure report. Historical
+completed experiments remain readable without retroactive report migration.
+Canonical hash-bound selection evidence is immutable across selector re-entry;
+`ranking.csv` may be recreated only when it agrees with that owner. New
+completed metadata binds the final report path/hash and, when present, the
+selection-report hash. Status validates those terminal bytes, while historical
+completed metadata without the bindings remains compatible. Mixed/failure
+reports cannot be selection-report aliases or byte-identical copies, and pure
+automatic hparam finalization still requires the canonical selection-report
+path. Test-selected canonical rows also bind every registered plan-local
+checkpoint audit path and complete SHA-256. Status reconstructs the global
+selection from those frozen bytes; finalization rehashes every audited
+checkpoint on its canonical execution host and commits completed metadata only
+while holding the canonical run-manifest lock.
+
 ## Inference And Evaluation
 
 Inference reuses finetune config, model, loader, metric, and prediction owners:
@@ -224,6 +256,7 @@ authority.
 | Concern | Canonical owner | Authoritative contract |
 | --- | --- | --- |
 | Recipe structure, frozen plan semantics, consultation, and publication | [`agent_tools/decision_rules.py`](../../agent_tools/decision_rules.py), [`agent_tools/plan_contract.py`](../../agent_tools/plan_contract.py), adapter `compile_plan_contract` hooks, [`agent_tools/decisions.py`](../../agent_tools/decisions.py), and [`agent_tools/plans.py`](../../agent_tools/plans.py) | [task recipe](../agent_contracts/task_recipe.md) |
+| Automatic finetune hparam profile expansion | [`agent_tools/domain/finetune_hparam_profile.py`](../../agent_tools/domain/finetune_hparam_profile.py) through the hparam adapter binding hook | [task recipe](../agent_contracts/task_recipe.md) |
 | Workspace state, launch, and monitoring | [`agent_tools/experiment_workspace.py`](../../agent_tools/experiment_workspace.py), [`agent_tools/hparam.py`](../../agent_tools/hparam.py) | [experiment workspace](../agent_contracts/experiment_workspace.md), [run manifest](../agent_contracts/run_manifest.md) |
 | Hparam ranking and test access | [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py) | [task recipe](../agent_contracts/task_recipe.md), [external test locking](../agent_contracts/external_test_locking.md) |
 | Direct and Slurm lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py), [`agent_tools/slurm.py`](../../agent_tools/slurm.py) | [run manifest](../agent_contracts/run_manifest.md) |
@@ -235,9 +268,12 @@ authority.
 `run_manifest.tsv` is the only lifecycle and execution-identity owner; status
 tables, events, reports, and `RESEARCH_LOG.md` are projections or narrative.
 `experiment-status` also validates registered step manifests and frozen plan
-control bundles, but ignores those projections and never queries Slurm,
-processes, GPUs, checkpoints, or W&B. Its argv suggestions remain advisory and
-require the same explicit authorization as invoking the underlying command. It
+control bundles. Hash-bound hparam selection reports, shared rankings, and
+plan-local checkpoint audits are consistency guards for canonical selection,
+not alternate lifecycle owners. Status never queries Slurm, processes, GPUs,
+checkpoint contents, runtime manifests, or W&B. Its argv suggestions remain
+advisory and require the same explicit authorization as invoking the underlying
+command. It
 uses the step manifest's one-way `plan_controller` binding as the sole
 ordinary/adaptive/pipeline classification owner; frozen recipes and pipeline
 row identity are consistency guards rather than alternate owners. It
@@ -248,6 +284,9 @@ may still be shown. Completed metadata fails closed when either kind of
 controller-deferred plan exists because the status read-set cannot prove controller
 completion. A registered step whose plan and canonical rows have not yet been
 materialized also blocks finalization instead of being treated as completed.
+The status blocker is advisory for controller-owned completion: verified
+adaptive and pipeline controllers retain their existing finalize callback,
+while the direct finalizer independently rejects unmaterialized steps.
 Registered plan rows, configs, complete executable scripts, and canonical rows
 must additionally match the same recipe-derived contract used by publication;
 recipe-owned input snapshots bind source config bytes, and mutual agreement
