@@ -800,15 +800,16 @@ def _registered_test_checkpoint_ranking(
             checkpoint_names = []
         else:
             manifest_path, manifest, checkpoint_names = observed_artifacts
-        rows.extend(
-            _checkpoint_test_result_rows(
-                artifact_row,
-                metric,
-                manifest_path,
-                manifest,
-                checkpoint_names,
-            )
+        test_rows = _checkpoint_test_result_rows(
+            artifact_row,
+            metric,
+            manifest_path,
+            manifest,
+            checkpoint_names,
         )
+        for row in test_rows:
+            row["status"] = status
+        rows.extend(test_rows)
     if active_runs:
         raise ValueError("Hparam selection requires every managed hparam run to be terminal: " + ", ".join(active_runs))
     rows.sort(
@@ -859,6 +860,9 @@ def _checkpoint_ranking_signature(rows: list[dict[str, Any]]) -> tuple[tuple[str
         "metric",
         "score",
         "rank",
+        "run_manifest",
+        "source",
+        "status",
     )
     return tuple(tuple("" if row.get(field) is None else str(row.get(field)) for field in fields) for row in rows)
 

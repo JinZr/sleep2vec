@@ -1069,6 +1069,12 @@ def _validate_test_checkpoint_audits(
                 scores.append(score)
         except (csv.Error, KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Frozen checkpoint test ranking is invalid: {audit_path}") from exc
+        if any(
+            str(audit.get(field) or "") != str(canonical_by_key[managed_run_key(audit)].get(field) or "")
+            for audit in audit_rows
+            for field in ("run_manifest", "status")
+        ):
+            raise ValueError(f"Canonical hparam selection differs from frozen checkpoint test ranking: {audit_path}")
         if any((left < right if reverse else left > right) for left, right in zip(scores, scores[1:])):
             raise ValueError(f"Frozen checkpoint test ranking disagrees with selection mode: {audit_path}")
         all_audit_rows.extend(audit_rows)

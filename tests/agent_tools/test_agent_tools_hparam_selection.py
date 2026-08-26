@@ -1251,6 +1251,36 @@ def test_status_and_finalize_reject_truncated_bound_test_selection_audit(tmp_pat
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("run_manifest", "/forged/nonwinner.json"), ("status", "finished")],
+)
+def test_test_selection_binds_nonwinning_checkpoint_audit_provenance(
+    tmp_path: Path,
+    field: str,
+    value: str,
+):
+    plan_dir = _prepare_test_selected_plan_with_two_checkpoints(tmp_path)
+    audit = plan_dir / "checkpoint_test_ranking.csv"
+    audit_rows = read_rows(audit, require_managed_identity=True)
+    audit_rows[1][field] = value
+    write_rows(audit, audit_rows)
+    canonical = read_rows(tmp_path / "run_manifest.tsv", require_managed_identity=True)
+    canonical[0]["checkpoint_ranking_sha256"] = hashlib.sha256(audit.read_bytes()).hexdigest()
+    write_rows(tmp_path / "run_manifest.tsv", canonical)
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="differs from current checkpoint test evidence"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+    with pytest.raises(ValueError, match="differs from frozen checkpoint test ranking"):
+        experiments.experiment_status(tmp_path)
+    with pytest.raises(ValueError, match="differs from frozen checkpoint test ranking"):
+        experiments.finalize_experiment(tmp_path, selection_report)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 def test_finalize_revalidates_every_bound_test_selection_checkpoint(tmp_path: Path):
     plan_dir = _prepare_test_selected_plan_with_two_checkpoints(tmp_path)
     audit_rows = read_rows(plan_dir / "checkpoint_test_ranking.csv", require_managed_identity=True)
