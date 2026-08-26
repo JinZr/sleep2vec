@@ -17,9 +17,9 @@ from agent_tools import (
     adaptive_hparam,
     experiments,
     hparam_runtime,
+    managed_scheduler,
     manifests,
     plan_hparam,
-    plans,
     run_artifacts,
     run_evidence,
     slurm,
@@ -35,10 +35,20 @@ _RUNTIME_COMMIT = subprocess.run(
 @pytest.fixture(autouse=True)
 def _stub_execution_snapshot_preflight(monkeypatch):
     monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", lambda *_args, **_kwargs: (None, False))
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: {
+            "target": str(execution.get("target", "local") or "local"),
+            "expected_runtime_commit": str(execution["runtime_commit"]),
+            "run_ids": [str(run["run_id"]) for run in runs],
+        },
+    )
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
+    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
+    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
 
 
 def _read_table(path: Path) -> list[dict[str, str]]:
@@ -1737,6 +1747,27 @@ def test_adaptive_init_materialization_failure_keeps_round_unpublished_and_retri
     assert [row["run_id"] for row in _read_table(tmp_path / "run_manifest.tsv")] == ["run-000"]
 
 
+def test_adaptive_init_target_preflight_failure_leaves_no_registration(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("target argv rejected")),
+    )
+
+    with pytest.raises(RuntimeError, match="Round 000 plan failed"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_000").exists()
+    assert not (workflow_dir / "adaptive" / "workflow.json").exists()
+    assert not (workflow_dir / "adaptive" / "run_registry.tsv").exists()
+    assert not list((workflow_dir / "adaptive" / "rounds").glob(".*.staging"))
+    assert not (tmp_path / "steps").exists()
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
+
+
 @pytest.mark.parametrize("tamper", [False, True])
 def test_adaptive_init_recovers_published_round_before_canonical_registration(
     tmp_path: Path, monkeypatch, tamper: bool
@@ -1903,12 +1934,16 @@ def test_adaptive_rounds_keep_frozen_runtime_identity_and_allow_capacity_updates
     suggestion = adaptive_hparam.suggest_next_round(workflow_dir)
     suggested = yaml.safe_load(suggestion.read_text())
     next_dir = workflow_dir / "adaptive" / "rounds" / "round_001"
-    round_recipe = adaptive_hparam._write_round_recipe(
-        adaptive_hparam.load_recipe_with_base(suggestion), suggestion, next_dir, 1
+    staging_dir = adaptive_hparam._stage_round(
+        next_dir,
+        adaptive_hparam.load_recipe_with_base(suggestion),
+        suggestion,
+        1,
+        None,
     )
-    report = plans.build_plan(recipe_path=round_recipe, output_dir=next_dir, allow_adaptive_workflow=True)
+    adaptive_hparam._publish_staged_round(staging_dir, next_dir)
+    plan_hparam.commit_hparam_plan(next_dir)
 
-    assert report.exit_code == 0
     assert suggested["execution"]["max_concurrent"] == 2
     assert {field: suggested["execution"][field] for field in ("python", "runtime_commit")} == frozen_identity
     second_plan = json.loads((next_dir / "plan.json").read_text())
@@ -3480,7 +3515,7 @@ def test_adaptive_step_blocks_uncommitted_active_status(tmp_path: Path, monkeypa
     assert not (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
 
 
-def test_build_failure_uses_a_fresh_round_on_the_next_step(tmp_path: Path, monkeypatch):
+def test_build_failure_retries_the_same_unpublished_round(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=2)
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
@@ -3503,22 +3538,44 @@ def test_build_failure_uses_a_fresh_round_on_the_next_step(tmp_path: Path, monke
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
     first_attempt = workflow_dir / "adaptive" / "rounds" / "round_001"
-    first_attempt_bytes = {
-        path.relative_to(first_attempt): path.read_bytes() for path in first_attempt.rglob("*") if path.is_file()
-    }
-    assert _read_table(tmp_path / "run_manifest.tsv")[1]["status"] == "planned"
+    assert not first_attempt.exists()
+    assert [row["run_id"] for row in _read_table(tmp_path / "run_manifest.tsv")] == ["run-000"]
 
     adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
-    assert (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
-    assert {
-        path.relative_to(first_attempt): path.read_bytes() for path in first_attempt.rglob("*") if path.is_file()
-    } == first_attempt_bytes
+    assert first_attempt.exists()
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
     registry = _read_table(workflow_dir / "adaptive" / "run_registry.tsv")
-    assert [row["round"] for row in registry] == ["0", "2"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 2
+    assert [row["round"] for row in registry] == ["0", "1"]
+    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
     statuses = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
-    assert statuses == {"run-000": "superseded", "run-001": "superseded", "run-002": "launched"}
+    assert statuses == {"run-000": "superseded", "run-001": "launched"}
+
+
+def test_round_target_preflight_failure_does_not_advance_registry_or_workspace(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=2)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
+    monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("target argv rejected")),
+    )
+    paths = [
+        workflow_dir / "adaptive" / "run_registry.tsv",
+        workflow_dir / "adaptive" / "workflow.json",
+        tmp_path / "run_manifest.tsv",
+        tmp_path / "events.jsonl",
+    ]
+    before = {path: path.read_bytes() for path in paths if path.exists()}
+
+    with pytest.raises(RuntimeError, match="Round 001 plan failed"):
+        adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
+    assert not list((workflow_dir / "adaptive" / "rounds").glob(".*.staging"))
+    assert {path: path.read_bytes() for path in before} == before
 
 
 def test_registry_failure_preserves_the_plan_and_next_step_uses_a_fresh_round(tmp_path: Path, monkeypatch):

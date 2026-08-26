@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import run_execution_preflight_fixture, write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
@@ -48,17 +48,21 @@ _RUNTIME_COMMIT = subprocess.run(
 
 
 @pytest.fixture(autouse=True)
-def _stub_execution_snapshot_preflight(monkeypatch):
-    def validated_snapshot(_run_dir, execution, _runs, _workspace_by_key):
-        if (execution.get("scheduler") or {}).get("type") == "slurm":
-            return {"python": "/opt/python", "python_version": "3.10.0"}, True
+def _stub_execution_snapshot_preflight(monkeypatch, request):
+    def validated_snapshot(run_dir, _execution, _runs, _workspace_by_key):
+        snapshot_path = Path(run_dir) / hparam_runtime.EXECUTION_SNAPSHOT_NAME
+        if snapshot_path.exists():
+            return json.loads(snapshot_path.read_text()), False
         return None, False
 
     monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", validated_snapshot)
+    if not request.node.name.startswith("test_execution_probe_"):
+        monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
+    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
+    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
 
 
 def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None, variant: str = "sleep2vec") -> Path:
@@ -152,6 +156,7 @@ def _write_slurm_plan(
         source_config_bytes=source_config,
         source_config_sha256=hashlib.sha256(source_config).hexdigest(),
     )
+    plan_hparam.preflight_hparam_plan(plan_dir, semantic_out=plan_dir)
     plan_hparam.commit_hparam_plan(plan_dir)
     return plan_dir, json.loads((plan_dir / "plan.json").read_text())
 
@@ -193,10 +198,11 @@ def _set_execution_probe(
     parse_error: str | None = None,
 ) -> list[str]:
     plan = json.loads((plan_dir / "plan.json").read_text())
+    frozen = json.loads((plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_text())
     command = shlex.split(plan["runs"][0]["command"])
     module = command[command.index("-m") + 1]
-    options = {token for token in command if token.startswith("--")} - set(missing_options or set())
-    runtime_commit = commit or plan["recipe"]["execution"]["runtime_commit"]
+    options = set(frozen["supported_options"]) - set(missing_options or set())
+    runtime_commit = commit or frozen["runtime_commit"]
     calls = []
 
     def run_probe(_execution, probe_command):
@@ -207,19 +213,21 @@ def _set_execution_probe(
                 0,
                 json.dumps(
                     {
-                        "python": "/runtime/bin/python",
-                        "python_version": "3.10.0",
+                        "python": frozen["python"],
+                        "python_version": frozen["python_version"],
                         "runtime_commit": runtime_commit,
-                        "runtime_repo_root": "/runtime/repo",
-                        "runtime_hostname": "runtime-host",
+                        "runtime_repo_root": frozen["runtime_repo_root"],
+                        "runtime_hostname": frozen["runtime_hostname"],
                         "module": module,
-                        "module_origin": f"/runtime/repo/{module.replace('.', '/')}.py",
+                        "module_origin": frozen["module_origin"],
                     }
                 ),
                 "",
             )
         calls.append("parse")
-        evidence = json.dumps({"supported_options": sorted(options), "cli_options_sha256": "digest"})
+        evidence = json.dumps(
+            {"supported_options": sorted(options), "cli_options_sha256": frozen["cli_options_sha256"]}
+        )
         return subprocess.CompletedProcess(
             probe_command,
             2 if parse_error else 0,
@@ -737,6 +745,7 @@ def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path:
         source_config_bytes=source_config,
         source_config_sha256=hashlib.sha256(source_config).hexdigest(),
     )
+    plan_hparam.preflight_hparam_plan(slurm_plan_dir, semantic_out=slurm_plan_dir)
     plan_hparam.commit_hparam_plan(slurm_plan_dir)
 
     run = json.loads((slurm_plan_dir / "plan.json").read_text())["runs"][0]
@@ -804,6 +813,7 @@ def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: 
 @pytest.mark.parametrize("field", ["runtime_dir", "checkpoint_dir"])
 def test_slurm_launch_rejects_existing_local_runtime_output_before_submission(tmp_path: Path, monkeypatch, field: str):
     plan_dir, plan = _write_slurm_plan(tmp_path)
+    snapshot = (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_bytes()
     run = plan["runs"][0]
     Path(run[field]).mkdir(parents=True)
     submitted = []
@@ -815,7 +825,7 @@ def test_slurm_launch_rejects_existing_local_runtime_output_before_submission(tm
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert submitted == []
     assert canonical["status"] in {"planned", "pending"}
-    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot
 
 
 def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission(tmp_path: Path, monkeypatch):
@@ -824,6 +834,7 @@ def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission
         execution={"target": "ssh", "host": "offline-host", "workdir": str(tmp_path)},
     )
     run = plan["runs"][0]
+    snapshot = (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_bytes()
     checkpoint_dir = Path(run["checkpoint_dir"])
     real_validate = hparam_runtime.exp_io.validate_managed_output_paths
     remote_probes = []
@@ -853,7 +864,7 @@ def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission
     ]
     assert submitted == []
     assert canonical["status"] in {"planned", "pending"}
-    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot
 
 
 def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypatch):
@@ -4465,7 +4476,6 @@ def test_hparam_run_queue_records_transition_observed_during_launch(tmp_path: Pa
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     merge_run_manifest(tmp_path, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "running"}])
-    (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).write_text("{}\n")
     observations = iter(["running", "finished"])
     monkeypatch.setattr(
         hparam_runtime.evidence,
@@ -4571,7 +4581,7 @@ def test_hparam_run_queue_fails_on_missing_pid_capacity_blocker_from_another_pla
     assert exc_info.value.run_id == first_run["run_id"]
 
 
-def test_hparam_launch_freezes_verified_execution_target_before_start(tmp_path: Path, monkeypatch):
+def test_hparam_launch_revalidates_verified_execution_target_before_start(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["max_runs"] = 2
@@ -4591,12 +4601,12 @@ def test_hparam_launch_freezes_verified_execution_target_before_start(tmp_path: 
 
     snapshot = json.loads((plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_text())
     assert calls == ["identity", "parse", "start"]
-    assert snapshot["python"] == "/runtime/bin/python"
+    assert snapshot["python"] == json.loads((plan_dir / "plan.json").read_text())["recipe"]["execution"]["python"]
     assert (
         snapshot["runtime_commit"]
         == json.loads((plan_dir / "plan.json").read_text())["recipe"]["execution"]["runtime_commit"]
     )
-    assert snapshot["runtime_hostname"] == "runtime-host"
+    assert snapshot["runtime_hostname"] == "test-runtime"
     assert snapshot["module"] == "sleep2vec.finetune"
     assert set(snapshot["required_options"]).issubset(snapshot["supported_options"])
     assert not list(plan_dir.glob(f".{hparam_runtime.EXECUTION_SNAPSHOT_NAME}.*"))
@@ -4628,7 +4638,7 @@ def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, 
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
     assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
-    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
     assert not (plan_dir / "launch_manifest.tsv").exists()
     assert not (plan_dir / "run_status.tsv").exists()
 
@@ -4972,7 +4982,7 @@ def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(t
 
     assert started == []
     assert all(path.read_bytes() == content for path, content in before.items())
-    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
     assert not (plan_dir / "launch_manifest.tsv").exists()
     assert not (plan_dir / "run_status.tsv").exists()
     row = _read_table(tmp_path / "run_manifest.tsv")[0]
@@ -4992,7 +5002,7 @@ def test_hparam_launch_rejects_frozen_cli_values_before_managed_writes(tmp_path:
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
     assert calls == ["identity", "parse"]
-    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
 
 
@@ -5008,7 +5018,7 @@ def test_hparam_launch_rejects_unintended_first_runtime_commit(tmp_path: Path, m
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
     assert calls == ["identity"]
-    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
 
 
 def test_hparam_launch_rejects_execution_snapshot_drift_before_next_wave(tmp_path: Path, monkeypatch):
@@ -5049,7 +5059,16 @@ def test_hparam_launch_rejects_partially_executed_plan_without_snapshot(tmp_path
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
-    calls = _set_execution_probe(monkeypatch, plan_dir)
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    plan.pop("execution_snapshot")
+    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).unlink()
+    calls = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_run_execution_command",
+        lambda *_args, **_kwargs: calls.append(True) or pytest.fail("started plan must fail before target probing"),
+    )
     monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
 
     with pytest.raises(ValueError, match="after a hparam run has started"):
@@ -5075,7 +5094,6 @@ def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_
         tmp_path,
         [{"step_id": runs[0]["step_id"], "run_id": runs[0]["run_id"], "status": "running"}],
     )
-    (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).write_text("{}\n")
     monkeypatch.setattr(
         hparam_runtime,
         "_validated_execution_snapshot",
@@ -5611,12 +5629,12 @@ def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path, monkeypatc
 def test_hparam_launch_resolves_relative_plan_dir_before_cd(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "relative_plan"
+    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
 
     plan = subprocess.run(
         [
             sys.executable,
-            "-m",
-            "agent_tools",
+            str(runner),
             "plan",
             "--recipe",
             str(recipe),
@@ -5631,8 +5649,7 @@ def test_hparam_launch_resolves_relative_plan_dir_before_cd(tmp_path: Path):
     launch = subprocess.run(
         [
             sys.executable,
-            "-m",
-            "agent_tools",
+            str(runner),
             "hparam-launch",
             "--plan-dir",
             "relative_plan",

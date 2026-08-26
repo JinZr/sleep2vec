@@ -674,6 +674,11 @@ def test_retryable_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Pa
             "result_root": str(paths["result_root"]),
         },
     )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_prepare_attempt_registration_groups",
+        lambda _root, _spec, items: {item[0]["id"]: None for item in items},
+    )
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
     attempts = [{"job_id": "age-hsp-i2-psg", "attempt": 1, "status": retryable_status, "verified": "false"}]

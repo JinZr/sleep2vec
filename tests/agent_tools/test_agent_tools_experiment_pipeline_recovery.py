@@ -154,6 +154,11 @@ def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path
 
     monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
     monkeypatch.setattr(experiment_pipeline, "_ensure_retry_preflight", retry_preflight)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_prepare_attempt_registration_groups",
+        lambda _root, _spec, items: {item[0]["id"]: None for item in items},
+    )
     monkeypatch.setattr(experiment_pipeline, "_materialize_attempt", materialize)
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
@@ -178,6 +183,130 @@ def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path
         "failed",
         "running",
     ]
+
+
+def test_retry_registration_preflight_failure_does_not_advance_attempt_registry(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    jobs_path = pipeline_dir / "jobs.tsv"
+    jobs_path.write_text("unchanged registry\n")
+    spec = _spec(root)
+    attempts = [{"job_id": "age-hsp-i2-psg", "attempt": 1, "status": "failed", "verified": "false"}]
+
+    def attempt_recipe(_pipeline_dir, _spec, job, _selection, attempt):
+        base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
+        return {"job": job["id"]}, base.with_suffix(".yaml"), base / "plan", base / "results"
+
+    def reject_registration(*_args):
+        raise experiment_pipeline.AttemptRegistrationPreflightError("target argv rejected")
+
+    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(experiment_pipeline, "_ensure_retry_preflight", lambda *_args: None)
+    monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_registration_groups", reject_registration)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_materialize_attempt",
+        lambda *_args, **_kwargs: pytest.fail("failed groups must not materialize attempts"),
+    )
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
+
+    with pytest.raises(experiment_pipeline.AttemptRegistrationPreflightError, match="target argv rejected"):
+        experiment_pipeline._create_needed_retries(root, pipeline_dir, spec, {"age": {}}, attempts)
+
+    assert jobs_path.read_text() == "unchanged registry\n"
+    assert attempts == [{"job_id": "age-hsp-i2-psg", "attempt": 1, "status": "failed", "verified": "false"}]
+    assert not list(pipeline_dir.rglob("attempt-002"))
+
+
+def test_initial_registration_preflight_groups_variants_before_publishing_any_attempt(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    experiment = {
+        "id": "unit",
+        "title": "Unit",
+        "objective": "Reject the external matrix before registration.",
+        "root": str(root),
+        "baseline": {"type": "none"},
+        "status": "active",
+    }
+    (root / "experiment.yaml").write_text(yaml.safe_dump({"experiment": experiment}, sort_keys=False))
+    (root / "run_manifest.tsv").write_text("step_id\trun_id\n")
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+
+    spec = _spec(root)
+    second = dict(spec["jobs"][0], id="age-hsp-i2-bcg", modality="bcg")
+    third = dict(
+        spec["jobs"][0],
+        id="age-hsp-i2-ecg",
+        checkpoint_source="age-root",
+        modality="ecg",
+        variant="sleep2vec",
+    )
+    spec["jobs"].extend([second, third])
+    selection_fields = {
+        "config": str(tmp_path / "config.yaml"),
+        "checkpoint": str(tmp_path / "model.ckpt"),
+        "label_name": "age",
+    }
+    selections = {
+        "age": {**selection_fields, "variant": "sleep2vec2", "config_sha256": "2" * 64},
+        "age-root": {**selection_fields, "variant": "sleep2vec", "config_sha256": "1" * 64},
+    }
+
+    def build_staged_plan(*, recipe_path, output_dir, staging_dir, run_index_offset, **_kwargs):
+        recipe = yaml.safe_load(Path(recipe_path).read_text())
+        job_id = recipe["name"].split("__")[1]
+        run_id = f"run-{run_index_offset:03d}"
+        module = "sleep2vec2.infer" if recipe["variant"] == "sleep2vec2" else "sleep2vec.infer"
+        command = f"/runtime/python -m {module} --config frozen.yaml"
+        semantic_script = Path(output_dir) / "runs" / f"{run_id}--{job_id}" / "launch.sh"
+        physical_script = Path(staging_dir) / semantic_script.relative_to(output_dir)
+        physical_script.parent.mkdir(parents=True)
+        physical_script.write_text(command + "\n")
+        (Path(staging_dir) / "plan.json").write_text(
+            json.dumps(
+                {
+                    "runs": [
+                        {
+                            "step_id": "external-evaluate",
+                            "run_id": run_id,
+                            "run_name": job_id,
+                            "script": str(semantic_script),
+                            "command": command,
+                        }
+                    ]
+                }
+            )
+            + "\n"
+        )
+        return SimpleNamespace(exit_code=0)
+
+    calls = []
+
+    def reject_second_group(_execution, runs, *, plan_label):
+        assert plan_label == "pipeline"
+        assert all(Path(run["script"]).is_file() for run in runs)
+        calls.append([run["run_id"] for run in runs])
+        if len(runs) == 2:
+            raise ValueError("frozen argv rejected")
+        return {"runtime_commit": "a" * 40}
+
+    monkeypatch.setattr(experiment_pipeline, "_ensure_initial_preflight", lambda *_args: None)
+    monkeypatch.setattr(experiment_pipeline, "build_plan", build_staged_plan)
+    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "inspect_execution_target", reject_second_group)
+
+    with pytest.raises(experiment_pipeline.AttemptRegistrationPreflightError, match="frozen argv rejected"):
+        experiment_pipeline._load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
+
+    assert calls == [["run-002"], ["run-000", "run-001"]]
+    assert not (pipeline_dir / "jobs.tsv").exists()
+    assert not (root / "steps").exists()
+    assert read_run_manifest(root) == []
+    assert not list((pipeline_dir / "plans").rglob("attempt-001"))
+    assert not list(pipeline_dir.rglob("*.staging"))
+    assert not list(pipeline_dir.rglob(managed_scheduler.EXECUTION_SNAPSHOT_NAME))
 
 
 @pytest.mark.parametrize(

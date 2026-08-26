@@ -153,6 +153,10 @@ def test_plan_cli_contract():
     assert args.user_decisions is None
     assert args.allow_unresolved is False
     assert args.unlock_final_test is False
+    assert args.validate_only is False
+
+    validated = parser.parse_args(["plan", "--recipe", "recipe.yaml", "--output-dir", "plan-dir", "--validate-only"])
+    assert validated.validate_only is True
 
 
 def test_collect_runs_cli_contract():

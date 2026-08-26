@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from . import plan_context, plan_contract, plan_rendering as rendering, slurm, transport
+from . import managed_scheduler, plan_context, plan_contract, plan_rendering as rendering, slurm, transport
 from .decision_models import DecisionIssue, DecisionStatus
 from .decision_paths import (
     inference_checkpoint_averaging_issue,
@@ -37,12 +37,16 @@ from .experiment_workspace import (
     read_run_manifest,
     run_identity,
 )
-from .manifests import write_json, write_text
+from .manifests import read_json, write_json, write_text
 from .models import REPO_ROOT, coerce_list, resolve_repo_path
 from .repo import repo_summary
 
 FROZEN_FINAL_EVAL_CONFIG_NAME = plan_contract.FROZEN_FINAL_EVAL_CONFIG_NAME
 _FINAL_EVAL_CONFIG_SNAPSHOT = "_final_eval_config_snapshot"
+
+
+class HparamRegistrationPreflightError(ValueError):
+    pass
 
 
 def final_test_unlocked(evaluation: dict, unlock_final_test: bool = False) -> bool:
@@ -965,28 +969,97 @@ def write_hparam_plan(
     write_json(physical_out / "plan.json", plan_payload)
 
 
-def commit_hparam_plan(out: str | Path, *, emit_event: bool = True) -> dict[str, Any]:
+def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path) -> dict[str, Any]:
+    from . import run_artifacts as artifacts
+
+    physical_dir = Path(physical_out)
+    plan_dir = Path(semantic_out)
+    plan = artifacts.read_hparam_plan(
+        physical_dir,
+        semantic_dir=plan_dir,
+        require_workspace_state=False,
+        require_adaptive_commit=False,
+    )
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    _hparam_registration_state(plan)
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    validation_runs = []
+    for run in plan["runs"]:
+        validation_run = dict(run)
+        validation_run["script"] = str(artifacts._physical_plan_path(Path(str(run["script"])), plan_dir, physical_dir))
+        validation_runs.append(validation_run)
+    snapshot = _inspect_hparam_execution_target(execution, validation_runs)
+    snapshot_path = physical_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
+    managed_scheduler.write_execution_snapshot_file(snapshot_path, snapshot)
+    plan_payload = read_json(physical_dir / "plan.json")
+    plan_payload["execution_snapshot"] = {
+        "path": str(plan_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME),
+        "sha256": file_sha256(snapshot_path),
+    }
+    # Keep plan.json as the terminal physical-plan manifest after adding the frozen target evidence.
+    write_json(physical_dir / "plan.json", plan_payload)
+    artifacts.read_hparam_plan(
+        physical_dir,
+        semantic_dir=plan_dir,
+        require_workspace_state=False,
+        require_adaptive_commit=False,
+    )
+    managed_scheduler.validated_execution_snapshot(
+        physical_dir,
+        execution,
+        validation_runs,
+        {},
+        inspector=_inspect_hparam_execution_target,
+        plan_label="hparam",
+    )
+    _hparam_registration_state(plan)
+    return snapshot
+
+
+def _inspect_hparam_execution_target(execution: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, Any]:
+    return managed_scheduler.inspect_execution_target(execution, runs, plan_label="hparam")
+
+
+def commit_hparam_plan(
+    out: str | Path,
+    *,
+    emit_event: bool = True,
+    preflight_validated: bool = False,
+) -> dict[str, Any]:
     from . import run_artifacts as artifacts
 
     plan_dir = Path(out).expanduser()
     if not plan_dir.is_absolute():
         plan_dir = plan_dir.resolve()
-    plan = artifacts.read_hparam_plan(
-        plan_dir,
-        require_workspace_state=False,
-        require_adaptive_commit=False,
-    )
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    root = experiment_root(recipe)
-    if root is None:
-        raise ValueError("experiment.root is required.")
-    ensure_experiment_workspace(recipe, plan_dir)
-    manifest_rows = _hparam_manifest_rows(plan)
-    expected_keys = {managed_run_key(row) for row in manifest_rows}
-    existing_keys = {managed_run_key(row) for row in read_run_manifest(root) if managed_run_key(row) in expected_keys}
-    if existing_keys and existing_keys != expected_keys:
-        missing = ", ".join(f"{step_id} / {run_id}" for step_id, run_id in sorted(expected_keys - existing_keys))
-        raise ValueError(f"Canonical hparam plan registration is partial; missing {missing}")
+    try:
+        plan = artifacts.read_hparam_plan(
+            plan_dir,
+            require_workspace_state=False,
+            require_adaptive_commit=False,
+        )
+        if "execution_snapshot" not in plan:
+            raise ValueError(f"Hparam plan lacks registration preflight evidence: {plan_dir}")
+        recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+        ensure_experiment_workspace(
+            recipe,
+            plan_dir,
+            validate_only=True,
+            allow_published_plan=True,
+        )
+        root, manifest_rows = _hparam_registration_state(plan)
+        if not preflight_validated:
+            execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+            managed_scheduler.validated_execution_snapshot(
+                plan_dir,
+                execution,
+                plan["runs"],
+                {},
+                inspector=_inspect_hparam_execution_target,
+                plan_label="hparam",
+            )
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise HparamRegistrationPreflightError(str(exc)) from exc
+    ensure_experiment_workspace(recipe, plan_dir, allow_published_plan=True)
     merge_run_manifest(root, manifest_rows)
     if emit_event:
         append_event(
@@ -1000,6 +1073,21 @@ def commit_hparam_plan(out: str | Path, *, emit_event: bool = True) -> dict[str,
         )
     artifacts.read_hparam_plan(plan_dir, require_adaptive_commit=False)
     return plan
+
+
+def _hparam_registration_state(plan: dict[str, Any]) -> tuple[Path, list[dict[str, Any]]]:
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    root = experiment_root(recipe)
+    if root is None:
+        raise ValueError("experiment.root is required.")
+    manifest_rows = _hparam_manifest_rows(plan)
+    expected_keys = {managed_run_key(row) for row in manifest_rows}
+    existing_rows = read_run_manifest(root) if (root / "run_manifest.tsv").exists() else []
+    existing_keys = {managed_run_key(row) for row in existing_rows if managed_run_key(row) in expected_keys}
+    if existing_keys and existing_keys != expected_keys:
+        missing = ", ".join(f"{step_id} / {run_id}" for step_id, run_id in sorted(expected_keys - existing_keys))
+        raise ValueError(f"Canonical hparam plan registration is partial; missing {missing}")
+    return root, manifest_rows
 
 
 def _hparam_manifest_rows(plan: dict[str, Any]) -> list[dict[str, Any]]:

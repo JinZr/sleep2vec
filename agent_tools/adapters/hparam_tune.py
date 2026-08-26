@@ -9,7 +9,7 @@ from ..decision_hparam import hparam_recipe_contract_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
 from ..models import coerce_list
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, finetune_loaded_split_values, variant_module
-from .base import TaskAdapter
+from .base import PlanRegistrationPreflightError, TaskAdapter
 
 
 class HparamTuneAdapter(TaskAdapter):
@@ -186,10 +186,21 @@ class HparamTuneAdapter(TaskAdapter):
             profile_audit=profile_audit,
         )
 
-    def commit_plan(self, out: Path) -> None:
+    def commit_plan(self, out: Path, *, preflight_validated: bool = False) -> None:
         from .. import plan_hparam
 
-        plan_hparam.commit_hparam_plan(out)
+        try:
+            plan_hparam.commit_hparam_plan(out, preflight_validated=preflight_validated)
+        except plan_hparam.HparamRegistrationPreflightError as exc:
+            raise PlanRegistrationPreflightError(str(exc)) from exc
+
+    def precommit_plan(self, out: Path, *, write_out: Path) -> None:
+        from .. import plan_hparam
+
+        try:
+            plan_hparam.preflight_hparam_plan(write_out, semantic_out=out)
+        except OSError as exc:
+            raise RuntimeError(f"Target execution preflight failed: {exc}") from exc
 
     def compile_plan_contract(
         self,
@@ -256,6 +267,7 @@ class HparamTuneAdapter(TaskAdapter):
             out / "plan.md",
             out / "run_all.sh",
             out / "validation.sh",
+            out / "execution_snapshot.json",
             out / "recipe.resolved.yaml",
             out / "config.source.yaml",
             out / plan_hparam.FROZEN_FINAL_EVAL_CONFIG_NAME,

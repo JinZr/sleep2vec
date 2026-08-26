@@ -331,11 +331,23 @@ def read_managed_yaml_mapping(text: str, *, source: str | Path) -> dict[str, Any
     return payload
 
 
-def validate_plan_output(recipe: dict[str, Any], output_dir: str | Path) -> str | None:
+def validate_plan_output(
+    recipe: dict[str, Any],
+    output_dir: str | Path,
+    *,
+    allow_published_plan: bool = False,
+) -> str | None:
     root = experiment_root(recipe)
     if root is None:
         return None
-    if _is_nonempty_unmanaged_root(root):
+    out = Path(output_dir).expanduser()
+    if not out.is_absolute():
+        out = (Path.cwd() / out).resolve()
+    else:
+        out = out.resolve()
+    if _is_nonempty_unmanaged_root(root) and not (
+        allow_published_plan and _unmanaged_root_contains_only_plan(root, out)
+    ):
         return f"Experiment root is non-empty and has no experiment.yaml: {root}"
     manifest_path = root / "experiment.yaml"
     if manifest_path.exists():
@@ -345,11 +357,6 @@ def validate_plan_output(recipe: dict[str, Any], output_dir: str | Path) -> str 
         experiment = manifest.get("experiment") if isinstance(manifest, dict) else None
         if isinstance(experiment, dict) and experiment.get("status") == "completed":
             return f"Experiment is completed and cannot accept new plans: {root}"
-    out = Path(output_dir).expanduser()
-    if not out.is_absolute():
-        out = (Path.cwd() / out).resolve()
-    else:
-        out = out.resolve()
     try:
         out.relative_to(root.resolve())
     except ValueError:
@@ -877,11 +884,13 @@ def ensure_experiment_workspace(
     *,
     register_step: bool = True,
     plan_controller: str | None = None,
+    validate_only: bool = False,
+    allow_published_plan: bool = False,
 ) -> tuple[Path, Path]:
     root = experiment_root(recipe)
     if root is None:
         raise ValueError("experiment.root is required.")
-    output_issue = validate_plan_output(recipe, output_dir)
+    output_issue = validate_plan_output(recipe, output_dir, allow_published_plan=allow_published_plan)
     if output_issue:
         raise ValueError(output_issue)
     recipe["experiment"]["root"] = str(root)
@@ -936,6 +945,9 @@ def ensure_experiment_workspace(
             and not any(str(row["step_id"]) == str(step["id"]) for row in workspace_rows)
         ):
             raise ValueError("Ordinary step primary recipe cannot change before its first canonical run.")
+
+    if validate_only:
+        return root, step_manifest.parent
 
     root.mkdir(parents=True, exist_ok=True)
     (root / "reports").mkdir(exist_ok=True)
@@ -1627,6 +1639,22 @@ def _public_mapping(value: dict[str, Any]) -> dict[str, Any]:
 
 def _is_nonempty_unmanaged_root(root: Path) -> bool:
     return root.exists() and any(root.iterdir()) and not (root / "experiment.yaml").exists()
+
+
+def _unmanaged_root_contains_only_plan(root: Path, plan_path: Path) -> bool:
+    try:
+        relative = plan_path.relative_to(root.resolve())
+    except ValueError:
+        return False
+    if not relative.parts:
+        return False
+    current = root.resolve()
+    for part in relative.parts:
+        child = current / part
+        if current.is_symlink() or not current.is_dir() or list(current.iterdir()) != [child]:
+            return False
+        current = child
+    return not current.is_symlink() and current.is_dir()
 
 
 def _now() -> str:

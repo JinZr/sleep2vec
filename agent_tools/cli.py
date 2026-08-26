@@ -114,6 +114,7 @@ def _build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--user-decisions")
     plan.add_argument("--allow-unresolved", action="store_true")
     plan.add_argument("--unlock-final-test", action="store_true")
+    plan.add_argument("--validate-only", action="store_true")
     plan.set_defaults(func=_cmd_plan)
 
     collect = sub.add_parser("collect-runs")
@@ -398,6 +399,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         user_decisions_path=args.user_decisions,
         allow_unresolved=args.allow_unresolved,
         unlock_final_test=args.unlock_final_test,
+        validate_only=args.validate_only,
     )
     print(report_text(report))
     return report.exit_code

@@ -61,7 +61,8 @@ def test_recipe_structure_rejects_static_contract_errors(task, recipe, field):
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
+    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
+    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
 
 
 def _snapshot(root: Path) -> dict[Path, bytes]:
