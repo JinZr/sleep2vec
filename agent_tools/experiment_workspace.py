@@ -1647,7 +1647,8 @@ def _unmanaged_root_contains_only_plan(root: Path, plan_path: Path) -> bool:
     except ValueError:
         return False
     if not relative.parts:
-        return False
+        # A published plan may occupy the root before workspace manifests are initialized there.
+        return not root.is_symlink() and root.is_dir()
     current = root.resolve()
     for part in relative.parts:
         child = current / part

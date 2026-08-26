@@ -648,6 +648,29 @@ def test_hparam_staging_uses_destination_filesystem_ancestor(tmp_path: Path, mon
     assert _staging_dirs(workspace, plan_dir) == []
 
 
+def test_hparam_plan_directory_may_equal_experiment_root(tmp_path: Path, monkeypatch):
+    recipe, _workspace = _recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    workspace = tmp_path / "workspace"
+    payload["experiment"]["root"] = str(workspace)
+    recipe = tmp_path / "root-plan.yaml"
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+    )
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=workspace)
+
+    assert report.exit_code == 0
+    assert (workspace / "plan.json").is_file()
+    assert (workspace / "experiment.yaml").is_file()
+    assert (workspace / "run_manifest.tsv").is_file()
+    assert run_artifacts.read_hparam_plan(workspace)["runs"][0]["run_id"] == "run-000"
+    assert read_run_manifest(workspace)[0]["status"] == "planned"
+
+
 def test_hparam_overwrite_publish_failure_restores_existing_plan(tmp_path: Path, monkeypatch):
     recipe, workspace = _recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
