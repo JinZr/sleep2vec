@@ -236,6 +236,35 @@ path-validation context; they do not provide a generic SSH launcher.
   envelope and neighborhood source. `search.configurations` appears only in
   derived rounds and static plans.
 
+### Registration preflight
+
+New ordinary hparam plans and adaptive rounds are fully materialized in a
+temporary directory on the final destination filesystem. The staged frozen
+bundle is recompiled and validated with the same reader used after publication;
+the tool then validates managed output topology on the frozen execution host
+and inspects the target Python, repository commit, module origin, supported CLI
+options, and every final argv. Only a complete pass permits atomic publication,
+step/controller registration, canonical run-row merge, and the `plan_created`
+event. Pipeline-derived attempts use the same target and topology checks once
+per scheduler group before any attempt in that group is published or
+registered.
+
+`agent_tools plan --validate-only` exposes that exact staged path for an
+ordinary `hparam_tune` recipe, then discards the staging directory. PASS, FAIL,
+and `NEEDS_USER_INPUT` do not create a plan, workspace, question/event file,
+step, or canonical run row. Other tasks are rejected because this first
+validate-only contract is hparam-specific.
+
+Every new hparam `plan.md` includes a human-readable registration-preflight
+card. Target Python, runtime commit, module origin, run/argv counts, and the
+argv digest come from the frozen execution snapshot. Variant, runtime module,
+actual config loader, architecture, and channels come from each final generated
+config and are grouped with their run IDs. The card is a projection for audit;
+the frozen generated config bytes and hashes remain semantic authority. This
+deterministic preflight does not inspect free bytes, estimate checkpoint storage,
+or turn unavailable Slurm accounting into a plan blocker; accounting capability
+remains a time-stamped `doctor` diagnostic.
+
 ### Managed launcher
 
 The optional `execution` block configures the managed launcher.
@@ -284,10 +313,12 @@ The optional `execution` block configures the managed launcher.
 - Generated leaf scripts use only `execution.workdir` on `PYTHONPATH`;
   `execution.env.PYTHONPATH` is rejected rather than merged.
 
-The first eligible execute atomically records verified Python/version, host,
-repository and commit, module origin, explicit-environment digest, normalized
-supported-option digest, and exact validated argv digest in
-`execution_snapshot.json`. Later launch waves must match it. Immediately before
+Registration preflight records verified Python/version, host, repository and
+commit, module origin, explicit-environment digest, normalized supported-option
+digest, and exact validated argv digest in `execution_snapshot.json` before a
+new hparam plan is published. Every launch wave live-reprobes the same target
+and must match that frozen snapshot; it also rechecks the managed output
+topology before starting a process or submitting `sbatch`. Immediately before
 each managed process starts, the same target/env/conda/PYTHONPATH wrapper
 rechecks Python/version, commit, repository root, hostname, module origin,
 untracked or ignored importable code, and the run's frozen script/config hashes.

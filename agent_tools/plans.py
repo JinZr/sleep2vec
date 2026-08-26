@@ -829,7 +829,12 @@ def build_plan(
                 source_config_bytes=validated_config_bytes,
                 source_config_sha256=validated_config_sha256,
             )
-            plan_adapter.precommit_plan(out, write_out=write_out)
+            preflight_summary = plan_adapter.precommit_plan(out, write_out=write_out)
+            if preflight_summary:
+                report = _append_issues(
+                    report,
+                    [DecisionIssue(DecisionStatus.PASS, "execution.preflight", preflight_summary)],
+                )
         except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
             if write_out.exists() and not write_out.is_symlink():
                 shutil.rmtree(write_out)

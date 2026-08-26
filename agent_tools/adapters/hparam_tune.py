@@ -194,11 +194,11 @@ class HparamTuneAdapter(TaskAdapter):
         except plan_hparam.HparamRegistrationPreflightError as exc:
             raise PlanRegistrationPreflightError(str(exc)) from exc
 
-    def precommit_plan(self, out: Path, *, write_out: Path) -> None:
+    def precommit_plan(self, out: Path, *, write_out: Path) -> str:
         from .. import plan_hparam
 
         try:
-            plan_hparam.preflight_hparam_plan(write_out, semantic_out=out)
+            return plan_hparam.preflight_hparam_plan(write_out, semantic_out=out)
         except OSError as exc:
             raise RuntimeError(f"Target execution preflight failed: {exc}") from exc
 

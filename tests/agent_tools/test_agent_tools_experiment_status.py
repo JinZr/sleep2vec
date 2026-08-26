@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import run_execution_preflight_fixture, write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
@@ -21,6 +21,7 @@ from agent_tools import (
     experiment_pipeline,
     experiment_tracking,
     experiments,
+    managed_scheduler,
     plan_context,
     plan_contract,
     plan_hparam,
@@ -35,6 +36,11 @@ from agent_tools.models import REPO_ROOT
 _RUNTIME_COMMIT = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
 ).stdout.strip()
+
+
+@pytest.fixture(autouse=True)
+def _stub_execution_target(monkeypatch):
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
 
 
 def _init_workspace(root: Path) -> None:

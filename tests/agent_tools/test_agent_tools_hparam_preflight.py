@@ -13,7 +13,7 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import managed_scheduler, plan_hparam, plans, run_artifacts
+from agent_tools import cli, managed_scheduler, plan_hparam, plans, run_artifacts
 from agent_tools.experiment_workspace import (
     ensure_experiment_workspace,
     file_sha256,
@@ -25,6 +25,7 @@ from agent_tools.models import REPO_ROOT
 _RUNTIME_COMMIT = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
 ).stdout.strip()
+_PREFLIGHT_CARD_HEADING = "## Hparam Registration Preflight Provenance"
 
 
 def _recipe(tmp_path: Path, *, task: str = "hparam_tune") -> tuple[Path, Path]:
@@ -108,6 +109,10 @@ def _workspace_files(workspace: Path) -> dict[Path, bytes]:
 
 def _staging_dirs(workspace: Path, plan_dir: Path) -> list[Path]:
     return list(workspace.parent.glob(f".{plan_dir.name}.*.staging"))
+
+
+def _preflight_card(text: str) -> str:
+    return text[text.index(_PREFLIGHT_CARD_HEADING) :].strip()
 
 
 @pytest.mark.parametrize(
@@ -341,8 +346,23 @@ def test_hparam_preflight_does_not_probe_storage_capacity(tmp_path: Path, monkey
     assert len(read_run_manifest(workspace)) == 1
 
 
-def test_hparam_validate_only_uses_same_preflight_without_writes(tmp_path: Path, monkeypatch):
+def test_hparam_validate_only_uses_same_provenance_card_without_writes(tmp_path: Path, monkeypatch, capsys):
     recipe, workspace = _recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"] = {
+        "method": "grid",
+        "max_runs": 3,
+        "configurations": [
+            {"runtime.lr": 1e-6},
+            {
+                "runtime.lr": 2e-6,
+                "yaml:/model/backbone/name": "hf_bert",
+                "yaml:/model/channels/0/input_dim": 16,
+            },
+            {"runtime.lr": 3e-6},
+        ],
+    }
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = workspace / "plans" / "tune"
     calls = []
     before = _workspace_files(workspace)
@@ -353,13 +373,60 @@ def test_hparam_validate_only_uses_same_preflight_without_writes(tmp_path: Path,
 
     monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect)
 
-    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir, validate_only=True)
+    exit_code = cli.main(["plan", "--recipe", str(recipe), "--output-dir", str(plan_dir), "--validate-only"])
+    validate_only_card = _preflight_card(capsys.readouterr().out)
 
-    assert report.exit_code == 0
+    assert exit_code == 0
     assert calls == ["hparam", "hparam"]
     assert _workspace_files(workspace) == before
     assert not plan_dir.exists()
     assert _staging_dirs(workspace, plan_dir) == []
+
+    exit_code = cli.main(["plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)])
+    plan_stdout_card = _preflight_card(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert calls == ["hparam", "hparam", "hparam", "hparam"]
+    assert plan_stdout_card == validate_only_card
+    plan_markdown = (plan_dir / "plan.md").read_text()
+    assert plan_markdown.count(_PREFLIGHT_CARD_HEADING) == 1
+    assert _preflight_card(plan_markdown) == validate_only_card
+    route_lines = [line for line in validate_only_card.splitlines() if line.startswith("| sleep2vec |")]
+    assert len(route_lines) == 2
+    assert "roformer (hidden_size=8)" in route_lines[0]
+    assert "ppg (input_dim=8, tokenizer=linear, out_dim=8)" in route_lines[0]
+    assert route_lines[0].endswith("| run-000, run-002 |")
+    assert "hf_bert (hidden_size=8)" in route_lines[1]
+    assert "ppg (input_dim=16, tokenizer=linear, out_dim=8)" in route_lines[1]
+    assert route_lines[1].endswith("| run-001 |")
+
+    plan = run_artifacts.read_hparam_plan(plan_dir)
+    snapshot = json.loads((plan_dir / "execution_snapshot.json").read_text())
+    planned_argv = []
+    modules = set()
+    for run in plan["runs"]:
+        tokens = shlex.split(run["command"])
+        module_index = tokens.index("-m") + 1
+        modules.add(tokens[module_index])
+        planned_argv.append({"run_id": run["run_id"], "args": tokens[module_index + 1 :]})
+    expected_argv_sha256 = hashlib.sha256(
+        json.dumps(planned_argv, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+    assert modules == {"sleep2vec.finetune"}
+    assert snapshot["module"] == "sleep2vec.finetune"
+    assert snapshot["runtime_commit"] == snapshot["expected_runtime_commit"] == _RUNTIME_COMMIT
+    assert snapshot["validated_argv_sha256"] == expected_argv_sha256
+    assert snapshot["python"] in validate_only_card
+    assert snapshot["module_origin"] in validate_only_card
+    assert snapshot["runtime_commit"] in validate_only_card
+    assert snapshot["validated_argv_sha256"] in validate_only_card
+    assert "Validated run count: 3" in validate_only_card
+    assert "Validated argv count: 3" in validate_only_card
+    raw_plan = json.loads((plan_dir / "plan.json").read_text())
+    assert raw_plan["execution_snapshot"]["sha256"] == file_sha256(plan_dir / "execution_snapshot.json")
+    assert "preflight" not in raw_plan
+    assert "route_card" not in raw_plan
 
 
 def test_hparam_validate_only_needs_user_input_without_writes(tmp_path: Path, monkeypatch):

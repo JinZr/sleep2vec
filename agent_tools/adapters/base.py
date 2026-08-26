@@ -159,7 +159,7 @@ class TaskAdapter:
         materializes_plan is True."""
         raise NotImplementedError
 
-    def precommit_plan(self, out: Path, *, write_out: Path) -> None:
+    def precommit_plan(self, out: Path, *, write_out: Path) -> str | None:
         """Validate a materialized plan before publication or registration."""
         return None
 

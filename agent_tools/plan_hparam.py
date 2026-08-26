@@ -977,7 +977,79 @@ def write_hparam_plan(
     write_json(physical_out / "plan.json", plan_payload)
 
 
-def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path) -> dict[str, Any]:
+def render_hparam_preflight_card(
+    recipe: dict[str, Any],
+    snapshot: dict[str, Any],
+    run_configs: list[tuple[dict[str, Any], bytes]],
+) -> str:
+    variant = str(recipe["variant"])
+    config_module = rendering.variant_module(recipe, "config")
+    loader = (
+        f"{config_module}.load_config(validate_sidecars=True)"
+        if variant == "sex_age_baseline"
+        else f"{config_module}.load_finetune_config"
+    )
+    routes: dict[tuple[str, str, str, str, tuple[str, ...]], list[str]] = {}
+    for run, config_bytes in run_configs:
+        summary = plan_context.load_config_summary_for_recipe(recipe, config_bytes=config_bytes)
+        model = (summary or {}).get("model") or {}
+        architecture = model.get("backbone") or model.get("name")
+        if architecture in (None, ""):
+            raise ValueError(f"Generated hparam config lacks architecture provenance: {run['run_id']}")
+        details = []
+        if model.get("hidden_size") not in (None, ""):
+            details.append(f"hidden_size={model['hidden_size']}")
+        if model.get("backbone_depth") not in (None, ""):
+            details.append(f"layers={model['backbone_depth']}")
+        if isinstance(model.get("features"), list) and model["features"]:
+            details.append(f"features={', '.join(str(feature) for feature in model['features'])}")
+        architecture_text = str(architecture)
+        if details:
+            architecture_text += f" ({', '.join(details)})"
+        channels = []
+        for channel in model.get("channels") or []:
+            if channel.get("name") in (None, ""):
+                continue
+            channel_details = [
+                f"{field}={channel[field]}"
+                for field in ("input_dim", "tokenizer", "out_dim")
+                if channel.get(field) not in (None, "")
+            ]
+            channel_text = str(channel["name"])
+            if channel_details:
+                channel_text += f" ({', '.join(channel_details)})"
+            channels.append(channel_text)
+        channel_signature = tuple(channels)
+        route = (variant, str(snapshot["module"]), loader, architecture_text, channel_signature)
+        routes.setdefault(route, []).append(str(run["run_id"]))
+
+    target = str(snapshot["target"])
+    if snapshot.get("host"):
+        target += f":{snapshot['host']}"
+    lines = [
+        "## Hparam Registration Preflight Provenance",
+        "",
+        f"- Execution target: `{target}`",
+        f"- Target Python: `{snapshot['python']}` (frozen command: `{snapshot['python_command']}`)",
+        f"- Runtime commit: `{snapshot['runtime_commit']}`",
+        f"- Module origin: `{snapshot['module_origin']}`",
+        f"- Validated run count: {len(run_configs)}",
+        f"- Validated argv count: {len(run_configs)}",
+        f"- Validated argv SHA-256: `{snapshot['validated_argv_sha256']}`",
+        "",
+        "| Variant | Python module | Canonical config loader | Architecture | Channels | Run IDs |",
+        "|---|---|---|---|---|---|",
+    ]
+    for route, run_ids in routes.items():
+        route_variant, module, config_loader, architecture, channels = route
+        lines.append(
+            f"| {route_variant} | {module} | {config_loader} | {architecture} | "
+            f"{', '.join(channels) if channels else 'none'} | {', '.join(run_ids)} |"
+        )
+    return "\n".join(lines)
+
+
+def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path) -> str:
     from . import run_artifacts as artifacts
 
     physical_dir = Path(physical_out)
@@ -1000,6 +1072,19 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
     snapshot = _inspect_hparam_execution_target(execution, validation_runs)
     snapshot_path = physical_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
     managed_scheduler.write_execution_snapshot_file(snapshot_path, snapshot)
+    card = render_hparam_preflight_card(
+        recipe,
+        snapshot,
+        [
+            (
+                run,
+                artifacts._physical_plan_path(Path(str(run["config"])), plan_dir, physical_dir).read_bytes(),
+            )
+            for run in plan["runs"]
+        ],
+    )
+    plan_markdown = physical_dir / "plan.md"
+    write_text(plan_markdown, f"{plan_markdown.read_text().rstrip()}\n\n{card}\n")
     plan_payload = read_json(physical_dir / "plan.json")
     plan_payload["execution_snapshot"] = {
         "path": str(plan_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME),
@@ -1023,7 +1108,7 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
     )
     _hparam_registration_state(plan)
     validate_hparam_output_paths(plan_dir, plan)
-    return snapshot
+    return card
 
 
 def _inspect_hparam_execution_target(execution: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, Any]:

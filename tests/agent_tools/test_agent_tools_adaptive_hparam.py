@@ -9,7 +9,7 @@ import shlex
 import subprocess
 import sys
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import run_execution_preflight_fixture, write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
@@ -37,12 +37,8 @@ def _stub_execution_snapshot_preflight(monkeypatch):
     monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", lambda *_args, **_kwargs: (None, False))
     monkeypatch.setattr(
         managed_scheduler,
-        "inspect_execution_target",
-        lambda execution, runs, **_kwargs: {
-            "target": str(execution.get("target", "local") or "local"),
-            "expected_runtime_commit": str(execution["runtime_commit"]),
-            "run_ids": [str(run["run_id"]) for run in runs],
-        },
+        "run_execution_command",
+        run_execution_preflight_fixture,
     )
 
 
