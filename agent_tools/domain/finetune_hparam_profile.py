@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionStatus
+from ..plan_rendering import DEFAULT_FINETUNE_LR, DEFAULT_FINETUNE_WEIGHT_DECAY
 
 PROFILE_ID = "finetune_balanced"
 DEFAULT_MAX_RUNS = 12
@@ -156,8 +157,12 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
     model = config_summary.get("model") if isinstance(config_summary.get("model"), dict) else {}
     finetune = config_summary.get("finetune") if isinstance(config_summary.get("finetune"), dict) else {}
 
-    lr = _finite_number(runtime.get("lr"), "runtime.lr", positive=True)
-    weight_decay = _finite_number(runtime.get("weight_decay"), "runtime.weight_decay", non_negative=True)
+    lr = _finite_number(runtime.get("lr", DEFAULT_FINETUNE_LR), "runtime.lr", positive=True)
+    weight_decay = _finite_number(
+        runtime.get("weight_decay", DEFAULT_FINETUNE_WEIGHT_DECAY),
+        "runtime.weight_decay",
+        non_negative=True,
+    )
     weight_decay_levels = (
         [0.0, 1.0e-5, 1.0e-4]
         if weight_decay == 0
@@ -249,10 +254,11 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
         raise ValueError("finetune_balanced cannot freeze a source backbone without a pretrained backbone.")
     lora_levels = [lora]
     if has_trained_backbone:
-        full = {**lora, "freeze_backbone_and_insert_lora": False, "insert_lora": False}
         head_only = {**lora, "freeze_backbone_and_insert_lora": True, "insert_lora": False}
         with_lora = {**lora, "freeze_backbone_and_insert_lora": True, "insert_lora": True}
-        lora_levels.extend((full, head_only, with_lora))
+        if freeze:
+            lora_levels.append({**lora, "freeze_backbone_and_insert_lora": False, "insert_lora": False})
+        lora_levels.extend((head_only, with_lora))
     lora_levels = _stable_unique(lora_levels)
     axes.append(_axis("adaptation.strategy", "yaml:/finetune/lora", lora_levels))
 

@@ -111,7 +111,7 @@ def test_default_profile_materializes_twelve_deterministic_unique_joint_points()
         "optimization.weight_decay": 3,
         "model.layer_mix": 4,
         "regularization.dropout": 3,
-        "adaptation.strategy": 4,
+        "adaptation.strategy": 3,
     }
 
 
@@ -142,6 +142,16 @@ def test_zero_weight_decay_uses_profile_owned_positive_anchors():
     audit = finetune_balanced_profile_audit(compiled)
     weight_decay = next(family for family in audit["searched_families"] if family["id"] == "optimization.weight_decay")
     assert weight_decay["covered_levels"] == 3
+
+
+def test_omitted_runtime_axes_use_canonical_finetune_defaults():
+    recipe = _recipe()
+    recipe["runtime"] = {}
+
+    configurations = _compile(recipe=recipe)["configurations"]
+
+    assert configurations[0]["runtime.lr"] == 1.0e-6
+    assert configurations[0]["runtime.weight_decay"] == 1.0e-5
 
 
 @pytest.mark.parametrize(
@@ -242,12 +252,11 @@ def test_regularization_profile_synchronizes_a_mismatched_source_dropout():
     assert configurations[0]["yaml:/model/head/kwargs/temporal_dropout"] == 0.2
 
 
-def test_adaptation_keeps_source_first_and_adds_three_atomic_arms():
+def test_adaptation_keeps_source_first_and_deduplicates_inert_insert_flag():
     configurations = _compile()["configurations"]
     values = _unique_values(configurations, "yaml:/finetune/lora")
 
     assert {(value["freeze_backbone_and_insert_lora"], value["insert_lora"]) for value in values} == {
-        (False, False),
         (False, True),
         (True, False),
         (True, True),
@@ -255,6 +264,21 @@ def test_adaptation_keeps_source_first_and_adds_three_atomic_arms():
     assert values[0] == _summary()["finetune"]["lora"]
     assert {(value["r"], value["alpha"]) for value in values} == {(8, 16)}
     assert all("yaml:/finetune/lora/insert_lora" not in point for point in configurations)
+
+
+@pytest.mark.parametrize("insert_lora", [False, True])
+def test_adaptation_adds_full_arm_when_source_backbone_is_frozen(insert_lora: bool):
+    summary = _summary()
+    summary["finetune"]["lora"].update({"freeze_backbone_and_insert_lora": True, "insert_lora": insert_lora})
+
+    values = _unique_values(_compile(summary=summary)["configurations"], "yaml:/finetune/lora")
+
+    assert values[0] == summary["finetune"]["lora"]
+    assert {(value["freeze_backbone_and_insert_lora"], value["insert_lora"]) for value in values} == {
+        (False, False),
+        (True, False),
+        (True, True),
+    }
 
 
 def test_adaptation_does_not_freeze_a_randomly_initialized_backbone():

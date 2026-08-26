@@ -8,13 +8,16 @@ from typing import Any
 from .experiment_workspace import MONITOR_EXIT_CODE_PREFIX
 from .models import REPO_ROOT, coerce_list, module_for_variant
 
+DEFAULT_FINETUNE_LR = 1e-6
+DEFAULT_FINETUNE_WEIGHT_DECAY = 1e-5
+
 _FINETUNE_RUNTIME_DEFAULTS = (
     ("precision", "--precision", "bf16-mixed"),
     ("epochs", "--epochs", 30),
     ("batch_size", "--batch-size", 12),
     ("num_workers", "--num-workers", 8),
-    ("lr", "--lr", 1e-6),
-    ("weight_decay", "--weight-decay", 1e-5),
+    ("lr", "--lr", DEFAULT_FINETUNE_LR),
+    ("weight_decay", "--weight-decay", DEFAULT_FINETUNE_WEIGHT_DECAY),
 )
 _FINETUNE_RUNTIME_OPTIONS = (
     ("device", "--device"),
