@@ -897,7 +897,7 @@ def hparam_selection_lifecycle(
             for row in step["rows"]
         ):
             raise ValueError(f"Canonical hparam selection metadata is only partially materialized for step {step_id}")
-        ranked = _validated_hparam_ranking(step)
+        ranked = validated_hparam_ranking(step)
         if ranked is None:
             pending_steps.append(step)
         else:
@@ -1046,7 +1046,7 @@ def hparam_selection_report_text(selected_steps: list[dict[str, Any]], *, root: 
     return "\n".join(lines)
 
 
-def _validated_hparam_ranking(step: dict[str, Any]) -> list[dict[str, Any]] | None:
+def validated_hparam_ranking(step: dict[str, Any]) -> list[dict[str, Any]] | None:
     rows = step["rows"]
     selection = step["selection"]
     evidence_fields = ("metric", "selection_mode", "selection_split", "rank", "score", "checkpoint_path")

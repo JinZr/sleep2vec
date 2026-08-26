@@ -2109,6 +2109,69 @@ def test_hparam_select_rebuilds_ranking_from_all_registered_plans(tmp_path: Path
     ]
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("checkpoint_sha256", "", "selection evidence is invalid"),
+        ("selection_mode", "min", "selection mode differs"),
+    ],
+)
+def test_hparam_select_validates_other_selected_steps_before_writing(
+    tmp_path: Path, field: str, value: str, message: str
+):
+    first_recipe = _hparam_recipe(tmp_path)
+    first_plan = tmp_path / "plan-1"
+    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    first_run = _first_run(first_plan)
+    first_checkpoint = Path(first_run["checkpoint_dir"]) / "epoch=1.ckpt"
+    first_checkpoint.parent.mkdir(parents=True)
+    first_checkpoint.write_text("checkpoint")
+    (Path(first_run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.9},
+                "best_model_path": str(first_checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    hparam_selection.select_hparam_candidates(first_plan)
+
+    second_recipe = _hparam_recipe(tmp_path)
+    second_payload = yaml.safe_load(second_recipe.read_text())
+    second_payload["step"] = {
+        "id": "second-tune",
+        "phase": "train",
+        "purpose": "Exercise a second hparam selection step.",
+    }
+    write_yaml(second_recipe, second_payload)
+    second_plan = tmp_path / "plan-2"
+    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    second_run = _first_run(second_plan)
+    second_checkpoint = Path(second_run["checkpoint_dir"]) / "epoch=2.ckpt"
+    second_checkpoint.parent.mkdir(parents=True)
+    second_checkpoint.write_text("checkpoint")
+    (Path(second_run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(second_checkpoint),
+                "epoch": 2,
+            }
+        )
+    )
+    canonical = read_run_manifest(tmp_path)
+    first_row = next(row for row in canonical if row["step_id"] == first_run["step_id"])
+    first_row[field] = value
+    write_rows(tmp_path / "run_manifest.tsv", canonical)
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match=message):
+        hparam_selection.select_hparam_candidates(second_plan)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 def test_hparam_select_only_preflights_registered_plans_that_own_preserved_rankings(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     first_plan = tmp_path / "plan-1"

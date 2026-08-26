@@ -73,6 +73,49 @@ def select_hparam_candidates(
     canonical_rows = read_run_manifest(workspace)
     canonical_by_key = {managed_run_key(row): row for row in canonical_rows}
     step_id = str((recipe.get("step") or {}).get("id") or "")
+    # Other selected steps feed the shared report, so reject their canonical drift before touching projections.
+    existing_selected_step_ids = sorted(
+        {
+            str(row["step_id"])
+            for row in canonical_rows
+            if str(row.get("step_id") or "") != step_id
+            and any(row.get(field) not in (None, "") for field in tracking.HPARAM_SELECTION_METADATA_FIELDS)
+        }
+    )
+    existing_report_run_keys = set()
+    for selected_step_id in existing_selected_step_ids:
+        policy_rows = [
+            row
+            for row in canonical_rows
+            if str(row.get("step_id") or "") == selected_step_id
+            and any(row.get(field) not in (None, "") for field in tracking.HPARAM_SELECTION_METADATA_FIELDS)
+        ]
+        policies = {
+            (
+                str(row.get("metric") or ""),
+                str(row.get("selection_mode") or ""),
+                str(row.get("selection_split") or ""),
+            )
+            for row in policy_rows
+        }
+        if len(policies) != 1:
+            raise ValueError(f"Canonical hparam rows disagree on selection policy: {selected_step_id}")
+        selected_metric, selected_mode, selected_split = next(iter(policies))
+        registered = list(
+            artifacts.iter_registered_hparam_plans(
+                workspace,
+                selected_step_id,
+                selection_metric=selected_metric,
+                selection_mode=selected_mode,
+                selection_split=selected_split,
+            )
+        )
+        if not registered:
+            raise ValueError(f"Selected hparam step has no registered plan: {selected_step_id}")
+        existing_report_run_keys.update(
+            managed_run_key(run) for _registered_root, registered_plan in registered for run in registered_plan["runs"]
+        )
+    _selection_report_steps([canonical_by_key[key] for key in sorted(existing_report_run_keys)])
     out = workspace / "reports" / "ranking.csv"
     selection_report_out = workspace / "reports" / "hparam_selection.md"
     checkpoint_out = root / "checkpoint_test_ranking.csv"
@@ -108,6 +151,7 @@ def select_hparam_candidates(
                 if evidence_run.get(field) in (None, ""):
                     evidence_run[field] = execution.get(field, "")
             evidence_runs_by_key[key] = evidence_run
+    report_run_keys = existing_report_run_keys | {managed_run_key(run) for run in step_runs}
     checkpoint_evidence_runs = [evidence_runs_by_key.get(managed_run_key(row), row) for row in canonical_rows]
     if selection_split == "test":
         for event in _candidate_selected_events(workspace):
@@ -355,7 +399,7 @@ def select_hparam_candidates(
         ],
     )
     selected_rows = read_run_manifest(workspace)
-    report_steps = _selection_report_steps(selected_rows)
+    report_steps = _selection_report_steps([row for row in selected_rows if managed_run_key(row) in report_run_keys])
     report_text = tracking.hparam_selection_report_text(report_steps, root=workspace)
     exp_io.write_text_at(selection_report_out, report_text)
     report_sha256 = hashlib.sha256(report_text.encode()).hexdigest()
@@ -393,11 +437,20 @@ def select_hparam_candidates(
 
 def _selection_report_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     selected_steps = []
-    for step_id in sorted({str(row["step_id"]) for row in rows if row.get("selection_task") == "hparam_tune"}):
+    selected_step_ids = sorted(
+        {
+            str(row["step_id"])
+            for row in rows
+            if any(row.get(field) not in (None, "") for field in tracking.HPARAM_SELECTION_METADATA_FIELDS)
+        }
+    )
+    for step_id in selected_step_ids:
         step_rows = sorted(
-            [row for row in rows if str(row["step_id"]) == step_id and row.get("selection_task") == "hparam_tune"],
+            [row for row in rows if str(row["step_id"]) == step_id],
             key=lambda row: str(row["run_id"]),
         )
+        if any(row.get("selection_task") != "hparam_tune" for row in step_rows):
+            raise ValueError(f"Canonical hparam selection metadata is only partially materialized for step {step_id}")
         policies = {
             (
                 str(row.get("metric") or ""),
@@ -409,22 +462,16 @@ def _selection_report_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if len(policies) != 1:
             raise ValueError(f"Canonical hparam rows disagree on selection policy: {step_id}")
         metric, mode, split = next(iter(policies))
-        ranked = []
-        for row in step_rows:
-            if row.get("rank") in (None, ""):
-                continue
-            ranked.append({**row, "rank": int(row["rank"])})
-        ranked.sort(key=lambda row: row["rank"])
-        if not ranked or [row["rank"] for row in ranked] != list(range(1, len(ranked) + 1)):
-            raise ValueError(f"Canonical hparam ranks are incomplete or duplicated for step {step_id}")
-        selected_steps.append(
-            {
-                "step_id": step_id,
-                "selection": {"metric": metric, "mode": mode, "split": split},
-                "rows": step_rows,
-                "ranked": ranked,
-            }
-        )
+        step = {
+            "step_id": step_id,
+            "selection": {"metric": metric, "mode": mode, "split": split},
+            "rows": step_rows,
+        }
+        ranked = tracking.validated_hparam_ranking(step)
+        if ranked is None:
+            raise ValueError(f"Canonical hparam ranks are incomplete for step {step_id}")
+        step["ranked"] = ranked
+        selected_steps.append(step)
     return selected_steps
 
 
