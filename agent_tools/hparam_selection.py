@@ -178,7 +178,7 @@ def select_hparam_candidates(
                 raise ValueError(f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}")
             if not Path(str(event.get("checkpoint_ranking") or "")).is_file():
                 raise ValueError("Frozen checkpoint test ranking referenced by candidate_selected event is missing.")
-            if str(event.get("ranking") or "") != str(out) or not out.is_file():
+            if str(event.get("ranking") or "") != str(out):
                 raise ValueError("Frozen hparam ranking referenced by candidate_selected event is missing or differs.")
     existing_ranked = read_rows(out, require_managed_identity=True)
     validate_managed_run_rows(existing_ranked, source=str(out), cardinality="one_per_run")

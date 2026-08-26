@@ -934,6 +934,44 @@ def test_hparam_select_does_not_rebuild_deleted_frozen_rankings_after_checkpoint
     assert events.read_bytes() == events_before
 
 
+def test_hparam_select_rebuilds_missing_shared_test_ranking_from_canonical_rows(tmp_path: Path):
+    recipe = _hparam_recipe(
+        tmp_path,
+        selection_metric="test_ahi_pearson",
+        selection_split="test",
+        config_monitor="val_ahi_pearson",
+    )
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "test_all_checkpoints_after_fit": True,
+                "checkpoint_test_results": [
+                    {
+                        "checkpoint_path": str(checkpoint),
+                        "epoch": 1,
+                        "metrics": {"test_ahi_pearson": 0.8},
+                    }
+                ],
+            }
+        )
+    )
+    ranking = hparam_selection.select_hparam_candidates(plan_dir)
+    ranking_before = ranking.read_bytes()
+    ranking.unlink()
+    assert experiments.experiment_status(tmp_path)["summary"]["state"] == "ready_to_report"
+
+    hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert ranking.read_bytes() == ranking_before
+    assert experiments.experiment_status(tmp_path)["summary"]["state"] == "ready_to_finalize"
+
+
 def test_hparam_select_rebuilds_test_ranking_from_new_registered_plan(tmp_path: Path):
     recipe = _hparam_recipe(
         tmp_path,
