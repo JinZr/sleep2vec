@@ -51,6 +51,13 @@ WANDB_RUN_FIELDS = {
     "created_at",
     "updated_at",
 }
+HPARAM_SELECTION_METADATA_FIELDS = {
+    "selection_task",
+    "selection_mode",
+    "selection_split",
+    "selection_report",
+    "selection_report_sha256",
+}
 
 
 def wandb_runs(entity: str, project: str, group: str | None) -> list[Any]:
@@ -861,15 +868,7 @@ def hparam_selection_lifecycle(
                 raise ValueError(f"Canonical hparam selection evidence is stale for all-failed step {step_id}")
             continue
         has_selection_metadata = any(
-            row.get(field) not in (None, "")
-            for row in step["rows"]
-            for field in (
-                "selection_task",
-                "selection_mode",
-                "selection_split",
-                "selection_report",
-                "selection_report_sha256",
-            )
+            row.get(field) not in (None, "") for row in step["rows"] for field in HPARAM_SELECTION_METADATA_FIELDS
         )
         if not has_selection_metadata:
             step["legacy_selection"] = True

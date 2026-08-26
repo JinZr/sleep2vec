@@ -463,16 +463,16 @@ def _registered_plan_steps(
 ) -> list[dict[str, Any]]:
     step_manifests = read_registered_steps(root, experiment_id=str(experiment["id"]), remote=remote)
     legacy_run_identity_fields = {"experiment_id", "step_id", "run_id", "run_name", "version"}
-    has_frozen_plan_rows = any(
-        managed_run_parameters(row)
-        or any(row.get(field) not in (None, "") for field in FROZEN_RUN_FIELDS - legacy_run_identity_fields)
+    managed_plan_fields = (FROZEN_RUN_FIELDS - legacy_run_identity_fields) | tracking.HPARAM_SELECTION_METADATA_FIELDS
+    has_managed_plan_rows = any(
+        managed_run_parameters(row) or any(row.get(field) not in (None, "") for field in managed_plan_fields)
         for row in rows
     )
-    if not step_manifests and not require_registered_rows and not has_frozen_plan_rows:
+    if not step_manifests and not require_registered_rows and not has_managed_plan_rows:
         return []
     if (
         not require_registered_rows
-        and not has_frozen_plan_rows
+        and not has_managed_plan_rows
         and not any(manifest["plans"] for manifest in step_manifests)
     ):
         registered_step_ids = {str(manifest["step"]["id"]) for manifest in step_manifests}

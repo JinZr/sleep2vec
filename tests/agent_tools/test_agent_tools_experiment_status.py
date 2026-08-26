@@ -25,7 +25,7 @@ from agent_tools import (
     recipes,
 )
 from agent_tools.adapters import all_adapters, finetune as finetune_adapter, get_adapter
-from agent_tools.experiment_workspace import managed_run_parameters
+from agent_tools.experiment_workspace import FROZEN_RUN_FIELDS, managed_run_parameters
 from agent_tools.manifests import read_rows, write_rows
 from agent_tools.models import REPO_ROOT
 
@@ -1643,25 +1643,32 @@ def test_experiment_finalize_rejects_canonical_runs_without_registered_plan(tmp_
     assert not (root / "reports" / "final.md").exists()
 
 
-def test_experiment_finalize_does_not_downgrade_managed_hparam_rows_to_legacy(tmp_path):
+@pytest.mark.parametrize("modern_evidence", ["managed_parameter", "selection_metadata"])
+def test_experiment_finalize_does_not_downgrade_managed_hparam_evidence_to_legacy(tmp_path, modern_evidence):
     root = tmp_path / "experiment"
     recipe = _write_public_hparam_recipe(root, {"runtime.lr": [1e-6]})
     plan_dir = root / "plans" / "tune"
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     rows = _read_manifest_rows(root)
-    rows[0]["status"] = "completed"
-    for field in (
-        "config",
-        "config_sha256",
-        "script",
-        "script_sha256",
-        "input_snapshots",
-        "run_dir",
-        "artifacts",
-        "runtime_dir",
-        "checkpoint_dir",
-    ):
-        rows[0][field] = ""
+    row = rows[0]
+    row["status"] = "completed"
+    legacy_run_identity_fields = {"experiment_id", "step_id", "run_id", "run_name", "version"}
+    for field in FROZEN_RUN_FIELDS - legacy_run_identity_fields:
+        row[field] = ""
+    for field in managed_run_parameters(row):
+        row[field] = ""
+    if modern_evidence == "managed_parameter":
+        row["runtime.lr"] = "1e-6"
+    else:
+        row.update(
+            {
+                "selection_task": "hparam_tune",
+                "selection_mode": "min",
+                "selection_split": "val",
+                "selection_report": str(root / "reports" / "hparam_selection.md"),
+                "selection_report_sha256": "a" * 64,
+            }
+        )
     write_rows(root / "run_manifest.tsv", rows)
     step_path = root / "steps" / "unit-hparam-tune" / "step.yaml"
     step_path.unlink()
