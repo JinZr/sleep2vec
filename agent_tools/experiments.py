@@ -9,6 +9,7 @@ import yaml
 
 from . import experiment_io as exp_io, experiment_tracking as tracking, run_artifacts as artifacts
 from .experiment_workspace import (
+    FROZEN_RUN_FIELDS,
     RESEARCH_LOG_NAME,
     SHA256_RE,
     TERMINAL_STATUSES,
@@ -18,6 +19,7 @@ from .experiment_workspace import (
     experiment_metadata_issues,
     experiment_readme_text,
     managed_run_key,
+    managed_run_parameters,
     merge_run_manifest,
     read_managed_yaml_mapping,
     read_registered_steps,
@@ -460,25 +462,18 @@ def _registered_plan_steps(
     require_registered_rows: bool,
 ) -> list[dict[str, Any]]:
     step_manifests = read_registered_steps(root, experiment_id=str(experiment["id"]), remote=remote)
+    legacy_run_identity_fields = {"experiment_id", "step_id", "run_id", "run_name", "version"}
     has_frozen_plan_rows = any(
-        row.get(field) not in (None, "")
+        managed_run_parameters(row)
+        or any(row.get(field) not in (None, "") for field in FROZEN_RUN_FIELDS - legacy_run_identity_fields)
         for row in rows
-        for field in (
-            "config",
-            "config_sha256",
-            "script",
-            "script_sha256",
-            "input_snapshots",
-            "run_dir",
-            "artifacts",
-            "runtime_dir",
-            "checkpoint_dir",
-        )
     )
     if not step_manifests and not require_registered_rows and not has_frozen_plan_rows:
         return []
-    if not require_registered_rows and not has_frozen_plan_rows and not any(
-        manifest["plans"] for manifest in step_manifests
+    if (
+        not require_registered_rows
+        and not has_frozen_plan_rows
+        and not any(manifest["plans"] for manifest in step_manifests)
     ):
         registered_step_ids = {str(manifest["step"]["id"]) for manifest in step_manifests}
         if not ({str(row["step_id"]) for row in rows} & registered_step_ids):

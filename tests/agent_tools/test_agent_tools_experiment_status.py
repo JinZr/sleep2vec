@@ -1634,7 +1634,44 @@ def test_experiment_finalize_rejects_canonical_runs_without_registered_plan(tmp_
     report.write_text("# Final\n")
     before = _workspace_files(root)
 
-    with pytest.raises(ValueError, match="plans differ from canonical run keys|unregistered steps|Managed file is missing"):
+    with pytest.raises(
+        ValueError, match="plans differ from canonical run keys|unregistered steps|Managed file is missing"
+    ):
+        experiments.finalize_experiment(root, report)
+
+    assert _workspace_files(root) == before
+    assert not (root / "reports" / "final.md").exists()
+
+
+def test_experiment_finalize_does_not_downgrade_managed_hparam_rows_to_legacy(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = _write_public_hparam_recipe(root, {"runtime.lr": [1e-6]})
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    rows = _read_manifest_rows(root)
+    rows[0]["status"] = "completed"
+    for field in (
+        "config",
+        "config_sha256",
+        "script",
+        "script_sha256",
+        "input_snapshots",
+        "run_dir",
+        "artifacts",
+        "runtime_dir",
+        "checkpoint_dir",
+    ):
+        rows[0][field] = ""
+    write_rows(root / "run_manifest.tsv", rows)
+    step_path = root / "steps" / "unit-hparam-tune" / "step.yaml"
+    step_path.unlink()
+    (step_path.parent / ".step.yaml.cas.lock").unlink()
+    step_path.parent.rmdir()
+    report = tmp_path / "final.md"
+    report.write_text("# Final\n")
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="unregistered steps"):
         experiments.finalize_experiment(root, report)
 
     assert _workspace_files(root) == before
