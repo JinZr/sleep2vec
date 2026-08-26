@@ -1031,9 +1031,7 @@ def test_empty_remote_canonical_commit_preserves_the_valid_matrix_identity_heade
     monkeypatch.setattr(
         experiment_io,
         "conditional_atomic_replace_text_at",
-        lambda path, text, _expected_sha256, *, remote=None, **_kwargs: writes.update(
-            {Path(path).name: (text, remote)}
-        )
+        lambda path, text, _expected_sha256, *, remote=None, **_kwargs: writes.update({Path(path).name: (text, remote)})
         is None,
     )
     monkeypatch.setattr(

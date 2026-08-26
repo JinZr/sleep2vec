@@ -1309,12 +1309,13 @@ def merge_run_manifest(
     root = Path(root)
     path = root / "run_manifest.tsv"
     lock_path = path.with_name(path.name + ".lock")
+    experiment_path = root / "experiment.yaml"
     exp_io.validate_managed_output_paths(
         root,
         [
             path,
             lock_path,
-            root / "experiment.yaml",
+            experiment_path,
             root / "run_matrix.csv",
             root / "reports" / "run_matrix.md",
             root / "events.jsonl",
@@ -1327,7 +1328,6 @@ def merge_run_manifest(
         lock_stack.enter_context(exp_io.blocking_file_lock(lock_path))
     try:
         for _attempt in range(3 if remote else 1):
-            experiment_path = root / "experiment.yaml"
             experiment_text = exp_io.read_text_at(experiment_path, remote=remote)
             if not experiment_text:
                 raise ValueError(f"Managed experiment manifest is missing: {experiment_path}")

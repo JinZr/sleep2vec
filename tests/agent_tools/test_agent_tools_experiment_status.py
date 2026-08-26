@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
@@ -2483,6 +2485,50 @@ def test_completed_experiment_rejects_late_run_manifest_merge(tmp_path):
         merge_run_manifest(root, [{**row, "health_status": "late observation"}])
 
     assert _workspace_files(root) == before
+    assert experiments.experiment_status(root)["summary"]["state"] == "completed"
+
+
+def test_inflight_run_manifest_merge_rechecks_owner_after_waiting_for_lock(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train", status="completed")
+    row = _read_manifest_rows(root)[0]
+    merge_waiting = threading.Event()
+    allow_merge = threading.Event()
+    errors = []
+    real_lock = experiment_io.blocking_file_lock
+
+    @contextmanager
+    def delayed_lock(path):
+        if threading.current_thread().name == "late-merge" and Path(path) == root / "run_manifest.tsv.lock":
+            merge_waiting.set()
+            assert allow_merge.wait(timeout=5)
+        with real_lock(path):
+            yield
+
+    def late_merge():
+        try:
+            merge_run_manifest(root, [{**row, "health_status": "late observation"}])
+        except Exception as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(experiment_io, "blocking_file_lock", delayed_lock)
+    worker = threading.Thread(target=late_merge, name="late-merge")
+    worker.start()
+    assert merge_waiting.wait(timeout=5)
+
+    report = tmp_path / "report.md"
+    report.write_text("# Final\n")
+    experiments.finalize_experiment(root, report)
+    after_finalize = _workspace_files(root)
+    allow_merge.set()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ValueError)
+    assert "completed and cannot update canonical runs" in str(errors[0])
+    assert _workspace_files(root) == after_finalize
     assert experiments.experiment_status(root)["summary"]["state"] == "completed"
 
 
