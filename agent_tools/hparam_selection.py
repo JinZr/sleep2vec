@@ -115,7 +115,7 @@ def select_hparam_candidates(
         existing_report_run_keys.update(
             managed_run_key(run) for _registered_root, registered_plan in registered for run in registered_plan["runs"]
         )
-    _selection_report_steps([canonical_by_key[key] for key in sorted(existing_report_run_keys)])
+    existing_report_steps = _selection_report_steps([canonical_by_key[key] for key in sorted(existing_report_run_keys)])
     out = workspace / "reports" / "ranking.csv"
     selection_report_out = workspace / "reports" / "hparam_selection.md"
     checkpoint_out = root / "checkpoint_test_ranking.csv"
@@ -152,6 +152,18 @@ def select_hparam_candidates(
                     evidence_run[field] = execution.get(field, "")
             evidence_runs_by_key[key] = evidence_run
     report_run_keys = existing_report_run_keys | {managed_run_key(run) for run in step_runs}
+    # A non-hparam run may share the current step id, so ownership must be checked by the full managed key.
+    misowned_selection = sorted(
+        f"{row.get('step_id', '')} / {row.get('run_id', '')}"
+        for row in canonical_rows
+        if managed_run_key(row) not in report_run_keys
+        and any(row.get(field) not in (None, "") for field in tracking.HPARAM_SELECTION_METADATA_FIELDS)
+    )
+    if misowned_selection:
+        raise ValueError(
+            "Canonical hparam selection metadata is not owned by a registered hparam plan: "
+            + ", ".join(misowned_selection)
+        )
     checkpoint_evidence_runs = [evidence_runs_by_key.get(managed_run_key(row), row) for row in canonical_rows]
     if selection_split == "test":
         for event in _candidate_selected_events(workspace):
@@ -217,7 +229,7 @@ def select_hparam_candidates(
                 f"Existing ranking row for another step has an invalid score: "
                 f"{row.get('step_id', '')} / {row.get('run_id', '')}"
             )
-    preserved = [row for row in existing_ranked if row.get("step_id") != step_id]
+    preserved = [row for selected_step in existing_report_steps for row in selected_step["ranked"]]
     prior_step_rows = [
         row
         for row in existing_ranked
@@ -350,7 +362,7 @@ def select_hparam_candidates(
             _existing_checkpoint_ranking_is_consistent(canonical_step_ranked, step_ranked)
         ):
             raise ValueError("Frozen canonical hparam selection differs from current runtime evidence.")
-    all_ranked = preserved + step_ranked
+    all_ranked = tracking.hparam_ranking_projection([*preserved, *step_ranked])
     if selection_split == "test" and not existing_checkpoint_ranked:
         # Keep the immutable audit plan-local while the workspace ranking spans compatible plans.
         write_rows(checkpoint_out, plan_checkpoint_ranked)
@@ -403,7 +415,6 @@ def select_hparam_candidates(
     report_text = tracking.hparam_selection_report_text(report_steps, root=workspace)
     exp_io.write_text_at(selection_report_out, report_text)
     report_sha256 = hashlib.sha256(report_text.encode()).hexdigest()
-    selected_step_ids = {step["step_id"] for step in report_steps}
     merge_run_manifest(
         workspace,
         [
@@ -415,7 +426,7 @@ def select_hparam_candidates(
                 "selection_report_sha256": report_sha256,
             }
             for row in selected_rows
-            if str(row.get("step_id") or "") in selected_step_ids
+            if managed_run_key(row) in report_run_keys
         ],
     )
     selection_event = {

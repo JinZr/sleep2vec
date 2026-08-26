@@ -67,6 +67,18 @@ HPARAM_SELECTION_RESULT_FIELDS = {
     "checkpoint_rank",
     "source",
 }
+_HPARAM_RANKING_BASE_FIELDS = (
+    "run_name",
+    "parameter_summary",
+    "version",
+    "config",
+    "metric",
+    "score",
+    "rank",
+    "checkpoint_path",
+    "checkpoint_sha256",
+)
+_HPARAM_RANKING_OPTIONAL_FIELDS = ("checkpoint_rank", "epoch", "run_manifest", "source", "status")
 
 
 def wandb_runs(entity: str, project: str, group: str | None) -> list[Any]:
@@ -959,59 +971,41 @@ def hparam_selection_lifecycle(
 
 def _hparam_ranking_matches(selected_steps: list[dict[str, Any]], ranking_text: Any) -> bool:
     ranked_rows = [row for step in selected_steps for row in step["ranked"]]
-    parameter_fields = sorted({field for row in ranked_rows for field in managed_run_parameters(row)})
-    base_projection_fields = (
-        "run_name",
-        "parameter_summary",
-        "version",
-        "config",
-        "metric",
-        "score",
-        "rank",
-        "checkpoint_path",
-        "checkpoint_sha256",
-        *parameter_fields,
-    )
-    optional_projection_fields = ("checkpoint_rank", "epoch", "run_manifest", "source", "status")
-    required = {
-        "step_id",
-        "run_id",
-        *base_projection_fields,
-        *(
-            field
-            for field in optional_projection_fields
-            if any(row.get(field) not in (None, "") for row in ranked_rows)
-        ),
-    }
-    allowed = {"step_id", "run_id", *base_projection_fields, *optional_projection_fields}
+    expected_rows = hparam_ranking_projection(ranked_rows)
+    if not expected_rows:
+        return False
+    expected_fields = sorted(expected_rows[0])
     if not isinstance(ranking_text, str):
         return False
     try:
         reader = csv.DictReader(io.StringIO(ranking_text), strict=True)
         fieldnames = reader.fieldnames or []
-        if (
-            len(fieldnames) != len(set(fieldnames))
-            or not required.issubset(fieldnames)
-            or not set(fieldnames) <= allowed
-        ):
+        if fieldnames != expected_fields:
             return False
         ranking_rows = list(reader)
     except csv.Error:
         return False
     if any(None in row or any(value is None for value in row.values()) for row in ranking_rows):
         return False
+    expected = [tuple(str(row.get(field) or "") for field in expected_fields) for row in expected_rows]
+    observed = [tuple(row[field] for field in expected_fields) for row in ranking_rows]
+    return observed == expected
 
-    projection_fields = (
-        *base_projection_fields,
-        *(field for field in optional_projection_fields if field in fieldnames),
+
+def hparam_ranking_projection(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = sorted(
+        rows,
+        key=lambda row: (str(row["step_id"]), int(row["rank"]), str(row["run_id"])),
     )
-    expected = {
-        managed_run_key(row): tuple(str(row.get(field) or "") for field in projection_fields) for row in ranked_rows
-    }
-    observed = {
-        managed_run_key(row): tuple(str(row.get(field) or "") for field in projection_fields) for row in ranking_rows
-    }
-    return len(observed) == len(ranking_rows) and None not in observed and observed == expected
+    parameter_fields = sorted({field for row in rows for field in managed_run_parameters(row)})
+    fields = [
+        "step_id",
+        "run_id",
+        *_HPARAM_RANKING_BASE_FIELDS,
+        *parameter_fields,
+        *(field for field in _HPARAM_RANKING_OPTIONAL_FIELDS if any(row.get(field) not in (None, "") for row in rows)),
+    ]
+    return [{field: row.get(field, "") for field in fields} for row in rows]
 
 
 def hparam_selection_report_text(selected_steps: list[dict[str, Any]], *, root: Path) -> str:

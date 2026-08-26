@@ -2496,6 +2496,7 @@ def test_experiment_status_rejects_missing_or_drifted_hparam_ranking(tmp_path, m
         ("status", "tamper"),
         ("run_manifest", "remove"),
         ("status", "remove"),
+        ("checkpoint_rank", "empty"),
         ("config", "remove"),
         ("runtime.lr", "remove"),
         ("unexpected", "add"),
@@ -2521,6 +2522,8 @@ def test_experiment_status_rejects_hparam_ranking_candidate_provenance_drift(tmp
     if mutation == "remove":
         for row in ranking_rows:
             row.pop(field)
+    elif mutation == "empty":
+        ranking_rows[0][field] = ""
     else:
         ranking_rows[0][field] = "tampered"
     write_rows(ranking, ranking_rows)
