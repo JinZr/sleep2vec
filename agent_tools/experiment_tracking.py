@@ -58,6 +58,15 @@ HPARAM_SELECTION_METADATA_FIELDS = {
     "selection_report",
     "selection_report_sha256",
 }
+HPARAM_SELECTION_RESULT_FIELDS = {
+    "score",
+    "rank",
+    "checkpoint_path",
+    "checkpoint_sha256",
+    "epoch",
+    "checkpoint_rank",
+    "source",
+}
 
 
 def wandb_runs(entity: str, project: str, group: str | None) -> list[Any]:
@@ -1047,7 +1056,7 @@ def _validated_hparam_ranking(step: dict[str, Any]) -> list[dict[str, Any]] | No
                 raise ValueError(f"Canonical hparam selection {field} differs for {step['step_id']} / {row['run_id']}")
         rank = row.get("rank")
         if rank in (None, ""):
-            if row.get("score") not in (None, "") or row.get("checkpoint_path") not in (None, ""):
+            if any(row.get(field) not in (None, "") for field in HPARAM_SELECTION_RESULT_FIELDS):
                 raise ValueError(f"Canonical hparam selection is incomplete for {step['step_id']} / {row['run_id']}")
             continue
         try:

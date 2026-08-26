@@ -230,6 +230,55 @@ def test_hparam_select_rejects_completed_experiment_without_mutation(tmp_path: P
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
+def test_hparam_select_clears_stale_result_evidence_from_unscored_candidates(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, max_runs=2)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    first_run = _first_run(plan_dir)
+    runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
+    checkpoint = Path(first_run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    Path(first_run["runtime_dir"], "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    losing_run = runs[1]
+    failed_manifest = Path(losing_run["runtime_dir"]) / "run_manifest.json"
+    failed_manifest.parent.mkdir(parents=True)
+    failed_manifest.write_text(json.dumps({"health_status": "failed"}))
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": losing_run["step_id"],
+                "run_id": losing_run["run_id"],
+                "status": "failed",
+                "score": "0.7",
+                "rank": "2",
+                "checkpoint_path": str(Path(losing_run["checkpoint_dir"]) / "epoch=2.ckpt"),
+                "checkpoint_sha256": "b" * 64,
+                "run_manifest": str(failed_manifest),
+                "epoch": "2",
+                "checkpoint_rank": "2",
+                "source": "stale-selection",
+            }
+        ],
+    )
+
+    hparam_selection.select_hparam_candidates(plan_dir)
+
+    canonical = next(row for row in read_run_manifest(tmp_path) if row["run_id"] == losing_run["run_id"])
+    assert canonical["selection_task"] == "hparam_tune"
+    assert all(canonical.get(field) in (None, "") for field in hparam_selection.tracking.HPARAM_SELECTION_RESULT_FIELDS)
+    assert canonical["run_manifest"] == str(failed_manifest)
+
+
 @pytest.mark.parametrize(("field", "value"), [("status", "running"), ("unexpected_terminal", "value")])
 def test_hparam_select_rejects_invalid_active_experiment_owner_without_mutation(tmp_path: Path, field: str, value: str):
     recipe = _hparam_recipe(tmp_path)

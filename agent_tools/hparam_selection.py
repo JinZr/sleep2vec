@@ -348,9 +348,8 @@ def select_hparam_candidates(
                 "selection_task": "hparam_tune",
                 "selection_mode": mode,
                 "selection_split": selection_split,
-                "score": "",
-                "rank": "",
-                "checkpoint_path": "",
+                **{field: "" for field in tracking.HPARAM_SELECTION_RESULT_FIELDS},
+                **({"run_manifest": row["run_manifest"]} if row.get("run_manifest") else {}),
             }
             for row in unscored_rows
         ],
