@@ -2306,8 +2306,8 @@ def test_experiment_finalize_rechecks_selection_report_before_terminal_commit(tm
     manifest_before = manifest.read_bytes()
     original_replace = experiment_io.conditional_atomic_replace_text_at
 
-    def publish_then_tamper(path, text, expected_sha256, *, remote=None):
-        committed = original_replace(path, text, expected_sha256, remote=remote)
+    def publish_then_tamper(path, text, expected_sha256, *, remote=None, **kwargs):
+        committed = original_replace(path, text, expected_sha256, remote=remote, **kwargs)
         if Path(path) == root / "reports" / "final.md" and committed:
             selection_report.write_text("# Tampered before terminal commit\n")
         return committed
@@ -2332,8 +2332,8 @@ def test_experiment_finalize_rechecks_ranking_before_terminal_commit(tmp_path, m
     manifest_before = manifest.read_bytes()
     original_replace = experiment_io.conditional_atomic_replace_text_at
 
-    def publish_then_tamper(path, text, expected_sha256, *, remote=None):
-        committed = original_replace(path, text, expected_sha256, remote=remote)
+    def publish_then_tamper(path, text, expected_sha256, *, remote=None, **kwargs):
+        committed = original_replace(path, text, expected_sha256, remote=remote, **kwargs)
         if Path(path) == root / "reports" / "final.md" and committed:
             ranking.write_text(ranking.read_text().replace("0.25", "999", 1))
         return committed
@@ -2358,8 +2358,8 @@ def test_experiment_finalize_rechecks_checkpoint_before_terminal_commit(tmp_path
     manifest_before = manifest.read_bytes()
     original_replace = experiment_io.conditional_atomic_replace_text_at
 
-    def publish_then_tamper(path, text, expected_sha256, *, remote=None):
-        committed = original_replace(path, text, expected_sha256, remote=remote)
+    def publish_then_tamper(path, text, expected_sha256, *, remote=None, **kwargs):
+        committed = original_replace(path, text, expected_sha256, remote=remote, **kwargs)
         if Path(path) == root / "reports" / "final.md" and committed:
             checkpoint.write_bytes(b"tampered before terminal commit\n")
         return committed
@@ -2425,6 +2425,48 @@ def test_experiment_finalize_guards_terminal_commit_with_run_manifest_lock(tmp_p
     assert manifest.read_bytes() == manifest_before
     assert (root / "reports" / "final.md").exists()
     assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
+
+
+def test_stale_finalizer_cannot_bind_an_overwritten_final_report(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train", status="completed")
+    report_a = tmp_path / "report-a.md"
+    report_b = tmp_path / "report-b.md"
+    report_a.write_text("# Final A\n")
+    report_b.write_text("# Final B\n")
+    final_report = root / "reports" / "final.md"
+    manifest = root / "experiment.yaml"
+    real_replace = experiment_io.conditional_atomic_replace_text_at
+    interleaved = False
+
+    def overwrite_before_terminal_commit(path, text, expected_sha256, *, remote=None, **kwargs):
+        nonlocal interleaved
+        if Path(path) == manifest and not interleaved:
+            interleaved = True
+            assert real_replace(
+                final_report,
+                report_b.read_text(),
+                hashlib.sha256(final_report.read_bytes()).hexdigest(),
+                dependency_path=kwargs["dependency_path"],
+                expected_dependency_sha256=kwargs["expected_dependency_sha256"],
+                guard_path=manifest,
+                expected_guard_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            )
+        return real_replace(path, text, expected_sha256, remote=remote, **kwargs)
+
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", overwrite_before_terminal_commit)
+
+    with pytest.raises(RuntimeError, match="changed during finalization"):
+        experiments.finalize_experiment(root, report_a)
+
+    assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
+    assert final_report.read_text() == report_b.read_text()
+
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", real_replace)
+    experiments.finalize_experiment(root, report_b)
+    completed = yaml.safe_load(manifest.read_text())["experiment"]
+    assert completed["final_report_sha256"] == hashlib.sha256(final_report.read_bytes()).hexdigest()
 
 
 def test_experiment_finalize_rechecks_rows_bound_to_run_manifest_snapshot(tmp_path, monkeypatch):

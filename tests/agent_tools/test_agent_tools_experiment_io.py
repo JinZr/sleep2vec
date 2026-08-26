@@ -220,6 +220,28 @@ def test_local_conditional_replace_requires_current_dependency(tmp_path: Path):
     assert path.read_text() == "old\n"
 
 
+def test_local_conditional_replace_requires_current_guard(tmp_path: Path):
+    path = tmp_path / "state.tsv"
+    dependency = tmp_path / "run_manifest.tsv"
+    guard = tmp_path / "experiment.yaml"
+    path.write_text("old\n")
+    dependency.write_text("current\n")
+    guard.write_text("active\n")
+
+    guard.write_text("completed\n")
+
+    assert not experiment_io.conditional_atomic_replace_text_at(
+        path,
+        "new\n",
+        hashlib.sha256(b"old\n").hexdigest(),
+        dependency_path=dependency,
+        expected_dependency_sha256=hashlib.sha256(b"current\n").hexdigest(),
+        guard_path=guard,
+        expected_guard_sha256=hashlib.sha256(b"active\n").hexdigest(),
+    )
+    assert path.read_text() == "old\n"
+
+
 def test_blocking_file_lock_reopens_descriptor_after_transient_eio(tmp_path: Path, monkeypatch):
     lock_path = tmp_path / "state.lock"
     attempts = 0
@@ -462,13 +484,17 @@ def test_remote_conditional_replace_locks_and_checks_dependency(monkeypatch):
         remote="host",
         dependency_path="/remote/run_manifest.tsv",
         expected_dependency_sha256="b" * 64,
+        guard_path="/remote/reports/final.md",
+        expected_guard_sha256="c" * 64,
     )
     command, _kwargs = calls[0]
     remote_command = command[-1]
     assert "/remote/experiment.yaml" in remote_command
     assert "/remote/run_manifest.tsv" in remote_command
+    assert "/remote/reports/final.md" in remote_command
     assert 'dependency_path + ".lock"' in remote_command
     assert "hashlib.sha256(dependency_current).hexdigest()" in remote_command
+    assert "hashlib.sha256(guard_current).hexdigest()" in remote_command
 
 
 @pytest.mark.parametrize("returncode", [1, 255])

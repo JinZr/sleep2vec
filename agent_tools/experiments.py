@@ -359,14 +359,25 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     target_exists = exp_io.path_exists_at(target, remote=remote)
     target_text = exp_io.read_text_at(target, remote=remote) if target_exists else ""
     target_sha256 = hashlib.sha256(target_text.encode()).hexdigest() if target_exists else None
-    if not exp_io.conditional_atomic_replace_text_at(target, report_text, target_sha256, remote=remote):
+    manifest_sha256 = hashlib.sha256(manifest_text.encode()).hexdigest()
+    report_sha256 = hashlib.sha256(report_text.encode()).hexdigest()
+    if not exp_io.conditional_atomic_replace_text_at(
+        target,
+        report_text,
+        target_sha256,
+        remote=remote,
+        dependency_path=run_manifest_path,
+        expected_dependency_sha256=run_manifest_snapshot["sha256"],
+        guard_path=root / "experiment.yaml",
+        expected_guard_sha256=manifest_sha256,
+    ):
         raise RuntimeError(f"Final report changed during publication: {target}")
     manifest["experiment"].update(
         {
             "status": "completed",
             "completed_at": utc_now(),
             "final_report": str(target),
-            "final_report_sha256": hashlib.sha256(report_text.encode()).hexdigest(),
+            "final_report_sha256": report_sha256,
         }
     )
     if hparam["selected_steps"]:
@@ -380,10 +391,12 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     if not exp_io.conditional_atomic_replace_text_at(
         root / "experiment.yaml",
         yaml.safe_dump(manifest, sort_keys=False),
-        hashlib.sha256(manifest_text.encode()).hexdigest(),
+        manifest_sha256,
         remote=remote,
         dependency_path=run_manifest_path,
         expected_dependency_sha256=run_manifest_snapshot["sha256"],
+        guard_path=target,
+        expected_guard_sha256=report_sha256,
     ):
         raise RuntimeError("Experiment or run manifest changed during finalization.")
     return target
