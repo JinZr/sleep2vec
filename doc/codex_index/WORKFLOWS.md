@@ -154,7 +154,11 @@ selection-report hash. Status validates those terminal bytes, while historical
 completed metadata without the bindings remains compatible. Mixed/failure
 reports cannot be selection-report aliases or byte-identical copies, and pure
 automatic hparam finalization still requires the canonical selection-report
-path.
+path. Test-selected canonical rows also bind every registered plan-local
+checkpoint audit path and complete SHA-256. Status reconstructs the global
+selection from those frozen bytes; finalization rehashes every audited
+checkpoint on its canonical execution host and commits completed metadata only
+while holding the canonical run-manifest lock.
 
 ## Inference And Evaluation
 
@@ -264,9 +268,12 @@ authority.
 `run_manifest.tsv` is the only lifecycle and execution-identity owner; status
 tables, events, reports, and `RESEARCH_LOG.md` are projections or narrative.
 `experiment-status` also validates registered step manifests and frozen plan
-control bundles, but ignores those projections and never queries Slurm,
-processes, GPUs, checkpoints, or W&B. Its argv suggestions remain advisory and
-require the same explicit authorization as invoking the underlying command. It
+control bundles. Hash-bound hparam selection reports, shared rankings, and
+plan-local checkpoint audits are consistency guards for canonical selection,
+not alternate lifecycle owners. Status never queries Slurm, processes, GPUs,
+checkpoint contents, runtime manifests, or W&B. Its argv suggestions remain
+advisory and require the same explicit authorization as invoking the underlying
+command. It
 uses the step manifest's one-way `plan_controller` binding as the sole
 ordinary/adaptive/pipeline classification owner; frozen recipes and pipeline
 row identity are consistency guards rather than alternate owners. It

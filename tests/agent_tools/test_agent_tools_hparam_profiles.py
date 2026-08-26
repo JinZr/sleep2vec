@@ -512,6 +512,19 @@ def test_checked_in_templates_select_only_supported_profile_variants():
     assert "parameters" in sleep2expert["search"]
 
 
+def test_task_recipe_schema_profile_skeleton_keeps_test_locked():
+    text = (REPO_ROOT / "recipes/schemas/task_recipe.schema.md").read_text()
+    block = text.split("```yaml\n", 1)[1].split("\n```", 1)[0]
+    skeleton = yaml.safe_load(block)
+
+    policy = skeleton["evaluation_policy"]
+    assert policy["selection_metric"] == "val_ahi_pearson"
+    assert policy["selection_split"] == "val"
+    assert policy["external_test_locked"] is True
+    assert policy["test_after_fit"] is False
+    assert policy["final_test_unlocked"] is False
+
+
 @pytest.mark.parametrize(
     ("config_path", "variant", "label"),
     [

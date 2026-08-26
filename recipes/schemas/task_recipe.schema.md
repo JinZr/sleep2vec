@@ -7,14 +7,16 @@ name: unit_hparam
 task: hparam_tune
 variant: sleep2vec
 experiment: {id: unit-experiment, title: Unit experiment, objective: Exercise tuning, root: artifacts/experiments/unit, baseline: {type: none, rationale: First run.}}
-step: {id: tune, phase: train, purpose: Select a configuration on the frozen test metric.}
+step: {id: tune, phase: train, purpose: Select a configuration on the frozen validation metric.}
 inputs:
   config: configs/example.yaml
   label_name: ahi
 evaluation_policy:
-  selection_metric: test_ahi_pearson
-  selection_split: test
-  external_test_locked: false
+  selection_metric: val_ahi_pearson
+  selection_split: val
+  external_test_locked: true
+  test_after_fit: false
+  final_test_unlocked: false
 search:
   profile: finetune_balanced
 ```

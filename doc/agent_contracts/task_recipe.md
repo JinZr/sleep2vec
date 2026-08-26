@@ -462,13 +462,19 @@ plans in that step must use the same selection metric and mode. Selection
 replaces current-plan keys, reranks the complete step, and writes deterministic
 `reports/hparam_selection.md`. The canonical manifest binds that report's path
 and hash to the selected rows; the report records metric/mode/split, evaluated
-count, winner run/checkpoint/score, parameter summary, executable parameters,
-and ranking path. `experiment-status` therefore advances a terminal ordinary
-hparam step from `ready_to_select` to `ready_to_report` and then to
-`ready_to_finalize`. A verified selection report may serve directly as the
-final report only when every ordinary materialized plan in the experiment is a
-hparam plan and every hparam step has a selected winner. Mixed experiments and
-partly failed multi-step searches require a separate non-empty combined report.
+count, winner run/checkpoint/score, parameter summary, search overrides, frozen
+config/script paths and hashes, and ranking path. For test-selected tuning,
+canonical rows additionally bind each registered plan's complete
+`checkpoint_test_ranking.csv` path and SHA-256. Status validates every bound
+audit and reconstructs the global checkpoint/run ranking; finalize rehashes
+every audited checkpoint on its frozen execution target. `experiment-status`
+therefore advances a terminal ordinary hparam step to `ready_to_select`; a
+successful selection normally writes the deterministic report and advances it
+to `ready_to_finalize`, while a missing or invalid derived report/ranking is
+`ready_to_report`. A verified selection report may serve directly as the final
+report only when every ordinary materialized plan in the experiment is a hparam
+plan and every hparam step has a selected winner. Mixed experiments and partly
+failed multi-step searches require a separate non-empty combined report.
 All-failed hparam steps skip selection and require a non-empty failure report;
 the canonical selection report cannot substitute for either report type.
 Historical completed experiments are not retroactively required to carry the

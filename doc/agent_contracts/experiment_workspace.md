@@ -92,7 +92,14 @@ Once canonical selection rows carry checkpoint hashes, rerunning
 `hparam-select` may only reproduce the same score and checkpoint evidence;
 deleting `reports/ranking.csv` does not authorize replacing the canonical
 selection from changed runtime evidence. The projection may be rebuilt only
-from the unchanged canonical selection.
+from the unchanged canonical selection. For test-selected tuning, every
+successful canonical row also binds its registered plan-local
+`checkpoint_test_ranking.csv` path and complete file SHA-256. Status validates
+those frozen audit bytes and reconstructs the step-wide checkpoint and run
+ranks without reopening runtime manifests or checkpoint contents. Finalization
+rehashes every checkpoint named by the bound audits on its canonical execution
+host, then holds the canonical run-manifest lock while it verifies the same
+manifest snapshot and commits terminal experiment metadata.
 
 New finalization commits `status: completed` only with the canonical
 `reports/final.md` path and SHA-256. When ordinary hparam selection exists, the
@@ -212,9 +219,12 @@ invalid and are not repaired in place.
 - `experiment-run` is the explicit, resumable external-evaluation launcher. Dry-run starts nothing; execute waits for successful source plans, freezes checkpoints selected by each source plan's registered ranking, and manages the declared job matrix.
 - `experiment-status` strictly validates the experiment owner, every registered
   step and frozen plan control bundle, and the canonical `run_manifest.tsv`,
-  then prints a deterministic read-only snapshot. It never reads projections
-  as lifecycle evidence, refreshes runtime observations, or writes workspace
-  state. Frozen recipe structure is validated by the same dictionary-only
+  then prints a deterministic read-only snapshot. Derived reports and rankings
+  never become lifecycle owners; modern hparam selection reports, shared
+  rankings, and plan-local checkpoint audits are read only as hash-bound
+  consistency evidence for canonical selection rows. Status never refreshes
+  runtime observations, reads checkpoint contents, or writes workspace state.
+  Frozen recipe structure is validated by the same dictionary-only
   `decision_rules` owner used by planning; status does not rerun consultation,
   policy decisions, config loading, or external input/path probes. Layered
   recipes validate both source layers plus any effective-only overlay produced
