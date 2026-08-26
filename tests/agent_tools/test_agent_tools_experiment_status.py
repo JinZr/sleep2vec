@@ -2127,6 +2127,11 @@ def test_hparam_checkpoint_rehash_uses_execution_evidence_host(
         "checkpoint_path": "/data/epoch=1.ckpt",
         "checkpoint_sha256": "a" * 64,
     }
+    audit_row = {
+        **row,
+        "checkpoint_path": "/data/epoch=2.ckpt",
+        "checkpoint_sha256": "b" * 64,
+    }
     validated = []
     hashed = []
     monkeypatch.setattr(
@@ -2137,16 +2142,21 @@ def test_hparam_checkpoint_rehash_uses_execution_evidence_host(
 
     def checkpoint_sha256(evidence_row, checkpoint_path):
         hashed.append((evidence_row, checkpoint_path))
-        return "a" * 64
+        return "a" * 64 if checkpoint_path == row["checkpoint_path"] else "b" * 64
 
     monkeypatch.setattr(experiments.evidence, "checkpoint_file_sha256", checkpoint_sha256)
 
-    experiments._validate_hparam_checkpoints([row], [{"ranked": [row]}], remote=remote)
+    experiments._validate_hparam_checkpoints(
+        [row],
+        [{"ranked": [row], "checkpoint_audit_rows": [row, audit_row]}],
+        remote=remote,
+    )
 
-    assert validated == [([row], [row], remote)]
-    assert hashed[0][0]["target"] == "ssh"
-    assert hashed[0][0]["host"] == expected_host
-    assert hashed[0][1] == row["checkpoint_path"]
+    assert validated == [([row], [row, audit_row], remote)]
+    assert [(evidence_row["target"], evidence_row["host"], path) for evidence_row, path in hashed] == [
+        ("ssh", expected_host, row["checkpoint_path"]),
+        ("ssh", expected_host, audit_row["checkpoint_path"]),
+    ]
 
 
 def test_experiment_finalize_rejects_selection_report_copy_for_pure_hparam_experiment(tmp_path):

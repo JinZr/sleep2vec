@@ -410,6 +410,18 @@ def select_hparam_candidates(
     # Freeze every contributing plan audit before the shared ranking makes the selection finalizable.
     for audit_path, audit_rows in checkpoint_audits_to_write:
         write_rows(audit_path, audit_rows)
+    audit_bindings = {}
+    if selection_split == "test":
+        for registered_root, registered_plan in current_registered:
+            audit_path = registered_root / "checkpoint_test_ranking.csv"
+            if not audit_path.is_file():
+                continue
+            binding = {
+                "checkpoint_ranking": str(audit_path),
+                "checkpoint_ranking_sha256": hashlib.sha256(audit_path.read_bytes()).hexdigest(),
+            }
+            for run in registered_plan["runs"]:
+                audit_bindings[managed_run_key(run)] = binding
     write_rows(out, all_ranked)
     merge_run_manifest(
         workspace,
@@ -427,6 +439,7 @@ def select_hparam_candidates(
                 "checkpoint_path": row.get("checkpoint_path"),
                 "checkpoint_sha256": row.get("checkpoint_sha256"),
                 "run_manifest": row.get("run_manifest"),
+                **audit_bindings.get(managed_run_key(row), {}),
                 **(
                     {
                         "epoch": row.get("epoch"),
@@ -717,6 +730,14 @@ def _validate_test_selection_events(
         exp_io.validate_managed_output_paths(workspace, [checkpoint_ranking])
         stored = read_rows(checkpoint_ranking, require_managed_identity=True)
         validate_managed_run_rows(stored, source=str(checkpoint_ranking), cardinality="many_per_run")
+        stored_sha256 = hashlib.sha256(checkpoint_ranking.read_bytes()).hexdigest()
+        bindings = {
+            (str(run.get("checkpoint_ranking") or ""), str(run.get("checkpoint_ranking_sha256") or ""))
+            for run in plan_runs
+            if str(run.get("status") or "") in SUCCESS_STATUSES
+        }
+        if bindings != {(str(checkpoint_ranking), stored_sha256)}:
+            raise ValueError("Canonical hparam selection differs from frozen checkpoint test ranking.")
         for row in stored:
             canonical = resolve_run_row(canonical_rows, row)
             if canonical is None:
