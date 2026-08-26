@@ -2249,6 +2249,32 @@ def test_experiment_finalize_rechecks_selection_report_before_terminal_commit(tm
     assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
 
 
+def test_experiment_finalize_rechecks_ranking_before_terminal_commit(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    ranking = root / "reports" / "ranking.csv"
+    manifest = root / "experiment.yaml"
+    manifest_before = manifest.read_bytes()
+    original_replace = experiment_io.conditional_atomic_replace_text_at
+
+    def publish_then_tamper(path, text, expected_sha256, *, remote=None):
+        committed = original_replace(path, text, expected_sha256, remote=remote)
+        if Path(path) == root / "reports" / "final.md" and committed:
+            ranking.write_text(ranking.read_text().replace("0.25", "999", 1))
+        return committed
+
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", publish_then_tamper)
+
+    with pytest.raises(ValueError, match="ranking changed during finalization"):
+        experiments.finalize_experiment(root, selection_report)
+
+    assert manifest.read_bytes() == manifest_before
+    assert (root / "reports" / "final.md").exists()
+    assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
+
+
 def test_experiment_finalize_rechecks_checkpoint_before_terminal_commit(tmp_path, monkeypatch):
     root = tmp_path / "experiment"
     _init_workspace(root)

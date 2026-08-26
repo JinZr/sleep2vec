@@ -266,15 +266,18 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     )
     if hparam["pending_steps"]:
         raise ValueError("Successful hparam runs must be selected before experiment finalization.")
+    if hparam["selected_steps"] and not hparam["report_valid"]:
+        raise ValueError("The hparam selection report is missing or differs from canonical selection evidence.")
     selection_report_path = Path(hparam["report_path"]) if hparam["selected_steps"] else None
     if selection_report_path is not None:
-        current_selection = exp_io.read_managed_files_at(root, [selection_report_path], remote=remote)
+        ranking_path = Path(selection_report["ranking_path"])
+        current_selection = exp_io.read_managed_files_at(root, [selection_report_path, ranking_path], remote=remote)
         if current_selection[str(selection_report_path)]["sha256"] != selection_report["sha256"]:
             raise ValueError("The hparam selection report changed during finalization.")
+        if current_selection[str(ranking_path)]["sha256"] != selection_report["ranking_sha256"]:
+            raise ValueError("The hparam ranking changed during finalization.")
     report_path_is_selection = str(Path(report_path)) == hparam["report_path"]
     if hparam["selected_steps"]:
-        if not hparam["report_valid"]:
-            raise ValueError("The hparam selection report is missing or differs from canonical selection evidence.")
         if hparam["automatic_report_final"]:
             if not report_path_is_selection:
                 raise ValueError(f"Successful hparam experiments must finalize from {hparam['report_path']}")
@@ -320,9 +323,13 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         manifest["experiment"]["selection_report_sha256"] = selection_report["sha256"]
     exp_io.append_event_at(root, "experiment_finalization_prepared", {"report": str(target)}, remote=remote)
     if selection_report_path is not None:
-        current_selection = exp_io.read_managed_files_at(root, [selection_report_path], remote=remote)
+        ranking_path = Path(selection_report["ranking_path"])
+        current_selection = exp_io.read_managed_files_at(root, [selection_report_path, ranking_path], remote=remote)
         if current_selection[str(selection_report_path)]["sha256"] != selection_report["sha256"]:
             raise ValueError("The hparam selection report changed during finalization.")
+        # The ranking is derived, but the published selection report cites it as verified evidence.
+        if current_selection[str(ranking_path)]["sha256"] != selection_report["ranking_sha256"]:
+            raise ValueError("The hparam ranking changed during finalization.")
     if hparam["selected_steps"]:
         _validate_hparam_checkpoints(rows, hparam["selected_steps"], remote=remote)
     # The experiment manifest is the terminal commit, so publish it only after the report is durable.
@@ -563,7 +570,9 @@ def _hparam_selection_report(root: Path, *, remote: str | None) -> dict[str, Any
     return {
         "path": str(path),
         **files[str(path)],
+        "ranking_path": str(ranking_path),
         "ranking_text": files.get(str(ranking_path), {}).get("text"),
+        "ranking_sha256": files.get(str(ranking_path), {}).get("sha256"),
     }
 
 
