@@ -5,10 +5,11 @@ import hashlib
 import json
 from pathlib import Path
 
+from agent_tool_test_helpers import run_execution_preflight_fixture
 import pytest
 import yaml
 
-from agent_tools import plans
+from agent_tools import managed_scheduler, plans
 from agent_tools.configs import config_summary
 from agent_tools.decision_models import DecisionStatus
 from agent_tools.domain.finetune_hparam_profile import (
@@ -18,6 +19,11 @@ from agent_tools.domain.finetune_hparam_profile import (
 )
 from agent_tools.models import REPO_ROOT
 from agent_tools.plan_hparam import apply_search_overrides, validate_final_eval_config_bytes
+
+
+@pytest.fixture(autouse=True)
+def _stub_execution_target(monkeypatch):
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
 
 
 def _recipe(*, label: str = "ahi", variant: str = "sleep2vec", max_runs: int | None = None) -> dict:

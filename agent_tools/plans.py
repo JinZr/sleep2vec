@@ -4,7 +4,11 @@ import copy
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 from typing import Any
 
 import yaml
@@ -20,6 +24,7 @@ from . import (
     schema_map,
 )
 from .adapters import SUPPORTED_TASKS, composite_adapter, get_adapter
+from .adapters.base import PlanRegistrationPreflightError
 from .configs import config_summary
 from .decisions import (
     DecisionIssue,
@@ -630,6 +635,8 @@ def build_plan(
     registered_recipe_path: str | Path | None = None,
     allow_adaptive_workflow: bool = False,
     plan_controller: str | None = None,
+    run_index_offset: int | None = None,
+    validate_only: bool = False,
 ) -> DecisionReport:
     out = canonical_local_experiment_root(output_dir, Path.cwd())
     recipe, cfg, report = preflight_plan(
@@ -682,9 +689,26 @@ def build_plan(
             raise ValueError("Validated source config bytes do not match their SHA-256.")
         if source_config_sha256 is not None and source_config_sha256 != validated_config_sha256:
             raise ValueError("Source config does not match the externally bound SHA-256.")
+    task = recipe.get("task")
+    plan_adapter = get_adapter(task)
     if _has_output_artifact_issue(report):
         return report
+    if validate_only and not (plan_adapter is not None and plan_adapter.materializes_plan):
+        report = _append_issues(
+            report,
+            [
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "validate_only",
+                    "plan --validate-only currently supports only materialized hyper-parameter recipes.",
+                    None,
+                    {"preflight_before_workspace": True},
+                )
+            ],
+        )
     if report.exit_code != 0:
+        if validate_only:
+            return report
         preflight_failed_before_workspace = bool(experiment_metadata_issues(recipe)) or any(
             issue.field in {"experiment", "step", "execution.workdir"}
             or issue.field.startswith("experiment.")
@@ -704,8 +728,16 @@ def build_plan(
             )
         return report
 
-    task = recipe.get("task")
-    plan_adapter = get_adapter(task)
+    root = experiment_root(recipe)
+    if root is None:
+        raise ValueError("experiment.root is required.")
+    recipe["experiment"]["root"] = str(root)
+    ensure_experiment_workspace(
+        recipe,
+        out,
+        plan_controller=plan_controller,
+        validate_only=True,
+    )
     input_snapshots = []
     if plan_adapter is not None:
         input_paths = plan_adapter.frozen_input_paths(recipe)
@@ -756,9 +788,13 @@ def build_plan(
         source_config_path,
         validated_config_sha256,
     )
-    ensure_experiment_workspace(recipe, out, register_step=False, plan_controller=plan_controller)
 
     write_out = out
+    generated_staging = False
+    output_identity = None
+    if plan_adapter is not None and plan_adapter.materializes_plan and os.path.lexists(out):
+        output_stat = out.lstat()
+        output_identity = (output_stat.st_dev, output_stat.st_ino)
     if defer_commit and staging_dir is None:
         raise ValueError("Deferred plan commit requires a staging directory.")
     if staging_dir is not None:
@@ -775,29 +811,95 @@ def build_plan(
         if write_out.is_symlink() or write_out.exists():
             raise ValueError(f"Atomic plan staging directory must not exist: {write_out}")
         write_out.mkdir(parents=True)
+    elif plan_adapter is not None and plan_adapter.materializes_plan:
+        staging_parent = out.parent
+        if os.path.lexists(out) and out.lstat().st_dev != out.parent.lstat().st_dev:
+            # A plan may itself be a mount point, so its parent is not always the destination filesystem.
+            staging_parent = out
+        while not os.path.lexists(staging_parent):
+            staging_parent = staging_parent.parent
+        write_out = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".staging", dir=staging_parent))
+        generated_staging = True
 
     if plan_adapter is not None and plan_adapter.materializes_plan:
-        plan_adapter.write_plan(
-            recipe,
-            out,
-            write_out=write_out,
-            unlock_final_test=unlock_final_test,
-            source_config_bytes=validated_config_bytes,
-            source_config_sha256=validated_config_sha256,
-        )
+        try:
+            plan_adapter.write_plan(
+                recipe,
+                out,
+                write_out=write_out,
+                unlock_final_test=unlock_final_test,
+                source_config_bytes=validated_config_bytes,
+                source_config_sha256=validated_config_sha256,
+            )
+            preflight_summary = plan_adapter.precommit_plan(out, write_out=write_out)
+            if preflight_summary:
+                report = _append_issues(
+                    report,
+                    [DecisionIssue(DecisionStatus.PASS, "execution.preflight", preflight_summary)],
+                )
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            if write_out.exists() and not write_out.is_symlink():
+                shutil.rmtree(write_out)
+            if isinstance(exc, OSError) and not isinstance(exc, subprocess.TimeoutExpired):
+                raise
+            return _append_issues(
+                report,
+                [
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "execution.preflight",
+                        str(exc),
+                        None,
+                        {"preflight_before_workspace": True},
+                    )
+                ],
+            )
+        if validate_only:
+            shutil.rmtree(write_out)
+            return report
         if defer_commit:
             return report
-        if staging_dir is not None:
-            out.parent.mkdir(parents=True, exist_ok=True)
-            write_out.replace(out)
-        plan_adapter.commit_plan(out)
+        current_output_identity = None
+        if os.path.lexists(out):
+            output_stat = out.lstat()
+            current_output_identity = (output_stat.st_dev, output_stat.st_ino)
+        if current_output_identity != output_identity:
+            shutil.rmtree(write_out)
+            raise ValueError(f"Atomic plan output changed during preflight: {out}")
+        out_preexisted = current_output_identity is not None
+        if staging_dir is not None or generated_staging:
+            try:
+                _publish_materialized_plan(write_out, out, out_preexisted=out_preexisted)
+            except BaseException:
+                if write_out.exists() and not write_out.is_symlink():
+                    shutil.rmtree(write_out)
+                raise
+        try:
+            plan_adapter.commit_plan(out, preflight_validated=True)
+        except PlanRegistrationPreflightError as exc:
+            if not out_preexisted and out.exists() and not out.is_symlink():
+                shutil.rmtree(out)
+            return _append_issues(
+                report,
+                [
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "execution.preflight",
+                        str(exc),
+                        None,
+                        {"preflight_before_workspace": True},
+                    )
+                ],
+            )
     else:
+        if staging_dir is None:
+            ensure_experiment_workspace(recipe, out, register_step=False, plan_controller=plan_controller)
         root = experiment_root(recipe)
         if root is None:
             raise ValueError("experiment.root is required.")
         run_adapter = get_adapter(task)
         assert run_adapter is not None
-        run_index = next_run_index(recipe)
+        run_index = next_run_index(recipe) if run_index_offset is None else run_index_offset
         run = plan_contract.generic_run_contract(recipe, out, run_index, run_adapter)
         run_id = run["run_id"]
         run_name = run["run_name"]
@@ -842,7 +944,12 @@ def build_plan(
         if staging_dir is not None:
             out.parent.mkdir(parents=True, exist_ok=True)
             write_out.replace(out)
-        ensure_experiment_workspace(recipe, out, plan_controller=plan_controller)
+        ensure_experiment_workspace(
+            recipe,
+            out,
+            plan_controller=plan_controller,
+            allow_published_plan=staging_dir is not None,
+        )
         manifest_row = {
             **run,
             "parameter_summary": "single resolved recipe",
@@ -857,6 +964,48 @@ def build_plan(
             {"step_id": (recipe.get("step") or {}).get("id"), "plan_dir": str(out), "run_count": 1},
         )
     return report
+
+
+def _publish_materialized_plan(write_out: Path, out: Path, *, out_preexisted: bool) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if not out_preexisted:
+        write_out.replace(out)
+        return
+    if out.is_symlink() or not out.is_dir():
+        raise ValueError(f"Atomic plan output is not a directory: {out}")
+
+    backup_parent = out if write_out.parent == out else out.parent
+    backup = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".backup", dir=backup_parent))
+    source_names = {path.name for path in write_out.iterdir()}
+    replaced_names = set(source_names)
+    for optional_name in ("final_external_test.sh", "config.final_eval.yaml"):
+        if optional_name not in source_names:
+            replaced_names.add(optional_name)
+    old_order = ["plan.json", *sorted(replaced_names - {"plan.json"})]
+    new_order = [*sorted(source_names - {"plan.json"}), "plan.json"]
+    moved_old = []
+    moved_new = []
+    try:
+        # Hide the old manifest while plan-owned top-level entries change; restore it last on failure.
+        for name in old_order:
+            current = out / name
+            if os.path.lexists(current):
+                current.replace(backup / name)
+                moved_old.append(name)
+        for name in new_order:
+            (write_out / name).replace(out / name)
+            moved_new.append(name)
+    except BaseException:
+        for name in reversed(moved_new):
+            current = out / name
+            if os.path.lexists(current):
+                current.replace(write_out / name)
+        for name in reversed(moved_old):
+            (backup / name).replace(out / name)
+        shutil.rmtree(backup)
+        raise
+    shutil.rmtree(backup)
+    write_out.rmdir()
 
 
 def preflight_plan(

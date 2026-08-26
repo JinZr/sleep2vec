@@ -63,4 +63,6 @@ def report_text(report: DecisionReport) -> str:
         for issue in report.issues:
             if issue.status == DecisionStatus.WARN:
                 lines.append(f"WARN {issue.field}: {issue.message}")
+            elif issue.status == DecisionStatus.PASS:
+                lines.extend([issue.message, ""])
     return "\n".join(lines).rstrip() + "\n"

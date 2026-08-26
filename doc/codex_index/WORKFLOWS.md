@@ -140,6 +140,16 @@ view; selection is only the best observed candidate within the frozen domain,
 metric, split, and budget. This profile does not enter the adaptive controller.
 It does not recursively inventory or claim coverage of unknown config fields.
 
+Ordinary hparam plans and adaptive rounds are staged on the destination
+filesystem and must pass frozen-bundle recompilation, execution-host topology,
+target identity, and complete argv validation before publication or canonical
+registration. `plan --validate-only` runs that same path for an ordinary
+`hparam_tune` recipe without leaving workspace or lifecycle state. The shared
+`plan.md`/stdout provenance card projects the authenticated execution snapshot
+and final generated configs; launch still live-reprobes snapshot equality and
+output topology. These deterministic checks do not estimate storage capacity,
+and unavailable Slurm accounting remains diagnostic rather than blocking.
+
 After all ordinary hparam runs are terminal, `experiment-status` recommends
 `hparam-select`. Selection writes canonical rank/winner fields plus a
 hash-bound deterministic `reports/hparam_selection.md`. Pure ordinary-hparam
@@ -318,7 +328,9 @@ unchanged polling does not produce a log entry.
 `experiment-run` owns the resumable source-ranking-to-external-evaluation flow.
 It accepts only checkpoint identities frozen by the registered ranking,
 preflights external recipes, and runs package-local inference in isolated
-attempt roots. Resume and retry require exact canonical evidence, and
+attempt roots. Derived attempts are target- and topology-preflighted as a
+scheduler group before any member is registered. Resume and retry require exact
+canonical evidence, and
 finalization requires one verified success per declared job. See the
 [experiment pipeline contract](../agent_contracts/experiment_pipeline.md).
 

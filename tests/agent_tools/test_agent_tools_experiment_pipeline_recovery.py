@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 from agent_tool_test_helpers import write_finetune_recipe
@@ -154,6 +155,11 @@ def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path
 
     monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
     monkeypatch.setattr(experiment_pipeline, "_ensure_retry_preflight", retry_preflight)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_prepare_attempt_registration_groups",
+        lambda _root, _spec, items, **_kwargs: {item[0]["id"]: None for item in items},
+    )
     monkeypatch.setattr(experiment_pipeline, "_materialize_attempt", materialize)
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
@@ -162,7 +168,7 @@ def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path
         root,
         pipeline_dir,
         spec,
-        {"age": {}},
+        {"age": {"variant": "sleep2vec2"}},
         attempts,
     )
 
@@ -178,6 +184,274 @@ def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path
         "failed",
         "running",
     ]
+
+
+def test_retry_registration_preflight_failure_does_not_block_independent_retry(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    spec = _spec(root)
+    second_job = dict(spec["jobs"][0], id="age-hsp-i2-bcg", modality="bcg", num_workers=16)
+    spec["jobs"].append(second_job)
+    attempts = [{"job_id": job["id"], "attempt": 1, "status": "failed", "verified": "false"} for job in spec["jobs"]]
+    order = []
+
+    def attempt_recipe(_pipeline_dir, _spec, job, _selection, attempt):
+        base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
+        return {"job": job["id"]}, base.with_suffix(".yaml"), base / "plan", base / "results"
+
+    def prepare_registration(_root, _spec, items, **_kwargs):
+        job_id = items[0][0]["id"]
+        order.append(f"prepare:{job_id}")
+        if job_id == "age-hsp-i2-psg":
+            raise experiment_pipeline.AttemptRegistrationPreflightError("target argv rejected")
+        return {job_id: None}
+
+    def materialize(_root, _spec, job, _selection, attempt, **_paths):
+        order.append(f"materialize:{job['id']}")
+        return {"job_id": job["id"], "attempt": attempt, "status": "planned", "verified": "false"}
+
+    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(experiment_pipeline, "_ensure_retry_preflight", lambda *_args: None)
+    monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_registration_groups", prepare_registration)
+    monkeypatch.setattr(experiment_pipeline, "_materialize_attempt", materialize)
+    monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
+
+    updated, created = experiment_pipeline._create_needed_retries(
+        root,
+        pipeline_dir,
+        spec,
+        {"age": {"variant": "sleep2vec2"}},
+        attempts,
+    )
+
+    assert created is True
+    assert order == [
+        "prepare:age-hsp-i2-psg",
+        "prepare:age-hsp-i2-bcg",
+        "materialize:age-hsp-i2-bcg",
+    ]
+    assert updated[0]["retry_preparation_error"] == "target argv rejected"
+    assert [row["attempt"] for row in updated if row["job_id"] == "age-hsp-i2-psg"] == [1]
+    assert [row["attempt"] for row in updated if row["job_id"] == "age-hsp-i2-bcg"] == [1, 2]
+
+
+@pytest.mark.parametrize("failure_kind", ["topology", "target"])
+def test_initial_registration_preflight_groups_variants_before_publishing_any_attempt(
+    tmp_path: Path,
+    monkeypatch,
+    failure_kind: str,
+):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    experiment = {
+        "id": "unit",
+        "title": "Unit",
+        "objective": "Reject the external matrix before registration.",
+        "root": str(root),
+        "baseline": {"type": "none"},
+        "status": "active",
+    }
+    (root / "experiment.yaml").write_text(yaml.safe_dump({"experiment": experiment}, sort_keys=False))
+    (root / "run_manifest.tsv").write_text("step_id\trun_id\n")
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+
+    spec = _spec(root)
+    second = dict(spec["jobs"][0], id="age-hsp-i2-bcg", modality="bcg")
+    third = dict(
+        spec["jobs"][0],
+        id="age-hsp-i2-ecg",
+        checkpoint_source="age-root",
+        modality="ecg",
+        variant="sleep2vec",
+    )
+    spec["jobs"].extend([second, third])
+    selection_fields = {
+        "config": str(tmp_path / "config.yaml"),
+        "checkpoint": str(tmp_path / "model.ckpt"),
+        "label_name": "age",
+    }
+    selections = {
+        "age": {**selection_fields, "variant": "sleep2vec2", "config_sha256": "2" * 64},
+        "age-root": {**selection_fields, "variant": "sleep2vec", "config_sha256": "1" * 64},
+    }
+
+    def build_staged_plan(*, recipe_path, output_dir, staging_dir, run_index_offset, **_kwargs):
+        recipe = yaml.safe_load(Path(recipe_path).read_text())
+        job_id = recipe["name"].split("__")[1]
+        run_id = f"run-{run_index_offset:03d}"
+        module = "sleep2vec2.infer" if recipe["variant"] == "sleep2vec2" else "sleep2vec.infer"
+        command = f"/runtime/python -m {module} --config frozen.yaml"
+        semantic_script = Path(output_dir) / "runs" / f"{run_id}--{job_id}" / "launch.sh"
+        physical_script = Path(staging_dir) / semantic_script.relative_to(output_dir)
+        physical_script.parent.mkdir(parents=True)
+        physical_script.write_text(command + "\n")
+        (Path(staging_dir) / "plan.json").write_text(
+            json.dumps(
+                {
+                    "runs": [
+                        {
+                            "step_id": "external-evaluate",
+                            "run_id": run_id,
+                            "run_name": job_id,
+                            "script": str(semantic_script),
+                            "command": command,
+                        }
+                    ]
+                }
+            )
+            + "\n"
+        )
+        return SimpleNamespace(exit_code=0)
+
+    target_calls = []
+    topology_calls = []
+
+    def reject_unsafe_group(root_path, paths, *, remote=None):
+        assert Path(root_path) == Path("/")
+        assert remote is None
+        topology_calls.append([Path(path) for path in paths])
+        if failure_kind == "topology" and len(paths) == 5:
+            raise ValueError("frozen output topology rejected")
+
+    def reject_second_group(_execution, runs, *, plan_label):
+        assert plan_label == "pipeline"
+        assert all(Path(run["script"]).is_file() for run in runs)
+        target_calls.append([run["run_id"] for run in runs])
+        if failure_kind == "target" and len(runs) == 2:
+            raise ValueError("frozen argv rejected")
+        return {"runtime_commit": "a" * 40}
+
+    monkeypatch.setattr(experiment_pipeline, "_ensure_initial_preflight", lambda *_args: None)
+    monkeypatch.setattr(experiment_pipeline, "build_plan", build_staged_plan)
+    monkeypatch.setattr(experiment_pipeline.exp_io, "validate_managed_output_paths", reject_unsafe_group)
+    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "inspect_execution_target", reject_second_group)
+
+    expected_error = "frozen output topology rejected" if failure_kind == "topology" else "frozen argv rejected"
+    with pytest.raises(experiment_pipeline.AttemptRegistrationPreflightError, match=expected_error):
+        experiment_pipeline._load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
+
+    assert [len(paths) for paths in topology_calls] == [3, 5]
+    expected_target_calls = [["run-002"]] if failure_kind == "topology" else [["run-002"], ["run-000", "run-001"]]
+    assert target_calls == expected_target_calls
+    assert not (pipeline_dir / "jobs.tsv").exists()
+    assert not (root / "steps").exists()
+    assert read_run_manifest(root) == []
+    assert not list((pipeline_dir / "plans").rglob("attempt-001"))
+    assert not list(pipeline_dir.rglob("*.staging"))
+    assert not list(pipeline_dir.rglob(managed_scheduler.EXECUTION_SNAPSHOT_NAME))
+
+
+def test_registration_preflight_freezes_complete_group_and_rejects_drift(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    spec = _spec(root)
+    second = dict(spec["jobs"][0], id="age-hsp-i2-bcg", modality="bcg")
+    spec["jobs"].append(second)
+    selection = {"variant": "sleep2vec2", "config_sha256": "2" * 64}
+    attempts = []
+    for job in spec["jobs"]:
+        recipe_path = pipeline_dir / "recipes" / job["id"] / "attempt-001.yaml"
+        plan_dir = pipeline_dir / "plans" / job["id"] / "attempt-001"
+        result_root = pipeline_dir / "results" / job["id"] / "attempt-001"
+        recipe_path.parent.mkdir(parents=True, exist_ok=True)
+        recipe_path.write_text("task: infer\n")
+        attempts.append((job, selection, 1, recipe_path, plan_dir, result_root))
+
+    first_plan_dir = attempts[0][4]
+    first_script = first_plan_dir / "runs" / "run-000--first" / "launch.sh"
+    first_script.parent.mkdir(parents=True)
+    first_script.write_text("/runtime/python -m sleep2vec2.infer --config first.yaml\n")
+    (first_plan_dir / "plan.json").write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "step_id": "external-evaluate",
+                        "run_id": "run-000",
+                        "script": str(first_script),
+                        "command": first_script.read_text().strip(),
+                    }
+                ]
+            }
+        )
+        + "\n"
+    )
+
+    stage_count = 0
+
+    def prepare_plan(_job_id, _selection, _recipe_path, plan_dir, *, run_index_offset):
+        nonlocal stage_count
+        stage_count += 1
+        staging_dir = plan_dir.parent / f".{plan_dir.name}.{stage_count}.staging"
+        run_id = f"run-{run_index_offset:03d}"
+        script = staging_dir / "runs" / f"{run_id}--pending" / "launch.sh"
+        script.parent.mkdir(parents=True)
+        command = "/runtime/python -m sleep2vec2.infer --config pending.yaml"
+        script.write_text(command + "\n")
+        (staging_dir / "plan.json").write_text(
+            json.dumps(
+                {
+                    "runs": [
+                        {
+                            "step_id": "external-evaluate",
+                            "run_id": run_id,
+                            "script": str(plan_dir / script.relative_to(staging_dir)),
+                            "command": command,
+                        }
+                    ]
+                }
+            )
+            + "\n"
+        )
+        return staging_dir, staging_dir
+
+    target_snapshot = {"validated_argv_sha256": "a" * 64}
+
+    def inspect(_execution, runs, *, plan_label):
+        assert plan_label == "pipeline"
+        assert [run["run_id"] for run in runs] == ["run-000", "run-001"]
+        assert all(Path(run["script"]).is_file() for run in runs)
+        return dict(target_snapshot)
+
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "read_run_manifest",
+        lambda _root: [{"step_id": "external-evaluate", "run_id": "run-000"}],
+    )
+    monkeypatch.setattr(experiment_pipeline, "next_run_index", lambda _recipe: 1)
+    monkeypatch.setattr(experiment_pipeline, "_validate_new_attempt_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_plan", prepare_plan)
+    monkeypatch.setattr(experiment_pipeline.exp_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "inspect_execution_target", inspect)
+
+    prepared = experiment_pipeline._prepare_attempt_registration_groups(
+        root,
+        spec,
+        attempts,
+        snapshot_owner_dirs={"sleep2vec2": pipeline_dir},
+    )
+
+    snapshot_path = pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
+    assert prepared[spec["jobs"][0]["id"]] is None
+    assert prepared[second["id"]] is not None
+    assert json.loads(snapshot_path.read_text()) == target_snapshot
+    shutil.rmtree(prepared[second["id"]])
+
+    target_snapshot["validated_argv_sha256"] = "b" * 64
+    with pytest.raises(experiment_pipeline.AttemptRegistrationPreflightError, match="snapshot changed"):
+        experiment_pipeline._prepare_attempt_registration_groups(
+            root,
+            spec,
+            attempts,
+            snapshot_owner_dirs={"sleep2vec2": pipeline_dir},
+        )
+
+    assert json.loads(snapshot_path.read_text()) == {"validated_argv_sha256": "a" * 64}
+    assert not list(pipeline_dir.rglob("*.staging"))
 
 
 @pytest.mark.parametrize(

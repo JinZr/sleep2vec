@@ -28,6 +28,10 @@ from typing import Any, Mapping
 from ..decision_models import DecisionIssue, DecisionReport, ResolvedDecision
 
 
+class PlanRegistrationPreflightError(ValueError):
+    pass
+
+
 class TaskAdapter:
     """One agent task's structured boundary.
 
@@ -150,10 +154,14 @@ class TaskAdapter:
         root and ``write_out`` may be a physical staging root."""
         raise NotImplementedError
 
-    def commit_plan(self, out: Path) -> None:
+    def commit_plan(self, out: Path, *, preflight_validated: bool = False) -> None:
         """Register a fully materialized plan; called only when
         materializes_plan is True."""
         raise NotImplementedError
+
+    def precommit_plan(self, out: Path, *, write_out: Path) -> str | None:
+        """Validate a materialized plan before publication or registration."""
+        return None
 
     def planned_plan_paths(
         self,

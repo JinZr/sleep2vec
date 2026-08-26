@@ -128,6 +128,7 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
         return root
 
     emit_plan_event = True
+    registration_prevalidated = False
     if os.path.lexists(round_dir):
         plan = _validate_initial_round(round_dir, round_recipe_payload, source_config_bytes)
         expected_keys = {managed_run_key(run) for run in plan["runs"]}
@@ -139,24 +140,34 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
             raise ValueError(f"Canonical adaptive round registration is partial; missing {missing}")
         emit_plan_event = not registered_keys
         if not registered_keys:
-            candidate_dir = _stage_initial_round(round_dir, round_recipe_payload, source_config_sha256)
+            candidate_dir = _stage_round(round_dir, recipe, recipe_path, 0, source_config_sha256)
             try:
                 if artifacts.plan_tree_sha256(round_dir) != artifacts.plan_tree_sha256(candidate_dir):
                     raise ValueError(f"Uncommitted adaptive round differs from deterministic regeneration: {round_dir}")
             finally:
                 shutil.rmtree(candidate_dir)
+            registration_prevalidated = True
     else:
-        staging_dir = _stage_initial_round(round_dir, round_recipe_payload, source_config_sha256)
+        staging_dir = _stage_round(round_dir, recipe, recipe_path, 0, source_config_sha256)
         try:
-            round_dir.parent.mkdir(parents=True, exist_ok=True)
-            staging_dir.replace(round_dir)
+            _publish_staged_round(staging_dir, round_dir)
         except BaseException:
             if staging_dir.exists() and not staging_dir.is_symlink():
                 shutil.rmtree(staging_dir)
             raise
         _validate_initial_round(round_dir, round_recipe_payload, source_config_bytes)
+        registration_prevalidated = True
 
-    plan = plan_hparam.commit_hparam_plan(round_dir, emit_event=emit_plan_event)
+    try:
+        plan = plan_hparam.commit_hparam_plan(
+            round_dir,
+            emit_event=emit_plan_event,
+            preflight_validated=registration_prevalidated,
+        )
+    except plan_hparam.HparamRegistrationPreflightError:
+        if not recovering and round_dir.exists() and not round_dir.is_symlink():
+            shutil.rmtree(round_dir)
+        raise
     _write_initial_registry(root, round_dir, plan)
     write_text(adaptive_dir / "README.md", _adaptive_readme(workflow))
     _validate_workflow_payload(root, workflow, require_adaptive_commit=False)
@@ -1145,26 +1156,47 @@ def adaptive_step(
             if round_recipe_payload is not None and isinstance(recipe.get("_base_recipe"), dict)
             else None
         )
-        round_recipe = _write_round_recipe(
-            recipe_payload,
-            recipe_source,
-            next_dir,
-            next_round,
-        )
-        if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
-            raise ValueError("Agent proposal frozen source config changed during round materialization.")
-        report = build_plan(
-            recipe_path=round_recipe,
-            output_dir=next_dir,
-            source_config_sha256=bound_config_sha256,
-            expected_recipe=expected_recipe,
-            expected_base_recipe=expected_base_recipe,
-            allow_adaptive_workflow=True,
-        )
-        if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
-            raise ValueError("Agent proposal frozen source config changed during plan materialization.")
-        if report.exit_code != 0:
-            raise RuntimeError(f"Round {next_round:03d} plan failed with exit code {report.exit_code}.")
+        try:
+            staging_dir = _stage_round(
+                next_dir,
+                recipe_payload,
+                recipe_source,
+                next_round,
+                bound_config_sha256,
+                expected_recipe=expected_recipe,
+                expected_base_recipe=expected_base_recipe,
+                bound_config_path=bound_config_path,
+            )
+        except BaseException:
+            if (
+                bound_config_path is not None
+                and next_dir.is_dir()
+                and not next_dir.is_symlink()
+                and list(next_dir.iterdir()) == [bound_config_path]
+                and not bound_config_path.is_symlink()
+            ):
+                bound_config_path.unlink()
+                next_dir.rmdir()
+            raise
+        try:
+            if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
+                raise ValueError("Agent proposal frozen source config changed during plan materialization.")
+            _publish_staged_round(
+                staging_dir,
+                next_dir,
+                bound_config_path=bound_config_path,
+                bound_config_sha256=bound_config_sha256,
+            )
+        except BaseException:
+            if staging_dir.exists() and not staging_dir.is_symlink():
+                shutil.rmtree(staging_dir)
+            raise
+        try:
+            plan_hparam.commit_hparam_plan(next_dir, preflight_validated=True)
+        except plan_hparam.HparamRegistrationPreflightError:
+            if next_dir.exists() and not next_dir.is_symlink():
+                shutil.rmtree(next_dir)
+            raise
         _append_registry_rows(root, next_round, next_dir)
         execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
         scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
@@ -1388,33 +1420,70 @@ def _validate_initial_round(
     return plan
 
 
-def _stage_initial_round(
+def _stage_round(
     round_dir: Path,
-    round_recipe_payload: dict[str, Any],
-    source_config_sha256: str,
+    recipe: dict[str, Any],
+    source_recipe_path: str | Path,
+    round_index: int,
+    source_config_sha256: str | None,
+    *,
+    expected_recipe: dict[str, Any] | None = None,
+    expected_base_recipe: dict[str, Any] | None = None,
+    bound_config_path: Path | None = None,
 ) -> Path:
-    staging_dir = round_dir.parent / f".round_000.{os.getpid()}.{time.time_ns()}.staging"
+    staging_dir = round_dir.parent / f".{round_dir.name}.{os.getpid()}.{time.time_ns()}.staging"
+    frozen_recipe = expected_recipe or _materialized_round_recipe(recipe, source_recipe_path, round_index)
+    if expected_base_recipe is None and isinstance(recipe.get("_base_recipe"), dict):
+        expected_base_recipe = _strip_internal_recipe_keys(copy.deepcopy(recipe["_base_recipe"]))
     try:
         with TemporaryDirectory(prefix="agent-tools-adaptive-init-") as temp_dir:
-            staged_recipe = Path(temp_dir) / "round_recipe.yaml"
-            staged_recipe.write_text(yaml.safe_dump(round_recipe_payload, sort_keys=False))
+            staged_recipe = _write_round_recipe(recipe, source_recipe_path, Path(temp_dir), round_index)
             report = build_plan(
                 recipe_path=staged_recipe,
                 output_dir=round_dir,
                 source_config_sha256=source_config_sha256,
+                expected_recipe=frozen_recipe,
+                expected_base_recipe=expected_base_recipe,
                 staging_dir=staging_dir,
                 defer_commit=True,
                 registered_recipe_path=round_dir / "round_recipe.yaml",
                 allow_adaptive_workflow=True,
             )
+            if report.exit_code == 0:
+                (staging_dir / "round_recipe.yaml").write_bytes(staged_recipe.read_bytes())
         if report.exit_code != 0:
-            raise RuntimeError(f"Round 000 plan failed with exit code {report.exit_code}.")
-        (staging_dir / "round_recipe.yaml").write_text(yaml.safe_dump(round_recipe_payload, sort_keys=False))
+            raise RuntimeError(f"Round {round_index:03d} plan failed with exit code {report.exit_code}.")
+        if bound_config_path is not None:
+            if source_config_sha256 is None:
+                raise ValueError("Agent proposal lacks a frozen source config SHA-256.")
+            if file_sha256(bound_config_path) != source_config_sha256:
+                raise ValueError("Agent proposal frozen source config changed during round materialization.")
+            (staging_dir / bound_config_path.name).write_bytes(bound_config_path.read_bytes())
         return staging_dir
     except BaseException:
         if staging_dir.exists() and not staging_dir.is_symlink():
             shutil.rmtree(staging_dir)
         raise
+
+
+def _publish_staged_round(
+    staging_dir: Path,
+    round_dir: Path,
+    *,
+    bound_config_path: Path | None = None,
+    bound_config_sha256: str | None = None,
+) -> None:
+    if os.path.lexists(round_dir):
+        if bound_config_path is None or bound_config_sha256 is None:
+            raise ValueError(f"Adaptive round output already exists: {round_dir}")
+        if round_dir.is_symlink() or not round_dir.is_dir():
+            raise ValueError(f"Adaptive round output is not a physical directory: {round_dir}")
+        if list(round_dir.iterdir()) != [bound_config_path] or file_sha256(bound_config_path) != bound_config_sha256:
+            raise ValueError(f"Adaptive round output changed before publication: {round_dir}")
+        bound_config_path.unlink()
+        round_dir.rmdir()
+    round_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir.replace(round_dir)
 
 
 def _write_initial_registry(root: Path, round_dir: Path, plan: dict[str, Any]) -> None:

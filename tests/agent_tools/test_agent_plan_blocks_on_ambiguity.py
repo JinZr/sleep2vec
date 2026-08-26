@@ -8,11 +8,17 @@ from pathlib import Path
 import subprocess
 import sys
 
-from agent_tool_test_helpers import survival_config_payload, write_finetune_recipe, write_survival_sidecars, write_yaml
+from agent_tool_test_helpers import (
+    run_execution_preflight_fixture,
+    survival_config_payload,
+    write_finetune_recipe,
+    write_survival_sidecars,
+    write_yaml,
+)
 import pytest
 import yaml
 
-from agent_tools import configs, experiments, plan_context, plan_contract, plan_hparam, plans
+from agent_tools import configs, experiments, managed_scheduler, plan_context, plan_contract, plan_hparam, plans
 from agent_tools.adapters.hparam_tune import HparamTuneAdapter
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
@@ -25,8 +31,14 @@ _RUNTIME_COMMIT = subprocess.run(
 ).stdout.strip()
 
 
+@pytest.fixture(autouse=True)
+def _stub_execution_target(monkeypatch):
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
+
+
 def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
+    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
+    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
 
 
 def _first_run(plan_dir: Path) -> dict:
@@ -2172,7 +2184,7 @@ def test_hparam_plan_materializes_config_validated_before_workspace_setup(tmp_pa
     base_recipe = Path(yaml.safe_load(recipe.read_text())["base_recipe"])
     config = Path(yaml.safe_load(base_recipe.read_text())["inputs"]["config"])
     validated_bytes = config.read_bytes()
-    real_ensure_workspace = plans.ensure_experiment_workspace
+    real_ensure_workspace = plan_hparam.ensure_experiment_workspace
 
     def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path, **workspace_options):
         payload = yaml.safe_load(config.read_text())
@@ -2180,7 +2192,7 @@ def test_hparam_plan_materializes_config_validated_before_workspace_setup(tmp_pa
         config.write_text(yaml.safe_dump(payload, sort_keys=False))
         return real_ensure_workspace(recipe_payload, output_dir, **workspace_options)
 
-    monkeypatch.setattr(plans, "ensure_experiment_workspace", mutate_source_after_preflight)
+    monkeypatch.setattr(plan_hparam, "ensure_experiment_workspace", mutate_source_after_preflight)
     output_dir = tmp_path / "plan"
 
     report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
@@ -2531,12 +2543,15 @@ def test_hparam_plan_removes_stale_final_script_when_overwrite_allowed_without_c
     stale_final_script.write_text("# stale final test script\n")
     stale_final_config = output_dir / "config.final_eval.yaml"
     stale_final_config.write_text("stale: true\n")
+    unrelated = output_dir / "unrelated.txt"
+    unrelated.write_text("preserve me\n")
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     assert not stale_final_script.exists()
     assert not stale_final_config.exists()
+    assert unrelated.read_text() == "preserve me\n"
     trial_script = Path(_first_run(output_dir)["script"]).read_text()
     assert "--no-test-after-fit" in trial_script
     assert "--test-after-fit" not in trial_script
@@ -3476,8 +3491,7 @@ def test_hparam_materialization_failure_does_not_register_plan(tmp_path: Path, m
 
     assert not (workspace / "steps" / step_id / "step.yaml").exists()
     assert read_run_manifest(workspace) == []
-    assert output_dir.exists()
-    assert not (output_dir / "plan.json").exists()
+    assert not output_dir.exists()
 
     monkeypatch.setattr(plan_hparam, "write_text", original_write_text)
     successful_dir = workspace / "successful-plan"

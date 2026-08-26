@@ -47,7 +47,8 @@ from agent_tools.experiment_workspace import (
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
+    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
+    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
 
 
 def _hparam_recipe(tmp_path: Path) -> Path:
@@ -1542,6 +1543,7 @@ def test_remote_output_validation_checks_root_itself_before_targets(monkeypatch)
 
     command, kwargs = calls[0]
     assert command[:2] == ["ssh", "unit-host"]
+    assert command[-1].index("for part in root.split(os.sep)[1:-1]") < command[-1].index("os.lstat(root)")
     assert command[-1].index("os.lstat(root)") < command[-1].index("for raw_target in targets")
     assert kwargs["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
 

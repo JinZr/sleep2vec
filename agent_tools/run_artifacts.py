@@ -555,13 +555,16 @@ def _validate_registered_run_parameters(
 def read_hparam_plan(
     run_dir: Path,
     *,
+    semantic_dir: Path | None = None,
     require_workspace_state: bool = True,
     require_adaptive_commit: bool = True,
 ) -> dict[str, Any]:
-    plan_path = run_dir / "plan.json"
-    resolved_recipe_path = run_dir / "recipe.resolved.yaml"
-    plan, resolved_recipe = _read_plan_documents(run_dir, require_resolved_sha256=True)
-    legacy_status = run_dir / "trial_status.tsv"
+    physical_dir = run_dir
+    plan_dir = semantic_dir or physical_dir
+    plan_path = physical_dir / "plan.json"
+    resolved_recipe_path = physical_dir / "recipe.resolved.yaml"
+    plan, resolved_recipe = _read_plan_documents(physical_dir, require_resolved_sha256=True)
+    legacy_status = physical_dir / "trial_status.tsv"
     if legacy_status.exists():
         raise ValueError(f"Legacy hparam status is read-only and cannot be managed: {legacy_status}")
     runs = plan.get("runs")
@@ -578,29 +581,29 @@ def read_hparam_plan(
     if workspace is None:
         raise ValueError("Invalid hparam workspace binding: experiment.root is required.")
     try:
-        run_dir.resolve().relative_to(workspace.resolve())
+        plan_dir.resolve().relative_to(workspace.resolve())
     except ValueError as exc:
         raise ValueError(f"Hparam plan must be inside experiment.root: {workspace}") from exc
-    experiment_manifest_path = workspace / "experiment.yaml"
     step_id = str(recipe["step"]["id"])
-    if not experiment_manifest_path.exists():
-        raise ValueError(f"Hparam plan is not bound to an initialized experiment workspace: {workspace}")
-    experiment_manifest = read_managed_yaml_mapping(
-        experiment_manifest_path.read_text(),
-        source=f"Managed experiment manifest {experiment_manifest_path}",
-    )
-    existing_experiment = experiment_manifest.get("experiment") if isinstance(experiment_manifest, dict) else None
     expected_experiment = recipe["experiment"]
-    if not isinstance(existing_experiment, dict) or any(
-        existing_experiment.get(field) != expected_experiment.get(field)
-        for field in ("id", "title", "objective", "root", "baseline")
-    ):
-        raise ValueError(f"Hparam plan experiment metadata differs from the managed workspace: {workspace}")
     experiment_id = str(expected_experiment["id"])
     for run in runs:
         if str(run["experiment_id"]) != experiment_id or str(run["step_id"]) != step_id:
             raise ValueError("Managed run identity does not match the hparam recipe workspace binding.")
     if require_workspace_state:
+        experiment_manifest_path = workspace / "experiment.yaml"
+        if not experiment_manifest_path.exists():
+            raise ValueError(f"Hparam plan is not bound to an initialized experiment workspace: {workspace}")
+        experiment_manifest = read_managed_yaml_mapping(
+            experiment_manifest_path.read_text(),
+            source=f"Managed experiment manifest {experiment_manifest_path}",
+        )
+        existing_experiment = experiment_manifest.get("experiment") if isinstance(experiment_manifest, dict) else None
+        if not isinstance(existing_experiment, dict) or any(
+            existing_experiment.get(field) != expected_experiment.get(field)
+            for field in ("id", "title", "objective", "root", "baseline")
+        ):
+            raise ValueError(f"Hparam plan experiment metadata differs from the managed workspace: {workspace}")
         step_manifest = read_step_manifest(workspace, step_id)
         expected_step_manifest = merge_step_manifest(
             step_manifest,
@@ -686,33 +689,39 @@ def read_hparam_plan(
     if frozen_recipe != resolved_recipe:
         raise ValueError(f"Hparam plan recipe differs from recipe.resolved.yaml: {resolved_recipe_path}")
     for run in runs:
-        verify_run_snapshot(run)
+        physical_run = dict(run)
+        for field in ("config", "script", "scheduler_script"):
+            if run.get(field) not in (None, ""):
+                physical_run[field] = str(_physical_plan_path(Path(str(run[field])), plan_dir, physical_dir))
+        verify_run_snapshot(physical_run)
     typed_plan = recipe.get("task") == "hparam_tune"
     pass_plan = plan.get("status") == "PASS"
     if typed_plan != pass_plan:
         raise ValueError(f"Hparam plan has an incomplete static contract: {plan_path}")
     if typed_plan:
-        _validate_local_hparam_plan_contract(plan, recipe, run_dir, runs)
+        _validate_local_hparam_plan_contract(plan, recipe, physical_dir, plan_dir, runs)
+        _validate_hparam_execution_snapshot(plan, physical_dir, plan_dir)
     if require_adaptive_commit:
-        _validate_adaptive_workflow_commit(run_dir, recipe)
+        _validate_adaptive_workflow_commit(plan_dir, recipe)
     return plan
 
 
 def _validate_local_hparam_plan_contract(
     plan: dict[str, Any],
     recipe: dict[str, Any],
-    run_dir: Path,
+    physical_dir: Path,
+    plan_dir: Path,
     runs: list[dict[str, Any]],
 ) -> None:
-    plan_path = run_dir / "plan.json"
-    resolved_plan_dir = run_dir.resolve()
+    plan_path = physical_dir / "plan.json"
+    resolved_plan_dir = plan_dir.resolve()
     first_run_id = str(runs[0].get("run_id") or "")
     match = re.fullmatch(r"run-(\d+)", first_run_id)
     if match is None:
         raise ValueError(f"Hparam plan has an invalid first run id: {first_run_id}")
     adapter = get_adapter("hparam_tune")
     assert adapter is not None
-    source_config = resolved_plan_dir / "config.source.yaml"
+    source_config = physical_dir / "config.source.yaml"
     if not source_config.is_file():
         raise FileNotFoundError(f"Missing frozen hparam source config: {source_config}")
     contract = adapter.compile_plan_contract(
@@ -722,27 +731,64 @@ def _validate_local_hparam_plan_contract(
         config_bytes=source_config.read_bytes(),
     )
     _validate_plan_contract_runs(runs, contract["runs"], plan_path)
-    launch_script = resolved_plan_dir / "run_all.sh"
+    launch_script = physical_dir / "run_all.sh"
     if not launch_script.is_file() or launch_script.read_text() != contract["launch_script_text"]:
         raise ValueError(f"Hparam plan launch script differs from its frozen recipe: {launch_script}")
     for run, run_files in zip(runs, contract["run_files"]):
-        if Path(run["config"]).read_bytes() != run_files["config_bytes"]:
+        config_path = _physical_plan_path(Path(run["config"]), resolved_plan_dir, physical_dir)
+        script_path = _physical_plan_path(Path(run["script"]), resolved_plan_dir, physical_dir)
+        if config_path.read_bytes() != run_files["config_bytes"]:
             raise ValueError(f"Hparam plan config differs from its frozen recipe: {run['run_id']}")
-        if Path(run["script"]).read_text() != run_files["script_text"]:
+        if script_path.read_text() != run_files["script_text"]:
             raise ValueError(f"Hparam plan script differs from its frozen recipe: {run['run_id']}")
         scheduler_text = run_files.get("scheduler_script_text")
-        if scheduler_text is not None and Path(run["scheduler_script"]).read_text() != scheduler_text:
+        scheduler_path = _physical_plan_path(
+            Path(str(run.get("scheduler_script") or "")), resolved_plan_dir, physical_dir
+        )
+        if scheduler_text is not None and scheduler_path.read_text() != scheduler_text:
             raise ValueError(f"Hparam Slurm script differs from its frozen recipe: {run['run_id']}")
     final_path, final_command = plan_contract.validate_final_eval_contract(plan, recipe, resolved_plan_dir, contract)
     if final_path is not None:
-        if not final_path.is_file() or file_sha256(final_path) != plan["final_eval_config"]["sha256"]:
+        physical_final_path = _physical_plan_path(final_path, resolved_plan_dir, physical_dir)
+        if not physical_final_path.is_file() or file_sha256(physical_final_path) != plan["final_eval_config"]["sha256"]:
             raise ValueError(f"Frozen final evaluation config changed after planning: {final_path}")
-    final_script = resolved_plan_dir / "final_external_test.sh"
+    final_script = physical_dir / "final_external_test.sh"
     if (final_command is not None) != final_script.is_file():
         requirement = "missing" if final_command is not None else "unexpected"
         raise ValueError(f"Hparam plan has {requirement} final external-test script: {final_script}")
     if final_command is not None and final_script.read_text() != contract["final_script_text"]:
         raise ValueError(f"Hparam final external-test script differs from its frozen recipe: {final_script}")
+
+
+def _physical_plan_path(path: Path, semantic_dir: Path, physical_dir: Path) -> Path:
+    try:
+        relative = path.relative_to(semantic_dir)
+    except ValueError:
+        return path
+    return physical_dir / relative
+
+
+def _validate_hparam_execution_snapshot(
+    plan: dict[str, Any],
+    physical_dir: Path,
+    plan_dir: Path,
+) -> None:
+    binding = plan.get("execution_snapshot")
+    if binding is None:
+        return
+    expected_path = plan_dir.resolve() / "execution_snapshot.json"
+    if not isinstance(binding, dict) or set(binding) != {"path", "sha256"}:
+        raise ValueError(f"Hparam execution snapshot binding is invalid: {physical_dir / 'plan.json'}")
+    if binding["path"] != str(expected_path) or not re.fullmatch(r"[0-9a-f]{64}", str(binding["sha256"])):
+        raise ValueError(f"Hparam execution snapshot binding is invalid: {physical_dir / 'plan.json'}")
+    snapshot_path = physical_dir / "execution_snapshot.json"
+    if snapshot_path.is_symlink() or not snapshot_path.is_file() or snapshot_path.stat().st_nlink != 1:
+        raise ValueError(f"Hparam execution snapshot is not an independent regular file: {snapshot_path}")
+    if file_sha256(snapshot_path) != binding["sha256"]:
+        raise ValueError(f"Hparam execution snapshot changed after planning: {snapshot_path}")
+    snapshot = read_json(snapshot_path)
+    if not isinstance(snapshot, dict):
+        raise ValueError(f"Hparam execution snapshot must be a mapping: {snapshot_path}")
 
 
 def plan_tree_sha256(root: Path) -> str:

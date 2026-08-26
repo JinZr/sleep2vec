@@ -23,7 +23,8 @@ _RUNTIME_COMMIT = subprocess.run(
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
+    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
+    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
 
 
 def _hparam_recipe(
@@ -34,7 +35,7 @@ def _hparam_recipe(
     variant: str = "sleep2vec",
 ) -> Path:
     base = write_finetune_recipe(tmp_path, variant=variant)
-    execution_payload = dict(execution or {})
+    execution_payload = {"workdir": str(tmp_path)} if execution is None else dict(execution)
     manager_runtime = (
         str(execution_payload.get("target", "local") or "local") == "local"
         and execution_payload.get("workdir") in (None, "", str(REPO_ROOT))
@@ -1332,7 +1333,7 @@ def test_hparam_external_eval_rejects_workspace_ranking_without_current_step(tmp
 def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
     tmp_path: Path,
 ):
-    recipe = _hparam_recipe(tmp_path, run_count=3)
+    recipe = _hparam_recipe(tmp_path, execution={}, run_count=3)
     payload = yaml.safe_load(recipe.read_text())
     base_recipe = Path(payload["base_recipe"])
     base_payload = yaml.safe_load(base_recipe.read_text())

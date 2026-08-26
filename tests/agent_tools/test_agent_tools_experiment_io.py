@@ -670,6 +670,17 @@ def test_managed_output_preflight_rejects_unsafe_topology(tmp_path: Path, target
         experiment_io.validate_managed_output_paths(tmp_path, [output])
 
 
+def test_managed_output_preflight_rejects_symlink_above_workspace_root(tmp_path: Path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(outside, target_is_directory=True)
+    root = alias / "workspace"
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        experiment_io.validate_managed_output_paths(root, [root / "result.tsv"])
+
+
 def test_remote_managed_output_preflight_fails_closed(monkeypatch):
     calls = []
 

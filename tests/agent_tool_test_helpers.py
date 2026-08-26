@@ -1,8 +1,50 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
+import subprocess
+import sys
 
 import yaml
+
+
+def run_execution_preflight_fixture(execution: dict, command: list[str]) -> subprocess.CompletedProcess:
+    from agent_tools import managed_scheduler
+
+    python_command, flag, script, *arguments = command
+    if flag != "-c":
+        raise AssertionError(f"Unexpected execution preflight command: {command}")
+    if script == managed_scheduler._RUNTIME_IDENTITY_SCRIPT:
+        (module,) = arguments
+        repo_root = str(execution.get("workdir") or Path(__file__).resolve().parents[1])
+        payload = {
+            "python": python_command,
+            "python_version": sys.version.split()[0],
+            "runtime_commit": str(execution["runtime_commit"]),
+            "runtime_repo_root": repo_root,
+            "runtime_hostname": "test-runtime",
+            "module": module,
+            "module_origin": str(Path(repo_root) / f"{module.replace('.', '/')}.py"),
+        }
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    _module, planned_argv_json, _module_origin = arguments
+    planned_argv = json.loads(planned_argv_json)
+    supported_options = sorted(
+        {token for planned in planned_argv for token in planned["args"] if token.startswith("--")}
+    )
+    normalized = json.dumps(supported_options, separators=(",", ":"))
+    evidence = {
+        "supported_options": supported_options,
+        "cli_options_sha256": hashlib.sha256(normalized.encode()).hexdigest(),
+    }
+    return subprocess.CompletedProcess(
+        command,
+        0,
+        f"AGENT_CLI_PREFLIGHT={json.dumps(evidence, sort_keys=True)}\n",
+        "",
+    )
 
 
 def config_payload(index_path: Path) -> dict:
