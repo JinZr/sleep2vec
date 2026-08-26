@@ -16,7 +16,7 @@ L0-level domain leaf.
 | **L0 leaves** | models, decision_models, transport, manifests, schema_map, gpu_rules, repo, plan_rendering, plan_contract, decision_paths, decision_hparam, plan_hparam, adaptive_proposals, experiment_workspace, experiment_io, managed_scheduler, ... | No intra-package deps beyond other L0 leaves; the reusable primitives. |
 | **L1 `adapters/`** | `base` (TaskAdapter protocol), `registry` (get_adapter / all_adapters / composite_adapter), 6 per-task plugins, `config_providers` | Generic plugin skeleton + domain plugins. Kernel dispatches through the registry and never hardcodes task names. |
 | **L2 kernel** | configs, decision_rules, decisions, plan_context, plans, experiment_pipeline | Orchestration over lower-layer owners and adapter declarations; authored task recipes remain governed by schema_map. |
-| **`domain/`** | sidecar_summaries, finetune_summary, sex_age_summary, presets, index_csv | sleep2vec-specific summaries/validators. L0-level leaves that must not be aggregated in `domain/__init__` (would trigger a partial-import cycle via configs). |
+| **`domain/`** | sidecar_summaries, finetune_summary, finetune_hparam_profile, sex_age_summary, presets, index_csv | sleep2vec-specific summaries/validators. L0-level leaves that must not be aggregated in `domain/__init__` (would trigger a partial-import cycle via configs). |
 
 ## Module ownership
 
@@ -65,10 +65,19 @@ normalization, compute-wrapper execution, and cancellation primitives.
 and exposes it through the `experiments` facade.
 
 ### Domain — sleep2vec-specific
-`domain/` (sidecar_summaries, finetune_summary, sex_age_summary, presets,
-index_csv), the top-level `index_csv` re-export shim, and the per-task adapters
+`domain/` (sidecar_summaries, finetune_summary, finetune_hparam_profile,
+sex_age_summary, presets, index_csv), the top-level `index_csv` re-export shim, and the per-task adapters
 sleep2stat / preset_prepare / finetune / infer_evaluate / hparam_tune /
 embedding_extraction.
+
+`domain.finetune_hparam_profile` owns the deterministic, config-derived
+`finetune_balanced` candidate compiler and its frozen audit view. The hparam
+adapter invokes it through the effective-recipe binding hook before
+consultation; generic decision code does not duplicate sleep2vec config fields.
+The compiler requires a complete explicit LayerMix block and explicit LoRA
+control booleans, preserves the exact source as candidate zero, and only
+expands its registered technical axes. Omitted non-control LoRA fields retain
+canonical variant loader defaults frozen by config and runtime identity.
 
 ### Mixed bridges (9) — generic orchestration with tolerated domain coupling
 | Module | Domain coupling (tolerated) |
