@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -108,7 +109,7 @@ def _workspace_files(workspace: Path) -> dict[Path, bytes]:
 
 
 def _staging_dirs(workspace: Path, plan_dir: Path) -> list[Path]:
-    return list(workspace.parent.glob(f".{plan_dir.name}.*.staging"))
+    return list(workspace.parent.rglob(f".{plan_dir.name}.*.staging"))
 
 
 def _preflight_card(text: str) -> str:
@@ -621,6 +622,68 @@ def test_hparam_registration_drift_preserves_existing_overwrite_destination(tmp_
     assert _workspace_files(workspace) == before
     assert stale.read_text() == '{"old": true}\n'
     assert sentinel.read_text() == "preserve me\n"
+
+
+def test_hparam_staging_uses_destination_filesystem_ancestor(tmp_path: Path, monkeypatch):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    real_replace = Path.replace
+
+    def reject_parent_filesystem_staging(path, target):
+        if path.name.endswith(".staging") and path.parent == workspace.parent:
+            raise OSError(errno.EXDEV, "cross-device link")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", reject_parent_filesystem_staging)
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+    )
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 0
+    assert plan_dir.is_dir()
+    assert _staging_dirs(workspace, plan_dir) == []
+
+
+def test_hparam_overwrite_publish_failure_restores_existing_plan(tmp_path: Path, monkeypatch):
+    recipe, workspace = _recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["artifacts"] = {**payload.get("artifacts", {}), "overwrite": True}
+    payload["decisions"]["overwrite_policy"] = {"value": True, "source": "explicit_recipe"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = workspace / "plans" / "tune"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "plan.json").write_text('{"old": true}\n')
+    (plan_dir / "unrelated.txt").write_text("preserve me\n")
+    before = _workspace_files(workspace)
+    real_replace = Path.replace
+    failed = False
+
+    def fail_during_publish(path, target):
+        nonlocal failed
+        target = Path(target)
+        if not failed and path.parent.name.endswith(".staging") and target == plan_dir / "plan.md":
+            failed = True
+            raise OSError(errno.EIO, "injected publish failure")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_during_publish)
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+    )
+
+    with pytest.raises(OSError, match="injected publish failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert failed is True
+    assert _workspace_files(workspace) == before
+    assert _staging_dirs(workspace, plan_dir) == []
+    assert not list(workspace.parent.rglob(f".{plan_dir.name}.*.backup"))
 
 
 def test_hparam_plan_rejects_destination_appearing_during_preflight(tmp_path: Path, monkeypatch):

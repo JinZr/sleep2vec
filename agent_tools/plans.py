@@ -812,11 +812,13 @@ def build_plan(
             raise ValueError(f"Atomic plan staging directory must not exist: {write_out}")
         write_out.mkdir(parents=True)
     elif plan_adapter is not None and plan_adapter.materializes_plan:
-        root = experiment_root(recipe)
-        if root is None:
-            raise ValueError("experiment.root is required.")
-        root.parent.mkdir(parents=True, exist_ok=True)
-        write_out = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".staging", dir=root.parent))
+        staging_parent = out.parent
+        if os.path.lexists(out) and out.lstat().st_dev != out.parent.lstat().st_dev:
+            # A plan may itself be a mount point, so its parent is not always the destination filesystem.
+            staging_parent = out
+        while not os.path.lexists(staging_parent):
+            staging_parent = staging_parent.parent
+        write_out = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".staging", dir=staging_parent))
         generated_staging = True
 
     if plan_adapter is not None and plan_adapter.materializes_plan:
@@ -867,25 +869,7 @@ def build_plan(
         out_preexisted = current_output_identity is not None
         if staging_dir is not None or generated_staging:
             try:
-                out.parent.mkdir(parents=True, exist_ok=True)
-                if not out_preexisted:
-                    write_out.replace(out)
-                else:
-                    if out.is_symlink() or not out.is_dir():
-                        raise ValueError(f"Atomic plan output is not a directory: {out}")
-                    (out / "plan.json").unlink(missing_ok=True)
-                    for optional_name in ("final_external_test.sh", "config.final_eval.yaml"):
-                        if not (write_out / optional_name).exists():
-                            (out / optional_name).unlink(missing_ok=True)
-                    shutil.copytree(
-                        write_out,
-                        out,
-                        dirs_exist_ok=True,
-                        copy_function=os.replace,
-                        ignore=lambda directory, _names: ["plan.json"] if Path(directory) == write_out else [],
-                    )
-                    os.replace(write_out / "plan.json", out / "plan.json")
-                    shutil.rmtree(write_out)
+                _publish_materialized_plan(write_out, out, out_preexisted=out_preexisted)
             except BaseException:
                 if write_out.exists() and not write_out.is_symlink():
                     shutil.rmtree(write_out)
@@ -980,6 +964,48 @@ def build_plan(
             {"step_id": (recipe.get("step") or {}).get("id"), "plan_dir": str(out), "run_count": 1},
         )
     return report
+
+
+def _publish_materialized_plan(write_out: Path, out: Path, *, out_preexisted: bool) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if not out_preexisted:
+        write_out.replace(out)
+        return
+    if out.is_symlink() or not out.is_dir():
+        raise ValueError(f"Atomic plan output is not a directory: {out}")
+
+    backup_parent = out if write_out.parent == out else out.parent
+    backup = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".backup", dir=backup_parent))
+    source_names = {path.name for path in write_out.iterdir()}
+    replaced_names = set(source_names)
+    for optional_name in ("final_external_test.sh", "config.final_eval.yaml"):
+        if optional_name not in source_names:
+            replaced_names.add(optional_name)
+    old_order = ["plan.json", *sorted(replaced_names - {"plan.json"})]
+    new_order = [*sorted(source_names - {"plan.json"}), "plan.json"]
+    moved_old = []
+    moved_new = []
+    try:
+        # Hide the old manifest while plan-owned top-level entries change; restore it last on failure.
+        for name in old_order:
+            current = out / name
+            if os.path.lexists(current):
+                current.replace(backup / name)
+                moved_old.append(name)
+        for name in new_order:
+            (write_out / name).replace(out / name)
+            moved_new.append(name)
+    except BaseException:
+        for name in reversed(moved_new):
+            current = out / name
+            if os.path.lexists(current):
+                current.replace(write_out / name)
+        for name in reversed(moved_old):
+            (backup / name).replace(out / name)
+        shutil.rmtree(backup)
+        raise
+    shutil.rmtree(backup)
+    write_out.rmdir()
 
 
 def preflight_plan(
