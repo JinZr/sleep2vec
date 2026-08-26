@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -102,7 +103,22 @@ def _read_table(path: Path) -> list[dict[str, str]]:
 
 
 def _first_run(plan_dir: Path) -> dict:
-    return json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    recipe = plan["recipe"]
+    workspace = Path(recipe["experiment"]["root"])
+    merge_run_manifest(
+        workspace,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "run_name": run["run_name"],
+                "status": "completed",
+            }
+            for run in plan["runs"]
+        ],
+    )
+    return plan["runs"][0]
 
 
 def _ranking_path(plan_dir: Path) -> Path:
@@ -155,6 +171,25 @@ def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path
     )
     assert selected["step_id"] == "unit-hparam-tune"
     assert selected["selected_run_id"] == "run-000"
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    report_text = selection_report.read_text()
+    canonical = read_run_manifest(tmp_path)[0]
+    assert "Selection metric: `val_ahi_pearson`" in report_text
+    assert "Selection split: `val`" in report_text
+    assert "Evaluated candidates: `1/1`" in report_text
+    assert "Winner run: `run-000`" in report_text
+    assert "Search overrides:" in report_text
+    assert f"Frozen config: `{canonical['config']}`" in report_text
+    assert f"Frozen config SHA-256: `{canonical['config_sha256']}`" in report_text
+    assert f"Frozen script: `{canonical['script']}`" in report_text
+    assert f"Frozen script SHA-256: `{canonical['script_sha256']}`" in report_text
+    assert "global optimum" in report_text
+    assert selected["selection_report"] == str(selection_report)
+    assert selected["selection_report_sha256"] == hashlib.sha256(report_text.encode()).hexdigest()
+    assert canonical["selection_mode"] == "max"
+    assert canonical["selection_split"] == "val"
+    assert canonical["selection_report"] == str(selection_report)
+    assert canonical["selection_report_sha256"] == selected["selection_report_sha256"]
 
 
 def test_test_selected_plan_exports_frozen_checkpoint_path_spelling(tmp_path: Path):
@@ -372,13 +407,8 @@ def test_hparam_select_uses_ssh_manifest_inventory_and_hash_evidence(
     assert row["run_manifest"] == str(Path(run["runtime_dir"]) / "run_manifest.json")
     assert runtime_calls and runtime_calls[0]["target"] == "ssh"
     assert runtime_calls[0]["host"] == "unit-host"
-    if selection_split == "test":
-        assert row["checkpoint_sha256"] == "b" * 64
-        assert [(call[0]["target"], call[0]["host"], call[1]) for call in hash_calls] == [
-            ("ssh", "unit-host", checkpoint)
-        ]
-    else:
-        assert hash_calls == []
+    assert row["checkpoint_sha256"] == "b" * 64
+    assert [(call[0]["target"], call[0]["host"], call[1]) for call in hash_calls] == [("ssh", "unit-host", checkpoint)]
 
 
 @pytest.mark.parametrize("selection_split", ["val", "test"])
@@ -1049,8 +1079,29 @@ def test_hparam_select_uses_canonical_status_not_runtime_manifest_status(tmp_pat
 
     result = _run("hparam-select", "--run-dir", str(plan_dir))
 
-    assert result.returncode == 0, result.stderr
-    assert _read_table(_ranking_path(plan_dir))[0]["status"] == "failed"
+    assert result.returncode == 1
+    assert "No valid val_ahi_pearson scores" in result.stderr
+    assert not _ranking_path(plan_dir).exists()
+
+
+def test_hparam_select_requires_terminal_canonical_runs_for_val_selection(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps({"metrics": {"val_ahi_pearson": 0.7}, "checkpoint_path": str(checkpoint), "epoch": 1})
+    )
+    before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    with pytest.raises(ValueError, match="requires every managed hparam run to be terminal"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+    assert not _ranking_path(plan_dir).exists()
 
 
 def test_hparam_checkpoint_scan_ranks_history_fixed_epoch_checkpoints(tmp_path: Path):

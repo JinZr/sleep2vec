@@ -15,6 +15,7 @@ from agent_tools import (
     decision_paths,
     decisions,
     experiment_io,
+    experiment_pipeline,
     experiment_tracking,
     experiments,
     plan_context,
@@ -231,8 +232,81 @@ def _workspace_files(root: Path) -> dict[str, bytes]:
     return {str(path.relative_to(root)): path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
 
 
-def _write_public_hparam_recipe(root: Path, parameters: dict) -> Path:
+def _record_hparam_selection(root: Path, *, step_id: str = "tune", write_report: bool = False) -> Path:
+    rows = _read_manifest_rows(root)
+    winner = next(row for row in rows if row["step_id"] == step_id)
+    winner.update(
+        {
+            "selection_task": "hparam_tune",
+            "metric": "val_loss",
+            "selection_mode": "min",
+            "selection_split": "val",
+            "score": "0.25",
+            "rank": "1",
+            "checkpoint_path": str(Path(winner["checkpoint_dir"]) / "epoch=1.ckpt"),
+            "checkpoint_sha256": "a" * 64,
+        }
+    )
+    write_rows(root / "run_manifest.tsv", rows)
+    experiment = yaml.safe_load((root / "experiment.yaml").read_text())["experiment"]
+    registered = experiments._registered_plan_steps(
+        root,
+        experiment,
+        _read_manifest_rows(root),
+        remote=None,
+        require_registered_rows=True,
+    )
+    lifecycle = experiment_tracking.hparam_selection_lifecycle(
+        registered,
+        _read_manifest_rows(root),
+        root=root,
+    )
+    report_path = root / "reports" / "hparam_selection.md"
+    if write_report:
+        report_path.parent.mkdir(exist_ok=True)
+        report_text = lifecycle["expected_report"]
+        report_path.write_text(report_text)
+        write_rows(
+            root / "reports" / "ranking.csv",
+            [
+                {
+                    "step_id": row["step_id"],
+                    "run_id": row["run_id"],
+                    "metric": row["metric"],
+                    "score": row["score"],
+                    "rank": row["rank"],
+                    "checkpoint_path": row["checkpoint_path"],
+                    "checkpoint_sha256": row["checkpoint_sha256"],
+                }
+                for row in rows
+                if row["step_id"] == step_id and row.get("rank") not in (None, "")
+            ],
+        )
+        rows = _read_manifest_rows(root)
+        digest = hashlib.sha256(report_text.encode()).hexdigest()
+        for row in rows:
+            if row["step_id"] == step_id:
+                row.update({"selection_report": str(report_path), "selection_report_sha256": digest})
+        write_rows(root / "run_manifest.tsv", rows)
+    return report_path
+
+
+def _write_public_hparam_recipe(
+    root: Path,
+    parameters: dict,
+    *,
+    selection_metric: str = "val_ahi_pearson",
+    selection_mode: str = "max",
+    max_runs: int = 1,
+) -> Path:
     base_recipe = write_finetune_recipe(root)
+    base_payload = yaml.safe_load(base_recipe.read_text())
+    base_payload["evaluation_policy"].update({"selection_metric": selection_metric, "selection_mode": selection_mode})
+    base_recipe.write_text(yaml.safe_dump(base_payload, sort_keys=False))
+    config_path = Path(base_payload["inputs"]["config"])
+    config_payload = yaml.safe_load(config_path.read_text())
+    config_payload["finetune"]["task"].update({"monitor": selection_metric, "monitor_mod": selection_mode})
+    config_path.write_text(yaml.safe_dump(config_payload, sort_keys=False))
     return write_yaml(
         root / "tune.yaml",
         {
@@ -241,10 +315,10 @@ def _write_public_hparam_recipe(root: Path, parameters: dict) -> Path:
             "variant": "sleep2vec",
             "base_recipe": str(base_recipe),
             "inputs": {},
-            "search": {"method": "grid", "max_runs": 1, "parameters": parameters},
+            "search": {"method": "grid", "max_runs": max_runs, "parameters": parameters},
             "evaluation_policy": {
-                "selection_metric": "val_ahi_pearson",
-                "selection_mode": "max",
+                "selection_metric": selection_metric,
+                "selection_mode": selection_mode,
                 "selection_split": "val",
                 "final_eval_split": "test",
                 "external_test_locked": True,
@@ -1505,6 +1579,75 @@ def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tm
         experiments.experiment_status(root)
 
 
+def test_experiment_finalize_rejects_unmaterialized_step(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="ordinary", status="completed")
+    step_dir = root / "steps" / "evaluate"
+    step_dir.mkdir(parents=True)
+    (step_dir / "step.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "step": {"id": "evaluate", "phase": "evaluate", "purpose": "Run external evaluation."},
+                "experiment_id": "status-unit",
+                "plan_controller": "unassigned",
+                "recipe_path": "",
+                "plans": [],
+            },
+            sort_keys=False,
+        )
+    )
+    report = tmp_path / "final.md"
+    report.write_text("# Final\n")
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="incomplete canonical steps: unmaterialized_step"):
+        experiments.finalize_experiment(root, report)
+
+    assert _workspace_files(root) == before
+
+
+@pytest.mark.parametrize("controller", ["adaptive", "pipeline"])
+def test_experiment_finalize_preserves_controller_verified_finalization(tmp_path, controller):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(
+        root,
+        step_id="tune" if controller == "adaptive" else "evaluate",
+        task="hparam_tune" if controller == "adaptive" else "finetune",
+        status="completed",
+        adaptive=controller == "adaptive",
+        pipeline=controller == "pipeline",
+    )
+    report = tmp_path / "controller-report.md"
+    report.write_text("# Controller-verified report\n")
+
+    target = experiments.finalize_experiment(root, report)
+
+    assert target.read_text() == report.read_text()
+
+
+def test_pipeline_facade_callback_can_finalize_controller_verified_report(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="evaluate", status="completed", pipeline=True)
+    report = tmp_path / "pipeline-report.md"
+    report.write_text("# Pipeline report\n")
+    spec = tmp_path / "pipeline.yaml"
+    spec.write_text("pipeline: unit\n")
+
+    def controller(_root, _spec, **kwargs):
+        target = kwargs["finalize_callback"](root, report)
+        return {"status": "completed", "final_report": str(target)}
+
+    monkeypatch.setattr(experiment_pipeline, "run_experiment_pipeline", controller)
+
+    result = experiments.run_experiment_pipeline(root, spec, execute=True)
+
+    assert result == {"status": "completed", "final_report": str(root / "reports" / "final.md")}
+    assert (root / "reports" / "final.md").read_text() == report.read_text()
+
+
 def test_experiment_status_keeps_multiple_ordinary_candidates_with_deferred_plan(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -1647,6 +1790,289 @@ def test_experiment_status_terminal_and_completed_contract(tmp_path):
     write_rows(root / "run_manifest.tsv", rows)
     with pytest.raises(ValueError, match="Completed experiment metadata conflicts"):
         experiments.experiment_status(root)
+
+
+def test_experiment_status_advances_ordinary_hparam_selection_and_report(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _row = _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    before = _workspace_files(root)
+
+    pending = experiments.experiment_status(root)
+
+    assert _workspace_files(root) == before
+    assert pending["summary"]["state"] == "ready_to_select"
+    assert pending["decision"]["recommended_next"]["argv"] == [
+        "python",
+        "-m",
+        "agent_tools",
+        "hparam-select",
+        "--run-dir",
+        str(plan_dir),
+    ]
+    assert pending["decision"]["blocked_actions"] == ["finalize"]
+
+    report_path = _record_hparam_selection(root)
+    selected_before = _workspace_files(root)
+    selected = experiments.experiment_status(root)
+    assert _workspace_files(root) == selected_before
+    assert selected["summary"]["state"] == "ready_to_report"
+    assert selected["decision"]["recommended_next"]["id"] == "hparam-select"
+
+    _record_hparam_selection(root, write_report=True)
+    ready_before = _workspace_files(root)
+    ready = experiments.experiment_status(root)
+    assert _workspace_files(root) == ready_before
+    assert ready["summary"]["state"] == "ready_to_finalize"
+    assert ready["decision"]["recommended_next"]["argv"][-2:] == ["--report", str(report_path)]
+
+
+def test_experiment_status_requires_combined_report_for_mixed_ordinary_steps(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    _add_plan(root, step_id="prepare", status="completed")
+    _record_hparam_selection(root, write_report=True)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_report"
+    assert snapshot["decision"]["manual_choice_required"] is True
+    assert snapshot["decision"]["other_legal_actions"][0]["required_inputs"] == ["report_path"]
+    assert "combined_report_required" in {blocker["code"] for blocker in snapshot["blockers"]}
+
+
+def test_pipeline_step_prevents_hparam_selection_report_from_becoming_experiment_final(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    _add_plan(root, step_id="evaluate", status="completed", pipeline=True)
+    selection_report = _record_hparam_selection(root, write_report=True)
+    combined = tmp_path / "pipeline-combined.md"
+    combined.write_text("# Pipeline combined report\n")
+
+    with pytest.raises(ValueError, match="cannot replace the required combined experiment report"):
+        experiments.finalize_experiment(root, selection_report)
+
+    target = experiments.finalize_experiment(root, combined)
+
+    assert target.read_text() == combined.read_text()
+
+
+def test_experiment_status_all_failed_hparam_requires_failure_report_not_selection(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="failed")
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_report"
+    assert snapshot["decision"]["recommended_next"] is None
+    assert snapshot["decision"]["other_legal_actions"][0]["required_inputs"] == ["report_path"]
+    assert "failure_report_required" in {blocker["code"] for blocker in snapshot["blockers"]}
+
+
+def test_experiment_status_keeps_completed_legacy_hparam_selection_readable(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    rows = _read_manifest_rows(root)
+    rows[0].update({"metric": "val_loss", "score": "0.25", "rank": "1", "checkpoint_path": "/legacy.ckpt"})
+    write_rows(root / "run_manifest.tsv", rows)
+
+    active = experiments.experiment_status(root)
+    assert active["summary"]["state"] == "ready_to_select"
+
+    manifest = yaml.safe_load((root / "experiment.yaml").read_text())
+    manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-26T00:00:00Z"})
+    (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+    completed = experiments.experiment_status(root)
+    assert completed["summary"]["state"] == "completed"
+
+
+@pytest.mark.parametrize("field", ["selection_task", "selection_report_sha256"])
+def test_experiment_status_rejects_partially_materialized_selection_metadata(tmp_path, field):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    rows = _read_manifest_rows(root)
+    rows[0][field] = "hparam_tune" if field == "selection_task" else "0" * 64
+    write_rows(root / "run_manifest.tsv", rows)
+
+    with pytest.raises(ValueError, match="partially materialized"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_finalize_requires_selection_and_uses_verified_selection_report(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    arbitrary = tmp_path / "arbitrary.md"
+    arbitrary.write_text("# Arbitrary\n")
+
+    with pytest.raises(ValueError, match="must be selected"):
+        experiments.finalize_experiment(root, arbitrary)
+
+    selection_report = _record_hparam_selection(root, write_report=True)
+    with pytest.raises(ValueError, match="must finalize from"):
+        experiments.finalize_experiment(root, arbitrary)
+
+    target = experiments.finalize_experiment(root, selection_report)
+    assert target.read_text() == selection_report.read_text()
+
+
+def test_experiment_finalize_reuses_verified_selection_report_text_across_race(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    verified_text = selection_report.read_text()
+    original_reader = experiments._hparam_selection_report
+
+    def read_then_tamper(*args, **kwargs):
+        payload = original_reader(*args, **kwargs)
+        selection_report.write_text("# Tampered after verification\n")
+        return payload
+
+    monkeypatch.setattr(experiments, "_hparam_selection_report", read_then_tamper)
+
+    target = experiments.finalize_experiment(root, selection_report)
+
+    assert target.read_text() == verified_text
+    assert target.read_text() != selection_report.read_text()
+
+
+def test_experiment_finalize_allows_combined_or_failure_reports(tmp_path):
+    mixed = tmp_path / "mixed"
+    _init_workspace(mixed)
+    _add_plan(mixed, step_id="tune", task="hparam_tune", status="completed")
+    _add_plan(mixed, step_id="prepare", status="completed")
+    selection_report = _record_hparam_selection(mixed, write_report=True)
+    with pytest.raises(ValueError, match="cannot replace"):
+        experiments.finalize_experiment(mixed, selection_report)
+    combined = tmp_path / "combined.md"
+    combined.write_text("# Combined report\n\nSelection and preparation summary.\n")
+    assert experiments.finalize_experiment(mixed, combined).read_text() == combined.read_text()
+
+    failed = tmp_path / "failed"
+    _init_workspace(failed)
+    _add_plan(failed, step_id="tune", task="hparam_tune", status="failed")
+    stale_selection = failed / "reports" / "hparam_selection.md"
+    stale_selection.parent.mkdir()
+    stale_selection.write_text("# Stale selection\n")
+    with pytest.raises(ValueError, match="cannot replace the required hparam failure report"):
+        experiments.finalize_experiment(failed, stale_selection)
+    failure_report = tmp_path / "failure.md"
+    failure_report.write_text("# Failure report\n\nNo candidate completed successfully.\n")
+    assert experiments.finalize_experiment(failed, failure_report).read_text() == failure_report.read_text()
+
+
+def test_experiment_status_requires_combined_report_when_one_hparam_step_failed(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="selected", task="hparam_tune", status="completed")
+    _add_plan(root, step_id="failed", task="hparam_tune", status="failed")
+    selection_report = _record_hparam_selection(root, step_id="selected", write_report=True)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_report"
+    assert "combined_report_required" in {blocker["code"] for blocker in snapshot["blockers"]}
+    with pytest.raises(ValueError, match="cannot replace"):
+        experiments.finalize_experiment(root, selection_report)
+    combined = tmp_path / "combined.md"
+    combined.write_text("# Combined report\n\nOne hparam step failed.\n")
+    assert experiments.finalize_experiment(root, combined).read_text() == combined.read_text()
+
+
+def test_experiment_finalize_rejects_stale_selection_after_success_becomes_failed(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    rows = _read_manifest_rows(root)
+    rows[0]["status"] = "failed"
+    write_rows(root / "run_manifest.tsv", rows)
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="stale for all-failed step"):
+        experiments.experiment_status(root)
+    with pytest.raises(ValueError, match="stale for all-failed step"):
+        experiments.finalize_experiment(root, selection_report)
+
+    assert _workspace_files(root) == before
+
+
+@pytest.mark.parametrize("mutation", ["missing", "tampered", "duplicate"])
+def test_experiment_status_rejects_missing_or_drifted_hparam_ranking(tmp_path, mutation):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    ranking = root / "reports" / "ranking.csv"
+    if mutation == "missing":
+        ranking.unlink()
+    elif mutation == "tampered":
+        ranking.write_text(ranking.read_text().replace("0.25", "999", 1))
+    else:
+        lines = ranking.read_text().splitlines()
+        ranking.write_text("\n".join([*lines, lines[1]]) + "\n")
+    before = _workspace_files(root)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_report"
+    assert snapshot["decision"]["recommended_next"]["id"] == "hparam-select"
+    with pytest.raises(ValueError, match="selection report is missing or differs"):
+        experiments.finalize_experiment(root, selection_report)
+    assert _workspace_files(root) == before
+
+
+@pytest.mark.parametrize(
+    ("selection_metric", "selection_mode", "scores"),
+    [
+        ("val_ahi_pearson", "max", ("0.1", "0.9")),
+        ("val_loss", "min", ("0.9", "0.1")),
+    ],
+)
+def test_experiment_status_rejects_hparam_ranks_opposed_to_selection_mode(
+    tmp_path, selection_metric, selection_mode, scores
+):
+    root = tmp_path / "experiment"
+    recipe = _write_public_hparam_recipe(
+        root,
+        {"runtime.lr": [1e-6, 2e-6]},
+        selection_metric=selection_metric,
+        selection_mode=selection_mode,
+        max_runs=2,
+    )
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    rows = _read_manifest_rows(root)
+    for rank, (row, score) in enumerate(zip(rows, scores), start=1):
+        row.update(
+            {
+                "status": "completed",
+                "selection_task": "hparam_tune",
+                "metric": selection_metric,
+                "selection_mode": selection_mode,
+                "selection_split": "val",
+                "score": score,
+                "rank": str(rank),
+                "checkpoint_path": str(Path(row["checkpoint_dir"]) / f"epoch={rank}.ckpt"),
+                "checkpoint_sha256": "a" * 64,
+            }
+        )
+    write_rows(root / "run_manifest.tsv", rows)
+    report = tmp_path / "report.md"
+    report.write_text("# Report\n")
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="ranks disagree with selection mode"):
+        experiments.experiment_status(root)
+    with pytest.raises(ValueError, match="ranks disagree with selection mode"):
+        experiments.finalize_experiment(root, report)
+    assert _workspace_files(root) == before
 
 
 def test_experiment_status_keeps_final_report_blocker_experiment_wide(tmp_path):

@@ -81,6 +81,7 @@ MANAGED_RUN_PATH_FIELDS = {
     "result_root",
     "run_dir",
     "run_manifest",
+    "selection_report",
     "runtime_dir",
     "script",
     "test_logits_path",

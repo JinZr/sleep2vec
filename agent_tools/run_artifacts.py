@@ -449,11 +449,20 @@ def read_registered_plan(
 
     if expected_recipe_path is not None and recipe.get("_recipe_path", "") != expected_recipe_path:
         raise ValueError(f"Registered plan recipe path differs from its managed step: {plan_dir}")
+    selection = None
+    if task == "hparam_tune":
+        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+        selection = {
+            "metric": str(evaluation.get("selection_metric") or ""),
+            "mode": str(evaluation.get("selection_mode") or ""),
+            "split": str(evaluation.get("selection_split") or ""),
+        }
     return {
         "path": str(plan_dir),
         "task": task,
         "run_keys": plan_keys,
         "launch_script": str(launch_script),
+        "selection": selection,
     }
 
 

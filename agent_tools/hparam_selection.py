@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 import csv
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from . import (
     run_evidence as evidence,
 )
 from .experiment_workspace import (
+    SUCCESS_STATUSES,
     TERMINAL_STATUSES,
     append_event,
     experiment_root,
@@ -53,6 +55,7 @@ def select_hparam_candidates(
     canonical_by_key = {managed_run_key(row): row for row in canonical_rows}
     step_id = str((recipe.get("step") or {}).get("id") or "")
     out = workspace / "reports" / "ranking.csv"
+    selection_report_out = workspace / "reports" / "hparam_selection.md"
     checkpoint_out = root / "checkpoint_test_ranking.csv"
     exp_io.validate_managed_output_paths(
         workspace,
@@ -63,6 +66,7 @@ def select_hparam_candidates(
             workspace / "run_matrix.csv",
             workspace / "reports" / "run_matrix.md",
             workspace / "events.jsonl",
+            selection_report_out,
         ],
     )
     step_runs = []
@@ -172,6 +176,19 @@ def select_hparam_candidates(
             raise ValueError(f"Managed run is missing from run_manifest.tsv: {run['step_id']} / {run['run_id']}")
         status = str(canonical.get("status") or "")
         artifact_row = evidence_runs_by_key[managed_run_key(run)]
+        if status not in TERMINAL_STATUSES:
+            active_runs.append(f"{run['step_id']} / {run['run_id']} ({status})")
+            continue
+        if status not in SUCCESS_STATUSES:
+            unscored_rows.append(
+                {
+                    "step_id": run["step_id"],
+                    "run_id": run["run_id"],
+                    "run_name": run["run_name"],
+                    "status": status,
+                }
+            )
+            continue
         # The execution target owns runtime evidence; never interpret a same-named manager-local tree for SSH runs.
         observed_artifacts = evidence.runtime_artifacts(artifact_row)
         if observed_artifacts is None:
@@ -186,29 +203,16 @@ def select_hparam_candidates(
         else:
             manifest_path, manifest, checkpoint_names = observed_artifacts
         if selection_split == "test":
-            if status not in TERMINAL_STATUSES:
-                active_runs.append(f"{run['step_id']} / {run['run_id']} ({status})")
-                continue
-            if status in {"completed", "finished"}:
-                test_rows = _checkpoint_test_result_rows(
-                    artifact_row,
-                    metric,
-                    manifest_path,
-                    manifest,
-                    checkpoint_names,
-                )
-                for row in test_rows:
-                    row["status"] = status
-                rows.extend(test_rows)
-            else:
-                unscored_rows.append(
-                    {
-                        "step_id": run["step_id"],
-                        "run_id": run["run_id"],
-                        "run_name": run["run_name"],
-                        "status": status,
-                    }
-                )
+            test_rows = _checkpoint_test_result_rows(
+                artifact_row,
+                metric,
+                manifest_path,
+                manifest,
+                checkpoint_names,
+            )
+            for row in test_rows:
+                row["status"] = status
+            rows.extend(test_rows)
             continue
         score = artifacts.metric_value(manifest, metric)
         ckpt = artifacts.fixed_checkpoint_path_from_names(
@@ -233,14 +237,13 @@ def select_hparam_candidates(
         valid_score = not isinstance(score, bool) and artifacts.float_or_none(score) is not None
         if valid_score and ckpt:
             tracking.validate_checkpoint_evidence_rows([artifact_row], [row])
+            row["checkpoint_sha256"] = evidence.checkpoint_file_sha256(artifact_row, ckpt)
         if not valid_score or not ckpt:
             unscored_rows.append(row)
         else:
             rows.append(row)
     if active_runs:
-        raise ValueError(
-            "Test checkpoint selection requires every managed hparam run to be terminal: " + ", ".join(active_runs)
-        )
+        raise ValueError("Hparam selection requires every managed hparam run to be terminal: " + ", ".join(active_runs))
     reverse = mode == "max"
     if selection_split == "test":
         rows.sort(
@@ -295,12 +298,15 @@ def select_hparam_candidates(
                 "run_id": row.get("run_id"),
                 "run_name": row.get("run_name"),
                 "metric": metric,
+                "selection_task": "hparam_tune",
+                "selection_mode": mode,
+                "selection_split": selection_split,
                 "score": row.get("score"),
                 "rank": row.get("rank"),
                 "checkpoint_path": row.get("checkpoint_path"),
+                "checkpoint_sha256": row.get("checkpoint_sha256"),
                 **(
                     {
-                        "checkpoint_sha256": row.get("checkpoint_sha256"),
                         "epoch": row.get("epoch"),
                         "checkpoint_rank": row.get("checkpoint_rank"),
                         "source": row.get("source"),
@@ -317,11 +323,34 @@ def select_hparam_candidates(
                 "run_id": row.get("run_id"),
                 "run_name": row.get("run_name"),
                 "metric": metric,
+                "selection_task": "hparam_tune",
+                "selection_mode": mode,
+                "selection_split": selection_split,
                 "score": "",
                 "rank": "",
                 "checkpoint_path": "",
             }
             for row in unscored_rows
+        ],
+    )
+    selected_rows = read_run_manifest(workspace)
+    report_steps = _selection_report_steps(selected_rows)
+    report_text = tracking.hparam_selection_report_text(report_steps, root=workspace)
+    exp_io.write_text_at(selection_report_out, report_text)
+    report_sha256 = hashlib.sha256(report_text.encode()).hexdigest()
+    selected_step_ids = {step["step_id"] for step in report_steps}
+    merge_run_manifest(
+        workspace,
+        [
+            {
+                "step_id": row["step_id"],
+                "run_id": row["run_id"],
+                "run_name": row.get("run_name"),
+                "selection_report": str(selection_report_out),
+                "selection_report_sha256": report_sha256,
+            }
+            for row in selected_rows
+            if str(row.get("step_id") or "") in selected_step_ids
         ],
     )
     selection_event = {
@@ -333,10 +362,49 @@ def select_hparam_candidates(
         "selected_checkpoint_path": step_ranked[0].get("checkpoint_path"),
         "selected_checkpoint_sha256": step_ranked[0].get("checkpoint_sha256"),
         "checkpoint_ranking": str(checkpoint_out) if selection_split == "test" else None,
+        "selection_report": str(selection_report_out),
+        "selection_report_sha256": report_sha256,
     }
     if not _selection_event_exists(workspace, selection_event):
         append_event(workspace, "candidate_selected", selection_event)
     return out
+
+
+def _selection_report_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected_steps = []
+    for step_id in sorted({str(row["step_id"]) for row in rows if row.get("selection_task") == "hparam_tune"}):
+        step_rows = sorted(
+            [row for row in rows if str(row["step_id"]) == step_id and row.get("selection_task") == "hparam_tune"],
+            key=lambda row: str(row["run_id"]),
+        )
+        policies = {
+            (
+                str(row.get("metric") or ""),
+                str(row.get("selection_mode") or ""),
+                str(row.get("selection_split") or ""),
+            )
+            for row in step_rows
+        }
+        if len(policies) != 1:
+            raise ValueError(f"Canonical hparam rows disagree on selection policy: {step_id}")
+        metric, mode, split = next(iter(policies))
+        ranked = []
+        for row in step_rows:
+            if row.get("rank") in (None, ""):
+                continue
+            ranked.append({**row, "rank": int(row["rank"])})
+        ranked.sort(key=lambda row: row["rank"])
+        if not ranked or [row["rank"] for row in ranked] != list(range(1, len(ranked) + 1)):
+            raise ValueError(f"Canonical hparam ranks are incomplete or duplicated for step {step_id}")
+        selected_steps.append(
+            {
+                "step_id": step_id,
+                "selection": {"metric": metric, "mode": mode, "split": split},
+                "rows": step_rows,
+                "ranked": ranked,
+            }
+        )
+    return selected_steps
 
 
 def _checkpoint_test_result_rows(

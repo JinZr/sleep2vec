@@ -2026,9 +2026,7 @@ def test_completed_experiment_rejects_new_plan(tmp_path: Path):
     first = tmp_path / "plans" / "first"
     second = tmp_path / "plans" / "second"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tstatus\nunit-experiment\tunit-finetune\trun-000\tfinished\n"
-    )
+    merge_run_manifest(tmp_path, [{**read_run_manifest(tmp_path)[0], "status": "finished"}])
     report = tmp_path / "final_source.md"
     report.write_text("# Final\n")
     assert _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report)).returncode == 0

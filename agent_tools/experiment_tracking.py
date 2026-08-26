@@ -20,8 +20,10 @@ from . import (
     transport,
 )
 from .experiment_workspace import (
+    SUCCESS_STATUSES,
     TERMINAL_STATUSES,
     managed_run_key,
+    managed_run_parameters,
     merge_run_row,
     read_managed_yaml_mapping,
     read_run_manifest,
@@ -543,6 +545,7 @@ def experiment_status_snapshot(
     *,
     root: Path,
     remote: str | None = None,
+    hparam_selection_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     allowed_statuses = TERMINAL_STATUSES | managed_scheduler.ACTIVE_STATUSES | managed_scheduler.LAUNCHABLE_STATUSES
     for row in rows:
@@ -555,6 +558,12 @@ def experiment_status_snapshot(
             )
     sorted_rows = sorted(rows, key=lambda row: (str(row["step_id"]), str(row["run_id"])))
     plan_blockers, candidates = _plan_advice(registered_steps, sorted_rows, remote=remote)
+    hparam = hparam_selection_lifecycle(
+        registered_steps,
+        sorted_rows,
+        root=root,
+        report=hparam_selection_report,
+    )
     missing_stop_reason_rows = stopped_runs_without_reason(sorted_rows)
     completed = experiment.get("status") == "completed"
     if completed:
@@ -567,6 +576,9 @@ def experiment_status_snapshot(
                 "Completed experiment metadata cannot be verified for adaptive or pipeline plans, or for "
                 "unmaterialized registered steps."
             )
+        new_pending_steps = [step for step in hparam["pending_steps"] if not step.get("legacy_selection")]
+        if new_pending_steps or (hparam["selected_steps"] and not hparam["report_valid"]):
+            raise ValueError("Completed experiment metadata conflicts with incomplete hparam selection evidence.")
     row_payloads = [_status_run_payload(row) for row in sorted_rows]
     step_payloads = []
     for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
@@ -658,23 +670,71 @@ def experiment_status_snapshot(
             if plan_blockers or missing_stop_reason_rows:
                 state = "blocked"
                 decision["manual_choice_required"] = True
+            elif hparam["pending_steps"]:
+                state = "ready_to_select"
+                select_actions = [
+                    _hparam_select_action(step["step_id"], step["plan_path"], remote)
+                    for step in hparam["pending_steps"]
+                ]
+                for step in hparam["pending_steps"]:
+                    blockers.append(
+                        _status_blocker(
+                            "hparam_selection_required",
+                            "Successful terminal hparam runs must be ranked before finalization.",
+                            step_id=step["step_id"],
+                            blocked_actions=["finalize"],
+                        )
+                    )
+                if len(select_actions) == 1:
+                    decision["recommended_next"] = select_actions[0]
+                else:
+                    decision["manual_choice_required"] = True
+                    decision["other_legal_actions"] = select_actions
+            elif hparam["selected_steps"] and not hparam["report_valid"]:
+                state = "ready_to_report"
+                blockers.append(
+                    _status_blocker(
+                        "hparam_selection_report_required",
+                        "The deterministic hparam selection report is missing or differs from "
+                        "canonical selection evidence.",
+                        blocked_actions=["finalize"],
+                    )
+                )
+                first = hparam["selected_steps"][0]
+                decision["recommended_next"] = _hparam_select_action(first["step_id"], first["plan_path"], remote)
+            elif hparam["selected_steps"] and hparam["automatic_report_final"]:
+                state = "ready_to_finalize"
+                decision["recommended_next"] = _finalize_action(root, hparam["report_path"], remote)
+            elif hparam["selected_steps"]:
+                state = "ready_to_report"
+                blockers.append(
+                    _status_blocker(
+                        "combined_report_required",
+                        "The hparam selection report does not cover every ordinary experiment step, so "
+                        "finalization requires a non-empty combined report.",
+                        blocked_actions=["finalize"],
+                    )
+                )
+                finalize = _finalize_action(root, "{report_path}", remote)
+                finalize["required_inputs"] = ["report_path"]
+                decision["manual_choice_required"] = True
+                decision["other_legal_actions"] = [finalize]
+            elif hparam["hparam_steps"]:
+                state = "ready_to_report"
+                blockers.append(
+                    _status_blocker(
+                        "failure_report_required",
+                        "No hparam run completed successfully; finalization requires a non-empty failure report.",
+                        blocked_actions=["finalize"],
+                    )
+                )
+                finalize = _finalize_action(root, "{report_path}", remote)
+                finalize["required_inputs"] = ["report_path"]
+                decision["manual_choice_required"] = True
+                decision["other_legal_actions"] = [finalize]
             else:
                 state = "ready_to_finalize"
-                finalize = _status_action(
-                    "experiment-finalize",
-                    "Publish a non-empty final report after human review.",
-                    [
-                        "python",
-                        "-m",
-                        "agent_tools",
-                        "experiment-finalize",
-                        "--run-dir",
-                        str(root),
-                        "--report",
-                        "{report_path}",
-                        *(["--remote", remote] if remote else []),
-                    ],
-                )
+                finalize = _finalize_action(root, "{report_path}", remote)
                 finalize["required_inputs"] = ["report_path"]
                 # The report is experiment-wide human input, not evidence attached to any managed run.
                 blockers.append(
@@ -732,6 +792,275 @@ def experiment_status_snapshot(
         ),
         "decision": decision,
     }
+
+
+def hparam_selection_lifecycle(
+    registered_steps: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    *,
+    root: Path,
+    report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    rows_by_step: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        rows_by_step.setdefault(str(row["step_id"]), []).append(row)
+    hparam_steps = []
+    pending_steps = []
+    selected_steps = []
+    for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
+        manifest = registered["manifest"]
+        if manifest["plan_controller"] != "ordinary":
+            continue
+        plans = [plan for plan in registered["plans"] if plan.get("task") == "hparam_tune"]
+        if not plans:
+            continue
+        step_id = str(manifest["step"]["id"])
+        selections = {tuple(sorted((plan.get("selection") or {}).items())) for plan in plans}
+        if len(selections) != 1:
+            raise ValueError(f"Registered hparam plans disagree on selection policy: {step_id}")
+        selection = dict(next(iter(selections)))
+        if not selection.get("metric") or selection.get("mode") not in {"min", "max"} or not selection.get("split"):
+            raise ValueError(f"Registered hparam plan has an incomplete selection policy: {step_id}")
+        plan_keys = {tuple(key) for plan in plans for key in plan["run_keys"]}
+        step = {
+            "step_id": step_id,
+            "plan_path": min(str(plan["path"]) for plan in plans),
+            "selection": selection,
+            "rows": sorted(
+                [row for row in rows_by_step.get(step_id, []) if managed_run_key(row) in plan_keys],
+                key=lambda row: str(row["run_id"]),
+            ),
+        }
+        hparam_steps.append(step)
+        if not any(row["status"] in SUCCESS_STATUSES for row in step["rows"]):
+            stale_fields = (
+                "selection_task",
+                "metric",
+                "selection_mode",
+                "selection_split",
+                "score",
+                "rank",
+                "checkpoint_path",
+                "checkpoint_sha256",
+                "selection_report",
+                "selection_report_sha256",
+            )
+            if any(row.get(field) not in (None, "") for row in step["rows"] for field in stale_fields):
+                raise ValueError(f"Canonical hparam selection evidence is stale for all-failed step {step_id}")
+            continue
+        has_selection_metadata = any(
+            row.get(field) not in (None, "")
+            for row in step["rows"]
+            for field in (
+                "selection_task",
+                "selection_mode",
+                "selection_split",
+                "selection_report",
+                "selection_report_sha256",
+            )
+        )
+        if not has_selection_metadata:
+            step["legacy_selection"] = True
+            pending_steps.append(step)
+            continue
+        if not all(
+            row.get("selection_task") == "hparam_tune"
+            and row.get("selection_mode") not in (None, "")
+            and row.get("selection_split") not in (None, "")
+            for row in step["rows"]
+        ):
+            raise ValueError(f"Canonical hparam selection metadata is only partially materialized for step {step_id}")
+        ranked = _validated_hparam_ranking(step)
+        if ranked is None:
+            pending_steps.append(step)
+        else:
+            step["ranked"] = ranked
+            selected_steps.append(step)
+
+    expected_report = hparam_selection_report_text(selected_steps, root=root) if selected_steps else None
+    report_path = str(root / "reports" / "hparam_selection.md")
+    report_valid = bool(
+        expected_report is not None
+        and report is not None
+        and report.get("path") == report_path
+        and report.get("text") == expected_report
+        and _hparam_ranking_matches(selected_steps, report.get("ranking_text"))
+        and all(
+            str(row.get("selection_report") or "") == report_path
+            and str(row.get("selection_report_sha256") or "") == str(report.get("sha256") or "")
+            for step in selected_steps
+            for row in step["rows"]
+        )
+    )
+    automatic_report_final = (
+        bool(hparam_steps)
+        and len(selected_steps) == len(hparam_steps)
+        and all(
+            registered["manifest"]["plan_controller"] == "ordinary"
+            and bool(registered["plans"])
+            and all(plan.get("task") == "hparam_tune" for plan in registered["plans"])
+            for registered in registered_steps
+        )
+    )
+    return {
+        "hparam_steps": hparam_steps,
+        "pending_steps": pending_steps,
+        "selected_steps": selected_steps,
+        "expected_report": expected_report,
+        "report_path": report_path,
+        "report_valid": report_valid,
+        "automatic_report_final": automatic_report_final,
+    }
+
+
+def _hparam_ranking_matches(selected_steps: list[dict[str, Any]], ranking_text: Any) -> bool:
+    if not isinstance(ranking_text, str):
+        return False
+    try:
+        reader = csv.DictReader(io.StringIO(ranking_text), strict=True)
+        fieldnames = reader.fieldnames or []
+        required = {"step_id", "run_id", "metric", "score", "rank", "checkpoint_path", "checkpoint_sha256"}
+        if len(fieldnames) != len(set(fieldnames)) or not required.issubset(fieldnames):
+            return False
+        ranking_rows = list(reader)
+    except csv.Error:
+        return False
+    if any(None in row or any(value is None for value in row.values()) for row in ranking_rows):
+        return False
+
+    fields = ("metric", "score", "rank", "checkpoint_path", "checkpoint_sha256")
+    expected = {
+        managed_run_key(row): tuple(str(row.get(field) or "") for field in fields)
+        for step in selected_steps
+        for row in step["ranked"]
+    }
+    observed = {managed_run_key(row): tuple(str(row.get(field) or "") for field in fields) for row in ranking_rows}
+    return len(observed) == len(ranking_rows) and None not in observed and observed == expected
+
+
+def hparam_selection_report_text(selected_steps: list[dict[str, Any]], *, root: Path) -> str:
+    lines = [
+        "# Hyper-parameter Selection",
+        "",
+        "Best observed candidates within the frozen search domain, metric, split, and budget.",
+        "This report does not claim a global optimum or authorize external-test access.",
+        "",
+    ]
+    ranking_path = root / "reports" / "ranking.csv"
+    for step in sorted(selected_steps, key=lambda item: item["step_id"]):
+        ranked = step["ranked"]
+        winner = ranked[0]
+        overrides = json.dumps(
+            managed_run_parameters(winner),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        selection = step["selection"]
+        lines.extend(
+            [
+                f"## Step `{step['step_id']}`",
+                "",
+                f"- Selection metric: `{selection['metric']}`",
+                f"- Selection mode: `{selection['mode']}`",
+                f"- Selection split: `{selection['split']}`",
+                f"- Evaluated candidates: `{len(ranked)}/{len(step['rows'])}`",
+                f"- Winner run: `{winner['run_id']}`",
+                f"- Winner checkpoint: `{winner['checkpoint_path']}`",
+            ]
+        )
+        if winner.get("checkpoint_sha256") not in (None, ""):
+            lines.append(f"- Winner checkpoint SHA-256: `{winner['checkpoint_sha256']}`")
+        lines.extend(
+            [
+                f"- Winner score: `{winner['score']}`",
+                f"- Parameter summary: `{winner.get('parameter_summary', '')}`",
+                f"- Search overrides: `{overrides}`",
+                f"- Frozen config: `{winner['config']}`",
+                f"- Frozen config SHA-256: `{winner['config_sha256']}`",
+                f"- Frozen script: `{winner['script']}`",
+                f"- Frozen script SHA-256: `{winner['script_sha256']}`",
+                f"- Ranking: `{ranking_path}`",
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _validated_hparam_ranking(step: dict[str, Any]) -> list[dict[str, Any]] | None:
+    rows = step["rows"]
+    selection = step["selection"]
+    evidence_fields = ("metric", "selection_mode", "selection_split", "rank", "score", "checkpoint_path")
+    if not any(any(row.get(field) not in (None, "") for field in evidence_fields) for row in rows):
+        return None
+    ranked = []
+    for row in rows:
+        for field, expected in (
+            ("metric", selection["metric"]),
+            ("selection_mode", selection["mode"]),
+            ("selection_split", selection["split"]),
+        ):
+            if str(row.get(field) or "") != expected:
+                raise ValueError(f"Canonical hparam selection {field} differs for {step['step_id']} / {row['run_id']}")
+        rank = row.get("rank")
+        if rank in (None, ""):
+            if row.get("score") not in (None, "") or row.get("checkpoint_path") not in (None, ""):
+                raise ValueError(f"Canonical hparam selection is incomplete for {step['step_id']} / {row['run_id']}")
+            continue
+        try:
+            rank_number = int(rank)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Canonical hparam rank is invalid for {step['step_id']} / {row['run_id']}") from exc
+        score = artifacts.float_or_none(row.get("score"))
+        if (
+            rank_number < 1
+            or score is None
+            or row.get("checkpoint_path") in (None, "")
+            or re.fullmatch(r"[0-9a-f]{64}", str(row.get("checkpoint_sha256") or "")) is None
+            or row.get("config") in (None, "")
+            or re.fullmatch(r"[0-9a-f]{64}", str(row.get("config_sha256") or "")) is None
+            or row.get("script") in (None, "")
+            or re.fullmatch(r"[0-9a-f]{64}", str(row.get("script_sha256") or "")) is None
+            or row["status"] not in SUCCESS_STATUSES
+        ):
+            raise ValueError(f"Canonical hparam selection evidence is invalid for {step['step_id']} / {row['run_id']}")
+        ranked.append({**row, "rank": rank_number})
+    ranked.sort(key=lambda row: row["rank"])
+    if [row["rank"] for row in ranked] != list(range(1, len(ranked) + 1)):
+        raise ValueError(f"Canonical hparam ranks are incomplete or duplicated for step {step['step_id']}")
+    scores = [artifacts.float_or_none(row["score"]) for row in ranked]
+    reverse = selection["mode"] == "max"
+    if any((left < right if reverse else left > right) for left, right in zip(scores, scores[1:])):
+        raise ValueError(f"Canonical hparam ranks disagree with selection mode for step {step['step_id']}")
+    return ranked or None
+
+
+def _hparam_select_action(step_id: str, plan_path: str, remote: str | None) -> dict[str, Any]:
+    return _status_action(
+        "hparam-select",
+        "Rank terminal successful candidates and regenerate the deterministic selection report.",
+        ["python", "-m", "agent_tools", "hparam-select", "--run-dir", plan_path],
+        step_id=step_id,
+        execution_host=remote,
+    )
+
+
+def _finalize_action(root: Path, report_path: str, remote: str | None) -> dict[str, Any]:
+    return _status_action(
+        "experiment-finalize",
+        "Publish the verified non-empty experiment report.",
+        [
+            "python",
+            "-m",
+            "agent_tools",
+            "experiment-finalize",
+            "--run-dir",
+            str(root),
+            "--report",
+            report_path,
+            *(["--remote", remote] if remote else []),
+        ],
+    )
 
 
 def format_experiment_status(snapshot: dict[str, Any]) -> str:

@@ -204,15 +204,63 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     if missing_stop_reasons:
         run_ids = [f"{row['step_id']} / {row['run_id']}" for row in missing_stop_reasons]
         raise ValueError(f"Stopped runs are missing required stop_reason: {run_ids}")
-    report_text = exp_io.read_text_at(report_path, remote=remote)
-    if not report_text.strip():
-        raise ValueError("Final report is missing or empty.")
     manifest_text = exp_io.read_text_at(root / "experiment.yaml", remote=remote)
     manifest = read_managed_yaml_mapping(
         manifest_text, source=f"Managed experiment manifest {root / 'experiment.yaml'}"
     )
     if not isinstance(manifest.get("experiment"), dict):
         raise ValueError("experiment.yaml is missing.")
+    registered_steps = _registered_plan_steps(
+        root,
+        manifest["experiment"],
+        rows,
+        remote=remote,
+        require_registered_rows=False,
+    )
+    selection_report = (
+        _hparam_selection_report(root, remote=remote)
+        if any(plan.get("task") == "hparam_tune" for step in registered_steps for plan in step["plans"])
+        else None
+    )
+    snapshot = tracking.experiment_status_snapshot(
+        manifest["experiment"],
+        registered_steps,
+        rows,
+        root=root,
+        remote=remote,
+        hparam_selection_report=selection_report,
+    )
+    blocking_codes = sorted(
+        {blocker["code"] for blocker in snapshot["blockers"] if blocker["code"] == "unmaterialized_step"}
+    )
+    if blocking_codes:
+        raise ValueError("Experiment cannot be finalized with incomplete canonical steps: " + ", ".join(blocking_codes))
+    hparam = tracking.hparam_selection_lifecycle(
+        registered_steps,
+        rows,
+        root=root,
+        report=selection_report,
+    )
+    if hparam["pending_steps"]:
+        raise ValueError("Successful hparam runs must be selected before experiment finalization.")
+    report_is_selection = str(Path(report_path)) == hparam["report_path"]
+    if hparam["selected_steps"]:
+        if not hparam["report_valid"]:
+            raise ValueError("The hparam selection report is missing or differs from canonical selection evidence.")
+        if hparam["automatic_report_final"]:
+            if not report_is_selection:
+                raise ValueError(f"Successful hparam experiments must finalize from {hparam['report_path']}")
+        elif report_is_selection:
+            raise ValueError("The hparam selection report cannot replace the required combined experiment report.")
+    elif hparam["hparam_steps"] and report_is_selection:
+        raise ValueError("The hparam selection report cannot replace the required hparam failure report.")
+    report_text = (
+        str(selection_report["text"])
+        if hparam["selected_steps"] and hparam["automatic_report_final"]
+        else exp_io.read_text_at(report_path, remote=remote)
+    )
+    if not report_text.strip():
+        raise ValueError("Final report is missing or empty.")
     target = root / "reports" / "final.md"
     exp_io.validate_managed_output_paths(
         root,
@@ -362,7 +410,36 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict
         allow_completed=True,
         validate_experiment_index=False,
     )
+    registered_steps = _registered_plan_steps(root, experiment, rows, remote=remote, require_registered_rows=True)
+    selection_report = (
+        _hparam_selection_report(root, remote=remote)
+        if any(plan.get("task") == "hparam_tune" for step in registered_steps for plan in step["plans"])
+        else None
+    )
+
+    return tracking.experiment_status_snapshot(
+        experiment,
+        registered_steps,
+        rows,
+        root=root,
+        remote=remote,
+        hparam_selection_report=selection_report,
+    )
+
+
+def _registered_plan_steps(
+    root: Path,
+    experiment: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    remote: str | None,
+    require_registered_rows: bool,
+) -> list[dict[str, Any]]:
     step_manifests = read_registered_steps(root, experiment_id=str(experiment["id"]), remote=remote)
+    if not step_manifests and not require_registered_rows:
+        return []
+    if not require_registered_rows and not any(manifest["plans"] for manifest in step_manifests):
+        return []
     step_ids = {str(manifest["step"]["id"]) for manifest in step_manifests}
     orphaned_steps = sorted({str(row["step_id"]) for row in rows} - step_ids)
     if orphaned_steps:
@@ -408,13 +485,24 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict
             raise ValueError(f"Managed step plans differ from canonical run keys: {step_id}")
         registered_steps.append({"manifest": manifest, "plans": plans})
 
-    return tracking.experiment_status_snapshot(
-        experiment,
-        registered_steps,
-        rows,
-        root=root,
-        remote=remote,
-    )
+    return registered_steps
+
+
+def _hparam_selection_report(root: Path, *, remote: str | None) -> dict[str, Any] | None:
+    path = root / "reports" / "hparam_selection.md"
+    ranking_path = root / "reports" / "ranking.csv"
+    exp_io.validate_managed_output_paths(root, [path, ranking_path], remote=remote)
+    if not exp_io.path_exists_at(path, remote=remote):
+        return None
+    read_paths = [path]
+    if exp_io.path_exists_at(ranking_path, remote=remote):
+        read_paths.append(ranking_path)
+    files = exp_io.read_managed_files_at(root, read_paths, remote=remote)
+    return {
+        "path": str(path),
+        **files[str(path)],
+        "ranking_text": files.get(str(ranking_path), {}).get("text"),
+    }
 
 
 def rank_experiment_candidates(run_dir: str | Path, *, metric: str, mode: str, remote: str | None = None) -> Path:
