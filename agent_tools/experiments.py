@@ -216,7 +216,7 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         manifest["experiment"],
         rows,
         remote=remote,
-        require_registered_rows=False,
+        require_registered_rows=True,
     )
     selection_report = (
         _hparam_selection_report(root, remote=remote)

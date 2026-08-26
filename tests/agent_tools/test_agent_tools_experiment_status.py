@@ -1618,6 +1618,25 @@ def test_experiment_finalize_rejects_unmaterialized_step(tmp_path):
     assert _workspace_files(root) == before
 
 
+def test_experiment_finalize_rejects_canonical_runs_without_registered_plan(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    step_path = root / "steps" / "tune" / "step.yaml"
+    step_manifest = yaml.safe_load(step_path.read_text())
+    step_manifest["plans"] = []
+    step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
+    report = tmp_path / "final.md"
+    report.write_text("# Final\n")
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="plans differ from canonical run keys"):
+        experiments.finalize_experiment(root, report)
+
+    assert _workspace_files(root) == before
+    assert not (root / "reports" / "final.md").exists()
+
+
 @pytest.mark.parametrize("controller", ["adaptive", "pipeline"])
 def test_experiment_finalize_preserves_controller_verified_finalization(tmp_path, controller):
     root = tmp_path / "experiment"
