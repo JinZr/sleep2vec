@@ -2579,6 +2579,7 @@ def test_experiment_status_rejects_hparam_ranks_opposed_to_selection_mode(
                 "rank": str(rank),
                 "checkpoint_path": str(Path(row["checkpoint_dir"]) / f"epoch={rank}.ckpt"),
                 "checkpoint_sha256": "a" * 64,
+                "run_manifest": str(Path(row["runtime_dir"]) / "run_manifest.json"),
             }
         )
     write_rows(root / "run_manifest.tsv", rows)
@@ -2590,6 +2591,33 @@ def test_experiment_status_rejects_hparam_ranks_opposed_to_selection_mode(
         experiments.experiment_status(root)
     with pytest.raises(ValueError, match="ranks disagree with selection mode"):
         experiments.finalize_experiment(root, report)
+    assert _workspace_files(root) == before
+
+
+@pytest.mark.parametrize(("field", "mutation"), [("run_manifest", "remove"), ("source", "add")])
+def test_experiment_status_rejects_coherent_val_selection_provenance_drift(tmp_path, field, mutation):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    canonical = _read_manifest_rows(root)
+    ranking_path = root / "reports" / "ranking.csv"
+    ranking = read_rows(ranking_path, require_managed_identity=True)
+    if mutation == "remove":
+        canonical[0].pop(field)
+        ranking[0].pop(field)
+    else:
+        canonical[0][field] = "forged_source"
+        ranking[0][field] = "forged_source"
+    write_rows(root / "run_manifest.tsv", canonical)
+    write_rows(ranking_path, ranking)
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="Canonical hparam selection evidence is invalid"):
+        experiments.experiment_status(root)
+    with pytest.raises(ValueError, match="Canonical hparam selection evidence is invalid"):
+        experiments.finalize_experiment(root, selection_report)
+
     assert _workspace_files(root) == before
 
 

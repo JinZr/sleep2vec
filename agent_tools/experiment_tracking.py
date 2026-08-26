@@ -1225,9 +1225,17 @@ def validated_hparam_ranking(step: dict[str, Any]) -> list[dict[str, Any]] | Non
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Canonical hparam rank is invalid for {step['step_id']} / {row['run_id']}") from exc
         score = artifacts.float_or_none(row.get("score"))
+        val_provenance_invalid = selection["split"] != "test" and (
+            str(row.get("run_manifest") or "") != str(Path(str(row["runtime_dir"])) / "run_manifest.json")
+            or any(
+                row.get(field) not in (None, "")
+                for field in ("checkpoint_rank", "checkpoint_ranking", "checkpoint_ranking_sha256", "source")
+            )
+        )
         if (
             rank_number < 1
             or score is None
+            or val_provenance_invalid
             or row.get("checkpoint_path") in (None, "")
             or re.fullmatch(r"[0-9a-f]{64}", str(row.get("checkpoint_sha256") or "")) is None
             or row.get("config") in (None, "")
