@@ -875,6 +875,8 @@ def hparam_selection_lifecycle(
                 "rank",
                 "checkpoint_path",
                 "checkpoint_sha256",
+                # checkpoint_rank is selection-owned; epoch/source may be ordinary runtime evidence.
+                "checkpoint_rank",
                 "selection_report",
                 "selection_report_sha256",
             )

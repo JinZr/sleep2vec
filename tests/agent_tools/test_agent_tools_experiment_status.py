@@ -1960,6 +1960,25 @@ def test_experiment_status_all_failed_hparam_requires_failure_report_not_selecti
     assert "failure_report_required" in {blocker["code"] for blocker in snapshot["blockers"]}
 
 
+def test_experiment_status_rejects_all_failed_hparam_with_stale_checkpoint_rank(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="failed")
+    rows = _read_manifest_rows(root)
+    rows[0]["checkpoint_rank"] = "1"
+    write_rows(root / "run_manifest.tsv", rows)
+    report = tmp_path / "failure.md"
+    report.write_text("# Failure report\n")
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="stale for all-failed step"):
+        experiments.experiment_status(root)
+    with pytest.raises(ValueError, match="stale for all-failed step"):
+        experiments.finalize_experiment(root, report)
+
+    assert _workspace_files(root) == before
+
+
 def test_experiment_status_keeps_completed_legacy_hparam_selection_readable(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
