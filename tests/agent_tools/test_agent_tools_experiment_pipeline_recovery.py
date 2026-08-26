@@ -219,7 +219,12 @@ def test_retry_registration_preflight_failure_does_not_advance_attempt_registry(
     assert not list(pipeline_dir.rglob("attempt-002"))
 
 
-def test_initial_registration_preflight_groups_variants_before_publishing_any_attempt(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("failure_kind", ["topology", "target"])
+def test_initial_registration_preflight_groups_variants_before_publishing_any_attempt(
+    tmp_path: Path,
+    monkeypatch,
+    failure_kind: str,
+):
     root = tmp_path / "workspace"
     root.mkdir()
     experiment = {
@@ -283,24 +288,36 @@ def test_initial_registration_preflight_groups_variants_before_publishing_any_at
         )
         return SimpleNamespace(exit_code=0)
 
-    calls = []
+    target_calls = []
+    topology_calls = []
+
+    def reject_unsafe_group(root_path, paths, *, remote=None):
+        assert Path(root_path) == Path("/")
+        assert remote is None
+        topology_calls.append([Path(path) for path in paths])
+        if failure_kind == "topology" and len(paths) == 4:
+            raise ValueError("frozen output topology rejected")
 
     def reject_second_group(_execution, runs, *, plan_label):
         assert plan_label == "pipeline"
         assert all(Path(run["script"]).is_file() for run in runs)
-        calls.append([run["run_id"] for run in runs])
-        if len(runs) == 2:
+        target_calls.append([run["run_id"] for run in runs])
+        if failure_kind == "target" and len(runs) == 2:
             raise ValueError("frozen argv rejected")
         return {"runtime_commit": "a" * 40}
 
     monkeypatch.setattr(experiment_pipeline, "_ensure_initial_preflight", lambda *_args: None)
     monkeypatch.setattr(experiment_pipeline, "build_plan", build_staged_plan)
+    monkeypatch.setattr(experiment_pipeline.exp_io, "validate_managed_output_paths", reject_unsafe_group)
     monkeypatch.setattr(experiment_pipeline.managed_scheduler, "inspect_execution_target", reject_second_group)
 
-    with pytest.raises(experiment_pipeline.AttemptRegistrationPreflightError, match="frozen argv rejected"):
+    expected_error = "frozen output topology rejected" if failure_kind == "topology" else "frozen argv rejected"
+    with pytest.raises(experiment_pipeline.AttemptRegistrationPreflightError, match=expected_error):
         experiment_pipeline._load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
 
-    assert calls == [["run-002"], ["run-000", "run-001"]]
+    assert [len(paths) for paths in topology_calls] == [2, 4]
+    expected_target_calls = [["run-002"]] if failure_kind == "topology" else [["run-002"], ["run-000", "run-001"]]
+    assert target_calls == expected_target_calls
     assert not (pipeline_dir / "jobs.tsv").exists()
     assert not (root / "steps").exists()
     assert read_run_manifest(root) == []

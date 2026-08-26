@@ -770,6 +770,9 @@ def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path:
 
 def test_hparam_reader_uses_frozen_context_for_implicit_workdir(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path, execution={})
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["parameters"]["runtime.lr"] = [9.87654321e-7]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
@@ -828,7 +831,113 @@ def test_slurm_launch_rejects_existing_local_runtime_output_before_submission(tm
     assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot
 
 
+@pytest.mark.parametrize("scheduler_kind", ["direct", "slurm"])
+@pytest.mark.parametrize("topology_drift", ["results_symlink", "execution_ancestor_symlink"])
+def test_hparam_launch_rejects_topology_drift_before_launch(
+    tmp_path: Path, monkeypatch, scheduler_kind: str, topology_drift: str
+):
+    if topology_drift == "execution_ancestor_symlink":
+        execution_parent = tmp_path / "execution-parent"
+        workdir = execution_parent / "repo"
+        workdir.mkdir(parents=True)
+        execution = {"workdir": str(workdir)}
+        if scheduler_kind == "slurm":
+            execution.update(
+                {
+                    "gpus_per_run": 1,
+                    "scheduler": {
+                        "type": "slurm",
+                        "partition": "gpu",
+                        "cpus_per_task": 8,
+                        "memory": "64G",
+                        "walltime": "01:00:00",
+                    },
+                }
+            )
+        recipe = _hparam_recipe(tmp_path, execution=execution)
+        plan_dir = tmp_path / "plan"
+        result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+        assert result.returncode == 0, result.stderr
+        plan = json.loads((plan_dir / "plan.json").read_text())
+        real_execution_parent = tmp_path / "execution-real"
+        execution_parent.rename(real_execution_parent)
+        execution_parent.symlink_to(real_execution_parent, target_is_directory=True)
+    elif scheduler_kind == "slurm":
+        plan_dir, plan = _write_slurm_plan(tmp_path)
+    else:
+        recipe = _hparam_recipe(tmp_path)
+        plan_dir = tmp_path / "plan"
+        result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+        assert result.returncode == 0, result.stderr
+        plan = json.loads((plan_dir / "plan.json").read_text())
+
+    if topology_drift == "results_symlink":
+        artifacts = plan["recipe"].get("artifacts") or {}
+        results_path = plan_hparam.plan_output_path(
+            plan_dir,
+            artifacts.get("results_csv_path"),
+            "results/agent_hparam_results.csv",
+        )
+        results_path.parent.mkdir(parents=True, exist_ok=True)
+        results_path.symlink_to(tmp_path / "run_manifest.tsv")
+
+    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
+    events_before = (tmp_path / "events.jsonl").read_bytes()
+    launch_attempts = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda *_args, **_kwargs: launch_attempts.append("start"),
+    )
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: launch_attempts.append("sbatch"),
+    )
+
+    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    canonical = next(
+        row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == plan["runs"][0]["run_id"]
+    )
+    assert launch_attempts == []
+    assert canonical["status"] == "planned"
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
+    assert (tmp_path / "events.jsonl").read_bytes() == events_before
+    assert not (plan_dir / "launch_manifest.tsv").exists()
+    assert not (plan_dir / "run_status.tsv").exists()
+
+
+def test_hparam_launch_ignores_existing_runtime_dir_for_nonlaunchable_run(tmp_path: Path, monkeypatch):
+    rows = _write_runtime_rows(
+        tmp_path,
+        [
+            {"run_id": "run-000", "status": "launched"},
+            {"run_id": "run-001", "status": "planned"},
+        ],
+    )
+    Path(rows[0]["runtime_dir"]).mkdir(parents=True)
+    calls = []
+    monkeypatch.setattr(
+        managed_scheduler,
+        "launch_managed_runs",
+        lambda *_args, **_kwargs: calls.append(True),
+    )
+
+    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+
+    assert calls == [True]
+
+
 def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission(tmp_path: Path, monkeypatch):
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+
+    def validate_without_remote(root, paths, remote=None):
+        if remote is None:
+            return real_validate(root, paths)
+
+    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_without_remote)
     plan_dir, plan = _write_slurm_plan(
         tmp_path,
         execution={"target": "ssh", "host": "offline-host", "workdir": str(tmp_path)},
@@ -836,7 +945,6 @@ def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission
     run = plan["runs"][0]
     snapshot = (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_bytes()
     checkpoint_dir = Path(run["checkpoint_dir"])
-    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
     remote_probes = []
 
     def reject_remote_checkpoint(root, paths, remote=None):
@@ -857,8 +965,17 @@ def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert remote_probes == [
         (
-            tmp_path,
-            [Path(run["runtime_dir"]), checkpoint_dir],
+            Path("/"),
+            [
+                plan_dir / "plan.json",
+                Path(run["runtime_dir"]),
+                checkpoint_dir,
+                plan_hparam.plan_output_path(
+                    plan_dir,
+                    (plan["recipe"].get("artifacts") or {}).get("results_csv_path"),
+                    "results/agent_hparam_results.csv",
+                ),
+            ],
             "offline-host",
         )
     ]

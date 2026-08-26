@@ -1061,6 +1061,7 @@ def _prepare_attempt_registration_groups(
 ) -> dict[str, Path | None]:
     prepared: dict[str, Path | None] = {}
     groups: dict[str, list[dict[str, Any]]] = {}
+    group_paths: dict[str, list[Path]] = {}
     canonical_keys = {managed_run_key(row) for row in read_run_manifest(root)}
     pending = []
     for item in attempts:
@@ -1103,10 +1104,14 @@ def _prepare_attempt_registration_groups(
             except (KeyError, ValueError) as exc:
                 raise ValueError(f"External attempt script is outside its plan: {plan_dir}") from exc
             run["script"] = str(physical_plan_dir / script_relative)
-            groups.setdefault(str(selection["variant"]), []).append(run)
+            variant = str(selection["variant"])
+            groups.setdefault(variant, []).append(run)
+            group_paths.setdefault(variant, []).extend([plan_dir / "plan.json", result_root])
 
         execution = _pipeline_execution(spec)
+        remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
         for variant in sorted(groups):
+            exp_io.validate_managed_output_paths(Path("/"), group_paths[variant], remote=remote)
             managed_scheduler.inspect_execution_target(execution, groups[variant], plan_label="pipeline")
         return prepared
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:

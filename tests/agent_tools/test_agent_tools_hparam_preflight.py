@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 
@@ -39,7 +41,7 @@ def _recipe(tmp_path: Path, *, task: str = "hparam_tune") -> tuple[Path, Path]:
                 "base_recipe": str(base),
                 "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
                 "execution": {
-                    "workdir": str(REPO_ROOT),
+                    "workdir": str(tmp_path / "runtime"),
                     "python": sys.executable,
                     "runtime_commit": _RUNTIME_COMMIT,
                 },
@@ -108,6 +110,76 @@ def _staging_dirs(workspace: Path, plan_dir: Path) -> list[Path]:
     return list(workspace.parent.glob(f".{plan_dir.name}.*.staging"))
 
 
+@pytest.mark.parametrize(
+    ("execution", "expected_remote"),
+    [
+        ({"target": "local"}, None),
+        ({"target": "ssh", "host": "frozen-host"}, "frozen-host"),
+    ],
+)
+def test_hparam_output_inventory_routes_to_execution_host(
+    tmp_path: Path,
+    monkeypatch,
+    execution: dict,
+    expected_remote: str | None,
+):
+    plan_dir = tmp_path / "plan"
+    results_path = tmp_path / "shared-results.csv"
+    run_000_runtime = tmp_path / "runtime" / "run-000"
+    run_001_runtime = tmp_path / "runtime" / "run-001"
+    plan = {
+        "recipe": {
+            "execution": execution,
+            "artifacts": {"results_csv_path": str(results_path)},
+        },
+        "runs": [
+            {
+                "run_id": "run-000",
+                "runtime_dir": str(run_000_runtime),
+                "checkpoint_dir": str(run_000_runtime / "checkpoints"),
+            },
+            {
+                "run_id": "run-001",
+                "runtime_dir": str(run_001_runtime),
+                "checkpoint_dir": str(run_001_runtime / "checkpoints"),
+            },
+        ],
+    }
+    observed = []
+
+    def validate(root, paths, *, remote=None):
+        observed.append((Path(root), [Path(path) for path in paths], remote))
+
+    monkeypatch.setattr(plan_hparam.exp_io, "validate_managed_output_paths", validate)
+
+    plan_hparam.validate_hparam_output_paths(plan_dir, plan)
+
+    expected = [
+        plan_dir / "plan.json",
+        run_000_runtime,
+        run_000_runtime / "checkpoints",
+        run_001_runtime,
+        run_001_runtime / "checkpoints",
+        results_path,
+    ]
+    assert observed == [(Path("/"), expected, expected_remote)]
+
+
+def test_hparam_output_inventory_rejects_duplicate_run_paths(tmp_path: Path):
+    plan_dir = tmp_path / "plan"
+    shared_runtime = tmp_path / "runtime" / "shared"
+    plan = {
+        "recipe": {"execution": {"target": "local"}},
+        "runs": [
+            {"runtime_dir": str(shared_runtime), "checkpoint_dir": str(shared_runtime / "checkpoints-0")},
+            {"runtime_dir": str(shared_runtime), "checkpoint_dir": str(shared_runtime / "checkpoints-1")},
+        ],
+    }
+
+    with pytest.raises(ValueError, match="independent regular files"):
+        plan_hparam.validate_hparam_output_paths(plan_dir, plan)
+
+
 def test_hparam_plan_preflights_before_registration(tmp_path: Path, monkeypatch):
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
@@ -128,6 +200,144 @@ def test_hparam_plan_preflights_before_registration(tmp_path: Path, monkeypatch)
     assert (plan_dir / "execution_snapshot.json").is_file()
     plan = run_artifacts.read_hparam_plan(plan_dir)
     assert plan["execution_snapshot"]["sha256"] == file_sha256(plan_dir / "execution_snapshot.json")
+    assert len(read_run_manifest(workspace)) == 1
+
+
+@pytest.mark.parametrize("output_type", ["symlink", "hardlink", "directory", "fifo"])
+def test_hparam_plan_rejects_unsafe_results_before_registration(tmp_path: Path, monkeypatch, output_type: str):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    results_path = tmp_path / "unsafe-results" / "results.csv"
+    results_path.parent.mkdir()
+    if output_type == "directory":
+        results_path.mkdir()
+    elif output_type == "fifo":
+        os.mkfifo(results_path)
+    else:
+        source = tmp_path / "results-source.csv"
+        source.write_text("metric\n1\n")
+        if output_type == "symlink":
+            results_path.symlink_to(source)
+        else:
+            os.link(source, results_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["artifacts"] = {**payload.get("artifacts", {}), "results_csv_path": str(results_path)}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    before = _workspace_files(workspace)
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda *_args, **_kwargs: pytest.fail("unsafe output topology must fail before target inspection"),
+    )
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert "Managed output paths must be independent regular files" in report.blocking_issues()[0].message
+    assert _workspace_files(workspace) == before
+    assert read_run_manifest(workspace) == []
+    assert not plan_dir.exists()
+    assert _staging_dirs(workspace, plan_dir) == []
+
+
+def test_hparam_plan_rejects_workdir_ancestor_symlink_before_registration(tmp_path: Path, monkeypatch):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    real_parent = tmp_path / "real-runtime-parent"
+    real_parent.mkdir()
+    alias_parent = tmp_path / "runtime-alias"
+    alias_parent.symlink_to(real_parent, target_is_directory=True)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["workdir"] = str(alias_parent / "runtime")
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    before = _workspace_files(workspace)
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda *_args, **_kwargs: pytest.fail("unsafe output topology must fail before target inspection"),
+    )
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert str(alias_parent) in report.blocking_issues()[0].message
+    assert _workspace_files(workspace) == before
+    assert read_run_manifest(workspace) == []
+    assert not plan_dir.exists()
+    assert _staging_dirs(workspace, plan_dir) == []
+
+
+@pytest.mark.parametrize(
+    "remote_error",
+    [
+        RuntimeError("SSH output path validation failed on frozen-host: transport failed"),
+        ValueError("Managed output paths must be independent regular files: /remote/alias"),
+    ],
+)
+def test_hparam_plan_fails_closed_on_remote_output_preflight(
+    tmp_path: Path,
+    monkeypatch,
+    remote_error: Exception,
+):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update({"target": "ssh", "host": "frozen-host"})
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    before = _workspace_files(workspace)
+    real_validate = plan_hparam.exp_io.validate_managed_output_paths
+
+    def validate(root, paths, *, remote=None):
+        if remote is not None:
+            assert remote == "frozen-host"
+            raise remote_error
+        return real_validate(root, paths)
+
+    monkeypatch.setattr(plan_hparam.exp_io, "validate_managed_output_paths", validate)
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda *_args, **_kwargs: pytest.fail("remote topology must fail before target inspection"),
+    )
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert str(remote_error) in report.blocking_issues()[0].message
+    assert _workspace_files(workspace) == before
+    assert read_run_manifest(workspace) == []
+    assert not plan_dir.exists()
+    assert _staging_dirs(workspace, plan_dir) == []
+
+
+def test_hparam_preflight_does_not_probe_storage_capacity(tmp_path: Path, monkeypatch):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    monkeypatch.setattr(os, "statvfs", lambda *_args, **_kwargs: pytest.fail("statvfs must not be called"))
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda *_args, **_kwargs: pytest.fail("disk_usage must not be called"),
+    )
+    real_run = subprocess.run
+
+    def reject_df(command, *args, **kwargs):
+        argv = shlex.split(command) if isinstance(command, str) else command
+        if argv and Path(str(argv[0])).name == "df":
+            pytest.fail("df must not be called")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", reject_df)
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+    )
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 0
+    assert (plan_dir / "plan.json").is_file()
     assert len(read_run_manifest(workspace)) == 1
 
 

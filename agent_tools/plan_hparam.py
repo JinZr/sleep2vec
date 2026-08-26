@@ -12,7 +12,15 @@ from typing import Any
 
 import yaml
 
-from . import managed_scheduler, plan_context, plan_contract, plan_rendering as rendering, slurm, transport
+from . import (
+    experiment_io as exp_io,
+    managed_scheduler,
+    plan_context,
+    plan_contract,
+    plan_rendering as rendering,
+    slurm,
+    transport,
+)
 from .decision_models import DecisionIssue, DecisionStatus
 from .decision_paths import (
     inference_checkpoint_averaging_issue,
@@ -982,6 +990,7 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
     )
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     _hparam_registration_state(plan)
+    validate_hparam_output_paths(plan_dir, plan)
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     validation_runs = []
     for run in plan["runs"]:
@@ -1013,6 +1022,7 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
         plan_label="hparam",
     )
     _hparam_registration_state(plan)
+    validate_hparam_output_paths(plan_dir, plan)
     return snapshot
 
 
@@ -1048,6 +1058,7 @@ def commit_hparam_plan(
         )
         root, manifest_rows = _hparam_registration_state(plan)
         if not preflight_validated:
+            validate_hparam_output_paths(plan_dir, plan)
             execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
             managed_scheduler.validated_execution_snapshot(
                 plan_dir,
@@ -1073,6 +1084,26 @@ def commit_hparam_plan(
         )
     artifacts.read_hparam_plan(plan_dir, require_adaptive_commit=False)
     return plan
+
+
+def validate_hparam_output_paths(
+    out: str | Path,
+    plan: dict[str, Any],
+    *,
+    runs: list[dict[str, Any]] | None = None,
+) -> None:
+    plan_dir = Path(out)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    declared_artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
+    paths = [plan_dir / "plan.json"]
+    for run in plan["runs"] if runs is None else runs:
+        paths.extend([Path(str(run["runtime_dir"])), Path(str(run["checkpoint_dir"]))])
+    paths.append(
+        plan_output_path(plan_dir, declared_artifacts.get("results_csv_path"), "results/agent_hparam_results.csv")
+    )
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
+    exp_io.validate_managed_output_paths(Path("/"), paths, remote=remote)
 
 
 def _hparam_registration_state(plan: dict[str, Any]) -> tuple[Path, list[dict[str, Any]]]:
