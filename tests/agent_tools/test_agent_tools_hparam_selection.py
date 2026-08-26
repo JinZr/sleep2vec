@@ -11,7 +11,7 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import hparam_selection, run_artifacts, run_evidence
+from agent_tools import experiments, hparam_selection, run_artifacts, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest, read_run_manifest
 from agent_tools.manifests import read_rows, write_rows
 from agent_tools.models import REPO_ROOT
@@ -192,6 +192,107 @@ def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path
     assert canonical["selection_report_sha256"] == selected["selection_report_sha256"]
 
 
+def test_hparam_select_rejects_completed_experiment_without_mutation(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    runtime_manifest = Path(run["runtime_dir"]) / "run_manifest.json"
+    runtime_manifest.write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    hparam_selection.select_hparam_candidates(plan_dir)
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    experiments.finalize_experiment(tmp_path, selection_report)
+    runtime_manifest.write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.9},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="completed"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize(("field", "value"), [("status", "running"), ("unexpected_terminal", "value")])
+def test_hparam_select_rejects_invalid_active_experiment_owner_without_mutation(tmp_path: Path, field: str, value: str):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    manifest_path = tmp_path / "experiment.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["experiment"][field] = value
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="Invalid active experiment owner"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("ranking_present", [True, False])
+def test_hparam_select_preserves_frozen_val_selection_when_runtime_evidence_drifts(
+    tmp_path: Path, ranking_present: bool
+):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    runtime_manifest = Path(run["runtime_dir"]) / "run_manifest.json"
+    runtime_manifest.write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    hparam_selection.select_hparam_candidates(plan_dir)
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "epoch": "1"}],
+    )
+    hparam_selection.select_hparam_candidates(plan_dir)
+    if not ranking_present:
+        _ranking_path(plan_dir).unlink()
+    runtime_manifest.write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.9},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="Frozen canonical hparam selection"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 def test_test_selected_plan_exports_frozen_checkpoint_path_spelling(tmp_path: Path):
     (tmp_path / "lexical").mkdir()
     workdir = tmp_path / "lexical" / ".."
@@ -294,8 +395,11 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
     for row in rows:
         assert {
             field: canonical[row["run_id"]][field]
-            for field in ("metric", "score", "epoch", "checkpoint_rank", "source")
-        } == {field: row[field] for field in ("metric", "score", "epoch", "checkpoint_rank", "source")}
+            for field in ("metric", "score", "epoch", "checkpoint_rank", "source", "run_manifest", "status")
+        } == {
+            field: row[field]
+            for field in ("metric", "score", "epoch", "checkpoint_rank", "source", "run_manifest", "status")
+        }
 
     hparam_selection.select_hparam_candidates(plan_dir)
 
@@ -313,6 +417,51 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
         hparam_selection.select_hparam_candidates(plan_dir)
     assert ranking.read_bytes() == ranking_before
     assert (plan_dir / "checkpoint_test_ranking.csv").read_bytes() == checkpoint_ranking_before
+
+
+@pytest.mark.parametrize("field", ["checkpoint_rank", "epoch", "source"])
+@pytest.mark.parametrize("mutation", ["tamper", "remove"])
+def test_experiment_status_rejects_test_ranking_optional_provenance_drift(tmp_path: Path, field: str, mutation: str):
+    recipe = _hparam_recipe(
+        tmp_path,
+        selection_metric="test_ahi_pearson",
+        selection_split="test",
+        config_monitor="val_ahi_pearson",
+    )
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "test_all_checkpoints_after_fit": True,
+                "checkpoint_test_results": [
+                    {
+                        "checkpoint_path": str(checkpoint),
+                        "epoch": 1,
+                        "metrics": {"test_ahi_pearson": 0.8},
+                    }
+                ],
+            }
+        )
+    )
+    ranking = hparam_selection.select_hparam_candidates(plan_dir)
+    selection_report = tmp_path / "reports" / "hparam_selection.md"
+    rows = read_rows(ranking, require_managed_identity=True)
+    if mutation == "remove":
+        rows[0].pop(field)
+    else:
+        rows[0][field] = "tampered"
+    write_rows(ranking, rows)
+
+    snapshot = experiments.experiment_status(tmp_path)
+
+    assert snapshot["summary"]["state"] == "ready_to_report"
+    with pytest.raises(ValueError, match="selection report is missing or differs"):
+        experiments.finalize_experiment(tmp_path, selection_report)
 
 
 def test_checkpoint_hash_uses_ssh_execution_target(monkeypatch):

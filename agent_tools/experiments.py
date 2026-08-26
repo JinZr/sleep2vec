@@ -10,6 +10,7 @@ import yaml
 from . import experiment_io as exp_io, experiment_tracking as tracking, run_artifacts as artifacts
 from .experiment_workspace import (
     RESEARCH_LOG_NAME,
+    SHA256_RE,
     TERMINAL_STATUSES,
     append_research_log,
     canonical_local_experiment_root,
@@ -243,22 +244,33 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     )
     if hparam["pending_steps"]:
         raise ValueError("Successful hparam runs must be selected before experiment finalization.")
-    report_is_selection = str(Path(report_path)) == hparam["report_path"]
+    selection_report_path = Path(hparam["report_path"]) if hparam["selected_steps"] else None
+    if selection_report_path is not None:
+        current_selection = exp_io.read_managed_files_at(root, [selection_report_path], remote=remote)
+        if current_selection[str(selection_report_path)]["sha256"] != selection_report["sha256"]:
+            raise ValueError("The hparam selection report changed during finalization.")
+    report_path_is_selection = str(Path(report_path)) == hparam["report_path"]
     if hparam["selected_steps"]:
         if not hparam["report_valid"]:
             raise ValueError("The hparam selection report is missing or differs from canonical selection evidence.")
         if hparam["automatic_report_final"]:
-            if not report_is_selection:
+            if not report_path_is_selection:
                 raise ValueError(f"Successful hparam experiments must finalize from {hparam['report_path']}")
-        elif report_is_selection:
+            report_text = str(selection_report["text"])
+        elif report_path_is_selection:
             raise ValueError("The hparam selection report cannot replace the required combined experiment report.")
-    elif hparam["hparam_steps"] and report_is_selection:
+    elif hparam["hparam_steps"] and report_path_is_selection:
         raise ValueError("The hparam selection report cannot replace the required hparam failure report.")
-    report_text = (
-        str(selection_report["text"])
-        if hparam["selected_steps"] and hparam["automatic_report_final"]
-        else exp_io.read_text_at(report_path, remote=remote)
-    )
+    if not (hparam["selected_steps"] and hparam["automatic_report_final"]):
+        report_text = exp_io.read_text_at(report_path, remote=remote)
+        report_content_is_selection = bool(
+            selection_report is not None
+            and hashlib.sha256(report_text.encode()).hexdigest() == selection_report["sha256"]
+        )
+        if hparam["selected_steps"] and report_content_is_selection:
+            raise ValueError("The hparam selection report cannot replace the required combined experiment report.")
+        if not hparam["selected_steps"] and hparam["hparam_steps"] and report_content_is_selection:
+            raise ValueError("The hparam selection report cannot replace the required hparam failure report.")
     if not report_text.strip():
         raise ValueError("Final report is missing or empty.")
     target = root / "reports" / "final.md"
@@ -272,9 +284,21 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     target_sha256 = hashlib.sha256(target_text.encode()).hexdigest() if target_exists else None
     if not exp_io.conditional_atomic_replace_text_at(target, report_text, target_sha256, remote=remote):
         raise RuntimeError(f"Final report changed during publication: {target}")
-    manifest["experiment"]["status"] = "completed"
-    manifest["experiment"]["completed_at"] = utc_now()
+    manifest["experiment"].update(
+        {
+            "status": "completed",
+            "completed_at": utc_now(),
+            "final_report": str(target),
+            "final_report_sha256": hashlib.sha256(report_text.encode()).hexdigest(),
+        }
+    )
+    if hparam["selected_steps"]:
+        manifest["experiment"]["selection_report_sha256"] = selection_report["sha256"]
     exp_io.append_event_at(root, "experiment_finalization_prepared", {"report": str(target)}, remote=remote)
+    if selection_report_path is not None:
+        current_selection = exp_io.read_managed_files_at(root, [selection_report_path], remote=remote)
+        if current_selection[str(selection_report_path)]["sha256"] != selection_report["sha256"]:
+            raise ValueError("The hparam selection report changed during finalization.")
     # The experiment manifest is the terminal commit, so publish it only after the report is durable.
     if not exp_io.conditional_atomic_replace_text_at(
         root / "experiment.yaml",
@@ -574,9 +598,22 @@ def _managed_workspace(
         raise ValueError("experiment.yaml must contain only the experiment owner mapping.")
     experiment = manifest.get("experiment")
     validated_experiment = experiment
+    completed_bindings: list[Path] = []
     if allow_completed and isinstance(experiment, dict) and ("status" in experiment or "completed_at" in experiment):
-        if set(experiment) - {"id", "title", "objective", "root", "baseline"} != {"status", "completed_at"}:
-            raise ValueError("Completed experiment metadata must define only status and completed_at.")
+        terminal_fields = set(experiment) - {"id", "title", "objective", "root", "baseline"}
+        allowed_terminal_fields = (
+            {"status", "completed_at"},
+            {"status", "completed_at", "final_report", "final_report_sha256"},
+            {
+                "status",
+                "completed_at",
+                "final_report",
+                "final_report_sha256",
+                "selection_report_sha256",
+            },
+        )
+        if terminal_fields not in allowed_terminal_fields:
+            raise ValueError("Completed experiment metadata has incomplete or unexpected terminal fields.")
         completed_at = experiment.get("completed_at")
         if experiment.get("status") != "completed" or not isinstance(completed_at, str):
             raise ValueError("Completed experiment metadata is invalid.")
@@ -586,9 +623,19 @@ def _managed_workspace(
             raise ValueError("Completed experiment completed_at must be an ISO timestamp.") from exc
         if completed_time.tzinfo is None or completed_time.utcoffset() != timezone.utc.utcoffset(completed_time):
             raise ValueError("Completed experiment completed_at must be in UTC.")
-        validated_experiment = {
-            field: value for field, value in experiment.items() if field not in {"status", "completed_at"}
-        }
+        if "final_report" in experiment:
+            final_report = root / "reports" / "final.md"
+            if experiment["final_report"] != str(final_report) or not SHA256_RE.fullmatch(
+                str(experiment["final_report_sha256"])
+            ):
+                raise ValueError("Completed experiment final report binding is invalid.")
+            completed_bindings.append(final_report)
+            selection_sha256 = experiment.get("selection_report_sha256")
+            if selection_sha256 is not None:
+                if not SHA256_RE.fullmatch(str(selection_sha256)):
+                    raise ValueError("Completed experiment selection report binding is invalid.")
+                completed_bindings.append(root / "reports" / "hparam_selection.md")
+        validated_experiment = {field: value for field, value in experiment.items() if field not in terminal_fields}
     issues = experiment_metadata_issues(
         {
             "experiment": validated_experiment,
@@ -599,6 +646,15 @@ def _managed_workspace(
         raise ValueError("; ".join(issue["message"] for issue in issues))
     if str(experiment["root"]) != str(root):
         raise ValueError(f"experiment.root differs from the target workspace: {root}")
+
+    if completed_bindings:
+        bound_files = exp_io.read_managed_files_at(root, completed_bindings, remote=remote)
+        if bound_files[str(completed_bindings[0])]["sha256"] != experiment["final_report_sha256"]:
+            raise ValueError("Completed experiment final report differs from its terminal binding.")
+        if len(completed_bindings) == 2 and (
+            bound_files[str(completed_bindings[1])]["sha256"] != experiment["selection_report_sha256"]
+        ):
+            raise ValueError("Completed experiment selection report differs from its terminal binding.")
 
     for legacy_path in (root / "trial_status.tsv", root / "adaptive" / "trial_registry.tsv"):
         if exp_io.path_exists_at(legacy_path, remote=remote):

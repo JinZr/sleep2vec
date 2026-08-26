@@ -147,6 +147,14 @@ experiments can finalize from that fixed report only when every hparam step has
 a selected winner; mixed or partly failed multi-step experiments still need a
 combined report, and all-failed searches need a failure report. Historical
 completed experiments remain readable without retroactive report migration.
+Canonical hash-bound selection evidence is immutable across selector re-entry;
+`ranking.csv` may be recreated only when it agrees with that owner. New
+completed metadata binds the final report path/hash and, when present, the
+selection-report hash. Status validates those terminal bytes, while historical
+completed metadata without the bindings remains compatible. Mixed/failure
+reports cannot be selection-report aliases or byte-identical copies, and pure
+automatic hparam finalization still requires the canonical selection-report
+path.
 
 ## Inference And Evaluation
 

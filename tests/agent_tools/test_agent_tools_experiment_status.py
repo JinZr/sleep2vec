@@ -233,7 +233,9 @@ def _workspace_files(root: Path) -> dict[str, bytes]:
     return {str(path.relative_to(root)): path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
 
 
-def _record_hparam_selection(root: Path, *, step_id: str = "tune", write_report: bool = False) -> Path:
+def _record_hparam_selection(
+    root: Path, *, step_id: str = "tune", write_report: bool = False, score: str = "0.25"
+) -> Path:
     rows = _read_manifest_rows(root)
     winner = next(row for row in rows if row["step_id"] == step_id)
     winner.update(
@@ -242,10 +244,11 @@ def _record_hparam_selection(root: Path, *, step_id: str = "tune", write_report:
             "metric": "val_loss",
             "selection_mode": "min",
             "selection_split": "val",
-            "score": "0.25",
+            "score": score,
             "rank": "1",
             "checkpoint_path": str(Path(winner["checkpoint_dir"]) / "epoch=1.ckpt"),
             "checkpoint_sha256": "a" * 64,
+            "run_manifest": str(Path(winner["runtime_dir"]) / "run_manifest.json"),
         }
     )
     write_rows(root / "run_manifest.tsv", rows)
@@ -282,6 +285,8 @@ def _record_hparam_selection(root: Path, *, step_id: str = "tune", write_report:
                     "rank": row["rank"],
                     "checkpoint_path": row["checkpoint_path"],
                     "checkpoint_sha256": row["checkpoint_sha256"],
+                    "run_manifest": row.get("run_manifest", ""),
+                    "status": row["status"],
                     **managed_run_parameters(row),
                 }
                 for row in rows
@@ -1925,14 +1930,83 @@ def test_experiment_finalize_requires_selection_and_uses_verified_selection_repo
 
     target = experiments.finalize_experiment(root, selection_report)
     assert target.read_text() == selection_report.read_text()
+    completed = yaml.safe_load((root / "experiment.yaml").read_text())["experiment"]
+    assert completed["final_report"] == str(target)
+    assert completed["final_report_sha256"] == _sha256(target)
+    assert completed["selection_report_sha256"] == _sha256(selection_report)
 
 
-def test_experiment_finalize_reuses_verified_selection_report_text_across_race(tmp_path, monkeypatch):
+def test_experiment_finalize_rejects_selection_report_copy_for_pure_hparam_experiment(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
     _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
     selection_report = _record_hparam_selection(root, write_report=True)
-    verified_text = selection_report.read_text()
+    copied_report = root / "selection-copy.md"
+    copied_report.write_bytes(selection_report.read_bytes())
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="must finalize from"):
+        experiments.finalize_experiment(root, copied_report)
+
+    assert _workspace_files(root) == before
+    assert not (root / "reports" / "final.md").exists()
+
+
+@pytest.mark.parametrize("mutation", ["delete", "tamper"])
+def test_experiment_status_validates_bound_final_report(tmp_path, mutation):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train", status="completed")
+    report = tmp_path / "report.md"
+    report.write_text("# Final report\n")
+    target = experiments.finalize_experiment(root, report)
+    if mutation == "delete":
+        target.unlink()
+    else:
+        target.write_text("# Tampered final report\n")
+
+    with pytest.raises(ValueError, match="final report|Managed file is missing"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_rejects_incomplete_terminal_report_binding(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train", status="completed")
+    report = tmp_path / "report.md"
+    report.write_text("# Final report\n")
+    experiments.finalize_experiment(root, report)
+    manifest_path = root / "experiment.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["experiment"].pop("final_report_sha256")
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+
+    with pytest.raises(ValueError, match="incomplete or unexpected terminal fields"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_detects_selection_commit_after_terminal_binding(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    final = experiments.finalize_experiment(root, selection_report)
+    final_bytes = final.read_bytes()
+
+    _record_hparam_selection(root, write_report=True, score="0.5")
+
+    with pytest.raises(ValueError, match="selection report differs from its terminal binding"):
+        experiments.experiment_status(root)
+    assert final.read_bytes() == final_bytes
+
+
+def test_experiment_finalize_rejects_selection_report_changed_after_snapshot(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    manifest = root / "experiment.yaml"
+    manifest_before = manifest.read_bytes()
     original_reader = experiments._hparam_selection_report
 
     def read_then_tamper(*args, **kwargs):
@@ -1942,10 +2016,38 @@ def test_experiment_finalize_reuses_verified_selection_report_text_across_race(t
 
     monkeypatch.setattr(experiments, "_hparam_selection_report", read_then_tamper)
 
-    target = experiments.finalize_experiment(root, selection_report)
+    with pytest.raises(ValueError, match="selection report changed during finalization"):
+        experiments.finalize_experiment(root, selection_report)
 
-    assert target.read_text() == verified_text
-    assert target.read_text() != selection_report.read_text()
+    assert manifest.read_bytes() == manifest_before
+    assert not (root / "events.jsonl").exists()
+    assert not (root / "reports" / "final.md").exists()
+    assert selection_report.read_text() == "# Tampered after verification\n"
+
+
+def test_experiment_finalize_rechecks_selection_report_before_terminal_commit(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    manifest = root / "experiment.yaml"
+    manifest_before = manifest.read_bytes()
+    original_replace = experiment_io.conditional_atomic_replace_text_at
+
+    def publish_then_tamper(path, text, expected_sha256, *, remote=None):
+        committed = original_replace(path, text, expected_sha256, remote=remote)
+        if Path(path) == root / "reports" / "final.md" and committed:
+            selection_report.write_text("# Tampered before terminal commit\n")
+        return committed
+
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", publish_then_tamper)
+
+    with pytest.raises(ValueError, match="selection report changed during finalization"):
+        experiments.finalize_experiment(root, selection_report)
+
+    assert manifest.read_bytes() == manifest_before
+    assert (root / "reports" / "final.md").exists()
+    assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
 
 
 def test_experiment_finalize_allows_combined_or_failure_reports(tmp_path):
@@ -1971,6 +2073,40 @@ def test_experiment_finalize_allows_combined_or_failure_reports(tmp_path):
     failure_report = tmp_path / "failure.md"
     failure_report.write_text("# Failure report\n\nNo candidate completed successfully.\n")
     assert experiments.finalize_experiment(failed, failure_report).read_text() == failure_report.read_text()
+
+
+def test_experiment_finalize_rejects_selection_report_dotdot_alias_for_mixed_experiment(tmp_path):
+    root = tmp_path / "mixed"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    _add_plan(root, step_id="prepare", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    aliased_report = selection_report.parent / ".." / "reports" / selection_report.name
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="cannot replace the required combined experiment report"):
+        experiments.finalize_experiment(root, aliased_report)
+
+    assert _workspace_files(root) == before
+    assert not (root / "reports" / "final.md").exists()
+
+
+def test_experiment_finalize_rejects_selection_report_copy_as_failure_report(tmp_path):
+    root = tmp_path / "failed"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="failed")
+    selection_report = root / "reports" / "hparam_selection.md"
+    selection_report.parent.mkdir()
+    selection_report.write_text("# Stale selection report\n")
+    same_content = root / "failure.md"
+    same_content.write_bytes(selection_report.read_bytes())
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="cannot replace the required hparam failure report"):
+        experiments.finalize_experiment(root, same_content)
+
+    assert _workspace_files(root) == before
+    assert not (root / "reports" / "final.md").exists()
 
 
 def test_experiment_status_requires_combined_report_when_one_hparam_step_failed(tmp_path):
@@ -2042,6 +2178,10 @@ def test_experiment_status_rejects_missing_or_drifted_hparam_ranking(tmp_path, m
         ("version", "tamper"),
         ("config", "tamper"),
         ("runtime.lr", "tamper"),
+        ("run_manifest", "tamper"),
+        ("status", "tamper"),
+        ("run_manifest", "remove"),
+        ("status", "remove"),
         ("config", "remove"),
         ("runtime.lr", "remove"),
         ("unexpected", "add"),

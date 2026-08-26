@@ -17,12 +17,15 @@ from .experiment_workspace import (
     SUCCESS_STATUSES,
     TERMINAL_STATUSES,
     append_event,
+    experiment_metadata_issues,
     experiment_root,
     managed_run_key,
     managed_run_parameters,
     merge_run_manifest,
+    read_managed_yaml_mapping,
     read_run_manifest,
     resolve_run_row,
+    validate_existing_experiment_manifest,
     validate_frozen_run_update,
     validate_managed_run_rows,
 )
@@ -51,6 +54,20 @@ def select_hparam_candidates(
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    experiment_manifest_path = workspace / "experiment.yaml"
+    experiment_manifest_text = experiment_manifest_path.read_text()
+    experiment_manifest = read_managed_yaml_mapping(
+        experiment_manifest_text, source=f"Managed experiment manifest {experiment_manifest_path}"
+    )
+    if set(experiment_manifest) != {"experiment"} or not isinstance(experiment_manifest["experiment"], dict):
+        raise ValueError("Invalid active experiment owner: experiment.yaml must contain only experiment metadata.")
+    active_experiment = experiment_manifest["experiment"]
+    if active_experiment.get("status") == "completed":
+        raise ValueError(f"Experiment is completed and cannot select hparam candidates: {workspace}")
+    active_issues = experiment_metadata_issues({"experiment": active_experiment, "step": recipe["step"]})
+    if active_issues:
+        raise ValueError("Invalid active experiment owner: " + "; ".join(issue["message"] for issue in active_issues))
+    validate_existing_experiment_manifest(experiment_manifest_text, recipe["experiment"], workspace)
     canonical_rows = read_run_manifest(workspace)
     canonical_by_key = {managed_run_key(row): row for row in canonical_rows}
     step_id = str((recipe.get("step") or {}).get("id") or "")
@@ -275,16 +292,18 @@ def select_hparam_candidates(
     else:
         step_ranked = ranked
     validate_managed_run_rows(step_ranked, source="current ranking", cardinality="one_per_run")
-    existing_current_step = [row for row in existing_ranked if row.get("step_id") == step_id]
-    current_uses_checkpoint_contract = any(
-        row.get("checkpoint_sha256") not in (None, "") for row in existing_current_step
-    )
-    if (
-        selection_split == "test"
-        and current_uses_checkpoint_contract
-        and not _existing_checkpoint_ranking_is_consistent(existing_current_step, step_ranked)
-    ):
-        raise ValueError("Frozen hparam ranking differs from current checkpoint test evidence.")
+    canonical_step_ranked = [
+        row
+        for row in canonical_rows
+        if str(row.get("step_id") or "") == step_id
+        and row.get("selection_task") == "hparam_tune"
+        and any(row.get(field) not in (None, "") for field in ("score", "rank", "checkpoint_path", "checkpoint_sha256"))
+    ]
+    if canonical_step_ranked:
+        if any(row.get("checkpoint_sha256") in (None, "") for row in canonical_step_ranked) or not (
+            _existing_checkpoint_ranking_is_consistent(canonical_step_ranked, step_ranked)
+        ):
+            raise ValueError("Frozen canonical hparam selection differs from current runtime evidence.")
     all_ranked = preserved + step_ranked
     if selection_split == "test" and not existing_checkpoint_ranked:
         # Keep the immutable audit plan-local while the workspace ranking spans compatible plans.
@@ -305,6 +324,7 @@ def select_hparam_candidates(
                 "rank": row.get("rank"),
                 "checkpoint_path": row.get("checkpoint_path"),
                 "checkpoint_sha256": row.get("checkpoint_sha256"),
+                "run_manifest": row.get("run_manifest"),
                 **(
                     {
                         "epoch": row.get("epoch"),
@@ -562,7 +582,9 @@ def _existing_checkpoint_ranking_is_consistent(
 ) -> bool:
     current_by_run = {managed_run_key(row): row for row in current_rows}
     existing_keys = {managed_run_key(row) for row in existing_rows}
-    fields = ["epoch", "checkpoint_path", "checkpoint_sha256", "metric", "score"]
+    fields = ["checkpoint_path", "checkpoint_sha256", "metric", "score"]
+    if any(row.get("epoch") not in (None, "") for row in current_rows):
+        fields.insert(0, "epoch")
     if existing_keys == set(current_by_run):
         fields.append("rank")
     for existing in existing_rows:

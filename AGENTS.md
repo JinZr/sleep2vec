@@ -103,7 +103,7 @@ While creating a new hparam recipe, an explicit request to tune hyper-parameters
 - Monitoring may update status and reports but must not start pending runs. Launching is an explicit action.
 - `experiment-run --execute` is an explicit launching action: it may wait for successful managed training sources and then fill its frozen external-evaluation matrix. `hparam-monitor` and `experiment-monitor` remain non-launching.
 - External-evaluation pipelines must freeze checkpoints from the source plan's registered ranking before running their separate evaluation matrix. Finalization requires every declared external job to have one verified successful manifest and no active attempt.
-- Stopping a run requires a recorded reason. Finalization requires no active runs and a non-empty final report.
+- Stopping a run requires a recorded reason. Finalization requires no active runs and a non-empty final report. New completed experiment metadata binds the canonical final report path and SHA-256, plus the selection-report SHA-256 when hparam selection exists; completed status must fail closed if those bound bytes drift. Historical completed metadata without these bindings remains readable without migration.
 - On takeover, read `experiment.yaml`, `RESEARCH_LOG.md` when present, and the current canonical manifests before acting. Treat `run_manifest.tsv` as the only lifecycle owner.
 - Use `experiment-note` to append evidence-backed, meaningful research actions, observations, interpretations, decisions, conclusions, and corrections. Do not log unchanged monitoring polls, rewrite prior entries, or use narrative text to infer lifecycle state.
 - This policy applies to new work. Do not migrate or rename historical experiment trees unless the user explicitly asks.

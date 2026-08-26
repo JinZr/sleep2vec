@@ -88,6 +88,22 @@ report only when every hparam step has a selected winner. Mixed experiments and
 partly failed multi-step searches require a separate combined report, and
 all-failed hparam experiments may close with a non-empty failure report. The
 canonical selection report cannot substitute for a combined or failure report.
+Once canonical selection rows carry checkpoint hashes, rerunning
+`hparam-select` may only reproduce the same score and checkpoint evidence;
+deleting `reports/ranking.csv` does not authorize replacing the canonical
+selection from changed runtime evidence. The projection may be rebuilt only
+from the unchanged canonical selection.
+
+New finalization commits `status: completed` only with the canonical
+`reports/final.md` path and SHA-256. When ordinary hparam selection exists, the
+terminal metadata also freezes the verified selection-report SHA-256. Status
+validates these bound bytes so report deletion, tampering, or a concurrent
+selection commit becomes visible as corrupt terminal evidence. Historical
+completed manifests without report bindings remain readable and are not
+retroactively migrated. A selection report path alias or byte-identical copy
+cannot substitute for the required mixed-experiment combined report or
+all-failed hparam report; pure ordinary-hparam automatic finalization still
+requires the canonical `reports/hparam_selection.md` path.
 
 ## Research log
 

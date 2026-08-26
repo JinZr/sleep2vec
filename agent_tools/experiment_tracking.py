@@ -579,6 +579,15 @@ def experiment_status_snapshot(
         new_pending_steps = [step for step in hparam["pending_steps"] if not step.get("legacy_selection")]
         if new_pending_steps or (hparam["selected_steps"] and not hparam["report_valid"]):
             raise ValueError("Completed experiment metadata conflicts with incomplete hparam selection evidence.")
+        if experiment.get("final_report_sha256") not in (None, ""):
+            terminal_selection_sha256 = experiment.get("selection_report_sha256")
+            current_selection_sha256 = (
+                hparam_selection_report.get("sha256") if hparam_selection_report is not None else None
+            )
+            if hparam["selected_steps"] and terminal_selection_sha256 != current_selection_sha256:
+                raise ValueError("Completed experiment metadata conflicts with its hparam selection report binding.")
+            if not hparam["selected_steps"] and terminal_selection_sha256 not in (None, ""):
+                raise ValueError("Completed experiment metadata has an unexpected hparam selection report binding.")
     row_payloads = [_status_run_payload(row) for row in sorted_rows]
     step_payloads = []
     for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
@@ -916,7 +925,7 @@ def hparam_selection_lifecycle(
 def _hparam_ranking_matches(selected_steps: list[dict[str, Any]], ranking_text: Any) -> bool:
     ranked_rows = [row for step in selected_steps for row in step["ranked"]]
     parameter_fields = sorted({field for row in ranked_rows for field in managed_run_parameters(row)})
-    projection_fields = (
+    base_projection_fields = (
         "run_name",
         "parameter_summary",
         "version",
@@ -928,8 +937,18 @@ def _hparam_ranking_matches(selected_steps: list[dict[str, Any]], ranking_text: 
         "checkpoint_sha256",
         *parameter_fields,
     )
-    required = {"step_id", "run_id", *projection_fields}
-    allowed = required | {"checkpoint_rank", "epoch", "run_manifest", "source", "status"}
+    optional_projection_fields = ("checkpoint_rank", "epoch", "run_manifest", "source", "status")
+    required = {
+        "step_id",
+        "run_id",
+        *base_projection_fields,
+        *(
+            field
+            for field in optional_projection_fields
+            if any(row.get(field) not in (None, "") for row in ranked_rows)
+        ),
+    }
+    allowed = {"step_id", "run_id", *base_projection_fields, *optional_projection_fields}
     if not isinstance(ranking_text, str):
         return False
     try:
@@ -947,6 +966,10 @@ def _hparam_ranking_matches(selected_steps: list[dict[str, Any]], ranking_text: 
     if any(None in row or any(value is None for value in row.values()) for row in ranking_rows):
         return False
 
+    projection_fields = (
+        *base_projection_fields,
+        *(field for field in optional_projection_fields if field in fieldnames),
+    )
     expected = {
         managed_run_key(row): tuple(str(row.get(field) or "") for field in projection_fields) for row in ranked_rows
     }
