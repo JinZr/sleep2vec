@@ -25,7 +25,8 @@ from agent_tools import (
     recipes,
 )
 from agent_tools.adapters import all_adapters, finetune as finetune_adapter, get_adapter
-from agent_tools.manifests import write_rows
+from agent_tools.experiment_workspace import managed_run_parameters
+from agent_tools.manifests import read_rows, write_rows
 from agent_tools.models import REPO_ROOT
 
 
@@ -272,11 +273,16 @@ def _record_hparam_selection(root: Path, *, step_id: str = "tune", write_report:
                 {
                     "step_id": row["step_id"],
                     "run_id": row["run_id"],
+                    "run_name": row["run_name"],
+                    "parameter_summary": row["parameter_summary"],
+                    "version": row["version"],
+                    "config": row["config"],
                     "metric": row["metric"],
                     "score": row["score"],
                     "rank": row["rank"],
                     "checkpoint_path": row["checkpoint_path"],
                     "checkpoint_sha256": row["checkpoint_sha256"],
+                    **managed_run_parameters(row),
                 }
                 for row in rows
                 if row["step_id"] == step_id and row.get("rank") not in (None, "")
@@ -2026,6 +2032,51 @@ def test_experiment_status_rejects_missing_or_drifted_hparam_ranking(tmp_path, m
     with pytest.raises(ValueError, match="selection report is missing or differs"):
         experiments.finalize_experiment(root, selection_report)
     assert _workspace_files(root) == before
+
+
+@pytest.mark.parametrize(
+    ("field", "mutation"),
+    [
+        ("run_name", "tamper"),
+        ("parameter_summary", "tamper"),
+        ("version", "tamper"),
+        ("config", "tamper"),
+        ("runtime.lr", "tamper"),
+        ("config", "remove"),
+        ("runtime.lr", "remove"),
+        ("unexpected", "add"),
+    ],
+)
+def test_experiment_status_rejects_hparam_ranking_candidate_provenance_drift(tmp_path, field, mutation):
+    root = tmp_path / "experiment"
+    recipe = _write_public_hparam_recipe(
+        root,
+        {"runtime.lr": [1e-6]},
+        selection_metric="val_loss",
+        selection_mode="min",
+    )
+    plan_dir = root / "plans" / "tune"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    rows = _read_manifest_rows(root)
+    for row in rows:
+        row["status"] = "completed"
+    write_rows(root / "run_manifest.tsv", rows)
+    selection_report = _record_hparam_selection(root, step_id="unit-hparam-tune", write_report=True)
+    ranking = root / "reports" / "ranking.csv"
+    ranking_rows = read_rows(ranking, require_managed_identity=True)
+    if mutation == "remove":
+        for row in ranking_rows:
+            row.pop(field)
+    else:
+        ranking_rows[0][field] = "tampered"
+    write_rows(ranking, ranking_rows)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_report"
+    assert snapshot["decision"]["recommended_next"]["id"] == "hparam-select"
+    with pytest.raises(ValueError, match="selection report is missing or differs"):
+        experiments.finalize_experiment(root, selection_report)
 
 
 @pytest.mark.parametrize(

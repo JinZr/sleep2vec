@@ -914,13 +914,32 @@ def hparam_selection_lifecycle(
 
 
 def _hparam_ranking_matches(selected_steps: list[dict[str, Any]], ranking_text: Any) -> bool:
+    ranked_rows = [row for step in selected_steps for row in step["ranked"]]
+    parameter_fields = sorted({field for row in ranked_rows for field in managed_run_parameters(row)})
+    projection_fields = (
+        "run_name",
+        "parameter_summary",
+        "version",
+        "config",
+        "metric",
+        "score",
+        "rank",
+        "checkpoint_path",
+        "checkpoint_sha256",
+        *parameter_fields,
+    )
+    required = {"step_id", "run_id", *projection_fields}
+    allowed = required | {"checkpoint_rank", "epoch", "run_manifest", "source", "status"}
     if not isinstance(ranking_text, str):
         return False
     try:
         reader = csv.DictReader(io.StringIO(ranking_text), strict=True)
         fieldnames = reader.fieldnames or []
-        required = {"step_id", "run_id", "metric", "score", "rank", "checkpoint_path", "checkpoint_sha256"}
-        if len(fieldnames) != len(set(fieldnames)) or not required.issubset(fieldnames):
+        if (
+            len(fieldnames) != len(set(fieldnames))
+            or not required.issubset(fieldnames)
+            or not set(fieldnames) <= allowed
+        ):
             return False
         ranking_rows = list(reader)
     except csv.Error:
@@ -928,13 +947,12 @@ def _hparam_ranking_matches(selected_steps: list[dict[str, Any]], ranking_text: 
     if any(None in row or any(value is None for value in row.values()) for row in ranking_rows):
         return False
 
-    fields = ("metric", "score", "rank", "checkpoint_path", "checkpoint_sha256")
     expected = {
-        managed_run_key(row): tuple(str(row.get(field) or "") for field in fields)
-        for step in selected_steps
-        for row in step["ranked"]
+        managed_run_key(row): tuple(str(row.get(field) or "") for field in projection_fields) for row in ranked_rows
     }
-    observed = {managed_run_key(row): tuple(str(row.get(field) or "") for field in fields) for row in ranking_rows}
+    observed = {
+        managed_run_key(row): tuple(str(row.get(field) or "") for field in projection_fields) for row in ranking_rows
+    }
     return len(observed) == len(ranking_rows) and None not in observed and observed == expected
 
 
