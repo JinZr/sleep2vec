@@ -254,11 +254,11 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
         raise ValueError("finetune_balanced cannot freeze a source backbone without a pretrained backbone.")
     lora_levels = [lora]
     if has_trained_backbone:
+        # Keep an explicit full-finetune arm when the exact source baseline has an inert insert_lora=true.
+        full = {**lora, "freeze_backbone_and_insert_lora": False, "insert_lora": False}
         head_only = {**lora, "freeze_backbone_and_insert_lora": True, "insert_lora": False}
         with_lora = {**lora, "freeze_backbone_and_insert_lora": True, "insert_lora": True}
-        if freeze:
-            lora_levels.append({**lora, "freeze_backbone_and_insert_lora": False, "insert_lora": False})
-        lora_levels.extend((head_only, with_lora))
+        lora_levels.extend((full, head_only, with_lora))
     lora_levels = _stable_unique(lora_levels)
     axes.append(_axis("adaptation.strategy", "yaml:/finetune/lora", lora_levels))
 

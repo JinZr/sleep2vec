@@ -111,7 +111,7 @@ def test_default_profile_materializes_twelve_deterministic_unique_joint_points()
         "optimization.weight_decay": 3,
         "model.layer_mix": 4,
         "regularization.dropout": 3,
-        "adaptation.strategy": 3,
+        "adaptation.strategy": 4,
     }
 
 
@@ -252,12 +252,13 @@ def test_regularization_profile_synchronizes_a_mismatched_source_dropout():
     assert configurations[0]["yaml:/model/head/kwargs/temporal_dropout"] == 0.2
 
 
-def test_adaptation_keeps_source_first_and_deduplicates_inert_insert_flag():
+def test_adaptation_keeps_source_first_and_includes_explicit_full_arm():
     configurations = _compile()["configurations"]
     values = _unique_values(configurations, "yaml:/finetune/lora")
 
     assert {(value["freeze_backbone_and_insert_lora"], value["insert_lora"]) for value in values} == {
         (False, True),
+        (False, False),
         (True, False),
         (True, True),
     }
