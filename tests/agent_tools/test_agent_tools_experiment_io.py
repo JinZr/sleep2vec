@@ -200,6 +200,26 @@ def test_local_conditional_replace_requires_expected_digest(tmp_path: Path):
     assert path.stat().st_mode & 0o777 == 0o640
 
 
+def test_local_conditional_replace_requires_current_dependency(tmp_path: Path):
+    path = tmp_path / "state.tsv"
+    dependency = tmp_path / "run_manifest.tsv"
+    path.write_text("old\n")
+    dependency.write_text("current\n")
+    target_sha256 = hashlib.sha256(b"old\n").hexdigest()
+    dependency_sha256 = hashlib.sha256(b"current\n").hexdigest()
+
+    dependency.write_text("changed\n")
+
+    assert not experiment_io.conditional_atomic_replace_text_at(
+        path,
+        "new\n",
+        target_sha256,
+        dependency_path=dependency,
+        expected_dependency_sha256=dependency_sha256,
+    )
+    assert path.read_text() == "old\n"
+
+
 def test_blocking_file_lock_reopens_descriptor_after_transient_eio(tmp_path: Path, monkeypatch):
     lock_path = tmp_path / "state.lock"
     attempts = 0
@@ -424,6 +444,31 @@ def test_remote_conditional_create_uses_atomic_no_replace_without_hardlink(monke
     assert "errno.EEXIST" in command[-1]
     assert "os.link(" not in command[-1]
     assert kwargs["input"] == b"new\n"
+
+
+def test_remote_conditional_replace_locks_and_checks_dependency(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
+
+    assert experiment_io.conditional_atomic_replace_text_at(
+        "/remote/experiment.yaml",
+        "experiment: {}\n",
+        "a" * 64,
+        remote="host",
+        dependency_path="/remote/run_manifest.tsv",
+        expected_dependency_sha256="b" * 64,
+    )
+    command, _kwargs = calls[0]
+    remote_command = command[-1]
+    assert "/remote/experiment.yaml" in remote_command
+    assert "/remote/run_manifest.tsv" in remote_command
+    assert 'dependency_path + ".lock"' in remote_command
+    assert "hashlib.sha256(dependency_current).hexdigest()" in remote_command
 
 
 @pytest.mark.parametrize("returncode", [1, 255])

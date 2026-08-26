@@ -245,6 +245,7 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     if remote and not Path(report_path).is_absolute():
         raise ValueError("Remote final report path must be absolute.")
     root = _target_root(run_dir, remote)
+    run_manifest_path = root / "run_manifest.tsv"
     rows = _managed_rows(root, remote=remote)
     if not rows:
         raise ValueError("Experiment has no managed runs to finalize.")
@@ -255,6 +256,24 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     if missing_stop_reasons:
         run_ids = [f"{row['step_id']} / {row['run_id']}" for row in missing_stop_reasons]
         raise ValueError(f"Stopped runs are missing required stop_reason: {run_ids}")
+    run_manifest_snapshot = exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[
+        str(run_manifest_path)
+    ]
+    rows = _managed_rows(root, remote=remote)
+    if not rows:
+        raise ValueError("Experiment has no managed runs to finalize.")
+    unresolved = [row["run_id"] for row in rows if row.get("status") not in TERMINAL_STATUSES]
+    if unresolved:
+        raise ValueError(f"Experiment still has unresolved runs: {unresolved}")
+    missing_stop_reasons = stopped_runs_without_reason(rows)
+    if missing_stop_reasons:
+        run_ids = [f"{row['step_id']} / {row['run_id']}" for row in missing_stop_reasons]
+        raise ValueError(f"Stopped runs are missing required stop_reason: {run_ids}")
+    if (
+        exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[str(run_manifest_path)]["sha256"]
+        != run_manifest_snapshot["sha256"]
+    ):
+        raise RuntimeError("Run manifest changed during finalization.")
     manifest_text = exp_io.read_text_at(root / "experiment.yaml", remote=remote)
     manifest = read_managed_yaml_mapping(
         manifest_text, source=f"Managed experiment manifest {root / 'experiment.yaml'}"
@@ -329,7 +348,12 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     target = root / "reports" / "final.md"
     exp_io.validate_managed_output_paths(
         root,
-        [target, root / "experiment.yaml", root / "events.jsonl"],
+        [
+            target,
+            root / "experiment.yaml",
+            root / "events.jsonl",
+            run_manifest_path.with_name(run_manifest_path.name + ".lock"),
+        ],
         remote=remote,
     )
     target_exists = exp_io.path_exists_at(target, remote=remote)
@@ -358,8 +382,10 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         yaml.safe_dump(manifest, sort_keys=False),
         hashlib.sha256(manifest_text.encode()).hexdigest(),
         remote=remote,
+        dependency_path=run_manifest_path,
+        expected_dependency_sha256=run_manifest_snapshot["sha256"],
     ):
-        raise RuntimeError("Experiment manifest changed during finalization.")
+        raise RuntimeError("Experiment or run manifest changed during finalization.")
     return target
 
 
