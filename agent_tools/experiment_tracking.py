@@ -579,7 +579,10 @@ def experiment_status_snapshot(
         new_pending_steps = [step for step in hparam["pending_steps"] if not step.get("legacy_selection")]
         if new_pending_steps or (hparam["selected_steps"] and not hparam["report_valid"]):
             raise ValueError("Completed experiment metadata conflicts with incomplete hparam selection evidence.")
-        if experiment.get("final_report_sha256") not in (None, ""):
+        has_terminal_report_binding = experiment.get("final_report_sha256") not in (None, "")
+        if hparam["selected_steps"] and not has_terminal_report_binding:
+            raise ValueError("Completed hparam experiment metadata is missing terminal report bindings.")
+        if has_terminal_report_binding:
             terminal_selection_sha256 = experiment.get("selection_report_sha256")
             current_selection_sha256 = (
                 hparam_selection_report.get("sha256") if hparam_selection_report is not None else None

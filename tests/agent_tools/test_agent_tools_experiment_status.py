@@ -2004,6 +2004,23 @@ def test_experiment_status_rejects_incomplete_terminal_report_binding(tmp_path):
         experiments.experiment_status(root)
 
 
+def test_experiment_status_requires_terminal_bindings_for_modern_hparam_selection(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    final = experiments.finalize_experiment(root, selection_report)
+    manifest_path = root / "experiment.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    for field in ("final_report", "final_report_sha256", "selection_report_sha256"):
+        manifest["experiment"].pop(field)
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+    final.write_text("# Tampered final report\n")
+
+    with pytest.raises(ValueError, match="missing terminal report bindings"):
+        experiments.experiment_status(root)
+
+
 def test_experiment_status_detects_selection_commit_after_terminal_binding(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
