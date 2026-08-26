@@ -677,7 +677,7 @@ def test_retryable_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Pa
     monkeypatch.setattr(
         experiment_pipeline,
         "_prepare_attempt_registration_groups",
-        lambda _root, _spec, items: {item[0]["id"]: None for item in items},
+        lambda _root, _spec, items, **_kwargs: {item[0]["id"]: None for item in items},
     )
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])

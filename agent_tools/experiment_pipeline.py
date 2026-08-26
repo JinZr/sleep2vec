@@ -878,7 +878,17 @@ def _load_or_create_initial_attempts(
     attempt_rows = list(existing)
     existing_jobs = {str(row["job_id"]) for row in attempt_rows}
     pending = [item for item in recipes if item[0]["id"] not in existing_jobs]
-    prepared = _prepare_attempt_registration_groups(root, spec, pending)
+    initial_variants = {str(selection["variant"]) for _job, selection, *_paths in recipes}
+    snapshot_owner_dirs = {
+        variant: pipeline_dir if len(initial_variants) == 1 else pipeline_dir / "initial_schedulers" / variant
+        for variant in initial_variants
+    }
+    prepared = _prepare_attempt_registration_groups(
+        root,
+        spec,
+        recipes,
+        snapshot_owner_dirs=snapshot_owner_dirs,
+    )
     try:
         for job, selection, attempt, recipe_path, plan_dir, result_root in pending:
             row = _materialize_attempt(
@@ -1058,6 +1068,8 @@ def _prepare_attempt_registration_groups(
     root: Path,
     spec: dict[str, Any],
     attempts: list[tuple[dict[str, Any], dict[str, Any], int, Path, Path, Path]],
+    *,
+    snapshot_owner_dirs: dict[str, Path],
 ) -> dict[str, Path | None]:
     prepared: dict[str, Path | None] = {}
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -1077,22 +1089,33 @@ def _prepare_attempt_registration_groups(
 
     if not pending:
         return prepared
+    pending_job_ids = {item[0]["id"] for item in pending}
+    pending_variants = {str(item[1]["variant"]) for item in pending}
     first_recipe_path = pending[0][3]
     first_recipe = read_managed_yaml_mapping(
         first_recipe_path.read_text(), source=f"External attempt recipe {first_recipe_path}"
     )
     first_run_index = next_run_index(first_recipe)
+    pending_run_indices = {item[0]["id"]: first_run_index + run_offset for run_offset, item in enumerate(pending)}
     try:
-        for run_offset, (job, selection, _attempt, recipe_path, plan_dir, result_root) in enumerate(pending):
-            _validate_new_attempt_paths(plan_dir, result_root, allow_existing_plan=True)
-            physical_plan_dir, staging_dir = _prepare_attempt_plan(
-                job["id"],
-                selection,
-                recipe_path,
-                plan_dir,
-                run_index_offset=first_run_index + run_offset,
-            )
-            prepared[job["id"]] = staging_dir
+        for job, selection, _attempt, recipe_path, plan_dir, result_root in attempts:
+            variant = str(selection["variant"])
+            if variant not in pending_variants:
+                continue
+            if job["id"] in pending_job_ids:
+                _validate_new_attempt_paths(plan_dir, result_root, allow_existing_plan=True)
+                physical_plan_dir, staging_dir = _prepare_attempt_plan(
+                    job["id"],
+                    selection,
+                    recipe_path,
+                    plan_dir,
+                    run_index_offset=pending_run_indices[job["id"]],
+                )
+                prepared[job["id"]] = staging_dir
+                group_paths.setdefault(variant, []).extend([plan_dir / "plan.json", result_root])
+            else:
+                # A resumed registration must compare the complete scheduler group with its frozen snapshot.
+                physical_plan_dir = plan_dir
 
             plan = read_json(physical_plan_dir / "plan.json")
             runs = plan.get("runs") if isinstance(plan, dict) else None
@@ -1104,15 +1127,28 @@ def _prepare_attempt_registration_groups(
             except (KeyError, ValueError) as exc:
                 raise ValueError(f"External attempt script is outside its plan: {plan_dir}") from exc
             run["script"] = str(physical_plan_dir / script_relative)
-            variant = str(selection["variant"])
             groups.setdefault(variant, []).append(run)
-            group_paths.setdefault(variant, []).extend([plan_dir / "plan.json", result_root])
 
         execution = _pipeline_execution(spec)
         remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
+        snapshots = {}
         for variant in sorted(groups):
-            exp_io.validate_managed_output_paths(Path("/"), group_paths[variant], remote=remote)
-            managed_scheduler.inspect_execution_target(execution, groups[variant], plan_label="pipeline")
+            snapshot_path = snapshot_owner_dirs[variant] / managed_scheduler.EXECUTION_SNAPSHOT_NAME
+            exp_io.validate_managed_output_paths(
+                Path("/"),
+                [*group_paths[variant], snapshot_path],
+                remote=remote,
+            )
+            snapshot = managed_scheduler.inspect_execution_target(execution, groups[variant], plan_label="pipeline")
+            if snapshot_path.exists() and read_json(snapshot_path) != snapshot:
+                raise ValueError(f"Frozen pipeline execution snapshot changed: {snapshot_path}")
+            snapshots[variant] = (snapshot_path, snapshot)
+        for snapshot_path, snapshot in snapshots.values():
+            if not snapshot_path.exists():
+                snapshot_text = json.dumps(snapshot, indent=2, sort_keys=True) + "\n"
+                exp_io.conditional_atomic_replace_text_at(snapshot_path, snapshot_text, None)
+            if read_json(snapshot_path) != snapshot:
+                raise ValueError(f"Frozen pipeline execution snapshot changed: {snapshot_path}")
         return prepared
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
         for staging_dir in prepared.values():
@@ -1673,6 +1709,7 @@ def _create_needed_retries(
                 root,
                 spec,
                 [(job, selection, attempt, recipe_path, plan_dir, result_root)],
+                snapshot_owner_dirs={str(selection["variant"]): pipeline_dir / "retry_schedulers" / job["id"]},
             )
             staging_dir = prepared[job["id"]]
             retry_row = _materialize_attempt(

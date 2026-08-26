@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 from agent_tool_test_helpers import write_finetune_recipe
@@ -157,7 +158,7 @@ def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path
     monkeypatch.setattr(
         experiment_pipeline,
         "_prepare_attempt_registration_groups",
-        lambda _root, _spec, items: {item[0]["id"]: None for item in items},
+        lambda _root, _spec, items, **_kwargs: {item[0]["id"]: None for item in items},
     )
     monkeypatch.setattr(experiment_pipeline, "_materialize_attempt", materialize)
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
@@ -167,7 +168,7 @@ def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path
         root,
         pipeline_dir,
         spec,
-        {"age": {}},
+        {"age": {"variant": "sleep2vec2"}},
         attempts,
     )
 
@@ -199,7 +200,7 @@ def test_retry_registration_preflight_failure_does_not_block_independent_retry(t
         base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
         return {"job": job["id"]}, base.with_suffix(".yaml"), base / "plan", base / "results"
 
-    def prepare_registration(_root, _spec, items):
+    def prepare_registration(_root, _spec, items, **_kwargs):
         job_id = items[0][0]["id"]
         order.append(f"prepare:{job_id}")
         if job_id == "age-hsp-i2-psg":
@@ -217,7 +218,13 @@ def test_retry_registration_preflight_failure_does_not_block_independent_retry(t
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
 
-    updated, created = experiment_pipeline._create_needed_retries(root, pipeline_dir, spec, {"age": {}}, attempts)
+    updated, created = experiment_pipeline._create_needed_retries(
+        root,
+        pipeline_dir,
+        spec,
+        {"age": {"variant": "sleep2vec2"}},
+        attempts,
+    )
 
     assert created is True
     assert order == [
@@ -306,7 +313,7 @@ def test_initial_registration_preflight_groups_variants_before_publishing_any_at
         assert Path(root_path) == Path("/")
         assert remote is None
         topology_calls.append([Path(path) for path in paths])
-        if failure_kind == "topology" and len(paths) == 4:
+        if failure_kind == "topology" and len(paths) == 5:
             raise ValueError("frozen output topology rejected")
 
     def reject_second_group(_execution, runs, *, plan_label):
@@ -326,7 +333,7 @@ def test_initial_registration_preflight_groups_variants_before_publishing_any_at
     with pytest.raises(experiment_pipeline.AttemptRegistrationPreflightError, match=expected_error):
         experiment_pipeline._load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
 
-    assert [len(paths) for paths in topology_calls] == [2, 4]
+    assert [len(paths) for paths in topology_calls] == [3, 5]
     expected_target_calls = [["run-002"]] if failure_kind == "topology" else [["run-002"], ["run-000", "run-001"]]
     assert target_calls == expected_target_calls
     assert not (pipeline_dir / "jobs.tsv").exists()
@@ -335,6 +342,116 @@ def test_initial_registration_preflight_groups_variants_before_publishing_any_at
     assert not list((pipeline_dir / "plans").rglob("attempt-001"))
     assert not list(pipeline_dir.rglob("*.staging"))
     assert not list(pipeline_dir.rglob(managed_scheduler.EXECUTION_SNAPSHOT_NAME))
+
+
+def test_registration_preflight_freezes_complete_group_and_rejects_drift(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    spec = _spec(root)
+    second = dict(spec["jobs"][0], id="age-hsp-i2-bcg", modality="bcg")
+    spec["jobs"].append(second)
+    selection = {"variant": "sleep2vec2", "config_sha256": "2" * 64}
+    attempts = []
+    for job in spec["jobs"]:
+        recipe_path = pipeline_dir / "recipes" / job["id"] / "attempt-001.yaml"
+        plan_dir = pipeline_dir / "plans" / job["id"] / "attempt-001"
+        result_root = pipeline_dir / "results" / job["id"] / "attempt-001"
+        recipe_path.parent.mkdir(parents=True, exist_ok=True)
+        recipe_path.write_text("task: infer\n")
+        attempts.append((job, selection, 1, recipe_path, plan_dir, result_root))
+
+    first_plan_dir = attempts[0][4]
+    first_script = first_plan_dir / "runs" / "run-000--first" / "launch.sh"
+    first_script.parent.mkdir(parents=True)
+    first_script.write_text("/runtime/python -m sleep2vec2.infer --config first.yaml\n")
+    (first_plan_dir / "plan.json").write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "step_id": "external-evaluate",
+                        "run_id": "run-000",
+                        "script": str(first_script),
+                        "command": first_script.read_text().strip(),
+                    }
+                ]
+            }
+        )
+        + "\n"
+    )
+
+    stage_count = 0
+
+    def prepare_plan(_job_id, _selection, _recipe_path, plan_dir, *, run_index_offset):
+        nonlocal stage_count
+        stage_count += 1
+        staging_dir = plan_dir.parent / f".{plan_dir.name}.{stage_count}.staging"
+        run_id = f"run-{run_index_offset:03d}"
+        script = staging_dir / "runs" / f"{run_id}--pending" / "launch.sh"
+        script.parent.mkdir(parents=True)
+        command = "/runtime/python -m sleep2vec2.infer --config pending.yaml"
+        script.write_text(command + "\n")
+        (staging_dir / "plan.json").write_text(
+            json.dumps(
+                {
+                    "runs": [
+                        {
+                            "step_id": "external-evaluate",
+                            "run_id": run_id,
+                            "script": str(plan_dir / script.relative_to(staging_dir)),
+                            "command": command,
+                        }
+                    ]
+                }
+            )
+            + "\n"
+        )
+        return staging_dir, staging_dir
+
+    target_snapshot = {"validated_argv_sha256": "a" * 64}
+
+    def inspect(_execution, runs, *, plan_label):
+        assert plan_label == "pipeline"
+        assert [run["run_id"] for run in runs] == ["run-000", "run-001"]
+        assert all(Path(run["script"]).is_file() for run in runs)
+        return dict(target_snapshot)
+
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "read_run_manifest",
+        lambda _root: [{"step_id": "external-evaluate", "run_id": "run-000"}],
+    )
+    monkeypatch.setattr(experiment_pipeline, "next_run_index", lambda _recipe: 1)
+    monkeypatch.setattr(experiment_pipeline, "_validate_new_attempt_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_plan", prepare_plan)
+    monkeypatch.setattr(experiment_pipeline.exp_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "inspect_execution_target", inspect)
+
+    prepared = experiment_pipeline._prepare_attempt_registration_groups(
+        root,
+        spec,
+        attempts,
+        snapshot_owner_dirs={"sleep2vec2": pipeline_dir},
+    )
+
+    snapshot_path = pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
+    assert prepared[spec["jobs"][0]["id"]] is None
+    assert prepared[second["id"]] is not None
+    assert json.loads(snapshot_path.read_text()) == target_snapshot
+    shutil.rmtree(prepared[second["id"]])
+
+    target_snapshot["validated_argv_sha256"] = "b" * 64
+    with pytest.raises(experiment_pipeline.AttemptRegistrationPreflightError, match="snapshot changed"):
+        experiment_pipeline._prepare_attempt_registration_groups(
+            root,
+            spec,
+            attempts,
+            snapshot_owner_dirs={"sleep2vec2": pipeline_dir},
+        )
+
+    assert json.loads(snapshot_path.read_text()) == {"validated_argv_sha256": "a" * 64}
+    assert not list(pipeline_dir.rglob("*.staging"))
 
 
 @pytest.mark.parametrize(
