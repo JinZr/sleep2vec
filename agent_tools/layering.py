@@ -64,6 +64,7 @@ DOMAIN_MODULES: frozenset[str] = frozenset(
     {
         "domain.sidecar_summaries",
         "domain.finetune_summary",
+        "domain.finetune_hparam_profile",
         "domain.sex_age_summary",
         "domain.presets",
         "domain.index_csv",

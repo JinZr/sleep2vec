@@ -287,6 +287,7 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     selection_metric = evaluation.get("selection_metric")
     selection_split = evaluation.get("selection_split")
+    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
     if "selection_metric" in evaluation and selection_metric in (None, ""):
         return [
             DecisionIssue(
@@ -327,6 +328,8 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
         for combo in hparam_combos(recipe):
             run_config = copy.deepcopy(base_config)
             apply_search_overrides(run_config, combo)
+            if search.get("profile") == "finetune_balanced":
+                validate_final_eval_config_bytes(recipe, yaml.safe_dump(run_config, sort_keys=False).encode())
             data = run_config.get("data") if isinstance(run_config.get("data"), dict) else {}
             finetune = run_config.get("finetune") if isinstance(run_config.get("finetune"), dict) else {}
             task = finetune.get("task") if isinstance(finetune.get("task"), dict) else {}
@@ -375,7 +378,7 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
                 "hparam_search_space",
                 str(exc),
                 None,
-                {},
+                {"preflight_before_workspace": True},
             )
         ]
     return []
@@ -772,6 +775,7 @@ def write_hparam_plan(
     unlock_final_test: bool,
     source_config_bytes: bytes,
     source_config_sha256: str,
+    profile_audit: dict[str, Any] | None = None,
 ) -> None:
     out = out.expanduser()
     if not out.is_absolute():
@@ -908,6 +912,26 @@ def write_hparam_plan(
         ),
         f"Candidate selection uses the frozen {selection_split} split metric.",
     ]
+    if profile_audit is not None:
+        plan_lines.extend(
+            [
+                (
+                    "Selection reports the best observed candidate within frozen search domain, "
+                    f"metric {evaluation.get('selection_metric')}, split {selection_split}, and budget "
+                    f"{profile_audit['budget']}."
+                ),
+                "",
+                "## Automatic Search Profile",
+                "",
+                f"Profile: {profile_audit['id']}",
+                f"Candidate count: {profile_audit['candidate_count']}",
+                "",
+                "| Searched family | Canonical keys | Covered levels |",
+                "|---|---|---:|",
+            ]
+        )
+        for family in profile_audit["searched_families"]:
+            plan_lines.append(f"| {family['id']} | {', '.join(family['keys'])} | {family['covered_levels']} |")
     if final_allowed:
         final_command = compile_hparam_final_command(recipe, out)
         assert final_command is not None

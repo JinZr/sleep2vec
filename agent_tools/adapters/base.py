@@ -114,7 +114,11 @@ class TaskAdapter:
         *,
         source_recipe: dict[str, Any] | None = None,
     ) -> list[DecisionIssue]:
-        """Bind config-owned fields into the in-memory effective recipe."""
+        """Bind config-owned fields into the in-memory effective recipe.
+
+        Domain adapters may defer a domain-leaf compiler import inside this
+        hook; generic adapters must keep it domain-free.
+        """
         return []
 
     def preflight_issues(
@@ -193,9 +197,8 @@ class TaskAdapter:
         return False
 
     def config_summary(self, config_path: str | Path) -> dict[str, Any]:
-        """Structured summary of a domain config. This is the only place an
-        adapter may import its domain package, and that import must stay
-        inside the method body (deferred)."""
+        """Structured summary of a domain config. Domain-leaf imports used by
+        adapter hooks must stay inside the method body (deferred)."""
         raise NotImplementedError
 
     def task_issues(

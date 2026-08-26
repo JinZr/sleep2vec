@@ -49,6 +49,26 @@ class HparamTuneAdapter(TaskAdapter):
     def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
         return hparam_recipe_contract_issues(recipe, source_layer=source_layer)
 
+    def bind_effective_recipe(
+        self,
+        recipe: dict[str, Any],
+        config_summary: dict[str, Any] | None,
+        *,
+        source_recipe: dict[str, Any] | None = None,
+    ) -> list[DecisionIssue]:
+        source = source_recipe or recipe
+        if isinstance(source.get("_local_recipe"), dict):
+            source = source["_local_recipe"]
+        authored_search = source.get("search") if isinstance(source.get("search"), dict) else {}
+        if "profile" not in authored_search:
+            return []
+        from ..domain.finetune_hparam_profile import compile_finetune_balanced_profile
+
+        compiled, issues = compile_finetune_balanced_profile(recipe, config_summary)
+        if compiled is not None:
+            recipe["search"] = compiled
+        return issues
+
     def task_issues(
         self,
         recipe: dict[str, Any],
@@ -149,6 +169,12 @@ class HparamTuneAdapter(TaskAdapter):
         source_config_sha256: str,
     ) -> None:
         from .. import plan_hparam
+        from ..domain.finetune_hparam_profile import finetune_balanced_profile_audit
+
+        search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+        profile_audit = (
+            finetune_balanced_profile_audit(search) if search.get("profile") == "finetune_balanced" else None
+        )
 
         plan_hparam.write_hparam_plan(
             recipe,
@@ -157,6 +183,7 @@ class HparamTuneAdapter(TaskAdapter):
             unlock_final_test=unlock_final_test,
             source_config_bytes=source_config_bytes,
             source_config_sha256=source_config_sha256,
+            profile_audit=profile_audit,
         )
 
     def commit_plan(self, out: Path) -> None:

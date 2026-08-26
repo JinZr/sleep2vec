@@ -16,6 +16,8 @@ def test_config_summary_extracts_channels_task_backend_and_monitor(tmp_path: Pat
     payload["model"]["head"]["hidden_dim"] = 1024
     payload["model"]["head"]["channel_agg"] = {"name": "gated_scalar", "kwargs": {}}
     payload["model"]["head"]["temporal_agg"] = {"name": "attn", "kwargs": {"heads": 2}}
+    payload["model"]["head"]["kwargs"] = {"temporal_dropout": 0.15}
+    payload["model"]["backbone"]["num_hidden_layers"] = 16
     payload["finetune"]["freeze_tokenizer"] = True
     payload["finetune"]["layer_mix"] = {
         "enabled": True,
@@ -35,8 +37,16 @@ def test_config_summary_extracts_channels_task_backend_and_monitor(tmp_path: Pat
     assert summary["model"]["head_details"]["hidden_dim"] == 1024
     assert summary["model"]["head_details"]["channel_agg"]["name"] == "gated_scalar"
     assert summary["model"]["head_details"]["temporal_agg"]["name"] == "attn"
+    assert summary["model"]["head_details"]["kwargs"] == {"temporal_dropout": 0.15}
+    assert summary["model"]["backbone_depth"] == 16
+    assert summary["model"]["layer_mix_present"] is True
     assert summary["model"]["layer_mix"]["layer_indices"] == [15, 16]
     assert summary["model"]["freeze"]["freeze_tokenizer"] is True
+    assert summary["finetune"]["lora_present"] is True
+    assert summary["finetune"]["lora"] == {
+        "freeze_backbone_and_insert_lora": True,
+        "insert_lora": False,
+    }
     assert summary["model"]["model_averaging"]["present"] is True
     assert summary["finetune"]["task"]["monitor"] == "val_ahi_pearson"
     assert summary["preset_build"]["required_channels"] == ["ppg", "ahi", "stage5"]
