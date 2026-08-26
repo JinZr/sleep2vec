@@ -7,7 +7,12 @@ from typing import Any
 
 import yaml
 
-from . import experiment_io as exp_io, experiment_tracking as tracking, run_artifacts as artifacts
+from . import (
+    experiment_io as exp_io,
+    experiment_tracking as tracking,
+    run_artifacts as artifacts,
+    run_evidence as evidence,
+)
 from .experiment_workspace import (
     FROZEN_RUN_FIELDS,
     RESEARCH_LOG_NAME,
@@ -193,6 +198,21 @@ def register_experiment_step(run_dir: str | Path, spec_path: str | Path, *, remo
     return path
 
 
+def _validate_hparam_checkpoints(
+    rows: list[dict[str, Any]],
+    selected_steps: list[dict[str, Any]],
+    *,
+    remote: str | None,
+) -> None:
+    ranked = [row for step in selected_steps for row in step["ranked"]]
+    tracking.validate_checkpoint_evidence_rows(rows, ranked, remote=remote)
+    for row in ranked:
+        evidence_host = tracking.checkpoint_evidence_host(row, remote)
+        evidence_row = row if evidence_host is None else {**row, "target": "ssh", "host": evidence_host}
+        if evidence.checkpoint_file_sha256(evidence_row, row["checkpoint_path"]) != row["checkpoint_sha256"]:
+            raise ValueError(f"Frozen checkpoint SHA-256 differs: {row['checkpoint_path']}")
+
+
 def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote: str | None = None) -> Path:
     if remote and not Path(report_path).is_absolute():
         raise ValueError("Remote final report path must be absolute.")
@@ -275,6 +295,8 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
             raise ValueError("The hparam selection report cannot replace the required hparam failure report.")
     if not report_text.strip():
         raise ValueError("Final report is missing or empty.")
+    if hparam["selected_steps"]:
+        _validate_hparam_checkpoints(rows, hparam["selected_steps"], remote=remote)
     target = root / "reports" / "final.md"
     exp_io.validate_managed_output_paths(
         root,
@@ -301,6 +323,8 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         current_selection = exp_io.read_managed_files_at(root, [selection_report_path], remote=remote)
         if current_selection[str(selection_report_path)]["sha256"] != selection_report["sha256"]:
             raise ValueError("The hparam selection report changed during finalization.")
+    if hparam["selected_steps"]:
+        _validate_hparam_checkpoints(rows, hparam["selected_steps"], remote=remote)
     # The experiment manifest is the terminal commit, so publish it only after the report is durable.
     if not exp_io.conditional_atomic_replace_text_at(
         root / "experiment.yaml",

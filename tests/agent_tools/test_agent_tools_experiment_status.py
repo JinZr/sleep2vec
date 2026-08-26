@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
@@ -28,6 +29,10 @@ from agent_tools.adapters import all_adapters, finetune as finetune_adapter, get
 from agent_tools.experiment_workspace import FROZEN_RUN_FIELDS, managed_run_parameters
 from agent_tools.manifests import read_rows, write_rows
 from agent_tools.models import REPO_ROOT
+
+_RUNTIME_COMMIT = subprocess.run(
+    ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
+).stdout.strip()
 
 
 def _init_workspace(root: Path) -> None:
@@ -238,6 +243,10 @@ def _record_hparam_selection(
 ) -> Path:
     rows = _read_manifest_rows(root)
     winner = next(row for row in rows if row["step_id"] == step_id)
+    winner["target"] = winner.get("target") or "local"
+    checkpoint = Path(winner["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_bytes(b"unit checkpoint\n")
     winner.update(
         {
             "selection_task": "hparam_tune",
@@ -246,8 +255,8 @@ def _record_hparam_selection(
             "selection_split": "val",
             "score": score,
             "rank": "1",
-            "checkpoint_path": str(Path(winner["checkpoint_dir"]) / "epoch=1.ckpt"),
-            "checkpoint_sha256": "a" * 64,
+            "checkpoint_path": str(checkpoint),
+            "checkpoint_sha256": _sha256(checkpoint),
             "run_manifest": str(Path(winner["runtime_dir"]) / "run_manifest.json"),
         }
     )
@@ -327,6 +336,7 @@ def _write_public_hparam_recipe(
             "base_recipe": str(base_recipe),
             "inputs": {},
             "search": {"method": "grid", "max_runs": max_runs, "parameters": parameters},
+            "execution": {"workdir": str(root), "python": sys.executable, "runtime_commit": _RUNTIME_COMMIT},
             "evaluation_policy": {
                 "selection_metric": selection_metric,
                 "selection_mode": selection_mode,
@@ -2003,6 +2013,60 @@ def test_experiment_finalize_requires_selection_and_uses_verified_selection_repo
     assert completed["selection_report_sha256"] == _sha256(selection_report)
 
 
+def test_experiment_finalize_rehashes_selected_checkpoints_before_writing(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    checkpoint = Path(_read_manifest_rows(root)[0]["checkpoint_path"])
+    checkpoint.write_bytes(b"tampered checkpoint\n")
+    before = _workspace_files(root)
+
+    assert experiments.experiment_status(root)["summary"]["state"] == "ready_to_finalize"
+    with pytest.raises(ValueError, match="Frozen checkpoint SHA-256 differs"):
+        experiments.finalize_experiment(root, selection_report)
+
+    assert _workspace_files(root) == before
+    assert not (root / "reports" / "final.md").exists()
+
+
+@pytest.mark.parametrize(
+    ("target", "host", "remote", "expected_host"),
+    [("local", "", "controller", "controller"), ("ssh", "worker", "controller", "worker")],
+)
+def test_hparam_checkpoint_rehash_uses_execution_evidence_host(
+    monkeypatch, target: str, host: str, remote: str, expected_host: str
+):
+    row = {
+        "step_id": "tune",
+        "run_id": "run-000",
+        "target": target,
+        "host": host,
+        "checkpoint_path": "/data/epoch=1.ckpt",
+        "checkpoint_sha256": "a" * 64,
+    }
+    validated = []
+    hashed = []
+    monkeypatch.setattr(
+        experiments.tracking,
+        "validate_checkpoint_evidence_rows",
+        lambda rows, ranked, *, remote: validated.append((rows, ranked, remote)),
+    )
+
+    def checkpoint_sha256(evidence_row, checkpoint_path):
+        hashed.append((evidence_row, checkpoint_path))
+        return "a" * 64
+
+    monkeypatch.setattr(experiments.evidence, "checkpoint_file_sha256", checkpoint_sha256)
+
+    experiments._validate_hparam_checkpoints([row], [{"ranked": [row]}], remote=remote)
+
+    assert validated == [([row], [row], remote)]
+    assert hashed[0][0]["target"] == "ssh"
+    assert hashed[0][0]["host"] == expected_host
+    assert hashed[0][1] == row["checkpoint_path"]
+
+
 def test_experiment_finalize_rejects_selection_report_copy_for_pure_hparam_experiment(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -2127,6 +2191,32 @@ def test_experiment_finalize_rechecks_selection_report_before_terminal_commit(tm
     monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", publish_then_tamper)
 
     with pytest.raises(ValueError, match="selection report changed during finalization"):
+        experiments.finalize_experiment(root, selection_report)
+
+    assert manifest.read_bytes() == manifest_before
+    assert (root / "reports" / "final.md").exists()
+    assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
+
+
+def test_experiment_finalize_rechecks_checkpoint_before_terminal_commit(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    checkpoint = Path(_read_manifest_rows(root)[0]["checkpoint_path"])
+    manifest = root / "experiment.yaml"
+    manifest_before = manifest.read_bytes()
+    original_replace = experiment_io.conditional_atomic_replace_text_at
+
+    def publish_then_tamper(path, text, expected_sha256, *, remote=None):
+        committed = original_replace(path, text, expected_sha256, remote=remote)
+        if Path(path) == root / "reports" / "final.md" and committed:
+            checkpoint.write_bytes(b"tampered before terminal commit\n")
+        return committed
+
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", publish_then_tamper)
+
+    with pytest.raises(ValueError, match="Frozen checkpoint SHA-256 differs"):
         experiments.finalize_experiment(root, selection_report)
 
     assert manifest.read_bytes() == manifest_before
