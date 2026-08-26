@@ -73,6 +73,9 @@ def select_hparam_candidates(
     canonical_rows = read_run_manifest(workspace)
     canonical_by_key = {managed_run_key(row): row for row in canonical_rows}
     step_id = str((recipe.get("step") or {}).get("id") or "")
+    out = workspace / "reports" / "ranking.csv"
+    selection_report_out = workspace / "reports" / "hparam_selection.md"
+    checkpoint_out = root / "checkpoint_test_ranking.csv"
     # Other selected steps feed the shared report, so reject their canonical drift before touching projections.
     existing_selected_step_ids = sorted(
         {
@@ -83,6 +86,7 @@ def select_hparam_candidates(
         }
     )
     existing_report_run_keys = set()
+    existing_test_selections = []
     for selected_step_id in existing_selected_step_ids:
         policy_rows = [
             row
@@ -112,13 +116,12 @@ def select_hparam_candidates(
         )
         if not registered:
             raise ValueError(f"Selected hparam step has no registered plan: {selected_step_id}")
+        if selected_split == "test":
+            existing_test_selections.append((selected_step_id, selected_metric, selected_mode, registered))
         existing_report_run_keys.update(
             managed_run_key(run) for _registered_root, registered_plan in registered for run in registered_plan["runs"]
         )
     existing_report_steps = _selection_report_steps([canonical_by_key[key] for key in sorted(existing_report_run_keys)])
-    out = workspace / "reports" / "ranking.csv"
-    selection_report_out = workspace / "reports" / "hparam_selection.md"
-    checkpoint_out = root / "checkpoint_test_ranking.csv"
     exp_io.validate_managed_output_paths(
         workspace,
         [
@@ -133,18 +136,23 @@ def select_hparam_candidates(
     )
     step_runs = []
     evidence_runs_by_key = {}
-    for _registered_root, registered_plan in artifacts.iter_registered_hparam_plans(
-        workspace,
-        step_id,
-        selection_metric=metric,
-        selection_mode=mode,
-        selection_split=selection_split,
-    ):
+    plan_root_by_key = {}
+    current_registered = list(
+        artifacts.iter_registered_hparam_plans(
+            workspace,
+            step_id,
+            selection_metric=metric,
+            selection_mode=mode,
+            selection_split=selection_split,
+        )
+    )
+    for registered_root, registered_plan in current_registered:
         registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
         execution = registered_recipe.get("execution") if isinstance(registered_recipe.get("execution"), dict) else {}
         for run in registered_plan["runs"]:
             key = managed_run_key(run)
             step_runs.append(run)
+            plan_root_by_key[key] = registered_root
             evidence_run = {**run, **(canonical_by_key.get(key) or {})}
             # A registered plan's frozen execution target remains authoritative before lifecycle rows fill it.
             for field in ("target", "host"):
@@ -164,22 +172,35 @@ def select_hparam_candidates(
             "Canonical hparam selection metadata is not owned by a registered hparam plan: "
             + ", ".join(misowned_selection)
         )
+    for selected_step_id, selected_metric, selected_mode, registered in existing_test_selections:
+        _validate_test_selection_events(
+            workspace,
+            out,
+            selected_step_id,
+            selected_metric,
+            selected_mode,
+            registered,
+            canonical_rows,
+            canonical_by_key,
+        )
+    current_has_selection = any(
+        str(row.get("step_id") or "") == step_id
+        and any(row.get(field) not in (None, "") for field in tracking.HPARAM_SELECTION_METADATA_FIELDS)
+        for row in canonical_rows
+    )
+    if selection_split == "test" and current_has_selection:
+        _validate_test_selection_events(
+            workspace,
+            out,
+            step_id,
+            metric,
+            mode,
+            current_registered,
+            canonical_rows,
+            canonical_by_key,
+            skip_signature_root=root,
+        )
     checkpoint_evidence_runs = [evidence_runs_by_key.get(managed_run_key(row), row) for row in canonical_rows]
-    if selection_split == "test":
-        for event in _candidate_selected_events(workspace):
-            if event.get("step_id") != step_id or event.get("metric") != metric or event.get("mode") != mode:
-                continue
-            selected_path = str(event.get("selected_checkpoint_path") or "")
-            selected_sha256 = str(event.get("selected_checkpoint_sha256") or "")
-            selected_run = evidence_runs_by_key.get((step_id, str(event.get("selected_run_id") or "")))
-            if not selected_path or not selected_sha256 or selected_run is None:
-                raise ValueError(f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}")
-            if evidence.checkpoint_file_sha256(selected_run, selected_path) != selected_sha256:
-                raise ValueError(f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}")
-            if not Path(str(event.get("checkpoint_ranking") or "")).is_file():
-                raise ValueError("Frozen checkpoint test ranking referenced by candidate_selected event is missing.")
-            if str(event.get("ranking") or "") != str(out):
-                raise ValueError("Frozen hparam ranking referenced by candidate_selected event is missing or differs.")
     existing_ranked = read_rows(out, require_managed_identity=True)
     validate_managed_run_rows(existing_ranked, source=str(out), cardinality="one_per_run")
     for row in existing_ranked:
@@ -332,15 +353,38 @@ def select_hparam_candidates(
     ranked = artifacts.assign_ranks(rows, key="score", reverse=reverse)
     if not ranked:
         raise ValueError(f"No valid {metric} scores are available for hparam selection.")
+    checkpoint_audits_to_write = []
     if selection_split == "test":
         validate_managed_run_rows(ranked, source="checkpoint test ranking", cardinality="many_per_run")
-        plan_checkpoint_rows = [dict(row) for row in rows if managed_run_key(row) in plan_run_keys]
-        plan_checkpoint_ranked = artifacts.assign_ranks(plan_checkpoint_rows, key="score", reverse=reverse)
-        if existing_checkpoint_ranked:
-            if _checkpoint_ranking_signature(existing_checkpoint_ranked) != _checkpoint_ranking_signature(
-                plan_checkpoint_ranked
-            ):
-                raise ValueError("Frozen checkpoint test ranking differs from current checkpoint test evidence.")
+        audit_paths = [registered_root / "checkpoint_test_ranking.csv" for registered_root, _plan in current_registered]
+        exp_io.validate_managed_output_paths(workspace, audit_paths)
+        for registered_root, registered_plan in current_registered:
+            registered_keys = {managed_run_key(run) for run in registered_plan["runs"]}
+            plan_rows = [dict(row) for row in rows if managed_run_key(row) in registered_keys]
+            expected_audit = artifacts.assign_ranks(plan_rows, key="score", reverse=reverse)
+            if not expected_audit:
+                continue
+            audit_path = registered_root / "checkpoint_test_ranking.csv"
+            stored_audit = (
+                existing_checkpoint_ranked
+                if registered_keys == plan_run_keys
+                else read_rows(audit_path, require_managed_identity=True)
+            )
+            if stored_audit:
+                validate_managed_run_rows(stored_audit, source=str(audit_path), cardinality="many_per_run")
+                if _checkpoint_ranking_signature(stored_audit) != _checkpoint_ranking_signature(expected_audit):
+                    raise ValueError("Frozen checkpoint test ranking differs from current checkpoint test evidence.")
+                continue
+            plan_has_selection = any(
+                any(
+                    (canonical_by_key.get(key) or {}).get(field) not in (None, "")
+                    for field in tracking.HPARAM_SELECTION_METADATA_FIELDS
+                )
+                for key in registered_keys
+            )
+            if plan_has_selection:
+                raise ValueError("Frozen checkpoint test ranking referenced by candidate_selected event is missing.")
+            checkpoint_audits_to_write.append((audit_path, expected_audit))
         best_by_run = {}
         for row in ranked:
             candidate = dict(row)
@@ -363,9 +407,9 @@ def select_hparam_candidates(
         ):
             raise ValueError("Frozen canonical hparam selection differs from current runtime evidence.")
     all_ranked = tracking.hparam_ranking_projection([*preserved, *step_ranked])
-    if selection_split == "test" and not existing_checkpoint_ranked:
-        # Keep the immutable audit plan-local while the workspace ranking spans compatible plans.
-        write_rows(checkpoint_out, plan_checkpoint_ranked)
+    # Freeze every contributing plan audit before the shared ranking makes the selection finalizable.
+    for audit_path, audit_rows in checkpoint_audits_to_write:
+        write_rows(audit_path, audit_rows)
     write_rows(out, all_ranked)
     merge_run_manifest(
         workspace,
@@ -429,6 +473,11 @@ def select_hparam_candidates(
             if managed_run_key(row) in report_run_keys
         ],
     )
+    selected_checkpoint_ranking = (
+        plan_root_by_key[managed_run_key(step_ranked[0])] / "checkpoint_test_ranking.csv"
+        if selection_split == "test"
+        else None
+    )
     selection_event = {
         "step_id": step_id,
         "metric": metric,
@@ -437,7 +486,7 @@ def select_hparam_candidates(
         "selected_run_id": step_ranked[0].get("run_id"),
         "selected_checkpoint_path": step_ranked[0].get("checkpoint_path"),
         "selected_checkpoint_sha256": step_ranked[0].get("checkpoint_sha256"),
-        "checkpoint_ranking": str(checkpoint_out) if selection_split == "test" else None,
+        "checkpoint_ranking": str(selected_checkpoint_ranking) if selected_checkpoint_ranking is not None else None,
         "selection_report": str(selection_report_out),
         "selection_report_sha256": report_sha256,
     }
@@ -594,6 +643,164 @@ def _checkpoint_test_result_rows(
     for row in rows:
         row["checkpoint_sha256"] = evidence.checkpoint_file_sha256(run, row["checkpoint_path"])
     return rows
+
+
+def _validate_test_selection_events(
+    workspace: Path,
+    shared_ranking: Path,
+    step_id: str,
+    metric: str,
+    mode: str,
+    registered: list[tuple[Path, dict[str, Any]]],
+    canonical_rows: list[dict[str, Any]],
+    canonical_by_key: dict[tuple[str, str] | None, dict[str, Any]],
+    *,
+    skip_signature_root: Path | None = None,
+) -> None:
+    owner_by_key = {}
+    runs_by_key = {}
+    for registered_root, registered_plan in registered:
+        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
+        execution = registered_recipe.get("execution") if isinstance(registered_recipe.get("execution"), dict) else {}
+        for run in registered_plan["runs"]:
+            key = managed_run_key(run)
+            canonical = canonical_by_key.get(key)
+            if canonical is None:
+                raise ValueError(f"Managed run is missing from run_manifest.tsv: {run['step_id']} / {run['run_id']}")
+            evidence_run = {**run, **canonical}
+            for field in ("target", "host"):
+                if evidence_run.get(field) in (None, ""):
+                    evidence_run[field] = execution.get(field, "")
+            owner_by_key[key] = registered_root
+            runs_by_key[key] = evidence_run
+
+    events = [
+        event
+        for event in _candidate_selected_events(workspace)
+        if event.get("step_id") == step_id and event.get("metric") == metric and event.get("mode") == mode
+    ]
+
+    event_bindings = []
+    for event in events:
+        key = (step_id, str(event.get("selected_run_id") or ""))
+        selected_run = runs_by_key.get(key)
+        registered_root = owner_by_key.get(key)
+        selected_path = str(event.get("selected_checkpoint_path") or "")
+        selected_sha256 = str(event.get("selected_checkpoint_sha256") or "")
+        if not selected_path or not selected_sha256 or selected_run is None or registered_root is None:
+            raise ValueError(f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}")
+        if evidence.checkpoint_file_sha256(selected_run, selected_path) != selected_sha256:
+            raise ValueError(f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}")
+        checkpoint_ranking = registered_root / "checkpoint_test_ranking.csv"
+        if str(event.get("checkpoint_ranking") or "") != str(checkpoint_ranking):
+            raise ValueError(
+                "Frozen checkpoint test ranking referenced by candidate_selected event is missing or differs."
+            )
+        if str(event.get("ranking") or "") != str(shared_ranking):
+            raise ValueError("Frozen hparam ranking referenced by candidate_selected event is missing or differs.")
+        event_bindings.append((key, selected_path, selected_sha256, registered_root))
+
+    audits = {}
+    for registered_root, registered_plan in registered:
+        plan_runs = [runs_by_key[managed_run_key(run)] for run in registered_plan["runs"]]
+        has_selection = any(
+            any(run.get(field) not in (None, "") for field in tracking.HPARAM_SELECTION_METADATA_FIELDS)
+            for run in plan_runs
+        )
+        if not has_selection or not any(str(run.get("status") or "") in SUCCESS_STATUSES for run in plan_runs):
+            continue
+        checkpoint_ranking = registered_root / "checkpoint_test_ranking.csv"
+        if not checkpoint_ranking.is_file():
+            raise ValueError(
+                "Frozen checkpoint test ranking referenced by candidate_selected event is missing or differs."
+            )
+        exp_io.validate_managed_output_paths(workspace, [checkpoint_ranking])
+        stored = read_rows(checkpoint_ranking, require_managed_identity=True)
+        validate_managed_run_rows(stored, source=str(checkpoint_ranking), cardinality="many_per_run")
+        for row in stored:
+            canonical = resolve_run_row(canonical_rows, row)
+            if canonical is None:
+                raise ValueError(
+                    f"Existing checkpoint test ranking row is outside the canonical manifest: "
+                    f"{row.get('step_id', '')} / {row.get('run_id', '')}"
+                )
+            validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
+        tracking.validate_checkpoint_evidence_rows(plan_runs, stored)
+        audits[registered_root] = stored
+        if registered_root != skip_signature_root:
+            expected = _registered_test_checkpoint_ranking(
+                registered_plan,
+                runs_by_key,
+                metric,
+                mode,
+            )
+            if _checkpoint_ranking_signature(stored) != _checkpoint_ranking_signature(expected):
+                raise ValueError("Frozen checkpoint test ranking differs from current checkpoint test evidence.")
+
+    for key, selected_path, selected_sha256, registered_root in event_bindings:
+        if registered_root not in audits:
+            raise ValueError(
+                "Frozen checkpoint test ranking referenced by candidate_selected event is missing or differs."
+            )
+        if not any(
+            managed_run_key(row) == key
+            and str(row.get("checkpoint_path") or "") == selected_path
+            and str(row.get("checkpoint_sha256") or "") == selected_sha256
+            for row in audits[registered_root]
+        ):
+            raise ValueError(f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}")
+
+
+def _registered_test_checkpoint_ranking(
+    registered_plan: dict[str, Any],
+    runs_by_key: dict[tuple[str, str] | None, dict[str, Any]],
+    metric: str,
+    mode: str,
+) -> list[dict[str, Any]]:
+    rows = []
+    active_runs = []
+    for run in registered_plan["runs"]:
+        artifact_row = runs_by_key[managed_run_key(run)]
+        status = str(artifact_row.get("status") or "")
+        if status not in TERMINAL_STATUSES:
+            active_runs.append(f"{run['step_id']} / {run['run_id']} ({status})")
+            continue
+        if status not in SUCCESS_STATUSES:
+            continue
+        observed_artifacts = evidence.runtime_artifacts(artifact_row)
+        if observed_artifacts is None:
+            if evidence.is_remote_row(artifact_row) and status in {"completed", "finished"}:
+                raise ValueError(
+                    f"Successful SSH hparam run has unavailable runtime artifacts: "
+                    f"{run['step_id']} / {run['run_id']}"
+                )
+            manifest_path = ""
+            manifest = {}
+            checkpoint_names = []
+        else:
+            manifest_path, manifest, checkpoint_names = observed_artifacts
+        rows.extend(
+            _checkpoint_test_result_rows(
+                artifact_row,
+                metric,
+                manifest_path,
+                manifest,
+                checkpoint_names,
+            )
+        )
+    if active_runs:
+        raise ValueError("Hparam selection requires every managed hparam run to be terminal: " + ", ".join(active_runs))
+    rows.sort(
+        key=lambda row: (
+            str(row.get("step_id") or ""),
+            str(row.get("run_id") or ""),
+            int(row.get("epoch")),
+            str(row.get("checkpoint_path") or ""),
+        )
+    )
+    ranked = artifacts.assign_ranks(rows, key="score", reverse=mode == "max")
+    validate_managed_run_rows(ranked, source="checkpoint test ranking", cardinality="many_per_run")
+    return ranked
 
 
 def _validate_stored_checkpoint_hashes(

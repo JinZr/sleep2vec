@@ -171,6 +171,43 @@ def _prepare_two_hparam_steps(tmp_path: Path) -> tuple[dict, Path, Path]:
     return first_run, first_plan, second_plan
 
 
+def _prepare_two_test_selected_steps(tmp_path: Path) -> list[Path]:
+    plans = []
+    for step_id, score in (("a-tune", 0.9), ("b-tune", 0.8)):
+        recipe = _hparam_recipe(
+            tmp_path,
+            selection_metric="test_ahi_pearson",
+            selection_split="test",
+            config_monitor="val_ahi_pearson",
+        )
+        payload = yaml.safe_load(recipe.read_text())
+        payload["step"] = {"id": step_id, "phase": "train", "purpose": f"Select {step_id}."}
+        write_yaml(recipe, payload)
+        plan_dir = tmp_path / f"plan-{step_id}"
+        assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+        run = _first_run(plan_dir)
+        checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_text(f"checkpoint-{step_id}")
+        (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+            json.dumps(
+                {
+                    "test_all_checkpoints_after_fit": True,
+                    "checkpoint_test_results": [
+                        {
+                            "checkpoint_path": str(checkpoint),
+                            "epoch": 1,
+                            "metrics": {"test_ahi_pearson": score},
+                        }
+                    ],
+                }
+            )
+        )
+        hparam_selection.select_hparam_candidates(plan_dir)
+        plans.append(plan_dir)
+    return plans
+
+
 def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -972,6 +1009,68 @@ def test_hparam_select_rebuilds_missing_shared_test_ranking_from_canonical_rows(
     assert experiments.experiment_status(tmp_path)["summary"]["state"] == "ready_to_finalize"
 
 
+@pytest.mark.parametrize("mutation", ["missing", "wrong_event_path"])
+def test_hparam_select_rejects_other_test_step_audit_drift_before_rebuilding_shared_ranking(
+    tmp_path: Path,
+    mutation: str,
+):
+    first_plan, second_plan = _prepare_two_test_selected_steps(tmp_path)
+    shared_ranking = _ranking_path(first_plan)
+    shared_ranking.unlink()
+    second_audit = second_plan / "checkpoint_test_ranking.csv"
+    if mutation == "missing":
+        second_audit.unlink()
+    else:
+        bogus = tmp_path / "bogus-checkpoint-ranking.csv"
+        bogus.write_bytes(second_audit.read_bytes())
+        events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+        next(
+            event
+            for event in events
+            if event.get("event_type") == "candidate_selected" and event.get("step_id") == "b-tune"
+        )["checkpoint_ranking"] = str(bogus)
+        (tmp_path / "events.jsonl").write_text("\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n")
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="checkpoint test ranking referenced.*missing or differs"):
+        hparam_selection.select_hparam_candidates(first_plan)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_hparam_select_replays_missing_candidate_event_from_canonical_selection(tmp_path: Path):
+    first_plan, second_plan = _prepare_two_test_selected_steps(tmp_path)
+    events_path = tmp_path / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    events_path.write_text(
+        "\n".join(
+            json.dumps(event, sort_keys=True)
+            for event in events
+            if not (event.get("event_type") == "candidate_selected" and event.get("step_id") == "a-tune")
+        )
+        + "\n"
+    )
+    frozen = {
+        path: path.read_bytes()
+        for path in (
+            _ranking_path(first_plan),
+            tmp_path / "reports" / "hparam_selection.md",
+            first_plan / "checkpoint_test_ranking.csv",
+            second_plan / "checkpoint_test_ranking.csv",
+        )
+    }
+
+    hparam_selection.select_hparam_candidates(first_plan)
+
+    assert {path: path.read_bytes() for path in frozen} == frozen
+    selected = [
+        json.loads(line)
+        for line in events_path.read_text().splitlines()
+        if json.loads(line).get("event_type") == "candidate_selected"
+    ]
+    assert [event["step_id"] for event in selected] == ["b-tune", "a-tune"]
+
+
 def test_hparam_select_rebuilds_test_ranking_from_new_registered_plan(tmp_path: Path):
     recipe = _hparam_recipe(
         tmp_path,
@@ -1028,6 +1127,57 @@ def test_hparam_select_rebuilds_test_ranking_from_new_registered_plan(tmp_path: 
         ("run-000", "2"),
     ]
     assert _read_table(plans[0] / "checkpoint_test_ranking.csv")[0]["rank"] == "1"
+    selection_events = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text().splitlines()
+        if json.loads(line).get("event_type") == "candidate_selected"
+    ]
+    assert len(selection_events) == 2
+    assert selection_events[-1]["checkpoint_ranking"] == str(plans[1] / "checkpoint_test_ranking.csv")
+
+
+def test_hparam_select_freezes_and_requires_every_successful_test_plan_audit(tmp_path: Path):
+    recipe = _hparam_recipe(
+        tmp_path,
+        selection_metric="test_ahi_pearson",
+        selection_split="test",
+        config_monitor="val_ahi_pearson",
+    )
+    plans = []
+    for index, score in enumerate((0.9, 0.8), start=1):
+        plan_dir = tmp_path / f"plan-{index}"
+        assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+        run = _first_run(plan_dir)
+        checkpoint = Path(run["checkpoint_dir"]) / f"epoch={index}.ckpt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_text(f"checkpoint-{index}")
+        (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+            json.dumps(
+                {
+                    "test_all_checkpoints_after_fit": True,
+                    "checkpoint_test_results": [
+                        {
+                            "checkpoint_path": str(checkpoint),
+                            "epoch": index,
+                            "metrics": {"test_ahi_pearson": score},
+                        }
+                    ],
+                }
+            )
+        )
+        plans.append(plan_dir)
+
+    shared_ranking = hparam_selection.select_hparam_candidates(plans[0])
+
+    assert all((plan_dir / "checkpoint_test_ranking.csv").is_file() for plan_dir in plans)
+    shared_ranking.unlink()
+    (plans[1] / "checkpoint_test_ranking.csv").unlink()
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="checkpoint test ranking referenced.*missing or differs"):
+        hparam_selection.select_hparam_candidates(plans[0])
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
 def test_hparam_select_rejects_a_plan_local_audit_missing_an_owned_run(tmp_path: Path):
