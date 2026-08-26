@@ -185,38 +185,49 @@ def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path
     ]
 
 
-def test_retry_registration_preflight_failure_does_not_advance_attempt_registry(tmp_path: Path, monkeypatch):
+def test_retry_registration_preflight_failure_does_not_block_independent_retry(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "external-v1"
     pipeline_dir.mkdir(parents=True)
-    jobs_path = pipeline_dir / "jobs.tsv"
-    jobs_path.write_text("unchanged registry\n")
     spec = _spec(root)
-    attempts = [{"job_id": "age-hsp-i2-psg", "attempt": 1, "status": "failed", "verified": "false"}]
+    second_job = dict(spec["jobs"][0], id="age-hsp-i2-bcg", modality="bcg", num_workers=16)
+    spec["jobs"].append(second_job)
+    attempts = [{"job_id": job["id"], "attempt": 1, "status": "failed", "verified": "false"} for job in spec["jobs"]]
+    order = []
 
     def attempt_recipe(_pipeline_dir, _spec, job, _selection, attempt):
         base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
         return {"job": job["id"]}, base.with_suffix(".yaml"), base / "plan", base / "results"
 
-    def reject_registration(*_args):
-        raise experiment_pipeline.AttemptRegistrationPreflightError("target argv rejected")
+    def prepare_registration(_root, _spec, items):
+        job_id = items[0][0]["id"]
+        order.append(f"prepare:{job_id}")
+        if job_id == "age-hsp-i2-psg":
+            raise experiment_pipeline.AttemptRegistrationPreflightError("target argv rejected")
+        return {job_id: None}
+
+    def materialize(_root, _spec, job, _selection, attempt, **_paths):
+        order.append(f"materialize:{job['id']}")
+        return {"job_id": job["id"], "attempt": attempt, "status": "planned", "verified": "false"}
 
     monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
     monkeypatch.setattr(experiment_pipeline, "_ensure_retry_preflight", lambda *_args: None)
-    monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_registration_groups", reject_registration)
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_materialize_attempt",
-        lambda *_args, **_kwargs: pytest.fail("failed groups must not materialize attempts"),
-    )
+    monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_registration_groups", prepare_registration)
+    monkeypatch.setattr(experiment_pipeline, "_materialize_attempt", materialize)
+    monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
 
-    with pytest.raises(experiment_pipeline.AttemptRegistrationPreflightError, match="target argv rejected"):
-        experiment_pipeline._create_needed_retries(root, pipeline_dir, spec, {"age": {}}, attempts)
+    updated, created = experiment_pipeline._create_needed_retries(root, pipeline_dir, spec, {"age": {}}, attempts)
 
-    assert jobs_path.read_text() == "unchanged registry\n"
-    assert attempts == [{"job_id": "age-hsp-i2-psg", "attempt": 1, "status": "failed", "verified": "false"}]
-    assert not list(pipeline_dir.rglob("attempt-002"))
+    assert created is True
+    assert order == [
+        "prepare:age-hsp-i2-psg",
+        "prepare:age-hsp-i2-bcg",
+        "materialize:age-hsp-i2-bcg",
+    ]
+    assert updated[0]["retry_preparation_error"] == "target argv rejected"
+    assert [row["attempt"] for row in updated if row["job_id"] == "age-hsp-i2-psg"] == [1]
+    assert [row["attempt"] for row in updated if row["job_id"] == "age-hsp-i2-bcg"] == [1, 2]
 
 
 @pytest.mark.parametrize("failure_kind", ["topology", "target"])

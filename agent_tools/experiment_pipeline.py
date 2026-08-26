@@ -1667,14 +1667,14 @@ def _create_needed_retries(
         _write_jobs(pipeline_dir / "jobs.tsv", attempts)
 
     for latest, job, selection, attempt, recipe_path, plan_dir, result_root in ready:
-        prepared = _prepare_attempt_registration_groups(
-            root,
-            spec,
-            [(job, selection, attempt, recipe_path, plan_dir, result_root)],
-        )
-
-        staging_dir = prepared[job["id"]]
+        staging_dir = None
         try:
+            prepared = _prepare_attempt_registration_groups(
+                root,
+                spec,
+                [(job, selection, attempt, recipe_path, plan_dir, result_root)],
+            )
+            staging_dir = prepared[job["id"]]
             retry_row = _materialize_attempt(
                 root,
                 spec,
