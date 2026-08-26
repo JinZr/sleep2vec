@@ -1806,10 +1806,10 @@ def test_adaptive_init_recovers_canonical_round_before_workflow_commit(tmp_path:
     workflow_path = workflow_dir / "adaptive" / "workflow.json"
     original_replace = adaptive_hparam.exp_io.conditional_atomic_replace_text_at
 
-    def fail_workflow_commit(path, text, expected_sha256, *, remote=None):
+    def fail_workflow_commit(path, text, expected_sha256, *, remote=None, **kwargs):
         if Path(path) == workflow_path:
             raise OSError("injected workflow commit failure")
-        return original_replace(path, text, expected_sha256, remote=remote)
+        return original_replace(path, text, expected_sha256, remote=remote, **kwargs)
 
     monkeypatch.setattr(adaptive_hparam.exp_io, "conditional_atomic_replace_text_at", fail_workflow_commit)
 

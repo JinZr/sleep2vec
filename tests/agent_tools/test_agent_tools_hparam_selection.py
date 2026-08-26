@@ -1221,8 +1221,8 @@ def test_finalize_rechecks_test_selection_audits_before_terminal_commit(tmp_path
     manifest_before = manifest.read_bytes()
     original_replace = experiments.exp_io.conditional_atomic_replace_text_at
 
-    def publish_then_tamper(path, text, expected_sha256, *, remote=None):
-        committed = original_replace(path, text, expected_sha256, remote=remote)
+    def publish_then_tamper(path, text, expected_sha256, *, remote=None, **kwargs):
+        committed = original_replace(path, text, expected_sha256, remote=remote, **kwargs)
         if Path(path) == tmp_path / "reports" / "final.md" and committed:
             audit.write_text(audit.read_text().replace("checkpoint_test_results", "forged_source", 1))
         return committed
