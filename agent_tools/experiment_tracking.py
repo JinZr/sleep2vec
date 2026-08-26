@@ -834,6 +834,23 @@ def hparam_selection_lifecycle(
     root: Path,
     report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    hparam_run_keys = {
+        tuple(key)
+        for registered in registered_steps
+        for plan in registered["plans"]
+        if plan.get("task") == "hparam_tune"
+        for key in plan["run_keys"]
+    }
+    # Controller-owned hparam plans may carry selection metadata; non-hparam runs never may.
+    misowned_selection = sorted(
+        managed_run_key(row)
+        for row in rows
+        if managed_run_key(row) not in hparam_run_keys
+        and any(row.get(field) not in (None, "") for field in HPARAM_SELECTION_METADATA_FIELDS)
+    )
+    if misowned_selection:
+        rendered = ", ".join(f"{step_id} / {run_id}" for step_id, run_id in misowned_selection)
+        raise ValueError(f"Canonical hparam selection metadata is not owned by a registered hparam plan: {rendered}")
     rows_by_step: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         rows_by_step.setdefault(str(row["step_id"]), []).append(row)

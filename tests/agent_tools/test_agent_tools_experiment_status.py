@@ -1960,6 +1960,69 @@ def test_experiment_status_all_failed_hparam_requires_failure_report_not_selecti
     assert "failure_report_required" in {blocker["code"] for blocker in snapshot["blockers"]}
 
 
+def test_experiment_status_rejects_selection_metadata_on_non_hparam_run(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="train", status="completed")
+    rows = _read_manifest_rows(root)
+    rows[0].update(
+        {
+            "selection_task": "hparam_tune",
+            "selection_mode": "max",
+            "selection_split": "val",
+            "selection_report": str(root / "reports" / "hparam_selection.md"),
+            "selection_report_sha256": "0" * 64,
+        }
+    )
+    write_rows(root / "run_manifest.tsv", rows)
+    report = tmp_path / "final.md"
+    report.write_text("# Final report\n")
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="not owned by a registered hparam plan"):
+        experiments.experiment_status(root)
+    with pytest.raises(ValueError, match="not owned by a registered hparam plan"):
+        experiments.finalize_experiment(root, report)
+
+    assert _workspace_files(root) == before
+
+
+def test_hparam_selection_lifecycle_rejects_misowned_metadata_in_mixed_step(tmp_path):
+    registered_steps = [
+        {
+            "manifest": {
+                "step": {"id": "mixed", "phase": "train", "purpose": "mixed plan types"},
+                "plan_controller": "ordinary",
+            },
+            "plans": [
+                {
+                    "task": "hparam_tune",
+                    "run_keys": [("mixed", "run-000")],
+                    "path": str(tmp_path / "hparam"),
+                    "selection": {"metric": "val_loss", "mode": "min", "split": "val"},
+                },
+                {
+                    "task": "finetune",
+                    "run_keys": [("mixed", "run-001")],
+                    "path": str(tmp_path / "finetune"),
+                },
+            ],
+        }
+    ]
+    rows = [
+        {"step_id": "mixed", "run_id": "run-000", "status": "planned"},
+        {
+            "step_id": "mixed",
+            "run_id": "run-001",
+            "status": "completed",
+            "selection_task": "hparam_tune",
+        },
+    ]
+
+    with pytest.raises(ValueError, match="mixed / run-001"):
+        experiment_tracking.hparam_selection_lifecycle(registered_steps, rows, root=tmp_path)
+
+
 def test_experiment_status_rejects_all_failed_hparam_with_stale_checkpoint_rank(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
