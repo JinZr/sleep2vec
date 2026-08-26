@@ -2133,6 +2133,38 @@ def test_experiment_status_requires_terminal_bindings_for_modern_hparam_selectio
         experiments.experiment_status(root)
 
 
+def test_experiment_status_rejects_modern_completion_downgraded_to_legacy_selection(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    selection_report = _record_hparam_selection(root, write_report=True)
+    experiments.finalize_experiment(root, selection_report)
+
+    rows = _read_manifest_rows(root)
+    for row in rows:
+        for field in (
+            "selection_task",
+            "metric",
+            "selection_mode",
+            "selection_split",
+            "score",
+            "rank",
+            "checkpoint_path",
+            "checkpoint_sha256",
+            "selection_report",
+            "selection_report_sha256",
+        ):
+            row[field] = ""
+    write_rows(root / "run_manifest.tsv", rows)
+    manifest_path = root / "experiment.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["experiment"].pop("selection_report_sha256")
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+
+    with pytest.raises(ValueError, match="incomplete hparam selection evidence"):
+        experiments.experiment_status(root)
+
+
 def test_experiment_status_detects_selection_commit_after_terminal_binding(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)

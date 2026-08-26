@@ -592,10 +592,15 @@ def experiment_status_snapshot(
                 "Completed experiment metadata cannot be verified for adaptive or pipeline plans, or for "
                 "unmaterialized registered steps."
             )
-        new_pending_steps = [step for step in hparam["pending_steps"] if not step.get("legacy_selection")]
-        if new_pending_steps or (hparam["selected_steps"] and not hparam["report_valid"]):
-            raise ValueError("Completed experiment metadata conflicts with incomplete hparam selection evidence.")
         has_terminal_report_binding = experiment.get("final_report_sha256") not in (None, "")
+        # A modern terminal binding makes disappearing selection evidence corruption, not legacy state.
+        incomplete_steps = (
+            hparam["pending_steps"]
+            if has_terminal_report_binding
+            else [step for step in hparam["pending_steps"] if not step.get("legacy_selection")]
+        )
+        if incomplete_steps or (hparam["selected_steps"] and not hparam["report_valid"]):
+            raise ValueError("Completed experiment metadata conflicts with incomplete hparam selection evidence.")
         if hparam["selected_steps"] and not has_terminal_report_binding:
             raise ValueError("Completed hparam experiment metadata is missing terminal report bindings.")
         if has_terminal_report_binding:
