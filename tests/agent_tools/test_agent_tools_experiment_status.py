@@ -1618,19 +1618,23 @@ def test_experiment_finalize_rejects_unmaterialized_step(tmp_path):
     assert _workspace_files(root) == before
 
 
-def test_experiment_finalize_rejects_canonical_runs_without_registered_plan(tmp_path):
+@pytest.mark.parametrize("registration_mutation", ["empty", "missing"])
+def test_experiment_finalize_rejects_canonical_runs_without_registered_plan(tmp_path, registration_mutation):
     root = tmp_path / "experiment"
     _init_workspace(root)
     _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
     step_path = root / "steps" / "tune" / "step.yaml"
-    step_manifest = yaml.safe_load(step_path.read_text())
-    step_manifest["plans"] = []
-    step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
+    if registration_mutation == "empty":
+        step_manifest = yaml.safe_load(step_path.read_text())
+        step_manifest["plans"] = []
+        step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
+    else:
+        step_path.unlink()
     report = tmp_path / "final.md"
     report.write_text("# Final\n")
     before = _workspace_files(root)
 
-    with pytest.raises(ValueError, match="plans differ from canonical run keys"):
+    with pytest.raises(ValueError, match="plans differ from canonical run keys|unregistered steps|Managed file is missing"):
         experiments.finalize_experiment(root, report)
 
     assert _workspace_files(root) == before

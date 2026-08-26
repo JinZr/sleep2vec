@@ -216,7 +216,7 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         manifest["experiment"],
         rows,
         remote=remote,
-        require_registered_rows=True,
+        require_registered_rows=False,
     )
     selection_report = (
         _hparam_selection_report(root, remote=remote)
@@ -460,10 +460,29 @@ def _registered_plan_steps(
     require_registered_rows: bool,
 ) -> list[dict[str, Any]]:
     step_manifests = read_registered_steps(root, experiment_id=str(experiment["id"]), remote=remote)
-    if not step_manifests and not require_registered_rows:
+    has_frozen_plan_rows = any(
+        row.get(field) not in (None, "")
+        for row in rows
+        for field in (
+            "config",
+            "config_sha256",
+            "script",
+            "script_sha256",
+            "input_snapshots",
+            "run_dir",
+            "artifacts",
+            "runtime_dir",
+            "checkpoint_dir",
+        )
+    )
+    if not step_manifests and not require_registered_rows and not has_frozen_plan_rows:
         return []
-    if not require_registered_rows and not any(manifest["plans"] for manifest in step_manifests):
-        return []
+    if not require_registered_rows and not has_frozen_plan_rows and not any(
+        manifest["plans"] for manifest in step_manifests
+    ):
+        registered_step_ids = {str(manifest["step"]["id"]) for manifest in step_manifests}
+        if not ({str(row["step_id"]) for row in rows} & registered_step_ids):
+            return []
     step_ids = {str(manifest["step"]["id"]) for manifest in step_manifests}
     orphaned_steps = sorted({str(row["step_id"]) for row in rows} - step_ids)
     if orphaned_steps:
