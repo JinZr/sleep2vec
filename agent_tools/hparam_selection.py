@@ -55,7 +55,9 @@ def select_hparam_candidates(
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
     experiment_manifest_path = workspace / "experiment.yaml"
-    experiment_manifest_text = experiment_manifest_path.read_text()
+    experiment_manifest_text = exp_io.read_managed_files_at(workspace, [experiment_manifest_path])[
+        str(experiment_manifest_path)
+    ]["text"]
     experiment_manifest = read_managed_yaml_mapping(
         experiment_manifest_text, source=f"Managed experiment manifest {experiment_manifest_path}"
     )

@@ -247,6 +247,46 @@ def test_hparam_select_rejects_invalid_active_experiment_owner_without_mutation(
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_hparam_select_rejects_aliased_active_experiment_owner_before_writing(tmp_path: Path, alias_kind: str):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    manifest_path = tmp_path / "experiment.yaml"
+    outside = tmp_path.parent / f"{tmp_path.name}-foreign-experiment.yaml"
+    outside.write_bytes(manifest_path.read_bytes())
+    manifest_path.unlink()
+    if alias_kind == "symlink":
+        manifest_path.symlink_to(outside)
+    else:
+        manifest_path.hardlink_to(outside)
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    outside_before = outside.read_bytes()
+
+    with pytest.raises(ValueError, match="missing or aliased"):
+        hparam_selection.select_hparam_candidates(plan_dir)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert outside.read_bytes() == outside_before
+    if alias_kind == "symlink":
+        assert manifest_path.is_symlink()
+    else:
+        assert manifest_path.stat().st_ino == outside.stat().st_ino
+
+
 @pytest.mark.parametrize("ranking_present", [True, False])
 def test_hparam_select_preserves_frozen_val_selection_when_runtime_evidence_drifts(
     tmp_path: Path, ranking_present: bool
