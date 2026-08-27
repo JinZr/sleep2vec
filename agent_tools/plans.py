@@ -47,8 +47,8 @@ from .experiment_workspace import (
     file_sha256,
     merge_run_manifest,
     next_run_index,
+    read_registered_steps,
     read_run_manifest,
-    read_step_manifest,
     validate_plan_output,
 )
 from .manifests import read_json, write_json, write_text
@@ -1566,11 +1566,16 @@ def _guard_pass_plan_publication(
     allow_existing: bool = False,
 ) -> DecisionReport:
     root = experiment_root(recipe)
-    step = recipe.get("step") if isinstance(recipe.get("step"), dict) else {}
-    step_id = str(step.get("id") or "")
-    if not allow_existing and root is not None and step_id:
-        step_manifest = read_step_manifest(root, step_id, allow_missing=True)
-        if step_manifest is not None and str(out) in step_manifest["plans"]:
+    experiment = recipe.get("experiment") if isinstance(recipe.get("experiment"), dict) else {}
+    experiment_id = str(experiment.get("id") or "")
+    if (
+        not allow_existing
+        and root is not None
+        and experiment_id
+        and exp_io.path_exists_at(root / "steps")
+    ):
+        registered_steps = read_registered_steps(root, experiment_id=experiment_id)
+        if any(str(out) in step_manifest["plans"] for step_manifest in registered_steps):
             report = _append_issues(
                 report,
                 [

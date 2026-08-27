@@ -2336,7 +2336,8 @@ def test_single_run_versions_are_unique_across_repeated_plans(tmp_path: Path):
     assert "run-001" in second_run["version"]
 
 
-def test_repeated_single_run_plan_rejects_registered_output_directory(tmp_path: Path):
+@pytest.mark.parametrize("change_step", [False, True], ids=["same-step", "different-step"])
+def test_repeated_single_run_plan_rejects_registered_output_directory(tmp_path: Path, change_step: bool):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["artifacts"]["overwrite"] = True
@@ -2351,6 +2352,14 @@ def test_repeated_single_run_plan_rejects_registered_output_directory(tmp_path: 
         path.relative_to(first_run_dir): path.read_bytes() for path in first_run_dir.rglob("*") if path.is_file()
     }
     first_plan_bytes = (plan_dir / "plan.json").read_bytes()
+    if change_step:
+        payload["step"] = {
+            "id": "unit-follow-up",
+            "phase": "train",
+            "purpose": "Exercise cross-step plan ownership.",
+        }
+        payload["artifacts"]["version_name"] = "unit-follow-up"
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
     second = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
