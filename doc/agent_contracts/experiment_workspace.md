@@ -207,7 +207,12 @@ and its README is written after canonical plan registration, then
 an adaptive round while that marker is absent. A retry may accept a complete
 unregistered round only when deterministic regeneration produces an identical
 plan tree; incomplete, partial-canonical, or differing visible rounds remain
-invalid and are not repaired in place.
+invalid and are not repaired in place. Recovery rereads canonical state under
+the round publication lock, repairs only a missing or malformed initial
+registry, and rejects a valid registry whose frozen rows differ. Workflow
+publication binds validated registry and README hashes to the no-clobber marker
+commit. Consumers require the exact ordered `plan_created` and `adaptive_init`
+events, so the marker cannot authorize work before initialization is complete.
 
 ## Lifecycle entrypoints
 

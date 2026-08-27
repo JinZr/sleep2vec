@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import threading
@@ -9,7 +10,7 @@ import pytest
 import yaml
 
 from agent_tools import adaptive_hparam, hparam_runtime, managed_scheduler, manifests, plan_hparam, plans, run_artifacts
-from agent_tools.experiment_workspace import file_sha256, read_run_manifest
+from agent_tools.experiment_workspace import append_event, file_sha256, read_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _agent_recipe, _read_table, _run
 
@@ -266,6 +267,543 @@ def test_adaptive_init_recovers_published_round_before_canonical_registration(
         assert (workflow_dir / "adaptive" / "workflow.json").is_file()
 
 
+def test_concurrent_adaptive_recoveries_publish_single_registration(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    original_commit = plan_hparam.commit_hparam_plan
+    monkeypatch.setattr(
+        plan_hparam,
+        "commit_hparam_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected registration failure")),
+    )
+    with pytest.raises(OSError, match="injected registration failure"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+    monkeypatch.setattr(plan_hparam, "commit_hparam_plan", original_commit)
+
+    registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
+    original_replace = adaptive_hparam.exp_io.conditional_atomic_replace_text_at
+    registry_writes = 0
+
+    def count_registry_write(path, text, expected_sha256, **kwargs):
+        nonlocal registry_writes
+        if Path(path) == registry_path:
+            registry_writes += 1
+        return original_replace(path, text, expected_sha256, **kwargs)
+
+    monkeypatch.setattr(adaptive_hparam.exp_io, "conditional_atomic_replace_text_at", count_registry_write)
+    original_lock = adaptive_hparam.plan_publication_lock
+    first_locked = threading.Event()
+    second_attempted = threading.Event()
+    release_first = threading.Event()
+    state_lock = threading.Lock()
+    lock_attempts = 0
+    active_holders = 0
+    max_active_holders = 0
+
+    @contextmanager
+    def observe_lock(out):
+        nonlocal lock_attempts, active_holders, max_active_holders
+        with state_lock:
+            lock_attempts += 1
+            if lock_attempts == 2:
+                second_attempted.set()
+        with original_lock(out):
+            with state_lock:
+                active_holders += 1
+                max_active_holders = max(max_active_holders, active_holders)
+                first_holder = not first_locked.is_set()
+            if first_holder:
+                first_locked.set()
+                assert release_first.wait(timeout=10)
+            try:
+                yield
+            finally:
+                with state_lock:
+                    active_holders -= 1
+
+    monkeypatch.setattr(adaptive_hparam, "plan_publication_lock", observe_lock)
+    errors = []
+
+    def recover():
+        try:
+            adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=recover)
+    second = threading.Thread(target=recover)
+    first.start()
+    assert first_locked.wait(timeout=10)
+    second.start()
+    assert second_attempted.wait(timeout=10)
+    release_first.set()
+    first.join(timeout=30)
+    second.join(timeout=30)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert max_active_holders == 1
+    assert registry_writes == 1
+    assert len(read_run_manifest(tmp_path)) == 1
+    assert len(_read_table(registry_path)) == 1
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
+    assert len([event for event in events if event["event_type"] == "adaptive_init"]) == 1
+    assert not list(round_dir.parent.glob(".*.staging"))
+
+
+def test_concurrent_fresh_adaptive_initializations_are_idempotent(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
+    original_stage = adaptive_hparam._stage_round
+    stage_barrier = threading.Barrier(2)
+    staged_dirs = []
+
+    def synchronize_staging(*args, **kwargs):
+        staged = original_stage(*args, **kwargs)
+        staged_dirs.append(staged)
+        stage_barrier.wait(timeout=30)
+        return staged
+
+    monkeypatch.setattr(adaptive_hparam, "_stage_round", synchronize_staging)
+    original_publish = adaptive_hparam.publish_staged_plan_locked
+    publications = 0
+
+    def count_publication(*args, **kwargs):
+        nonlocal publications
+        publications += 1
+        return original_publish(*args, **kwargs)
+
+    monkeypatch.setattr(adaptive_hparam, "publish_staged_plan_locked", count_publication)
+    original_replace = adaptive_hparam.exp_io.conditional_atomic_replace_text_at
+    registry_writes = 0
+
+    def count_registry_write(path, text, expected_sha256, **kwargs):
+        nonlocal registry_writes
+        if Path(path) == registry_path:
+            registry_writes += 1
+        return original_replace(path, text, expected_sha256, **kwargs)
+
+    monkeypatch.setattr(adaptive_hparam.exp_io, "conditional_atomic_replace_text_at", count_registry_write)
+    results = []
+    errors = []
+
+    def initialize():
+        try:
+            results.append(adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir))
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=initialize)
+    second = threading.Thread(target=initialize)
+    first.start()
+    second.start()
+    first.join(timeout=60)
+    second.join(timeout=60)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert results == [workflow_dir, workflow_dir]
+    assert len(staged_dirs) == 2
+    assert staged_dirs[0] != staged_dirs[1]
+    assert publications == 1
+    assert registry_writes == 1
+    assert len(read_run_manifest(tmp_path)) == 1
+    assert len(_read_table(registry_path)) == 1
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
+    assert len([event for event in events if event["event_type"] == "adaptive_init"]) == 1
+    assert not list(round_dir.parent.glob(".*.staging"))
+    assert not list(round_dir.parent.glob(".*.backup"))
+
+
+def test_concurrent_adaptive_init_rechecks_publication_after_preflight(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    original_preflight = adaptive_hparam.preflight_plan
+    first_waiting = threading.Event()
+    release_first = threading.Event()
+    state_lock = threading.Lock()
+    preflight_calls = 0
+
+    def pause_first_preflight(**kwargs):
+        nonlocal preflight_calls
+        assert kwargs["allow_existing_output_artifacts"] is True
+        with state_lock:
+            preflight_calls += 1
+            first_call = preflight_calls == 1
+        if first_call:
+            first_waiting.set()
+            assert release_first.wait(timeout=30)
+        return original_preflight(**kwargs)
+
+    monkeypatch.setattr(adaptive_hparam, "preflight_plan", pause_first_preflight)
+    results = []
+    errors = []
+
+    def initialize_first():
+        try:
+            results.append(adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir))
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=initialize_first)
+    first.start()
+    assert first_waiting.wait(timeout=30)
+    second_result = adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+    release_first.set()
+    first.join(timeout=60)
+
+    assert not first.is_alive()
+    assert errors == []
+    assert results == [workflow_dir]
+    assert second_result == workflow_dir
+    assert preflight_calls == 2
+    assert len(read_run_manifest(tmp_path)) == 1
+    assert len(_read_table(workflow_dir / "adaptive" / "run_registry.tsv")) == 1
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
+    assert len([event for event in events if event["event_type"] == "adaptive_init"]) == 1
+    assert not list((workflow_dir / "adaptive" / "rounds").rglob("*.staging"))
+
+
+@pytest.mark.parametrize("event_written", [False, True], ids=["before-write", "after-write"])
+def test_adaptive_init_reconciles_plan_event_after_append_failure(
+    tmp_path: Path,
+    monkeypatch,
+    event_written: bool,
+):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    original_write_event = adaptive_hparam._write_experiment_event
+    failed = False
+
+    def fail_plan_event(workspace, event_type, payload):
+        nonlocal failed
+        if event_type == "plan_created" and not failed:
+            failed = True
+            if event_written:
+                original_write_event(workspace, event_type, payload)
+            raise OSError("injected plan event failure")
+        return original_write_event(workspace, event_type, payload)
+
+    monkeypatch.setattr(adaptive_hparam, "_write_experiment_event", fail_plan_event)
+    with pytest.raises(OSError, match="injected plan event failure"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert len(read_run_manifest(tmp_path)) == 1
+    assert not workflow_path.exists()
+    monkeypatch.setattr(adaptive_hparam, "_write_experiment_event", original_write_event)
+
+    adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+    adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
+    assert len([event for event in events if event["event_type"] == "adaptive_init"]) == 1
+
+
+@pytest.mark.parametrize("event_written", [False, True], ids=["before-write", "after-write"])
+def test_adaptive_init_reconciles_ready_event_after_append_failure(
+    tmp_path: Path,
+    monkeypatch,
+    event_written: bool,
+):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    original_write_event = adaptive_hparam._write_experiment_event
+    failed = False
+
+    def fail_ready_event(workspace, event_type, payload):
+        nonlocal failed
+        if event_type == "adaptive_init" and not failed:
+            failed = True
+            if event_written:
+                original_write_event(workspace, event_type, payload)
+            raise OSError("injected adaptive event failure")
+        return original_write_event(workspace, event_type, payload)
+
+    monkeypatch.setattr(adaptive_hparam, "_write_experiment_event", fail_ready_event)
+    with pytest.raises(OSError, match="injected adaptive event failure"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert workflow_path.is_file()
+    monkeypatch.setattr(adaptive_hparam, "_write_experiment_event", original_write_event)
+
+    adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+    adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
+    assert len([event for event in events if event["event_type"] == "adaptive_init"]) == 1
+
+
+def test_adaptive_consumers_reject_marker_before_ready_event(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    original_reconcile = adaptive_hparam._reconcile_initial_event
+    marker_published = threading.Event()
+    release_initializer = threading.Event()
+    errors = []
+
+    def pause_ready_event(workspace, event_type, payload, *, identity_field):
+        if event_type == "adaptive_init":
+            marker_published.set()
+            assert release_initializer.wait(timeout=30)
+        return original_reconcile(
+            workspace,
+            event_type,
+            payload,
+            identity_field=identity_field,
+        )
+
+    monkeypatch.setattr(adaptive_hparam, "_reconcile_initial_event", pause_ready_event)
+
+    def initialize():
+        try:
+            adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+        except BaseException as exc:
+            errors.append(exc)
+
+    initializer = threading.Thread(target=initialize)
+    initializer.start()
+    assert marker_published.wait(timeout=30)
+    assert workflow_path.is_file()
+
+    with pytest.raises(FileNotFoundError, match="initialization events are not committed"):
+        adaptive_hparam.digest_hparam_run(round_dir)
+
+    assert not (workflow_dir / "adaptive" / "digests").exists()
+    release_initializer.set()
+    initializer.join(timeout=60)
+    assert not initializer.is_alive()
+    assert errors == []
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    event_types = [event["event_type"] for event in events]
+    assert event_types.index("plan_created") < event_types.index("adaptive_init")
+    assert "digest" not in event_types
+
+
+@pytest.mark.parametrize("event_type", ["plan_created", "adaptive_init"])
+def test_adaptive_consumers_reject_conflicting_initialization_events(tmp_path: Path, event_type: str):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    if event_type == "plan_created":
+        plan = json.loads((round_dir / "plan.json").read_text())
+        payload = {
+            "step_id": plan["recipe"]["step"]["id"],
+            "plan_dir": str(round_dir),
+            "run_count": 99,
+        }
+    else:
+        payload = {
+            "round": 0,
+            "recipe_path": str(tmp_path / "other-recipe.yaml"),
+            "round_dir": str(round_dir),
+        }
+    append_event(tmp_path, event_type, payload)
+
+    with pytest.raises(ValueError, match="initialization events conflict"):
+        run_artifacts.read_hparam_plan(round_dir)
+    with pytest.raises(ValueError, match="initialization events conflict"):
+        hparam_runtime.launch_hparam_runs(round_dir)
+    with pytest.raises(ValueError, match="initialization events conflict"):
+        adaptive_hparam.digest_hparam_run(round_dir)
+
+    assert not (round_dir / "launch_manifest.tsv").exists()
+    assert not (workflow_dir / "adaptive" / "digests").exists()
+
+
+def test_adaptive_init_rejects_ready_event_without_plan_event(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    events_path = tmp_path / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    events_path.write_text(
+        "".join(json.dumps(event, sort_keys=True) + "\n" for event in events if event["event_type"] != "plan_created")
+    )
+    events_before = events_path.read_bytes()
+
+    with pytest.raises(ValueError, match="without its plan-created event"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert events_path.read_bytes() == events_before
+
+
+def test_adaptive_init_rejects_ready_event_without_workflow_marker(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
+    events_path = tmp_path / "events.jsonl"
+    rows = _read_table(registry_path)
+    rows.append(
+        {
+            **rows[0],
+            "round": "1",
+            "run_id": "run-001",
+            "run_name": "later-round",
+            "version": "later-round",
+            "round_dir": str(workflow_dir / "adaptive" / "rounds" / "round_001"),
+        }
+    )
+    manifests.write_rows(registry_path, rows)
+    workflow_path.unlink()
+    events_before = events_path.read_bytes()
+    registry_before = registry_path.read_bytes()
+
+    with pytest.raises(ValueError, match="without its workflow marker"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert not workflow_path.exists()
+    assert events_path.read_bytes() == events_before
+    assert registry_path.read_bytes() == registry_before
+
+
+@pytest.mark.parametrize("conflict", ["plan", "plan_exact", "ready"])
+def test_adaptive_init_rejects_preexisting_event_conflicts_before_registration(tmp_path: Path, conflict: str):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    if conflict in {"plan", "plan_exact"}:
+        step_id = adaptive_hparam.load_recipe_with_base(recipe)["step"]["id"]
+        event = {
+            "event_type": "plan_created",
+            "step_id": step_id,
+            "plan_dir": str(round_dir),
+            "run_count": 99 if conflict == "plan" else 1,
+        }
+        expected = (
+            "conflicts with adaptive initialization: plan_created"
+            if conflict == "plan"
+            else "exists before canonical registration"
+        )
+    else:
+        event = {
+            "event_type": "adaptive_init",
+            "round": 0,
+            "recipe_path": str(recipe.resolve()),
+            "round_dir": str(round_dir),
+        }
+        expected = "without its plan-created event"
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(json.dumps(event, sort_keys=True) + "\n")
+    events_before = events_path.read_bytes()
+
+    with pytest.raises(ValueError, match=expected):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert events_path.read_bytes() == events_before
+    assert not round_dir.exists()
+    assert not (workflow_dir / "adaptive" / "run_registry.tsv").exists()
+    assert read_run_manifest(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("event_type", "field", "replacement"),
+    [
+        ("plan_created", "run_count", True),
+        ("plan_created", "run_count", 1.0),
+        ("adaptive_init", "round", False),
+        ("adaptive_init", "round", 0.0),
+    ],
+    ids=["plan-bool", "plan-float", "ready-bool", "ready-float"],
+)
+def test_adaptive_init_rejects_event_payload_type_changes(
+    tmp_path: Path,
+    event_type: str,
+    field: str,
+    replacement,
+):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    events_path = tmp_path / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    next(event for event in events if event["event_type"] == event_type)[field] = replacement
+    events_path.write_text("".join(json.dumps(event, sort_keys=True) + "\n" for event in events))
+    events_before = events_path.read_bytes()
+
+    with pytest.raises(ValueError, match=f"conflicts with adaptive initialization: {event_type}"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert events_path.read_bytes() == events_before
+
+
+def test_adaptive_init_rejects_readme_ancestor_drift_after_parent_open(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    adaptive_dir = workflow_dir / "adaptive"
+    moved_adaptive_dir = workflow_dir / "adaptive-moved"
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_readme = outside_dir / "README.md"
+    outside_readme.write_text("external sentinel\n")
+    outside_before = outside_readme.read_bytes()
+    original_open_temporary = adaptive_hparam.exp_io._open_temporary_at
+    swapped = False
+
+    def swap_readme_ancestor(parent_descriptor, target_name):
+        nonlocal swapped
+        if target_name == "README.md" and not swapped:
+            swapped = True
+            adaptive_dir.rename(moved_adaptive_dir)
+            adaptive_dir.symlink_to(outside_dir, target_is_directory=True)
+        return original_open_temporary(parent_descriptor, target_name)
+
+    monkeypatch.setattr(adaptive_hparam.exp_io, "_open_temporary_at", swap_readme_ancestor)
+
+    with pytest.raises(ValueError, match="Managed directory is missing or aliased"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert swapped is True
+    assert outside_readme.read_bytes() == outside_before
+    assert (moved_adaptive_dir / "README.md").is_file()
+    assert not (outside_dir / "workflow.json").exists()
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
+    assert not [event for event in events if event["event_type"] == "adaptive_init"]
+
+
+def test_adaptive_init_rejects_workflow_ancestor_drift_after_parent_open(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    adaptive_dir = workflow_dir / "adaptive"
+    moved_adaptive_dir = workflow_dir / "adaptive-moved"
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    original_open_temporary = adaptive_hparam.exp_io._open_temporary_at
+    swapped = False
+
+    def swap_workflow_ancestor(parent_descriptor, target_name):
+        nonlocal swapped
+        if target_name == "workflow.json" and not swapped:
+            swapped = True
+            adaptive_dir.rename(moved_adaptive_dir)
+            adaptive_dir.symlink_to(outside_dir, target_is_directory=True)
+        return original_open_temporary(parent_descriptor, target_name)
+
+    monkeypatch.setattr(adaptive_hparam.exp_io, "_open_temporary_at", swap_workflow_ancestor)
+
+    with pytest.raises(ValueError, match="Managed directory is missing or aliased"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert not (outside_dir / "workflow.json").exists()
+    assert (moved_adaptive_dir / "workflow.json").is_file()
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
+    assert not [event for event in events if event["event_type"] == "adaptive_init"]
+
+
 def test_adaptive_init_recovers_canonical_round_before_workflow_commit(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
@@ -285,7 +823,9 @@ def test_adaptive_init_recovers_canonical_round_before_workflow_commit(tmp_path:
 
     plan_bytes = (round_dir / "plan.json").read_bytes()
     assert [row["run_id"] for row in _read_table(tmp_path / "run_manifest.tsv")] == ["run-000"]
-    assert len(_read_table(workflow_dir / "adaptive" / "run_registry.tsv")) == 1
+    registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
+    assert len(_read_table(registry_path)) == 1
+    registry_before = registry_path.read_bytes()
     assert not workflow_path.exists()
     with pytest.raises(FileNotFoundError, match="initialization is not committed"):
         hparam_runtime.launch_hparam_runs(round_dir)
@@ -298,18 +838,212 @@ def test_adaptive_init_recovers_canonical_round_before_workflow_commit(tmp_path:
 
     assert (round_dir / "plan.json").read_bytes() == plan_bytes
     assert [row["run_id"] for row in _read_table(tmp_path / "run_manifest.tsv")] == ["run-000"]
-    assert len(_read_table(workflow_dir / "adaptive" / "run_registry.tsv")) == 1
+    assert len(_read_table(registry_path)) == 1
+    assert registry_path.read_bytes() == registry_before
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
     assert len([event for event in events if event["event_type"] == "adaptive_init"]) == 1
 
 
-def test_adaptive_init_does_not_publish_marker_when_registry_validation_fails(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("registry_bytes", [b"broken\n", b"\xff"], ids=["truncated", "invalid-utf8"])
+def test_adaptive_init_repairs_malformed_initial_registry(tmp_path: Path, monkeypatch, registry_bytes: bytes):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
+    original_replace = adaptive_hparam.exp_io.conditional_atomic_replace_text_at
+
+    def fail_workflow_commit(path, text, expected_sha256, *, remote=None, **kwargs):
+        if Path(path) == workflow_path:
+            raise OSError("injected workflow commit failure")
+        return original_replace(path, text, expected_sha256, remote=remote, **kwargs)
+
+    monkeypatch.setattr(adaptive_hparam.exp_io, "conditional_atomic_replace_text_at", fail_workflow_commit)
+    with pytest.raises(OSError, match="injected workflow commit failure"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+    registry_path.write_bytes(registry_bytes)
+    monkeypatch.setattr(adaptive_hparam.exp_io, "conditional_atomic_replace_text_at", original_replace)
+
+    adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert workflow_path.is_file()
+    assert len(_read_table(registry_path)) == 1
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
+    assert len([event for event in events if event["event_type"] == "adaptive_init"]) == 1
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_adaptive_registry_repair_rejects_alias_after_topology_guard(
+    tmp_path: Path,
+    monkeypatch,
+    alias_kind: str,
+):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
+    original_replace = adaptive_hparam.exp_io.conditional_atomic_replace_text_at
+
+    def fail_workflow_commit(path, text, expected_sha256, *, remote=None, **kwargs):
+        if Path(path) == workflow_path:
+            raise OSError("injected workflow commit failure")
+        return original_replace(path, text, expected_sha256, remote=remote, **kwargs)
+
+    monkeypatch.setattr(adaptive_hparam.exp_io, "conditional_atomic_replace_text_at", fail_workflow_commit)
+    with pytest.raises(OSError, match="injected workflow commit failure"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+    monkeypatch.setattr(adaptive_hparam.exp_io, "conditional_atomic_replace_text_at", original_replace)
+    outside = tmp_path / "outside.tsv"
+    outside_bytes = b"external sentinel\n"
+    outside.write_bytes(outside_bytes)
+    original_validate = adaptive_hparam.exp_io.validate_managed_output_paths
+    swapped = False
+
+    def swap_after_guard(root, paths, **kwargs):
+        nonlocal swapped
+        result = original_validate(root, paths, **kwargs)
+        if not swapped and [Path(path) for path in paths] == [registry_path]:
+            registry_path.unlink()
+            if alias_kind == "symlink":
+                registry_path.symlink_to(outside)
+            else:
+                registry_path.hardlink_to(outside)
+            swapped = True
+        return result
+
+    monkeypatch.setattr(adaptive_hparam.exp_io, "validate_managed_output_paths", swap_after_guard)
+
+    with pytest.raises(ValueError, match="missing or aliased"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert swapped is True
+    assert outside.read_bytes() == outside_bytes
+    assert not workflow_path.exists()
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_adaptive_init_rejects_registry_alias_before_public_readiness(
+    tmp_path: Path,
+    monkeypatch,
+    alias_kind: str,
+):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    outside = tmp_path / "outside.tsv"
+    original_ensure_registry = adaptive_hparam._ensure_initial_registry
+
+    def alias_registry_after_ensure(root, round_dir, plan):
+        original_ensure_registry(root, round_dir, plan)
+        registry_bytes = registry_path.read_bytes()
+        outside.write_bytes(registry_bytes)
+        registry_path.unlink()
+        if alias_kind == "symlink":
+            registry_path.symlink_to(outside)
+        else:
+            registry_path.hardlink_to(outside)
+
+    monkeypatch.setattr(adaptive_hparam, "_ensure_initial_registry", alias_registry_after_ensure)
+
+    with pytest.raises(ValueError, match="missing or aliased"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert not workflow_path.exists()
+    assert outside.read_bytes() == registry_path.read_bytes()
+    with pytest.raises(FileNotFoundError, match="initialization is not committed"):
+        hparam_runtime.launch_hparam_runs(round_dir)
+    assert not (round_dir / "launch_manifest.tsv").exists()
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
+    assert not [event for event in events if event["event_type"] == "adaptive_init"]
+
+
+@pytest.mark.parametrize("support_name", ["run_registry.tsv", "README.md"])
+def test_adaptive_init_binds_support_files_to_workflow_publication(
+    tmp_path: Path,
+    monkeypatch,
+    support_name: str,
+):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    adaptive_dir = workflow_dir / "adaptive"
+    workflow_path = adaptive_dir / "workflow.json"
+    support_path = adaptive_dir / support_name
+    original_replace = adaptive_hparam.exp_io.conditional_atomic_replace_text_at
+    drifted = False
+
+    def drift_support_before_workflow_cas(path, text, expected_sha256, **kwargs):
+        nonlocal drifted
+        if Path(path) == workflow_path and not drifted:
+            support_path.write_text(support_path.read_text() + "drift\n")
+            drifted = True
+        return original_replace(path, text, expected_sha256, **kwargs)
+
+    monkeypatch.setattr(adaptive_hparam.exp_io, "conditional_atomic_replace_text_at", drift_support_before_workflow_cas)
+
+    with pytest.raises(RuntimeError, match="inputs changed before readiness publication"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert drifted is True
+    assert not workflow_path.exists()
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
+    assert not [event for event in events if event["event_type"] == "adaptive_init"]
+
+
+def test_adaptive_registry_repair_rejects_ancestor_alias_before_cas(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    adaptive_dir = workflow_dir / "adaptive"
+    moved_adaptive_dir = workflow_dir / "adaptive-original"
+    workflow_path = adaptive_dir / "workflow.json"
+    registry_path = adaptive_dir / "run_registry.tsv"
+    original_replace = adaptive_hparam.exp_io.conditional_atomic_replace_text_at
+
+    def fail_workflow_commit(path, text, expected_sha256, **kwargs):
+        if Path(path) == workflow_path:
+            raise OSError("injected workflow commit failure")
+        return original_replace(path, text, expected_sha256, **kwargs)
+
+    monkeypatch.setattr(adaptive_hparam.exp_io, "conditional_atomic_replace_text_at", fail_workflow_commit)
+    with pytest.raises(OSError, match="injected workflow commit failure"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    registry_path.write_bytes(b"broken\n")
+    registry_before = registry_path.read_bytes()
+    outside = tmp_path / "outside-adaptive"
+    outside.mkdir()
+    outside_registry = outside / registry_path.name
+    outside_registry.write_bytes(registry_before)
+    swapped = False
+
+    def swap_ancestor_before_cas(path, text, expected_sha256, **kwargs):
+        nonlocal swapped
+        if not swapped and Path(path) == registry_path:
+            adaptive_dir.rename(moved_adaptive_dir)
+            adaptive_dir.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return original_replace(path, text, expected_sha256, **kwargs)
+
+    monkeypatch.setattr(adaptive_hparam.exp_io, "conditional_atomic_replace_text_at", swap_ancestor_before_cas)
+
+    with pytest.raises(OSError):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert swapped is True
+    assert outside_registry.read_bytes() == registry_before
+    assert not (outside / "workflow.json").exists()
+
+
+def test_adaptive_init_does_not_repair_valid_registry_mismatch(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     workflow_path = workflow_dir / "adaptive" / "workflow.json"
-    original_registry_writer = adaptive_hparam._write_initial_registry
+    original_registry_writer = adaptive_hparam._ensure_initial_registry
 
     def write_invalid_registry(root, initial_round_dir, plan):
         original_registry_writer(root, initial_round_dir, plan)
@@ -318,7 +1052,7 @@ def test_adaptive_init_does_not_publish_marker_when_registry_validation_fails(tm
         rows[0]["config"] = str(tmp_path / "other-config.yaml")
         manifests.write_rows(registry_path, rows)
 
-    monkeypatch.setattr(adaptive_hparam, "_write_initial_registry", write_invalid_registry)
+    monkeypatch.setattr(adaptive_hparam, "_ensure_initial_registry", write_invalid_registry)
 
     with pytest.raises(ValueError, match="Frozen run field differs"):
         adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
@@ -326,6 +1060,17 @@ def test_adaptive_init_does_not_publish_marker_when_registry_validation_fails(tm
     assert (round_dir / "plan.json").is_file()
     assert _read_table(tmp_path / "run_manifest.tsv")
     assert not workflow_path.exists()
+    registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
+    registry_before = registry_path.read_bytes()
+
+    monkeypatch.setattr(adaptive_hparam, "_ensure_initial_registry", original_registry_writer)
+    with pytest.raises(ValueError, match="differs from the frozen round"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert registry_path.read_bytes() == registry_before
+    assert not workflow_path.exists()
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert not [event for event in events if event["event_type"] == "adaptive_init"]
 
 
 @pytest.mark.parametrize("missing_name", ["recipe.resolved.yaml", "plan.md"])
@@ -442,7 +1187,7 @@ def test_adaptive_publication_serializes_with_doctor_output(tmp_path: Path, monk
     assert not doctor_thread.is_alive()
     assert init_errors == []
     assert len(doctor_errors) == 1
-    assert "PASS plan artifacts already exist" in str(doctor_errors[0])
+    assert "Plan artifacts already exist" in str(doctor_errors[0])
     assert (round_dir / "plan.json").exists()
     assert not (round_dir / "decisions.yaml").exists()
     experiment_root = Path(json.loads((round_dir / "plan.json").read_text())["recipe"]["experiment"]["root"])

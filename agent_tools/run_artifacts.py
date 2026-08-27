@@ -16,12 +16,14 @@ from .adapters import get_adapter
 from .decision_models import USER_DECISIONS_FILENAME
 from .experiment_workspace import (
     SCHEDULER_PLAN_IDENTITY_FIELDS,
+    event_matches,
     experiment_metadata_issues,
     experiment_root,
     file_sha256,
     managed_run_key,
     managed_run_parameters,
     merge_step_manifest,
+    read_experiment_events,
     read_managed_yaml_mapping,
     read_run_manifest,
     read_step_manifest,
@@ -700,7 +702,7 @@ def read_hparam_plan(
         _validate_local_hparam_plan_contract(plan, recipe, physical_dir, plan_dir, runs)
         _validate_hparam_execution_snapshot(plan, physical_dir, plan_dir)
     if require_adaptive_commit:
-        _validate_adaptive_workflow_commit(plan_dir, recipe)
+        _validate_adaptive_workflow_commit(plan_dir, recipe, plan)
     return plan
 
 
@@ -812,7 +814,7 @@ def plan_tree_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
-def _validate_adaptive_workflow_commit(run_dir: Path, recipe: dict[str, Any]) -> None:
+def _validate_adaptive_workflow_commit(run_dir: Path, recipe: dict[str, Any], plan: dict[str, Any]) -> None:
     adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
     if adaptive.get("enabled") is not True:
         return
@@ -828,6 +830,50 @@ def _validate_adaptive_workflow_commit(run_dir: Path, recipe: dict[str, Any]) ->
     workflow = read_json(workflow_path)
     if not isinstance(workflow, dict) or str(workflow.get("root") or "") != str(workflow_root):
         raise ValueError(f"Adaptive workflow commit marker differs from the plan root: {workflow_path}")
+    initial_round = workflow_root / "adaptive" / "rounds" / "round_000"
+    if run_dir == initial_round:
+        initial_plan = plan
+    else:
+        initial_plan_path = initial_round / "plan.json"
+        snapshot = exp_io.read_managed_files_at(workflow_root, [initial_plan_path])[str(initial_plan_path)]
+        initial_plan = json.loads(snapshot["text"], object_pairs_hook=_json_object_without_duplicate_keys)
+    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    plan_event = {
+        "step_id": (initial_recipe.get("step") or {}).get("id"),
+        "plan_dir": str(initial_round),
+        "run_count": len(initial_plan.get("runs", [])),
+    }
+    ready_event = {
+        "round": 0,
+        "recipe_path": workflow.get("recipe_path"),
+        "round_dir": str(initial_round),
+    }
+    workspace = experiment_root(recipe)
+    events = read_experiment_events(workspace)
+    plan_related = [
+        (index, event)
+        for index, event in enumerate(events)
+        if event.get("event_type") == "plan_created" and event.get("plan_dir") == plan_event["plan_dir"]
+    ]
+    ready_related = [
+        (index, event)
+        for index, event in enumerate(events)
+        if event.get("event_type") == "adaptive_init" and event.get("round_dir") == ready_event["round_dir"]
+    ]
+    if not plan_related or not ready_related:
+        raise FileNotFoundError(f"Adaptive workflow initialization events are not committed: {workflow_path}")
+    plan_positions = [index for index, event in plan_related if event_matches(event, "plan_created", plan_event)]
+    ready_positions = [index for index, event in ready_related if event_matches(event, "adaptive_init", ready_event)]
+    if (
+        len(ready_related) == 1
+        and not ready_positions
+        and ready_related[0][1].get("recipe_path") != workflow.get("recipe_path")
+    ):
+        raise ValueError(f"Adaptive source recipe changed after initialization: {workflow_path}")
+    if len(plan_related) != 1 or len(ready_related) != 1 or len(plan_positions) != 1 or len(ready_positions) != 1:
+        raise ValueError(f"Adaptive workflow initialization events conflict: {workflow_path}")
+    if plan_positions[0] >= ready_positions[0]:
+        raise ValueError(f"Adaptive workflow initialization events are out of order: {workflow_path}")
 
 
 def iter_registered_hparam_plans(

@@ -727,6 +727,32 @@ def append_event(root: str | Path, event_type: str, payload: dict[str, Any]) -> 
     exp_io.append_managed_text_at(path, json.dumps(row, sort_keys=True) + "\n", managed_root=root)
 
 
+def read_experiment_events(root: str | Path) -> list[dict[str, Any]]:
+    root = Path(root)
+    path = root / "events.jsonl"
+    exp_io.validate_managed_output_paths(root, [path])
+    if not os.path.lexists(path):
+        return []
+    snapshot = exp_io.read_managed_files_at(root, [path])[str(path)]
+    events = []
+    for line_number, line in enumerate(snapshot["text"].splitlines(), start=1):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Experiment event log is malformed at line {line_number}: {path}") from exc
+        if not isinstance(event, dict):
+            raise ValueError(f"Experiment event log must contain mappings: {path}")
+        events.append(event)
+    return events
+
+
+def event_matches(event: dict[str, Any], event_type: str, payload: dict[str, Any]) -> bool:
+    return event.get("event_type") == event_type and all(
+        field in event and type(event[field]) is type(value) and event[field] == value
+        for field, value in payload.items()
+    )
+
+
 def run_identity(
     recipe: dict[str, Any], index: int, parameters: dict[str, Any], *, run_name: str | None = None
 ) -> dict[str, str]:
