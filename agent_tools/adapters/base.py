@@ -146,6 +146,7 @@ class TaskAdapter:
         out: Path,
         *,
         write_out: Path | None = None,
+        run_index_offset: int | None = None,
         unlock_final_test: bool,
         source_config_bytes: bytes,
         source_config_sha256: str,

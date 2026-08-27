@@ -788,6 +788,7 @@ def write_hparam_plan(
     source_config_bytes: bytes,
     source_config_sha256: str,
     profile_audit: dict[str, Any] | None = None,
+    run_index_offset: int | None = None,
 ) -> None:
     out = out.expanduser()
     if not out.is_absolute():
@@ -860,7 +861,7 @@ def write_hparam_plan(
     runs = []
     test_after_fit = evaluation["test_after_fit"]
     selection_split = str(evaluation.get("selection_split") or "")
-    run_index_offset = next_run_index(recipe)
+    run_index_offset = next_run_index(recipe) if run_index_offset is None else run_index_offset
     for contract in compile_hparam_run_contracts(
         recipe,
         out,
@@ -1196,7 +1197,7 @@ def _hparam_registration_state(plan: dict[str, Any]) -> tuple[Path, list[dict[st
     root = experiment_root(recipe)
     if root is None:
         raise ValueError("experiment.root is required.")
-    manifest_rows = _hparam_manifest_rows(plan)
+    manifest_rows = hparam_manifest_rows(plan)
     expected_keys = {managed_run_key(row) for row in manifest_rows}
     existing_rows = read_run_manifest(root) if (root / "run_manifest.tsv").exists() else []
     existing_keys = {managed_run_key(row) for row in existing_rows if managed_run_key(row) in expected_keys}
@@ -1206,7 +1207,7 @@ def _hparam_registration_state(plan: dict[str, Any]) -> tuple[Path, list[dict[st
     return root, manifest_rows
 
 
-def _hparam_manifest_rows(plan: dict[str, Any]) -> list[dict[str, Any]]:
+def hparam_manifest_rows(plan: dict[str, Any]) -> list[dict[str, Any]]:
     runs = plan.get("runs") if isinstance(plan.get("runs"), list) else []
     rows = []
     for run in runs:

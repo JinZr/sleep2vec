@@ -164,6 +164,7 @@ class HparamTuneAdapter(TaskAdapter):
         out: Path,
         *,
         write_out: Path | None = None,
+        run_index_offset: int | None = None,
         unlock_final_test: bool,
         source_config_bytes: bytes,
         source_config_sha256: str,
@@ -184,6 +185,7 @@ class HparamTuneAdapter(TaskAdapter):
             source_config_bytes=source_config_bytes,
             source_config_sha256=source_config_sha256,
             profile_audit=profile_audit,
+            run_index_offset=run_index_offset,
         )
 
     def commit_plan(self, out: Path, *, preflight_validated: bool = False) -> None:

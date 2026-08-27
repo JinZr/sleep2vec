@@ -568,7 +568,7 @@ def test_hparam_registration_rejects_partial_canonical_rows_before_workspace_wri
         if calls == 1:
             run = dict(runs[0])
             run["script"] = str(plan_dir / Path(run["script"]).relative_to(staging_dir))
-            row = plan_hparam._hparam_manifest_rows({"runs": [run]})[0]
+            row = plan_hparam.hparam_manifest_rows({"runs": [run]})[0]
             merge_run_manifest(workspace, [row])
         return _snapshot(execution, runs)
 
@@ -588,6 +588,72 @@ def test_hparam_registration_rejects_partial_canonical_rows_before_workspace_wri
     assert not (workspace / "steps" / "unit-finetune" / "step.yaml").exists()
     assert (events_path.read_bytes() if events_path.exists() else None) == events_before
     assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000"]
+
+
+@pytest.mark.parametrize("failure_stage", ["rows", "event"])
+def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
+    tmp_path: Path,
+    monkeypatch,
+    failure_stage: str,
+):
+    recipe, workspace = _recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"] = {
+        "method": "grid",
+        "max_runs": 2,
+        "parameters": {"runtime.lr": [1e-6, 2e-6]},
+    }
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = workspace / "plans" / "tune"
+    monkeypatch.setattr(
+        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+    )
+
+    if failure_stage == "rows":
+        real_commit = plan_hparam.merge_run_manifest
+        monkeypatch.setattr(
+            plan_hparam,
+            "merge_run_manifest",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected canonical rows failure")),
+        )
+        expected_error = "injected canonical rows failure"
+    else:
+        real_commit = plan_hparam.append_event
+        monkeypatch.setattr(
+            plan_hparam,
+            "append_event",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected plan event failure")),
+        )
+        expected_error = "injected plan event failure"
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    monkeypatch.setattr(
+        plan_hparam,
+        "merge_run_manifest" if failure_stage == "rows" else "append_event",
+        real_commit,
+    )
+
+    frozen_tree = run_artifacts.plan_tree_sha256(plan_dir)
+    frozen_run_ids = [run["run_id"] for run in json.loads((plan_dir / "plan.json").read_text())["runs"]]
+    assert len(read_run_manifest(workspace)) == (0 if failure_stage == "rows" else 2)
+
+    recovered = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert recovered.exit_code == 0
+    assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
+    assert [run["run_id"] for run in json.loads((plan_dir / "plan.json").read_text())["runs"]] == frozen_run_ids
+    assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000", "run-001"]
+    events = [json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines()]
+    created = [
+        event for event in events if event["event_type"] == "plan_created" and event["plan_dir"] == str(plan_dir)
+    ]
+    assert len(created) == 1
+    assert not _staging_dirs(workspace, plan_dir)
+
+    replay = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    assert replay.exit_code == 1
+    assert "Registered plan directories are immutable" in replay.blocking_issues()[0].message
 
 
 def test_hparam_registration_drift_preserves_existing_overwrite_destination(tmp_path: Path, monkeypatch):

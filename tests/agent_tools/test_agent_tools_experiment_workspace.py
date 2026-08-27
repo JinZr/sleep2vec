@@ -2371,3 +2371,151 @@ def test_repeated_single_run_plan_rejects_registered_output_directory(tmp_path: 
     assert (plan_dir / "plan.json").read_bytes() == first_plan_bytes
     assert not (plan_dir / "runs" / "run-001--unit").exists()
     assert [row["run_id"] for row in read_run_manifest(tmp_path)] == ["run-000"]
+
+
+def test_single_run_plan_recovers_registered_plan_after_manifest_failure(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    plan_dir = tmp_path / "plans" / "interrupted"
+    real_merge = plans.merge_run_manifest
+    failed = False
+
+    def fail_first_merge(root, rows):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("injected canonical commit failure")
+        return real_merge(root, rows)
+
+    monkeypatch.setattr(plans, "merge_run_manifest", fail_first_merge)
+    with pytest.raises(RuntimeError, match="injected canonical commit failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    frozen_tree = run_artifacts.plan_tree_sha256(plan_dir)
+    assert read_run_manifest(tmp_path) == []
+    step = read_step_manifest(tmp_path, "unit-finetune")
+    assert step["plans"] == [str(plan_dir)]
+
+    with pytest.raises(ValueError, match="recover it before creating another plan"):
+        plans.build_plan(recipe_path=recipe, output_dir=tmp_path / "plans" / "fresh")
+    assert not (tmp_path / "plans" / "fresh").exists()
+
+    other_payload = yaml.safe_load(recipe.read_text())
+    other_payload["step"] = {
+        "id": "other-step",
+        "phase": "train",
+        "purpose": "Register an intervening canonical run.",
+    }
+    other_payload["artifacts"]["version_name"] = "other"
+    other_recipe = write_yaml(tmp_path / "other.yaml", other_payload)
+    other_report = plans.build_plan(recipe_path=other_recipe, output_dir=tmp_path / "plans" / "other")
+    assert other_report.exit_code == 0
+
+    recovered = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert recovered.exit_code == 0
+    assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
+    rows = read_run_manifest(tmp_path)
+    assert {(row["step_id"], row["run_id"]) for row in rows} == {
+        ("unit-finetune", "run-000"),
+        ("other-step", "run-000"),
+    }
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    created = [
+        event for event in events if event["event_type"] == "plan_created" and event["plan_dir"] == str(plan_dir)
+    ]
+    assert len(created) == 1
+
+
+def test_single_run_registration_recovery_rejects_changed_frozen_plan(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    real_merge = plans.merge_run_manifest
+    monkeypatch.setattr(
+        plans,
+        "merge_run_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected canonical commit failure")),
+    )
+    with pytest.raises(RuntimeError, match="injected canonical commit failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    monkeypatch.setattr(plans, "merge_run_manifest", real_merge)
+
+    frozen_tree = run_artifacts.plan_tree_sha256(plan_dir)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["runtime"]["lr"] = 9e-6
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    with pytest.raises(ValueError, match="differs from deterministic regeneration"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
+    assert read_run_manifest(tmp_path) == []
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert not any(event["event_type"] == "plan_created" for event in events)
+    assert not list(plan_dir.parent.glob(f".{plan_dir.name}.*.staging"))
+
+
+def test_same_step_plan_registration_serializes_run_index_allocation(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    original_check = plans._assert_no_incomplete_step_registration
+    first_checking = threading.Event()
+    second_checking = threading.Event()
+    release_first = threading.Event()
+    calls_lock = threading.Lock()
+    calls = 0
+
+    def pause_first_check(recipe_payload, out):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            call = calls
+        if call == 1:
+            first_checking.set()
+            assert release_first.wait(timeout=10)
+        else:
+            second_checking.set()
+        return original_check(recipe_payload, out)
+
+    monkeypatch.setattr(plans, "_assert_no_incomplete_step_registration", pause_first_check)
+    reports = []
+    errors = []
+
+    def create_plan(name):
+        try:
+            reports.append(plans.build_plan(recipe_path=recipe, output_dir=tmp_path / "plans" / name))
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=create_plan, args=("first",))
+    second = threading.Thread(target=create_plan, args=("second",))
+    first.start()
+    assert first_checking.wait(timeout=10)
+    second.start()
+    assert not second_checking.wait(timeout=0.2)
+    release_first.set()
+    first.join(timeout=20)
+    second.join(timeout=20)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert [report.exit_code for report in reports] == [0, 0]
+    run_ids = {
+        json.loads((tmp_path / "plans" / name / "plan.json").read_text())["runs"][0]["run_id"]
+        for name in ("first", "second")
+    }
+    assert run_ids == {"run-000", "run-001"}
+
+
+def test_step_registration_lock_namespace_cannot_deadlock_with_plan_output(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
+    output = tmp_path / "steps" / "unit-finetune" / "step.yaml"
+
+    result = subprocess.run(
+        [sys.executable, str(runner), "plan", "--recipe", str(recipe), "--output-dir", str(output)],
+        text=True,
+        capture_output=True,
+        timeout=5,
+    )
+
+    assert result.returncode != 0
