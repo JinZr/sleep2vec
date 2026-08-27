@@ -505,6 +505,7 @@ def test_hparam_blocked_plan_writes_user_decision_template(tmp_path: Path):
 def test_hparam_blocked_plan_retry_rejects_same_output_dir_even_with_overwrite(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"]["label_name"]["value"] = "ASK_USER"
     payload["decisions"]["overwrite_policy"]["value"] = "ASK_USER"
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     blocked_dir = tmp_path / "hparam-blocked"
@@ -514,6 +515,7 @@ def test_hparam_blocked_plan_retry_rejects_same_output_dir_even_with_overwrite(t
     assert blocked.returncode == 2
     decisions = blocked_dir / "decisions.yaml"
     decision_payload = yaml.safe_load(decisions.read_text())
+    assert decision_payload["decisions"]["label_name"]["value"] == "ASK_USER"
     decision_payload["decisions"]["overwrite_policy"]["value"] = True
     decisions.write_text(yaml.safe_dump(decision_payload, sort_keys=False))
     blocked_files = {path.name: path.read_bytes() for path in blocked_dir.iterdir() if path.is_file()}

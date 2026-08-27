@@ -1530,6 +1530,7 @@ def _guard_blocked_plan_publication(
         _overwrite_policy(recipe),
         root=out,
         allow_existing=allow_existing,
+        require_fresh="Blocked plan artifacts already exist; retry with a fresh --output-dir.",
     )
     report = _guard_existing_outputs(
         report,
