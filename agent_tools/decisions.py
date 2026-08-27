@@ -83,6 +83,8 @@ def decision_entry_contract_issues(
 
 
 def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
+    if task in ("", "ASK_USER"):
+        task = None
     task_scope = {task}
     scope_adapter = get_adapter(task)
     if scope_adapter is not None and scope_adapter.base_task is not None:

@@ -347,6 +347,27 @@ def test_generated_task_template_remains_unresolved_until_filled(tmp_path: Path)
     assert "Status: PASS" in resolved.stdout
 
 
+def test_doctor_writes_task_template_for_explicit_ask_user_sentinel(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["task"] = "ASK_USER"
+    payload["decisions"]["task"] = {"value": "ASK_USER", "source": "unresolved"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    output_dir = tmp_path / "doctor"
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]["task"] == {
+        "value": "ASK_USER",
+        "source": "explicit_user",
+        "question": (
+            "Which task should be performed: preset_prepare, finetune, infer, evaluate, "
+            "hparam_tune, sleep2stat, or embedding_extraction?"
+        ),
+    }
+
+
 def test_user_split_decision_requires_concrete_split(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     decisions = _write_decisions(
