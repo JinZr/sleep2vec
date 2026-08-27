@@ -707,11 +707,11 @@ def ensure_experiment_workspace(
     root.mkdir(parents=True, exist_ok=True)
     (root / "reports").mkdir(exist_ok=True)
     step_dir = root / "steps" / str(step["id"])
-    step_dir.mkdir(parents=True, exist_ok=True)
     if not manifest_exists:
         write_initial_experiment_manifest(root, experiment)
         append_event(root, "experiment_initialized", {"experiment_id": experiment["id"]})
     if register_step:
+        step_dir.mkdir(parents=True, exist_ok=True)
         _merged_step_payload, created_step = commit_step_manifest(root, step_payload)
         if created_step:
             append_event(root, "step_registered", {"step_id": step["id"], "phase": step["phase"]})

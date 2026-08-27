@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import sys
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+import pytest
 import yaml
 
 from agent_tools import cli as agent_cli
@@ -213,17 +215,71 @@ def test_doctor_does_not_overwrite_user_decisions_created_during_publication(tmp
     recipe, _cfg, report = evaluate_recipe(recipe_path)
     output_dir = tmp_path / "doctor"
     template = output_dir / "decisions.yaml"
-    original_open = Path.open
+    real_link = os.link
 
-    def competing_open(path: Path, mode: str = "r", *args, **kwargs):
-        if path == template and mode == "x":
+    def competing_link(source, destination, *args, **kwargs):
+        if Path(destination) == template:
             template.write_text("user competitor\n")
-        return original_open(path, mode, *args, **kwargs)
+        return real_link(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", competing_open)
+    monkeypatch.setattr(os, "link", competing_link)
 
-    assert write_user_decision_template(output_dir, recipe, report) == (template, False)
+    assert write_user_decision_template(output_dir, recipe, report, preserve_existing=True) == (template, False)
     assert template.read_text() == "user competitor\n"
+    assert not list(output_dir.glob(".decisions.yaml.*.tmp"))
+
+
+def test_user_decision_template_is_complete_when_published(tmp_path: Path, monkeypatch):
+    recipe_path = write_finetune_recipe(tmp_path, include_label=False)
+    recipe, _cfg, report = evaluate_recipe(recipe_path)
+    output_dir = tmp_path / "doctor"
+    template = output_dir / "decisions.yaml"
+    real_link = os.link
+    published_bytes = b""
+
+    def inspect_link(source, destination, *args, **kwargs):
+        nonlocal published_bytes
+        created = real_link(source, destination, *args, **kwargs)
+        published_bytes = Path(destination).read_bytes()
+        assert yaml.safe_load(published_bytes)["decisions"]["label_name"]["value"] == "ASK_USER"
+        return created
+
+    monkeypatch.setattr(os, "link", inspect_link)
+
+    assert write_user_decision_template(output_dir, recipe, report, preserve_existing=True) == (template, True)
+    assert template.read_bytes() == published_bytes
+    assert not list(output_dir.glob(".decisions.yaml.*.tmp"))
+
+
+@pytest.mark.parametrize("competitor_kind", ["symlink", "hardlink"])
+def test_doctor_rejects_aliased_user_decisions_created_during_publication(
+    tmp_path: Path,
+    monkeypatch,
+    competitor_kind: str,
+):
+    recipe_path = write_finetune_recipe(tmp_path, include_label=False)
+    recipe, _cfg, report = evaluate_recipe(recipe_path)
+    output_dir = tmp_path / "doctor"
+    template = output_dir / "decisions.yaml"
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("user competitor\n")
+    real_link = os.link
+
+    def competing_link(source, destination, *args, **kwargs):
+        if Path(destination) == template:
+            if competitor_kind == "symlink":
+                template.symlink_to(outside)
+            else:
+                template.hardlink_to(outside)
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", competing_link)
+
+    with pytest.raises(ValueError, match="Managed output paths"):
+        write_user_decision_template(output_dir, recipe, report, preserve_existing=True)
+
+    assert outside.read_text() == "user competitor\n"
+    assert not list(output_dir.glob(".decisions.yaml.*.tmp"))
 
 
 def test_doctor_rejects_output_directory_owned_by_pass_plan(tmp_path: Path):

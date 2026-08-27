@@ -238,7 +238,8 @@ invalid and are not repaired in place.
   A registered directory containing `questions.json`, `questions.md`, and
   `plan.blocked.md`, plus optional `decisions.yaml` and `plan.draft.json`, is a
   non-runnable planning outcome and is skipped; missing required, extra, or
-  aliased entries fail closed. Historical blocked plans without
+  aliased entries fail closed. The physical bundle is completed and validated
+  before its step manifest publishes canonical ownership. Historical blocked plans without
   `decisions.yaml` remain readable. A
   plan binds to the registered step's core `id`, `phase`, and `purpose`, while
   manifest-owned `inputs` and `outputs` remain valid step metadata.

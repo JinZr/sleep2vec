@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -16,7 +17,7 @@ from agent_tool_test_helpers import (
 import pytest
 import yaml
 
-from agent_tools import managed_scheduler, plans
+from agent_tools import experiments, managed_scheduler, plans, run_artifacts
 from agent_tools.experiment_workspace import ensure_experiment_workspace, read_run_manifest
 from agent_tools.models import REPO_ROOT
 
@@ -500,6 +501,63 @@ def test_hparam_blocked_plan_writes_user_decision_template(tmp_path: Path):
         "source": "explicit_user",
         "question": "Is overwriting existing output files allowed for this task?",
     }
+
+
+def test_blocked_plan_rejects_user_decisions_created_during_publication(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    recipe = write_finetune_recipe(source, include_label=False)
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = workspace / "plans" / "blocked"
+    template = plan_dir / "decisions.yaml"
+    real_link = os.link
+
+    def competing_link(source_path, destination, *args, **kwargs):
+        if Path(destination) == template:
+            template.write_text("user competitor\n")
+        return real_link(source_path, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", competing_link)
+
+    with pytest.raises(ValueError, match="appeared during blocked plan publication"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert template.read_text() == "user competitor\n"
+    assert not (plan_dir / "plan.blocked.md").exists()
+    assert not list(plan_dir.glob(".decisions.yaml.*.tmp"))
+    assert not (workspace / "steps" / payload["step"]["id"] / "step.yaml").exists()
+    assert experiments.experiment_status(workspace)["steps"] == []
+
+
+def test_blocked_plan_registers_step_after_complete_bundle(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    recipe = write_finetune_recipe(source, include_label=False)
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = workspace / "plans" / "blocked"
+    step_manifest = workspace / "steps" / payload["step"]["id"] / "step.yaml"
+    real_ensure = plans.ensure_experiment_workspace
+    registration_modes = []
+
+    def inspect_registration(*args, **kwargs):
+        register_step = kwargs.get("register_step", True)
+        registration_modes.append(register_step)
+        if register_step:
+            assert not step_manifest.exists()
+            assert run_artifacts.is_registered_blocked_plan(plan_dir, workspace=workspace)
+        return real_ensure(*args, **kwargs)
+
+    monkeypatch.setattr(plans, "ensure_experiment_workspace", inspect_registration)
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 2
+    assert registration_modes == [False, True]
+    assert step_manifest.is_file()
 
 
 def test_hparam_blocked_plan_retry_rejects_same_output_dir_even_with_overwrite(tmp_path: Path):

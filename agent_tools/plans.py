@@ -506,6 +506,8 @@ def write_user_decision_template(
     output_dir: str | Path,
     recipe: dict,
     report: DecisionReport,
+    *,
+    preserve_existing: bool,
 ) -> tuple[Path, bool] | None:
     decision_entries = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
     payload = user_decision_template(recipe.get("task"), report, load_consultation_policy(), decision_entries)
@@ -514,13 +516,31 @@ def write_user_decision_template(
     target = Path(output_dir) / USER_DECISIONS_FILENAME
     text = yaml.safe_dump(payload, sort_keys=False)
     target.parent.mkdir(parents=True, exist_ok=True)
-    # This file is human-editable, so exclusive creation preserves decisions saved during publication.
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+    )
+    temporary_path = Path(temporary_name)
+    created = False
     try:
-        with target.open("x") as file_obj:
+        with os.fdopen(file_descriptor, "w") as file_obj:
             file_obj.write(text)
+            os.fchmod(file_obj.fileno(), 0o644)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        # Exact blocked bundles cannot retain a CAS lock; link complete bytes without clobbering human edits.
+        os.link(temporary_path, target)
+        created = True
     except FileExistsError:
-        return target, False
-    return target, True
+        if not preserve_existing:
+            raise ValueError(
+                f"User decisions appeared during blocked plan publication; retry with a fresh --output-dir: {target}"
+            ) from None
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    exp_io.validate_managed_output_paths(target.parent, [target])
+    return target, created
 
 
 def prepare_doctor_report(output_dir: str | Path | None, recipe: dict, report: DecisionReport) -> DecisionReport:
@@ -557,7 +577,7 @@ def write_doctor_outputs(
             raise ValueError(locked_report.blocking_issues()[-1].message)
         if report.blocking_issues():
             write_questions(out, report)
-        return write_user_decision_template(out, recipe, report)
+        return write_user_decision_template(out, recipe, report, preserve_existing=True)
 
 
 def build_context(
@@ -1025,9 +1045,14 @@ def build_plan(
             )
             if _has_output_artifact_issue(report):
                 return report
-            ensure_experiment_workspace(recipe, out, plan_controller=plan_controller)
+            workspace, _step_dir = ensure_experiment_workspace(
+                recipe,
+                out,
+                register_step=False,
+                plan_controller=plan_controller,
+            )
             write_questions(out, report)
-            template = write_user_decision_template(out, recipe, report)
+            template = write_user_decision_template(out, recipe, report, preserve_existing=False)
             template_path = template[0] if template is not None else None
             if template_path is not None:
                 report.published_user_decisions_path = str(template_path)
@@ -1040,6 +1065,10 @@ def build_plan(
                     out / "plan.draft.json",
                     {"status": report.status.value, "recipe": recipe, "questions": questions_payload(report)},
                 )
+            if not artifacts.is_registered_blocked_plan(out, workspace=workspace):
+                raise ValueError(f"Blocked plan publication did not produce a complete control bundle: {out}")
+            # step.yaml is canonical ownership; expose the plan only after its blocked bundle is complete.
+            ensure_experiment_workspace(recipe, out, plan_controller=plan_controller)
         return report
 
     root = experiment_root(recipe)
