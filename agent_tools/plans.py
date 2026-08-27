@@ -1225,6 +1225,14 @@ def preflight_plan(
         allow_existing=allow_existing_output_artifacts,
     )
     if successful_plan:
+        # Blocked bundles are human-editable evidence; reusing one would mix PASS and blocked envelopes.
+        report = _guard_existing_outputs(
+            report,
+            plan_contract.blocked_plan_control_paths(out),
+            _overwrite_policy(recipe),
+            root=out,
+            require_fresh=True,
+        )
         root = experiment_root(recipe)
         if root is not None:
             report = _guard_existing_outputs(
@@ -1334,6 +1342,7 @@ def _guard_existing_outputs(
     *,
     root: Path,
     allow_existing: bool = False,
+    require_fresh: bool = False,
 ) -> DecisionReport:
     try:
         exp_io.validate_managed_output_paths(root, paths)
@@ -1355,9 +1364,13 @@ def _guard_existing_outputs(
     existing = sorted(str(path) for path in paths if path.exists())
     if not existing:
         return report
-    if overwrite_policy is True:
+    if require_fresh:
+        status = DecisionStatus.FAIL
+        message = "Blocked plan artifacts already exist; retry with a fresh --output-dir."
+        question = None
+    elif overwrite_policy is True:
         return report
-    if overwrite_policy is False:
+    elif overwrite_policy is False:
         status = DecisionStatus.FAIL
         message = "Output artifacts already exist and overwrite_policy=false."
         question = None
@@ -1394,15 +1407,7 @@ def _planned_plan_paths(
         if adapter_paths is not None:
             return adapter_paths
     if report.exit_code != 0:
-        paths = [
-            out / "questions.json",
-            out / "questions.md",
-            out / USER_DECISIONS_FILENAME,
-            out / "plan.blocked.md",
-        ]
-        if allow_unresolved and report.exit_code == 2:
-            paths.append(out / "plan.draft.json")
-        return paths
+        return plan_contract.blocked_plan_control_paths(out)
     assert adapter is not None
     run = plan_contract.generic_run_contract(recipe, out, next_run_index(recipe), adapter)
     run_dir = Path(run["run_dir"])

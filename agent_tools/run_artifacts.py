@@ -139,13 +139,7 @@ def is_registered_blocked_plan(
     plan_path = plan_dir / "plan.json"
     resolved_recipe_path = plan_dir / "recipe.resolved.yaml"
     user_decisions_path = plan_dir / USER_DECISIONS_FILENAME
-    blocked_only_paths = [
-        plan_dir / "questions.json",
-        plan_dir / "questions.md",
-        user_decisions_path,
-        plan_dir / "plan.blocked.md",
-        plan_dir / "plan.draft.json",
-    ]
+    blocked_only_paths = plan_contract.blocked_plan_control_paths(plan_dir)
     # Existence checks may follow local aliases, so validate every possible control file's ancestry first.
     try:
         exp_io.validate_managed_output_paths(

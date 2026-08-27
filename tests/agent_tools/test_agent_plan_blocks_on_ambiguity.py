@@ -324,6 +324,44 @@ def test_blocked_plan_initializes_workspace_and_retry_uses_new_plan_dir(tmp_path
     assert (retry_dir / "run.sh").exists()
 
 
+def test_generic_blocked_plan_retry_rejects_same_output_dir(tmp_path: Path):
+    source = tmp_path / "source"
+    recipe = write_finetune_recipe(source, include_label=False)
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    blocked_dir = workspace / "plans" / "blocked"
+
+    blocked = _run("plan", "--recipe", str(recipe), "--output-dir", str(blocked_dir))
+
+    assert blocked.returncode == 2
+    decisions = blocked_dir / "decisions.yaml"
+    decision_payload = yaml.safe_load(decisions.read_text())
+    decision_payload["decisions"]["label_name"]["value"] = "ahi"
+    decisions.write_text(yaml.safe_dump(decision_payload, sort_keys=False))
+    blocked_files = {path.name: path.read_bytes() for path in blocked_dir.iterdir() if path.is_file()}
+    manifest = workspace / "run_manifest.tsv"
+    manifest_bytes = manifest.read_bytes()
+
+    retry = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(blocked_dir),
+    )
+
+    assert retry.returncode == 1
+    assert "fresh --output-dir" in retry.stdout
+    assert {path.name: path.read_bytes() for path in blocked_dir.iterdir() if path.is_file()} == blocked_files
+    assert manifest.read_bytes() == manifest_bytes
+    assert not (blocked_dir / "plan.json").exists()
+    assert not (blocked_dir / "runs").exists()
+
+
 def test_hparam_blocked_plan_writes_user_decision_template(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -339,6 +377,42 @@ def test_hparam_blocked_plan_writes_user_decision_template(tmp_path: Path):
         "source": "explicit_user",
         "question": "Is overwriting existing output files allowed for this task?",
     }
+
+
+def test_hparam_blocked_plan_retry_rejects_same_output_dir_even_with_overwrite(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"]["overwrite_policy"]["value"] = "ASK_USER"
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    blocked_dir = tmp_path / "hparam-blocked"
+
+    blocked = _run("plan", "--recipe", str(recipe), "--output-dir", str(blocked_dir))
+
+    assert blocked.returncode == 2
+    decisions = blocked_dir / "decisions.yaml"
+    decision_payload = yaml.safe_load(decisions.read_text())
+    decision_payload["decisions"]["overwrite_policy"]["value"] = True
+    decisions.write_text(yaml.safe_dump(decision_payload, sort_keys=False))
+    blocked_files = {path.name: path.read_bytes() for path in blocked_dir.iterdir() if path.is_file()}
+    manifest = tmp_path / "run_manifest.tsv"
+    manifest_bytes = manifest.read_bytes()
+
+    retry = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(blocked_dir),
+    )
+
+    assert retry.returncode == 1
+    assert "fresh --output-dir" in retry.stdout
+    assert {path.name: path.read_bytes() for path in blocked_dir.iterdir() if path.is_file()} == blocked_files
+    assert manifest.read_bytes() == manifest_bytes
+    assert not (blocked_dir / "plan.json").exists()
+    assert not (blocked_dir / "runs").exists()
 
 
 def test_context_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):

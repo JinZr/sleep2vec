@@ -4,10 +4,9 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from .. import slurm
+from .. import plan_contract, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_tune_issues
 from ..decision_models import (
-    USER_DECISIONS_FILENAME,
     DecisionIssue,
     DecisionReport,
     DecisionStatus,
@@ -257,12 +256,7 @@ class HparamTuneAdapter(TaskAdapter):
         from ..experiment_workspace import next_run_index
 
         if report.exit_code != 0:
-            paths = [
-                out / "questions.json",
-                out / "questions.md",
-                out / USER_DECISIONS_FILENAME,
-                out / "plan.blocked.md",
-            ]
+            paths = plan_contract.blocked_plan_control_paths(out)
             evaluation = recipe.get("evaluation_policy") or {}
             if plan_hparam.final_test_unlocked(evaluation, unlock_final_test):
                 paths.extend(
@@ -271,8 +265,6 @@ class HparamTuneAdapter(TaskAdapter):
                         out / plan_hparam.FROZEN_FINAL_EVAL_CONFIG_NAME,
                     ]
                 )
-            if allow_unresolved and report.exit_code == 2:
-                paths.append(out / "plan.draft.json")
             return paths
         paths = [
             out / "plan.json",
