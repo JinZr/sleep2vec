@@ -1,0 +1,42 @@
+pid = int(sys.argv[1])
+pgid = int(sys.argv[2])
+expected_token = sys.argv[3]
+timeout = float(sys.argv[4])
+
+if pgid != pid or pgid == os.getpgrp():
+    print("Refusing to signal an unsafe process group", file=sys.stderr)
+    raise SystemExit(45)
+try:
+    leader_pgid = os.getpgid(pid)
+except ProcessLookupError:
+    leader_pgid = None
+if leader_pgid is not None:
+    if leader_pgid != pgid or start_token(pid) != expected_token:
+        print("Process identity changed before stop", file=sys.stderr)
+        raise SystemExit(45)
+
+group_running = process_group_running(pgid)
+if group_running is None:
+    print("Cannot inspect managed process group", file=sys.stderr)
+    raise SystemExit(1)
+if not group_running:
+    print("Managed process group is no longer running", file=sys.stderr)
+    raise SystemExit(44)
+
+os.killpg(pgid, signal.SIGTERM)
+deadline = time.monotonic() + timeout
+while time.monotonic() < deadline:
+    group_running = process_group_running(pgid)
+    if group_running is None:
+        print("Cannot inspect managed process group", file=sys.stderr)
+        raise SystemExit(1)
+    if not group_running:
+        break
+    time.sleep(0.05)
+group_running = process_group_running(pgid)
+if group_running is None:
+    print("Cannot inspect managed process group", file=sys.stderr)
+    raise SystemExit(1)
+if group_running:
+    print("Managed process group did not stop after SIGTERM", file=sys.stderr)
+    raise SystemExit(46)

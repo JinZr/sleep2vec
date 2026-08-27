@@ -1,0 +1,50 @@
+
+import json
+import os
+import stat
+import sys
+
+root, directory = json.loads(sys.argv[1])
+
+def reject(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(2)
+
+def validate_directory(path):
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        reject(f"Managed directory is missing or aliased: {path}")
+    return True
+
+if not validate_directory(root):
+    reject(f"Managed workspace root is missing: {root}")
+relative = os.path.relpath(directory, root)
+current = root
+for part in [] if relative == "." else relative.split(os.sep):
+    current = os.path.join(current, part)
+    if not validate_directory(current):
+        print("[]")
+        raise SystemExit(0)
+
+names = []
+try:
+    entries = list(os.scandir(directory))
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+for entry in entries:
+    try:
+        info = entry.stat(follow_symlinks=False)
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        reject(f"Managed directory contains a non-directory entry: {entry.path}")
+    names.append(entry.name)
+print(json.dumps(sorted(names)))

@@ -1,0 +1,9 @@
+import hashlib, sys
+path, expected = sys.argv[1:3]
+digest = hashlib.sha256()
+with open(path, 'rb') as checkpoint:
+    for chunk in iter(lambda: checkpoint.read(1024 * 1024), b''):
+        digest.update(chunk)
+observed = digest.hexdigest()
+if observed != expected:
+    raise SystemExit(f'Frozen checkpoint SHA-256 differs: {path}')

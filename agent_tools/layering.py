@@ -29,6 +29,7 @@ KERNEL_MODULES: frozenset[str] = frozenset(
     {
         "decision_models",
         "transport",
+        "python_programs",
         "manifests",
         "schema_map",
         "gpu_rules",

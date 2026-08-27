@@ -1,0 +1,45 @@
+import argparse
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import runpy
+import sys
+
+module = sys.argv[1]
+planned_argv = json.loads(sys.argv[2])
+expected_origin = sys.argv[3]
+spec = importlib.util.find_spec(module)
+origin = str(Path(spec.origin).resolve()) if spec is not None and spec.origin else ""
+if origin != expected_origin:
+    print("Target runtime module origin changed before argparse validation.", file=sys.stderr)
+    raise SystemExit(2)
+original_parse_args = argparse.ArgumentParser.parse_args
+
+class ArgumentsValidated(Exception):
+    pass
+
+def validate(self, args=None, namespace=None):
+    for planned in planned_argv:
+        try:
+            original_parse_args(self, planned["args"], namespace)
+        except SystemExit:
+            print("Frozen argv rejected for " + planned["run_id"], file=sys.stderr)
+            raise
+    supported_options = sorted({option for action in self._actions for option in action.option_strings})
+    normalized = json.dumps(supported_options, separators=(",", ":"))
+    evidence = {
+        "supported_options": supported_options,
+        "cli_options_sha256": hashlib.sha256(normalized.encode()).hexdigest(),
+    }
+    print("AGENT_CLI_PREFLIGHT=" + json.dumps(evidence, sort_keys=True))
+    raise ArgumentsValidated
+
+argparse.ArgumentParser.parse_args = validate
+sys.argv = [module, *planned_argv[0]["args"]]
+try:
+    runpy.run_module(module, run_name="__main__")
+except ArgumentsValidated:
+    raise SystemExit(0)
+print("Target runtime did not validate arguments through argparse.", file=sys.stderr)
+raise SystemExit(2)

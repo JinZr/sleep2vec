@@ -5,6 +5,8 @@ import shlex
 import subprocess
 from typing import Any
 
+from . import python_programs
+
 SSH_TIMEOUT_SECONDS = 10
 REMOTE_MISSING_RETURN_CODE = 44
 REMOTE_CONFLICT_RETURN_CODE = 45
@@ -67,6 +69,10 @@ def run_shell(
 
 def remote_python_command(script: str, *args: Any) -> str:
     return " ".join([f"python3 -c {sh(script)}", *(sh(arg) for arg in args)])
+
+
+def remote_python_program_command(name: str, *args: Any) -> str:
+    return remote_python_command(python_programs.source(name), *args)
 
 
 def remote_write_command(path: Any) -> str:

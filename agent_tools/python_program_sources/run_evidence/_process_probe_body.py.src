@@ -1,0 +1,20 @@
+pid = int(sys.argv[1])
+pgid = int(sys.argv[2])
+
+try:
+    leader_pgid = os.getpgid(pid)
+except ProcessLookupError:
+    leader = None
+else:
+    token = start_token(pid)
+    if token is None:
+        print(f"Cannot read process start time for PID {pid}", file=sys.stderr)
+        raise SystemExit(1)
+    leader = {"pid": pid, "process_group_id": leader_pgid, "process_start_token": token}
+
+group_running = process_group_running(pgid)
+if group_running is None:
+    print(f"Cannot inspect process group {pgid}", file=sys.stderr)
+    raise SystemExit(1)
+
+print(json.dumps({"leader": leader, "group_running": group_running}, sort_keys=True))

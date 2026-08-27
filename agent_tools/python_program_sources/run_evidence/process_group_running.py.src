@@ -1,0 +1,55 @@
+def process_group_running(pgid, proc_root="/proc"):
+    leader_uncertain = False
+    try:
+        leader_stat = open(os.path.join(proc_root, str(pgid), "stat"), encoding="utf-8").read()
+    except FileNotFoundError:
+        leader_stat = None
+    except OSError:
+        leader_stat = None
+        leader_uncertain = True
+    if leader_stat:
+        fields = leader_stat.rsplit(")", 1)[-1].split()
+        try:
+            leader_pgid = int(fields[2])
+        except (IndexError, ValueError):
+            leader_uncertain = True
+        else:
+            if leader_pgid == pgid and fields[0] not in {"Z", "X"}:
+                return True
+
+    try:
+        entries = os.listdir(proc_root)
+    except FileNotFoundError:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    except OSError:
+        return None
+
+    uncertain = leader_uncertain
+    for entry in entries:
+        if not entry.isdigit() or entry == str(pgid):
+            continue
+        try:
+            stat_text = open(os.path.join(proc_root, entry, "stat"), encoding="utf-8").read()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            uncertain = True
+            continue
+        fields = stat_text.rsplit(")", 1)[-1].split()
+        if len(fields) < 3:
+            uncertain = True
+            continue
+        try:
+            process_pgid = int(fields[2])
+        except ValueError:
+            uncertain = True
+            continue
+        if process_pgid == pgid and fields[0] not in {"Z", "X"}:
+            return True
+    return None if uncertain else False

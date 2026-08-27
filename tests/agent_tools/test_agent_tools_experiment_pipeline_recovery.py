@@ -11,7 +11,7 @@ from agent_tool_test_helpers import write_finetune_recipe
 import pytest
 import yaml
 
-from agent_tools import experiment_pipeline, experiments, managed_scheduler, plan_contract, plans
+from agent_tools import experiment_pipeline, experiments, managed_scheduler, plan_contract, plans, python_programs
 from agent_tools.experiment_workspace import commit_step_manifest, file_sha256, read_run_manifest
 from agent_tools.manifests import write_rows
 
@@ -567,7 +567,7 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     )
 
     def inspect_command(_execution, probe):
-        if "runtime_hostname" in probe[2]:
+        if probe[2] == python_programs.source("managed_scheduler.runtime_identity"):
             payload = {
                 "python": "/runtime/python",
                 "python_version": "3.12",
