@@ -21,10 +21,15 @@ _BLOCKED_PLAN_CONTROL_NAMES = (
     "plan.blocked.md",
     "plan.draft.json",
 )
+_PASS_PLAN_CONTROL_NAMES = ("plan.json", "recipe.resolved.yaml")
 
 
 def blocked_plan_control_paths(plan_dir: Path) -> list[Path]:
     return [plan_dir / name for name in _BLOCKED_PLAN_CONTROL_NAMES]
+
+
+def pass_plan_control_paths(plan_dir: Path) -> list[Path]:
+    return [plan_dir / name for name in _PASS_PLAN_CONTROL_NAMES]
 
 
 def bind_plan_context(recipe: dict[str, Any]) -> None:

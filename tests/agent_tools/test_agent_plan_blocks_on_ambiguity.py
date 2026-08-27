@@ -16,7 +16,8 @@ from agent_tool_test_helpers import (
 import pytest
 import yaml
 
-from agent_tools import managed_scheduler
+from agent_tools import managed_scheduler, plans
+from agent_tools.experiment_workspace import ensure_experiment_workspace, read_run_manifest
 from agent_tools.models import REPO_ROOT
 
 _RUNTIME_COMMIT = subprocess.run(
@@ -360,6 +361,35 @@ def test_generic_blocked_plan_retry_rejects_same_output_dir(tmp_path: Path):
     assert manifest.read_bytes() == manifest_bytes
     assert not (blocked_dir / "plan.json").exists()
     assert not (blocked_dir / "runs").exists()
+
+
+def test_generic_pass_rechecks_blocked_artifacts_created_after_preflight(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    recipe = write_finetune_recipe(source)
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = workspace / "plans" / "current"
+    ensure_experiment_workspace(payload, plan_dir, register_step=False)
+    competitor = plan_dir / "decisions.yaml"
+    validate_bound_recipe = plans._validate_bound_recipe
+
+    def inject_competitor(*args, **kwargs):
+        result = validate_bound_recipe(*args, **kwargs)
+        plan_dir.mkdir(parents=True)
+        competitor.write_text("user competitor\n")
+        return result
+
+    monkeypatch.setattr(plans, "_validate_bound_recipe", inject_competitor)
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert competitor.read_text() == "user competitor\n"
+    assert not (plan_dir / "plan.json").exists()
+    assert not (plan_dir / "runs").exists()
+    assert read_run_manifest(workspace) == []
 
 
 def test_hparam_blocked_plan_writes_user_decision_template(tmp_path: Path):

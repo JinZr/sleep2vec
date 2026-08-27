@@ -71,8 +71,7 @@ def _read_plan_documents(
     strict_control_bundle: bool = False,
     require_resolved_sha256: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    plan_path = plan_dir / "plan.json"
-    resolved_recipe_path = plan_dir / "recipe.resolved.yaml"
+    plan_path, resolved_recipe_path = plan_contract.pass_plan_control_paths(plan_dir)
     if strict_control_bundle:
         if workspace is None:
             raise ValueError("Strict registered-plan reads require a workspace root.")

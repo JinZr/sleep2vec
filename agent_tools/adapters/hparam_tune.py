@@ -6,13 +6,7 @@ from typing import Any
 
 from .. import plan_contract, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_tune_issues
-from ..decision_models import (
-    DecisionIssue,
-    DecisionReport,
-    DecisionStatus,
-    ResolvedDecision,
-    merge_status,
-)
+from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
 from ..models import coerce_list
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, finetune_loaded_split_values, variant_module
 from .base import PlanRegistrationPreflightError, TaskAdapter

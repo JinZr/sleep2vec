@@ -206,6 +206,26 @@ def test_doctor_does_not_overwrite_user_decisions_created_during_publication(tmp
     assert template.read_text() == "user competitor\n"
 
 
+def test_doctor_rejects_output_directory_owned_by_pass_plan(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    output_dir = tmp_path / "plan"
+    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    assert planned.returncode == 0
+    before = {path.relative_to(output_dir): path.read_bytes() for path in output_dir.rglob("*") if path.is_file()}
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"].pop("label_name")
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "doctor output requires a fresh --output-dir" in result.stderr
+    assert {
+        path.relative_to(output_dir): path.read_bytes() for path in output_dir.rglob("*") if path.is_file()
+    } == before
+    assert not (output_dir / "decisions.yaml").exists()
+
+
 def test_user_decision_template_skips_non_decisions_and_deduplicates_base_issue():
     report = DecisionReport(
         status=DecisionStatus.NEEDS_USER_INPUT,

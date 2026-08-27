@@ -493,6 +493,15 @@ def write_questions(output_dir: str | Path, report: DecisionReport) -> None:
     write_text(out / "questions.md", questions_markdown(report))
 
 
+def _plan_publication_lock(out: Path):
+    lock_root = Path(tempfile.gettempdir()).resolve() / "agent-tools-plan-locks"
+    lock_root.mkdir(mode=0o700, exist_ok=True)
+    lock_name = hashlib.sha256(str(out).encode()).hexdigest() + ".lock"
+    lock_path = lock_root / lock_name
+    exp_io.validate_managed_output_paths(Path(lock_path.anchor), [lock_path])
+    return exp_io.blocking_file_lock(lock_path)
+
+
 def write_user_decision_template(
     output_dir: str | Path,
     recipe: dict,
@@ -525,9 +534,29 @@ def write_doctor_outputs(
 ) -> tuple[Path, bool] | None:
     if output_dir is None or _has_output_artifact_issue(report):
         return None
-    if report.blocking_issues():
-        write_questions(output_dir, report)
-    return write_user_decision_template(output_dir, recipe, report)
+    out = Path(output_dir).expanduser()
+    if not out.is_absolute():
+        out = Path.cwd() / out
+    out = Path(os.path.normpath(out))
+    with _plan_publication_lock(out):
+        locked_report = _guard_existing_outputs(
+            report,
+            plan_contract.blocked_plan_control_paths(out),
+            True,
+            root=out,
+        )
+        locked_report = _guard_existing_outputs(
+            locked_report,
+            plan_contract.pass_plan_control_paths(out),
+            _overwrite_policy(recipe),
+            root=out,
+            require_fresh="PASS plan artifacts already exist; doctor output requires a fresh --output-dir.",
+        )
+        if _has_output_artifact_issue(locked_report):
+            raise ValueError(locked_report.blocking_issues()[-1].message)
+        if report.blocking_issues():
+            write_questions(out, report)
+        return write_user_decision_template(out, recipe, report)
 
 
 def build_context(
@@ -758,38 +787,49 @@ def _materialize_adapter_plan(
         return report
     if defer_commit:
         return report
-    current_output_identity = None
-    if os.path.lexists(out):
-        output_stat = out.lstat()
-        current_output_identity = (output_stat.st_dev, output_stat.st_ino)
-    if current_output_identity != output_identity:
-        shutil.rmtree(write_out)
-        raise ValueError(f"Atomic plan output changed during preflight: {out}")
-    out_preexisted = current_output_identity is not None
-    if staging_dir is not None or generated_staging:
-        try:
-            _publish_materialized_plan(write_out, out, out_preexisted=out_preexisted)
-        except BaseException:
+    with _plan_publication_lock(out):
+        report = _guard_pass_plan_publication(
+            report,
+            recipe,
+            out,
+            unlock_final_test=unlock_final_test,
+        )
+        if _has_output_artifact_issue(report):
             if write_out.exists() and not write_out.is_symlink():
                 shutil.rmtree(write_out)
-            raise
-    try:
-        plan_adapter.commit_plan(out, preflight_validated=True)
-    except PlanRegistrationPreflightError as exc:
-        if not out_preexisted and out.exists() and not out.is_symlink():
-            shutil.rmtree(out)
-        return _append_issues(
-            report,
-            [
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "execution.preflight",
-                    str(exc),
-                    None,
-                    {"preflight_before_workspace": True},
-                )
-            ],
-        )
+            return report
+        current_output_identity = None
+        if os.path.lexists(out):
+            output_stat = out.lstat()
+            current_output_identity = (output_stat.st_dev, output_stat.st_ino)
+        if current_output_identity != output_identity:
+            shutil.rmtree(write_out)
+            raise ValueError(f"Atomic plan output changed during preflight: {out}")
+        out_preexisted = current_output_identity is not None
+        if staging_dir is not None or generated_staging:
+            try:
+                _publish_materialized_plan(write_out, out, out_preexisted=out_preexisted)
+            except BaseException:
+                if write_out.exists() and not write_out.is_symlink():
+                    shutil.rmtree(write_out)
+                raise
+        try:
+            plan_adapter.commit_plan(out, preflight_validated=True)
+        except PlanRegistrationPreflightError as exc:
+            if not out_preexisted and out.exists() and not out.is_symlink():
+                shutil.rmtree(out)
+            return _append_issues(
+                report,
+                [
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "execution.preflight",
+                        str(exc),
+                        None,
+                        {"preflight_before_workspace": True},
+                    )
+                ],
+            )
     return report
 
 
@@ -800,10 +840,13 @@ def _materialize_single_run_plan(
     report: DecisionReport,
     out: Path,
     write_out: Path,
+    output_identity: tuple[int, int] | None,
+    generated_staging: bool,
     staging_dir: str | Path | None,
     defer_commit: bool,
     plan_controller: str | None,
     run_index_offset: int | None,
+    unlock_final_test: bool,
     validated_config_bytes: bytes,
 ) -> DecisionReport:
     if staging_dir is None:
@@ -855,28 +898,52 @@ def _materialize_single_run_plan(
     (write_out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
     if defer_commit:
         return report
-    if staging_dir is not None:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        write_out.replace(out)
-    ensure_experiment_workspace(
-        recipe,
-        out,
-        plan_controller=plan_controller,
-        allow_published_plan=staging_dir is not None,
-    )
-    manifest_row = {
-        **run,
-        "parameter_summary": "single resolved recipe",
-    }
-    merge_run_manifest(
-        root,
-        [manifest_row],
-    )
-    append_event(
-        root,
-        "plan_created",
-        {"step_id": (recipe.get("step") or {}).get("id"), "plan_dir": str(out), "run_count": 1},
-    )
+    # Generic plans stay staged until the same locked publication gate as materialized hparam plans.
+    with _plan_publication_lock(out):
+        report = _guard_pass_plan_publication(
+            report,
+            recipe,
+            out,
+            unlock_final_test=unlock_final_test,
+        )
+        if _has_output_artifact_issue(report):
+            if write_out != out and write_out.exists() and not write_out.is_symlink():
+                shutil.rmtree(write_out)
+            return report
+        current_output_identity = None
+        if os.path.lexists(out):
+            output_stat = out.lstat()
+            current_output_identity = (output_stat.st_dev, output_stat.st_ino)
+        if current_output_identity != output_identity:
+            shutil.rmtree(write_out)
+            raise ValueError(f"Atomic plan output changed during preflight: {out}")
+        out_preexisted = current_output_identity is not None
+        if staging_dir is not None or generated_staging:
+            try:
+                _publish_materialized_plan(write_out, out, out_preexisted=out_preexisted)
+            except BaseException:
+                if write_out.exists() and not write_out.is_symlink():
+                    shutil.rmtree(write_out)
+                raise
+        ensure_experiment_workspace(
+            recipe,
+            out,
+            plan_controller=plan_controller,
+            allow_published_plan=staging_dir is not None or generated_staging,
+        )
+        manifest_row = {
+            **run,
+            "parameter_summary": "single resolved recipe",
+        }
+        merge_run_manifest(
+            root,
+            [manifest_row],
+        )
+        append_event(
+            root,
+            "plan_created",
+            {"step_id": (recipe.get("step") or {}).get("id"), "plan_dir": str(out), "run_count": 1},
+        )
     return report
 
 
@@ -947,19 +1014,29 @@ def build_plan(
         )
         if preflight_failed_before_workspace:
             return report
-        ensure_experiment_workspace(recipe, out, plan_controller=plan_controller)
-        write_questions(out, report)
-        template = write_user_decision_template(out, recipe, report)
-        template_path = template[0] if template is not None else None
-        write_text(
-            out / "plan.blocked.md",
-            context.blocked_plan_markdown(report, allow_unresolved, user_decisions_path=template_path),
-        )
-        if allow_unresolved and report.exit_code == 2:
-            write_json(
-                out / "plan.draft.json",
-                {"status": report.status.value, "recipe": recipe, "questions": questions_payload(report)},
+        with _plan_publication_lock(out):
+            report = _guard_blocked_plan_publication(
+                report,
+                recipe,
+                out,
+                allow_unresolved=allow_unresolved,
+                unlock_final_test=unlock_final_test,
             )
+            if _has_output_artifact_issue(report):
+                return report
+            ensure_experiment_workspace(recipe, out, plan_controller=plan_controller)
+            write_questions(out, report)
+            template = write_user_decision_template(out, recipe, report)
+            template_path = template[0] if template is not None else None
+            write_text(
+                out / "plan.blocked.md",
+                context.blocked_plan_markdown(report, allow_unresolved, user_decisions_path=template_path),
+            )
+            if allow_unresolved and report.exit_code == 2:
+                write_json(
+                    out / "plan.draft.json",
+                    {"status": report.status.value, "recipe": recipe, "questions": questions_payload(report)},
+                )
         return report
 
     root = experiment_root(recipe)
@@ -1026,7 +1103,7 @@ def build_plan(
     write_out = out
     generated_staging = False
     output_identity = None
-    if plan_adapter is not None and plan_adapter.materializes_plan and os.path.lexists(out):
+    if plan_adapter is not None and os.path.lexists(out):
         output_stat = out.lstat()
         output_identity = (output_stat.st_dev, output_stat.st_ino)
     if defer_commit and staging_dir is None:
@@ -1045,7 +1122,7 @@ def build_plan(
         if write_out.is_symlink() or write_out.exists():
             raise ValueError(f"Atomic plan staging directory must not exist: {write_out}")
         write_out.mkdir(parents=True)
-    elif plan_adapter is not None and plan_adapter.materializes_plan:
+    elif plan_adapter is not None:
         staging_parent = out.parent
         if os.path.lexists(out) and out.lstat().st_dev != out.parent.lstat().st_dev:
             # A plan may itself be a mount point, so its parent is not always the destination filesystem.
@@ -1078,10 +1155,13 @@ def build_plan(
             report=report,
             out=out,
             write_out=write_out,
+            output_identity=output_identity,
+            generated_staging=generated_staging,
             staging_dir=staging_dir,
             defer_commit=defer_commit,
             plan_controller=plan_controller,
             run_index_offset=run_index_offset,
+            unlock_final_test=unlock_final_test,
             validated_config_bytes=validated_config_bytes,
         )
 
@@ -1217,21 +1297,13 @@ def preflight_plan(
     successful_plan = report.exit_code == 0
     if successful_plan:
         plan_contract.bind_plan_context(recipe)
-    report = _guard_existing_outputs(
-        report,
-        _planned_plan_paths(recipe, out, report, allow_unresolved, unlock_final_test),
-        _overwrite_policy(recipe),
-        root=out,
-        allow_existing=allow_existing_output_artifacts,
-    )
     if successful_plan:
-        # Blocked bundles are human-editable evidence; reusing one would mix PASS and blocked envelopes.
-        report = _guard_existing_outputs(
+        report = _guard_pass_plan_publication(
             report,
-            plan_contract.blocked_plan_control_paths(out),
-            _overwrite_policy(recipe),
-            root=out,
-            require_fresh=True,
+            recipe,
+            out,
+            unlock_final_test=unlock_final_test,
+            allow_existing=allow_existing_output_artifacts,
         )
         root = experiment_root(recipe)
         if root is not None:
@@ -1242,6 +1314,15 @@ def preflight_plan(
                 root=root,
                 allow_existing=True,
             )
+    else:
+        report = _guard_blocked_plan_publication(
+            report,
+            recipe,
+            out,
+            allow_unresolved=allow_unresolved,
+            unlock_final_test=unlock_final_test,
+            allow_existing=allow_existing_output_artifacts,
+        )
     return recipe, cfg, report
 
 
@@ -1342,7 +1423,7 @@ def _guard_existing_outputs(
     *,
     root: Path,
     allow_existing: bool = False,
-    require_fresh: bool = False,
+    require_fresh: str | None = None,
 ) -> DecisionReport:
     try:
         exp_io.validate_managed_output_paths(root, paths)
@@ -1364,9 +1445,9 @@ def _guard_existing_outputs(
     existing = sorted(str(path) for path in paths if path.exists())
     if not existing:
         return report
-    if require_fresh:
+    if require_fresh is not None:
         status = DecisionStatus.FAIL
-        message = "Blocked plan artifacts already exist; retry with a fresh --output-dir."
+        message = require_fresh
         question = None
     elif overwrite_policy is True:
         return report
@@ -1378,6 +1459,9 @@ def _guard_existing_outputs(
         status = DecisionStatus.NEEDS_USER_INPUT
         message = "Output artifacts already exist and overwrite policy is not explicit."
         question = "Is overwriting existing agent-generated output files allowed for this task?"
+    evidence = {"existing_paths": existing}
+    if require_fresh is None:
+        evidence["user_decision_field"] = "overwrite_policy"
     return _append_issues(
         report,
         [
@@ -1386,9 +1470,61 @@ def _guard_existing_outputs(
                 "output_artifacts",
                 message,
                 question,
-                {"existing_paths": existing, "user_decision_field": "overwrite_policy"},
+                evidence,
             )
         ],
+    )
+
+
+def _guard_pass_plan_publication(
+    report: DecisionReport,
+    recipe: dict,
+    out: Path,
+    *,
+    unlock_final_test: bool,
+    allow_existing: bool = False,
+) -> DecisionReport:
+    planned_paths = _planned_plan_paths(recipe, out, report, False, unlock_final_test)
+    report = _guard_existing_outputs(
+        report,
+        planned_paths,
+        _overwrite_policy(recipe),
+        root=out,
+        allow_existing=allow_existing,
+    )
+    # Blocked bundles are human-editable evidence; reusing one would mix PASS and blocked envelopes.
+    return _guard_existing_outputs(
+        report,
+        plan_contract.blocked_plan_control_paths(out),
+        _overwrite_policy(recipe),
+        root=out,
+        require_fresh="Blocked plan artifacts already exist; retry with a fresh --output-dir.",
+    )
+
+
+def _guard_blocked_plan_publication(
+    report: DecisionReport,
+    recipe: dict,
+    out: Path,
+    *,
+    allow_unresolved: bool,
+    unlock_final_test: bool,
+    allow_existing: bool = False,
+) -> DecisionReport:
+    planned_paths = _planned_plan_paths(recipe, out, report, allow_unresolved, unlock_final_test)
+    report = _guard_existing_outputs(
+        report,
+        planned_paths,
+        _overwrite_policy(recipe),
+        root=out,
+        allow_existing=allow_existing,
+    )
+    return _guard_existing_outputs(
+        report,
+        plan_contract.pass_plan_control_paths(out),
+        _overwrite_policy(recipe),
+        root=out,
+        require_fresh="PASS plan artifacts already exist; retry with a fresh --output-dir.",
     )
 
 
