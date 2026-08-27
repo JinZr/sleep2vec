@@ -869,7 +869,12 @@ def _materialize_adapter_plan(
         out_preexisted = current_output_identity is not None
         if registration_state == "unregistered" and (staging_dir is not None or generated_staging):
             try:
-                publish_staged_plan_locked(write_out, out, out_preexisted=out_preexisted)
+                publish_staged_plan_locked(
+                    write_out,
+                    out,
+                    out_preexisted=out_preexisted,
+                    replace_unowned_plan=_is_unowned_published_plan(recipe, out),
+                )
             except BaseException:
                 if write_out.exists() and not write_out.is_symlink():
                     shutil.rmtree(write_out)
@@ -1004,7 +1009,12 @@ def _materialize_single_run_plan(
         out_preexisted = current_output_identity is not None
         if registration_state == "unregistered" and (staging_dir is not None or generated_staging):
             try:
-                publish_staged_plan_locked(write_out, out, out_preexisted=out_preexisted)
+                publish_staged_plan_locked(
+                    write_out,
+                    out,
+                    out_preexisted=out_preexisted,
+                    replace_unowned_plan=_is_unowned_published_plan(recipe, out),
+                )
             except BaseException:
                 if write_out.exists() and not write_out.is_symlink():
                     shutil.rmtree(write_out)
@@ -1313,7 +1323,13 @@ def _validate_published_pass_envelope(out: Path) -> None:
         raise ValueError(f"Published PASS plan contains blocked planning artifacts: {', '.join(blocked)}")
 
 
-def publish_staged_plan_locked(write_out: Path, out: Path, *, out_preexisted: bool) -> None:
+def publish_staged_plan_locked(
+    write_out: Path,
+    out: Path,
+    *,
+    out_preexisted: bool,
+    replace_unowned_plan: bool = False,
+) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     if not out_preexisted:
         write_out.replace(out)
@@ -1335,13 +1351,15 @@ def publish_staged_plan_locked(write_out: Path, out: Path, *, out_preexisted: bo
             if destination_runs.is_symlink() or not destination_runs.is_dir():
                 raise ValueError(f"Published plan runs path is not a physical directory: {destination_runs}")
             collisions = [name for name in run_names if os.path.lexists(destination_runs / name)]
-            if collisions:
+            if collisions and not replace_unowned_plan:
                 raise ValueError(f"Published run directories are immutable: {', '.join(collisions)}")
 
     backup_parent = out if write_out.parent == out else out.parent
     backup = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".backup", dir=backup_parent))
     plan_source_names = source_names - {"runs"}
     replaced_names = set(plan_source_names)
+    if replace_unowned_plan and "runs" in source_names:
+        replaced_names.add("runs")
     for optional_name in ("final_external_test.sh", "config.final_eval.yaml"):
         if optional_name not in plan_source_names:
             replaced_names.add(optional_name)

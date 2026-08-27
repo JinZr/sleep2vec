@@ -2466,8 +2466,20 @@ def test_single_run_plan_recovers_registered_plan_after_manifest_failure(tmp_pat
     assert len(created) == 1
 
 
-def test_single_run_plan_recovers_exact_unowned_publication(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("overwrite", [False, True])
+@pytest.mark.parametrize("mutate", [False, True], ids=["exact", "drifted"])
+def test_single_run_plan_handles_unowned_publication(
+    tmp_path: Path,
+    monkeypatch,
+    overwrite: bool,
+    mutate: bool,
+):
     recipe = write_finetune_recipe(tmp_path)
+    if overwrite:
+        payload = yaml.safe_load(recipe.read_text())
+        payload["artifacts"]["overwrite"] = True
+        payload["decisions"]["overwrite_policy"] = {"value": True, "source": "explicit_recipe"}
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plans" / "interrupted"
     real_publish = plans.publish_staged_plan_locked
 
@@ -2483,9 +2495,18 @@ def test_single_run_plan_recovers_exact_unowned_publication(tmp_path: Path, monk
     frozen_tree = run_artifacts.plan_tree_sha256(plan_dir)
     assert read_step_manifest(tmp_path, "unit-finetune", allow_missing=True) is None
     assert read_run_manifest(tmp_path) == []
+    if mutate:
+        next((plan_dir / "runs").glob("*/run.json")).write_text('{"tampered": true}\n')
+
+    if mutate and not overwrite:
+        with pytest.raises(ValueError, match="differs from deterministic regeneration"):
+            plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+        assert run_artifacts.plan_tree_sha256(plan_dir) != frozen_tree
+        assert read_step_manifest(tmp_path, "unit-finetune", allow_missing=True) is None
+        assert read_run_manifest(tmp_path) == []
+        return
 
     recovered = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
     assert recovered.exit_code == 0
     assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
     assert read_step_manifest(tmp_path, "unit-finetune")["plans"] == [str(plan_dir)]

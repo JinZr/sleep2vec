@@ -657,8 +657,20 @@ def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
     assert "Registered plan directories are immutable" in replay.blocking_issues()[0].message
 
 
-def test_hparam_plan_recovers_exact_unowned_publication(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("overwrite", [False, True])
+@pytest.mark.parametrize("mutate", [False, True], ids=["exact", "drifted"])
+def test_hparam_plan_handles_unowned_publication(
+    tmp_path: Path,
+    monkeypatch,
+    overwrite: bool,
+    mutate: bool,
+):
     recipe, workspace = _recipe(tmp_path)
+    if overwrite:
+        payload = yaml.safe_load(recipe.read_text())
+        payload["artifacts"] = {**payload.get("artifacts", {}), "overwrite": True}
+        payload["decisions"]["overwrite_policy"] = {"value": True, "source": "explicit_recipe"}
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = workspace / "plans" / "tune"
     monkeypatch.setattr(
         managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
@@ -677,9 +689,18 @@ def test_hparam_plan_recovers_exact_unowned_publication(tmp_path: Path, monkeypa
     frozen_tree = run_artifacts.plan_tree_sha256(plan_dir)
     assert read_run_manifest(workspace) == []
     assert not (workspace / "steps" / "unit-finetune" / "step.yaml").exists()
+    if mutate:
+        next((plan_dir / "runs").glob("*/run.json")).write_text('{"tampered": true}\n')
+
+    if mutate and not overwrite:
+        with pytest.raises(ValueError, match="differs from deterministic regeneration"):
+            plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+        assert run_artifacts.plan_tree_sha256(plan_dir) != frozen_tree
+        assert read_run_manifest(workspace) == []
+        assert not (workspace / "steps" / "unit-finetune" / "step.yaml").exists()
+        return
 
     recovered = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
     assert recovered.exit_code == 0
     assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
     assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000"]
@@ -850,6 +871,37 @@ def test_staged_plan_publish_rejects_existing_run_directory(tmp_path: Path):
 
     with pytest.raises(ValueError, match="Published run directories are immutable: run-000--unit"):
         plans.publish_staged_plan_locked(staging_dir, plan_dir, out_preexisted=True)
+
+    assert _workspace_files(tmp_path) == before
+    assert not list(tmp_path.rglob(".plan.*.backup"))
+
+
+def test_unowned_plan_replacement_failure_restores_existing_runs(tmp_path: Path, monkeypatch):
+    plan_dir = tmp_path / "plan"
+    staging_dir = tmp_path / ".plan.staging"
+    for root, marker in ((plan_dir, "old"), (staging_dir, "new")):
+        run_dir = root / "runs" / "run-000--unit"
+        run_dir.mkdir(parents=True)
+        (root / "plan.json").write_text(f'{{"plan": "{marker}"}}\n')
+        (root / "plan.md").write_text(f"{marker} plan\n")
+        (run_dir / "run.json").write_text(f'{{"run": "{marker}"}}\n')
+    before = _workspace_files(tmp_path)
+    real_replace = Path.replace
+
+    def fail_final_manifest(path, target):
+        if path == staging_dir / "plan.json":
+            raise OSError(errno.EIO, "injected final manifest failure")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_final_manifest)
+
+    with pytest.raises(OSError, match="injected final manifest failure"):
+        plans.publish_staged_plan_locked(
+            staging_dir,
+            plan_dir,
+            out_preexisted=True,
+            replace_unowned_plan=True,
+        )
 
     assert _workspace_files(tmp_path) == before
     assert not list(tmp_path.rglob(".plan.*.backup"))
