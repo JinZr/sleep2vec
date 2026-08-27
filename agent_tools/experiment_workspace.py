@@ -426,6 +426,11 @@ def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> d
     }
 
 
+def validate_step_registration(root: str | Path, incoming: dict[str, Any]) -> None:
+    existing = read_step_manifest(root, str(incoming["step"]["id"]), allow_missing=True)
+    merge_step_manifest(existing or {}, incoming)
+
+
 def _validated_step_manifest(text: str, path: Path, step_id: str) -> dict[str, Any]:
     payload = read_managed_yaml_mapping(text, source=f"Managed step manifest {path}")
     normalized = merge_step_manifest(payload, {})

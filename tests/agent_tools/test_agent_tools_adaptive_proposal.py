@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import threading
 
 import pytest
 import yaml
@@ -384,6 +385,127 @@ def test_agent_proposal_preview_is_read_only_and_execute_uses_bound_snapshot(tmp
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path)
 
 
+def test_agent_proposal_recovers_exact_published_unregistered_round(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    commit_plan = adaptive_hparam.plan_hparam.commit_hparam_plan
+    commit_calls = 0
+
+    def interrupt_first_commit(*args, **kwargs):
+        nonlocal commit_calls
+        commit_calls += 1
+        if commit_calls == 1:
+            raise RuntimeError("registration interrupted")
+        return commit_plan(*args, **kwargs)
+
+    def fake_launch(run_dir, *, dry_run=True):
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "launched"} for run in runs],
+        )
+        return Path(run_dir) / "launch_manifest.tsv"
+
+    monkeypatch.setattr(adaptive_hparam.plan_hparam, "commit_hparam_plan", interrupt_first_commit)
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+
+    with pytest.raises(RuntimeError, match="registration interrupted"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+    next_dir = workflow_dir / "adaptive" / "rounds" / "round_001"
+    accepted_path = workflow_dir / "adaptive" / "proposals" / "round_001.json"
+    suggestion_path = workflow_dir / "adaptive" / "suggestions" / "round_001.yaml"
+    frozen_bytes = {
+        "plan": (next_dir / "plan.json").read_bytes(),
+        "accepted": accepted_path.read_bytes(),
+        "suggestion": suggestion_path.read_bytes(),
+    }
+    assert [row["round"] for row in _read_table(workflow_dir / "adaptive" / "run_registry.tsv")] == ["0"]
+
+    adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+    assert (next_dir / "plan.json").read_bytes() == frozen_bytes["plan"]
+    assert accepted_path.read_bytes() == frozen_bytes["accepted"]
+    assert suggestion_path.read_bytes() == frozen_bytes["suggestion"]
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
+    assert [row["round"] for row in _read_table(workflow_dir / "adaptive" / "run_registry.tsv")] == ["0", "1"]
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("agent_proposal_accepted") == 1
+
+
+def test_concurrent_agent_proposal_execute_serializes_round_projections(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    stage_round = adaptive_hparam._stage_round
+    first_staging = threading.Event()
+    second_staging = threading.Event()
+    release_first = threading.Event()
+    state_lock = threading.Lock()
+    stage_calls = 0
+
+    def pause_first_stage(*args, **kwargs):
+        nonlocal stage_calls
+        with state_lock:
+            stage_calls += 1
+            call = stage_calls
+        if call == 1:
+            first_staging.set()
+            assert release_first.wait(timeout=10)
+        else:
+            second_staging.set()
+        return stage_round(*args, **kwargs)
+
+    def fake_launch(run_dir, *, dry_run=True):
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "launched"} for run in runs],
+        )
+        return Path(run_dir) / "launch_manifest.tsv"
+
+    monkeypatch.setattr(adaptive_hparam, "_stage_round", pause_first_stage)
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    results = []
+    errors = []
+
+    def execute():
+        try:
+            results.append(adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True))
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=execute)
+    second = threading.Thread(target=execute)
+    first.start()
+    assert first_staging.wait(timeout=10)
+    second.start()
+    try:
+        assert not second_staging.wait(timeout=0.5)
+    finally:
+        release_first.set()
+    first.join(timeout=30)
+    second.join(timeout=30)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert "round binding is stale" in str(errors[0])
+    assert stage_calls == 1
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("agent_proposal_accepted") == 1
+
+
 def test_agent_proposal_rejects_tampered_snapshot_before_acceptance(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
@@ -626,17 +748,6 @@ def test_agent_proposal_materializes_bound_recipe_and_config_bytes(tmp_path: Pat
         return real_write_round_recipe(*args, **kwargs)
 
     monkeypatch.setattr(adaptive_hparam, "_write_round_recipe", mutate_source_before_round_recipe)
-    real_append_event = adaptive_hparam._append_event
-
-    def mutate_suggestion_after_accept(root, event_type, payload):
-        real_append_event(root, event_type, payload)
-        if event_type == "agent_proposal_accepted":
-            suggestion = workflow_dir / "adaptive" / "suggestions" / "round_001.yaml"
-            suggestion_payload = yaml.safe_load(suggestion.read_text())
-            suggestion_payload["search"]["parameters"]["runtime.lr"] = [0.5]
-            suggestion.write_text(yaml.safe_dump(suggestion_payload, sort_keys=False))
-
-    monkeypatch.setattr(adaptive_hparam, "_append_event", mutate_suggestion_after_accept)
 
     def fake_launch(run_dir, *, dry_run=True):
         launch_manifest = Path(run_dir) / "launch_manifest.tsv"
@@ -660,8 +771,8 @@ def test_agent_proposal_materializes_bound_recipe_and_config_bytes(tmp_path: Pat
     round_recipe = yaml.safe_load((next_dir / "round_recipe.yaml").read_text())
     assert round_recipe["inputs"]["config"] == str(next_dir / "source_config.yaml")
     assert yaml.safe_load(config_path.read_text())["data"]["max_tokens"] == 999
-    tampered_suggestion = yaml.safe_load((workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").read_text())
-    assert tampered_suggestion["search"]["parameters"]["runtime.lr"] == [0.5]
+    suggestion = yaml.safe_load((workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").read_text())
+    assert suggestion["search"]["parameters"]["runtime.lr"] == [5e-7]
 
 
 def test_agent_proposal_rejects_frozen_config_replacement_inside_plan_builder(tmp_path: Path, monkeypatch):

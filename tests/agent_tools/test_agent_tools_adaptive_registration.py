@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from agent_tools import adaptive_hparam, hparam_runtime, managed_scheduler, manifests, plan_hparam, plans, run_artifacts
-from agent_tools.experiment_workspace import append_event, file_sha256, read_run_manifest
+from agent_tools.experiment_workspace import append_event, file_sha256, read_run_manifest, read_step_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _agent_recipe, _read_table, _run
 
@@ -94,6 +94,46 @@ def test_adaptive_init_creates_round_zero_without_modifying_original_recipe(tmp_
     assert "--no-test-after-fit" not in round_plan["runs"][0]["command"]
     assert (workflow_dir / "adaptive" / "run_registry.tsv").exists()
     assert "adaptive_init" in (tmp_path / "events.jsonl").read_text()
+
+
+def test_adaptive_init_rejects_recipe_root_change_after_lock_selection(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    changed_root = tmp_path / "changed-root"
+    workflow_dir = changed_root / "workflow"
+    original_lock = adaptive_hparam.plan_registration_lock
+
+    @contextmanager
+    def mutate_recipe_after_lock(root):
+        with original_lock(root):
+            payload = yaml.safe_load(recipe.read_text())
+            payload["experiment"]["root"] = str(changed_root)
+            recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+            yield
+
+    monkeypatch.setattr(adaptive_hparam, "plan_registration_lock", mutate_recipe_after_lock)
+
+    with pytest.raises(ValueError, match="experiment.root changed while acquiring"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+
+    assert not workflow_dir.exists()
+    assert not (changed_root / "experiment.yaml").exists()
+
+
+def test_adaptive_step_rejects_source_workspace_drift(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workflow_dir)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    (workflow_dir / "experiment.yaml").write_text(
+        yaml.safe_dump({"experiment": payload["experiment"]}, sort_keys=False)
+    )
+    (workflow_dir / "run_manifest.tsv").write_text("step_id\trun_id\n")
+
+    with pytest.raises(ValueError, match="differs from the frozen workflow workspace"):
+        adaptive_hparam.adaptive_step(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").exists()
 
 
 def test_adaptive_workflow_commit_accepts_relative_round_path(tmp_path: Path, monkeypatch):
@@ -292,7 +332,7 @@ def test_concurrent_adaptive_recoveries_publish_single_registration(tmp_path: Pa
         return original_replace(path, text, expected_sha256, **kwargs)
 
     monkeypatch.setattr(adaptive_hparam.exp_io, "conditional_atomic_replace_text_at", count_registry_write)
-    original_lock = adaptive_hparam.plan_publication_lock
+    original_lock = adaptive_hparam.plan_registration_lock
     first_locked = threading.Event()
     second_attempted = threading.Event()
     release_first = threading.Event()
@@ -302,13 +342,13 @@ def test_concurrent_adaptive_recoveries_publish_single_registration(tmp_path: Pa
     max_active_holders = 0
 
     @contextmanager
-    def observe_lock(out):
+    def observe_lock(root):
         nonlocal lock_attempts, active_holders, max_active_holders
         with state_lock:
             lock_attempts += 1
             if lock_attempts == 2:
                 second_attempted.set()
-        with original_lock(out):
+        with original_lock(root):
             with state_lock:
                 active_holders += 1
                 max_active_holders = max(max_active_holders, active_holders)
@@ -322,7 +362,7 @@ def test_concurrent_adaptive_recoveries_publish_single_registration(tmp_path: Pa
                 with state_lock:
                     active_holders -= 1
 
-    monkeypatch.setattr(adaptive_hparam, "plan_publication_lock", observe_lock)
+    monkeypatch.setattr(adaptive_hparam, "plan_registration_lock", observe_lock)
     errors = []
 
     def recover():
@@ -354,22 +394,85 @@ def test_concurrent_adaptive_recoveries_publish_single_registration(tmp_path: Pa
     assert not list(round_dir.parent.glob(".*.staging"))
 
 
+def test_adaptive_init_waits_for_ordinary_registration_owner(tmp_path: Path, monkeypatch):
+    adaptive_recipe = _adaptive_recipe(tmp_path)
+    adaptive_payload = yaml.safe_load(adaptive_recipe.read_text())
+    ordinary_recipe = Path(adaptive_payload["base_recipe"])
+    adaptive_payload["step"] = yaml.safe_load(ordinary_recipe.read_text())["step"]
+    adaptive_recipe.write_text(yaml.safe_dump(adaptive_payload, sort_keys=False))
+    ordinary_plan = tmp_path / "plans" / "ordinary"
+    workflow_dir = tmp_path / "workflow"
+    ordinary_holding = threading.Event()
+    release_ordinary = threading.Event()
+    adaptive_staging = threading.Event()
+    original_check = plans._assert_no_incomplete_step_registration
+    original_stage = adaptive_hparam._stage_round
+
+    def pause_ordinary(recipe, out):
+        if out == ordinary_plan:
+            ordinary_holding.set()
+            if not release_ordinary.wait(timeout=10):
+                raise AssertionError("ordinary planner was not released")
+        return original_check(recipe, out)
+
+    def observe_adaptive_stage(*args, **kwargs):
+        adaptive_staging.set()
+        return original_stage(*args, **kwargs)
+
+    monkeypatch.setattr(plans, "_assert_no_incomplete_step_registration", pause_ordinary)
+    monkeypatch.setattr(adaptive_hparam, "_stage_round", observe_adaptive_stage)
+    ordinary_reports = []
+    ordinary_errors = []
+    adaptive_errors = []
+
+    def run_ordinary():
+        try:
+            ordinary_reports.append(plans.build_plan(recipe_path=ordinary_recipe, output_dir=ordinary_plan))
+        except BaseException as exc:
+            ordinary_errors.append(exc)
+
+    def run_adaptive():
+        try:
+            adaptive_hparam.init_adaptive_workflow(adaptive_recipe, workflow_dir)
+        except BaseException as exc:
+            adaptive_errors.append(exc)
+
+    ordinary = threading.Thread(target=run_ordinary)
+    adaptive = threading.Thread(target=run_adaptive)
+    ordinary.start()
+    assert ordinary_holding.wait(timeout=10)
+    adaptive.start()
+    try:
+        assert not adaptive_staging.wait(timeout=0.5)
+    finally:
+        release_ordinary.set()
+    ordinary.join(timeout=30)
+    adaptive.join(timeout=30)
+
+    assert not ordinary_errors
+    assert ordinary_reports[0].exit_code == 0
+    assert len(adaptive_errors) == 1
+    assert "plan_controller differs" in str(adaptive_errors[0])
+    assert len(read_run_manifest(tmp_path)) == 1
+    assert read_step_manifest(tmp_path, adaptive_payload["step"]["id"])["plan_controller"] == "ordinary"
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_000").exists()
+    assert not (workflow_dir / "adaptive" / "workflow.json").exists()
+
+
 def test_concurrent_fresh_adaptive_initializations_are_idempotent(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
     original_stage = adaptive_hparam._stage_round
-    stage_barrier = threading.Barrier(2)
     staged_dirs = []
 
-    def synchronize_staging(*args, **kwargs):
+    def count_staging(*args, **kwargs):
         staged = original_stage(*args, **kwargs)
         staged_dirs.append(staged)
-        stage_barrier.wait(timeout=30)
         return staged
 
-    monkeypatch.setattr(adaptive_hparam, "_stage_round", synchronize_staging)
+    monkeypatch.setattr(adaptive_hparam, "_stage_round", count_staging)
     original_publish = adaptive_hparam.publish_staged_plan_locked
     publications = 0
 
@@ -409,8 +512,7 @@ def test_concurrent_fresh_adaptive_initializations_are_idempotent(tmp_path: Path
     assert not second.is_alive()
     assert errors == []
     assert results == [workflow_dir, workflow_dir]
-    assert len(staged_dirs) == 2
-    assert staged_dirs[0] != staged_dirs[1]
+    assert len(staged_dirs) == 1
     assert publications == 1
     assert registry_writes == 1
     assert len(read_run_manifest(tmp_path)) == 1
@@ -427,6 +529,7 @@ def test_concurrent_adaptive_init_rechecks_publication_after_preflight(tmp_path:
     workflow_dir = tmp_path / "workflow"
     original_preflight = adaptive_hparam.preflight_plan
     first_waiting = threading.Event()
+    second_preflight = threading.Event()
     release_first = threading.Event()
     state_lock = threading.Lock()
     preflight_calls = 0
@@ -440,29 +543,36 @@ def test_concurrent_adaptive_init_rechecks_publication_after_preflight(tmp_path:
         if first_call:
             first_waiting.set()
             assert release_first.wait(timeout=30)
+        else:
+            second_preflight.set()
         return original_preflight(**kwargs)
 
     monkeypatch.setattr(adaptive_hparam, "preflight_plan", pause_first_preflight)
     results = []
     errors = []
 
-    def initialize_first():
+    def initialize():
         try:
             results.append(adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir))
         except BaseException as exc:
             errors.append(exc)
 
-    first = threading.Thread(target=initialize_first)
+    first = threading.Thread(target=initialize)
     first.start()
     assert first_waiting.wait(timeout=30)
-    second_result = adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
-    release_first.set()
+    second = threading.Thread(target=initialize)
+    second.start()
+    try:
+        assert not second_preflight.wait(timeout=0.5)
+    finally:
+        release_first.set()
     first.join(timeout=60)
+    second.join(timeout=60)
 
     assert not first.is_alive()
+    assert not second.is_alive()
     assert errors == []
-    assert results == [workflow_dir]
-    assert second_result == workflow_dir
+    assert results == [workflow_dir, workflow_dir]
     assert preflight_calls == 2
     assert len(read_run_manifest(tmp_path)) == 1
     assert len(_read_table(workflow_dir / "adaptive" / "run_registry.tsv")) == 1
@@ -550,7 +660,7 @@ def test_adaptive_consumers_reject_marker_before_ready_event(tmp_path: Path, mon
     workflow_dir = tmp_path / "workflow"
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     workflow_path = workflow_dir / "adaptive" / "workflow.json"
-    original_reconcile = adaptive_hparam._reconcile_initial_event
+    original_reconcile = adaptive_hparam._reconcile_event
     marker_published = threading.Event()
     release_initializer = threading.Event()
     errors = []
@@ -566,7 +676,7 @@ def test_adaptive_consumers_reject_marker_before_ready_event(tmp_path: Path, mon
             identity_field=identity_field,
         )
 
-    monkeypatch.setattr(adaptive_hparam, "_reconcile_initial_event", pause_ready_event)
+    monkeypatch.setattr(adaptive_hparam, "_reconcile_event", pause_ready_event)
 
     def initialize():
         try:
@@ -684,7 +794,7 @@ def test_adaptive_init_rejects_preexisting_event_conflicts_before_registration(t
             "run_count": 99 if conflict == "plan" else 1,
         }
         expected = (
-            "conflicts with adaptive initialization: plan_created"
+            "event history conflicts: plan_created"
             if conflict == "plan"
             else "exists before canonical registration"
         )
@@ -733,7 +843,7 @@ def test_adaptive_init_rejects_event_payload_type_changes(
     events_path.write_text("".join(json.dumps(event, sort_keys=True) + "\n" for event in events))
     events_before = events_path.read_bytes()
 
-    with pytest.raises(ValueError, match=f"conflicts with adaptive initialization: {event_type}"):
+    with pytest.raises(ValueError, match=f"event history conflicts: {event_type}"):
         adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
 
     assert events_path.read_bytes() == events_before
