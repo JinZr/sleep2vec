@@ -26,12 +26,17 @@ from .experiment_workspace import (
     append_event,
     canonical_local_experiment_root,
     commit_step_manifest,
+    event_matches,
     file_sha256,
     managed_run_key,
     merge_run_manifest,
     next_run_index,
+    plan_registration_lock,
+    plan_registration_rows_state,
+    read_experiment_events,
     read_managed_yaml_mapping,
     read_run_manifest,
+    validate_step_registration,
 )
 from .hparam_runtime import monitor_hparam_runs
 from .hparam_selection import select_hparam_candidates
@@ -52,6 +57,10 @@ class RetryPreparationError(RuntimeError):
 
 
 class AttemptRegistrationPreflightError(RuntimeError):
+    pass
+
+
+class PipelineRegistrationRecoveryError(RuntimeError):
     pass
 
 
@@ -180,8 +189,9 @@ def run_experiment_pipeline(
         else:
             staging_dir = pipeline_dir.parent / f".{pipeline_id}.{os.getpid()}.{time.time_ns()}.staging"
             staging_dir.mkdir()
-            _freeze_pipeline(root, staging_dir, spec_file, source_text, spec)
-            os.replace(staging_dir, pipeline_dir)
+            with plan_registration_lock(root):
+                _freeze_pipeline(root, staging_dir, spec_file, source_text, spec)
+                os.replace(staging_dir, pipeline_dir)
         try:
             return _execute_pipeline(
                 root,
@@ -190,6 +200,8 @@ def run_experiment_pipeline(
                 poll_seconds=poll_seconds,
                 finalize_callback=finalize_callback,
             )
+        except PipelineRegistrationRecoveryError:
+            raise
         except Exception as exc:
             state = read_json(pipeline_dir / "pipeline.json")
             if state.get("status") not in {"blocked", "completed"}:
@@ -886,39 +898,93 @@ def _load_or_create_initial_attempts(
         variant: pipeline_dir if len(initial_variants) == 1 else pipeline_dir / "initial_schedulers" / variant
         for variant in initial_variants
     }
-    prepared = _prepare_attempt_registration_groups(
-        root,
-        spec,
-        recipes,
-        snapshot_owner_dirs=snapshot_owner_dirs,
-    )
-    try:
-        for job, selection, attempt, recipe_path, plan_dir, result_root in pending:
-            row = _materialize_attempt(
-                root,
-                spec,
-                job,
-                selection,
-                attempt,
-                recipe_path=recipe_path,
-                plan_dir=plan_dir,
-                result_root=result_root,
-                prepared_staging_dir=prepared[job["id"]],
-            )
-            attempt_rows.append(row)
-            _write_jobs(jobs_path, attempt_rows)
-    finally:
-        for staging_dir in prepared.values():
-            if staging_dir is not None and staging_dir.exists() and not staging_dir.is_symlink():
-                shutil.rmtree(staging_dir)
-    _validate_attempt_rows(root, pipeline_dir, spec, selections, attempt_rows)
-    if len(existing) != len(spec["jobs"]):
-        append_event(
+    with plan_registration_lock(root):
+        prepared = _prepare_attempt_registration_groups(
             root,
-            "pipeline_jobs_planned",
-            {"pipeline_id": spec["pipeline"]["id"], "job_count": len(spec["jobs"])},
+            spec,
+            recipes,
+            snapshot_owner_dirs=snapshot_owner_dirs,
         )
+        try:
+            for job, selection, attempt, recipe_path, plan_dir, result_root in pending:
+                row = _materialize_attempt(
+                    root,
+                    spec,
+                    job,
+                    selection,
+                    attempt,
+                    recipe_path=recipe_path,
+                    plan_dir=plan_dir,
+                    result_root=result_root,
+                    prepared_plan_dir=prepared[job["id"]],
+                )
+                attempt_rows.append(row)
+                _write_jobs(jobs_path, attempt_rows)
+        finally:
+            plan_dirs = {job["id"]: plan_dir for job, _selection, _attempt, _recipe, plan_dir, _result in recipes}
+            for job_id, physical_plan_dir in prepared.items():
+                if (
+                    physical_plan_dir != plan_dirs[job_id]
+                    and physical_plan_dir.exists()
+                    and not physical_plan_dir.is_symlink()
+                ):
+                    shutil.rmtree(physical_plan_dir)
+        _validate_attempt_rows(root, pipeline_dir, spec, selections, attempt_rows)
+        _reconcile_pipeline_jobs_planned_event(root, spec)
     return attempt_rows
+
+
+def _reconcile_pipeline_jobs_planned_event(root: Path, spec: dict[str, Any]) -> None:
+    payload = {"pipeline_id": spec["pipeline"]["id"], "job_count": len(spec["jobs"])}
+    _reconcile_pipeline_event(root, "pipeline_jobs_planned", payload, identity_fields=("pipeline_id",))
+
+
+def _reconcile_pipeline_retry_planned_event(root: Path, spec: dict[str, Any], attempt: dict[str, Any]) -> None:
+    payload = {
+        "pipeline_id": spec["pipeline"]["id"],
+        "job_id": str(attempt["job_id"]),
+        "attempt": int(attempt["attempt"]),
+    }
+    _reconcile_pipeline_event(
+        root,
+        "pipeline_job_retry_planned",
+        payload,
+        identity_fields=("pipeline_id", "job_id", "attempt"),
+    )
+
+
+def _reconcile_pipeline_event(
+    root: Path,
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    identity_fields: tuple[str, ...],
+) -> None:
+    def related_events() -> list[dict[str, Any]]:
+        return [
+            event
+            for event in read_experiment_events(root)
+            if event.get("event_type") == event_type
+            and all(event.get(field) == payload[field] for field in identity_fields)
+        ]
+
+    try:
+        related = related_events()
+    except (OSError, RuntimeError) as exc:
+        raise PipelineRegistrationRecoveryError(f"Pipeline {event_type} event must be reconciled on resume.") from exc
+    exact = [event for event in related if event_matches(event, event_type, payload)]
+    if len(related) != len(exact) or len(exact) > 1:
+        raise ValueError(f"Pipeline {event_type} event conflicts with canonical registration.")
+    if exact:
+        return
+    try:
+        append_event(root, event_type, payload)
+        related = related_events()
+    except (OSError, RuntimeError) as exc:
+        raise PipelineRegistrationRecoveryError(f"Pipeline {event_type} event must be reconciled on resume.") from exc
+    exact = [event for event in related if event_matches(event, event_type, payload)]
+    if len(related) != 1 or len(exact) != 1:
+        raise ValueError(f"Pipeline {event_type} event was not committed exactly once.")
 
 
 def _ensure_initial_preflight(
@@ -998,7 +1064,7 @@ def _materialize_attempt(
     recipe_path: Path,
     plan_dir: Path,
     result_root: Path,
-    prepared_staging_dir: Path | None = None,
+    prepared_plan_dir: Path | None = None,
 ) -> dict[str, Any]:
     # The plan envelope and its canonical ownership must become visible under one publication lock.
     with plan_publication_lock(plan_dir):
@@ -1011,7 +1077,7 @@ def _materialize_attempt(
             recipe_path=recipe_path,
             plan_dir=plan_dir,
             result_root=result_root,
-            prepared_staging_dir=prepared_staging_dir,
+            prepared_plan_dir=prepared_plan_dir,
         )
 
 
@@ -1025,34 +1091,27 @@ def _materialize_attempt_locked(
     recipe_path: Path,
     plan_dir: Path,
     result_root: Path,
-    prepared_staging_dir: Path | None = None,
+    prepared_plan_dir: Path | None = None,
 ) -> dict[str, Any]:
     _validate_new_attempt_paths(plan_dir, result_root, allow_existing_plan=True)
     plan_path = plan_dir / "plan.json"
     if plan_dir.exists() and not plan_path.exists():
         raise ValueError(f"External attempt plan is incomplete: {plan_dir}")
+    physical_plan_dir = prepared_plan_dir
+    staging_dir = None
+    if physical_plan_dir is None:
+        physical_plan_dir, staging_dir = _prepare_attempt_plan(job["id"], selection, recipe_path, plan_dir)
+    elif physical_plan_dir != plan_dir:
+        staging_dir = physical_plan_dir
+        if plan_dir.exists():
+            raise ValueError(f"External attempt plan appeared after registration preflight: {plan_dir}")
 
-    plan = read_json(plan_path) if plan_path.exists() else None
-    runs = plan.get("runs") if isinstance(plan, dict) else None
-    run = dict(runs[0]) if isinstance(runs, list) and len(runs) == 1 and isinstance(runs[0], dict) else None
-    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(root)}
-    canonical = canonical_by_key.get(managed_run_key(run)) if run is not None else None
-    if canonical is None:
-        if prepared_staging_dir is not None:
-            if plan_dir.exists():
-                raise ValueError(f"External attempt plan appeared after registration preflight: {plan_dir}")
-            publish_staged_plan_locked(prepared_staging_dir, plan_dir, out_preexisted=False)
-        else:
-            _physical_plan_dir, staging_dir = _prepare_attempt_plan(job["id"], selection, recipe_path, plan_dir)
-            if staging_dir is not None:
-                publish_staged_plan_locked(staging_dir, plan_dir, out_preexisted=False)
-        plan = read_json(plan_path)
+    plan = read_json(physical_plan_dir / "plan.json")
     runs = plan.get("runs") if isinstance(plan, dict) else None
     if not isinstance(runs, list) or len(runs) != 1 or not isinstance(runs[0], dict):
-        raise ValueError(f"External job plan must contain exactly one managed run: {plan_dir}")
+        raise ValueError(f"External job plan must contain exactly one managed run: {physical_plan_dir}")
     run = dict(runs[0])
     base_run = {field: value for field, value in run.items() if field != "command"}
-    _validate_physical_attempt_plan(spec, job, selection, recipe_path, plan_dir, base_run)
     enrichment = {
         "step_id": run["step_id"],
         "run_id": run["run_id"],
@@ -1062,6 +1121,35 @@ def _materialize_attempt_locked(
         "result_root": str(result_root),
         "terminal_status_owner": "script",
     }
+    registration_row = {**base_run, "parameter_summary": "single resolved recipe", **enrichment}
+    registration_state = plan_registration_rows_state(
+        root,
+        [registration_row],
+        source="Canonical pipeline attempt",
+    )
+    if staging_dir is not None and registration_state == "present":
+        raise ValueError(f"Canonical external attempt exists before plan publication: {plan_dir}")
+    plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    step_payload = {
+        "step": plan_recipe["step"],
+        "experiment_id": plan_recipe["experiment"]["id"],
+        "plan_controller": "pipeline",
+        "recipe_path": plan_recipe.get("_recipe_path", ""),
+        "plans": [str(plan_dir.resolve())],
+    }
+    validate_step_registration(root, step_payload)
+    _validate_physical_attempt_plan(
+        spec,
+        job,
+        selection,
+        recipe_path,
+        plan_dir,
+        physical_plan_dir,
+        base_run,
+    )
+    if staging_dir is not None:
+        publish_staged_plan_locked(staging_dir, plan_dir, out_preexisted=False)
+
     canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(root)}
     canonical = canonical_by_key.get(managed_run_key(run))
     if canonical is not None:
@@ -1069,22 +1157,9 @@ def _materialize_attempt_locked(
             {"step_id": run["step_id"], "run_id": run["run_id"], "recipe": str(recipe_path), "plan_dir": str(plan_dir)},
             canonical,
         )
-    plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     # Publish pipeline ownership before its row so a crash cannot expose the attempt as an ordinary launch candidate.
-    commit_step_manifest(
-        root,
-        {
-            "step": plan_recipe["step"],
-            "experiment_id": plan_recipe["experiment"]["id"],
-            "plan_controller": "pipeline",
-            "recipe_path": plan_recipe.get("_recipe_path", ""),
-            "plans": [str(plan_dir.resolve())],
-        },
-    )
-    if canonical is None:
-        update = {**base_run, "parameter_summary": "single resolved recipe", **enrichment}
-    else:
-        update = enrichment
+    commit_step_manifest(root, step_payload)
+    update = registration_row if canonical is None else enrichment
     committed = merge_run_manifest(root, [update])
     canonical = {managed_run_key(row): row for row in committed}[managed_run_key(run)]
     projection = _attempt_projection(job, selection, canonical, recipe_path=recipe_path, plan_dir=plan_dir)
@@ -1098,8 +1173,8 @@ def _prepare_attempt_registration_groups(
     attempts: list[tuple[dict[str, Any], dict[str, Any], int, Path, Path, Path]],
     *,
     snapshot_owner_dirs: dict[str, Path],
-) -> dict[str, Path | None]:
-    prepared: dict[str, Path | None] = {}
+) -> dict[str, Path]:
+    prepared: dict[str, Path] = {}
     groups: dict[str, list[dict[str, Any]]] = {}
     group_paths: dict[str, list[Path]] = {}
     canonical_keys = {managed_run_key(row) for row in read_run_manifest(root)}
@@ -1111,7 +1186,7 @@ def _prepare_attempt_registration_groups(
         runs = plan.get("runs") if isinstance(plan, dict) else None
         run = runs[0] if isinstance(runs, list) and len(runs) == 1 and isinstance(runs[0], dict) else None
         if run is not None and managed_run_key(run) in canonical_keys:
-            prepared[job["id"]] = None
+            prepared[job["id"]] = plan_dir
         else:
             pending.append(item)
 
@@ -1132,14 +1207,14 @@ def _prepare_attempt_registration_groups(
                 continue
             if job["id"] in pending_job_ids:
                 _validate_new_attempt_paths(plan_dir, result_root, allow_existing_plan=True)
-                physical_plan_dir, staging_dir = _prepare_attempt_plan(
+                physical_plan_dir, _ = _prepare_attempt_plan(
                     job["id"],
                     selection,
                     recipe_path,
                     plan_dir,
                     run_index_offset=pending_run_indices[job["id"]],
                 )
-                prepared[job["id"]] = staging_dir
+                prepared[job["id"]] = physical_plan_dir
                 group_paths.setdefault(variant, []).extend([plan_dir / "plan.json", result_root])
             else:
                 # A resumed registration must compare the complete scheduler group with its frozen snapshot.
@@ -1184,9 +1259,14 @@ def _prepare_attempt_registration_groups(
                 raise ValueError(f"Frozen pipeline execution snapshot changed: {snapshot_path}")
         return prepared
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
-        for staging_dir in prepared.values():
-            if staging_dir is not None and staging_dir.exists() and not staging_dir.is_symlink():
-                shutil.rmtree(staging_dir)
+        plan_dirs = {job["id"]: plan_dir for job, _selection, _attempt, _recipe, plan_dir, _result in attempts}
+        for job_id, physical_plan_dir in prepared.items():
+            if (
+                physical_plan_dir != plan_dirs[job_id]
+                and physical_plan_dir.exists()
+                and not physical_plan_dir.is_symlink()
+            ):
+                shutil.rmtree(physical_plan_dir)
         raise AttemptRegistrationPreflightError(f"External attempt registration preflight failed: {exc}") from exc
 
 
@@ -1196,6 +1276,7 @@ def _validate_physical_attempt_plan(
     selection: dict[str, Any],
     recipe_path: Path,
     plan_dir: Path,
+    physical_plan_dir: Path,
     run: dict[str, Any],
 ) -> None:
     expected = {
@@ -1216,11 +1297,13 @@ def _validate_physical_attempt_plan(
     for field, value in expected_paths.items():
         if Path(str(run.get(field) or "")) != value:
             raise ValueError(f"External attempt plan path differs from its managed directory: {field}")
-    if file_sha256(run["config"]) != selection["config_sha256"]:
+    physical_config = artifacts._physical_plan_path(Path(run["config"]), plan_dir, physical_plan_dir)
+    if file_sha256(physical_config) != selection["config_sha256"]:
         raise ValueError(f"External attempt config differs from its selected source: {job['id']}")
     _validate_attempt_plan(
         {"step_id": run["step_id"], "run_id": run["run_id"], "recipe": str(recipe_path), "plan_dir": str(plan_dir)},
         run,
+        physical_plan_dir=physical_plan_dir,
     )
 
 
@@ -1405,15 +1488,18 @@ def _validate_attempt_rows(
         raise ValueError("Pipeline job has multiple verified successful attempts.")
 
 
-def _validate_attempt_plan(row: dict[str, Any], canonical_run: dict[str, Any]) -> None:
+def _validate_attempt_plan(
+    row: dict[str, Any], canonical_run: dict[str, Any], *, physical_plan_dir: Path | None = None
+) -> None:
     recipe_path = Path(str(row["recipe"]))
     plan_dir = Path(str(row["plan_dir"]))
-    plan_path = plan_dir / "plan.json"
-    resolved_recipe_path = plan_dir / "recipe.resolved.yaml"
+    physical_plan_dir = plan_dir if physical_plan_dir is None else physical_plan_dir
+    plan_path = physical_plan_dir / "plan.json"
+    resolved_recipe_path = physical_plan_dir / "recipe.resolved.yaml"
     if recipe_path.is_symlink() or not recipe_path.is_file():
         raise ValueError(f"Pipeline attempt recipe is missing or aliased: {recipe_path}")
-    if plan_dir.is_symlink() or not plan_dir.is_dir():
-        raise ValueError(f"Pipeline attempt plan directory is missing or aliased: {plan_dir}")
+    if physical_plan_dir.is_symlink() or not physical_plan_dir.is_dir():
+        raise ValueError(f"Pipeline attempt plan directory is missing or aliased: {physical_plan_dir}")
     for path in (plan_path, resolved_recipe_path):
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"Pipeline attempt plan artifact is missing or aliased: {path}")
@@ -1444,13 +1530,19 @@ def _validate_attempt_plan(row: dict[str, Any], canonical_run: dict[str, Any]) -
             raise ValueError(f"Pipeline attempt plan field drifted: {field}")
     for path_field, hash_field in (("config", "config_sha256"), ("script", "script_sha256")):
         path = Path(str(canonical_run.get(path_field) or ""))
-        if path.is_symlink() or not path.is_file() or file_sha256(path) != canonical_run.get(hash_field):
-            raise ValueError(f"Pipeline attempt {path_field} changed: {path}")
+        physical_path = artifacts._physical_plan_path(path, plan_dir, physical_plan_dir)
+        if (
+            physical_path.is_symlink()
+            or not physical_path.is_file()
+            or file_sha256(physical_path) != canonical_run.get(hash_field)
+        ):
+            raise ValueError(f"Pipeline attempt {path_field} changed: {physical_path}")
         try:
             path.relative_to(plan_dir)
         except ValueError as exc:
             raise ValueError(f"Pipeline attempt {path_field} is outside its plan: {path}") from exc
-    if commands[0] not in Path(str(canonical_run["script"])).read_text().splitlines():
+    physical_script = artifacts._physical_plan_path(Path(str(canonical_run["script"])), plan_dir, physical_plan_dir)
+    if commands[0] not in physical_script.read_text().splitlines():
         raise ValueError(f"Pipeline attempt command drifted: {plan_path}")
     source_recipe = read_managed_yaml_mapping(recipe_path.read_text(), source=f"Pipeline recipe {recipe_path}")
     resolved_recipe = read_managed_yaml_mapping(
@@ -1670,6 +1762,9 @@ def _create_needed_retries(
 ) -> tuple[list[dict[str, Any]], bool]:
     created = False
     state_changed = False
+    for row in attempts:
+        if int(row["attempt"]) > 1:
+            _reconcile_pipeline_retry_planned_event(root, spec, row)
     canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
     by_job: dict[str, list[dict[str, Any]]] = {}
     for row in attempts:
@@ -1736,40 +1831,45 @@ def _create_needed_retries(
         _write_jobs(pipeline_dir / "jobs.tsv", attempts)
 
     for latest, job, selection, attempt, recipe_path, plan_dir, result_root in ready:
-        staging_dir = None
+        physical_plan_dir = None
         try:
-            prepared = _prepare_attempt_registration_groups(
-                root,
-                spec,
-                [(job, selection, attempt, recipe_path, plan_dir, result_root)],
-                snapshot_owner_dirs={str(selection["variant"]): pipeline_dir / "retry_schedulers" / job["id"]},
-            )
-            staging_dir = prepared[job["id"]]
-            retry_row = _materialize_attempt(
-                root,
-                spec,
-                job,
-                selection,
-                attempt,
-                recipe_path=recipe_path,
-                plan_dir=plan_dir,
-                result_root=result_root,
-                prepared_staging_dir=staging_dir,
-            )
-        except RuntimeError as exc:
-            latest["retry_preparation_error"] = str(exc)
-            _write_jobs(pipeline_dir / "jobs.tsv", attempts)
-            continue
+            with plan_registration_lock(root):
+                try:
+                    prepared = _prepare_attempt_registration_groups(
+                        root,
+                        spec,
+                        [(job, selection, attempt, recipe_path, plan_dir, result_root)],
+                        snapshot_owner_dirs={
+                            str(selection["variant"]): pipeline_dir / "retry_schedulers" / job["id"]
+                        },
+                    )
+                    physical_plan_dir = prepared[job["id"]]
+                except AttemptRegistrationPreflightError as exc:
+                    latest["retry_preparation_error"] = str(exc)
+                    _write_jobs(pipeline_dir / "jobs.tsv", attempts)
+                    continue
+                retry_row = _materialize_attempt(
+                    root,
+                    spec,
+                    job,
+                    selection,
+                    attempt,
+                    recipe_path=recipe_path,
+                    plan_dir=plan_dir,
+                    result_root=result_root,
+                    prepared_plan_dir=physical_plan_dir,
+                )
+                attempts.append(retry_row)
+                _write_jobs(pipeline_dir / "jobs.tsv", attempts)
+                _reconcile_pipeline_retry_planned_event(root, spec, retry_row)
         finally:
-            if staging_dir is not None and staging_dir.exists() and not staging_dir.is_symlink():
-                shutil.rmtree(staging_dir)
-        attempts.append(retry_row)
-        _write_jobs(pipeline_dir / "jobs.tsv", attempts)
-        append_event(
-            root,
-            "pipeline_job_retry_planned",
-            {"pipeline_id": spec["pipeline"]["id"], "job_id": job["id"], "attempt": attempt},
-        )
+            if (
+                physical_plan_dir is not None
+                and physical_plan_dir != plan_dir
+                and physical_plan_dir.exists()
+                and not physical_plan_dir.is_symlink()
+            ):
+                shutil.rmtree(physical_plan_dir)
         created = True
     return attempts, created
 

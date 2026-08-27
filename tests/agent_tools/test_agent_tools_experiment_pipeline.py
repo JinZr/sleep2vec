@@ -679,7 +679,6 @@ def test_retryable_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Pa
         "_prepare_attempt_registration_groups",
         lambda _root, _spec, items, **_kwargs: {item[0]["id"]: None for item in items},
     )
-    monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
     attempts = [{"job_id": "age-hsp-i2-psg", "attempt": 1, "status": retryable_status, "verified": "false"}]
 
@@ -714,6 +713,13 @@ def test_retryable_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Pa
     assert created_again is False
     assert unchanged == updated
     assert experiment_pipeline._logical_job_states(spec, updated)[0]["status"] == "failed"
+    retry_events = [
+        event
+        for event in experiment_pipeline.read_experiment_events(root)
+        if event.get("event_type") == "pipeline_job_retry_planned"
+    ]
+    assert len(retry_events) == 1
+    assert retry_events[0]["attempt"] == 2
 
 
 @pytest.mark.parametrize("status", ["missing_pid", "unknown_remote", "stopped", "superseded"])
