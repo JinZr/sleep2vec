@@ -794,9 +794,7 @@ def test_adaptive_init_rejects_preexisting_event_conflicts_before_registration(t
             "run_count": 99 if conflict == "plan" else 1,
         }
         expected = (
-            "event history conflicts: plan_created"
-            if conflict == "plan"
-            else "exists before canonical registration"
+            "event history conflicts: plan_created" if conflict == "plan" else "exists before canonical registration"
         )
     else:
         event = {

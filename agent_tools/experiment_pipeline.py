@@ -1846,9 +1846,7 @@ def _create_needed_retries(
                         root,
                         spec,
                         [(job, selection, attempt, recipe_path, plan_dir, result_root)],
-                        snapshot_owner_dirs={
-                            str(selection["variant"]): pipeline_dir / "retry_schedulers" / job["id"]
-                        },
+                        snapshot_owner_dirs={str(selection["variant"]): pipeline_dir / "retry_schedulers" / job["id"]},
                     )
                     physical_plan_dir = prepared[job["id"]]
                 except AttemptRegistrationPreflightError as exc:

@@ -878,7 +878,13 @@ def test_published_unregistered_round_is_recovered_without_skipping_index(tmp_pa
     registry = _read_table(workflow_dir / "adaptive" / "run_registry.tsv")
     assert [row["round"] for row in registry] == ["0", "1"]
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
-    assert sum(event.get("event_type") == "plan_created" and event.get("plan_dir") == str(first_attempt) for event in events) == 1
+    assert (
+        sum(
+            event.get("event_type") == "plan_created" and event.get("plan_dir") == str(first_attempt)
+            for event in events
+        )
+        == 1
+    )
     assert adaptive_hparam._latest_round_index(workflow_dir) == 1
 
 
@@ -1003,7 +1009,13 @@ def test_registry_failure_recovers_the_same_published_round(tmp_path: Path, monk
     statuses = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
     assert statuses == {"run-000": "superseded", "run-001": "launched"}
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
-    assert sum(event.get("event_type") == "plan_created" and event.get("plan_dir") == str(first_attempt) for event in events) == 1
+    assert (
+        sum(
+            event.get("event_type") == "plan_created" and event.get("plan_dir") == str(first_attempt)
+            for event in events
+        )
+        == 1
+    )
     launched = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")
     merge_run_manifest(
         tmp_path,

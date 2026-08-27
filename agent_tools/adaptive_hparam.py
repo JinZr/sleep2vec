@@ -49,7 +49,7 @@ from .experiment_workspace import (
     validate_step_registration,
 )
 from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, stop_hparam_run
-from .manifests import read_json, read_rows, utc_now, validate_managed_header, write_json, write_rows, write_text
+from .manifests import read_json, read_rows, utc_now, validate_managed_header, write_rows, write_text
 from .models import resolve_repo_path
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 from .recipes import load_recipe_with_base, recipe_name
@@ -1356,7 +1356,9 @@ def _adaptive_step(
                     )
                 else:
                     if artifacts.plan_tree_sha256(next_dir) != staged_plan_sha256:
-                        raise ValueError(f"Published adaptive round differs from deterministic regeneration: {next_dir}")
+                        raise ValueError(
+                            f"Published adaptive round differs from deterministic regeneration: {next_dir}"
+                        )
                     placeholder_backup = None
                 try:
                     committed_plan = plan_hparam.commit_hparam_plan(
@@ -1674,9 +1676,10 @@ def _publish_staged_round_locked(
             raise ValueError(f"Adaptive round output already exists: {round_dir}")
         if round_dir.is_symlink() or not round_dir.is_dir():
             raise ValueError(f"Adaptive round output is not a physical directory: {round_dir}")
-        if not _is_bound_config_placeholder(round_dir, bound_config_path) or file_sha256(
-            bound_config_path
-        ) != bound_config_sha256:
+        if (
+            not _is_bound_config_placeholder(round_dir, bound_config_path)
+            or file_sha256(bound_config_path) != bound_config_sha256
+        ):
             raise ValueError(f"Adaptive round output changed before publication: {round_dir}")
         placeholder_backup = round_dir.parent / f".{round_dir.name}.{os.getpid()}.{time.time_ns()}.backup"
         round_dir.replace(placeholder_backup)
@@ -1845,9 +1848,7 @@ def _validate_initial_event_order(
 ) -> None:
     events = read_experiment_events(workspace)
     plan_positions = [
-        index
-        for index, event in enumerate(events)
-        if _is_related_event(event, "plan_created", plan_event, "plan_dir")
+        index for index, event in enumerate(events) if _is_related_event(event, "plan_created", plan_event, "plan_dir")
     ]
     ready_positions = [
         index
