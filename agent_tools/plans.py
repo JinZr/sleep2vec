@@ -1519,12 +1519,31 @@ def _guard_blocked_plan_publication(
         root=out,
         allow_existing=allow_existing,
     )
-    return _guard_existing_outputs(
+    report = _guard_existing_outputs(
         report,
         plan_contract.pass_plan_control_paths(out),
         _overwrite_policy(recipe),
         root=out,
         require_fresh="PASS plan artifacts already exist; retry with a fresh --output-dir.",
+    )
+    if _has_output_artifact_issue(report) or not out.is_dir():
+        return report
+    allowed_names = {path.name for path in plan_contract.blocked_plan_control_paths(out)}
+    unexpected = sorted(str(path) for path in out.iterdir() if path.name not in allowed_names)
+    if not unexpected:
+        return report
+    # Blocked-plan readers enforce an exact envelope, so foreign entries must fail before step registration.
+    return _append_issues(
+        report,
+        [
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "output_artifacts",
+                "Blocked plan output contains unexpected entries; retry with a fresh --output-dir.",
+                None,
+                {"unexpected_paths": unexpected},
+            )
+        ],
     )
 
 
