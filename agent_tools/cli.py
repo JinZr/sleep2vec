@@ -16,6 +16,7 @@ from .adaptive_hparam import (
     suggest_next_round,
 )
 from .configs import config_summary
+from .decision_models import USER_DECISIONS_FILENAME
 from .domain.presets import preset_summary
 from .experiment_tracking import format_experiment_status
 from .experiments import (
@@ -407,6 +408,11 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         validate_only=args.validate_only,
     )
     print(report_text(report))
+    decisions_path = Path(args.output_dir) / USER_DECISIONS_FILENAME
+    if report.exit_code == 2 and (decisions_path.exists() or decisions_path.is_symlink()):
+        print(f"User decisions file: {decisions_path}")
+        print(f"Fill it and rerun with --user-decisions {decisions_path}.")
+        print("The retry must use a fresh --output-dir.")
     return report.exit_code
 
 

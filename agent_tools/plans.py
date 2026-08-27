@@ -941,7 +941,12 @@ def build_plan(
             return report
         ensure_experiment_workspace(recipe, out, plan_controller=plan_controller)
         write_questions(out, report)
-        write_text(out / "plan.blocked.md", context.blocked_plan_markdown(report, allow_unresolved))
+        template = write_user_decision_template(out, recipe, report)
+        template_path = template[0] if template is not None else None
+        write_text(
+            out / "plan.blocked.md",
+            context.blocked_plan_markdown(report, allow_unresolved, user_decisions_path=template_path),
+        )
         if allow_unresolved and report.exit_code == 2:
             write_json(
                 out / "plan.draft.json",
@@ -1381,7 +1386,12 @@ def _planned_plan_paths(
         if adapter_paths is not None:
             return adapter_paths
     if report.exit_code != 0:
-        paths = [out / "questions.json", out / "questions.md", out / "plan.blocked.md"]
+        paths = [
+            out / "questions.json",
+            out / "questions.md",
+            out / USER_DECISIONS_FILENAME,
+            out / "plan.blocked.md",
+        ]
         if allow_unresolved and report.exit_code == 2:
             paths.append(out / "plan.draft.json")
         return paths

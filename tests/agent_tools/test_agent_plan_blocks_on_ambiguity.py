@@ -253,7 +253,10 @@ def test_plan_does_not_create_run_all_when_consultation_required(tmp_path: Path)
     assert result.returncode == 2
     assert "Questions for user" in result.stdout
     assert "label_name" in result.stdout
+    assert str(output_dir / "decisions.yaml") in result.stdout
     assert (output_dir / "plan.blocked.md").exists()
+    assert (output_dir / "decisions.yaml").exists()
+    assert "fresh `--output-dir`" in (output_dir / "plan.blocked.md").read_text()
     assert not (output_dir / "run_all.sh").exists()
 
 
@@ -301,8 +304,10 @@ def test_blocked_plan_initializes_workspace_and_retry_uses_new_plan_dir(tmp_path
     assert blocked.returncode == 2
     assert (workspace / "experiment.yaml").exists()
     assert (blocked_dir / "plan.blocked.md").exists()
-    decisions = tmp_path / "decisions.yaml"
-    decisions.write_text(yaml.safe_dump({"decisions": {"label_name": {"value": "ahi", "source": "explicit_user"}}}))
+    decisions = blocked_dir / "decisions.yaml"
+    decision_payload = yaml.safe_load(decisions.read_text())
+    decision_payload["decisions"]["label_name"]["value"] = "ahi"
+    decisions.write_text(yaml.safe_dump(decision_payload, sort_keys=False))
     retry_dir = workspace / "plans" / "retry"
 
     retry = _run(
@@ -317,6 +322,23 @@ def test_blocked_plan_initializes_workspace_and_retry_uses_new_plan_dir(tmp_path
 
     assert retry.returncode == 0, retry.stderr
     assert (retry_dir / "run.sh").exists()
+
+
+def test_hparam_blocked_plan_writes_user_decision_template(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"]["overwrite_policy"]["value"] = "ASK_USER"
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    output_dir = tmp_path / "hparam-blocked"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]["overwrite_policy"] == {
+        "value": "ASK_USER",
+        "source": "explicit_user",
+        "question": "Is overwriting existing output files allowed for this task?",
+    }
 
 
 def test_context_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
@@ -338,6 +360,7 @@ def test_context_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path
     )
 
     assert result.returncode in {1, 2}
+    assert not (output_dir / "decisions.yaml").exists()
     assert (output_dir / "commands.blocked.sh").exists()
     assert not (output_dir / "commands.sh").exists()
     context = json.loads((output_dir / "context.json").read_text())

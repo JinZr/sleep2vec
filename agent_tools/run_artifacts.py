@@ -13,6 +13,7 @@ import yaml
 
 from . import decision_rules as task_rules, experiment_io as exp_io, plan_contract
 from .adapters import get_adapter
+from .decision_models import USER_DECISIONS_FILENAME
 from .experiment_workspace import (
     SCHEDULER_PLAN_IDENTITY_FIELDS,
     experiment_metadata_issues,
@@ -137,9 +138,11 @@ def is_registered_blocked_plan(
         raise ValueError(f"Registered plan is outside its managed workspace: {plan_dir}") from exc
     plan_path = plan_dir / "plan.json"
     resolved_recipe_path = plan_dir / "recipe.resolved.yaml"
+    user_decisions_path = plan_dir / USER_DECISIONS_FILENAME
     blocked_only_paths = [
         plan_dir / "questions.json",
         plan_dir / "questions.md",
+        user_decisions_path,
         plan_dir / "plan.blocked.md",
         plan_dir / "plan.draft.json",
     ]
@@ -164,6 +167,8 @@ def is_registered_blocked_plan(
     ):
         return False
     blocked_files = [plan_dir / "questions.json", plan_dir / "questions.md", blocked_path]
+    if user_decisions_path in blocked_entries:
+        blocked_files.append(user_decisions_path)
     draft_path = plan_dir / "plan.draft.json"
     if draft_path in blocked_entries:
         blocked_files.append(draft_path)

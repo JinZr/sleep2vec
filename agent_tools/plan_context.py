@@ -239,7 +239,12 @@ def context_markdown(payload: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def blocked_plan_markdown(report: DecisionReport, allow_unresolved: bool) -> str:
+def blocked_plan_markdown(
+    report: DecisionReport,
+    allow_unresolved: bool,
+    *,
+    user_decisions_path: Path | None = None,
+) -> str:
     lines = ["# Agent Plan Blocked", "", f"Status: {report.status.value}", ""]
     if allow_unresolved:
         lines.append("A draft plan may be written, but executable commands are not generated.")
@@ -247,6 +252,16 @@ def blocked_plan_markdown(report: DecisionReport, allow_unresolved: bool) -> str
     lines.append("## Questions")
     for issue in report.blocking_issues():
         lines.append(f"- {issue.field}: {issue.question or issue.message}")
+    if user_decisions_path is not None:
+        lines.extend(
+            [
+                "",
+                "## Next action",
+                "",
+                f"Fill `{user_decisions_path}` and pass it with `--user-decisions`.",
+                "Use a fresh `--output-dir` for the retry.",
+            ]
+        )
     return "\n".join(lines) + "\n"
 
 

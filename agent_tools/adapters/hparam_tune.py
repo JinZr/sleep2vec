@@ -6,7 +6,14 @@ from typing import Any
 
 from .. import slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_tune_issues
-from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
+from ..decision_models import (
+    USER_DECISIONS_FILENAME,
+    DecisionIssue,
+    DecisionReport,
+    DecisionStatus,
+    ResolvedDecision,
+    merge_status,
+)
 from ..models import coerce_list
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, finetune_loaded_split_values, variant_module
 from .base import PlanRegistrationPreflightError, TaskAdapter
@@ -250,7 +257,12 @@ class HparamTuneAdapter(TaskAdapter):
         from ..experiment_workspace import next_run_index
 
         if report.exit_code != 0:
-            paths = [out / "questions.json", out / "questions.md", out / "plan.blocked.md"]
+            paths = [
+                out / "questions.json",
+                out / "questions.md",
+                out / USER_DECISIONS_FILENAME,
+                out / "plan.blocked.md",
+            ]
             evaluation = recipe.get("evaluation_policy") or {}
             if plan_hparam.final_test_unlocked(evaluation, unlock_final_test):
                 paths.extend(
