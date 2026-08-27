@@ -1950,7 +1950,8 @@ def test_experiment_wandb_sync_remote_writes_outputs_over_ssh(monkeypatch):
             return subprocess.CompletedProcess(command, 0, run_manifest, "")
         if "run_manifest.tsv" in shell and "os.lstat" in shell:
             return subprocess.CompletedProcess(command, 0, "", "")
-        if "os.replace(temporary, path)" in shell:
+        # Match the embedded publication programs while keeping the manifest assertion tied to managed CAS below.
+        if "expect_missing = not expected and not append_mode" in shell or "os.replace(temporary, path)" in shell:
             return subprocess.CompletedProcess(command, 0, "", "")
         if "cat >" in shell or "mkdir -p" in shell:
             return subprocess.CompletedProcess(command, 0, "", "")
@@ -1965,7 +1966,9 @@ def test_experiment_wandb_sync_remote_writes_outputs_over_ssh(monkeypatch):
     assert any("/wujidata/run/wandb/runs.tsv" in target for target in write_targets)
     assert any("/wujidata/run/wandb/history/run123.csv" in target for target in write_targets)
     assert any("/wujidata/run/metrics_manifest.tsv" in target for target in write_targets)
-    atomic_targets = [command[-1] for command, kwargs in calls if "os.replace(temporary, path)" in command[-1]]
+    atomic_targets = [
+        command[-1] for command, kwargs in calls if "expect_missing = not expected and not append_mode" in command[-1]
+    ]
     assert any("/wujidata/run/run_manifest.tsv" in target for target in atomic_targets)
     assert any("/wujidata/run/reports/wandb.md" in target for target in write_targets)
 
