@@ -296,7 +296,7 @@ def test_single_run_materialization_failure_does_not_register_plan(tmp_path: Pat
     step_path = workspace / "steps" / payload["step"]["id"] / "step.yaml"
     assert not step_path.exists()
     assert read_run_manifest(workspace) == []
-    assert output_dir.exists()
+    assert not output_dir.exists()
     assert not (output_dir / "plan.json").exists()
 
     monkeypatch.setattr(plans, "write_json", original_write_json)

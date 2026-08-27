@@ -767,6 +767,51 @@ def test_hparam_plan_rechecks_blocked_artifacts_created_after_preflight(tmp_path
     assert _staging_dirs(workspace, plan_dir) == []
 
 
+@pytest.mark.parametrize("competitor_kind", ["file", "symlink"])
+def test_hparam_plan_rolls_back_blocked_artifact_created_after_final_guard(
+    tmp_path: Path,
+    monkeypatch,
+    competitor_kind: str,
+):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    effective, _cfg, _report = plans.evaluate_recipe(recipe)
+    ensure_experiment_workspace(effective, plan_dir, register_step=False)
+    plan_dir.mkdir(parents=True)
+    competitor = plan_dir / "decisions.yaml"
+    guard_pass = plans._guard_pass_plan_publication
+    guard_calls = 0
+
+    def inject_after_final_guard(*args, **kwargs):
+        nonlocal guard_calls
+        guarded = guard_pass(*args, **kwargs)
+        guard_calls += 1
+        if guard_calls == 2:
+            if competitor_kind == "symlink":
+                target = tmp_path / "user-decisions.yaml"
+                target.write_text("user competitor\n")
+                competitor.symlink_to(target)
+            else:
+                competitor.write_text("user competitor\n")
+        return guarded
+
+    monkeypatch.setattr(plans, "_guard_pass_plan_publication", inject_after_final_guard)
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+    )
+
+    with pytest.raises(ValueError, match="planning artifacts|Managed output paths"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert competitor.read_text() == "user competitor\n"
+    assert competitor.is_symlink() is (competitor_kind == "symlink")
+    assert not (plan_dir / "plan.json").exists()
+    assert read_run_manifest(workspace) == []
+    assert _staging_dirs(workspace, plan_dir) == []
+
+
 def test_validate_only_rejects_non_hparam_without_writes(tmp_path: Path):
     recipe, workspace = _recipe(tmp_path, task="finetune")
     plan_dir = workspace / "plans" / "finetune"

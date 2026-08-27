@@ -44,7 +44,7 @@ from .experiment_workspace import (
 from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, stop_hparam_run
 from .manifests import read_json, read_rows, utc_now, write_json, write_rows, write_text
 from .models import resolve_repo_path
-from .plans import build_plan, preflight_plan
+from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 from .recipes import load_recipe_with_base, recipe_name
 
 _EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
@@ -130,6 +130,7 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
 
     emit_plan_event = True
     registration_prevalidated = False
+    committed_plan = None
     if os.path.lexists(round_dir):
         plan = _validate_initial_round(round_dir, round_recipe_payload, source_config_bytes)
         expected_keys = {managed_run_key(run) for run in plan["runs"]}
@@ -150,26 +151,56 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
             registration_prevalidated = True
     else:
         staging_dir = _stage_round(round_dir, recipe, recipe_path, 0, source_config_sha256)
+        cleanup_staging = True
         try:
-            _publish_staged_round(staging_dir, round_dir)
+            with plan_publication_lock(round_dir):
+                staged_plan_sha256 = artifacts.plan_tree_sha256(staging_dir)
+                placeholder_backup = _publish_staged_round_locked(staging_dir, round_dir)
+                try:
+                    _validate_initial_round(round_dir, round_recipe_payload, source_config_bytes)
+                except BaseException:
+                    cleanup_staging = False
+                    cleanup_staging = _restore_uncommitted_round(
+                        staging_dir,
+                        round_dir,
+                        placeholder_backup,
+                        staged_plan_sha256,
+                    )
+                    raise
+                try:
+                    committed_plan = plan_hparam.commit_hparam_plan(
+                        round_dir,
+                        emit_event=emit_plan_event,
+                        preflight_validated=True,
+                    )
+                except plan_hparam.HparamRegistrationPreflightError:
+                    cleanup_staging = False
+                    cleanup_staging = _restore_uncommitted_round(
+                        staging_dir,
+                        round_dir,
+                        placeholder_backup,
+                        staged_plan_sha256,
+                    )
+                    raise
+                if placeholder_backup is not None:
+                    shutil.rmtree(placeholder_backup)
+                _write_initial_registry(root, round_dir, committed_plan)
         except BaseException:
-            if staging_dir.exists() and not staging_dir.is_symlink():
+            if cleanup_staging and staging_dir.exists() and not staging_dir.is_symlink():
                 shutil.rmtree(staging_dir)
             raise
-        _validate_initial_round(round_dir, round_recipe_payload, source_config_bytes)
-        registration_prevalidated = True
-
-    try:
-        plan = plan_hparam.commit_hparam_plan(
-            round_dir,
-            emit_event=emit_plan_event,
-            preflight_validated=registration_prevalidated,
-        )
-    except plan_hparam.HparamRegistrationPreflightError:
-        if not recovering and round_dir.exists() and not round_dir.is_symlink():
-            shutil.rmtree(round_dir)
-        raise
-    _write_initial_registry(root, round_dir, plan)
+    if committed_plan is None:
+        try:
+            committed_plan = plan_hparam.commit_hparam_plan(
+                round_dir,
+                emit_event=emit_plan_event,
+                preflight_validated=registration_prevalidated,
+            )
+        except plan_hparam.HparamRegistrationPreflightError:
+            if not recovering and round_dir.exists() and not round_dir.is_symlink():
+                shutil.rmtree(round_dir)
+            raise
+        _write_initial_registry(root, round_dir, committed_plan)
     write_text(adaptive_dir / "README.md", _adaptive_readme(workflow))
     _validate_workflow_payload(root, workflow, require_adaptive_commit=False)
     workflow_text = json.dumps(workflow, indent=2, sort_keys=True) + "\n"
@@ -1179,26 +1210,36 @@ def adaptive_step(
                 bound_config_path.unlink()
                 next_dir.rmdir()
             raise
+        cleanup_staging = True
         try:
             if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
                 raise ValueError("Agent proposal frozen source config changed during plan materialization.")
-            _publish_staged_round(
-                staging_dir,
-                next_dir,
-                bound_config_path=bound_config_path,
-                bound_config_sha256=bound_config_sha256,
-            )
+            with plan_publication_lock(next_dir):
+                staged_plan_sha256 = artifacts.plan_tree_sha256(staging_dir)
+                placeholder_backup = _publish_staged_round_locked(
+                    staging_dir,
+                    next_dir,
+                    bound_config_path=bound_config_path,
+                    bound_config_sha256=bound_config_sha256,
+                )
+                try:
+                    plan_hparam.commit_hparam_plan(next_dir, preflight_validated=True)
+                except plan_hparam.HparamRegistrationPreflightError:
+                    cleanup_staging = False
+                    cleanup_staging = _restore_uncommitted_round(
+                        staging_dir,
+                        next_dir,
+                        placeholder_backup,
+                        staged_plan_sha256,
+                    )
+                    raise
+                if placeholder_backup is not None:
+                    shutil.rmtree(placeholder_backup)
+                _append_registry_rows(root, next_round, next_dir)
         except BaseException:
-            if staging_dir.exists() and not staging_dir.is_symlink():
+            if cleanup_staging and staging_dir.exists() and not staging_dir.is_symlink():
                 shutil.rmtree(staging_dir)
             raise
-        try:
-            plan_hparam.commit_hparam_plan(next_dir, preflight_validated=True)
-        except plan_hparam.HparamRegistrationPreflightError:
-            if next_dir.exists() and not next_dir.is_symlink():
-                shutil.rmtree(next_dir)
-            raise
-        _append_registry_rows(root, next_round, next_dir)
         execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
         scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
         if scheduler.get("type") == "slurm":
@@ -1467,13 +1508,14 @@ def _stage_round(
         raise
 
 
-def _publish_staged_round(
+def _publish_staged_round_locked(
     staging_dir: Path,
     round_dir: Path,
     *,
     bound_config_path: Path | None = None,
     bound_config_sha256: str | None = None,
-) -> None:
+) -> Path | None:
+    placeholder_backup = None
     if os.path.lexists(round_dir):
         if bound_config_path is None or bound_config_sha256 is None:
             raise ValueError(f"Adaptive round output already exists: {round_dir}")
@@ -1481,10 +1523,39 @@ def _publish_staged_round(
             raise ValueError(f"Adaptive round output is not a physical directory: {round_dir}")
         if list(round_dir.iterdir()) != [bound_config_path] or file_sha256(bound_config_path) != bound_config_sha256:
             raise ValueError(f"Adaptive round output changed before publication: {round_dir}")
-        bound_config_path.unlink()
-        round_dir.rmdir()
-    round_dir.parent.mkdir(parents=True, exist_ok=True)
-    staging_dir.replace(round_dir)
+        placeholder_backup = round_dir.parent / f".{round_dir.name}.{os.getpid()}.{time.time_ns()}.backup"
+        round_dir.replace(placeholder_backup)
+    try:
+        publish_staged_plan_locked(staging_dir, round_dir, out_preexisted=False)
+    except BaseException:
+        if placeholder_backup is not None and not os.path.lexists(round_dir):
+            placeholder_backup.replace(round_dir)
+        raise
+    return placeholder_backup
+
+
+def _restore_uncommitted_round(
+    staging_dir: Path,
+    round_dir: Path,
+    placeholder_backup: Path | None,
+    staged_plan_sha256: str,
+) -> bool:
+    # Registration preflight has not mutated the workspace, so the physical publication can still be undone.
+    if os.path.lexists(round_dir) and not os.path.lexists(staging_dir):
+        round_dir.replace(staging_dir)
+        try:
+            unchanged = artifacts.plan_tree_sha256(staging_dir) == staged_plan_sha256
+        except (OSError, ValueError):
+            unchanged = False
+        if not unchanged:
+            if not os.path.lexists(round_dir):
+                staging_dir.replace(round_dir)
+            return False
+    elif os.path.lexists(staging_dir):
+        return False
+    if placeholder_backup is not None and not os.path.lexists(round_dir):
+        placeholder_backup.replace(round_dir)
+    return True
 
 
 def _write_initial_registry(root: Path, round_dir: Path, plan: dict[str, Any]) -> None:

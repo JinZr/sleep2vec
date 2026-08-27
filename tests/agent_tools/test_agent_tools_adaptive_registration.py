@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import threading
 
+from agent_tool_test_helpers import write_finetune_recipe
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, hparam_runtime, managed_scheduler, manifests, plan_hparam, run_artifacts
+from agent_tools import adaptive_hparam, hparam_runtime, managed_scheduler, manifests, plan_hparam, plans, run_artifacts
+from agent_tools.experiment_workspace import file_sha256, read_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _agent_recipe, _read_table, _run
 
@@ -374,7 +377,7 @@ def test_adaptive_rounds_keep_frozen_runtime_identity_and_allow_capacity_updates
         1,
         None,
     )
-    adaptive_hparam._publish_staged_round(staging_dir, next_dir)
+    adaptive_hparam._publish_staged_round_locked(staging_dir, next_dir)
     plan_hparam.commit_hparam_plan(next_dir)
 
     assert suggested["execution"]["max_concurrent"] == 2
@@ -383,6 +386,156 @@ def test_adaptive_rounds_keep_frozen_runtime_identity_and_allow_capacity_updates
     assert {
         field: second_plan["recipe"]["execution"][field] for field in ("python", "runtime_commit")
     } == frozen_identity
+
+
+def test_adaptive_publication_serializes_with_doctor_output(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workspace = tmp_path / "workflow"
+    round_dir = workspace / "adaptive" / "rounds" / "round_000"
+    doctor_path = write_finetune_recipe(tmp_path / "doctor-source", include_label=False)
+    doctor_recipe, _config, doctor_report = plans.evaluate_recipe(doctor_path)
+    assert doctor_report.exit_code == 2
+
+    publication_entered = threading.Event()
+    allow_publication = threading.Event()
+    doctor_attempted = threading.Event()
+    publish_staged_round = adaptive_hparam._publish_staged_round_locked
+    plan_lock = plans.plan_publication_lock
+
+    def pause_publication(*args, **kwargs):
+        publication_entered.set()
+        assert allow_publication.wait(timeout=10)
+        return publish_staged_round(*args, **kwargs)
+
+    def observe_doctor_lock(out):
+        doctor_attempted.set()
+        return plan_lock(out)
+
+    monkeypatch.setattr(adaptive_hparam, "_publish_staged_round_locked", pause_publication)
+    monkeypatch.setattr(plans, "plan_publication_lock", observe_doctor_lock)
+    init_errors = []
+    doctor_errors = []
+
+    def initialize():
+        try:
+            adaptive_hparam.init_adaptive_workflow(recipe, workspace)
+        except BaseException as exc:
+            init_errors.append(exc)
+
+    def write_doctor():
+        try:
+            plans.write_doctor_outputs(round_dir, doctor_recipe, doctor_report)
+        except BaseException as exc:
+            doctor_errors.append(exc)
+
+    init_thread = threading.Thread(target=initialize)
+    doctor_thread = threading.Thread(target=write_doctor)
+    init_thread.start()
+    assert publication_entered.wait(timeout=10)
+    doctor_thread.start()
+    assert doctor_attempted.wait(timeout=10)
+    allow_publication.set()
+    init_thread.join(timeout=30)
+    doctor_thread.join(timeout=30)
+
+    assert not init_thread.is_alive()
+    assert not doctor_thread.is_alive()
+    assert init_errors == []
+    assert len(doctor_errors) == 1
+    assert "PASS plan artifacts already exist" in str(doctor_errors[0])
+    assert (round_dir / "plan.json").exists()
+    assert not (round_dir / "decisions.yaml").exists()
+    experiment_root = Path(json.loads((round_dir / "plan.json").read_text())["recipe"]["experiment"]["root"])
+    assert len(read_run_manifest(experiment_root)) == 1
+
+
+def test_uncommitted_adaptive_round_restores_bound_config_placeholder(tmp_path: Path):
+    round_dir = tmp_path / "round_001"
+    round_dir.mkdir()
+    bound_config = round_dir / "config.source.yaml"
+    bound_config.write_text("source: frozen\n")
+    staging_dir = tmp_path / ".round_001.staging"
+    staging_dir.mkdir()
+    (staging_dir / "plan.json").write_text("{}\n")
+    (staging_dir / bound_config.name).write_bytes(bound_config.read_bytes())
+
+    staged_plan_sha256 = run_artifacts.plan_tree_sha256(staging_dir)
+    placeholder_backup = adaptive_hparam._publish_staged_round_locked(
+        staging_dir,
+        round_dir,
+        bound_config_path=bound_config,
+        bound_config_sha256=file_sha256(bound_config),
+    )
+    restored = adaptive_hparam._restore_uncommitted_round(
+        staging_dir,
+        round_dir,
+        placeholder_backup,
+        staged_plan_sha256,
+    )
+
+    assert restored is True
+    assert {path.name for path in round_dir.iterdir()} == {bound_config.name}
+    assert bound_config.read_text() == "source: frozen\n"
+    assert (staging_dir / "plan.json").exists()
+    assert placeholder_backup is not None
+    assert not placeholder_backup.exists()
+
+
+def test_uncommitted_adaptive_round_preserves_foreign_bytes_on_failed_restore(tmp_path: Path):
+    round_dir = tmp_path / "round_001"
+    round_dir.mkdir()
+    bound_config = round_dir / "config.source.yaml"
+    bound_config.write_text("source: frozen\n")
+    staging_dir = tmp_path / ".round_001.staging"
+    staging_dir.mkdir()
+    (staging_dir / "plan.json").write_text("{}\n")
+    (staging_dir / bound_config.name).write_bytes(bound_config.read_bytes())
+    staged_plan_sha256 = run_artifacts.plan_tree_sha256(staging_dir)
+
+    placeholder_backup = adaptive_hparam._publish_staged_round_locked(
+        staging_dir,
+        round_dir,
+        bound_config_path=bound_config,
+        bound_config_sha256=file_sha256(bound_config),
+    )
+    foreign = round_dir / "user.txt"
+    foreign.write_text("preserve me\n")
+    restored = adaptive_hparam._restore_uncommitted_round(
+        staging_dir,
+        round_dir,
+        placeholder_backup,
+        staged_plan_sha256,
+    )
+
+    assert restored is False
+    assert foreign.read_text() == "preserve me\n"
+    assert not staging_dir.exists()
+    assert placeholder_backup is not None
+    assert (placeholder_backup / bound_config.name).read_text() == "source: frozen\n"
+
+
+def test_adaptive_init_preserves_staging_when_rollback_raises(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path)
+    workspace = tmp_path / "workflow"
+    preserved = []
+
+    def fail_validation(*_args, **_kwargs):
+        raise ValueError("injected final validation failure")
+
+    def fail_restore(staging_dir, round_dir, _placeholder_backup, _staged_plan_sha256):
+        round_dir.replace(staging_dir)
+        (staging_dir / "user.txt").write_text("preserve me\n")
+        preserved.append(staging_dir)
+        raise OSError("injected rollback failure")
+
+    monkeypatch.setattr(adaptive_hparam, "_validate_initial_round", fail_validation)
+    monkeypatch.setattr(adaptive_hparam, "_restore_uncommitted_round", fail_restore)
+
+    with pytest.raises(OSError, match="injected rollback failure"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workspace)
+
+    assert len(preserved) == 1
+    assert (preserved[0] / "user.txt").read_text() == "preserve me\n"
 
 
 @pytest.mark.parametrize("tamper", ["missing", "extra"])

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import copy
 import hashlib
 import json
@@ -14,6 +15,41 @@ import yaml
 from agent_tools import experiment_pipeline, experiments, managed_scheduler, plan_contract, plans, python_programs
 from agent_tools.experiment_workspace import commit_step_manifest, file_sha256, read_run_manifest
 from agent_tools.manifests import write_rows
+
+
+def test_attempt_materialization_enters_plan_publication_lock(tmp_path: Path, monkeypatch):
+    plan_dir = tmp_path / "attempt"
+    lock_active = False
+
+    @contextmanager
+    def publication_lock(out):
+        nonlocal lock_active
+        assert out == plan_dir
+        lock_active = True
+        try:
+            yield
+        finally:
+            lock_active = False
+
+    def materialize_locked(*_args, **_kwargs):
+        assert lock_active
+        return {"status": "planned"}
+
+    monkeypatch.setattr(experiment_pipeline, "plan_publication_lock", publication_lock)
+    monkeypatch.setattr(experiment_pipeline, "_materialize_attempt_locked", materialize_locked)
+
+    result = experiment_pipeline._materialize_attempt(
+        tmp_path,
+        {},
+        {},
+        {},
+        1,
+        recipe_path=tmp_path / "recipe.yaml",
+        plan_dir=plan_dir,
+        result_root=tmp_path / "result",
+    )
+
+    assert result == {"status": "planned"}
 
 
 def _spec(root: Path) -> dict:

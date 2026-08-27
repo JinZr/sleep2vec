@@ -442,6 +442,49 @@ def test_generic_pass_rechecks_blocked_artifacts_created_after_preflight(tmp_pat
     assert read_run_manifest(workspace) == []
 
 
+@pytest.mark.parametrize("competitor_kind", ["file", "symlink"])
+def test_generic_pass_rolls_back_blocked_artifact_created_after_final_guard(
+    tmp_path: Path,
+    monkeypatch,
+    competitor_kind: str,
+):
+    source = tmp_path / "source"
+    recipe = write_finetune_recipe(source)
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = workspace / "plans" / "current"
+    ensure_experiment_workspace(payload, plan_dir, register_step=False)
+    plan_dir.mkdir(parents=True)
+    competitor = plan_dir / "decisions.yaml"
+    guard_pass = plans._guard_pass_plan_publication
+    guard_calls = 0
+
+    def inject_after_final_guard(*args, **kwargs):
+        nonlocal guard_calls
+        guarded = guard_pass(*args, **kwargs)
+        guard_calls += 1
+        if guard_calls == 2:
+            if competitor_kind == "symlink":
+                target = tmp_path / "user-decisions.yaml"
+                target.write_text("user competitor\n")
+                competitor.symlink_to(target)
+            else:
+                competitor.write_text("user competitor\n")
+        return guarded
+
+    monkeypatch.setattr(plans, "_guard_pass_plan_publication", inject_after_final_guard)
+
+    with pytest.raises(ValueError, match="planning artifacts|Managed output paths"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert competitor.read_text() == "user competitor\n"
+    assert competitor.is_symlink() is (competitor_kind == "symlink")
+    assert not (plan_dir / "plan.json").exists()
+    assert read_run_manifest(workspace) == []
+
+
 def test_hparam_blocked_plan_writes_user_decision_template(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())

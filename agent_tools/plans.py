@@ -493,7 +493,7 @@ def write_questions(output_dir: str | Path, report: DecisionReport) -> None:
     write_text(out / "questions.md", questions_markdown(report))
 
 
-def _plan_publication_lock(out: Path):
+def plan_publication_lock(out: Path):
     lock_root = Path(tempfile.gettempdir()).resolve() / "agent-tools-plan-locks"
     lock_root.mkdir(mode=0o700, exist_ok=True)
     lock_name = hashlib.sha256(str(out).encode()).hexdigest() + ".lock"
@@ -538,7 +538,7 @@ def write_doctor_outputs(
     if not out.is_absolute():
         out = Path.cwd() / out
     out = Path(os.path.normpath(out))
-    with _plan_publication_lock(out):
+    with plan_publication_lock(out):
         locked_report = _guard_existing_outputs(
             report,
             plan_contract.blocked_plan_control_paths(out),
@@ -787,7 +787,7 @@ def _materialize_adapter_plan(
         return report
     if defer_commit:
         return report
-    with _plan_publication_lock(out):
+    with plan_publication_lock(out):
         report = _guard_pass_plan_publication(
             report,
             recipe,
@@ -808,7 +808,7 @@ def _materialize_adapter_plan(
         out_preexisted = current_output_identity is not None
         if staging_dir is not None or generated_staging:
             try:
-                _publish_materialized_plan(write_out, out, out_preexisted=out_preexisted)
+                publish_staged_plan_locked(write_out, out, out_preexisted=out_preexisted)
             except BaseException:
                 if write_out.exists() and not write_out.is_symlink():
                     shutil.rmtree(write_out)
@@ -899,7 +899,7 @@ def _materialize_single_run_plan(
     if defer_commit:
         return report
     # Generic plans stay staged until the same locked publication gate as materialized hparam plans.
-    with _plan_publication_lock(out):
+    with plan_publication_lock(out):
         report = _guard_pass_plan_publication(
             report,
             recipe,
@@ -920,7 +920,7 @@ def _materialize_single_run_plan(
         out_preexisted = current_output_identity is not None
         if staging_dir is not None or generated_staging:
             try:
-                _publish_materialized_plan(write_out, out, out_preexisted=out_preexisted)
+                publish_staged_plan_locked(write_out, out, out_preexisted=out_preexisted)
             except BaseException:
                 if write_out.exists() and not write_out.is_symlink():
                     shutil.rmtree(write_out)
@@ -1014,7 +1014,7 @@ def build_plan(
         )
         if preflight_failed_before_workspace:
             return report
-        with _plan_publication_lock(out):
+        with plan_publication_lock(out):
             report = _guard_blocked_plan_publication(
                 report,
                 recipe,
@@ -1166,10 +1166,20 @@ def build_plan(
         )
 
 
-def _publish_materialized_plan(write_out: Path, out: Path, *, out_preexisted: bool) -> None:
+def _validate_published_pass_envelope(out: Path) -> None:
+    blocked_paths = plan_contract.blocked_plan_control_paths(out)
+    exp_io.validate_managed_output_paths(Path(out.anchor), blocked_paths)
+    blocked = sorted(str(path) for path in blocked_paths if os.path.lexists(path))
+    if blocked:
+        raise ValueError(f"Published PASS plan contains blocked planning artifacts: {', '.join(blocked)}")
+
+
+def publish_staged_plan_locked(write_out: Path, out: Path, *, out_preexisted: bool) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     if not out_preexisted:
         write_out.replace(out)
+        # A post-publish conflict may contain user bytes; leave it unregistered instead of deleting it via rollback.
+        _validate_published_pass_envelope(out)
         return
     if out.is_symlink() or not out.is_dir():
         raise ValueError(f"Atomic plan output is not a directory: {out}")
@@ -1195,6 +1205,7 @@ def _publish_materialized_plan(write_out: Path, out: Path, *, out_preexisted: bo
         for name in new_order:
             (write_out / name).replace(out / name)
             moved_new.append(name)
+        _validate_published_pass_envelope(out)
     except BaseException:
         for name in reversed(moved_new):
             current = out / name

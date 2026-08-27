@@ -36,7 +36,7 @@ from .experiment_workspace import (
 from .hparam_runtime import monitor_hparam_runs
 from .hparam_selection import select_hparam_candidates
 from .manifests import read_json, read_rows, utc_now
-from .plans import build_plan, preflight_plan
+from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 
 SCHEMA_VERSION = 1
 PIPELINE_KIND = "external_matrix"
@@ -1000,6 +1000,33 @@ def _materialize_attempt(
     result_root: Path,
     prepared_staging_dir: Path | None = None,
 ) -> dict[str, Any]:
+    # The plan envelope and its canonical ownership must become visible under one publication lock.
+    with plan_publication_lock(plan_dir):
+        return _materialize_attempt_locked(
+            root,
+            spec,
+            job,
+            selection,
+            attempt,
+            recipe_path=recipe_path,
+            plan_dir=plan_dir,
+            result_root=result_root,
+            prepared_staging_dir=prepared_staging_dir,
+        )
+
+
+def _materialize_attempt_locked(
+    root: Path,
+    spec: dict[str, Any],
+    job: dict[str, Any],
+    selection: dict[str, Any],
+    attempt: int,
+    *,
+    recipe_path: Path,
+    plan_dir: Path,
+    result_root: Path,
+    prepared_staging_dir: Path | None = None,
+) -> dict[str, Any]:
     _validate_new_attempt_paths(plan_dir, result_root, allow_existing_plan=True)
     plan_path = plan_dir / "plan.json"
     if plan_dir.exists() and not plan_path.exists():
@@ -1014,13 +1041,11 @@ def _materialize_attempt(
         if prepared_staging_dir is not None:
             if plan_dir.exists():
                 raise ValueError(f"External attempt plan appeared after registration preflight: {plan_dir}")
-            plan_dir.parent.mkdir(parents=True, exist_ok=True)
-            prepared_staging_dir.replace(plan_dir)
+            publish_staged_plan_locked(prepared_staging_dir, plan_dir, out_preexisted=False)
         else:
             _physical_plan_dir, staging_dir = _prepare_attempt_plan(job["id"], selection, recipe_path, plan_dir)
             if staging_dir is not None:
-                plan_dir.parent.mkdir(parents=True, exist_ok=True)
-                staging_dir.replace(plan_dir)
+                publish_staged_plan_locked(staging_dir, plan_dir, out_preexisted=False)
         plan = read_json(plan_path)
     runs = plan.get("runs") if isinstance(plan, dict) else None
     if not isinstance(runs, list) or len(runs) != 1 or not isinstance(runs[0], dict):
