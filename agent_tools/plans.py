@@ -1526,18 +1526,29 @@ def _guard_blocked_plan_publication(
     allow_existing: bool = False,
 ) -> DecisionReport:
     planned_paths = _planned_plan_paths(recipe, out, report, allow_unresolved, unlock_final_test)
+    blocked_paths = plan_contract.blocked_plan_control_paths(out)
+    overwrite_policy = _overwrite_policy(recipe)
     report = _guard_existing_outputs(
         report,
-        planned_paths,
-        _overwrite_policy(recipe),
+        blocked_paths,
+        overwrite_policy,
         root=out,
         allow_existing=allow_existing,
         require_fresh="Blocked plan artifacts already exist; retry with a fresh --output-dir.",
     )
+    non_control_paths = [path for path in planned_paths if path not in blocked_paths]
+    if non_control_paths:
+        report = _guard_existing_outputs(
+            report,
+            non_control_paths,
+            overwrite_policy,
+            root=out,
+            allow_existing=allow_existing,
+        )
     report = _guard_existing_outputs(
         report,
         plan_contract.pass_plan_control_paths(out),
-        _overwrite_policy(recipe),
+        overwrite_policy,
         root=out,
         require_fresh="PASS plan artifacts already exist; retry with a fresh --output-dir.",
     )

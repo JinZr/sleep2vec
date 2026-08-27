@@ -213,7 +213,7 @@ def test_plan_allows_existing_workspace_matrix_and_events_for_new_plan(tmp_path:
     assert (workspace / "plan-2" / "plan.json").exists()
 
 
-def test_plan_refuses_existing_blocked_artifact_when_overwrite_missing(tmp_path: Path):
+def test_plan_requires_fresh_directory_for_existing_blocked_artifact(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     payload = yaml.safe_load(recipe.read_text())
     payload["decisions"].pop("overwrite_policy")
@@ -226,7 +226,8 @@ def test_plan_refuses_existing_blocked_artifact_when_overwrite_missing(tmp_path:
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
-    assert result.returncode == 2
+    assert result.returncode == 1
+    assert "Blocked plan artifacts already exist; retry with a fresh --output-dir." in result.stdout
     assert blocked_plan.read_text() == "keep me"
 
 
