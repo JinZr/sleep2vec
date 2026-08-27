@@ -235,9 +235,11 @@ invalid and are not repaired in place.
   paths and complete launch scripts across creator and controller hosts.
   Suggested commands are advisory argv arrays and
   do not authorize a launch or mutation.
-  A registered directory containing exactly `questions.json`, `questions.md`,
-  `plan.blocked.md`, and optional `plan.draft.json` is a non-runnable planning
-  outcome and is skipped; missing, extra, or aliased entries fail closed. A
+  A registered directory containing `questions.json`, `questions.md`, and
+  `plan.blocked.md`, plus optional `decisions.yaml` and `plan.draft.json`, is a
+  non-runnable planning outcome and is skipped; missing required, extra, or
+  aliased entries fail closed. Historical blocked plans without
+  `decisions.yaml` remain readable. A
   plan binds to the registered step's core `id`, `phase`, and `purpose`, while
   manifest-owned `inputs` and `outputs` remain valid step metadata.
   Status classifies launch advice and controller-deferred blockers only from
