@@ -108,7 +108,6 @@ def user_decision_template(
     task: str | None,
     report: DecisionReport,
     policy: dict,
-    decision_entries: dict,
 ) -> dict[str, Any]:
     if report.status != DecisionStatus.NEEDS_USER_INPUT:
         return {}
@@ -127,14 +126,8 @@ def user_decision_template(
     if not template_fields:
         return {}
 
-    resolved_decisions = dict(report.decisions)
-    for field, raw_decision in decision_entries.items():
-        decision = _decision_from_mapping(field, raw_decision, "explicit_user")
-        if decision.source == "explicit_user":
-            resolved_decisions[field] = decision
-
     decisions = {}
-    for field, decision in resolved_decisions.items():
+    for field, decision in report.decisions.items():
         if field not in allowed or decision.source != "explicit_user":
             continue
         entry = {"value": decision.value, "source": "explicit_user"}
@@ -189,6 +182,13 @@ def evaluate_consultation_gates(
             )
         )
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=decisions)
+    # Preserve user-file entries when an unresolved task stops consultation before later fields are evaluated.
+    decisions.update(
+        {
+            field: _decision_from_mapping(field, raw_decision, "explicit_user")
+            for field, raw_decision in user_decisions.items()
+        }
+    )
     supported_tasks = SUPPORTED_TASKS
     task_decision = _resolve_decision(
         "task",

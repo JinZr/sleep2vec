@@ -509,8 +509,7 @@ def write_user_decision_template(
     *,
     preserve_existing: bool,
 ) -> tuple[Path, bool] | None:
-    decision_entries = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
-    payload = user_decision_template(recipe.get("task"), report, load_consultation_policy(), decision_entries)
+    payload = user_decision_template(recipe.get("task"), report, load_consultation_policy())
     if not payload:
         return None
     target = Path(output_dir) / USER_DECISIONS_FILENAME

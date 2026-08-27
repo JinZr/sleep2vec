@@ -136,6 +136,20 @@ def test_doctor_writes_fillable_user_decision_template(tmp_path: Path):
     assert "Status: PASS" in resolved.stdout
 
 
+def test_doctor_template_does_not_promote_scalar_recipe_decision_to_user(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path, include_label=False)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"]["overwrite_policy"] = False
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    output_dir = tmp_path / "doctor"
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    template = yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]
+    assert set(template) == {"label_name"}
+
+
 def test_doctor_template_preserves_explicit_user_decisions_and_metadata(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     decisions = _write_decisions(
@@ -359,7 +373,7 @@ def test_user_decision_template_skips_non_decisions_and_deduplicates_base_issue(
         decisions={"label_name": ResolvedDecision("label_name", None, "missing", "none")},
     )
 
-    assert user_decision_template("hparam_tune", report, load_consultation_policy(), {}) == {
+    assert user_decision_template("hparam_tune", report, load_consultation_policy()) == {
         "decisions": {
             "label_name": {
                 "value": "ASK_USER",
@@ -380,7 +394,7 @@ def test_user_decision_template_requires_pure_needs_status():
         decisions={"label_name": ResolvedDecision("label_name", None, "missing", "none")},
     )
 
-    assert user_decision_template("finetune", report, load_consultation_policy(), {}) == {}
+    assert user_decision_template("finetune", report, load_consultation_policy()) == {}
 
 
 def test_user_decision_file_requires_decisions_mapping_before_output(tmp_path: Path):
@@ -488,8 +502,8 @@ def test_task_template_preserves_user_decisions_not_evaluated_after_task_blocker
         tmp_path,
         {
             "task": {"value": "ASK_USER", "source": "explicit_user"},
-            "label_name": {"value": "ahi", "source": "explicit_user", "meaning": "Primary outcome."},
-            "overwrite_policy": {"value": False, "source": "explicit_user"},
+            "label_name": "ahi",
+            "overwrite_policy": False,
         },
     )
     output_dir = tmp_path / "doctor"
@@ -506,11 +520,7 @@ def test_task_template_preserves_user_decisions_not_evaluated_after_task_blocker
 
     assert result.returncode == 2
     template = yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]
-    assert template["label_name"] == {
-        "value": "ahi",
-        "source": "explicit_user",
-        "meaning": "Primary outcome.",
-    }
+    assert template["label_name"] == {"value": "ahi", "source": "explicit_user"}
     assert template["overwrite_policy"] == {"value": False, "source": "explicit_user"}
 
 
