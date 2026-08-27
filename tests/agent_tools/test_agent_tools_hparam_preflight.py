@@ -690,7 +690,8 @@ def test_hparam_plan_recovers_exact_unowned_publication(tmp_path: Path, monkeypa
     )
 
 
-def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("field", ["config", "pipeline_id"])
+def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, monkeypatch, field: str):
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     monkeypatch.setattr(
@@ -699,7 +700,7 @@ def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, 
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     manifest_path = workspace / "run_manifest.tsv"
     rows = read_run_manifest(workspace)
-    rows[0]["config"] = str(workspace / "foreign.yaml")
+    rows[0][field] = str(workspace / "foreign.yaml") if field == "config" else "foreign-pipeline"
     with manifest_path.open("w", newline="") as file_obj:
         fieldnames = sorted({field for row in rows for field in row})
         writer = csv.DictWriter(file_obj, fieldnames=fieldnames, delimiter="\t")
@@ -711,7 +712,7 @@ def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, 
 
     assert report.exit_code == 1
     assert "Frozen run field differs" in report.blocking_issues()[0].message
-    assert "config" in report.blocking_issues()[0].message
+    assert field in report.blocking_issues()[0].message
     assert manifest_path.read_bytes() == before
 
 

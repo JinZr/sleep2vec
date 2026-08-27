@@ -2498,20 +2498,21 @@ def test_single_run_plan_recovers_exact_unowned_publication(tmp_path: Path, monk
     assert len(created) == 1
 
 
-def test_complete_registration_recovery_rejects_foreign_canonical_row(tmp_path: Path):
+@pytest.mark.parametrize("field", ["config", "pipeline_id"])
+def test_complete_registration_recovery_rejects_foreign_canonical_row(tmp_path: Path, field: str):
     recipe = write_finetune_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     manifest_path = tmp_path / "run_manifest.tsv"
     rows = read_run_manifest(tmp_path)
-    rows[0]["config"] = str(tmp_path / "foreign.yaml")
+    rows[0][field] = str(tmp_path / "foreign.yaml") if field == "config" else "foreign-pipeline"
     with manifest_path.open("w", newline="") as file_obj:
         writer = csv.DictWriter(file_obj, fieldnames=sorted(rows[0]), delimiter="\t")
         writer.writeheader()
         writer.writerows(rows)
     before = manifest_path.read_bytes()
 
-    with pytest.raises(ValueError, match="Frozen run field differs.*config"):
+    with pytest.raises(ValueError, match=f"Frozen run field differs.*{field}"):
         plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
 
     assert manifest_path.read_bytes() == before

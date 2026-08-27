@@ -1052,8 +1052,20 @@ def plan_registration_rows_state(
         raise ValueError(f"{source} registration is partial; missing {missing}")
     if not present_keys:
         return "missing"
+    allowed_canonical_only = SCHEDULER_BINDING_FIELDS | PROCESS_IDENTITY_FIELDS
     for key, expected in expected_by_key.items():
-        validate_frozen_run_update(canonical_by_key[key], expected, allow_execution_identity_fill=True)
+        canonical = canonical_by_key[key]
+        canonical_fields = set(FROZEN_RUN_FIELDS & canonical.keys()) | set(managed_run_parameters(canonical))
+        expected_fields = set(FROZEN_RUN_FIELDS & expected.keys()) | set(managed_run_parameters(expected))
+        unexpected = sorted(
+            field
+            for field in canonical_fields - expected_fields - allowed_canonical_only
+            if canonical.get(field) not in (None, "")
+        )
+        if unexpected:
+            step_id, run_id = key
+            raise ValueError(f"Frozen run field differs for {step_id} / {run_id}: {unexpected[0]}")
+        validate_frozen_run_update(canonical, expected, allow_execution_identity_fill=True)
     return "present"
 
 
