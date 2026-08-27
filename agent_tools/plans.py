@@ -47,6 +47,7 @@ from .experiment_workspace import (
     merge_run_manifest,
     next_run_index,
     read_run_manifest,
+    read_step_manifest,
     validate_plan_output,
 )
 from .manifests import read_json, write_json, write_text
@@ -1562,6 +1563,24 @@ def _guard_pass_plan_publication(
     unlock_final_test: bool,
     allow_existing: bool = False,
 ) -> DecisionReport:
+    root = experiment_root(recipe)
+    step = recipe.get("step") if isinstance(recipe.get("step"), dict) else {}
+    step_id = str(step.get("id") or "")
+    if not allow_existing and root is not None and step_id:
+        step_manifest = read_step_manifest(root, step_id, allow_missing=True)
+        if step_manifest is not None and str(out) in step_manifest["plans"]:
+            report = _append_issues(
+                report,
+                [
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "output_artifacts",
+                        "Registered plan directories are immutable; retry with a fresh --output-dir.",
+                        None,
+                        {"existing_paths": [str(out)]},
+                    )
+                ],
+            )
     planned_paths = _planned_plan_paths(recipe, out, report, False, unlock_final_test)
     report = _guard_existing_outputs(
         report,

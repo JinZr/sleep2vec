@@ -2336,7 +2336,7 @@ def test_single_run_versions_are_unique_across_repeated_plans(tmp_path: Path):
     assert "run-001" in second_run["version"]
 
 
-def test_repeated_single_run_plan_preserves_prior_run_tree(tmp_path: Path):
+def test_repeated_single_run_plan_rejects_registered_output_directory(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["artifacts"]["overwrite"] = True
@@ -2350,13 +2350,15 @@ def test_repeated_single_run_plan_preserves_prior_run_tree(tmp_path: Path):
     first_run_bytes = {
         path.relative_to(first_run_dir): path.read_bytes() for path in first_run_dir.rglob("*") if path.is_file()
     }
+    first_plan_bytes = (plan_dir / "plan.json").read_bytes()
 
     second = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
-    assert second.returncode == 0, second.stderr
+    assert second.returncode == 1
+    assert "Registered plan directories are immutable" in second.stdout
     assert {
         path.relative_to(first_run_dir): path.read_bytes() for path in first_run_dir.rglob("*") if path.is_file()
     } == first_run_bytes
-    assert (plan_dir / "runs" / "run-001--unit" / "run.json").is_file()
-    assert json.loads((plan_dir / "plan.json").read_text())["runs"][0]["run_id"] == "run-001"
-    assert [row["run_id"] for row in read_run_manifest(tmp_path)] == ["run-000", "run-001"]
+    assert (plan_dir / "plan.json").read_bytes() == first_plan_bytes
+    assert not (plan_dir / "runs" / "run-001--unit").exists()
+    assert [row["run_id"] for row in read_run_manifest(tmp_path)] == ["run-000"]
