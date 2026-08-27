@@ -674,6 +674,119 @@ def test_local_conditional_replace_rejects_public_parent_alias_drift(tmp_path: P
     assert outside_target.read_text() == "old\n"
 
 
+@pytest.mark.parametrize("target_exists", [False, True])
+def test_local_conditional_write_reports_unknown_when_public_parent_moves_during_rename(
+    tmp_path: Path,
+    monkeypatch,
+    target_exists: bool,
+):
+    root = tmp_path / "workspace"
+    parent = root / "adaptive"
+    moved_parent = root / "adaptive-original"
+    outside = tmp_path / "outside"
+    target = parent / "run_registry.tsv"
+    outside_target = outside / target.name
+    parent.mkdir(parents=True)
+    outside.mkdir()
+    outside_target.write_text("outside\n")
+    expected = None
+    if target_exists:
+        target.write_text("old\n")
+        expected = hashlib.sha256(b"old\n").hexdigest()
+
+    def move_public_parent():
+        parent.rename(moved_parent)
+        parent.symlink_to(outside, target_is_directory=True)
+
+    rename_owner = experiment_io.os if target_exists else experiment_io
+    rename_name = "replace" if target_exists else "_rename_noreplace_at"
+    original_rename = getattr(rename_owner, rename_name)
+
+    def rename_after_parent_moves(*args, **kwargs):
+        move_public_parent()
+        return original_rename(*args, **kwargs)
+
+    monkeypatch.setattr(rename_owner, rename_name, rename_after_parent_moves)
+
+    with pytest.raises(RuntimeError, match="publication outcome is unknown"):
+        experiment_io.conditional_atomic_replace_text_at(
+            target,
+            "new\n",
+            expected,
+            managed_root=root,
+        )
+
+    assert outside_target.read_text() == "outside\n"
+    assert (moved_parent / target.name).read_text() == "new\n"
+
+
+@pytest.mark.parametrize("mode", ["create", "replace", "append"])
+def test_embedded_conditional_write_reports_unknown_when_public_parent_moves_during_rename(
+    tmp_path: Path,
+    mode: str,
+):
+    root = tmp_path / "workspace"
+    parent = root / "adaptive"
+    moved_parent = root / "adaptive-moved"
+    outside = tmp_path / "outside"
+    target = parent / "run_registry.tsv"
+    outside_target = outside / target.name
+    parent.mkdir(parents=True)
+    outside.mkdir()
+    outside_target.write_text("outside\n")
+    expected = ""
+    rename_name = "rename_noreplace_at"
+    extra_args = []
+    if mode != "create":
+        target.write_text("old\n")
+        rename_name = "os.replace"
+    if mode == "replace":
+        expected = hashlib.sha256(b"old\n").hexdigest()
+    elif mode == "append":
+        extra_args = ["append"]
+
+    marker = (
+        "                # Supported writers share this lock; this binds the namespace "
+        "for the immediately following rename."
+    )
+    source = python_programs.source("experiment_io.conditional_atomic_replace_text")
+    assert source.count(marker) == 1
+    injection = f"""                original_rename = {rename_name}
+
+                def drift_during_rename(*args, **kwargs):
+                    path.parent.rename(path.parent.with_name(path.parent.name + "-moved"))
+                    path.parent.symlink_to(managed_root.parent / "outside", target_is_directory=True)
+                    return original_rename(*args, **kwargs)
+
+                {rename_name} = drift_during_rename
+"""
+    source = source.replace(marker, injection + marker)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            source,
+            str(root),
+            str(target),
+            expected,
+            "",
+            "",
+            "",
+            "",
+        ]
+        + extra_args,
+        input=b"new\n",
+        capture_output=True,
+        timeout=5,
+    )
+
+    assert result.returncode != 0
+    assert b"publication outcome is unknown" in result.stderr
+    assert outside_target.read_text() == "outside\n"
+    assert (moved_parent / target.name).read_text() == ("old\nnew\n" if mode == "append" else "new\n")
+
+
 def test_remote_conditional_replace_reports_conflict_and_writes_exact_bytes(monkeypatch):
     calls = []
 

@@ -405,10 +405,10 @@ def _open_managed_root(managed_root: Path) -> int:
     try:
         for part in managed_root.relative_to(managed_root.anchor).parts:
             opened = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current)
-            os.close(current)
+            _close_descriptor(current)
             current = opened
     except BaseException:
-        os.close(current)
+        _close_descriptor(current)
         raise
     return current
 
@@ -429,10 +429,10 @@ def _open_managed_parent(root_descriptor: int, relative: Path, *, create: bool) 
                 except FileExistsError:
                     pass
                 opened = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current)
-            os.close(current)
+            _close_descriptor(current)
             current = opened
     except BaseException:
-        os.close(current)
+        _close_descriptor(current)
         raise
     return current, relative.name
 
@@ -451,11 +451,52 @@ def _read_regular_file_at(parent_descriptor: int, name: str) -> tuple[bytes, int
             os.close(descriptor)
 
 
+def _managed_publication_matches(
+    root: Path,
+    relative: Path,
+    root_info: os.stat_result,
+    parent_info: os.stat_result,
+    published_info: os.stat_result,
+    payload: bytes,
+) -> bool:
+    try:
+        with ExitStack() as stack:
+            root_descriptor = _open_managed_root(root)
+            stack.callback(_close_descriptor, root_descriptor)
+            parent_descriptor, target_name = _open_managed_parent(root_descriptor, relative, create=False)
+            stack.callback(_close_descriptor, parent_descriptor)
+            current_root_info = os.fstat(root_descriptor)
+            current_parent_info = os.fstat(parent_descriptor)
+            if (current_root_info.st_dev, current_root_info.st_ino) != (
+                root_info.st_dev,
+                root_info.st_ino,
+            ) or (current_parent_info.st_dev, current_parent_info.st_ino) != (
+                parent_info.st_dev,
+                parent_info.st_ino,
+            ):
+                return False
+            descriptor = os.open(target_name, _FILE_OPEN_FLAGS, dir_fd=parent_descriptor)
+            stack.callback(_close_descriptor, descriptor)
+            current_info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(current_info.st_mode)
+                or current_info.st_nlink != 1
+                or (current_info.st_dev, current_info.st_ino) != (published_info.st_dev, published_info.st_ino)
+            ):
+                return False
+            chunks = []
+            while chunk := os.read(descriptor, 1024 * 1024):
+                chunks.append(chunk)
+            return b"".join(chunks) == payload
+    except OSError:
+        return False
+
+
 def append_managed_text_at(path: str | Path, text: str, *, managed_root: str | Path) -> None:
     root = Path(str(managed_root))
     target = Path(str(path))
     _validate_raw_managed_path(root, target)
-    payload = text.encode()
+    incoming = text.encode()
     with ExitStack() as stack:
         try:
             root_descriptor = _open_managed_root(root)
@@ -482,12 +523,13 @@ def append_managed_text_at(path: str | Path, text: str, *, managed_root: str | P
             raise ValueError(f"Managed output path is missing or aliased: {target}") from exc
         file_descriptor, temporary = _open_temporary_at(parent_descriptor, target_name)
         try:
+            replacement = current + incoming
             temporary_info = os.fstat(file_descriptor)
             if not stat.S_ISREG(temporary_info.st_mode) or temporary_info.st_nlink != 1:
                 raise ValueError(f"Managed append temporary is aliased: {target}")
             with os.fdopen(file_descriptor, "wb") as file_obj:
                 file_descriptor = -1
-                file_obj.write(current + payload)
+                file_obj.write(replacement)
                 os.fchmod(file_obj.fileno(), target_mode)
                 file_obj.flush()
                 os.fsync(file_obj.fileno())
@@ -538,6 +580,17 @@ def append_managed_text_at(path: str | Path, text: str, *, managed_root: str | P
                         )
                     elif not _rename_noreplace_at(public_parent, temporary, public_name):
                         raise RuntimeError(f"Managed output path changed while it was written: {target}")
+                    if not _managed_publication_matches(
+                        root,
+                        target.relative_to(root),
+                        root_info,
+                        parent_info,
+                        temporary_info,
+                        replacement,
+                    ):
+                        raise RuntimeError(
+                            f"Managed publication outcome is unknown because its public path changed: {target}"
+                        )
                 finally:
                     _close_descriptor(public_parent)
             finally:
@@ -746,6 +799,9 @@ def conditional_atomic_replace_text_at(
                     os.fchmod(file_obj.fileno(), target_mode)
                     file_obj.flush()
                     os.fsync(file_obj.fileno())
+                    temporary_info = os.fstat(file_obj.fileno())
+                    if not stat.S_ISREG(temporary_info.st_mode) or temporary_info.st_nlink != 1:
+                        raise ValueError(f"Managed CAS temporary is aliased: {target}")
                 try:
                     public_root = _open_managed_root(root)
                 except OSError as exc:
@@ -793,6 +849,17 @@ def conditional_atomic_replace_text_at(
                         public_name,
                         src_dir_fd=public_parent,
                         dst_dir_fd=public_parent,
+                    )
+                if not _managed_publication_matches(
+                    root,
+                    target.relative_to(root),
+                    root_info,
+                    target_parent_info,
+                    temporary_info,
+                    payload,
+                ):
+                    raise RuntimeError(
+                        f"Managed publication outcome is unknown because its public path changed: {target}"
                     )
             except BaseException:
                 try:

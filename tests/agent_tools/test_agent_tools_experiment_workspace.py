@@ -836,6 +836,45 @@ def test_append_event_does_not_follow_workspace_drift_after_root_open(tmp_path: 
     assert not (moved_workspace / "events.jsonl").exists()
 
 
+@pytest.mark.parametrize("target_exists", [False, True])
+def test_append_event_reports_unknown_when_workspace_moves_during_rename(
+    tmp_path: Path,
+    monkeypatch,
+    target_exists: bool,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    moved_workspace = tmp_path / "workspace-moved"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    events_path = workspace / "events.jsonl"
+    outside_events = outside / "events.jsonl"
+    outside_events.write_text("outside\n")
+    if target_exists:
+        events_path.write_text('{"event_type": "before"}\n')
+
+    def move_workspace():
+        workspace.rename(moved_workspace)
+        workspace.symlink_to(outside, target_is_directory=True)
+
+    rename_owner = experiment_io.os if target_exists else experiment_io
+    rename_name = "replace" if target_exists else "_rename_noreplace_at"
+    original_rename = getattr(rename_owner, rename_name)
+
+    def rename_after_workspace_moves(*args, **kwargs):
+        move_workspace()
+        return original_rename(*args, **kwargs)
+
+    monkeypatch.setattr(rename_owner, rename_name, rename_after_workspace_moves)
+
+    with pytest.raises(RuntimeError, match="publication outcome is unknown"):
+        append_event(workspace, "after", {})
+
+    assert outside_events.read_text() == "outside\n"
+    events = [json.loads(line) for line in (moved_workspace / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events] == (["before", "after"] if target_exists else ["after"])
+
+
 def test_append_event_does_not_modify_hardlink_added_after_snapshot(tmp_path: Path, monkeypatch):
     events_path = tmp_path / "events.jsonl"
     events_path.write_text('{"event_type": "before"}\n')

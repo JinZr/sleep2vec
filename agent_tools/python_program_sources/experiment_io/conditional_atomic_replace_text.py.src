@@ -55,10 +55,10 @@ def open_managed_root():
     try:
         for part in managed_root.relative_to(managed_root.anchor).parts:
             opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
-            os.close(current)
+            close_descriptor(current)
             current = opened
     except BaseException:
-        os.close(current)
+        close_descriptor(current)
         raise
     return current
 
@@ -77,10 +77,10 @@ def open_managed_parent(root_descriptor, relative, create):
                 except FileExistsError:
                     pass
                 opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
-            os.close(current)
+            close_descriptor(current)
             current = opened
     except BaseException:
-        os.close(current)
+        close_descriptor(current)
         raise
     return current, relative.name
 
@@ -97,6 +97,40 @@ def read_regular_file_at(parent_descriptor, name):
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def publication_matches(root_info, parent_info, published_info, payload):
+    try:
+        with ExitStack() as stack:
+            root_descriptor = open_managed_root()
+            stack.callback(close_descriptor, root_descriptor)
+            parent_descriptor, target_name = open_managed_parent(root_descriptor, target_relative, False)
+            stack.callback(close_descriptor, parent_descriptor)
+            current_root_info = os.fstat(root_descriptor)
+            current_parent_info = os.fstat(parent_descriptor)
+            if (current_root_info.st_dev, current_root_info.st_ino) != (
+                root_info.st_dev,
+                root_info.st_ino,
+            ) or (current_parent_info.st_dev, current_parent_info.st_ino) != (
+                parent_info.st_dev,
+                parent_info.st_ino,
+            ):
+                return False
+            descriptor = os.open(target_name, FILE_OPEN_FLAGS, dir_fd=parent_descriptor)
+            stack.callback(close_descriptor, descriptor)
+            current_info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(current_info.st_mode)
+                or current_info.st_nlink != 1
+                or (current_info.st_dev, current_info.st_ino) != (published_info.st_dev, published_info.st_ino)
+            ):
+                return False
+            chunks = []
+            while chunk := os.read(descriptor, 1024 * 1024):
+                chunks.append(chunk)
+            return b"".join(chunks) == payload
+    except OSError:
+        return False
 
 
 @contextmanager
@@ -310,6 +344,10 @@ with ExitStack() as lock_stack:
                     )
                 elif not rename_noreplace_at(public_parent, temporary, public_name):
                     raise SystemExit(45)
+                if not publication_matches(root_info, target_parent_info, temporary_info, payload):
+                    raise RuntimeError(
+                        f"Managed publication outcome is unknown because its public path changed: {path}"
+                    )
             finally:
                 close_descriptor(public_parent)
         finally:
