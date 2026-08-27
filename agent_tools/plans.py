@@ -499,9 +499,14 @@ def write_user_decision_template(
     if not payload:
         return None
     target = Path(output_dir) / USER_DECISIONS_FILENAME
-    if target.exists() or target.is_symlink():
+    text = yaml.safe_dump(payload, sort_keys=False)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # This file is human-editable, so exclusive creation preserves decisions saved during publication.
+    try:
+        with target.open("x") as file_obj:
+            file_obj.write(text)
+    except FileExistsError:
         return target, False
-    write_text(target, yaml.safe_dump(payload, sort_keys=False))
     return target, True
 
 

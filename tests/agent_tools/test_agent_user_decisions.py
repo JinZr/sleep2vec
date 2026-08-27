@@ -9,7 +9,7 @@ import yaml
 
 from agent_tools.decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
 from agent_tools.decisions import user_decision_template
-from agent_tools.plans import evaluate_recipe
+from agent_tools.plans import evaluate_recipe, write_user_decision_template
 from agent_tools.recipes import load_consultation_policy
 
 
@@ -186,6 +186,24 @@ def test_doctor_does_not_overwrite_existing_user_decisions_file(tmp_path: Path):
     assert result.returncode == 2
     assert "Preserved existing user decisions file" in result.stdout
     assert template.read_text() == original
+
+
+def test_doctor_does_not_overwrite_user_decisions_created_during_publication(tmp_path: Path, monkeypatch):
+    recipe_path = write_finetune_recipe(tmp_path, include_label=False)
+    recipe, _cfg, report = evaluate_recipe(recipe_path)
+    output_dir = tmp_path / "doctor"
+    template = output_dir / "decisions.yaml"
+    original_open = Path.open
+
+    def competing_open(path: Path, mode: str = "r", *args, **kwargs):
+        if path == template and mode == "x":
+            template.write_text("user competitor\n")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", competing_open)
+
+    assert write_user_decision_template(output_dir, recipe, report) == (template, False)
+    assert template.read_text() == "user competitor\n"
 
 
 def test_user_decision_template_skips_non_decisions_and_deduplicates_base_issue():
