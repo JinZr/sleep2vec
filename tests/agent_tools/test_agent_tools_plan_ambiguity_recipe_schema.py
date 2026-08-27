@@ -6,17 +6,12 @@ from shlex import quote as shlex_quote
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
+from test_agent_plan_blocks_on_ambiguity import _first_run, _hparam_recipe, _run
+from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
 import yaml
 
 from agent_tools import plan_context, plans
 from agent_tools.run_artifacts import read_hparam_plan
-
-from test_agent_plan_blocks_on_ambiguity import (
-    _first_run,
-    _hparam_recipe,
-    _run,
-    _stub_execution_target,
-)
 
 
 def test_hparam_recipe_cannot_inherit_experiment_and_step_from_base(tmp_path: Path):

@@ -2,30 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import shlex
 import shutil
 import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
 
 import pytest
-import yaml
-
-from agent_tools import (
-    hparam_runtime,
-    managed_scheduler,
-    manifests,
-    plan_rendering,
-    run_evidence,
-)
-from agent_tools.experiment_workspace import (
-    MONITOR_EXIT_CODE_PREFIX,
-    file_sha256,
-    merge_run_manifest,
-    merge_run_row,
-)
 from test_agent_tools_hparam_runtime import (
     _REAL_VALIDATED_EXECUTION_SNAPSHOT,
     _hparam_recipe,
@@ -34,11 +19,15 @@ from test_agent_tools_hparam_runtime import (
     _read_table,
     _run,
     _set_execution_probe,
-    _stub_execution_snapshot_preflight,
     _write_process_identity,
     _write_runtime_rows,
     write_yaml,
 )
+from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
+import yaml
+
+from agent_tools import hparam_runtime, managed_scheduler, manifests, plan_rendering, run_evidence
+from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256, merge_run_manifest, merge_run_row
 
 
 def test_registered_step_remains_canonical_through_plan_and_dry_run_launch(tmp_path: Path):
@@ -82,6 +71,7 @@ def test_registered_step_remains_canonical_through_plan_and_dry_run_launch(tmp_p
     events = [json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("step_registered") == 1
 
+
 def test_hparam_launch_rejects_unregistered_plan_copy_before_start(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -98,6 +88,7 @@ def test_hparam_launch_rejects_unregistered_plan_copy_before_start(tmp_path: Pat
 
     assert started == []
     assert not (copied_plan / "launch_manifest.tsv").exists()
+
 
 def test_hparam_launch_rejects_completed_experiment_without_writes(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
@@ -123,6 +114,7 @@ def test_hparam_launch_rejects_completed_experiment_without_writes(tmp_path: Pat
     assert started == []
     assert after == before
 
+
 def test_hparam_launch_does_not_restart_workspace_terminal_run(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -140,6 +132,7 @@ def test_hparam_launch_does_not_restart_workspace_terminal_run(tmp_path: Path, m
 
     assert started == []
     assert _read_table(plan_dir / "run_status.tsv")[0]["status"] == "failed"
+
 
 @pytest.mark.parametrize("operation", ["launch", "monitor", "stop"])
 def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: Path, monkeypatch, operation: str):
@@ -180,6 +173,7 @@ def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: 
     assert canonical["score"] == "0.9"
     assert canonical["wandb_url"] == "https://wandb.example/current"
 
+
 def test_hparam_launch_records_event_only_for_a_process_started_by_that_call(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -196,6 +190,7 @@ def test_hparam_launch_records_event_only_for_a_process_started_by_that_call(tmp
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert started and len(started) == 1
     assert [event["event_type"] for event in events].count("run_launched") == 1
+
 
 def test_hparam_launch_serializes_concurrent_execute_calls(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
@@ -251,6 +246,7 @@ def test_hparam_launch_serializes_concurrent_execute_calls(tmp_path: Path, monke
     assert failures == []
     assert len(started) == 1
 
+
 def test_hparam_launch_commits_execution_identity_before_start(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     started = []
@@ -271,6 +267,7 @@ def test_hparam_launch_commits_execution_identity_before_start(tmp_path: Path, m
     assert len(started) == 1
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
 
+
 def test_hparam_launch_does_not_start_when_identity_precommit_fails(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     started = []
@@ -287,6 +284,7 @@ def test_hparam_launch_does_not_start_when_identity_precommit_fails(tmp_path: Pa
         hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
 
     assert started == []
+
 
 def test_hparam_launch_preserves_first_commit_when_second_start_raises(tmp_path: Path, monkeypatch):
     _write_runtime_rows(
@@ -322,6 +320,7 @@ def test_hparam_launch_preserves_first_commit_when_second_start_raises(tmp_path:
     assert rows["run-001"]["status"] == "planned"
     assert rows["run-001"]["target"] == "local"
 
+
 def test_hparam_launch_artifact_reconciliation_never_starts_pending_runs_and_deduplicates_events(
     tmp_path: Path, monkeypatch
 ):
@@ -351,6 +350,7 @@ def test_hparam_launch_artifact_reconciliation_never_starts_pending_runs_and_ded
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_launched") == 1
 
+
 def test_hparam_launch_does_not_start_after_canonical_owner_commits_terminal_status(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     real_merge = merge_run_manifest
@@ -374,6 +374,7 @@ def test_hparam_launch_does_not_start_after_canonical_owner_commits_terminal_sta
     assert started == []
     assert not (tmp_path / "events.jsonl").exists()
 
+
 def test_hparam_launch_failure_does_not_record_launched_event(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -384,6 +385,7 @@ def test_hparam_launch_failure_does_not_record_launched_event(tmp_path: Path, mo
 
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert "run_launched" not in [event["event_type"] for event in events]
+
 
 def test_hparam_launch_rejects_workspace_frozen_drift_before_start(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
@@ -402,6 +404,7 @@ def test_hparam_launch_rejects_workspace_frozen_drift_before_start(tmp_path: Pat
 
     assert started == []
     assert not (plan_dir / "launch_manifest.tsv").exists()
+
 
 def test_hparam_launch_rejects_invalid_canonical_output_before_start(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
@@ -425,6 +428,7 @@ def test_hparam_launch_rejects_invalid_canonical_output_before_start(tmp_path: P
     assert not (plan_dir / "launch_manifest.tsv").exists()
     assert not (plan_dir / "run_status.tsv").exists()
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
 
 def test_hparam_ssh_launch_validates_run_outputs_remotely_before_start(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(
@@ -459,6 +463,7 @@ def test_hparam_ssh_launch_validates_run_outputs_remotely_before_start(tmp_path:
     assert remote_calls[0][0][:2] == ["ssh", "unit-host"]
     assert remote_calls[0][1]["timeout"] == hparam_runtime.exp_io.SSH_TIMEOUT_SECONDS
 
+
 def test_hparam_runtime_rejects_tampered_relative_workdir_before_start(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -478,6 +483,7 @@ def test_hparam_runtime_rejects_tampered_relative_workdir_before_start(tmp_path:
     assert started == []
     assert not (plan_dir / "launch_manifest.tsv").exists()
 
+
 def test_hparam_runtime_rejects_workdir_that_differs_from_frozen_runtime_path(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -496,6 +502,7 @@ def test_hparam_runtime_rejects_workdir_that_differs_from_frozen_runtime_path(tm
 
     assert started == []
     assert not (plan_dir / "launch_manifest.tsv").exists()
+
 
 @pytest.mark.parametrize(
     ("field", "changed"),
@@ -544,6 +551,7 @@ def test_hparam_launch_rejects_execution_drift_from_resolved_recipe_before_side_
     assert calls == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
+
 def test_hparam_launch_rejects_synchronized_recipe_drift_before_side_effects(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -570,6 +578,7 @@ def test_hparam_launch_rejects_synchronized_recipe_drift_before_side_effects(tmp
     assert calls == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
+
 def test_hparam_launch_rejects_base_runtime_drift_before_side_effects(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -591,6 +600,7 @@ def test_hparam_launch_rejects_base_runtime_drift_before_side_effects(tmp_path: 
 
     assert calls == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
 
 @pytest.mark.parametrize("operation", ["launch", "monitor"])
 def test_hparam_runtime_ignores_uncommitted_launch_execution_identity(tmp_path: Path, monkeypatch, operation: str):
@@ -639,6 +649,7 @@ def test_hparam_runtime_ignores_uncommitted_launch_execution_identity(tmp_path: 
     else:
         assert calls == []
         assert canonical.get("target", "") == ""
+
 
 def test_hparam_launch_binds_ssh_conda_gpu_and_pid_identity_only_after_a_launch_slot(
     tmp_path: Path,
@@ -717,6 +728,7 @@ def test_hparam_launch_binds_ssh_conda_gpu_and_pid_identity_only_after_a_launch_
     assert rows[0]["pid_path"].endswith("runs/run-000--lr-1e-6/pid")
     assert started == [rows[0]["command"]]
 
+
 def test_hparam_run_queue_fails_on_missing_pid_capacity_blocker_from_another_plan(tmp_path: Path, monkeypatch):
     execution = {"workdir": str(tmp_path), "gpu_pool": [0], "gpus_per_run": 1}
     first_recipe = _hparam_recipe(tmp_path, execution=execution)
@@ -755,6 +767,7 @@ def test_hparam_run_queue_fails_on_missing_pid_capacity_blocker_from_another_pla
     assert exc_info.value.step_id == first_run["step_id"]
     assert exc_info.value.run_id == first_run["run_id"]
 
+
 def test_hparam_launch_revalidates_verified_execution_target_before_start(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -784,6 +797,7 @@ def test_hparam_launch_revalidates_verified_execution_target_before_start(tmp_pa
     assert snapshot["module"] == "sleep2vec.finetune"
     assert set(snapshot["required_options"]).issubset(snapshot["supported_options"])
     assert not list(plan_dir.glob(f".{hparam_runtime.EXECUTION_SNAPSHOT_NAME}.*"))
+
 
 def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
@@ -815,6 +829,7 @@ def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, 
     assert not (plan_dir / "launch_manifest.tsv").exists()
     assert not (plan_dir / "run_status.tsv").exists()
 
+
 def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch):
     calls = []
 
@@ -838,6 +853,7 @@ def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch):
     assert "${PYTHONPATH" not in shell
     assert "TOKEN=value" in shell
     assert kwargs["timeout"] == hparam_runtime.LAUNCH_TIMEOUT_SECONDS
+
 
 def test_verified_launch_rechecks_snapshot_and_artifacts_immediately_before_process_start(tmp_path: Path):
     script = tmp_path / "launch.sh"
@@ -873,6 +889,7 @@ def test_verified_launch_rechecks_snapshot_and_artifacts_immediately_before_proc
         "start_new_session=True"
     )
 
+
 def test_launch_creates_and_stops_a_dedicated_process_group(tmp_path: Path):
     script = tmp_path / "launch.sh"
     script.write_text("#!/usr/bin/env bash\nsleep 30\n")
@@ -895,6 +912,7 @@ def test_launch_creates_and_stops_a_dedicated_process_group(tmp_path: Path):
     run_evidence.stop_process_group({}, identity)
 
     assert run_evidence.process_identity_running({}, identity) is False
+
 
 @pytest.mark.parametrize(
     ("exit_code", "expected_status"),
@@ -947,6 +965,7 @@ def test_monitor_owned_launch_uses_shell_exit_code(tmp_path: Path, exit_code: in
     assert log_path.read_text().splitlines()[-1] == f"{MONITOR_EXIT_CODE_PREFIX}{exit_code}"
     assert observed["status"] == expected_status
 
+
 def test_launch_timeout_remains_nonterminal_until_process_evidence_reconciles(monkeypatch):
     monkeypatch.setattr(
         hparam_runtime.subprocess,
@@ -955,6 +974,7 @@ def test_launch_timeout_remains_nonterminal_until_process_evidence_reconciles(mo
     )
 
     assert hparam_runtime._start_process({}, "managed launch") == "launched"
+
 
 @pytest.mark.parametrize(
     ("execution", "expected_status"),
@@ -972,6 +992,7 @@ def test_launch_returncode_255_is_uncertain_only_over_ssh(monkeypatch, execution
 
     assert hparam_runtime._start_process(execution, "managed launch") == expected_status
 
+
 def test_unresolved_launch_timeout_is_not_relaunched(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     starts = []
@@ -986,6 +1007,7 @@ def test_unresolved_launch_timeout_is_not_relaunched(tmp_path: Path, monkeypatch
 
     assert starts == ["timeout"]
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "missing_pid"
+
 
 def test_execution_probe_allows_untracked_experiment_artifacts(tmp_path: Path):
     repo = tmp_path / "runtime-repo"
@@ -1069,6 +1091,7 @@ def test_execution_probe_allows_untracked_experiment_artifacts(tmp_path: Path):
     assert f"Frozen run artifact is not an independent file: {checkpoint}" in checkpoint_result.stderr
     assert not (artifact_dir / "pid").exists()
 
+
 def test_execution_probe_rejects_runtime_module_outside_verified_repository(tmp_path: Path):
     repo = tmp_path / "runtime-repo"
     repo.mkdir()
@@ -1092,6 +1115,7 @@ def test_execution_probe_rejects_runtime_module_outside_verified_repository(tmp_
             {"workdir": str(repo), "python": sys.executable, "runtime_commit": commit},
             [{"run_id": "run-000", "script": str(script), "command": command}],
         )
+
 
 def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(
@@ -1127,6 +1151,7 @@ def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(t
     assert row["status"] == "planned"
     assert row.get("target", "") == ""
 
+
 def test_hparam_launch_rejects_frozen_cli_values_before_managed_writes(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -1142,6 +1167,7 @@ def test_hparam_launch_rejects_frozen_cli_values_before_managed_writes(tmp_path:
     assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
 
+
 def test_hparam_launch_rejects_unintended_first_runtime_commit(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "runtime_commit": "a" * 40})
     plan_dir = tmp_path / "plan"
@@ -1155,6 +1181,7 @@ def test_hparam_launch_rejects_unintended_first_runtime_commit(tmp_path: Path, m
 
     assert calls == ["identity"]
     assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+
 
 def test_hparam_launch_rejects_execution_snapshot_drift_before_next_wave(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "max_concurrent": 1})
@@ -1186,6 +1213,7 @@ def test_hparam_launch_rejects_execution_snapshot_drift_before_next_wave(tmp_pat
 
     assert len(started) == 1
     assert all(path.read_bytes() == content for path, content in before.items())
+
 
 def test_repeated_ssh_dry_run_does_not_observe_runtime_before_execute(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(
@@ -1232,6 +1260,7 @@ def test_repeated_ssh_dry_run_does_not_observe_runtime_before_execute(tmp_path: 
     assert len(started) == 1
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
 
+
 @pytest.mark.parametrize("runtime_fault", ["existing", "ancestor_symlink"])
 def test_hparam_launch_rejects_unsafe_runtime_root_before_start(tmp_path: Path, monkeypatch, runtime_fault: str):
     recipe = _hparam_recipe(tmp_path)
@@ -1257,6 +1286,7 @@ def test_hparam_launch_rejects_unsafe_runtime_root_before_start(tmp_path: Path, 
 
     assert started == []
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
+
 
 def test_hparam_ssh_launch_rejects_existing_remote_runtime_root_before_start(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(
@@ -1298,6 +1328,7 @@ def test_hparam_ssh_launch_rejects_existing_remote_runtime_root_before_start(tmp
     assert started == []
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
 
+
 def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -1323,6 +1354,7 @@ def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path, monkeypatc
     assert "start_new_session=True" in rows[0]["command"]
     assert "CUDA_VISIBLE_DEVICES=2" in rows[0]["command"]
     assert started == [rows[0]["command"]]
+
 
 def test_hparam_launch_resolves_relative_plan_dir_before_cd(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
@@ -1365,6 +1397,7 @@ def test_hparam_launch_resolves_relative_plan_dir_before_cd(tmp_path: Path):
     assert rows[0]["log_path"] == str(plan_dir / "runs" / "run-000--lr-1e-6" / "stdout.log")
     assert "relative_plan/relative_plan" not in rows[0]["command"]
 
+
 def test_hparam_launch_does_not_retry_missing_pid(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -1387,6 +1420,7 @@ def test_hparam_launch_does_not_retry_missing_pid(tmp_path: Path, monkeypatch):
     assert started == []
     status = {row["run_id"]: row["status"] for row in _read_table(plan_dir / "launch_manifest.tsv")}
     assert status == {"run-000": "missing_pid", "run-001": "pending"}
+
 
 def test_hparam_launch_fail_flag_reports_owned_missing_pid_before_start(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
@@ -1423,6 +1457,7 @@ def test_hparam_launch_fail_flag_reports_owned_missing_pid_before_start(tmp_path
     assert {row["run_id"]: row["status"] for row in _read_table(plan_dir / "launch_manifest.tsv")} == expected
     assert {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")} == expected
 
+
 def test_hparam_launch_validates_every_snapshot_before_starting(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -1444,6 +1479,7 @@ def test_hparam_launch_validates_every_snapshot_before_starting(tmp_path: Path, 
     assert started == []
     assert not (plan_dir / "launch_manifest.tsv").exists()
     assert not (plan_dir / "run_status.tsv").exists()
+
 
 def test_hparam_runtime_rejects_legacy_plan_without_side_effects(tmp_path: Path, monkeypatch):
     (tmp_path / "plan.json").write_text(json.dumps({"trials": [{"trial_id": "trial_000"}], "recipe": {}}))

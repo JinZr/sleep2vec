@@ -1,21 +1,10 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
+import sys
 
 import pytest
-import yaml
-
-from agent_tools import (
-    decision_hparam,
-    hparam_runtime,
-    managed_scheduler,
-    run_evidence,
-)
-from agent_tools.experiment_workspace import (
-    merge_run_manifest,
-)
 from test_agent_tools_hparam_runtime import (
     _REAL_VALIDATED_EXECUTION_SNAPSHOT,
     _RUNTIME_COMMIT,
@@ -23,11 +12,15 @@ from test_agent_tools_hparam_runtime import (
     _process_identity,
     _read_table,
     _run,
-    _stub_execution_snapshot_preflight,
     _write_process_identity,
     _write_runtime_rows,
     write_yaml,
 )
+from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
+import yaml
+
+from agent_tools import decision_hparam, hparam_runtime, managed_scheduler, run_evidence
+from agent_tools.experiment_workspace import merge_run_manifest
 
 
 def test_hparam_plan_rejects_gpus_per_run_without_a_physical_pool_before_workspace_creation(tmp_path: Path):
@@ -51,6 +44,7 @@ def test_hparam_plan_rejects_gpus_per_run_without_a_physical_pool_before_workspa
     assert not plan_dir.exists()
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
+
 @pytest.mark.parametrize("gpus_per_run", [0, False, 0.5, 1.0, 1.5, "0.5", "1", "1.5"])
 def test_hparam_execution_reports_invalid_gpus_per_run(gpus_per_run):
     issues = decision_hparam._hparam_execution_issues(
@@ -63,6 +57,7 @@ def test_hparam_execution_reports_invalid_gpus_per_run(gpus_per_run):
     assert issues[0].status.value == "FAIL"
     assert "must be a positive integer" in issues[0].message
 
+
 @pytest.mark.parametrize("max_concurrent", [True, 1.0, 1.5, "1", 0])
 def test_hparam_execution_reports_invalid_max_concurrent(max_concurrent):
     issues = decision_hparam._hparam_execution_issues({"max_concurrent": max_concurrent}, {})
@@ -71,6 +66,7 @@ def test_hparam_execution_reports_invalid_max_concurrent(max_concurrent):
     assert issues[0].field == "execution.max_concurrent"
     assert issues[0].status.value == "FAIL"
     assert "must be a positive integer" in issues[0].message
+
 
 @pytest.mark.parametrize(
     ("execution", "field"),
@@ -87,6 +83,7 @@ def test_hparam_execution_rejects_invalid_runtime_identity(execution, field):
     assert len(issues) == 1
     assert issues[0].field == field
     assert issues[0].status.value == "FAIL"
+
 
 def test_hparam_execution_warns_when_slurm_request_voluntarily_lowers_priority():
     issues = decision_hparam._hparam_execution_issues(
@@ -109,12 +106,14 @@ def test_hparam_execution_warns_when_slurm_request_voluntarily_lowers_priority()
     assert "nice=100 voluntarily lowers priority" in priority_issue.message
     assert "nodelist narrows eligible nodes" in priority_issue.message
 
+
 def test_hparam_runtime_rejects_gpus_per_run_without_a_physical_pool():
     with pytest.raises(
         ValueError,
         match="execution.gpus_per_run requires a non-empty execution.gpu_pool or runtime.devices",
     ):
         hparam_runtime._gpu_groups({"execution": {"gpus_per_run": 2}})
+
 
 def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(
@@ -155,6 +154,7 @@ def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group
     assert [row["gpus"] for row in rows] == ["0", "1", "1", ""]
     assert [row["status"] for row in rows] == ["missing_pid", "finished", "launched", "pending"]
 
+
 def test_hparam_run_queue_dry_run_returns_after_one_preview(tmp_path: Path, monkeypatch):
     calls = []
     manifest = tmp_path / "launch_manifest.tsv"
@@ -169,6 +169,7 @@ def test_hparam_run_queue_dry_run_returns_after_one_preview(tmp_path: Path, monk
 
     assert result == manifest
     assert calls == [((tmp_path / "plan").resolve(), True)]
+
 
 def test_hparam_run_queue_executes_each_wave_until_all_runs_are_terminal(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "max_concurrent": 1})
@@ -205,6 +206,7 @@ def test_hparam_run_queue_executes_each_wave_until_all_runs_are_terminal(tmp_pat
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert sum(event["event_type"] == "run_status_changed" for event in events) == 3
 
+
 def test_hparam_run_queue_returns_terminal_plan_without_monitor_or_launch(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -217,6 +219,7 @@ def test_hparam_run_queue_returns_terminal_plan_without_monitor_or_launch(tmp_pa
 
     assert hparam_runtime.run_hparam_queue(plan_dir, dry_run=False) == plan_dir / "run_status.tsv"
     assert _read_table(plan_dir / "run_status.tsv")[0]["status"] == "finished"
+
 
 def test_hparam_run_queue_fails_instead_of_waiting_on_missing_pid(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
@@ -233,6 +236,7 @@ def test_hparam_run_queue_fails_instead_of_waiting_on_missing_pid(tmp_path: Path
 
     with pytest.raises(RuntimeError, match="cannot advance.*missing_pid"):
         hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)
+
 
 def test_hparam_run_queue_blocks_after_unsafe_process_identity(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
@@ -252,6 +256,7 @@ def test_hparam_run_queue_blocks_after_unsafe_process_identity(tmp_path: Path, m
     assert canonical["status"] == "missing_pid"
     assert "reused by a different process" in canonical["process_identity_error"]
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "missing_pid"
+
 
 def test_hparam_run_queue_fails_after_unbound_remote_launch_remains_unknown(tmp_path: Path, monkeypatch):
     _write_runtime_rows(
@@ -275,6 +280,7 @@ def test_hparam_run_queue_fails_after_unbound_remote_launch_remains_unknown(tmp_
     row = _read_table(tmp_path / "run_manifest.tsv")[0]
     assert row["status"] == "unknown_remote"
     assert all(row.get(field, "") == "" for field in ("pid", "process_group_id", "process_start_token"))
+
 
 def test_hparam_run_queue_keeps_monitoring_bound_unknown_remote(tmp_path: Path, monkeypatch):
     _write_runtime_rows(
@@ -312,6 +318,7 @@ def test_hparam_run_queue_keeps_monitoring_bound_unknown_remote(tmp_path: Path, 
     assert launch_calls == [True]
     assert sleeps == [1]
 
+
 def test_hparam_run_queue_records_transition_observed_during_launch(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -337,6 +344,7 @@ def test_hparam_run_queue_records_transition_observed_during_launch(tmp_path: Pa
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     transitions = [event for event in events if event["event_type"] == "run_status_changed"]
     assert [(event["from"], event["to"]) for event in transitions] == [("running", "finished")]
+
 
 def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path: Path, monkeypatch):
     execution = {"workdir": str(tmp_path), "gpu_pool": [0], "gpus_per_run": 1}
@@ -384,6 +392,7 @@ def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path:
         for event in events
     )
 
+
 def test_hparam_launch_rejects_partially_executed_plan_without_snapshot(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -407,6 +416,7 @@ def test_hparam_launch_rejects_partially_executed_plan_without_snapshot(tmp_path
 
     assert calls == []
     assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+
 
 def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_is_unknown(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(
@@ -442,6 +452,7 @@ def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_
     assert [row["status"] for row in rows] == ["running", "pending"]
     assert [row["gpus"] for row in rows] == ["", ""]
     assert started == []
+
 
 def test_hparam_launch_blocks_default_gpu_capacity_when_other_active_identity_is_unknown(tmp_path: Path, monkeypatch):
     execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
@@ -479,6 +490,7 @@ def test_hparam_launch_blocks_default_gpu_capacity_when_other_active_identity_is
     assert row["status"] == "pending"
     assert row["gpus"] == ""
     assert started == []
+
 
 def test_hparam_launch_counts_active_gpu_load_from_previous_plan(tmp_path: Path, monkeypatch):
     execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
@@ -519,6 +531,7 @@ def test_hparam_launch_counts_active_gpu_load_from_previous_plan(tmp_path: Path,
     assert [row["gpus"] for row in rows] == ["1", ""]
     assert [row["status"] for row in rows] == ["launched", "pending"]
 
+
 def test_hparam_launch_full_previous_plan_keeps_replacement_pending(tmp_path: Path, monkeypatch):
     execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
     first_recipe = _hparam_recipe(tmp_path, execution=execution)
@@ -554,6 +567,7 @@ def test_hparam_launch_full_previous_plan_keeps_replacement_pending(tmp_path: Pa
     assert row["gpus"] == ""
     assert started == []
 
+
 def test_hparam_launch_keeps_cpu_only_concurrency_plan_local(tmp_path: Path, monkeypatch):
     execution = {"workdir": str(tmp_path)}
     first_recipe = _hparam_recipe(tmp_path, execution=execution)
@@ -583,6 +597,7 @@ def test_hparam_launch_keeps_cpu_only_concurrency_plan_local(tmp_path: Path, mon
     rows = _read_table(second_plan / "launch_manifest.tsv")
     assert len(started) == 1
     assert [row["status"] for row in rows] == ["launched", "pending"]
+
 
 def test_hparam_launch_explicit_gpu_oversubscription_warns_and_balances_groups(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(
@@ -618,6 +633,7 @@ def test_hparam_launch_explicit_gpu_oversubscription_warns_and_balances_groups(t
     assert len(started) == 4
     assert [row["gpus"] for row in rows] == ["0", "1", "0", "1"]
     assert {row["status"] for row in rows} == {"launched"}
+
 
 def test_hparam_launch_explicit_oversubscription_balances_overlapping_previous_group(tmp_path: Path, monkeypatch):
     first_recipe = _hparam_recipe(
@@ -657,6 +673,7 @@ def test_hparam_launch_explicit_oversubscription_balances_overlapping_previous_g
     assert "CUDA_VISIBLE_DEVICES=2" in started[0]
     assert [row["gpus"] for row in rows] == ["2", "0", "1", ""]
     assert [row["status"] for row in rows] == ["launched", "launched", "launched", "pending"]
+
 
 @pytest.mark.parametrize(
     ("different_field", "expected_gpus", "expected_statuses"),
@@ -728,6 +745,7 @@ def test_hparam_launch_scopes_active_gpu_load_by_target_and_ssh_host(
     if different_field in {"workdir", "local_host"}:
         assert "CUDA_VISIBLE_DEVICES=1" in started[0]
 
+
 @pytest.mark.parametrize("max_concurrent", [True, 1.0, 1.5, "1", 0])
 def test_managed_scheduler_rejects_invalid_max_concurrent(max_concurrent):
     with pytest.raises(ValueError, match="execution.max_concurrent must be a positive integer"):
@@ -738,6 +756,7 @@ def test_managed_scheduler_rejects_invalid_max_concurrent(max_concurrent):
             {},
             expected_keys=set(),
         )
+
 
 def test_managed_scheduler_capacity_balances_around_other_active_runs():
     execution = {"gpu_pool": [0, 1, 2], "gpus_per_run": 1, "max_concurrent": 3}
@@ -773,6 +792,7 @@ def test_managed_scheduler_capacity_balances_around_other_active_runs():
     assert allocation is not None
     assert allocation[2] == 1
 
+
 def test_direct_gpu_capacity_does_not_count_active_slurm_allocations():
     execution = {"gpu_pool": [0, 1], "gpus_per_run": 1, "max_concurrent": 2}
     expected = {
@@ -805,6 +825,7 @@ def test_direct_gpu_capacity_does_not_count_active_slurm_allocations():
 
     assert capacity.slots == 2
     assert capacity.group_loads == [0, 0]
+
 
 def test_managed_scheduler_ignores_external_missing_pid_when_expected_runs_are_terminal(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
@@ -846,6 +867,7 @@ def test_managed_scheduler_ignores_external_missing_pid_when_expected_runs_are_t
     assert result.committed_rows[0]["run_id"] == rows[0]["run_id"]
     assert result.committed_rows[0]["status"] == "finished"
 
+
 def test_managed_scheduler_row_terminal_owner_overrides_monitor_default(tmp_path: Path, monkeypatch):
     observed = []
 
@@ -863,6 +885,7 @@ def test_managed_scheduler_row_terminal_owner_overrides_monitor_default(tmp_path
 
     assert managed_scheduler.observe_run(tmp_path, row, row) == row
     assert observed == [(True, False)]
+
 
 def test_managed_scheduler_observe_run_preserves_artifact_context(tmp_path: Path, monkeypatch):
     row = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])[0]
@@ -883,6 +906,7 @@ def test_managed_scheduler_observe_run_preserves_artifact_context(tmp_path: Path
     assert observed["run_manifest"] == str(manifest)
     assert observed["checkpoints"] == "epoch=1.ckpt;epoch=2.ckpt"
     assert observed["checkpoint_count"] == 2
+
 
 def test_managed_scheduler_validates_result_root_against_explicit_output_root(tmp_path: Path):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])

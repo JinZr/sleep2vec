@@ -3,12 +3,21 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import shlex
 import subprocess
-from pathlib import Path
 
 import pytest
+from test_agent_tools_hparam_runtime import (
+    _hparam_recipe,
+    _read_table,
+    _run,
+    _write_runtime_rows,
+    _write_slurm_plan,
+    write_yaml,
+)
+from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
 
 from agent_tools import (
@@ -22,21 +31,7 @@ from agent_tools import (
     run_artifacts,
     slurm,
 )
-from agent_tools.experiment_workspace import (
-    MONITOR_EXIT_CODE_PREFIX,
-    file_sha256,
-    next_run_index,
-    run_identity,
-)
-from test_agent_tools_hparam_runtime import (
-    _hparam_recipe,
-    _read_table,
-    _run,
-    _stub_execution_snapshot_preflight,
-    _write_runtime_rows,
-    _write_slurm_plan,
-    write_yaml,
-)
+from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256, next_run_index, run_identity
 
 
 @pytest.mark.parametrize("direct_controller", [False, True])
@@ -48,6 +43,7 @@ def test_slurm_plan_freezes_controller_topology(tmp_path: Path, direct_controlle
 
     assert run["scheduler_direct_controller"] == expected
     assert canonical["scheduler_direct_controller"] == expected
+
 
 @pytest.mark.parametrize("direct_controller", [False, True])
 def test_hparam_monitor_uses_canonical_slurm_controller_topology(
@@ -82,6 +78,7 @@ def test_hparam_monitor_uses_canonical_slurm_controller_topology(
     if direct_controller:
         execution["scheduler"] = {"direct_controller": True}
     assert observed_executions == [execution]
+
 
 @pytest.mark.parametrize(
     ("variant", "gpus_per_run"),
@@ -134,6 +131,7 @@ def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path, variant: str
     assert command[devices_index + 1 + gpus_per_run].startswith("--")
     assert "sbatch --parsable" in _read_table(plan_dir / "launch_manifest.tsv")[0]["command"]
 
+
 def test_slurm_doctor_reports_live_capabilities_without_mutating_scheduler(tmp_path: Path, monkeypatch):
     recipe_path = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe_path.read_text())
@@ -180,6 +178,7 @@ def test_slurm_doctor_reports_live_capabilities_without_mutating_scheduler(tmp_p
     assert calls == [("local", "gpu")]
     assert recipe["execution"]["scheduler"] == configured_scheduler
 
+
 def test_slurm_doctor_reports_unavailable_capabilities_as_warning(tmp_path: Path, monkeypatch):
     recipe_path = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe_path.read_text())
@@ -205,6 +204,7 @@ def test_slurm_doctor_reports_unavailable_capabilities_as_warning(tmp_path: Path
     assert capability_issue.status.value == "WARN"
     assert "inspection was unavailable" in capability_issue.message
     assert recipe["execution"]["scheduler"] == configured_scheduler
+
 
 @pytest.mark.parametrize(
     "artifact_name", ["job.sbatch", "slurm_terminal.json", "allocation_identity.json", "slurm.log"]
@@ -241,6 +241,7 @@ def test_slurm_plan_rejects_existing_single_use_artifacts_before_writing(tmp_pat
     assert "Output artifacts already exist" in result.stdout
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
+
 def test_slurm_plan_rejects_scheduler_artifact_symlink_before_writing(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -276,6 +277,7 @@ def test_slurm_plan_rejects_scheduler_artifact_symlink_before_writing(tmp_path: 
     assert target.read_text() == "outside\n"
     assert not (plan_dir / "plan.json").exists()
 
+
 @pytest.mark.parametrize(
     ("section", "field", "value", "message"),
     [
@@ -310,6 +312,7 @@ def test_public_slurm_hparam_recipe_rejects_direct_scheduler_controls(
     assert re.search(message, result.stdout)
     assert not (tmp_path / "plan").exists()
 
+
 def test_public_slurm_hparam_recipe_rejects_unknown_scheduler_fields(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -328,6 +331,7 @@ def test_public_slurm_hparam_recipe_rejects_unknown_scheduler_fields(tmp_path: P
     assert result.returncode == 1
     assert "Unknown hparam execution.scheduler field: sbatch_args" in result.stdout
     assert not (tmp_path / "plan").exists()
+
 
 @pytest.mark.parametrize(
     ("scheduler", "message"),
@@ -350,6 +354,7 @@ def test_public_hparam_recipe_requires_complete_scheduler_contract(tmp_path: Pat
     assert result.returncode == 1
     assert message in result.stdout
     assert not (tmp_path / "plan").exists()
+
 
 def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path: Path):
     recipe_path = _hparam_recipe(tmp_path)
@@ -401,6 +406,7 @@ def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path:
     with pytest.raises(ValueError, match="snapshot hash changed"):
         run_artifacts.read_hparam_plan(slurm_plan_dir)
 
+
 def test_hparam_reader_uses_frozen_context_for_implicit_workdir(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path, execution={})
     payload = yaml.safe_load(recipe.read_text())
@@ -416,6 +422,7 @@ def test_hparam_reader_uses_frozen_context_for_implicit_workdir(tmp_path: Path, 
     plan = run_artifacts.read_hparam_plan(plan_dir)
 
     assert plan["recipe"]["execution"].get("workdir") in (None, "")
+
 
 def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path, run_count=2)
@@ -444,6 +451,7 @@ def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: 
     assert all(row["pid"] == "" and row["process_group_id"] == "" for row in rows)
     assert all("--devices 0" in Path(run["script"]).read_text() for run in plan["runs"])
 
+
 @pytest.mark.parametrize("field", ["runtime_dir", "checkpoint_dir"])
 def test_slurm_launch_rejects_existing_local_runtime_output_before_submission(tmp_path: Path, monkeypatch, field: str):
     plan_dir, plan = _write_slurm_plan(tmp_path)
@@ -460,6 +468,7 @@ def test_slurm_launch_rejects_existing_local_runtime_output_before_submission(tm
     assert submitted == []
     assert canonical["status"] in {"planned", "pending"}
     assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot
+
 
 @pytest.mark.parametrize("scheduler_kind", ["direct", "slurm"])
 @pytest.mark.parametrize("topology_drift", ["results_symlink", "execution_ancestor_symlink"])
@@ -538,6 +547,7 @@ def test_hparam_launch_rejects_topology_drift_before_launch(
     assert not (plan_dir / "launch_manifest.tsv").exists()
     assert not (plan_dir / "run_status.tsv").exists()
 
+
 def test_hparam_launch_ignores_existing_runtime_dir_for_nonlaunchable_run(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
         tmp_path,
@@ -557,6 +567,7 @@ def test_hparam_launch_ignores_existing_runtime_dir_for_nonlaunchable_run(tmp_pa
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
 
     assert calls == [True]
+
 
 def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission(tmp_path: Path, monkeypatch):
     real_validate = hparam_runtime.exp_io.validate_managed_output_paths
@@ -611,6 +622,7 @@ def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission
     assert canonical["status"] in {"planned", "pending"}
     assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot
 
+
 @pytest.mark.parametrize(
     ("execution", "runtime_devices", "expected_devices"),
     [
@@ -639,6 +651,7 @@ def test_hparam_plan_uses_logical_devices_for_scheduled_gpu_groups(
     command = json.loads((plan_dir / "plan.json").read_text())["runs"][0]["command"]
     assert f"--devices {expected_devices} --precision" in command
 
+
 def test_slurm_sex_age_baseline_rejects_multi_gpu_without_changing_direct_execution():
     scheduler = {
         "type": "slurm",
@@ -664,6 +677,7 @@ def test_slurm_sex_age_baseline_rejects_multi_gpu_without_changing_direct_execut
     assert failures[0].field == "execution.gpus_per_run"
     assert "does not support multi-GPU Slurm execution" in failures[0].message
     assert not [issue for issue in direct_issues if issue.status.value == "FAIL"]
+
 
 @pytest.mark.parametrize("gpus_per_run", [1.0, "1"])
 def test_slurm_hparam_rejects_coerced_gpu_count_before_plan_write(tmp_path: Path, gpus_per_run):
@@ -694,6 +708,7 @@ def test_slurm_hparam_rejects_coerced_gpu_count_before_plan_write(tmp_path: Path
     assert not (plan_dir / "recipe.resolved.yaml").exists()
     assert not (plan_dir / "run_all.sh").exists()
 
+
 @pytest.mark.parametrize(("slurm_procid", "marker_count"), [("0", 1), ("1", 0)])
 def test_hparam_exit_marker_is_written_only_by_slurm_rank_zero(tmp_path: Path, slurm_procid: str, marker_count: int):
     script = tmp_path / "launch.sh"
@@ -717,6 +732,7 @@ def test_hparam_exit_marker_is_written_only_by_slurm_rank_zero(tmp_path: Path, s
 
     assert result.returncode == 7
     assert result.stdout.count(MONITOR_EXIT_CODE_PREFIX) == marker_count
+
 
 @pytest.mark.parametrize(
     "env_name",

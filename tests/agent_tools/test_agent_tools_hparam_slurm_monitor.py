@@ -1,26 +1,15 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
+import subprocess
 
 import pytest
+from test_agent_tools_hparam_runtime import _read_table, _write_slurm_plan
+from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 
-from agent_tools import (
-    hparam_runtime,
-    managed_scheduler,
-    run_artifacts,
-    run_evidence,
-    slurm,
-)
-from agent_tools.experiment_workspace import (
-    merge_run_manifest,
-)
-from test_agent_tools_hparam_runtime import (
-    _read_table,
-    _stub_execution_snapshot_preflight,
-    _write_slurm_plan,
-)
+from agent_tools import hparam_runtime, managed_scheduler, run_artifacts, run_evidence, slurm
+from agent_tools.experiment_workspace import merge_run_manifest
 
 
 def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypatch):
@@ -65,6 +54,7 @@ def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypat
     assert canonical["scheduler_raw_state"] == "COMPLETED"
     assert canonical["scheduler_exit_code"] == "0"
     assert canonical["scheduler_node"] == "h20-bj-96"
+
 
 @pytest.mark.parametrize(
     ("scheduler_state", "sidecar_exit_code", "expected_status"),
@@ -121,6 +111,7 @@ def test_slurm_monitor_requires_scheduler_and_sidecar_terminal_evidence(
     assert canonical["status"] == expected_status
     assert canonical["scheduler_raw_state"] == scheduler_state
 
+
 def test_slurm_monitor_keeps_terminal_sidecar_unknown_without_scheduler_record(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -152,6 +143,7 @@ def test_slurm_monitor_keeps_terminal_sidecar_unknown_without_scheduler_record(t
     assert canonical["status"] == "unknown_scheduler"
     assert canonical["scheduler_raw_state"] == "MISSING"
     assert "before terminal scheduler state was observed" in canonical["scheduler_reason"]
+
 
 @pytest.mark.parametrize(
     (
@@ -249,6 +241,7 @@ def test_slurm_monitor_handles_purged_job_when_accounting_is_unavailable(
         if terminal_exit_code not in (None, 0):
             assert f"non-zero exit code {terminal_exit_code}" in canonical["scheduler_reason"]
 
+
 def test_slurm_monitor_ignores_local_host_label_for_accounting_disabled_recovery(
     tmp_path: Path,
     monkeypatch,
@@ -291,6 +284,7 @@ def test_slurm_monitor_ignores_local_host_label_for_accounting_disabled_recovery
     assert canonical["status"] == "completed"
     assert canonical["scheduler_raw_state"] == "MISSING"
 
+
 def test_slurm_accounting_disabled_recovery_requires_matching_ssh_host(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -329,6 +323,7 @@ def test_slurm_accounting_disabled_recovery_requires_matching_ssh_host(tmp_path:
 
     assert observed["status"] == "unknown_scheduler"
     assert observed["scheduler_raw_state"] == "MISSING"
+
 
 @pytest.mark.parametrize("accounting_failure", ["permission", "timeout"])
 def test_slurm_monitor_keeps_purged_sidecar_unknown_for_other_accounting_failures(
@@ -373,6 +368,7 @@ def test_slurm_monitor_keeps_purged_sidecar_unknown_for_other_accounting_failure
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert canonical["status"] == "unknown_scheduler"
     assert canonical["scheduler_raw_state"] == "MISSING"
+
 
 @pytest.mark.parametrize(
     ("identity_override", "execution"),
@@ -429,6 +425,7 @@ def test_slurm_monitor_requires_complete_matching_canonical_identity_for_account
     assert observed["status"] == "unknown_scheduler"
     assert observed["scheduler_raw_state"] == "MISSING"
 
+
 def test_slurm_monitor_keeps_ssh_transport_failure_unknown_when_output_mentions_disabled_accounting(
     tmp_path: Path,
     monkeypatch,
@@ -477,6 +474,7 @@ def test_slurm_monitor_keeps_ssh_transport_failure_unknown_when_output_mentions_
     assert observed["scheduler_raw_state"] == "MISSING"
     assert "ssh: connection closed" in observed["scheduler_reason"]
 
+
 def test_slurm_monitor_rejects_mismatched_terminal_sidecar_cluster_before_query(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -510,6 +508,7 @@ def test_slurm_monitor_rejects_mismatched_terminal_sidecar_cluster_before_query(
         hparam_runtime.monitor_hparam_runs(plan_dir)
 
     assert manifest_path.read_bytes() == before
+
 
 def test_slurm_monitor_recovers_terminal_state_from_accounting_after_controller_purge(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=True)
@@ -557,6 +556,7 @@ def test_slurm_monitor_recovers_terminal_state_from_accounting_after_controller_
     assert [argv[0] for argv in scheduler_calls] == ["squeue", "scontrol", "sacct"]
     assert all("--clusters=wuji-h20" not in argv for argv in scheduler_calls)
     assert "--duplicates" in scheduler_calls[-1]
+
 
 @pytest.mark.parametrize("observation_source", ["controller", "accounting"])
 @pytest.mark.parametrize("terminal_exit_code", [None, 0, 7])
@@ -623,6 +623,7 @@ def test_slurm_monitor_keeps_revoked_federation_sibling_unknown(
     )
     assert accounting_calls == ([("3880", token, "wuji-h20")] if observation_source == "accounting" else [])
 
+
 def test_slurm_monitor_rejects_unauthenticated_accounting_without_terminalizing_run(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -661,6 +662,7 @@ def test_slurm_monitor_rejects_unauthenticated_accounting_without_terminalizing_
     canonical = next(row for row in _read_table(manifest_path) if row["run_id"] == run["run_id"])
     assert canonical["status"] != "completed"
 
+
 def test_slurm_monitor_fails_closed_when_job_disappears_without_sidecar(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -684,6 +686,7 @@ def test_slurm_monitor_fails_closed_when_job_disappears_without_sidecar(tmp_path
     assert canonical["status"] == "unknown_scheduler"
     assert canonical["scheduler_raw_state"] == "COMPLETED"
     assert "missing the matching terminal sidecar" in canonical["scheduler_reason"]
+
 
 def test_slurm_monitor_health_reports_queue_diagnostics_without_pid_or_gpu_probes(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
@@ -742,6 +745,7 @@ def test_slurm_monitor_health_reports_queue_diagnostics_without_pid_or_gpu_probe
     assert canonical["scheduler_partition"] == "gpu"
     assert int(canonical["scheduler_queue_age_seconds"]) >= 0
 
+
 def test_slurm_monitor_health_uses_allocation_start_and_preserves_lifecycle_on_detail_failure(
     tmp_path: Path, monkeypatch
 ):
@@ -791,6 +795,7 @@ def test_slurm_monitor_health_uses_allocation_start_and_preserves_lifecycle_on_d
     assert canonical["log_age_seconds"] == "12"
     assert int(canonical["scheduler_allocation_age_seconds"]) >= 0
 
+
 def test_slurm_submission_timeout_reconciles_exact_submit_token(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -814,6 +819,7 @@ def test_slurm_submission_timeout_reconciles_exact_submit_token(tmp_path: Path, 
     assert canonical["status"] == "queued"
     assert canonical["scheduler_job_id"] == "3880"
     assert canonical["scheduler_reason"] == "Resources"
+
 
 def test_slurm_submission_timeout_reconciles_revoked_without_resubmitting(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
@@ -849,6 +855,7 @@ def test_slurm_submission_timeout_reconciles_revoked_without_resubmitting(tmp_pa
         "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported. "
         "Scheduler reason: Sibling"
     )
+
 
 def test_slurm_submission_timeout_sidecar_still_waits_for_scheduler_terminal(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
@@ -886,6 +893,7 @@ def test_slurm_submission_timeout_sidecar_still_waits_for_scheduler_terminal(tmp
     assert canonical["scheduler_raw_state"] == "COMPLETING"
     assert canonical["scheduler_exit_code"] == "0"
 
+
 def test_slurm_submission_timeout_never_resubmits_unresolved_run(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -906,6 +914,7 @@ def test_slurm_submission_timeout_never_resubmits_unresolved_run(tmp_path: Path,
     assert calls == ["submit"]
     assert canonical["status"] == "submitting"
     assert canonical.get("scheduler_job_id", "") == ""
+
 
 @pytest.mark.parametrize("binding_source", ["queue", "allocation", "terminal"])
 @pytest.mark.parametrize("launched_at", ["", "2026-01-01T00:00:00Z"])
@@ -971,6 +980,7 @@ def test_slurm_late_job_binding_records_launch_time_without_overwriting_existing
     assert observed["scheduler_job_id"] == "3880"
     assert observed["launched_at"] == (launched_at or "2026-08-21T00:02:00Z")
 
+
 @pytest.mark.parametrize("direct_controller", [False, True])
 def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch, direct_controller: bool):
     plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=direct_controller)
@@ -1023,6 +1033,7 @@ def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch, dir
         hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="repeat request")
 
     assert cancelled == [(execution, "3880", "wuji-h20")]
+
 
 @pytest.mark.parametrize(
     ("initial_status", "scheduler_state", "terminal_sidecar", "terminal_exit_code", "expected_status"),
@@ -1114,6 +1125,7 @@ def test_slurm_stop_request_waits_for_matching_scheduler_cancellation(
         assert [event["event_type"] for event in repeated_events].count("run_stop_requested") == 1
         assert [event["event_type"] for event in repeated_events].count("run_stopped") == 1
 
+
 def test_slurm_stop_request_uses_accounting_after_controller_purges_cancelled_job(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=True)
     run = plan["runs"][0]
@@ -1155,6 +1167,7 @@ def test_slurm_stop_request_uses_accounting_after_controller_purges_cancelled_jo
     assert all("--clusters=wuji-h20" not in argv for argv in scheduler_calls)
     assert "--duplicates" in scheduler_calls[-1]
 
+
 def test_slurm_stop_request_rejects_blank_accounting_comment_without_terminalizing_run(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -1184,6 +1197,7 @@ def test_slurm_stop_request_rejects_blank_accounting_comment_without_terminalizi
     canonical = next(row for row in _read_table(manifest_path) if row["run_id"] == run["run_id"])
     assert canonical["status"] == "stopping"
     assert canonical.get("stopped_at", "") == ""
+
 
 def test_slurm_stop_failure_preserves_retriable_request_state(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
@@ -1220,6 +1234,7 @@ def test_slurm_stop_failure_preserves_retriable_request_state(tmp_path: Path, mo
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_stop_requested") == 1
 
+
 def test_slurm_stop_intent_merge_failure_prevents_scancel(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -1244,6 +1259,7 @@ def test_slurm_stop_intent_merge_failure_prevents_scancel(tmp_path: Path, monkey
     assert cancelled == []
     assert (tmp_path / "run_manifest.tsv").read_bytes() == before
 
+
 def test_slurm_stop_interruption_after_intent_commit_remains_recoverable(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
@@ -1263,6 +1279,7 @@ def test_slurm_stop_interruption_after_intent_commit_remains_recoverable(tmp_pat
     assert canonical["status"] == "stopping"
     assert canonical["stop_requested_at"] == "2026-08-21T03:40:00Z"
     assert canonical["stop_reason"] == "validation diverged"
+
 
 def test_slurm_stop_post_cancel_projection_failure_keeps_canonical_intent(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
@@ -1303,6 +1320,7 @@ def test_slurm_stop_post_cancel_projection_failure_keeps_canonical_intent(tmp_pa
 
     recovered = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert recovered["status"] == "stopped"
+
 
 @pytest.mark.parametrize("stale_status", ["queued", "running", "unknown_scheduler"])
 def test_slurm_monitor_preserves_concurrent_stop_intent(tmp_path: Path, monkeypatch, stale_status: str):

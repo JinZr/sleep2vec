@@ -65,10 +65,6 @@ class ProcessIdentityError(RuntimeError):
     pass
 
 
-
-
-
-
 def status_row(
     run_dir: Path,
     row: dict[str, Any],
@@ -397,8 +393,6 @@ def _parse_process_identity(text: str, path: Any) -> dict[str, Any]:
     return {"pid": pid, "process_group_id": pgid, "process_start_token": token}
 
 
-
-
 def process_identity_running(row: dict[str, Any], identity: dict[str, Any]) -> bool | None:
     _require_matching_process_identity(row, identity)
     result = run_row_command(
@@ -450,8 +444,6 @@ def process_running(row: dict[str, Any], pid: int | None) -> bool | None:
     except OSError:
         return False
     return True
-
-
 
 
 def stop_process_group(row: dict[str, Any], identity: dict[str, Any], *, timeout: float = 5.0) -> None:

@@ -9,23 +9,22 @@ import subprocess
 import sys
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
-import yaml
-
-from agent_tools import configs, plan_context, plan_hparam, plans
-from agent_tools.adapters.hparam_tune import HparamTuneAdapter
-from agent_tools.models import REPO_ROOT
-from agent_tools.plan_hparam import final_test_checkpoint_issues
-
 from test_agent_plan_blocks_on_ambiguity import (
     _RUNTIME_COMMIT,
     _first_run,
     _hparam_recipe,
     _local_runtime_execution,
     _run,
-    _stub_execution_target,
     _survival_recipe_with_missing_sidecar_key,
     _valid_final_config_bytes,
 )
+from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
+import yaml
+
+from agent_tools import configs, plan_context, plan_hparam, plans
+from agent_tools.adapters.hparam_tune import HparamTuneAdapter
+from agent_tools.models import REPO_ROOT
+from agent_tools.plan_hparam import final_test_checkpoint_issues
 
 
 def test_infer_eval_split_ask_user_blocks_command_generation(tmp_path: Path):

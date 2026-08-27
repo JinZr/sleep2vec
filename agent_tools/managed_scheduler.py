@@ -75,8 +75,6 @@ __all__ = [
 ]
 
 
-
-
 @dataclass(frozen=True)
 class StatusChanges:
     rows_by_key: dict[RunKey, dict[str, Any]]

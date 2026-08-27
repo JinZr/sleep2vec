@@ -6,13 +6,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import shlex
-import shutil
 import subprocess
 import sys
-import threading
-import time
 
 from agent_tool_test_helpers import run_execution_preflight_fixture, write_finetune_recipe, write_yaml
 import pytest
@@ -23,25 +19,12 @@ from agent_tools import (
     hparam_runtime,
     managed_scheduler,
     manifests,
-    plan_contract,
     plan_hparam,
-    plan_rendering,
-    plans,
     python_programs,
-    run_artifacts,
     run_evidence,
-    slurm,
     transport,
 )
-from agent_tools.experiment_workspace import (
-    MONITOR_EXIT_CODE_PREFIX,
-    file_sha256,
-    merge_run_manifest,
-    merge_run_row,
-    next_run_index,
-    run_identity,
-)
-from agent_tools.hparam_runtime import monitor_hparam_runs
+from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256
 from agent_tools.models import REPO_ROOT
 
 _REAL_VALIDATED_EXECUTION_SNAPSHOT = hparam_runtime._validated_execution_snapshot
@@ -217,9 +200,7 @@ def _set_execution_probe(
     calls = []
 
     def run_probe(_execution, probe_command):
-        if len(probe_command) > 2 and probe_command[2] == python_programs.source(
-            "managed_scheduler.runtime_identity"
-        ):
+        if len(probe_command) > 2 and probe_command[2] == python_programs.source("managed_scheduler.runtime_identity"):
             calls.append("identity")
             return subprocess.CompletedProcess(
                 probe_command,

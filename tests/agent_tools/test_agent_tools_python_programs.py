@@ -7,7 +7,6 @@ import pytest
 
 from agent_tools import python_programs, transport
 
-
 SOURCE_HASHES = {
     "experiment_io.conditional_atomic_replace_text": "8989e107e855da8ea2cf8055ba34d55e44b0bb1fe578aab67fa0f9f1ad53b5ec",
     "experiment_io.list_managed_subdirectories": "e8b83f0cef4f3cf46b84542276f7ffaf7045acaf4f409c9ad2d0333178b39c8b",

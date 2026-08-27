@@ -1,32 +1,24 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
+import subprocess
 
 import pytest
-
-from agent_tools import (
-    hparam_runtime,
-    manifests,
-    run_artifacts,
-    run_evidence,
-    transport,
-)
-from agent_tools.experiment_workspace import (
-    merge_run_manifest,
-)
-from agent_tools.hparam_runtime import monitor_hparam_runs
 from test_agent_tools_hparam_runtime import (
     _hparam_recipe,
     _is_remote_python_program,
     _process_identity,
     _read_table,
     _run,
-    _stub_execution_snapshot_preflight,
     _write_process_identity,
     _write_runtime_rows,
 )
+from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
+
+from agent_tools import hparam_runtime, manifests, run_artifacts, run_evidence, transport
+from agent_tools.experiment_workspace import merge_run_manifest
+from agent_tools.hparam_runtime import monitor_hparam_runs
 
 
 @pytest.mark.parametrize(
@@ -60,6 +52,7 @@ def test_local_runtime_manifest_corruption_fails_closed(tmp_path: Path, monkeypa
 
     with pytest.raises((ValueError, UnicodeError), match="run manifest"):
         run_evidence.status_row(tmp_path, rows[0], rows[0], script_commits_terminal_status=False)
+
 
 @pytest.mark.parametrize(
     "failure",
@@ -130,6 +123,7 @@ def test_remote_runtime_manifest_corruption_fails_closed(tmp_path: Path, monkeyp
     with pytest.raises(RuntimeError, match="runtime artifact observation failed"):
         run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
 
+
 @pytest.mark.parametrize("state", ["missing", "regular"])
 def test_remote_runtime_manifest_distinguishes_missing_and_regular_file(tmp_path: Path, monkeypatch, state: str):
     runtime_dir = tmp_path / "remote-runtime"
@@ -166,6 +160,7 @@ def test_remote_runtime_manifest_distinguishes_missing_and_regular_file(tmp_path
 
     assert observed["run_manifest"] == (str(manifest) if state == "regular" else "")
 
+
 def test_find_run_manifest_distinguishes_missing_and_valid_regular_file(tmp_path: Path):
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
@@ -177,6 +172,7 @@ def test_find_run_manifest_distinguishes_missing_and_valid_regular_file(tmp_path
     manifest.write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
 
     assert run_artifacts.find_run_manifest(run) == manifest
+
 
 def test_hparam_monitor_handles_running_missing_and_failed_rows(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
@@ -225,6 +221,7 @@ def test_hparam_monitor_handles_running_missing_and_failed_rows(tmp_path: Path, 
     assert all(event["step_id"] == "train-model" for event in status_events)
     assert {event["run_id"] for event in status_events} == {"running", "missing", "failed"}
 
+
 def test_hparam_monitor_polls_until_the_current_plan_is_terminal(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     statuses = iter(["running", "finished"])
@@ -254,6 +251,7 @@ def test_hparam_monitor_polls_until_the_current_plan_is_terminal(tmp_path: Path,
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "finished"
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "finished"
 
+
 def test_hparam_monitor_does_not_overwrite_workspace_terminal_status(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -276,6 +274,7 @@ def test_hparam_monitor_does_not_overwrite_workspace_terminal_status(tmp_path: P
     assert local_rows[0]["status"] == "failed"
     assert workspace_rows[0]["status"] == "failed"
     assert len((tmp_path / "events.jsonl").read_text().splitlines()) == event_count
+
 
 def test_hparam_monitor_mirrors_and_reports_the_status_committed_by_the_canonical_owner(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
@@ -305,6 +304,7 @@ def test_hparam_monitor_mirrors_and_reports_the_status_committed_by_the_canonica
     assert status_event["from"] == "running"
     assert status_event["to"] == "failed"
 
+
 def test_hparam_monitor_marks_clean_exit_finished_without_launch_manifest(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
         tmp_path,
@@ -325,6 +325,7 @@ def test_hparam_monitor_marks_clean_exit_finished_without_launch_manifest(tmp_pa
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_status_changed") == 1
 
+
 def test_hparam_monitor_rejects_aliased_status_report_before_canonical_write(tmp_path: Path):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     status_report = tmp_path / "reports" / "status.md"
@@ -337,6 +338,7 @@ def test_hparam_monitor_rejects_aliased_status_report_before_canonical_write(tmp
 
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
     assert not (tmp_path / "events.jsonl").exists()
+
 
 @pytest.mark.parametrize("output_name", ["run_status", "status_report"])
 @pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
@@ -375,6 +377,7 @@ def test_continuous_hparam_monitor_revalidates_output_aliases_each_round(
     assert alias_path.read_bytes() == experiment_bytes
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
 
+
 @pytest.mark.parametrize("poll_seconds", [0, -1, float("nan"), float("inf")])
 def test_hparam_monitor_rejects_invalid_poll_interval_before_writing(
     tmp_path: Path,
@@ -389,6 +392,7 @@ def test_hparam_monitor_rejects_invalid_poll_interval_before_writing(
         monitor_hparam_runs(tmp_path, once=False, poll_seconds=poll_seconds)
 
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
 
 def test_hparam_monitor_keeps_failed_status_after_failure_evidence_disappears(tmp_path: Path, monkeypatch):
     dead_pid = tmp_path / "dead.pid"
@@ -417,6 +421,7 @@ def test_hparam_monitor_keeps_failed_status_after_failure_evidence_disappears(tm
     hparam_runtime.monitor_hparam_runs(tmp_path)
 
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "failed"
+
 
 def test_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch):
     dead_pid = tmp_path / "dead.pid"
@@ -457,6 +462,7 @@ def test_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch)
     assert manifest["run-001"]["status"] == "pending"
     assert not manifest["run-001"]["launched_at"]
 
+
 def test_continuous_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "pending"}])
 
@@ -481,6 +487,7 @@ def test_continuous_hparam_monitor_never_launches_pending_runs(tmp_path: Path, m
     assert launch_row["status"] == "pending"
     assert not launch_row["launched_at"]
 
+
 def test_hparam_monitor_health_is_opt_in(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
     _write_process_identity(pid_path)
@@ -503,6 +510,7 @@ def test_hparam_monitor_health_is_opt_in(tmp_path: Path, monkeypatch):
     row = _read_table(tmp_path / "run_status.tsv")[0]
     assert "health_status" not in row
 
+
 def test_hparam_status_preserves_terminal_state_with_live_pid(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "stopped.pid"
     pid_path.write_text("123")
@@ -516,6 +524,7 @@ def test_hparam_status_preserves_terminal_state_with_live_pid(tmp_path: Path, mo
 
     assert row["status"] == "stopped"
 
+
 @pytest.mark.parametrize("pid_text", ["", "not-a-pid"])
 def test_hparam_status_does_not_infer_terminal_from_corrupt_local_pid(tmp_path: Path, pid_text: str):
     pid_path = tmp_path / "running.pid"
@@ -525,6 +534,7 @@ def test_hparam_status_does_not_infer_terminal_from_corrupt_local_pid(tmp_path: 
     row = run_evidence.status_row(tmp_path, previous, previous, script_commits_terminal_status=False)
 
     assert row["status"] == "running"
+
 
 @pytest.mark.parametrize("pid_text", ["", "not-a-pid", "0", "-1"])
 @pytest.mark.parametrize("status", ["planned", "pending"])
@@ -544,6 +554,7 @@ def test_hparam_launch_does_not_start_when_local_pid_is_corrupt(
 
     assert started == []
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "missing_pid"
+
 
 @pytest.mark.parametrize("status", ["planned", "pending"])
 def test_hparam_launch_recovers_after_transient_local_pid_read_error(tmp_path: Path, monkeypatch, status: str):
@@ -582,6 +593,7 @@ def test_hparam_launch_recovers_after_transient_local_pid_read_error(tmp_path: P
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "launched"
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
 
+
 @pytest.mark.parametrize("failure", ["directory", "invalid_utf8", "os_error", "dangling_symlink"])
 def test_hparam_monitor_preserves_nonterminal_status_for_unreadable_local_pid(
     tmp_path: Path, monkeypatch, failure: str
@@ -610,6 +622,7 @@ def test_hparam_monitor_preserves_nonterminal_status_for_unreadable_local_pid(
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "running"
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
 
+
 def test_gpu_summary_matches_managed_process_group_children(monkeypatch):
     def fake_command(_row, command):
         if "--query-compute-apps" in command:
@@ -632,6 +645,7 @@ def test_gpu_summary_matches_managed_process_group_children(monkeypatch):
     assert "456, GPU-managed, 1024" in summary
     assert "789, GPU-foreign, 2048" not in summary
 
+
 def test_gpu_summary_preserves_process_group_probe_uncertainty(monkeypatch):
     def fake_command(_row, command):
         if "--query-compute-apps" in command:
@@ -643,6 +657,7 @@ def test_gpu_summary_preserves_process_group_probe_uncertainty(monkeypatch):
     monkeypatch.setattr(run_evidence, "run_row_command", fake_command)
 
     assert run_evidence.gpu_summary({"gpus": "0", "process_group_id": 123}, 123) is None
+
 
 def test_hparam_monitor_health_classifies_compute_active(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
@@ -670,6 +685,7 @@ def test_hparam_monitor_health_classifies_compute_active(tmp_path: Path, monkeyp
     row = _read_table(tmp_path / "run_status.tsv")[0]
     assert row["health_status"] == "compute_active"
     assert row["gpu_summary"] == "123, GPU-1, 1024"
+
 
 def test_hparam_monitor_health_classifies_data_loading_from_io_delta(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
@@ -712,6 +728,7 @@ def test_hparam_monitor_health_classifies_data_loading_from_io_delta(tmp_path: P
     row = _read_table(tmp_path / "run_status.tsv")[0]
     assert row["health_status"] == "data_loading"
     assert row["io_read_delta_bytes"] == "150"
+
 
 def test_hparam_monitor_health_classifies_stalled_and_unknown_remote(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
@@ -760,6 +777,7 @@ def test_hparam_monitor_health_classifies_stalled_and_unknown_remote(tmp_path: P
     assert status["stalled"] == "possibly_stalled"
     assert status["remote"] == "unknown_remote"
 
+
 def test_health_requires_a_comparable_checkpoint_observation():
     inputs = {
         "status": "running",
@@ -785,6 +803,7 @@ def test_health_requires_a_comparable_checkpoint_observation():
         )
         == "compute_active"
     )
+
 
 def test_health_preserves_checkpoint_inventory_when_remote_probe_is_unavailable(tmp_path: Path, monkeypatch):
     identity = _process_identity()
@@ -823,6 +842,7 @@ def test_health_preserves_checkpoint_inventory_when_remote_probe_is_unavailable(
     assert observed["checkpoints"] == "epoch=1.ckpt"
     assert observed["checkpoint_count"] == ""
     assert observed["health_status"] == "health_unknown"
+
 
 @pytest.mark.parametrize("failure", ["timeout", "ssh_error", "permission", "wrong_type", "missing", "ps_error"])
 def test_hparam_monitor_remote_pid_probe_failure_is_unknown_until_recovery(tmp_path: Path, monkeypatch, failure: str):
@@ -893,6 +913,7 @@ def test_hparam_monitor_remote_pid_probe_failure_is_unknown_until_recovery(tmp_p
         ("unknown_remote", "running"),
     ]
 
+
 @pytest.mark.parametrize("uncertain_returncode", [124, 255, 1])
 def test_hparam_monitor_requires_certain_remote_process_absence_before_clean_finish(
     tmp_path: Path, monkeypatch, uncertain_returncode: int
@@ -946,6 +967,7 @@ def test_hparam_monitor_requires_certain_remote_process_absence_before_clean_fin
         ("unknown_remote", "finished"),
     ]
 
+
 @pytest.mark.parametrize(
     ("returncode", "expected"),
     [(0, 123), (run_evidence.REMOTE_MISSING_RETURN_CODE, None)],
@@ -961,6 +983,7 @@ def test_remote_pid_read_uses_lstat_and_open_missing_contract(monkeypatch, retur
 
     assert run_evidence.read_pid("/remote/run.pid", {"target": "ssh", "host": "unit-host"}) == expected
     assert commands == [transport.remote_python_program_command("run_evidence.read_pid_text", "/remote/run.pid")]
+
 
 def test_hparam_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
@@ -1016,6 +1039,7 @@ def test_hparam_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypat
 
     row = _read_table(tmp_path / "run_status.tsv")[0]
     assert row["health_status"] == "possibly_stalled"
+
 
 def test_hparam_remote_command_timeout_returns_unknown_remote(monkeypatch):
     def fake_run(*_args, **_kwargs):

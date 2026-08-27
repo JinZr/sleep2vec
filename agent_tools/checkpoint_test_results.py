@@ -51,8 +51,7 @@ def validate_checkpoint_test_results(
             )
         if checkpoint_path in seen_paths:
             raise ValueError(
-                f"checkpoint_test_results contains a duplicate checkpoint: "
-                f"{step_id} / {run_id} / {checkpoint_path}"
+                f"checkpoint_test_results contains a duplicate checkpoint: " f"{step_id} / {run_id} / {checkpoint_path}"
             )
         seen_paths.add(checkpoint_path)
         epoch = artifacts.epoch_number(result.get("epoch"))
@@ -69,13 +68,10 @@ def validate_checkpoint_test_results(
         score = None if isinstance(raw_score, bool) else artifacts.float_or_none(raw_score)
         if score is None:
             raise ValueError(
-                f"checkpoint_test_results is missing a finite {metric}: "
-                f"{step_id} / {run_id} / {checkpoint_path}"
+                f"checkpoint_test_results is missing a finite {metric}: " f"{step_id} / {run_id} / {checkpoint_path}"
             )
         rows.append({"checkpoint_path": checkpoint_path, "epoch": epoch, "score": score})
     missing_paths = sorted(set(expected_epochs) - seen_paths)
     if missing_paths:
-        raise ValueError(
-            f"checkpoint_test_results is incomplete for {step_id} / {run_id}: " + ", ".join(missing_paths)
-        )
+        raise ValueError(f"checkpoint_test_results is incomplete for {step_id} / {run_id}: " + ", ".join(missing_paths))
     return rows

@@ -7,18 +7,12 @@ import sys
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
+from test_agent_plan_blocks_on_ambiguity import _first_run, _hparam_recipe, _run, _write_preset_recipe
+from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
 import yaml
 
 from agent_tools import configs, plan_context, plans
 from agent_tools.models import REPO_ROOT
-
-from test_agent_plan_blocks_on_ambiguity import (
-    _first_run,
-    _hparam_recipe,
-    _run,
-    _stub_execution_target,
-    _write_preset_recipe,
-)
 
 
 def test_unlock_final_test_required_for_final_external_script(tmp_path: Path):

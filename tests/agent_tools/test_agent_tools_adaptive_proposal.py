@@ -7,12 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import (
-    adaptive_hparam,
-    hparam_runtime,
-    manifests,
-    run_evidence,
-)
+from agent_tools import adaptive_hparam, hparam_runtime, manifests, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -1043,7 +1038,6 @@ def test_agent_proposal_loop_fails_without_writing_an_event(tmp_path: Path):
     assert events_path.read_bytes() == before
 
 
-
 def test_agent_proposal_configuration_points_execute_as_exact_runs(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -1096,7 +1090,6 @@ def test_agent_proposal_configuration_points_execute_as_exact_runs(tmp_path: Pat
     assert "## Configurations" in rationale
     assert "point 0" in rationale and "point 1" in rationale
     assert "agent_proposal_accepted" in events_path.read_text()
-
 
 
 def test_explicit_best_neighborhood_uses_existing_numeric_neighbors(tmp_path: Path):

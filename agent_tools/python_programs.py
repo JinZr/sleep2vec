@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 _SOURCE_ROOT = Path(__file__).with_name("python_program_sources")
 
 _FRAGMENTS = {
@@ -17,12 +16,8 @@ _PROGRAMS = {
     "experiment_io.read_managed_files": ("experiment_io/read_managed_files.py.src",),
     "experiment_io.validate_managed_output_paths": ("experiment_io/validate_managed_output_paths.py.src",),
     "experiment_io.read_text": ("experiment_io/read_text.py.src",),
-    "experiment_io.conditional_atomic_replace_text": (
-        "experiment_io/conditional_atomic_replace_text.py.src",
-    ),
-    "experiment_workspace.write_run_matrix_if_current": (
-        "experiment_workspace/write_run_matrix_if_current.py.src",
-    ),
+    "experiment_io.conditional_atomic_replace_text": ("experiment_io/conditional_atomic_replace_text.py.src",),
+    "experiment_workspace.write_run_matrix_if_current": ("experiment_workspace/write_run_matrix_if_current.py.src",),
     "run_evidence.runtime_artifacts": ("run_evidence/runtime_artifacts.py.src",),
     "run_evidence.checkpoint_file_sha256": ("run_evidence/checkpoint_file_sha256.py.src",),
     "run_evidence.read_pid_text": ("run_evidence/read_pid_text.py.src",),
@@ -49,9 +44,7 @@ _PROGRAMS = {
     "plan_rendering.commit_status": ("plan_rendering/commit_status.py.src",),
     "plan_rendering.runtime_commit_guard": ("plan_rendering/runtime_commit_guard.py.src",),
     "plan_rendering.verify_input_snapshots": ("plan_rendering/verify_input_snapshots.py.src",),
-    "hparam_postprocess.verify_checkpoint_sha256": (
-        "hparam_postprocess/verify_checkpoint_sha256.py.src",
-    ),
+    "hparam_postprocess.verify_checkpoint_sha256": ("hparam_postprocess/verify_checkpoint_sha256.py.src",),
 }
 
 

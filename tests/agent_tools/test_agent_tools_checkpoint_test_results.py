@@ -52,10 +52,7 @@ def test_checkpoint_test_results_keep_selection_error_text():
 
     with pytest.raises(
         ValueError,
-        match=(
-            r"^checkpoint_test_results is incomplete for tune / run-001: "
-            r"/checkpoints/epoch=2-step=20\.ckpt$"
-        ),
+        match=(r"^checkpoint_test_results is incomplete for tune / run-001: " r"/checkpoints/epoch=2-step=20\.ckpt$"),
     ):
         checkpoint_test_results.validate_checkpoint_test_results(
             [

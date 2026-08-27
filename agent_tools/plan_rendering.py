@@ -5,8 +5,8 @@ from pathlib import Path
 import shlex
 from typing import Any
 
-from .experiment_workspace import MONITOR_EXIT_CODE_PREFIX
 from . import python_programs
+from .experiment_workspace import MONITOR_EXIT_CODE_PREFIX
 from .models import REPO_ROOT, coerce_list, module_for_variant
 
 DEFAULT_FINETUNE_LR = 1e-6

@@ -4,23 +4,17 @@ from pathlib import Path
 from shlex import quote as shlex_quote
 import sys
 
-from agent_tool_test_helpers import (
-    survival_config_payload,
-    write_finetune_recipe,
-    write_survival_sidecars,
-    write_yaml,
-)
-import yaml
-
+from agent_tool_test_helpers import survival_config_payload, write_finetune_recipe, write_survival_sidecars, write_yaml
 from test_agent_plan_blocks_on_ambiguity import (
     _RUNTIME_COMMIT,
     _run,
-    _stub_execution_target,
     _survival_recipe_with_missing_sidecar_key,
     _write_infer_recipe,
     _write_preset_recipe,
     _write_survival_config_with_bad_sidecars,
 )
+from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
+import yaml
 
 
 def test_doctor_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):

@@ -9,21 +9,14 @@ import sys
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
+from test_agent_plan_blocks_on_ambiguity import _RUNTIME_COMMIT, _bound_config_summary, _first_run, _hparam_recipe, _run
+from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
 import yaml
 
 from agent_tools import experiments, plan_contract, plan_hparam, plans
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import collect_runs
-
-from test_agent_plan_blocks_on_ambiguity import (
-    _RUNTIME_COMMIT,
-    _bound_config_summary,
-    _first_run,
-    _hparam_recipe,
-    _run,
-    _stub_execution_target,
-)
 
 
 def test_plan_normalizes_scalar_runtime_devices(tmp_path: Path):

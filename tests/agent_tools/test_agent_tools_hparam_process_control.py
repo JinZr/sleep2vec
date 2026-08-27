@@ -2,33 +2,25 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import threading
-from pathlib import Path
 
 import pytest
-
-from agent_tools import (
-    hparam_runtime,
-    manifests,
-    run_evidence,
-    transport,
-)
-from agent_tools.experiment_workspace import (
-    MONITOR_EXIT_CODE_PREFIX,
-    merge_run_manifest,
-)
 from test_agent_tools_hparam_runtime import (
     _embedded_process_group_running,
     _is_remote_python_program,
     _process_identity,
     _read_table,
-    _stub_execution_snapshot_preflight,
     _write_proc_stat,
     _write_process_identity,
     _write_runtime_rows,
 )
+from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
+
+from agent_tools import hparam_runtime, manifests, run_evidence, transport
+from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, merge_run_manifest
 
 
 def test_remote_stop_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
@@ -65,6 +57,7 @@ def test_remote_stop_failure_does_not_commit_stopped_state(tmp_path: Path, monke
     assert (tmp_path / "launch_manifest.tsv").read_bytes() == before_launch
     assert (tmp_path / "run_status.tsv").read_bytes() == before_status
     assert not (tmp_path / "events.jsonl").exists()
+
 
 @pytest.mark.parametrize("failure", ["permission", "wrong_type", "ssh_error", "timeout"])
 def test_remote_stop_pid_probe_failure_has_no_side_effects(tmp_path: Path, monkeypatch, failure: str):
@@ -104,6 +97,7 @@ def test_remote_stop_pid_probe_failure_has_no_side_effects(tmp_path: Path, monke
     assert calls == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
+
 @pytest.mark.parametrize("pid_text", ["0", "-1"])
 def test_hparam_stop_rejects_nonpositive_pid_before_kill(tmp_path: Path, monkeypatch, pid_text: str):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
@@ -117,6 +111,7 @@ def test_hparam_stop_rejects_nonpositive_pid_before_kill(tmp_path: Path, monkeyp
 
     assert killed == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
 
 @pytest.mark.parametrize("failure", ["invalid_utf8", "os_error"])
 def test_hparam_stop_rejects_unreadable_local_pid_before_kill(tmp_path: Path, monkeypatch, failure: str):
@@ -144,6 +139,7 @@ def test_hparam_stop_rejects_unreadable_local_pid_before_kill(tmp_path: Path, mo
     assert killed == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
+
 @pytest.mark.parametrize("failure", ["directory", "symlink", "dangling_symlink", "hardlink", "fifo"])
 def test_hparam_stop_rejects_unsafe_local_pid_topology_before_read_or_kill(tmp_path: Path, monkeypatch, failure: str):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
@@ -170,6 +166,7 @@ def test_hparam_stop_rejects_unsafe_local_pid_topology_before_read_or_kill(tmp_p
 
     assert calls == []
 
+
 def test_hparam_stop_rejects_unsafe_remote_pid_topology_before_read_or_signal(tmp_path: Path, monkeypatch):
     _write_runtime_rows(
         tmp_path,
@@ -190,6 +187,7 @@ def test_hparam_stop_rejects_unsafe_remote_pid_topology_before_read_or_signal(tm
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="unsafe remote PID topology")
 
     assert calls == [("preflight", "unit-host")]
+
 
 @pytest.mark.parametrize(
     ("target", "host", "message"),
@@ -230,6 +228,7 @@ def test_hparam_stop_rejects_invalid_transport_before_pid_read_or_signal(
     assert calls == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
+
 @pytest.mark.parametrize("missing_field", ["pid", "process_group_id", "process_start_token"])
 def test_hparam_stop_rejects_partial_canonical_process_identity_before_pid_read_or_signal(
     tmp_path: Path,
@@ -253,6 +252,7 @@ def test_hparam_stop_rejects_partial_canonical_process_identity_before_pid_read_
 
     assert calls == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
 
 @pytest.mark.parametrize(
     "process_args",
@@ -290,6 +290,7 @@ def test_hparam_stop_binds_first_process_identity_to_the_frozen_script(
     assert canonical["process_start_token"] == "proc:unit-start"
     assert canonical["status"] == "stopped"
 
+
 @pytest.mark.parametrize(
     "process_args",
     [
@@ -326,6 +327,7 @@ def test_hparam_stop_rejects_unbound_first_process_identity_before_signal_or_com
 
     assert calls == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
 
 def test_hparam_stop_rejects_unbound_remote_first_process_identity_before_signal_or_commit(
     tmp_path: Path,
@@ -365,6 +367,7 @@ def test_hparam_stop_rejects_unbound_remote_first_process_identity_before_signal
     assert calls == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
+
 def test_hparam_stop_uses_the_recorded_process_group_identity(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
         tmp_path,
@@ -387,6 +390,7 @@ def test_hparam_stop_uses_the_recorded_process_group_identity(tmp_path: Path, mo
     assert canonical["process_group_id"] == "123"
     assert canonical["process_start_token"] == "proc:unit-start"
 
+
 def test_hparam_stop_rejects_a_reused_process_before_canonical_commit(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
         tmp_path,
@@ -404,6 +408,7 @@ def test_hparam_stop_rejects_a_reused_process_before_canonical_commit(tmp_path: 
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="stale process identity")
 
     assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+
 
 def test_remote_stop_verifies_and_signals_in_one_command(monkeypatch):
     identity = _process_identity()
@@ -425,6 +430,7 @@ def test_remote_stop_verifies_and_signals_in_one_command(monkeypatch):
         5.0,
     )
 
+
 @pytest.mark.parametrize(
     ("leader_state", "live_child", "expected"),
     [
@@ -445,6 +451,7 @@ def test_embedded_process_group_probe_requires_a_non_zombie_member(
 
     assert _embedded_process_group_running(proc_root, 123) is expected
 
+
 def test_embedded_process_group_probe_uses_the_live_leader_fast_path(tmp_path: Path, monkeypatch):
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
@@ -457,6 +464,7 @@ def test_embedded_process_group_probe_uses_the_live_leader_fast_path(tmp_path: P
 
     assert _embedded_process_group_running(proc_root, 123) is True
 
+
 def test_embedded_process_group_probe_preserves_uncertainty_from_unreadable_proc_entries(tmp_path: Path):
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
@@ -464,6 +472,7 @@ def test_embedded_process_group_probe_preserves_uncertainty_from_unreadable_proc
     (proc_root / "124" / "stat").mkdir(parents=True)
 
     assert _embedded_process_group_running(proc_root, 123) is None
+
 
 @pytest.mark.parametrize("group_running", [False, True], ids=["zombie-only", "live-child"])
 def test_process_monitor_uses_group_liveness_for_a_matching_leader(monkeypatch, group_running: bool):
@@ -481,6 +490,7 @@ def test_process_monitor_uses_group_liveness_for_a_matching_leader(monkeypatch, 
 
     assert run_evidence.process_identity_running({}, identity) is group_running
 
+
 def test_process_monitor_rejects_a_reused_pid_start_token(monkeypatch):
     identity = _process_identity()
     reused = {**identity, "process_start_token": "proc:other-start"}
@@ -497,6 +507,7 @@ def test_process_monitor_rejects_a_reused_pid_start_token(monkeypatch):
 
     with pytest.raises(RuntimeError, match="was reused"):
         run_evidence.process_identity_running({}, identity)
+
 
 @pytest.mark.parametrize(
     ("process_args", "expected_status", "expected_pid"),
@@ -544,6 +555,7 @@ def test_status_binds_first_process_identity_only_to_the_frozen_script(
     assert observed.get("process_group_id", "") == expected_pid
     assert observed.get("process_start_token", "") == ("proc:unit-start" if expected_pid else "")
 
+
 @pytest.mark.parametrize(
     ("target", "host", "expected_status"),
     [
@@ -584,6 +596,7 @@ def test_status_keeps_dead_unfrozen_process_identity_unbound(
     assert observed.get("process_group_id", "") == ""
     assert observed.get("process_start_token", "") == ""
 
+
 def test_hparam_run_queue_fails_after_dead_unfrozen_process_identity(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "launched"}])
     _write_process_identity(rows[0]["pid_path"])
@@ -601,6 +614,7 @@ def test_hparam_run_queue_fails_after_dead_unfrozen_process_identity(tmp_path: P
 
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "missing_pid"
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "missing_pid"
+
 
 def test_status_marks_a_zombie_only_managed_process_finished(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "managed.pid"
@@ -626,6 +640,7 @@ def test_status_marks_a_zombie_only_managed_process_finished(tmp_path: Path, mon
 
     assert observed["status"] == "finished"
 
+
 def test_local_stop_checks_once_more_at_the_deadline_for_a_zombie_only_group(monkeypatch):
     identity = _process_identity()
     states = iter([True, False])
@@ -647,6 +662,7 @@ def test_local_stop_checks_once_more_at_the_deadline_for_a_zombie_only_group(mon
     run_evidence.stop_process_group({}, identity, timeout=0.5)
 
     assert calls == ["probe", "signal", "probe"]
+
 
 @pytest.mark.parametrize("script_commits_terminal_status", [False, True])
 def test_status_keeps_a_reused_managed_process_identity_capacity_blocking(
@@ -682,6 +698,7 @@ def test_status_keeps_a_reused_managed_process_identity_capacity_blocking(
     assert observed["status"] == "missing_pid"
     assert "reused by a different process" in observed["process_identity_error"]
 
+
 @pytest.mark.parametrize("script_commits_terminal_status", [False, True])
 def test_status_keeps_legacy_integer_only_managed_identity_capacity_blocking(
     tmp_path: Path, script_commits_terminal_status: bool
@@ -705,6 +722,7 @@ def test_status_keeps_legacy_integer_only_managed_identity_capacity_blocking(
     assert observed["status"] == "missing_pid"
     assert "partial process identity" in observed["process_identity_error"]
 
+
 def test_status_marks_lifecycle_owned_script_exit_without_terminal_commit_failed(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "managed.pid"
     identity = _write_process_identity(pid_path)
@@ -722,6 +740,7 @@ def test_status_marks_lifecycle_owned_script_exit_without_terminal_commit_failed
     observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=True)
 
     assert observed["status"] == "failed"
+
 
 def test_status_fails_closed_without_monitor_owned_exit_code(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "managed.pid"
@@ -742,12 +761,14 @@ def test_status_fails_closed_without_monitor_owned_exit_code(tmp_path: Path, mon
 
     assert observed["status"] == "failed"
 
+
 @pytest.mark.parametrize(("exit_code", "expected"), [(0, False), (7, True)])
 def test_log_failure_projection_recognizes_monitor_exit_code(tmp_path: Path, exit_code: int, expected: bool):
     log_path = tmp_path / "managed.log"
     log_path.write_text(f"{MONITOR_EXIT_CODE_PREFIX}{exit_code}\n")
 
     assert run_evidence.log_has_failure(log_path) is expected
+
 
 def test_status_preserves_remote_uncertainty_when_monitor_exit_log_is_unreadable(tmp_path: Path, monkeypatch):
     identity = _process_identity()
@@ -775,6 +796,7 @@ def test_status_preserves_remote_uncertainty_when_monitor_exit_log_is_unreadable
 
     assert observed["status"] == "unknown_remote"
 
+
 def test_status_marks_lifecycle_owned_running_run_with_missing_pid_as_missing_pid(tmp_path: Path):
     row = {
         "script": str(tmp_path / "launch.sh"),
@@ -787,6 +809,7 @@ def test_status_marks_lifecycle_owned_running_run_with_missing_pid_as_missing_pi
 
     assert observed["status"] == "missing_pid"
 
+
 def test_status_marks_lifecycle_owned_script_without_process_identity_exit_failed(tmp_path: Path):
     row = {
         "script": str(tmp_path / "launch.sh"),
@@ -797,6 +820,7 @@ def test_status_marks_lifecycle_owned_script_without_process_identity_exit_faile
     observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=True)
 
     assert observed["status"] == "failed"
+
 
 @pytest.mark.parametrize("status", ["completed", "failed", "finished", "launch_failed", "stopped", "superseded"])
 def test_hparam_stop_rejects_terminal_status_before_pid_or_mutation(tmp_path: Path, monkeypatch, status: str):
@@ -820,6 +844,7 @@ def test_hparam_stop_rejects_terminal_status_before_pid_or_mutation(tmp_path: Pa
     assert calls == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
+
 def test_hparam_monitor_rejects_dangling_launch_manifest_before_canonical_write(tmp_path: Path):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     launch_path = tmp_path / "launch_manifest.tsv"
@@ -833,6 +858,7 @@ def test_hparam_monitor_rejects_dangling_launch_manifest_before_canonical_write(
 
     assert not missing_target.exists()
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
 
 def test_hparam_stop_rejects_dangling_status_manifest_before_kill_or_write(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
@@ -851,6 +877,7 @@ def test_hparam_stop_rejects_dangling_status_manifest_before_kill_or_write(tmp_p
     assert killed == []
     assert not missing_target.exists()
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
 
 def test_hparam_stop_commits_one_final_row_to_all_manifests(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
@@ -880,6 +907,7 @@ def test_hparam_stop_commits_one_final_row_to_all_manifests(tmp_path: Path, monk
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_stopped") == 1
 
+
 def test_hparam_stop_rejects_invalid_canonical_output_before_kill(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     target = tmp_path / "run_matrix.csv"
@@ -895,6 +923,7 @@ def test_hparam_stop_rejects_invalid_canonical_output_before_kill(tmp_path: Path
     assert killed == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
     assert not (tmp_path / "events.jsonl").exists()
+
 
 def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
@@ -971,6 +1000,7 @@ def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor
     assert not any(
         event.get("event_type") == "run_status_changed" and event.get("to") == "finished" for event in events
     )
+
 
 @pytest.mark.parametrize(
     ("field", "changed"),

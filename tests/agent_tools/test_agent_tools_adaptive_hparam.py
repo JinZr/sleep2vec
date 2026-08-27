@@ -3,16 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from agent_tool_test_helpers import write_yaml
 import pytest
 import yaml
 
-from agent_tool_test_helpers import write_yaml
 from agent_tools import adaptive_hparam, plan_hparam, slurm
 from tests.agent_tools import adaptive_hparam_test_support as test_support
-from tests.agent_tools.adaptive_hparam_test_support import (
-    _adaptive_recipe,
-    _run,
-)
+from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _run
 
 _stub_execution_snapshot_preflight = test_support._stub_execution_snapshot_preflight
 
@@ -174,7 +171,6 @@ def test_adaptive_minutes_since_accepts_slurm_sidecar_timestamp():
     assert 0 <= minutes < 1
 
 
-
 def test_adaptive_recipe_requires_explicit_test_feedback_flag(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path, test_feedback=False)
 
@@ -229,7 +225,6 @@ def test_adaptive_rejects_removed_run_budget_and_gpu_fields(tmp_path: Path):
     assert "search.max_trials is no longer supported" in result.stdout
     assert "adaptive.max_trials_total is no longer supported" in result.stdout
     assert "execution.gpus_per_trial is no longer supported" in result.stdout
-
 
 
 def test_hparam_count_does_not_materialize_search_values():

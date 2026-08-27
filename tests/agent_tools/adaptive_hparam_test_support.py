@@ -14,7 +14,6 @@ from agent_tools import hparam_runtime, managed_scheduler
 from agent_tools.experiment_workspace import merge_run_manifest
 from agent_tools.models import REPO_ROOT
 
-
 _RUNTIME_COMMIT = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
 ).stdout.strip()
@@ -168,6 +167,8 @@ def _write_agent_submission(input_path: Path, *, lr: list[float] | None = None) 
         + "\n"
     )
     return proposal_path
+
+
 def _write_fake_manifest(workflow_dir: Path, *, score: float = 0.7) -> None:
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     launched = _run("hparam-launch", "--plan-dir", str(round_dir))
@@ -255,7 +256,6 @@ def _mark_round_terminal(workflow_dir: Path, workspace: Path, *, status: str = "
         workspace,
         [{"step_id": run["step_id"], "run_id": run["run_id"], "status": status}],
     )
-
 
 
 def _write_agent_configuration_submission(input_path: Path) -> Path:
