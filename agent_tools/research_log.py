@@ -275,8 +275,9 @@ def append_research_log(
 ) -> tuple[Path, str, bool]:
     root = Path(root)
     path = root / RESEARCH_LOG_NAME
-    lock_path = Path(f"{path}.lock") if remote else path.with_name(f".{path.name}.cas.lock")
-    managed_paths = [path, lock_path]
+    managed_paths = [path, path.with_name(f".{path.name}.cas.lock")]
+    if remote:
+        managed_paths.append(Path(f"{path}.lock"))
     scope = entry.get("scope") if isinstance(entry, dict) else None
     if isinstance(scope, dict) and isinstance(scope.get("step_id"), str):
         managed_paths.append(root / "steps" / scope["step_id"] / "step.yaml")

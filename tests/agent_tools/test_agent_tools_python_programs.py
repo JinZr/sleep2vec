@@ -8,7 +8,7 @@ import pytest
 from agent_tools import python_programs, transport
 
 SOURCE_HASHES = {
-    "experiment_io.conditional_atomic_replace_text": "3b06fa26f92725d1197460c736410dabc4a8565fceec0c371ba964907baa5823",
+    "experiment_io.conditional_atomic_replace_text": "1bbf7c0723948f2be16803a16f7274a9056462ceb305728fd7dc8e9ac101ed49",
     "experiment_io.list_managed_subdirectories": "e8b83f0cef4f3cf46b84542276f7ffaf7045acaf4f409c9ad2d0333178b39c8b",
     "experiment_io.path_exists": "e6d06dceb086b4e29e3079cfe15fa4aa9a39931ecb614ac63073f338617d8fe9",
     "experiment_io.read_managed_files": "acf0d66282bd5bb74c506d165ee1bd0e88f219c78e9678e75951c6e385538002",
@@ -34,7 +34,7 @@ SOURCE_HASHES = {
 }
 
 COMMAND_HASHES = {
-    "experiment_io.conditional_atomic_replace_text": "c932a866e3a0f2bb4d48501d46489cae3407f2002b1f12fbbd77915743863b81",
+    "experiment_io.conditional_atomic_replace_text": "9476f5b4db0d8a91ba73550d5c4104f087d2c15ad547cd401c1a26162dfe27c4",
     "experiment_io.list_managed_subdirectories": "87f1c489bbff353f89d4418104abbb691fe6b2ba5ee9245815eb0ae1369e2921",
     "experiment_io.path_exists": "b6266a2d3eb073b90ea6ca0ed6a038448f0f79f0b3063b13a3ce7bf36c2595d7",
     "experiment_io.read_managed_files": "43836ec1178eee36b1b54788554a977047552565245e8d54413370e8d57d6da0",

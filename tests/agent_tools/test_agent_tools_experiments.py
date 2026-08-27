@@ -558,6 +558,7 @@ def test_remote_research_log_retries_conflict_and_preserves_competing_entry(tmp_
     assert appended is True
     assert state["attempts"] == 2
     assert root / "RESEARCH_LOG.md.lock" in state["paths"]
+    assert root / ".RESEARCH_LOG.md.cas.lock" in state["paths"]
     assert state["text"].count('id="obs-competing"') == 1
     assert state["text"].count('id="obs-new"') == 1
 

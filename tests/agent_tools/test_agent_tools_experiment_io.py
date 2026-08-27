@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -777,7 +779,80 @@ def test_remote_conditional_replace_deduplicates_target_dependency_lock(tmp_path
     assert result.returncode == 0, result.stderr.decode()
     assert path.read_bytes() == b"new\n"
     assert (tmp_path / "state.tsv.lock").is_file()
-    assert not (tmp_path / ".state.tsv.cas.lock").exists()
+    assert (tmp_path / ".state.tsv.cas.lock").is_file()
+
+
+def test_local_and_embedded_remote_conditional_replace_share_a_cas_lock(tmp_path: Path, monkeypatch):
+    path = tmp_path / "state.tsv"
+    path.write_text("old\n")
+    digest = hashlib.sha256(b"old\n").hexdigest()
+    local_ready = threading.Event()
+    release_local = threading.Event()
+    original_open_temporary = experiment_io._open_temporary_at
+
+    def pause_local_writer(parent_descriptor, target_name):
+        descriptor, temporary = original_open_temporary(parent_descriptor, target_name)
+        local_ready.set()
+        assert release_local.wait(timeout=5)
+        return descriptor, temporary
+
+    monkeypatch.setattr(experiment_io, "_open_temporary_at", pause_local_writer)
+    local_result = []
+    local_thread = threading.Thread(
+        target=lambda: local_result.append(
+            experiment_io.conditional_atomic_replace_text_at(path, "local\n", digest, managed_root=tmp_path)
+        )
+    )
+    local_thread.start()
+    assert local_ready.wait(timeout=5)
+
+    remote = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("experiment_io.conditional_atomic_replace_text"),
+            str(tmp_path),
+            str(path),
+            digest,
+            "",
+            "",
+            "",
+            "",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert remote.stdin is not None
+    remote.stdin.write(b"remote\n")
+    remote.stdin.close()
+    remote_lock_held = False
+    deadline = time.monotonic() + 5
+    while remote.poll() is None and time.monotonic() < deadline:
+        try:
+            lock_descriptor = os.open(tmp_path / "state.tsv.lock", os.O_RDWR)
+        except FileNotFoundError:
+            time.sleep(0.01)
+            continue
+        try:
+            fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            remote_lock_held = True
+            break
+        else:
+            fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_descriptor)
+        time.sleep(0.01)
+    release_local.set()
+
+    local_thread.join(timeout=5)
+    assert not local_thread.is_alive()
+    remote.wait(timeout=5)
+    assert remote_lock_held, "Embedded remote writer bypassed the local CAS lock"
+    assert local_result == [True]
+    assert remote.returncode == experiment_io.REMOTE_CONFLICT_RETURN_CODE
+    assert path.read_bytes() == b"local\n"
 
 
 def test_remote_conditional_replace_rejects_fifo_without_blocking(tmp_path: Path):

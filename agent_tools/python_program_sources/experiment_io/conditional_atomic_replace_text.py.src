@@ -215,15 +215,15 @@ with ExitStack() as lock_stack:
             raise SystemExit(45)
         if hashlib.sha256(dependency_current).hexdigest() != dependency_expected:
             raise SystemExit(45)
-    if append_mode:
-        target_lock_name = f".{target_name}.cas.lock"
-    else:
-        # Non-append writers must share the canonical lock used by lifecycle owners and dependency readers.
-        target_lock_name = target_name + ".lock"
-    target_lock_key = (target_parent_info.st_dev, target_parent_info.st_ino, target_lock_name)
-    if target_lock_key not in locked_files:
-        lock_stack.enter_context(blocking_file_lock_at(target_parent, target_lock_name))
-        locked_files.add(target_lock_key)
+    target_lock_names = [f".{target_name}.cas.lock"]
+    if not append_mode:
+        # Keep lifecycle readers and mixed local/SSH CAS writers on shared locks, in that order.
+        target_lock_names.insert(0, target_name + ".lock")
+    for target_lock_name in target_lock_names:
+        target_lock_key = (target_parent_info.st_dev, target_parent_info.st_ino, target_lock_name)
+        if target_lock_key not in locked_files:
+            lock_stack.enter_context(blocking_file_lock_at(target_parent, target_lock_name))
+            locked_files.add(target_lock_key)
     if guard_relative is not None:
         try:
             guard_parent, guard_name = open_managed_parent(root_descriptor, guard_relative, False)
