@@ -1463,50 +1463,10 @@ def _write_remote_run_matrix_if_current(
     matrix_path = root / "run_matrix.csv"
     report_path = root / "reports" / "run_matrix.md"
     matrix_text, report_text = _run_matrix_text(rows)
-    script = f"""
-import fcntl
-import hashlib
-import json
-import os
-import sys
-import tempfile
-
-manifest_path, matrix_path, report_path, expected = sys.argv[1:]
-payload = json.load(sys.stdin)
-with open(manifest_path + ".lock", "a+") as lock_file:
-    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-    try:
-        with open(manifest_path, "rb") as file_obj:
-            current = file_obj.read()
-    except FileNotFoundError:
-        raise SystemExit({exp_io.REMOTE_CONFLICT_RETURN_CODE})
-    if hashlib.sha256(current).hexdigest() != expected:
-        raise SystemExit({exp_io.REMOTE_CONFLICT_RETURN_CODE})
-    staged = []
-    try:
-        for path, text in ((matrix_path, payload["matrix"]), (report_path, payload["report"])):
-            parent = os.path.dirname(path) or "."
-            os.makedirs(parent, exist_ok=True)
-            descriptor, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".", dir=parent)
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as file_obj:
-                file_obj.write(text)
-                os.fchmod(file_obj.fileno(), 0o644)
-                file_obj.flush()
-                os.fsync(file_obj.fileno())
-            staged.append((temporary, path))
-        for temporary, path in staged:
-            os.replace(temporary, path)
-    finally:
-        for temporary, _path in staged:
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                pass
-"""
     result = transport.run_ssh(
         remote,
-        transport.remote_python_command(
-            script,
+        transport.remote_python_program_command(
+            "experiment_workspace.write_run_matrix_if_current",
             str(root / "run_manifest.tsv"),
             str(matrix_path),
             str(report_path),

@@ -65,104 +65,8 @@ class ProcessIdentityError(RuntimeError):
     pass
 
 
-_PROCESS_START_TOKEN_CODE = """
-def start_token(pid):
-    try:
-        stat_text = open(f"/proc/{pid}/stat", encoding="utf-8").read()
-    except OSError:
-        if sys.platform == "darwin":
-            # macOS has no /proc; libproc exposes the kernel start timestamp without a fragile ps parse.
-            import ctypes
-
-            class ProcBsdInfo(ctypes.Structure):
-                _fields_ = [
-                    ("flags", ctypes.c_uint32), ("status", ctypes.c_uint32),
-                    ("xstatus", ctypes.c_uint32), ("pid", ctypes.c_uint32),
-                    ("ppid", ctypes.c_uint32), ("uid", ctypes.c_uint32),
-                    ("gid", ctypes.c_uint32), ("ruid", ctypes.c_uint32),
-                    ("rgid", ctypes.c_uint32), ("svuid", ctypes.c_uint32),
-                    ("svgid", ctypes.c_uint32), ("rfu", ctypes.c_uint32),
-                    ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32),
-                    ("nfiles", ctypes.c_uint32), ("pgid", ctypes.c_uint32),
-                    ("pjobc", ctypes.c_uint32), ("e_tdev", ctypes.c_uint32),
-                    ("e_tpgid", ctypes.c_uint32), ("nice", ctypes.c_int32),
-                    ("start_sec", ctypes.c_uint64), ("start_usec", ctypes.c_uint64),
-                ]
-
-            info = ProcBsdInfo()
-            libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
-            size = libproc.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
-            if size == ctypes.sizeof(info) and info.pid == pid:
-                return f"darwin:{info.start_sec}:{info.start_usec}"
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "lstart="],
-            text=True,
-            capture_output=True,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return None
-        return "ps:" + result.stdout.strip()
-    return "proc:" + stat_text.rsplit(")", 1)[1].split()[19]
-""".strip()
 
 
-_PROCESS_GROUP_RUNNING_CODE = """
-def process_group_running(pgid, proc_root="/proc"):
-    leader_uncertain = False
-    try:
-        leader_stat = open(os.path.join(proc_root, str(pgid), "stat"), encoding="utf-8").read()
-    except FileNotFoundError:
-        leader_stat = None
-    except OSError:
-        leader_stat = None
-        leader_uncertain = True
-    if leader_stat:
-        fields = leader_stat.rsplit(")", 1)[-1].split()
-        try:
-            leader_pgid = int(fields[2])
-        except (IndexError, ValueError):
-            leader_uncertain = True
-        else:
-            if leader_pgid == pgid and fields[0] not in {"Z", "X"}:
-                return True
-
-    try:
-        entries = os.listdir(proc_root)
-    except FileNotFoundError:
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        return True
-    except OSError:
-        return None
-
-    uncertain = leader_uncertain
-    for entry in entries:
-        if not entry.isdigit() or entry == str(pgid):
-            continue
-        try:
-            stat_text = open(os.path.join(proc_root, entry, "stat"), encoding="utf-8").read()
-        except FileNotFoundError:
-            continue
-        except OSError:
-            uncertain = True
-            continue
-        fields = stat_text.rsplit(")", 1)[-1].split()
-        if len(fields) < 3:
-            uncertain = True
-            continue
-        try:
-            process_pgid = int(fields[2])
-        except ValueError:
-            uncertain = True
-            continue
-        if process_pgid == pgid and fields[0] not in {"Z", "X"}:
-            return True
-    return None if uncertain else False
-""".strip()
 
 
 def status_row(
@@ -314,84 +218,10 @@ def status_row(
 
 def runtime_artifacts(row: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]] | None:
     if is_remote_row(row):
-        script = """
-import json
-import os
-import stat
-import sys
-
-runtime_dir = sys.argv[1]
-checkpoint_dir = sys.argv[2]
-payload = {"run_manifest": "", "manifest": {}, "checkpoints": []}
-
-if runtime_dir:
-    try:
-        runtime_info = os.lstat(runtime_dir)
-    except FileNotFoundError:
-        runtime_info = None
-    except OSError as exc:
-        print(exc, file=sys.stderr)
-        raise SystemExit(1)
-    if runtime_info is not None and (stat.S_ISLNK(runtime_info.st_mode) or not stat.S_ISDIR(runtime_info.st_mode)):
-        print(f"Remote runtime path is not a directory: {runtime_dir}", file=sys.stderr)
-        raise SystemExit(1)
-    manifest = os.path.join(runtime_dir, "run_manifest.json")
-    try:
-        manifest_info = os.lstat(manifest)
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        print(exc, file=sys.stderr)
-        raise SystemExit(1)
-    else:
-        if (
-            stat.S_ISLNK(manifest_info.st_mode)
-            or not stat.S_ISREG(manifest_info.st_mode)
-            or manifest_info.st_nlink != 1
-        ):
-            print(f"Remote run manifest is not an independent regular file: {manifest}", file=sys.stderr)
-            raise SystemExit(1)
-        try:
-            with open(manifest, encoding="utf-8") as file_obj:
-                manifest_payload = json.load(file_obj)
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            print(exc, file=sys.stderr)
-            raise SystemExit(1)
-        if not isinstance(manifest_payload, dict):
-            print(f"Remote run manifest is corrupt: {manifest}", file=sys.stderr)
-            raise SystemExit(1)
-        payload["run_manifest"] = manifest
-        payload["manifest"] = manifest_payload
-
-if checkpoint_dir:
-    try:
-        checkpoint_info = os.lstat(checkpoint_dir)
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        print(exc, file=sys.stderr)
-        raise SystemExit(1)
-    else:
-        if stat.S_ISLNK(checkpoint_info.st_mode) or not stat.S_ISDIR(checkpoint_info.st_mode):
-            print(f"Remote checkpoint path is not a directory: {checkpoint_dir}", file=sys.stderr)
-            raise SystemExit(1)
-        try:
-            payload["checkpoints"] = sorted(
-                name
-                for name in os.listdir(checkpoint_dir)
-                if name.endswith(".ckpt")
-                and stat.S_ISREG(os.lstat(os.path.join(checkpoint_dir, name)).st_mode)
-            )
-        except OSError as exc:
-            print(exc, file=sys.stderr)
-            raise SystemExit(1)
-
-sys.stdout.write(json.dumps(payload))
-"""
         result = run_row_command(
             row,
-            transport.remote_python_command(
-                script,
+            transport.remote_python_program_command(
+                "run_evidence.runtime_artifacts",
                 str(row.get("runtime_dir") or ""),
                 str(row.get("checkpoint_dir") or ""),
             ),
@@ -425,34 +255,9 @@ def checkpoint_file_sha256(row: dict[str, Any], checkpoint_path: str | Path) -> 
     if row.get("target") == "ssh" and not row.get("host"):
         raise ValueError("Managed SSH checkpoint evidence requires a host.")
     if is_remote_row(row):
-        script = """
-import hashlib
-import os
-import stat
-import sys
-
-path = sys.argv[1]
-try:
-    info = os.lstat(path)
-except OSError as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-    print(f"Checkpoint is not a physical regular file: {path}", file=sys.stderr)
-    raise SystemExit(1)
-digest = hashlib.sha256()
-try:
-    with open(path, "rb") as file_obj:
-        while chunk := file_obj.read(1024 * 1024):
-            digest.update(chunk)
-except OSError as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-sys.stdout.write(digest.hexdigest())
-"""
         result = run_row_command(
             row,
-            transport.remote_python_command(script, str(checkpoint_path)),
+            transport.remote_python_program_command("run_evidence.checkpoint_file_sha256", str(checkpoint_path)),
         )
         if result.returncode != 0:
             detail = result.stderr.strip() or f"exit code {result.returncode}"
@@ -539,34 +344,9 @@ def _read_pid_text(path: Any, row: dict[str, Any] | None) -> str | None:
     if not path:
         return None
     if is_remote_row(row):
-        script = f"""
-import os
-import stat
-import sys
-
-path = sys.argv[1]
-try:
-    info = os.lstat(path)
-except FileNotFoundError:
-    raise SystemExit({REMOTE_MISSING_RETURN_CODE})
-except OSError as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-
-if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-    print(f"PID file is not an independent regular file: {{path}}", file=sys.stderr)
-    raise SystemExit(1)
-
-try:
-    with open(path, encoding="utf-8") as file_obj:
-        sys.stdout.write(file_obj.read())
-except (OSError, UnicodeError) as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-"""
         result = run_row_command(
             row or {},
-            transport.remote_python_command(script, str(path)),
+            transport.remote_python_program_command("run_evidence.read_pid_text", str(path)),
         )
         if result.returncode == REMOTE_MISSING_RETURN_CODE:
             return None
@@ -617,49 +397,14 @@ def _parse_process_identity(text: str, path: Any) -> dict[str, Any]:
     return {"pid": pid, "process_group_id": pgid, "process_start_token": token}
 
 
-_PROCESS_PROBE_SCRIPT = "\n\n".join(
-    [
-        """
-import json
-import os
-import subprocess
-import sys
-""".strip(),
-        _PROCESS_START_TOKEN_CODE,
-        _PROCESS_GROUP_RUNNING_CODE,
-        """
-
-pid = int(sys.argv[1])
-pgid = int(sys.argv[2])
-
-try:
-    leader_pgid = os.getpgid(pid)
-except ProcessLookupError:
-    leader = None
-else:
-    token = start_token(pid)
-    if token is None:
-        print(f"Cannot read process start time for PID {pid}", file=sys.stderr)
-        raise SystemExit(1)
-    leader = {"pid": pid, "process_group_id": leader_pgid, "process_start_token": token}
-
-group_running = process_group_running(pgid)
-if group_running is None:
-    print(f"Cannot inspect process group {pgid}", file=sys.stderr)
-    raise SystemExit(1)
-
-print(json.dumps({"leader": leader, "group_running": group_running}, sort_keys=True))
-""".strip(),
-    ]
-)
 
 
 def process_identity_running(row: dict[str, Any], identity: dict[str, Any]) -> bool | None:
     _require_matching_process_identity(row, identity)
     result = run_row_command(
         row,
-        transport.remote_python_command(
-            _PROCESS_PROBE_SCRIPT,
+        transport.remote_python_program_command(
+            "run_evidence.process_probe",
             identity["pid"],
             identity["process_group_id"],
         ),
@@ -707,64 +452,6 @@ def process_running(row: dict[str, Any], pid: int | None) -> bool | None:
     return True
 
 
-_PROCESS_STOP_SCRIPT = "\n\n".join(
-    [
-        """
-import os
-import signal
-import subprocess
-import sys
-import time
-""".strip(),
-        _PROCESS_START_TOKEN_CODE,
-        _PROCESS_GROUP_RUNNING_CODE,
-        """
-
-pid = int(sys.argv[1])
-pgid = int(sys.argv[2])
-expected_token = sys.argv[3]
-timeout = float(sys.argv[4])
-
-if pgid != pid or pgid == os.getpgrp():
-    print("Refusing to signal an unsafe process group", file=sys.stderr)
-    raise SystemExit(45)
-try:
-    leader_pgid = os.getpgid(pid)
-except ProcessLookupError:
-    leader_pgid = None
-if leader_pgid is not None:
-    if leader_pgid != pgid or start_token(pid) != expected_token:
-        print("Process identity changed before stop", file=sys.stderr)
-        raise SystemExit(45)
-
-group_running = process_group_running(pgid)
-if group_running is None:
-    print("Cannot inspect managed process group", file=sys.stderr)
-    raise SystemExit(1)
-if not group_running:
-    print("Managed process group is no longer running", file=sys.stderr)
-    raise SystemExit(44)
-
-os.killpg(pgid, signal.SIGTERM)
-deadline = time.monotonic() + timeout
-while time.monotonic() < deadline:
-    group_running = process_group_running(pgid)
-    if group_running is None:
-        print("Cannot inspect managed process group", file=sys.stderr)
-        raise SystemExit(1)
-    if not group_running:
-        break
-    time.sleep(0.05)
-group_running = process_group_running(pgid)
-if group_running is None:
-    print("Cannot inspect managed process group", file=sys.stderr)
-    raise SystemExit(1)
-if group_running:
-    print("Managed process group did not stop after SIGTERM", file=sys.stderr)
-    raise SystemExit(46)
-""".strip(),
-    ]
-)
 
 
 def stop_process_group(row: dict[str, Any], identity: dict[str, Any], *, timeout: float = 5.0) -> None:
@@ -775,8 +462,8 @@ def stop_process_group(row: dict[str, Any], identity: dict[str, Any], *, timeout
         # Verification and signal share one remote process so PID reuse cannot race a second SSH call.
         result = run_row_command(
             row,
-            transport.remote_python_command(
-                _PROCESS_STOP_SCRIPT,
+            transport.remote_python_program_command(
+                "run_evidence.process_stop",
                 pid,
                 pgid,
                 identity["process_start_token"],
@@ -818,31 +505,9 @@ def log_has_failure(
     if not path:
         return require_exit_code
     if is_remote_row(row):
-        script = f"""
-import os
-import sys
-
-path = sys.argv[1]
-try:
-    os.lstat(path)
-except FileNotFoundError:
-    raise SystemExit({REMOTE_MISSING_RETURN_CODE})
-except OSError as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-
-try:
-    with open(path, encoding="utf-8", errors="replace") as file_obj:
-        lines = file_obj.readlines()
-except OSError as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-
-sys.stdout.write("".join(lines[-100:]))
-"""
         result = run_row_command(
             row or {},
-            transport.remote_python_command(script, str(path)),
+            transport.remote_python_program_command("run_evidence.log_tail", str(path)),
         )
         if result.returncode == REMOTE_MISSING_RETURN_CODE:
             tail = ""

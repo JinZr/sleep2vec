@@ -16,7 +16,7 @@ from typing import Any
 
 import yaml
 
-from . import experiment_io as exp_io, gpu_rules, run_evidence as evidence, slurm, transport
+from . import experiment_io as exp_io, gpu_rules, python_programs, run_evidence as evidence, slurm, transport
 from .experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     LAUNCHABLE_STATUSES,
@@ -74,159 +74,7 @@ __all__ = [
     "validated_execution_snapshot",
 ]
 
-_RUNTIME_IDENTITY_SCRIPT = """
-import hashlib
-import importlib.util
-import json
-from pathlib import Path
-import socket
-import subprocess
-import sys
 
-module = sys.argv[1]
-expected = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
-artifacts = json.loads(sys.argv[3]) if len(sys.argv) > 3 else []
-commit = subprocess.run(["git", "rev-parse", "HEAD"], text=True, capture_output=True)
-repo_root = subprocess.run(["git", "rev-parse", "--show-toplevel"], text=True, capture_output=True)
-dirty = subprocess.run(
-    ["git", "status", "--porcelain", "--untracked-files=no"],
-    text=True,
-    capture_output=True,
-)
-untracked_code = subprocess.run(
-    ["git", "ls-files", "--others", "--exclude-standard", "--", "*.py", "*.pyi", "*.so"],
-    text=True,
-    capture_output=True,
-)
-ignored_code = subprocess.run(
-    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyi", "*.so"],
-    text=True,
-    capture_output=True,
-)
-if (
-    commit.returncode != 0
-    or repo_root.returncode != 0
-    or dirty.returncode != 0
-    or untracked_code.returncode != 0
-    or ignored_code.returncode != 0
-):
-    print(
-        commit.stderr or repo_root.stderr or dirty.stderr or untracked_code.stderr or ignored_code.stderr,
-        file=sys.stderr,
-    )
-    raise SystemExit(2)
-if dirty.stdout.strip():
-    print("Target runtime has tracked worktree changes; launch requires a clean commit.", file=sys.stderr)
-    raise SystemExit(2)
-
-def importable_code(output):
-    paths = []
-    for raw in output.splitlines():
-        path = Path(raw)
-        module_name = path.name.split(".", 1)[0]
-        if module_name.isidentifier() and all(part.isidentifier() for part in path.parts[:-1]):
-            paths.append(raw)
-    return paths
-
-if importable_code(untracked_code.stdout) or importable_code(ignored_code.stdout):
-    print(
-        "Target runtime has untracked or ignored Python code; launch requires commit-defined import roots.",
-        file=sys.stderr,
-    )
-    raise SystemExit(2)
-runtime_repo_root = Path(repo_root.stdout.strip()).resolve()
-spec = importlib.util.find_spec(module)
-origin = Path(spec.origin).resolve() if spec is not None and spec.origin else None
-if origin is None:
-    print(f"Target runtime module has no file origin: {module}", file=sys.stderr)
-    raise SystemExit(2)
-try:
-    origin.relative_to(runtime_repo_root)
-except ValueError:
-    print(f"Target runtime module is outside the verified repository: {origin}", file=sys.stderr)
-    raise SystemExit(2)
-payload = {
-    "python": sys.executable,
-    "python_version": sys.version.split()[0],
-    "runtime_commit": commit.stdout.strip(),
-    "runtime_repo_root": str(runtime_repo_root),
-    "runtime_hostname": socket.gethostname(),
-    "module": module,
-    "module_origin": str(origin),
-}
-identity_fields = (
-    "python",
-    "python_version",
-    "runtime_commit",
-    "runtime_repo_root",
-    "runtime_hostname",
-    "module",
-    "module_origin",
-)
-changed = [field for field in identity_fields if expected and payload[field] != expected.get(field)]
-if changed:
-    print("Target runtime identity changed before process start: " + ", ".join(changed), file=sys.stderr)
-    raise SystemExit(2)
-for artifact in artifacts:
-    path = Path(artifact["path"])
-    if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
-        print(f"Frozen run artifact is not an independent file: {path}", file=sys.stderr)
-        raise SystemExit(2)
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    if digest != artifact["sha256"]:
-        print(f"Frozen run artifact changed before process start: {path}", file=sys.stderr)
-        raise SystemExit(2)
-print(json.dumps(payload, sort_keys=True))
-""".strip()
-
-_PROCESS_LAUNCH_SCRIPT = "\n\n".join(
-    [
-        """
-import json
-import os
-import signal
-import subprocess
-import sys
-""".strip(),
-        evidence._PROCESS_START_TOKEN_CODE,
-        """
-
-script, log_path, pid_path, workdir = sys.argv[1:]
-
-with open(log_path, "ab", buffering=0) as log_file:
-    process = subprocess.Popen(
-        ["bash", script],
-        cwd=workdir,
-        env=os.environ.copy(),
-        stdin=subprocess.DEVNULL,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    try:
-        identity = {
-            "pid": process.pid,
-            "process_group_id": os.getpgid(process.pid),
-            "process_start_token": start_token(process.pid),
-        }
-        if identity["process_start_token"] is None:
-            raise RuntimeError(f"Cannot read process start time for PID {process.pid}")
-        descriptor = os.open(pid_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as file_obj:
-            json.dump(identity, file_obj, sort_keys=True)
-            file_obj.write("\\n")
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
-    except BaseException:
-        # An unrecorded process group cannot be managed safely, so stop it before surfacing launch failure.
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        raise
-""".strip(),
-    ]
-)
 
 
 @dataclass(frozen=True)
@@ -576,24 +424,7 @@ def _launch_managed_runs(
             hooks=hooks,
         )
     planned_by_key = {managed_run_key(run): run for run in runs}
-    snapshot_path = owner_dir / EXECUTION_SNAPSHOT_NAME
-    exp_io.validate_managed_output_paths(
-        workspace,
-        [
-            workspace / "run_manifest.tsv",
-            workspace / "run_matrix.csv",
-            workspace / "reports" / "run_matrix.md",
-            workspace / "events.jsonl",
-            workspace / "reports" / "status.md",
-            snapshot_path,
-        ],
-    )
-    experiment_manifest = yaml.safe_load((workspace / "experiment.yaml").read_text()) or {}
-    experiment = experiment_manifest.get("experiment") if isinstance(experiment_manifest, dict) else None
-    if isinstance(experiment, dict) and experiment.get("status") == "completed":
-        raise ValueError(f"Experiment is completed and cannot launch runs: {workspace}")
-    expected_keys = {managed_run_key(run) for run in runs}
-    workspace_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    snapshot_path, expected_keys, workspace_by_key = _managed_launch_preflight(workspace, owner_dir, runs)
     if (
         not dry_run
         and not snapshot_path.exists()
@@ -935,18 +766,11 @@ def _managed_scheduler_type(execution: dict[str, Any], runs: list[dict[str, Any]
     return configured
 
 
-def _launch_slurm_runs(
+def _managed_launch_preflight(
     workspace: Path,
     owner_dir: Path,
     runs: list[dict[str, Any]],
-    execution: dict[str, Any],
-    *,
-    dry_run: bool,
-    runtime_output_fields: tuple[str, ...],
-    runtime_output_root: str | Path | None,
-    projection_writer: Callable[[LaunchResult], None] | None,
-    hooks: SchedulerHooks,
-) -> LaunchResult:
+) -> tuple[Path, set[RunKey], dict[RunKey, dict[str, Any]]]:
     snapshot_path = owner_dir / EXECUTION_SNAPSHOT_NAME
     exp_io.validate_managed_output_paths(
         workspace,
@@ -965,6 +789,22 @@ def _launch_slurm_runs(
         raise ValueError(f"Experiment is completed and cannot launch runs: {workspace}")
     expected_keys = {managed_run_key(run) for run in runs}
     workspace_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    return snapshot_path, expected_keys, workspace_by_key
+
+
+def _launch_slurm_runs(
+    workspace: Path,
+    owner_dir: Path,
+    runs: list[dict[str, Any]],
+    execution: dict[str, Any],
+    *,
+    dry_run: bool,
+    runtime_output_fields: tuple[str, ...],
+    runtime_output_root: str | Path | None,
+    projection_writer: Callable[[LaunchResult], None] | None,
+    hooks: SchedulerHooks,
+) -> LaunchResult:
+    snapshot_path, expected_keys, workspace_by_key = _managed_launch_preflight(workspace, owner_dir, runs)
     missing = expected_keys - set(workspace_by_key)
     if missing:
         step_id, run_id = sorted(missing)[0]
@@ -1592,7 +1432,10 @@ def inspect_execution_target(
     if python_command != str(expected_python):
         raise ValueError(f"Frozen {plan_label} commands differ from execution.python.")
     run_command = command_runner or run_execution_command
-    identity_result = run_command(execution, [python_command, "-c", _RUNTIME_IDENTITY_SCRIPT, module])
+    identity_result = run_command(
+        execution,
+        [python_command, "-c", python_programs.source("managed_scheduler.runtime_identity"), module],
+    )
     if identity_result.returncode != 0:
         detail = (
             identity_result.stderr.strip()
@@ -1621,56 +1464,16 @@ def inspect_execution_target(
             f"expected {expected_commit}, observed {identity['runtime_commit']}."
         )
 
-    parser_script = """
-import argparse
-import hashlib
-import importlib.util
-import json
-from pathlib import Path
-import runpy
-import sys
-
-module = sys.argv[1]
-planned_argv = json.loads(sys.argv[2])
-expected_origin = sys.argv[3]
-spec = importlib.util.find_spec(module)
-origin = str(Path(spec.origin).resolve()) if spec is not None and spec.origin else ""
-if origin != expected_origin:
-    print("Target runtime module origin changed before argparse validation.", file=sys.stderr)
-    raise SystemExit(2)
-original_parse_args = argparse.ArgumentParser.parse_args
-
-class ArgumentsValidated(Exception):
-    pass
-
-def validate(self, args=None, namespace=None):
-    for planned in planned_argv:
-        try:
-            original_parse_args(self, planned["args"], namespace)
-        except SystemExit:
-            print("Frozen argv rejected for " + planned["run_id"], file=sys.stderr)
-            raise
-    supported_options = sorted({option for action in self._actions for option in action.option_strings})
-    normalized = json.dumps(supported_options, separators=(",", ":"))
-    evidence = {
-        "supported_options": supported_options,
-        "cli_options_sha256": hashlib.sha256(normalized.encode()).hexdigest(),
-    }
-    print("AGENT_CLI_PREFLIGHT=" + json.dumps(evidence, sort_keys=True))
-    raise ArgumentsValidated
-
-argparse.ArgumentParser.parse_args = validate
-sys.argv = [module, *planned_argv[0]["args"]]
-try:
-    runpy.run_module(module, run_name="__main__")
-except ArgumentsValidated:
-    raise SystemExit(0)
-print("Target runtime did not validate arguments through argparse.", file=sys.stderr)
-raise SystemExit(2)
-""".strip()
     parse_result = run_command(
         execution,
-        [python_command, "-c", parser_script, module, json.dumps(planned_argv), identity["module_origin"]],
+        [
+            python_command,
+            "-c",
+            python_programs.source("managed_scheduler.cli_preflight"),
+            module,
+            json.dumps(planned_argv),
+            identity["module_origin"],
+        ],
     )
     if parse_result.returncode != 0:
         detail = parse_result.stderr.strip() or parse_result.stdout.strip() or f"exit code {parse_result.returncode}"
@@ -1749,7 +1552,7 @@ def build_launch_command(
     run = [
         str(execution.get("python") or sys.executable),
         "-c",
-        _PROCESS_LAUNCH_SCRIPT,
+        python_programs.source("managed_scheduler.process_launch"),
         str(script),
         str(log_path),
         str(pid_path),
@@ -1776,7 +1579,7 @@ def build_launch_command(
                 for part in (
                     execution["python"],
                     "-c",
-                    _RUNTIME_IDENTITY_SCRIPT,
+                    python_programs.source("managed_scheduler.runtime_identity"),
                     execution_snapshot["module"],
                     json.dumps(execution_snapshot, sort_keys=True),
                     json.dumps(artifacts, sort_keys=True),

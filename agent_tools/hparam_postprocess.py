@@ -13,7 +13,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence as evidence
+from . import experiment_io as exp_io, python_programs, run_artifacts as artifacts, run_evidence as evidence
 from .experiment_workspace import (
     canonical_local_experiment_root,
     experiment_root,
@@ -114,17 +114,7 @@ def generate_external_eval(
                 [
                     "python",
                     "-c",
-                    (
-                        "import hashlib, sys\n"
-                        "path, expected = sys.argv[1:3]\n"
-                        "digest = hashlib.sha256()\n"
-                        "with open(path, 'rb') as checkpoint:\n"
-                        "    for chunk in iter(lambda: checkpoint.read(1024 * 1024), b''):\n"
-                        "        digest.update(chunk)\n"
-                        "observed = digest.hexdigest()\n"
-                        "if observed != expected:\n"
-                        "    raise SystemExit(f'Frozen checkpoint SHA-256 differs: {path}')"
-                    ),
+                    python_programs.source("hparam_postprocess.verify_checkpoint_sha256"),
                     checkpoint_path,
                     checkpoint_sha256,
                 ]
