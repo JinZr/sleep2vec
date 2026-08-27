@@ -709,6 +709,57 @@ def test_hparam_overwrite_publish_failure_restores_existing_plan(tmp_path: Path,
     assert not list(workspace.parent.rglob(f".{plan_dir.name}.*.backup"))
 
 
+def test_staged_plan_publish_rejects_existing_run_directory(tmp_path: Path):
+    plan_dir = tmp_path / "plan"
+    staging_dir = tmp_path / ".plan.staging"
+    existing_run = plan_dir / "runs" / "run-000--unit"
+    staged_run = staging_dir / "runs" / "run-000--unit"
+    existing_run.mkdir(parents=True)
+    staged_run.mkdir(parents=True)
+    (plan_dir / "plan.json").write_text('{"old": true}\n')
+    (existing_run / "run.json").write_text('{"old": true}\n')
+    (staging_dir / "plan.json").write_text('{"new": true}\n')
+    (staged_run / "run.json").write_text('{"new": true}\n')
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="Published run directories are immutable: run-000--unit"):
+        plans.publish_staged_plan_locked(staging_dir, plan_dir, out_preexisted=True)
+
+    assert _workspace_files(tmp_path) == before
+    assert not list(tmp_path.rglob(".plan.*.backup"))
+
+
+def test_staged_plan_publish_failure_restores_appended_runs(tmp_path: Path, monkeypatch):
+    plan_dir = tmp_path / "plan"
+    staging_dir = tmp_path / ".plan.staging"
+    existing_run = plan_dir / "runs" / "run-000--unit"
+    existing_run.mkdir(parents=True)
+    (plan_dir / "plan.json").write_text('{"old": true}\n')
+    (plan_dir / "plan.md").write_text("old plan\n")
+    (existing_run / "run.json").write_text('{"old": true}\n')
+    for run_name in ("run-001--unit", "run-002--unit"):
+        run_dir = staging_dir / "runs" / run_name
+        run_dir.mkdir(parents=True)
+        (run_dir / "run.json").write_text(f'{{"run": "{run_name}"}}\n')
+    (staging_dir / "plan.json").write_text('{"new": true}\n')
+    (staging_dir / "plan.md").write_text("new plan\n")
+    before = _workspace_files(tmp_path)
+    real_replace = Path.replace
+
+    def fail_second_run(path, target):
+        if path == staging_dir / "runs" / "run-002--unit":
+            raise OSError(errno.EIO, "injected run publish failure")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_second_run)
+
+    with pytest.raises(OSError, match="injected run publish failure"):
+        plans.publish_staged_plan_locked(staging_dir, plan_dir, out_preexisted=True)
+
+    assert _workspace_files(tmp_path) == before
+    assert not list(tmp_path.rglob(".plan.*.backup"))
+
+
 def test_hparam_plan_rejects_destination_appearing_during_preflight(tmp_path: Path, monkeypatch):
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"

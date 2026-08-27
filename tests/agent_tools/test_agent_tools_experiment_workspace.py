@@ -2110,3 +2110,29 @@ def test_single_run_versions_are_unique_across_repeated_plans(tmp_path: Path):
     assert first_run["version"] != second_run["version"]
     assert "run-000" in first_run["version"]
     assert "run-001" in second_run["version"]
+
+
+def test_repeated_single_run_plan_preserves_prior_run_tree(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["artifacts"]["overwrite"] = True
+    payload["decisions"]["overwrite_policy"] = {"value": True, "source": "explicit_recipe"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+
+    first = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert first.returncode == 0, first.stderr
+    first_run_dir = plan_dir / "runs" / "run-000--unit"
+    first_run_bytes = {
+        path.relative_to(first_run_dir): path.read_bytes() for path in first_run_dir.rglob("*") if path.is_file()
+    }
+
+    second = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    assert second.returncode == 0, second.stderr
+    assert {
+        path.relative_to(first_run_dir): path.read_bytes() for path in first_run_dir.rglob("*") if path.is_file()
+    } == first_run_bytes
+    assert (plan_dir / "runs" / "run-001--unit" / "run.json").is_file()
+    assert json.loads((plan_dir / "plan.json").read_text())["runs"][0]["run_id"] == "run-001"
+    assert [row["run_id"] for row in read_run_manifest(tmp_path)] == ["run-000", "run-001"]

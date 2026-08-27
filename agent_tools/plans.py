@@ -1187,17 +1187,34 @@ def publish_staged_plan_locked(write_out: Path, out: Path, *, out_preexisted: bo
     if out.is_symlink() or not out.is_dir():
         raise ValueError(f"Atomic plan output is not a directory: {out}")
 
+    staged_runs = write_out / "runs"
+    source_names = {path.name for path in write_out.iterdir()}
+    run_names = []
+    if "runs" in source_names:
+        if staged_runs.is_symlink() or not staged_runs.is_dir():
+            raise ValueError(f"Staged plan runs path is not a physical directory: {staged_runs}")
+        run_names = sorted(path.name for path in staged_runs.iterdir())
+        destination_runs = out / "runs"
+        if os.path.lexists(destination_runs):
+            if destination_runs.is_symlink() or not destination_runs.is_dir():
+                raise ValueError(f"Published plan runs path is not a physical directory: {destination_runs}")
+            collisions = [name for name in run_names if os.path.lexists(destination_runs / name)]
+            if collisions:
+                raise ValueError(f"Published run directories are immutable: {', '.join(collisions)}")
+
     backup_parent = out if write_out.parent == out else out.parent
     backup = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".backup", dir=backup_parent))
-    source_names = {path.name for path in write_out.iterdir()}
-    replaced_names = set(source_names)
+    plan_source_names = source_names - {"runs"}
+    replaced_names = set(plan_source_names)
     for optional_name in ("final_external_test.sh", "config.final_eval.yaml"):
-        if optional_name not in source_names:
+        if optional_name not in plan_source_names:
             replaced_names.add(optional_name)
     old_order = ["plan.json", *sorted(replaced_names - {"plan.json"})]
-    new_order = [*sorted(source_names - {"plan.json"}), "plan.json"]
+    new_order = [*sorted(plan_source_names - {"plan.json"}), "plan.json"]
     moved_old = []
     moved_new = []
+    moved_run_names = []
+    moved_runs_dir = False
     try:
         # Hide the old manifest while plan-owned top-level entries change; restore it last on failure.
         for name in old_order:
@@ -1205,15 +1222,34 @@ def publish_staged_plan_locked(write_out: Path, out: Path, *, out_preexisted: bo
             if os.path.lexists(current):
                 current.replace(backup / name)
                 moved_old.append(name)
-        for name in new_order:
+        for name in new_order[:-1]:
             (write_out / name).replace(out / name)
             moved_new.append(name)
+        # Committed run directories are append-only; overwrite replaces only plan-level files.
+        if "runs" in source_names:
+            destination_runs = out / "runs"
+            if os.path.lexists(destination_runs):
+                for name in run_names:
+                    (staged_runs / name).replace(destination_runs / name)
+                    moved_run_names.append(name)
+                staged_runs.rmdir()
+            else:
+                staged_runs.replace(destination_runs)
+                moved_runs_dir = True
+        (write_out / "plan.json").replace(out / "plan.json")
+        moved_new.append("plan.json")
         _validate_published_pass_envelope(out)
     except BaseException:
         for name in reversed(moved_new):
             current = out / name
             if os.path.lexists(current):
                 current.replace(write_out / name)
+        if moved_runs_dir:
+            (out / "runs").replace(staged_runs)
+        elif moved_run_names:
+            staged_runs.mkdir(exist_ok=True)
+            for name in reversed(moved_run_names):
+                (out / "runs" / name).replace(staged_runs / name)
         for name in reversed(moved_old):
             (backup / name).replace(out / name)
         shutil.rmtree(backup)
