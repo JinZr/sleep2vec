@@ -35,6 +35,7 @@ from .decisions import (
     decision_entry_contract_issues,
     evaluate_consultation_gates,
     merge_status,
+    resolved_user_decisions,
     user_decision_template,
 )
 from .experiment_workspace import (
@@ -274,7 +275,7 @@ def evaluate_recipe(
             DecisionReport(
                 status=merge_status(contract_issues),
                 issues=contract_issues,
-                decisions={},
+                decisions=resolved_user_decisions(user_decisions),
             ),
         )
     recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
@@ -510,7 +511,8 @@ def write_user_decision_template(
     *,
     preserve_existing: bool,
 ) -> tuple[Path, bool] | None:
-    payload = user_decision_template(recipe.get("task"), report, load_consultation_policy())
+    task_owner = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    payload = user_decision_template(task_owner.get("task"), report, load_consultation_policy())
     if not payload:
         return None
     target = Path(output_dir) / USER_DECISIONS_FILENAME

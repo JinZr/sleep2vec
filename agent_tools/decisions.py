@@ -22,6 +22,7 @@ __all__ = [
     "ResolvedDecision",
     "evaluate_consultation_gates",
     "merge_status",
+    "resolved_user_decisions",
     "user_decision_template",
 ]
 
@@ -143,6 +144,13 @@ def user_decision_template(
     return {"decisions": decisions}
 
 
+def resolved_user_decisions(user_decisions: dict[str, Any]) -> dict[str, ResolvedDecision]:
+    return {
+        field: _decision_from_mapping(field, raw_decision, "explicit_user")
+        for field, raw_decision in user_decisions.items()
+    }
+
+
 def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
     return DecisionIssue(
         DecisionStatus.FAIL,
@@ -183,12 +191,7 @@ def evaluate_consultation_gates(
         )
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=decisions)
     # Preserve user-file entries when an unresolved task stops consultation before later fields are evaluated.
-    decisions.update(
-        {
-            field: _decision_from_mapping(field, raw_decision, "explicit_user")
-            for field, raw_decision in user_decisions.items()
-        }
-    )
+    decisions.update(resolved_user_decisions(user_decisions))
     supported_tasks = SUPPORTED_TASKS
     task_decision = _resolve_decision(
         "task",
