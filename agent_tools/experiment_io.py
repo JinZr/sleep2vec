@@ -668,6 +668,7 @@ def conditional_atomic_replace_text_at(
         with ExitStack() as lock_stack:
             root_descriptor = _open_managed_root(root)
             lock_stack.callback(os.close, root_descriptor)
+            root_info = os.fstat(root_descriptor)
             locked_files: set[tuple[int, int, str]] = set()
             target_parent, target_name = _open_managed_parent(
                 root_descriptor,
@@ -745,16 +746,53 @@ def conditional_atomic_replace_text_at(
                     os.fchmod(file_obj.fileno(), target_mode)
                     file_obj.flush()
                     os.fsync(file_obj.fileno())
+                try:
+                    public_root = _open_managed_root(root)
+                except OSError as exc:
+                    raise ValueError(f"Managed CAS path changed during publication: {target}") from exc
+                lock_stack.callback(os.close, public_root)
+                try:
+                    public_parent, public_name = _open_managed_parent(
+                        public_root,
+                        target.relative_to(root),
+                        create=False,
+                    )
+                except OSError as exc:
+                    raise ValueError(f"Managed CAS path changed during publication: {target}") from exc
+                lock_stack.callback(os.close, public_parent)
+                public_root_info = os.fstat(public_root)
+                public_parent_info = os.fstat(public_parent)
+                if (public_root_info.st_dev, public_root_info.st_ino) != (
+                    root_info.st_dev,
+                    root_info.st_ino,
+                ) or (public_parent_info.st_dev, public_parent_info.st_ino) != (
+                    target_parent_info.st_dev,
+                    target_parent_info.st_ino,
+                ):
+                    raise ValueError(f"Managed CAS path changed during publication: {target}")
+                try:
+                    public_current, _public_mode = _read_regular_file_at(public_parent, public_name)
+                except FileNotFoundError:
+                    if expected_sha256 is not None:
+                        os.unlink(temporary, dir_fd=public_parent)
+                        return False
+                except ValueError as exc:
+                    raise ValueError(f"Managed output path is missing or aliased: {target}") from exc
+                else:
+                    if expected_sha256 is None or public_current != current:
+                        os.unlink(temporary, dir_fd=public_parent)
+                        return False
+                # Supported writers share this lock; this binds the namespace for the following rename.
                 if expected_sha256 is None:
-                    if not _rename_noreplace_at(target_parent, temporary, target_name):
-                        os.unlink(temporary, dir_fd=target_parent)
+                    if not _rename_noreplace_at(public_parent, temporary, public_name):
+                        os.unlink(temporary, dir_fd=public_parent)
                         return False
                 else:
                     os.replace(
                         temporary,
-                        target_name,
-                        src_dir_fd=target_parent,
-                        dst_dir_fd=target_parent,
+                        public_name,
+                        src_dir_fd=public_parent,
+                        dst_dir_fd=public_parent,
                     )
             except BaseException:
                 try:

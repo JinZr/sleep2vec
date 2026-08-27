@@ -642,7 +642,7 @@ def test_local_conditional_create_does_not_leave_a_temporary_hardlink(tmp_path: 
     experiment_io.validate_managed_output_paths(tmp_path, [path])
 
 
-def test_local_conditional_replace_anchors_parent_before_alias_drift(tmp_path: Path, monkeypatch):
+def test_local_conditional_replace_rejects_public_parent_alias_drift(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     parent = root / "adaptive"
     moved_parent = root / "adaptive-original"
@@ -662,13 +662,15 @@ def test_local_conditional_replace_anchors_parent_before_alias_drift(tmp_path: P
 
     monkeypatch.setattr(experiment_io, "_open_temporary_at", swap_parent_after_open)
 
-    assert experiment_io.conditional_atomic_replace_text_at(
-        target,
-        "new\n",
-        hashlib.sha256(b"old\n").hexdigest(),
-        managed_root=root,
-    )
-    assert (moved_parent / target.name).read_text() == "new\n"
+    with pytest.raises(ValueError, match="path changed during publication"):
+        experiment_io.conditional_atomic_replace_text_at(
+            target,
+            "new\n",
+            hashlib.sha256(b"old\n").hexdigest(),
+            managed_root=root,
+        )
+
+    assert (moved_parent / target.name).read_text() == "old\n"
     assert outside_target.read_text() == "old\n"
 
 
