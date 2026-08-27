@@ -776,6 +776,8 @@ def test_remote_conditional_replace_deduplicates_target_dependency_lock(tmp_path
 
     assert result.returncode == 0, result.stderr.decode()
     assert path.read_bytes() == b"new\n"
+    assert (tmp_path / "state.tsv.lock").is_file()
+    assert not (tmp_path / ".state.tsv.cas.lock").exists()
 
 
 def test_remote_conditional_replace_rejects_fifo_without_blocking(tmp_path: Path):

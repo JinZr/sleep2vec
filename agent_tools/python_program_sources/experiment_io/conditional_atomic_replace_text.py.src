@@ -215,7 +215,11 @@ with ExitStack() as lock_stack:
             raise SystemExit(45)
         if hashlib.sha256(dependency_current).hexdigest() != dependency_expected:
             raise SystemExit(45)
-    target_lock_name = f".{target_name}.cas.lock"
+    if append_mode:
+        target_lock_name = f".{target_name}.cas.lock"
+    else:
+        # Non-append writers must share the canonical lock used by lifecycle owners and dependency readers.
+        target_lock_name = target_name + ".lock"
     target_lock_key = (target_parent_info.st_dev, target_parent_info.st_ino, target_lock_name)
     if target_lock_key not in locked_files:
         lock_stack.enter_context(blocking_file_lock_at(target_parent, target_lock_name))
