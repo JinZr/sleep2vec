@@ -41,6 +41,7 @@ KERNEL_MODULES: frozenset[str] = frozenset(
         "experiments",
         "run_artifacts",
         "run_evidence",
+        "checkpoint_test_results",
         "hparam",
         "hparam_runtime",
         "managed_scheduler",

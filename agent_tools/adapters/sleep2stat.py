@@ -7,6 +7,7 @@ import yaml
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from ..decision_paths import path_context, path_validation, validate_input_path
+from ..domain.sidecar_summaries import looks_like_placeholder_path
 from ..models import REPO_ROOT, coerce_list, repo_relative, resolve_repo_path
 from ..plan_rendering import append_bool_option, append_list_option, append_option, render_command
 from .base import TaskAdapter
@@ -76,19 +77,6 @@ def sleep2stat_existing_run_dir_issue(recipe: dict, raw_path: Any) -> DecisionIs
     )
 
 
-def _looks_like_placeholder_path(value: str | Path | None) -> bool:
-    if value in (None, ""):
-        return True
-    text = str(value).strip()
-    lowered = text.lower()
-    return (
-        lowered in {"ask_user", "none", "null", "todo", "tbd", "placeholder"}
-        or text.startswith("/path/to")
-        or text.startswith("<")
-        or "ASK_USER" in text
-    )
-
-
 def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
     from sleep2stat.config import SUPPORTED_ANALYZER_TYPES, SUPPORTED_REDUCER_TYPES, load_config
 
@@ -130,11 +118,11 @@ def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
         }
         analyzers.append(analyzer)
         if item.enabled and item.type == "sleep2vec_downstream":
-            if _looks_like_placeholder_path(item.config):
+            if looks_like_placeholder_path(item.config):
                 agent_risk_issues.append(
                     f"Analyzer {item.name} downstream config is missing or placeholder: {item.config}"
                 )
-            if _looks_like_placeholder_path(item.ckpt_path):
+            if looks_like_placeholder_path(item.ckpt_path):
                 agent_risk_issues.append(f"Analyzer {item.name} ckpt_path is missing or placeholder: {item.ckpt_path}")
     for item in cfg.reducers:
         reducers.append(
@@ -348,7 +336,7 @@ class Sleep2statAdapter(TaskAdapter):
                 continue
             for analyzer_field in ("config", "ckpt_path"):
                 value = analyzer.get(analyzer_field)
-                if not value or _looks_like_placeholder_path(value):
+                if not value or looks_like_placeholder_path(value):
                     continue
                 issue = validate_input_path(
                     recipe,

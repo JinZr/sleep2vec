@@ -17,6 +17,7 @@ import yaml
 
 from . import (
     adaptive_proposals,
+    checkpoint_test_results,
     experiment_io as exp_io,
     hparam_runtime,
     managed_scheduler,
@@ -1833,48 +1834,21 @@ def _test_checkpoint_objective(
     results = manifest.get("checkpoint_test_results")
     if manifest.get("test_all_checkpoints_after_fit") is not True or not isinstance(results, list):
         return None
-    expected = {}
-    expected_epochs = set()
-    for name in sorted(checkpoint_names):
-        if not name.startswith("epoch="):
-            continue
-        epoch = artifacts.epoch_number_from_checkpoint_name(name)
-        if epoch is None or epoch in expected_epochs:
-            return None
-        expected_epochs.add(epoch)
-        expected[str(Path(checkpoint_dir) / name)] = epoch
-    if not expected:
-        return None
-    candidates = []
-    seen_paths = set()
-    seen_epochs = set()
-    for result in results:
-        if not isinstance(result, dict):
-            return None
-        checkpoint_path = str(result.get("checkpoint_path") or "")
-        epoch = artifacts.epoch_number(result.get("epoch"))
-        if (
-            checkpoint_path not in expected
-            or checkpoint_path in seen_paths
-            or epoch != expected[checkpoint_path]
-            or epoch in seen_epochs
-        ):
-            return None
-        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
-        raw_score = metrics.get(objective["metric"])
-        score = None if isinstance(raw_score, bool) else artifacts.float_or_none(raw_score)
-        if score is None:
-            return None
-        seen_paths.add(checkpoint_path)
-        seen_epochs.add(epoch)
-        candidates.append(
-            {
-                "score": score,
-                "checkpoint_path": checkpoint_path,
-                "epoch": epoch,
-            }
+    try:
+        expected = checkpoint_test_results.expected_epoch_checkpoints(
+            checkpoint_dir,
+            checkpoint_names,
+            step_id="adaptive",
+            run_id="candidate",
         )
-    if seen_paths != set(expected):
+        candidates = checkpoint_test_results.validate_checkpoint_test_results(
+            results,
+            objective["metric"],
+            expected,
+            step_id="adaptive",
+            run_id="candidate",
+        )
+    except ValueError:
         return None
     candidates.sort(key=lambda row: (int(row["epoch"]), str(row["checkpoint_path"])))
     candidates.sort(key=lambda row: float(row["score"]), reverse=objective["mode"] == "max")

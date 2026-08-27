@@ -263,25 +263,17 @@ def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> 
     )
 
 
-def hparam_tune_issues(
+def _hparam_config_issues(
     recipe: dict,
     config_summary: dict | None,
     decisions: dict[str, ResolvedDecision],
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
-    issues = hparam_recipe_contract_issues(recipe, source_layer="effective")
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
-    profile_mode = "profile" in search
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
-
+    issues = []
     local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
     local_evaluation = (
         local_recipe.get("evaluation_policy") if isinstance(local_recipe.get("evaluation_policy"), dict) else {}
     )
-    local_runtime = local_recipe.get("runtime") if isinstance(local_recipe.get("runtime"), dict) else {}
     local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
     if config_summary:
         for issue in config_summary.get("blocking_issues", []):
@@ -341,6 +333,16 @@ def hparam_tune_issues(
             )
     if not recipe.get("base_recipe"):
         issues.append(needs_issue("base_recipe", "base_recipe is required for hyper-parameter tuning.", high_impact))
+    return issues
+
+
+def _hparam_search_issues(
+    search: dict[str, Any],
+    *,
+    profile_mode: bool,
+    high_impact: dict[str, dict[str, Any]],
+) -> list[DecisionIssue]:
+    issues = []
     if "max_trials" in search:
         issues.append(
             DecisionIssue(
@@ -380,16 +382,16 @@ def hparam_tune_issues(
         issues.append(needs_issue("hparam_search_space", "search.parameters is required.", high_impact))
     elif "parameters" in search:
         issues.extend(_hparam_search_parameter_issues(search.get("parameters")))
-    issues.extend(
-        _hparam_execution_issues(
-            execution,
-            runtime,
-            local_runtime=local_runtime,
-            variant=str(recipe.get("variant") or ""),
-        )
-    )
-    if not (profile_mode and adaptive.get("enabled") is True):
-        issues.extend(_hparam_adaptive_issues(adaptive))
+    return issues
+
+
+def _hparam_search_budget_issues(
+    search: dict[str, Any],
+    *,
+    profile_mode: bool,
+    high_impact: dict[str, dict[str, Any]],
+) -> list[DecisionIssue]:
+    issues = []
     max_runs = search.get("max_runs")
     if max_runs in (None, "") and not profile_mode:
         issues.append(needs_issue("hparam_budget", "search.max_runs is required.", high_impact))
@@ -403,6 +405,24 @@ def hparam_tune_issues(
                 {"max_runs": max_runs},
             )
         )
+    return issues
+
+
+def _hparam_evaluation_issues(
+    recipe: dict,
+    decisions: dict[str, ResolvedDecision],
+    high_impact: dict[str, dict[str, Any]],
+) -> list[DecisionIssue]:
+    issues = []
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+    local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    local_evaluation = (
+        local_recipe.get("evaluation_policy") if isinstance(local_recipe.get("evaluation_policy"), dict) else {}
+    )
+    local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
     user_external_lock = decisions.get("external_test_locked")
     has_external_lock = (
         "external_test_locked" in local_evaluation
@@ -415,6 +435,8 @@ def hparam_tune_issues(
     external_test_locked = evaluation.get("external_test_locked")
     selection_split = evaluation.get("selection_split")
     selection_metric = evaluation.get("selection_metric")
+    max_runs = search.get("max_runs")
+    configurations = search.get("configurations")
     if (
         selection_split == "test"
         and selection_metric not in (None, "", "ASK_USER")
@@ -552,6 +574,38 @@ def hparam_tune_issues(
     return issues
 
 
+def hparam_tune_issues(
+    recipe: dict,
+    config_summary: dict | None,
+    decisions: dict[str, ResolvedDecision],
+    high_impact: dict[str, dict[str, Any]],
+) -> list[DecisionIssue]:
+    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    profile_mode = "profile" in search
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+    local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    local_runtime = local_recipe.get("runtime") if isinstance(local_recipe.get("runtime"), dict) else {}
+
+    issues = hparam_recipe_contract_issues(recipe, source_layer="effective")
+    issues.extend(_hparam_config_issues(recipe, config_summary, decisions, high_impact))
+    issues.extend(_hparam_search_issues(search, profile_mode=profile_mode, high_impact=high_impact))
+    issues.extend(
+        _hparam_execution_issues(
+            execution,
+            runtime,
+            local_runtime=local_runtime,
+            variant=str(recipe.get("variant") or ""),
+        )
+    )
+    if not (profile_mode and adaptive.get("enabled") is True):
+        issues.extend(_hparam_adaptive_issues(adaptive))
+    issues.extend(_hparam_search_budget_issues(search, profile_mode=profile_mode, high_impact=high_impact))
+    issues.extend(_hparam_evaluation_issues(recipe, decisions, high_impact))
+    return issues
+
+
 def _hparam_execution_issues(
     execution: dict[str, Any],
     runtime: dict[str, Any],
@@ -559,10 +613,38 @@ def _hparam_execution_issues(
     local_runtime: dict[str, Any] | None = None,
     variant: str = "",
 ) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
     scheduler = execution.get("scheduler") if "scheduler" in execution else {"type": "direct"}
     scheduler_type = scheduler.get("type") if isinstance(scheduler, dict) else None
     is_slurm = scheduler_type == "slurm"
+    issues = _hparam_scheduler_issues(
+        execution,
+        scheduler=scheduler,
+        is_slurm=is_slurm,
+        local_runtime=local_runtime,
+    )
+    issues.extend(_hparam_runtime_identity_issues(execution))
+    issues.extend(
+        _hparam_runtime_resource_issues(
+            execution,
+            runtime,
+            scheduler=scheduler,
+            is_slurm=is_slurm,
+            variant=variant,
+        )
+    )
+    issues.extend(_hparam_runtime_env_issues(execution, is_slurm=is_slurm))
+    return issues
+
+
+def _hparam_scheduler_issues(
+    execution: dict[str, Any],
+    *,
+    scheduler: Any,
+    is_slurm: bool,
+    local_runtime: dict[str, Any] | None,
+) -> list[DecisionIssue]:
+    issues: list[DecisionIssue] = []
+    scheduler_type = scheduler.get("type") if isinstance(scheduler, dict) else None
     if scheduler_type not in {"direct", "slurm"}:
         issues.append(
             DecisionIssue(
@@ -625,6 +707,11 @@ def _hparam_execution_issues(
                 {"gpus_per_trial": execution.get("gpus_per_trial")},
             )
         )
+    return issues
+
+
+def _hparam_runtime_identity_issues(execution: dict[str, Any]) -> list[DecisionIssue]:
+    issues: list[DecisionIssue] = []
     target = execution.get("target", "local")
     for field in ("log_dir", "pid_dir"):
         if field in execution:
@@ -736,6 +823,18 @@ def _hparam_execution_issues(
                 {"path_validation": execution.get("path_validation")},
             )
         )
+    return issues
+
+
+def _hparam_runtime_resource_issues(
+    execution: dict[str, Any],
+    runtime: dict[str, Any],
+    *,
+    scheduler: Any,
+    is_slurm: bool,
+    variant: str,
+) -> list[DecisionIssue]:
+    issues: list[DecisionIssue] = []
     max_concurrent = None
     if "max_concurrent" in execution and not is_slurm:
         raw_max_concurrent = execution["max_concurrent"]
@@ -840,6 +939,15 @@ def _hparam_execution_issues(
             )
             for issue in gpu_issues
         )
+    return issues
+
+
+def _hparam_runtime_env_issues(
+    execution: dict[str, Any],
+    *,
+    is_slurm: bool,
+) -> list[DecisionIssue]:
+    issues: list[DecisionIssue] = []
     if "env" in execution and not isinstance(execution["env"], dict):
         issues.append(
             DecisionIssue(

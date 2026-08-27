@@ -24,7 +24,7 @@ from . import (
     schema_map,
 )
 from .adapters import SUPPORTED_TASKS, composite_adapter, get_adapter
-from .adapters.base import PlanRegistrationPreflightError
+from .adapters.base import PlanRegistrationPreflightError, TaskAdapter
 from .configs import config_summary
 from .decisions import (
     DecisionIssue,
@@ -620,34 +620,17 @@ def build_context(
     return report
 
 
-def build_plan(
+def _validate_bound_recipe(
+    recipe: dict[str, Any],
+    cfg: dict[str, Any] | None,
+    report: DecisionReport,
+    out: Path,
     *,
-    recipe_path: str | Path,
-    output_dir: str | Path,
-    user_decisions_path: str | Path | None = None,
-    allow_unresolved: bool = False,
-    unlock_final_test: bool = False,
-    source_config_sha256: str | None = None,
-    expected_recipe: dict[str, Any] | None = None,
-    expected_base_recipe: dict[str, Any] | None = None,
-    staging_dir: str | Path | None = None,
-    defer_commit: bool = False,
-    registered_recipe_path: str | Path | None = None,
-    allow_adaptive_workflow: bool = False,
-    plan_controller: str | None = None,
-    run_index_offset: int | None = None,
-    validate_only: bool = False,
-) -> DecisionReport:
-    out = canonical_local_experiment_root(output_dir, Path.cwd())
-    recipe, cfg, report = preflight_plan(
-        recipe_path=recipe_path,
-        output_dir=out,
-        user_decisions_path=user_decisions_path,
-        allow_unresolved=allow_unresolved,
-        unlock_final_test=unlock_final_test,
-        allow_existing_output_artifacts=defer_commit,
-        allow_adaptive_workflow=allow_adaptive_workflow,
-    )
+    expected_recipe: dict[str, Any] | None,
+    expected_base_recipe: dict[str, Any] | None,
+    registered_recipe_path: str | Path | None,
+    source_config_sha256: str | None,
+) -> tuple[bytes | None, str | None]:
     if expected_recipe is not None:
         recipe_source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
         actual_recipe = {key: value for key, value in recipe_source.items() if not str(key).startswith("_")}
@@ -689,6 +672,222 @@ def build_plan(
             raise ValueError("Validated source config bytes do not match their SHA-256.")
         if source_config_sha256 is not None and source_config_sha256 != validated_config_sha256:
             raise ValueError("Source config does not match the externally bound SHA-256.")
+    return validated_config_bytes, validated_config_sha256
+
+
+def _materialize_adapter_plan(
+    *,
+    plan_adapter: TaskAdapter,
+    recipe: dict[str, Any],
+    report: DecisionReport,
+    out: Path,
+    write_out: Path,
+    output_identity: tuple[int, int] | None,
+    generated_staging: bool,
+    staging_dir: str | Path | None,
+    defer_commit: bool,
+    validate_only: bool,
+    unlock_final_test: bool,
+    validated_config_bytes: bytes,
+    validated_config_sha256: str,
+) -> DecisionReport:
+    try:
+        plan_adapter.write_plan(
+            recipe,
+            out,
+            write_out=write_out,
+            unlock_final_test=unlock_final_test,
+            source_config_bytes=validated_config_bytes,
+            source_config_sha256=validated_config_sha256,
+        )
+        preflight_summary = plan_adapter.precommit_plan(out, write_out=write_out)
+        if preflight_summary:
+            report = _append_issues(
+                report,
+                [DecisionIssue(DecisionStatus.PASS, "execution.preflight", preflight_summary)],
+            )
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        if write_out.exists() and not write_out.is_symlink():
+            shutil.rmtree(write_out)
+        if isinstance(exc, OSError) and not isinstance(exc, subprocess.TimeoutExpired):
+            raise
+        return _append_issues(
+            report,
+            [
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "execution.preflight",
+                    str(exc),
+                    None,
+                    {"preflight_before_workspace": True},
+                )
+            ],
+        )
+    if validate_only:
+        shutil.rmtree(write_out)
+        return report
+    if defer_commit:
+        return report
+    current_output_identity = None
+    if os.path.lexists(out):
+        output_stat = out.lstat()
+        current_output_identity = (output_stat.st_dev, output_stat.st_ino)
+    if current_output_identity != output_identity:
+        shutil.rmtree(write_out)
+        raise ValueError(f"Atomic plan output changed during preflight: {out}")
+    out_preexisted = current_output_identity is not None
+    if staging_dir is not None or generated_staging:
+        try:
+            _publish_materialized_plan(write_out, out, out_preexisted=out_preexisted)
+        except BaseException:
+            if write_out.exists() and not write_out.is_symlink():
+                shutil.rmtree(write_out)
+            raise
+    try:
+        plan_adapter.commit_plan(out, preflight_validated=True)
+    except PlanRegistrationPreflightError as exc:
+        if not out_preexisted and out.exists() and not out.is_symlink():
+            shutil.rmtree(out)
+        return _append_issues(
+            report,
+            [
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "execution.preflight",
+                    str(exc),
+                    None,
+                    {"preflight_before_workspace": True},
+                )
+            ],
+        )
+    return report
+
+
+def _materialize_single_run_plan(
+    *,
+    task: str,
+    recipe: dict[str, Any],
+    report: DecisionReport,
+    out: Path,
+    write_out: Path,
+    staging_dir: str | Path | None,
+    defer_commit: bool,
+    plan_controller: str | None,
+    run_index_offset: int | None,
+    validated_config_bytes: bytes,
+) -> DecisionReport:
+    if staging_dir is None:
+        ensure_experiment_workspace(recipe, out, register_step=False, plan_controller=plan_controller)
+    root = experiment_root(recipe)
+    if root is None:
+        raise ValueError("experiment.root is required.")
+    run_adapter = get_adapter(task)
+    assert run_adapter is not None
+    run_index = next_run_index(recipe) if run_index_offset is None else run_index_offset
+    run = plan_contract.generic_run_contract(recipe, out, run_index, run_adapter)
+    run_id = run["run_id"]
+    run_name = run["run_name"]
+    write_run_dir = write_out / "runs" / f"{run_id}--{run_name}"
+    write_run_dir.mkdir(parents=True, exist_ok=True)
+    write_config_path = write_run_dir / "config.yaml"
+    write_config_path.write_bytes(validated_config_bytes)
+    contract = run_adapter.compile_plan_contract(
+        recipe,
+        out,
+        run_index_offset=run_index,
+        config_bytes=validated_config_bytes,
+    )
+    run = contract["runs"][0]
+    commands = contract["commands"]
+    run.update({"status": "planned", "config_sha256": file_sha256(write_config_path)})
+    write_text(write_out / "plan.md", context.plan_markdown(report, commands))
+    write_text(write_out / "run.sh", contract["script_text"], executable=True)
+    write_launch_path = write_run_dir / "launch.sh"
+    write_text(write_launch_path, (write_out / "run.sh").read_text(), executable=True)
+    run["script_sha256"] = file_sha256(write_launch_path)
+    artifact_payload = {
+        "declared": recipe.get("artifacts") or {},
+        "runtime_dir": run["runtime_dir"],
+        "checkpoint_dir": run["checkpoint_dir"],
+        "external_artifacts": True,
+    }
+    write_json(
+        write_run_dir / "artifacts.json",
+        artifact_payload,
+    )
+    planned_run = {**run, "command": commands[0]} if len(commands) == 1 else dict(run)
+    write_json(write_run_dir / "run.json", {**planned_run, "commands": commands})
+    write_json(
+        write_out / "plan.json",
+        {"status": report.status.value, "commands": commands, "runs": [planned_run], "recipe": recipe},
+    )
+    resolved_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
+    (write_out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
+    if defer_commit:
+        return report
+    if staging_dir is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        write_out.replace(out)
+    ensure_experiment_workspace(
+        recipe,
+        out,
+        plan_controller=plan_controller,
+        allow_published_plan=staging_dir is not None,
+    )
+    manifest_row = {
+        **run,
+        "parameter_summary": "single resolved recipe",
+    }
+    merge_run_manifest(
+        root,
+        [manifest_row],
+    )
+    append_event(
+        root,
+        "plan_created",
+        {"step_id": (recipe.get("step") or {}).get("id"), "plan_dir": str(out), "run_count": 1},
+    )
+    return report
+
+
+def build_plan(
+    *,
+    recipe_path: str | Path,
+    output_dir: str | Path,
+    user_decisions_path: str | Path | None = None,
+    allow_unresolved: bool = False,
+    unlock_final_test: bool = False,
+    source_config_sha256: str | None = None,
+    expected_recipe: dict[str, Any] | None = None,
+    expected_base_recipe: dict[str, Any] | None = None,
+    staging_dir: str | Path | None = None,
+    defer_commit: bool = False,
+    registered_recipe_path: str | Path | None = None,
+    allow_adaptive_workflow: bool = False,
+    plan_controller: str | None = None,
+    run_index_offset: int | None = None,
+    validate_only: bool = False,
+) -> DecisionReport:
+    out = canonical_local_experiment_root(output_dir, Path.cwd())
+    recipe, cfg, report = preflight_plan(
+        recipe_path=recipe_path,
+        output_dir=out,
+        user_decisions_path=user_decisions_path,
+        allow_unresolved=allow_unresolved,
+        unlock_final_test=unlock_final_test,
+        allow_existing_output_artifacts=defer_commit,
+        allow_adaptive_workflow=allow_adaptive_workflow,
+    )
+    validated_config_bytes, validated_config_sha256 = _validate_bound_recipe(
+        recipe,
+        cfg,
+        report,
+        out,
+        expected_recipe=expected_recipe,
+        expected_base_recipe=expected_base_recipe,
+        registered_recipe_path=registered_recipe_path,
+        source_config_sha256=source_config_sha256,
+    )
     task = recipe.get("task")
     plan_adapter = get_adapter(task)
     if _has_output_artifact_issue(report):
@@ -822,148 +1021,34 @@ def build_plan(
         generated_staging = True
 
     if plan_adapter is not None and plan_adapter.materializes_plan:
-        try:
-            plan_adapter.write_plan(
-                recipe,
-                out,
-                write_out=write_out,
-                unlock_final_test=unlock_final_test,
-                source_config_bytes=validated_config_bytes,
-                source_config_sha256=validated_config_sha256,
-            )
-            preflight_summary = plan_adapter.precommit_plan(out, write_out=write_out)
-            if preflight_summary:
-                report = _append_issues(
-                    report,
-                    [DecisionIssue(DecisionStatus.PASS, "execution.preflight", preflight_summary)],
-                )
-        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
-            if write_out.exists() and not write_out.is_symlink():
-                shutil.rmtree(write_out)
-            if isinstance(exc, OSError) and not isinstance(exc, subprocess.TimeoutExpired):
-                raise
-            return _append_issues(
-                report,
-                [
-                    DecisionIssue(
-                        DecisionStatus.FAIL,
-                        "execution.preflight",
-                        str(exc),
-                        None,
-                        {"preflight_before_workspace": True},
-                    )
-                ],
-            )
-        if validate_only:
-            shutil.rmtree(write_out)
-            return report
-        if defer_commit:
-            return report
-        current_output_identity = None
-        if os.path.lexists(out):
-            output_stat = out.lstat()
-            current_output_identity = (output_stat.st_dev, output_stat.st_ino)
-        if current_output_identity != output_identity:
-            shutil.rmtree(write_out)
-            raise ValueError(f"Atomic plan output changed during preflight: {out}")
-        out_preexisted = current_output_identity is not None
-        if staging_dir is not None or generated_staging:
-            try:
-                _publish_materialized_plan(write_out, out, out_preexisted=out_preexisted)
-            except BaseException:
-                if write_out.exists() and not write_out.is_symlink():
-                    shutil.rmtree(write_out)
-                raise
-        try:
-            plan_adapter.commit_plan(out, preflight_validated=True)
-        except PlanRegistrationPreflightError as exc:
-            if not out_preexisted and out.exists() and not out.is_symlink():
-                shutil.rmtree(out)
-            return _append_issues(
-                report,
-                [
-                    DecisionIssue(
-                        DecisionStatus.FAIL,
-                        "execution.preflight",
-                        str(exc),
-                        None,
-                        {"preflight_before_workspace": True},
-                    )
-                ],
-            )
+        return _materialize_adapter_plan(
+            plan_adapter=plan_adapter,
+            recipe=recipe,
+            report=report,
+            out=out,
+            write_out=write_out,
+            output_identity=output_identity,
+            generated_staging=generated_staging,
+            staging_dir=staging_dir,
+            defer_commit=defer_commit,
+            validate_only=validate_only,
+            unlock_final_test=unlock_final_test,
+            validated_config_bytes=validated_config_bytes,
+            validated_config_sha256=validated_config_sha256,
+        )
     else:
-        if staging_dir is None:
-            ensure_experiment_workspace(recipe, out, register_step=False, plan_controller=plan_controller)
-        root = experiment_root(recipe)
-        if root is None:
-            raise ValueError("experiment.root is required.")
-        run_adapter = get_adapter(task)
-        assert run_adapter is not None
-        run_index = next_run_index(recipe) if run_index_offset is None else run_index_offset
-        run = plan_contract.generic_run_contract(recipe, out, run_index, run_adapter)
-        run_id = run["run_id"]
-        run_name = run["run_name"]
-        write_run_dir = write_out / "runs" / f"{run_id}--{run_name}"
-        write_run_dir.mkdir(parents=True, exist_ok=True)
-        write_config_path = write_run_dir / "config.yaml"
-        write_config_path.write_bytes(validated_config_bytes)
-        contract = run_adapter.compile_plan_contract(
-            recipe,
-            out,
-            run_index_offset=run_index,
-            config_bytes=validated_config_bytes,
-        )
-        run = contract["runs"][0]
-        commands = contract["commands"]
-        run.update({"status": "planned", "config_sha256": file_sha256(write_config_path)})
-        write_text(write_out / "plan.md", context.plan_markdown(report, commands))
-        write_text(write_out / "run.sh", contract["script_text"], executable=True)
-        write_launch_path = write_run_dir / "launch.sh"
-        write_text(write_launch_path, (write_out / "run.sh").read_text(), executable=True)
-        run["script_sha256"] = file_sha256(write_launch_path)
-        artifact_payload = {
-            "declared": recipe.get("artifacts") or {},
-            "runtime_dir": run["runtime_dir"],
-            "checkpoint_dir": run["checkpoint_dir"],
-            "external_artifacts": True,
-        }
-        write_json(
-            write_run_dir / "artifacts.json",
-            artifact_payload,
-        )
-        planned_run = {**run, "command": commands[0]} if len(commands) == 1 else dict(run)
-        write_json(write_run_dir / "run.json", {**planned_run, "commands": commands})
-        write_json(
-            write_out / "plan.json",
-            {"status": report.status.value, "commands": commands, "runs": [planned_run], "recipe": recipe},
-        )
-        resolved_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
-        (write_out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
-        if defer_commit:
-            return report
-        if staging_dir is not None:
-            out.parent.mkdir(parents=True, exist_ok=True)
-            write_out.replace(out)
-        ensure_experiment_workspace(
-            recipe,
-            out,
+        return _materialize_single_run_plan(
+            task=task,
+            recipe=recipe,
+            report=report,
+            out=out,
+            write_out=write_out,
+            staging_dir=staging_dir,
+            defer_commit=defer_commit,
             plan_controller=plan_controller,
-            allow_published_plan=staging_dir is not None,
+            run_index_offset=run_index_offset,
+            validated_config_bytes=validated_config_bytes,
         )
-        manifest_row = {
-            **run,
-            "parameter_summary": "single resolved recipe",
-        }
-        merge_run_manifest(
-            root,
-            [manifest_row],
-        )
-        append_event(
-            root,
-            "plan_created",
-            {"step_id": (recipe.get("step") or {}).get("id"), "plan_dir": str(out), "run_count": 1},
-        )
-    return report
 
 
 def _publish_materialized_plan(write_out: Path, out: Path, *, out_preexisted: bool) -> None:
