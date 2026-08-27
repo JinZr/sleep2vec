@@ -1029,6 +1029,8 @@ def build_plan(
             write_questions(out, report)
             template = write_user_decision_template(out, recipe, report)
             template_path = template[0] if template is not None else None
+            if template_path is not None:
+                report.published_user_decisions_path = str(template_path)
             write_text(
                 out / "plan.blocked.md",
                 context.blocked_plan_markdown(report, allow_unresolved, user_decisions_path=template_path),

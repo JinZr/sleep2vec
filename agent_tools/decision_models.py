@@ -28,6 +28,7 @@ class DecisionReport:
     status: DecisionStatus
     issues: list[DecisionIssue] = field(default_factory=list)
     decisions: dict[str, "ResolvedDecision"] = field(default_factory=dict)
+    published_user_decisions_path: str | None = None
 
     @property
     def exit_code(self) -> int:

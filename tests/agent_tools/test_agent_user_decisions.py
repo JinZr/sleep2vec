@@ -7,6 +7,7 @@ import sys
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import yaml
 
+from agent_tools import cli as agent_cli
 from agent_tools.decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
 from agent_tools.decisions import user_decision_template
 from agent_tools.plans import evaluate_recipe, write_user_decision_template
@@ -186,6 +187,25 @@ def test_doctor_does_not_overwrite_existing_user_decisions_file(tmp_path: Path):
     assert result.returncode == 2
     assert "Preserved existing user decisions file" in result.stdout
     assert template.read_text() == original
+
+
+def test_plan_cli_does_not_advertise_stale_user_decisions_file(tmp_path: Path, monkeypatch, capsys):
+    output_dir = tmp_path / "plan"
+    output_dir.mkdir()
+    stale_template = output_dir / "decisions.yaml"
+    stale_template.write_text("stale template\n")
+    report = DecisionReport(
+        status=DecisionStatus.NEEDS_USER_INPUT,
+        issues=[DecisionIssue(DecisionStatus.NEEDS_USER_INPUT, "step.purpose", "Step purpose is missing.")],
+    )
+    monkeypatch.setattr(agent_cli, "build_plan", lambda **_kwargs: report)
+
+    exit_code = agent_cli.main(["plan", "--recipe", str(tmp_path / "recipe.yaml"), "--output-dir", str(output_dir)])
+
+    stdout = capsys.readouterr().out
+    assert exit_code == 2
+    assert str(stale_template) not in stdout
+    assert "Fill it and rerun" not in stdout
 
 
 def test_doctor_does_not_overwrite_user_decisions_created_during_publication(tmp_path: Path, monkeypatch):
