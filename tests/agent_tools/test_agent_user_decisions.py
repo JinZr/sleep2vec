@@ -298,6 +298,35 @@ def test_user_task_fills_missing_recipe_task(tmp_path: Path):
     assert effective["task"] == "finetune"
 
 
+def test_generated_task_template_remains_unresolved_until_filled(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload.pop("task")
+    payload["decisions"].pop("task")
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    output_dir = tmp_path / "doctor"
+
+    initial = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    template = output_dir / "decisions.yaml"
+    assert initial.returncode == 2
+    assert yaml.safe_load(template.read_text())["decisions"]["task"]["value"] == "ASK_USER"
+
+    unresolved = _run("doctor", "--recipe", str(recipe), "--user-decisions", str(template))
+
+    assert unresolved.returncode == 2
+    assert "Status: NEEDS_USER_INPUT" in unresolved.stdout
+    assert "Unsupported task" not in unresolved.stdout
+
+    decisions = yaml.safe_load(template.read_text())
+    decisions["decisions"]["task"]["value"] = "finetune"
+    template.write_text(yaml.safe_dump(decisions, sort_keys=False))
+    resolved = _run("doctor", "--recipe", str(recipe), "--user-decisions", str(template))
+
+    assert resolved.returncode == 0
+    assert "Status: PASS" in resolved.stdout
+
+
 def test_user_split_decision_requires_concrete_split(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     decisions = _write_decisions(

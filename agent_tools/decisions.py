@@ -187,7 +187,7 @@ def evaluate_consultation_gates(
     )
     task_value = task_decision.value
     decisions["task"] = task_decision
-    if task_value in (None, ""):
+    if task_value in (None, "", "ASK_USER"):
         issues.append(needs_issue("task", "Task is missing.", high_impact))
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=decisions)
     if task_value not in supported_tasks:
@@ -372,7 +372,8 @@ def _resolve_decision(
 ) -> ResolvedDecision:
     if field in user_decisions:
         return _decision_from_mapping(field, user_decisions[field], "explicit_user")
-    if task_override not in (None, "") and field == "task":
+    # ASK_USER is an unresolved sentinel; generated templates must not turn it into a task name.
+    if task_override not in (None, "", "ASK_USER") and field == "task":
         return ResolvedDecision(field, task_override, "explicit_cli", "high", {"task": task_override})
     if field in cli_args and cli_args[field] not in (None, ""):
         return ResolvedDecision(field, cli_args[field], "explicit_cli", "high", {"cli": cli_args[field]})

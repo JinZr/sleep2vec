@@ -71,6 +71,9 @@ def _recipe_contract_issues(recipe: dict, user_decisions: dict, policy: dict) ->
         effective_task = _decision_value(recipe_decisions.get("task"))
     if effective_task in (None, "", "ASK_USER"):
         effective_task = _decision_value(user_decisions.get("task"))
+    # ASK_USER is an unresolved sentinel, not a task scope for contract validation.
+    if effective_task == "ASK_USER":
+        effective_task = None
     issues: list[DecisionIssue] = []
     if has_layers:
         base_recipe = recipe["_base_recipe"]
