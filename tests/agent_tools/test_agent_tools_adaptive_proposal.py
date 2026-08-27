@@ -27,6 +27,34 @@ from tests.agent_tools.adaptive_hparam_test_support import (
 _stub_execution_snapshot_preflight = test_support._stub_execution_snapshot_preflight
 
 
+def test_adaptive_projection_publication_is_atomic_and_retryable(tmp_path: Path, monkeypatch):
+    target = tmp_path / "adaptive" / "projection.yaml"
+    content = b"decision: accepted\n"
+    original_rename = adaptive_hparam.exp_io._rename_noreplace_at
+    monkeypatch.setattr(
+        adaptive_hparam.exp_io,
+        "_rename_noreplace_at",
+        lambda *_args: (_ for _ in ()).throw(OSError("publication interrupted")),
+    )
+
+    with pytest.raises(OSError, match="publication interrupted"):
+        adaptive_hparam._write_exact_bytes(target, content, managed_root=tmp_path)
+
+    assert not target.exists()
+    monkeypatch.setattr(adaptive_hparam.exp_io, "_rename_noreplace_at", original_rename)
+    adaptive_hparam._write_exact_bytes(target, content, managed_root=tmp_path)
+    adaptive_hparam._write_exact_bytes(target, content, managed_root=tmp_path)
+    assert target.read_bytes() == content
+
+    outside = tmp_path / "outside.yaml"
+    outside.write_bytes(b"original\n")
+    alias = tmp_path / "adaptive" / "alias.yaml"
+    alias.symlink_to(outside)
+    with pytest.raises(ValueError, match="Existing adaptive projection differs"):
+        adaptive_hparam._write_exact_bytes(alias, content, managed_root=tmp_path)
+    assert outside.read_bytes() == b"original\n"
+
+
 @pytest.mark.parametrize("explicit_strategy", [False, True])
 def test_agent_proposal_waits_for_terminal_round_then_writes_deterministic_snapshot(
     tmp_path: Path, explicit_strategy: bool

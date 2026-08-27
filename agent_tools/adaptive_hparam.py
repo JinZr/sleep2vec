@@ -831,13 +831,32 @@ def _agent_suggestion_rationale(validated: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _write_exact_bytes(path: Path, content: bytes) -> None:
+def _write_exact_bytes(path: Path, content: bytes, *, managed_root: Path) -> None:
+    expected_sha256 = hashlib.sha256(content).hexdigest()
     if os.path.lexists(path):
-        if path.is_symlink() or not path.is_file() or path.read_bytes() != content:
+        try:
+            snapshot = exp_io.read_managed_files_at(managed_root, [path], allow_invalid_utf8=True)[str(path)]
+        except ValueError as exc:
+            raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {path}") from exc
+        if snapshot["sha256"] != expected_sha256:
             raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {path}")
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
+    created = exp_io.conditional_atomic_replace_text_at(
+        path,
+        content.decode(),
+        None,
+        managed_root=managed_root,
+    )
+    try:
+        snapshot = exp_io.read_managed_files_at(managed_root, [path], allow_invalid_utf8=True)[str(path)]
+    except ValueError as exc:
+        if created:
+            raise RuntimeError(f"Adaptive projection changed after publication: {path}") from exc
+        raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {path}") from exc
+    if snapshot["sha256"] != expected_sha256:
+        if created:
+            raise RuntimeError(f"Adaptive projection changed after publication: {path}")
+        raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {path}")
 
 
 def _ids_or_none(keys: list[tuple[str, str]]) -> str:
@@ -1231,10 +1250,10 @@ def _adaptive_step(
         accepted_bytes = (json.dumps(accepted_payload, indent=2, sort_keys=True) + "\n").encode()
         suggestion_bytes = yaml.safe_dump(candidate_payload, sort_keys=False).encode()
         rationale_bytes = _agent_suggestion_rationale(validated).encode()
-        _write_exact_bytes(bound_config_path, bound_config_bytes)
-        _write_exact_bytes(accepted_path, accepted_bytes)
-        _write_exact_bytes(suggestion, suggestion_bytes)
-        _write_exact_bytes(rationale_path, rationale_bytes)
+        _write_exact_bytes(bound_config_path, bound_config_bytes, managed_root=workspace)
+        _write_exact_bytes(accepted_path, accepted_bytes, managed_root=workspace)
+        _write_exact_bytes(suggestion, suggestion_bytes, managed_root=workspace)
+        _write_exact_bytes(rationale_path, rationale_bytes, managed_root=workspace)
         _reconcile_event(
             workspace,
             "agent_proposal_accepted",
@@ -1274,9 +1293,9 @@ def _adaptive_step(
         if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
             raise ValueError("Agent proposal frozen source config changed before round materialization.")
         if bound_config_path is not None:
-            _write_exact_bytes(accepted_path, accepted_bytes)
-            _write_exact_bytes(suggestion, suggestion_bytes)
-            _write_exact_bytes(rationale_path, rationale_bytes)
+            _write_exact_bytes(accepted_path, accepted_bytes, managed_root=workspace)
+            _write_exact_bytes(suggestion, suggestion_bytes, managed_root=workspace)
+            _write_exact_bytes(rationale_path, rationale_bytes, managed_root=workspace)
         recipe_payload = round_recipe_payload if round_recipe_payload is not None else load_recipe_with_base(suggestion)
         recipe_source = workflow["recipe_path"] if round_recipe_payload is not None else suggestion
         expected_recipe = (
@@ -1305,10 +1324,13 @@ def _adaptive_step(
                 bound_config_path is not None
                 and next_dir.is_dir()
                 and not next_dir.is_symlink()
-                and list(next_dir.iterdir()) == [bound_config_path]
+                and _is_bound_config_placeholder(next_dir, bound_config_path)
                 and not bound_config_path.is_symlink()
             ):
                 bound_config_path.unlink()
+                lock_path = bound_config_path.with_name(f".{bound_config_path.name}.cas.lock")
+                if os.path.lexists(lock_path):
+                    lock_path.unlink()
                 next_dir.rmdir()
             raise
         cleanup_staging = True
@@ -1652,7 +1674,9 @@ def _publish_staged_round_locked(
             raise ValueError(f"Adaptive round output already exists: {round_dir}")
         if round_dir.is_symlink() or not round_dir.is_dir():
             raise ValueError(f"Adaptive round output is not a physical directory: {round_dir}")
-        if list(round_dir.iterdir()) != [bound_config_path] or file_sha256(bound_config_path) != bound_config_sha256:
+        if not _is_bound_config_placeholder(round_dir, bound_config_path) or file_sha256(
+            bound_config_path
+        ) != bound_config_sha256:
             raise ValueError(f"Adaptive round output changed before publication: {round_dir}")
         placeholder_backup = round_dir.parent / f".{round_dir.name}.{os.getpid()}.{time.time_ns()}.backup"
         round_dir.replace(placeholder_backup)
@@ -1663,6 +1687,12 @@ def _publish_staged_round_locked(
             placeholder_backup.replace(round_dir)
         raise
     return placeholder_backup
+
+
+def _is_bound_config_placeholder(round_dir: Path, bound_config_path: Path) -> bool:
+    lock_path = bound_config_path.with_name(f".{bound_config_path.name}.cas.lock")
+    contents = set(round_dir.iterdir())
+    return contents == {bound_config_path} or contents == {bound_config_path, lock_path}
 
 
 def _restore_uncommitted_round(
