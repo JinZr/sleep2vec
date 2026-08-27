@@ -762,12 +762,12 @@ def test_adaptive_init_rejects_readme_ancestor_drift_after_parent_open(tmp_path:
 
     monkeypatch.setattr(adaptive_hparam.exp_io, "_open_temporary_at", swap_readme_ancestor)
 
-    with pytest.raises(ValueError, match="Managed directory is missing or aliased"):
+    with pytest.raises(ValueError, match="Managed CAS path changed during publication"):
         adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
 
     assert swapped is True
     assert outside_readme.read_bytes() == outside_before
-    assert (moved_adaptive_dir / "README.md").is_file()
+    assert not (moved_adaptive_dir / "README.md").exists()
     assert not (outside_dir / "workflow.json").exists()
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
@@ -794,11 +794,11 @@ def test_adaptive_init_rejects_workflow_ancestor_drift_after_parent_open(tmp_pat
 
     monkeypatch.setattr(adaptive_hparam.exp_io, "_open_temporary_at", swap_workflow_ancestor)
 
-    with pytest.raises(ValueError, match="Managed directory is missing or aliased"):
+    with pytest.raises(ValueError, match="Managed CAS path changed during publication"):
         adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
 
     assert not (outside_dir / "workflow.json").exists()
-    assert (moved_adaptive_dir / "workflow.json").is_file()
+    assert not (moved_adaptive_dir / "workflow.json").exists()
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert len([event for event in events if event["event_type"] == "plan_created"]) == 1
     assert not [event for event in events if event["event_type"] == "adaptive_init"]
