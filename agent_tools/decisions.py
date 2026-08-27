@@ -104,7 +104,12 @@ def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
     return allowed
 
 
-def user_decision_template(task: str | None, report: DecisionReport, policy: dict) -> dict[str, Any]:
+def user_decision_template(
+    task: str | None,
+    report: DecisionReport,
+    policy: dict,
+    decision_entries: dict,
+) -> dict[str, Any]:
     if report.status != DecisionStatus.NEEDS_USER_INPUT:
         return {}
 
@@ -122,8 +127,14 @@ def user_decision_template(task: str | None, report: DecisionReport, policy: dic
     if not template_fields:
         return {}
 
+    resolved_decisions = dict(report.decisions)
+    for field, raw_decision in decision_entries.items():
+        decision = _decision_from_mapping(field, raw_decision, "explicit_user")
+        if decision.source == "explicit_user":
+            resolved_decisions[field] = decision
+
     decisions = {}
-    for field, decision in report.decisions.items():
+    for field, decision in resolved_decisions.items():
         if field not in allowed or decision.source != "explicit_user":
             continue
         entry = {"value": decision.value, "source": "explicit_user"}

@@ -249,7 +249,7 @@ def test_user_decision_template_skips_non_decisions_and_deduplicates_base_issue(
         decisions={"label_name": ResolvedDecision("label_name", None, "missing", "none")},
     )
 
-    assert user_decision_template("hparam_tune", report, load_consultation_policy()) == {
+    assert user_decision_template("hparam_tune", report, load_consultation_policy(), {}) == {
         "decisions": {
             "label_name": {
                 "value": "ASK_USER",
@@ -270,7 +270,7 @@ def test_user_decision_template_requires_pure_needs_status():
         decisions={"label_name": ResolvedDecision("label_name", None, "missing", "none")},
     )
 
-    assert user_decision_template("finetune", report, load_consultation_policy()) == {}
+    assert user_decision_template("finetune", report, load_consultation_policy(), {}) == {}
 
 
 def test_user_decision_file_requires_decisions_mapping_before_output(tmp_path: Path):
@@ -366,6 +366,42 @@ def test_doctor_writes_task_template_for_explicit_ask_user_sentinel(tmp_path: Pa
             "hparam_tune, sleep2stat, or embedding_extraction?"
         ),
     }
+
+
+def test_task_template_preserves_user_decisions_not_evaluated_after_task_blocker(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["task"] = "ASK_USER"
+    payload["decisions"]["task"] = {"value": "ASK_USER", "source": "unresolved"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    decisions = _write_decisions(
+        tmp_path,
+        {
+            "task": {"value": "ASK_USER", "source": "explicit_user"},
+            "label_name": {"value": "ahi", "source": "explicit_user", "meaning": "Primary outcome."},
+            "overwrite_policy": {"value": False, "source": "explicit_user"},
+        },
+    )
+    output_dir = tmp_path / "doctor"
+
+    result = _run(
+        "doctor",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 2
+    template = yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]
+    assert template["label_name"] == {
+        "value": "ahi",
+        "source": "explicit_user",
+        "meaning": "Primary outcome.",
+    }
+    assert template["overwrite_policy"] == {"value": False, "source": "explicit_user"}
 
 
 def test_user_split_decision_requires_concrete_split(tmp_path: Path):
