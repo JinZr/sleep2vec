@@ -375,7 +375,12 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     recipe, _cfg, report = evaluate_recipe(args.recipe, args.user_decisions)
     report = prepare_doctor_report(args.output_dir, recipe, report)
     print(report_text(report))
-    write_doctor_outputs(args.output_dir, recipe, report)
+    template = write_doctor_outputs(args.output_dir, recipe, report)
+    if template is not None:
+        path, created = template
+        action = "Wrote" if created else "Preserved existing"
+        print(f"{action} user decisions file: {path}")
+        print(f"Fill it and rerun with --user-decisions {path}.")
     return report.exit_code
 
 

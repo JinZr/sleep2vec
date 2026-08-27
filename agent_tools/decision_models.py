@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+USER_DECISIONS_FILENAME = "decisions.yaml"
+
 
 class DecisionStatus(str, Enum):
     PASS = "PASS"

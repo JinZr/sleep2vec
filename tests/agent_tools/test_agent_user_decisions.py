@@ -7,7 +7,10 @@ import sys
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import yaml
 
+from agent_tools.decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
+from agent_tools.decisions import user_decision_template
 from agent_tools.plans import evaluate_recipe
+from agent_tools.recipes import load_consultation_policy
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -94,6 +97,142 @@ def test_recipe_ask_user_always_blocks(tmp_path: Path):
 
     assert result.returncode == 2
     assert "ASK_USER" in result.stdout
+
+
+def test_doctor_writes_fillable_user_decision_template(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path, include_label=False)
+    output_dir = tmp_path / "doctor"
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    template = output_dir / "decisions.yaml"
+    assert result.returncode == 2
+    assert str(template) in result.stdout
+    assert yaml.safe_load(template.read_text()) == {
+        "decisions": {
+            "label_name": {
+                "value": "ASK_USER",
+                "source": "explicit_user",
+                "question": (
+                    "Which label should this task use, for example ahi, age, sex, stage5, "
+                    "or a custom metadata label?"
+                ),
+            }
+        }
+    }
+
+    unresolved = _run("doctor", "--recipe", str(recipe), "--user-decisions", str(template))
+    assert unresolved.returncode == 2
+    assert "Status: NEEDS_USER_INPUT" in unresolved.stdout
+
+    payload = yaml.safe_load(template.read_text())
+    payload["decisions"]["label_name"]["value"] = "ahi"
+    template.write_text(yaml.safe_dump(payload, sort_keys=False))
+    resolved = _run("doctor", "--recipe", str(recipe), "--user-decisions", str(template))
+    assert resolved.returncode == 0
+    assert "Status: PASS" in resolved.stdout
+
+
+def test_doctor_template_preserves_explicit_user_decisions_and_metadata(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path, include_label=False)
+    decisions = _write_decisions(
+        tmp_path,
+        {
+            "label_name": {
+                "value": "ASK_USER",
+                "source": "explicit_user",
+                "question": "Which outcome?",
+                "rationale": "Outcome is pending review.",
+            },
+            "overwrite_policy": {"value": False, "source": "explicit_user"},
+        },
+    )
+    output_dir = tmp_path / "doctor"
+
+    result = _run(
+        "doctor",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 2
+    assert yaml.safe_load((output_dir / "decisions.yaml").read_text()) == {
+        "decisions": {
+            "label_name": {
+                "value": "ASK_USER",
+                "source": "explicit_user",
+                "question": "Which outcome?",
+                "rationale": "Outcome is pending review.",
+            },
+            "overwrite_policy": {"value": False, "source": "explicit_user"},
+        }
+    }
+
+
+def test_doctor_does_not_overwrite_existing_user_decisions_file(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path, include_label=False)
+    output_dir = tmp_path / "doctor"
+    output_dir.mkdir()
+    template = output_dir / "decisions.yaml"
+    original = "decisions:\n  label_name:\n    value: ahi\n"
+    template.write_text(original)
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "Preserved existing user decisions file" in result.stdout
+    assert template.read_text() == original
+
+
+def test_user_decision_template_skips_non_decisions_and_deduplicates_base_issue():
+    report = DecisionReport(
+        status=DecisionStatus.NEEDS_USER_INPUT,
+        issues=[
+            DecisionIssue(
+                DecisionStatus.NEEDS_USER_INPUT,
+                "base_finetune.label_name",
+                "label_name is not explicitly resolved.",
+                "Which label?",
+                {"user_decision_field": "label_name"},
+            ),
+            DecisionIssue(
+                DecisionStatus.NEEDS_USER_INPUT,
+                "base_finetune.label_name",
+                "label_name is still unresolved.",
+                "Which label?",
+                {"user_decision_field": "label_name"},
+            ),
+            DecisionIssue(DecisionStatus.NEEDS_USER_INPUT, "data_input", "Data input is missing."),
+        ],
+        decisions={"label_name": ResolvedDecision("label_name", None, "missing", "none")},
+    )
+
+    assert user_decision_template("hparam_tune", report, load_consultation_policy()) == {
+        "decisions": {
+            "label_name": {
+                "value": "ASK_USER",
+                "source": "explicit_user",
+                "question": "Which label?",
+            }
+        }
+    }
+
+
+def test_user_decision_template_requires_pure_needs_status():
+    report = DecisionReport(
+        status=DecisionStatus.FAIL,
+        issues=[
+            DecisionIssue(DecisionStatus.NEEDS_USER_INPUT, "label_name", "Label is missing.", "Which label?"),
+            DecisionIssue(DecisionStatus.FAIL, "config", "Config is invalid."),
+        ],
+        decisions={"label_name": ResolvedDecision("label_name", None, "missing", "none")},
+    )
+
+    assert user_decision_template("finetune", report, load_consultation_policy()) == {}
 
 
 def test_user_decision_file_requires_decisions_mapping_before_output(tmp_path: Path):

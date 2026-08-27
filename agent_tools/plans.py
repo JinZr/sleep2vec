@@ -26,6 +26,7 @@ from . import (
 from .adapters import SUPPORTED_TASKS, composite_adapter, get_adapter
 from .adapters.base import PlanRegistrationPreflightError, TaskAdapter
 from .configs import config_summary
+from .decision_models import USER_DECISIONS_FILENAME
 from .decisions import (
     DecisionIssue,
     DecisionReport,
@@ -34,6 +35,7 @@ from .decisions import (
     decision_entry_contract_issues,
     evaluate_consultation_gates,
     merge_status,
+    user_decision_template,
 )
 from .experiment_workspace import (
     append_event,
@@ -488,16 +490,36 @@ def write_questions(output_dir: str | Path, report: DecisionReport) -> None:
     write_text(out / "questions.md", questions_markdown(report))
 
 
+def write_user_decision_template(
+    output_dir: str | Path,
+    recipe: dict,
+    report: DecisionReport,
+) -> tuple[Path, bool] | None:
+    payload = user_decision_template(recipe.get("task"), report, load_consultation_policy())
+    if not payload:
+        return None
+    target = Path(output_dir) / USER_DECISIONS_FILENAME
+    if target.exists() or target.is_symlink():
+        return target, False
+    write_text(target, yaml.safe_dump(payload, sort_keys=False))
+    return target, True
+
+
 def prepare_doctor_report(output_dir: str | Path | None, recipe: dict, report: DecisionReport) -> DecisionReport:
     adapter = get_adapter(recipe.get("task"))
     return adapter.prepare_doctor_report(recipe, report) if adapter is not None else report
 
 
-def write_doctor_outputs(output_dir: str | Path | None, recipe: dict, report: DecisionReport) -> None:
+def write_doctor_outputs(
+    output_dir: str | Path | None,
+    recipe: dict,
+    report: DecisionReport,
+) -> tuple[Path, bool] | None:
     if output_dir is None or _has_output_artifact_issue(report):
-        return
+        return None
     if report.blocking_issues():
         write_questions(output_dir, report)
+    return write_user_decision_template(output_dir, recipe, report)
 
 
 def build_context(
@@ -1338,7 +1360,7 @@ def _guard_existing_outputs(
                 "output_artifacts",
                 message,
                 question,
-                {"existing_paths": existing},
+                {"existing_paths": existing, "user_decision_field": "overwrite_policy"},
             )
         ],
     )

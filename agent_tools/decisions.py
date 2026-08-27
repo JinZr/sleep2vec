@@ -22,6 +22,7 @@ __all__ = [
     "ResolvedDecision",
     "evaluate_consultation_gates",
     "merge_status",
+    "user_decision_template",
 ]
 
 _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_recipe", "explicit_config"}
@@ -99,6 +100,41 @@ def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
     elif scope_adapter is not None:
         allowed |= scope_adapter.extra_decision_fields
     return allowed
+
+
+def user_decision_template(task: str | None, report: DecisionReport, policy: dict) -> dict[str, Any]:
+    if report.status != DecisionStatus.NEEDS_USER_INPUT:
+        return {}
+
+    allowed = _decision_fields_for_task(task, policy)
+    template_fields: list[tuple[str, DecisionIssue]] = []
+    seen = set()
+    for issue in report.issues:
+        if issue.status != DecisionStatus.NEEDS_USER_INPUT:
+            continue
+        field = issue.evidence.get("user_decision_field", issue.field)
+        if field not in allowed or field in seen:
+            continue
+        template_fields.append((field, issue))
+        seen.add(field)
+    if not template_fields:
+        return {}
+
+    decisions = {}
+    for field, decision in report.decisions.items():
+        if field not in allowed or decision.source != "explicit_user":
+            continue
+        entry = {"value": decision.value, "source": "explicit_user"}
+        for metadata_field in ("meaning", "question", "rationale"):
+            if metadata_field in decision.evidence:
+                entry[metadata_field] = decision.evidence[metadata_field]
+        decisions[field] = entry
+
+    for field, issue in template_fields:
+        entry = decisions.setdefault(field, {"value": "ASK_USER", "source": "explicit_user"})
+        if "question" not in entry:
+            entry["question"] = issue.question or issue.message
+    return {"decisions": decisions}
 
 
 def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
@@ -477,16 +513,21 @@ def _base_task_issues(
         policy,
         require_experiment=False,
     )
-    return [
-        DecisionIssue(
-            issue.status,
-            f"base_{base_task}.{issue.field}",
-            f"Base {base_task} readiness issue: {issue.message}",
-            issue.question,
-            issue.evidence,
+    issues = []
+    for issue in report.blocking_issues():
+        evidence = dict(issue.evidence)
+        if issue.field in report.decisions:
+            evidence["user_decision_field"] = issue.field
+        issues.append(
+            DecisionIssue(
+                issue.status,
+                f"base_{base_task}.{issue.field}",
+                f"Base {base_task} readiness issue: {issue.message}",
+                issue.question,
+                evidence,
+            )
         )
-        for issue in report.blocking_issues()
-    ]
+    return issues
 
 
 def _output_paths_missing(recipe: dict) -> bool:
