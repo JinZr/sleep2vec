@@ -1201,7 +1201,11 @@ def test_interrupted_atomic_replace_preserves_the_complete_old_manifest(tmp_path
         [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
     )
     before = (tmp_path / "run_manifest.tsv").read_bytes()
-    monkeypatch.setattr(experiment_io.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("interrupted")))
+    monkeypatch.setattr(
+        experiment_io.os,
+        "replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("interrupted")),
+    )
 
     with pytest.raises(OSError, match="interrupted"):
         merge_run_manifest(tmp_path, [{"step_id": "train", "run_id": "run-000", "status": "running"}])

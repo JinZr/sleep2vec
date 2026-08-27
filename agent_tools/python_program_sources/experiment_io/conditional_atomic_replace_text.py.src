@@ -1,60 +1,245 @@
-
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import ctypes
 import errno
 import fcntl
 import hashlib
 import os
+from pathlib import Path
+import secrets
 import stat
 import sys
-import tempfile
+import time
 
-path = sys.argv[1]
-expected = sys.argv[2]
-dependency_path = sys.argv[3]
-dependency_expected = sys.argv[4]
-guard_path = sys.argv[5]
-guard_expected = sys.argv[6]
+managed_root = Path(sys.argv[1])
+path = Path(sys.argv[2])
+expected = sys.argv[3]
+dependency_path = Path(sys.argv[4]) if sys.argv[4] else None
+dependency_expected = sys.argv[5]
+guard_path = Path(sys.argv[6]) if sys.argv[6] else None
+guard_expected = sys.argv[7]
 expect_missing = not expected
-parent = os.path.dirname(path) or "."
-os.makedirs(parent, exist_ok=True)
 
-lock_paths = ([dependency_path + ".lock"] if dependency_path else []) + [path + ".lock"]
-with ExitStack() as lock_stack:
-    for lock_path in dict.fromkeys(lock_paths):
-        lock_file = lock_stack.enter_context(open(lock_path, "a+"))
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-    if dependency_path:
+DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def managed_relative(target):
+    if not managed_root.is_absolute() or not target.is_absolute():
+        raise ValueError("Managed CAS paths must be absolute.")
+    if ".." in managed_root.parts or ".." in target.parts:
+        raise ValueError("Managed CAS paths must not contain '..' components.")
+    try:
+        relative = target.relative_to(managed_root)
+    except ValueError as exc:
+        raise ValueError(f"Managed CAS path is outside its workspace: {target}") from exc
+    if not relative.parts:
+        raise ValueError("Managed CAS target must name a file below its workspace root.")
+    return relative
+
+
+target_relative = managed_relative(path)
+dependency_relative = managed_relative(dependency_path) if dependency_path is not None else None
+guard_relative = managed_relative(guard_path) if guard_path is not None else None
+
+
+def open_managed_root():
+    current = os.open(managed_root.anchor, DIRECTORY_OPEN_FLAGS)
+    try:
+        for part in managed_root.relative_to(managed_root.anchor).parts:
+            opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
+            os.close(current)
+            current = opened
+    except BaseException:
+        os.close(current)
+        raise
+    return current
+
+
+def open_managed_parent(root_descriptor, relative, create):
+    current = os.dup(root_descriptor)
+    try:
+        for part in relative.parts[:-1]:
+            try:
+                opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(part, 0o755, dir_fd=current)
+                except FileExistsError:
+                    pass
+                opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
+            os.close(current)
+            current = opened
+    except BaseException:
+        os.close(current)
+        raise
+    return current, relative.name
+
+
+def read_regular_file_at(parent_descriptor, name):
+    descriptor = os.open(name, FILE_OPEN_FLAGS, dir_fd=parent_descriptor)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError(f"Managed CAS file is missing or aliased: {name}")
+        with os.fdopen(descriptor, "rb") as file_obj:
+            descriptor = -1
+            return file_obj.read(), stat.S_IMODE(info.st_mode)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+@contextmanager
+def blocking_file_lock_at(parent_descriptor, name):
+    for attempt in range(4):
+        descriptor = -1
         try:
-            with open(dependency_path, "rb") as file_obj:
-                dependency_current = file_obj.read()
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o644,
+                    dir_fd=parent_descriptor,
+                )
+            except FileExistsError:
+                descriptor = os.open(
+                    name,
+                    os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=parent_descriptor,
+                )
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError(f"Managed CAS lock is missing or aliased: {name}")
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except FileNotFoundError:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if attempt == 3:
+                raise
+            time.sleep(0.1 * (2**attempt))
+        except OSError as exc:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if exc.errno != errno.EIO or attempt == 3:
+                raise
+            time.sleep(0.1 * (2**attempt))
+        except BaseException:
+            if descriptor >= 0:
+                os.close(descriptor)
+            raise
+        else:
+            break
+    try:
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def open_temporary_at(parent_descriptor, target_name):
+    for _attempt in range(100):
+        name = f".{target_name}.{secrets.token_hex(8)}"
+        try:
+            descriptor = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+        except FileExistsError:
+            continue
+        return descriptor, name
+    raise FileExistsError(f"Could not allocate a temporary file for managed CAS target: {target_name}")
+
+
+def rename_noreplace_at(parent_descriptor, source_name, target_name):
+    libc = ctypes.CDLL(None, use_errno=True)
+    source = os.fsencode(source_name)
+    destination = os.fsencode(target_name)
+    if hasattr(libc, "renameat2"):
+        rename = libc.renameat2
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(parent_descriptor, source, parent_descriptor, destination, 1)
+    elif hasattr(libc, "renameatx_np"):
+        rename = libc.renameatx_np
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(parent_descriptor, source, parent_descriptor, destination, 4)
+    else:
+        raise RuntimeError("Atomic descriptor-relative no-replace rename is unavailable on this platform.")
+    if result == 0:
+        return True
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        return False
+    raise OSError(error, os.strerror(error), target_name)
+
+
+with ExitStack() as lock_stack:
+    root_descriptor = open_managed_root()
+    lock_stack.callback(os.close, root_descriptor)
+    locked_files = set()
+    target_parent, target_name = open_managed_parent(root_descriptor, target_relative, True)
+    lock_stack.callback(os.close, target_parent)
+    if dependency_relative is not None:
+        try:
+            dependency_parent, dependency_name = open_managed_parent(root_descriptor, dependency_relative, False)
+        except FileNotFoundError:
+            raise SystemExit(45)
+        lock_stack.callback(os.close, dependency_parent)
+        dependency_lock_name = dependency_name + ".lock"
+        dependency_parent_info = os.fstat(dependency_parent)
+        dependency_lock_key = (
+            dependency_parent_info.st_dev,
+            dependency_parent_info.st_ino,
+            dependency_lock_name,
+        )
+        if dependency_lock_key not in locked_files:
+            lock_stack.enter_context(blocking_file_lock_at(dependency_parent, dependency_lock_name))
+            locked_files.add(dependency_lock_key)
+        try:
+            dependency_current, _dependency_mode = read_regular_file_at(dependency_parent, dependency_name)
         except FileNotFoundError:
             raise SystemExit(45)
         if hashlib.sha256(dependency_current).hexdigest() != dependency_expected:
             raise SystemExit(45)
-    if guard_path:
+    target_lock_name = target_name + ".lock"
+    target_parent_info = os.fstat(target_parent)
+    target_lock_key = (target_parent_info.st_dev, target_parent_info.st_ino, target_lock_name)
+    if target_lock_key not in locked_files:
+        lock_stack.enter_context(blocking_file_lock_at(target_parent, target_lock_name))
+        locked_files.add(target_lock_key)
+    if guard_relative is not None:
         try:
-            with open(guard_path, "rb") as file_obj:
-                guard_current = file_obj.read()
+            guard_parent, guard_name = open_managed_parent(root_descriptor, guard_relative, False)
+        except FileNotFoundError:
+            raise SystemExit(45)
+        lock_stack.callback(os.close, guard_parent)
+        try:
+            guard_current, _guard_mode = read_regular_file_at(guard_parent, guard_name)
         except FileNotFoundError:
             raise SystemExit(45)
         if hashlib.sha256(guard_current).hexdigest() != guard_expected:
             raise SystemExit(45)
     if expect_missing:
-        if os.path.lexists(path):
+        try:
+            os.stat(target_name, dir_fd=target_parent, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
             raise SystemExit(45)
         target_mode = 0o644
     else:
         try:
-            with open(path, "rb") as file_obj:
-                current = file_obj.read()
-                target_mode = stat.S_IMODE(os.fstat(file_obj.fileno()).st_mode)
+            current, target_mode = read_regular_file_at(target_parent, target_name)
         except FileNotFoundError:
             raise SystemExit(45)
         if hashlib.sha256(current).hexdigest() != expected:
             raise SystemExit(45)
     payload = sys.stdin.buffer.read()
-    descriptor, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".", dir=parent)
+    descriptor, temporary = open_temporary_at(target_parent, target_name)
     try:
         with os.fdopen(descriptor, "wb") as file_obj:
             file_obj.write(payload)
@@ -62,31 +247,19 @@ with ExitStack() as lock_stack:
             file_obj.flush()
             os.fsync(file_obj.fileno())
         if expect_missing:
-            libc = ctypes.CDLL(None, use_errno=True)
-            source = os.fsencode(temporary)
-            destination = os.fsencode(path)
-            if hasattr(libc, "renameat2"):
-                rename = libc.renameat2
-                rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-                rename.restype = ctypes.c_int
-                result = rename(-100, source, -100, destination, 1)
-            elif hasattr(libc, "renamex_np"):
-                rename = libc.renamex_np
-                rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-                rename.restype = ctypes.c_int
-                result = rename(source, destination, 4)
-            else:
-                raise RuntimeError("Atomic no-replace rename is unavailable on this platform.")
-            if result != 0:
-                error = ctypes.get_errno()
-                if error == errno.EEXIST:
-                    raise SystemExit(45)
-                raise OSError(error, os.strerror(error), path)
+            if not rename_noreplace_at(target_parent, temporary, target_name):
+                os.unlink(temporary, dir_fd=target_parent)
+                raise SystemExit(45)
         else:
-            os.replace(temporary, path)
+            os.replace(
+                temporary,
+                target_name,
+                src_dir_fd=target_parent,
+                dst_dir_fd=target_parent,
+            )
     except BaseException:
         try:
-            os.unlink(temporary)
+            os.unlink(temporary, dir_fd=target_parent)
         except FileNotFoundError:
             pass
         raise

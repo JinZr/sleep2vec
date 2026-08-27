@@ -753,6 +753,7 @@ def test_stale_finalizer_cannot_bind_an_overwritten_final_report(tmp_path, monke
                 final_report,
                 report_b.read_text(),
                 hashlib.sha256(final_report.read_bytes()).hexdigest(),
+                managed_root=kwargs["managed_root"],
                 dependency_path=kwargs["dependency_path"],
                 expected_dependency_sha256=kwargs["expected_dependency_sha256"],
                 guard_path=manifest,

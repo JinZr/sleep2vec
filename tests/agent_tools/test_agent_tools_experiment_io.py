@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import errno
 import fcntl
 import hashlib
@@ -5,11 +6,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
-from agent_tools import experiment_io, manifests
+from agent_tools import experiment_io, manifests, python_programs
 
 
 @pytest.mark.parametrize(
@@ -96,6 +98,21 @@ def test_local_managed_control_reads_reject_aliases_and_non_directory_entries(tm
         experiment_io.list_managed_subdirectories_at(root, steps)
 
 
+def test_managed_control_read_can_snapshot_invalid_utf8_for_repair(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    manifest = root / "state.tsv"
+    manifest.write_bytes(b"\xff")
+
+    with pytest.raises(ValueError, match="not valid UTF-8"):
+        experiment_io.read_managed_files_at(root, [manifest])
+
+    assert experiment_io.read_managed_files_at(root, [manifest], allow_invalid_utf8=True)[str(manifest)] == {
+        "text": None,
+        "sha256": hashlib.sha256(b"\xff").hexdigest(),
+    }
+
+
 def test_managed_control_reads_reject_dot_dot_before_resolution(tmp_path):
     root = tmp_path / "workspace"
     root.mkdir()
@@ -124,6 +141,39 @@ def test_remote_managed_control_reads_use_one_read_only_probe(monkeypatch):
     assert len(calls) == 1
     assert 'open(target, "rb")' in calls[0][0][-1]
     assert "mkdir" not in calls[0][0][-1]
+
+
+def test_remote_managed_control_read_requests_invalid_utf8_snapshot(monkeypatch):
+    path = "/remote/workspace/state.tsv"
+    payload = {path: {"text": None, "sha256": "a" * 64}}
+    program_calls = []
+
+    def fake_program_command(name, request):
+        program_calls.append((name, json.loads(request)))
+        return ["remote-program"]
+
+    monkeypatch.setattr(experiment_io.transport, "remote_python_program_command", fake_program_command)
+    monkeypatch.setattr(
+        experiment_io.transport,
+        "run_ssh",
+        lambda _remote, command, **_kwargs: subprocess.CompletedProcess(command, 0, json.dumps(payload), ""),
+    )
+
+    assert (
+        experiment_io.read_managed_files_at(
+            "/remote/workspace",
+            [path],
+            remote="host",
+            allow_invalid_utf8=True,
+        )
+        == payload
+    )
+    assert program_calls == [
+        (
+            "experiment_io.read_managed_files",
+            ["/remote/workspace", [path], False, True],
+        )
+    ]
 
 
 def test_local_managed_control_bundle_requires_exact_directory_entries(tmp_path):
@@ -189,15 +239,21 @@ def test_local_conditional_replace_requires_expected_digest(tmp_path: Path):
     path.write_bytes(b"old\r\n")
     path.chmod(0o640)
 
-    assert not experiment_io.conditional_atomic_replace_text_at(path, "new\n", "wrong")
+    assert not experiment_io.conditional_atomic_replace_text_at(path, "new\n", "wrong", managed_root=tmp_path)
     assert path.read_bytes() == b"old\r\n"
     assert experiment_io.conditional_atomic_replace_text_at(
         path,
         "new\n",
         hashlib.sha256(b"old\r\n").hexdigest(),
+        managed_root=tmp_path,
     )
     assert path.read_bytes() == b"new\n"
     assert path.stat().st_mode & 0o777 == 0o640
+
+
+def test_conditional_replace_requires_managed_root(tmp_path: Path):
+    with pytest.raises(TypeError, match="managed_root"):
+        experiment_io.conditional_atomic_replace_text_at(tmp_path / "state.tsv", "new\n", None)
 
 
 def test_local_conditional_replace_requires_current_dependency(tmp_path: Path):
@@ -214,10 +270,38 @@ def test_local_conditional_replace_requires_current_dependency(tmp_path: Path):
         path,
         "new\n",
         target_sha256,
+        managed_root=tmp_path,
         dependency_path=dependency,
         expected_dependency_sha256=dependency_sha256,
     )
     assert path.read_text() == "old\n"
+
+
+def test_local_conditional_replace_deduplicates_colliding_lock_names(tmp_path: Path, monkeypatch):
+    path = tmp_path / "state.tsv"
+    dependency = tmp_path / ".state.tsv.cas"
+    path.write_text("old\n")
+    dependency.write_text("dependency\n")
+    locks = []
+    original_lock = experiment_io._blocking_file_lock_at
+
+    @contextmanager
+    def record_lock(parent_descriptor, name):
+        locks.append((os.fstat(parent_descriptor).st_ino, name))
+        with original_lock(parent_descriptor, name):
+            yield
+
+    monkeypatch.setattr(experiment_io, "_blocking_file_lock_at", record_lock)
+
+    assert experiment_io.conditional_atomic_replace_text_at(
+        path,
+        "new\n",
+        hashlib.sha256(b"old\n").hexdigest(),
+        managed_root=tmp_path,
+        dependency_path=dependency,
+        expected_dependency_sha256=hashlib.sha256(b"dependency\n").hexdigest(),
+    )
+    assert len(locks) == 1
 
 
 def test_local_conditional_replace_requires_current_guard(tmp_path: Path):
@@ -234,6 +318,7 @@ def test_local_conditional_replace_requires_current_guard(tmp_path: Path):
         path,
         "new\n",
         hashlib.sha256(b"old\n").hexdigest(),
+        managed_root=tmp_path,
         dependency_path=dependency,
         expected_dependency_sha256=hashlib.sha256(b"current\n").hexdigest(),
         guard_path=guard,
@@ -297,6 +382,7 @@ def test_local_conditional_replace_retries_transient_flock_eio(tmp_path: Path, m
         path,
         "new\n",
         hashlib.sha256(b"old\n").hexdigest(),
+        managed_root=tmp_path,
     )
     assert attempts == 2
     assert delays == [0.1]
@@ -322,6 +408,7 @@ def test_local_conditional_replace_fails_closed_after_persistent_flock_eio(tmp_p
             path,
             "new\n",
             hashlib.sha256(b"old\n").hexdigest(),
+            managed_root=tmp_path,
         )
 
     assert error.value.errno == errno.EIO
@@ -347,6 +434,7 @@ def test_local_conditional_replace_does_not_retry_other_flock_errors(tmp_path: P
             path,
             "new\n",
             hashlib.sha256(b"old\n").hexdigest(),
+            managed_root=tmp_path,
         )
 
     assert error.value.errno == errno.EPERM
@@ -376,9 +464,9 @@ def test_blocking_file_lock_does_not_retry_post_lock_eio(tmp_path: Path, monkeyp
 def test_local_conditional_create_never_replaces_an_existing_file(tmp_path: Path):
     path = tmp_path / "state.tsv"
 
-    assert experiment_io.conditional_atomic_replace_text_at(path, "first\n", None)
+    assert experiment_io.conditional_atomic_replace_text_at(path, "first\n", None, managed_root=tmp_path)
     assert path.read_text() == "first\n"
-    assert not experiment_io.conditional_atomic_replace_text_at(path, "second\n", None)
+    assert not experiment_io.conditional_atomic_replace_text_at(path, "second\n", None, managed_root=tmp_path)
     assert path.read_text() == "first\n"
 
 
@@ -387,43 +475,113 @@ def test_local_conditional_create_preserves_a_dangling_symlink(tmp_path: Path):
     missing = tmp_path / "missing.tsv"
     path.symlink_to(missing)
 
-    assert not experiment_io.conditional_atomic_replace_text_at(path, "new\n", None)
+    assert not experiment_io.conditional_atomic_replace_text_at(path, "new\n", None, managed_root=tmp_path)
     assert path.is_symlink()
     assert path.readlink() == missing
 
 
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_local_conditional_replace_rejects_leaf_alias(tmp_path: Path, alias_kind: str):
+    path = tmp_path / "state.tsv"
+    outside = tmp_path / "outside.tsv"
+    outside.write_text("old\n")
+    if alias_kind == "symlink":
+        path.symlink_to(outside)
+    else:
+        path.hardlink_to(outside)
+
+    with pytest.raises((OSError, ValueError)):
+        experiment_io.conditional_atomic_replace_text_at(
+            path,
+            "new\n",
+            hashlib.sha256(b"old\n").hexdigest(),
+            managed_root=tmp_path,
+        )
+
+    assert outside.read_text() == "old\n"
+
+
+@pytest.mark.parametrize("fifo_role", ["target", "dependency", "guard"])
+def test_local_conditional_replace_rejects_fifo_without_blocking(tmp_path: Path, fifo_role: str):
+    target = tmp_path / "state.tsv"
+    dependency = tmp_path / "run_manifest.tsv"
+    guard = tmp_path / "experiment.yaml"
+    target.write_text("old\n")
+    dependency.write_text("dependency\n")
+    guard.write_text("guard\n")
+    fifo = {"target": target, "dependency": dependency, "guard": guard}[fifo_role]
+    fifo.unlink()
+    os.mkfifo(fifo)
+
+    with pytest.raises(ValueError, match="missing or aliased"):
+        experiment_io.conditional_atomic_replace_text_at(
+            target,
+            "new\n",
+            hashlib.sha256(b"old\n").hexdigest(),
+            managed_root=tmp_path,
+            dependency_path=dependency,
+            expected_dependency_sha256=hashlib.sha256(b"dependency\n").hexdigest(),
+            guard_path=guard,
+            expected_guard_sha256=hashlib.sha256(b"guard\n").hexdigest(),
+        )
+
+    assert fifo.is_fifo()
+    if fifo_role != "target":
+        assert target.read_bytes() == b"old\n"
+
+
 def test_local_conditional_create_preserves_a_publish_time_competitor(tmp_path: Path, monkeypatch):
     path = tmp_path / "state.tsv"
-    original_mkstemp = experiment_io.tempfile.mkstemp
+    original_open_temporary = experiment_io._open_temporary_at
 
-    def create_competitor(*args, **kwargs):
-        descriptor, temporary = original_mkstemp(*args, **kwargs)
+    def create_competitor(parent_descriptor, target_name):
+        descriptor, temporary = original_open_temporary(parent_descriptor, target_name)
         path.write_text("competitor\n")
         return descriptor, temporary
 
-    monkeypatch.setattr(experiment_io.tempfile, "mkstemp", create_competitor)
+    monkeypatch.setattr(experiment_io, "_open_temporary_at", create_competitor)
 
-    assert not experiment_io.conditional_atomic_replace_text_at(path, "new\n", None)
+    assert not experiment_io.conditional_atomic_replace_text_at(path, "new\n", None, managed_root=tmp_path)
     assert path.read_text() == "competitor\n"
 
 
-def test_local_conditional_create_avoids_trash_retained_hardlinks(tmp_path: Path, monkeypatch):
+def test_local_conditional_create_does_not_leave_a_temporary_hardlink(tmp_path: Path):
     path = tmp_path / "state.tsv"
-    trash = tmp_path / ".trash"
-    original_unlink = Path.unlink
 
-    def retain_in_trash(candidate: Path, missing_ok: bool = False):
-        if candidate.parent == tmp_path and candidate.name.startswith(f".{path.name}."):
-            trash.mkdir(exist_ok=True)
-            os.link(candidate, trash / candidate.name)
-        original_unlink(candidate, missing_ok=missing_ok)
-
-    monkeypatch.setattr(Path, "unlink", retain_in_trash)
-
-    assert experiment_io.conditional_atomic_replace_text_at(path, "first\n", None)
+    assert experiment_io.conditional_atomic_replace_text_at(path, "first\n", None, managed_root=tmp_path)
     assert path.stat().st_nlink == 1
-    assert not trash.exists()
+    assert not [entry for entry in tmp_path.glob(f".{path.name}.*") if entry.name != f".{path.name}.cas.lock"]
     experiment_io.validate_managed_output_paths(tmp_path, [path])
+
+
+def test_local_conditional_replace_anchors_parent_before_alias_drift(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    parent = root / "adaptive"
+    moved_parent = root / "adaptive-original"
+    outside = tmp_path / "outside"
+    target = parent / "run_registry.tsv"
+    outside_target = outside / target.name
+    parent.mkdir(parents=True)
+    outside.mkdir()
+    target.write_text("old\n")
+    outside_target.write_text("old\n")
+    original_open_temporary = experiment_io._open_temporary_at
+
+    def swap_parent_after_open(parent_descriptor, target_name):
+        parent.rename(moved_parent)
+        parent.symlink_to(outside, target_is_directory=True)
+        return original_open_temporary(parent_descriptor, target_name)
+
+    monkeypatch.setattr(experiment_io, "_open_temporary_at", swap_parent_after_open)
+
+    assert experiment_io.conditional_atomic_replace_text_at(
+        target,
+        "new\n",
+        hashlib.sha256(b"old\n").hexdigest(),
+        managed_root=root,
+    )
+    assert (moved_parent / target.name).read_text() == "new\n"
+    assert outside_target.read_text() == "old\n"
 
 
 def test_remote_conditional_replace_reports_conflict_and_writes_exact_bytes(monkeypatch):
@@ -439,6 +597,7 @@ def test_remote_conditional_replace_reports_conflict_and_writes_exact_bytes(monk
         "/remote/state.tsv",
         "new\r\n",
         hashlib.sha256(b"old\r\n").hexdigest(),
+        managed_root="/remote",
         remote="host",
     )
     command, kwargs = calls[0]
@@ -457,12 +616,20 @@ def test_remote_conditional_create_uses_atomic_no_replace_without_hardlink(monke
 
     monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
 
-    assert experiment_io.conditional_atomic_replace_text_at("/remote/state.tsv", "new\n", None, remote="host")
+    assert experiment_io.conditional_atomic_replace_text_at(
+        "/remote/state.tsv",
+        "new\n",
+        None,
+        managed_root="/remote",
+        remote="host",
+    )
     command, kwargs = calls[0]
     assert "expect_missing = not expected" in command[-1]
-    assert "os.path.lexists(path)" in command[-1]
+    assert "dir_fd=target_parent" in command[-1]
     assert "renameat2" in command[-1]
-    assert "renamex_np" in command[-1]
+    assert "renameatx_np" in command[-1]
+    assert "renamex_np" not in command[-1]
+    assert "-100" not in command[-1]
     assert "errno.EEXIST" in command[-1]
     assert "os.link(" not in command[-1]
     assert kwargs["input"] == b"new\n"
@@ -481,6 +648,7 @@ def test_remote_conditional_replace_locks_and_checks_dependency(monkeypatch):
         "/remote/experiment.yaml",
         "experiment: {}\n",
         "a" * 64,
+        managed_root="/remote",
         remote="host",
         dependency_path="/remote/run_manifest.tsv",
         expected_dependency_sha256="b" * 64,
@@ -492,9 +660,63 @@ def test_remote_conditional_replace_locks_and_checks_dependency(monkeypatch):
     assert "/remote/experiment.yaml" in remote_command
     assert "/remote/run_manifest.tsv" in remote_command
     assert "/remote/reports/final.md" in remote_command
-    assert 'dependency_path + ".lock"' in remote_command
+    assert 'dependency_name + ".lock"' in remote_command
     assert "hashlib.sha256(dependency_current).hexdigest()" in remote_command
     assert "hashlib.sha256(guard_current).hexdigest()" in remote_command
+
+
+def test_remote_conditional_replace_deduplicates_target_dependency_lock(tmp_path: Path):
+    path = tmp_path / "state.tsv"
+    path.write_text("old\n")
+    digest = hashlib.sha256(b"old\n").hexdigest()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("experiment_io.conditional_atomic_replace_text"),
+            str(tmp_path),
+            str(path),
+            digest,
+            str(path),
+            digest,
+            "",
+            "",
+        ],
+        input=b"new\n",
+        capture_output=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr.decode()
+    assert path.read_bytes() == b"new\n"
+
+
+def test_remote_conditional_replace_rejects_fifo_without_blocking(tmp_path: Path):
+    path = tmp_path / "state.tsv"
+    os.mkfifo(path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("experiment_io.conditional_atomic_replace_text"),
+            str(tmp_path),
+            str(path),
+            hashlib.sha256(b"old\n").hexdigest(),
+            "",
+            "",
+            "",
+            "",
+        ],
+        input=b"new\n",
+        capture_output=True,
+        timeout=5,
+    )
+
+    assert result.returncode != 0
+    assert b"missing or aliased" in result.stderr
+    assert path.is_fifo()
 
 
 @pytest.mark.parametrize("returncode", [1, 255])

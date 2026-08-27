@@ -529,7 +529,7 @@ def test_remote_research_log_retries_conflict_and_preserves_competing_entry(tmp_
         state["paths"] = [Path(path) for path in paths]
         assert remote == "unit-host"
 
-    def commit(_path, replacement, _expected_sha256, *, remote=None):
+    def commit(_path, replacement, _expected_sha256, *, remote=None, **_kwargs):
         state["attempts"] += 1
         if state["attempts"] == 1:
             marker = "<!-- agent-tools-research-entry " f'id="obs-competing" sha256="{competing_digest}" -->\n'
@@ -567,7 +567,7 @@ def test_uncertain_remote_research_log_commit_is_idempotent_on_retry(tmp_path: P
     entry = json.loads(_research_entry(tmp_path, "obs-timeout").read_text())
     state = {"text": experiment_workspace.RESEARCH_LOG_PREAMBLE, "raise_timeout": True}
 
-    def commit(_path, replacement, _expected_sha256, *, remote=None):
+    def commit(_path, replacement, _expected_sha256, *, remote=None, **_kwargs):
         state["text"] = replacement
         if state["raise_timeout"]:
             state["raise_timeout"] = False
@@ -918,10 +918,10 @@ def test_interrupted_finalization_preserves_complete_experiment_manifest(tmp_pat
     before = manifest.read_bytes()
     real_replace = experiment_io.os.replace
 
-    def interrupt_manifest_replace(source, target):
-        if Path(target) == manifest:
+    def interrupt_manifest_replace(source, target, **kwargs):
+        if target == manifest.name:
             raise OSError("interrupted")
-        return real_replace(source, target)
+        return real_replace(source, target, **kwargs)
 
     monkeypatch.setattr(experiment_io.os, "replace", interrupt_manifest_replace)
 

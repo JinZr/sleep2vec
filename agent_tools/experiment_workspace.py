@@ -503,6 +503,7 @@ def commit_step_manifest(
             path,
             replacement,
             expected_sha256,
+            managed_root=root,
             remote=remote,
         ):
             return merged, not exists
@@ -1146,6 +1147,7 @@ def merge_run_manifest(
                 path,
                 replacement,
                 expected_sha256,
+                managed_root=root,
                 remote=remote,
                 guard_path=experiment_path,
                 expected_guard_sha256=hashlib.sha256(experiment_text.encode()).hexdigest(),

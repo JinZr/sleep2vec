@@ -8,10 +8,10 @@ import pytest
 from agent_tools import python_programs, transport
 
 SOURCE_HASHES = {
-    "experiment_io.conditional_atomic_replace_text": "8989e107e855da8ea2cf8055ba34d55e44b0bb1fe578aab67fa0f9f1ad53b5ec",
+    "experiment_io.conditional_atomic_replace_text": "7e72b443277a857c45101793ad1ea35f6b2e238db4fb0226a2755d4fb9fae621",
     "experiment_io.list_managed_subdirectories": "e8b83f0cef4f3cf46b84542276f7ffaf7045acaf4f409c9ad2d0333178b39c8b",
     "experiment_io.path_exists": "e6d06dceb086b4e29e3079cfe15fa4aa9a39931ecb614ac63073f338617d8fe9",
-    "experiment_io.read_managed_files": "6c0ab9b082bfc8df6a83ab3d040f1894da83c815f813e43dd743c38a14ee99b6",
+    "experiment_io.read_managed_files": "acf0d66282bd5bb74c506d165ee1bd0e88f219c78e9678e75951c6e385538002",
     "experiment_io.read_text": "19cd7e4efbe93f6f5bb05f6ade6d57f729316d9dd32f9927db16fdd46b5b2798",
     "experiment_io.remote_dir_nonempty": "ac9c6bf27c949fd7b9df50c33f6c80494efa8029365ebd914c029440acc9787d",
     "experiment_io.validate_managed_output_paths": "ddbcd4b1491649aec534a778230e424ed2680cd46d8ea037d7a0a4cfe9a08a77",
@@ -34,10 +34,10 @@ SOURCE_HASHES = {
 }
 
 COMMAND_HASHES = {
-    "experiment_io.conditional_atomic_replace_text": "68277d183dbb44aba5728960dc5a91f6fe51427db027e21b5af871f36f3662a3",
+    "experiment_io.conditional_atomic_replace_text": "3e59745dacface22c7eb21db0db84cd14835f0ec33e3427835e9a5dfb450445b",
     "experiment_io.list_managed_subdirectories": "87f1c489bbff353f89d4418104abbb691fe6b2ba5ee9245815eb0ae1369e2921",
     "experiment_io.path_exists": "b6266a2d3eb073b90ea6ca0ed6a038448f0f79f0b3063b13a3ce7bf36c2595d7",
-    "experiment_io.read_managed_files": "8102b79d228fd463e4b3c0a4e772a50952c4799d2a87c45095a839ea5a155be1",
+    "experiment_io.read_managed_files": "43836ec1178eee36b1b54788554a977047552565245e8d54413370e8d57d6da0",
     "experiment_io.read_text": "e29a1ae2879cbfdc6af06f04306e6bc385479ac39b40b98efc65f913fe686b2e",
     "experiment_io.remote_dir_nonempty": "79cde1f9f61e4be321b9d387045babbfcd9d370c06da5722bdd15579ba8f8a38",
     "experiment_io.validate_managed_output_paths": "23881e1035651ec1a36c8137f328a0f6c57b933e0e0f00263411e981a5230f11",

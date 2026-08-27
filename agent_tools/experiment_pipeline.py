@@ -1174,7 +1174,12 @@ def _prepare_attempt_registration_groups(
         for snapshot_path, snapshot in snapshots.values():
             if not snapshot_path.exists():
                 snapshot_text = json.dumps(snapshot, indent=2, sort_keys=True) + "\n"
-                exp_io.conditional_atomic_replace_text_at(snapshot_path, snapshot_text, None)
+                exp_io.conditional_atomic_replace_text_at(
+                    snapshot_path,
+                    snapshot_text,
+                    None,
+                    managed_root=root,
+                )
             if read_json(snapshot_path) != snapshot:
                 raise ValueError(f"Frozen pipeline execution snapshot changed: {snapshot_path}")
         return prepared

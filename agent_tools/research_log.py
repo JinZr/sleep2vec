@@ -311,6 +311,12 @@ def append_research_log(
         replacement = current + marker + block
         _research_log_blocks(replacement, path)
         expected_sha256 = hashlib.sha256(current.encode()).hexdigest() if exists else None
-        if io.conditional_atomic_replace_text_at(path, replacement, expected_sha256, remote=remote):
+        if io.conditional_atomic_replace_text_at(
+            path,
+            replacement,
+            expected_sha256,
+            managed_root=root,
+            remote=remote,
+        ):
             return path, normalized["id"], True
     raise RuntimeError(f"Managed research log changed during three append attempts: {path}")

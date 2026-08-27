@@ -464,14 +464,16 @@ def test_registration_preflight_freezes_complete_group_and_rejects_drift(tmp_pat
     monkeypatch.setattr(experiment_pipeline.exp_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_pipeline.managed_scheduler, "inspect_execution_target", inspect)
 
+    snapshot_owner = pipeline_dir / "initial_schedulers" / "sleep2vec2"
+    assert not snapshot_owner.exists()
     prepared = experiment_pipeline._prepare_attempt_registration_groups(
         root,
         spec,
         attempts,
-        snapshot_owner_dirs={"sleep2vec2": pipeline_dir},
+        snapshot_owner_dirs={"sleep2vec2": snapshot_owner},
     )
 
-    snapshot_path = pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
+    snapshot_path = snapshot_owner / managed_scheduler.EXECUTION_SNAPSHOT_NAME
     assert prepared[spec["jobs"][0]["id"]] is None
     assert prepared[second["id"]] is not None
     assert json.loads(snapshot_path.read_text()) == target_snapshot
@@ -483,7 +485,7 @@ def test_registration_preflight_freezes_complete_group_and_rejects_drift(tmp_pat
             root,
             spec,
             attempts,
-            snapshot_owner_dirs={"sleep2vec2": pipeline_dir},
+            snapshot_owner_dirs={"sleep2vec2": snapshot_owner},
         )
 
     assert json.loads(snapshot_path.read_text()) == {"validated_argv_sha256": "a" * 64}

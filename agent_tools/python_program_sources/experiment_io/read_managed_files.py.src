@@ -5,7 +5,7 @@ import os
 import stat
 import sys
 
-root, targets, exact_directory_entries = json.loads(sys.argv[1])
+root, targets, exact_directory_entries, allow_invalid_utf8 = json.loads(sys.argv[1])
 
 def reject(message):
     print(message, file=sys.stderr)
@@ -57,7 +57,9 @@ for target in targets:
     try:
         text = data.decode("utf-8")
     except UnicodeError:
-        reject(f"Managed file is not valid UTF-8: {target}")
+        if not allow_invalid_utf8:
+            reject(f"Managed file is not valid UTF-8: {target}")
+        text = None
     payload[target] = {"text": text, "sha256": hashlib.sha256(data).hexdigest()}
 if exact_directory_entries:
     parents = {os.path.dirname(target) for target in targets}

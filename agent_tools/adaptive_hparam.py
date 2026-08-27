@@ -204,7 +204,12 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
     write_text(adaptive_dir / "README.md", _adaptive_readme(workflow))
     _validate_workflow_payload(root, workflow, require_adaptive_commit=False)
     workflow_text = json.dumps(workflow, indent=2, sort_keys=True) + "\n"
-    created_workflow = exp_io.conditional_atomic_replace_text_at(workflow_path, workflow_text, None)
+    created_workflow = exp_io.conditional_atomic_replace_text_at(
+        workflow_path,
+        workflow_text,
+        None,
+        managed_root=root,
+    )
     if not created_workflow:
         if read_json(workflow_path) != workflow:
             raise ValueError(f"Existing adaptive workflow differs from the requested initialization: {workflow_path}")
