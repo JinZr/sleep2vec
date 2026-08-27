@@ -919,7 +919,7 @@ def _load_or_create_initial_attempts(
                     prepared_plan_dir=prepared[job["id"]],
                 )
                 attempt_rows.append(row)
-                _write_jobs(jobs_path, attempt_rows)
+                _write_registered_jobs(jobs_path, attempt_rows)
         finally:
             plan_dirs = {job["id"]: plan_dir for job, _selection, _attempt, _recipe, plan_dir, _result in recipes}
             for job_id, physical_plan_dir in prepared.items():
@@ -1565,6 +1565,13 @@ def _write_jobs(path: Path, rows: list[dict[str, Any]]) -> None:
     _write_rows_atomic(path, rows)
 
 
+def _write_registered_jobs(path: Path, rows: list[dict[str, Any]]) -> None:
+    try:
+        _write_jobs(path, rows)
+    except (OSError, RuntimeError) as exc:
+        raise PipelineRegistrationRecoveryError("Pipeline jobs projection must be reconciled on resume.") from exc
+
+
 def _run_attempts(
     root: Path,
     pipeline_dir: Path,
@@ -1860,7 +1867,7 @@ def _create_needed_retries(
                     prepared_plan_dir=physical_plan_dir,
                 )
                 attempts.append(retry_row)
-                _write_jobs(pipeline_dir / "jobs.tsv", attempts)
+                _write_registered_jobs(pipeline_dir / "jobs.tsv", attempts)
                 _reconcile_pipeline_retry_planned_event(root, spec, retry_row)
         finally:
             if (

@@ -129,6 +129,39 @@ def test_pipeline_group_registration_waits_for_ordinary_plan(tmp_path: Path, mon
     assert [row["job_id"] for row in pipeline_rows] == [spec["jobs"][0]["id"]]
 
 
+def test_initial_jobs_projection_failure_is_recoverable(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    spec = _spec(root)
+    selections = {"age": {"variant": "sleep2vec2"}}
+
+    def attempt_recipe(_pipeline_dir, _spec, job, _selection, attempt):
+        base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
+        return {"name": job["id"]}, base / "recipe.yaml", base / "plan", base / "results"
+
+    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(experiment_pipeline, "_ensure_initial_preflight", lambda *_args: None)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_prepare_attempt_registration_groups",
+        lambda _root, _spec, items, **_kwargs: {item[0]["id"]: item[4] for item in items},
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_materialize_attempt",
+        lambda _root, _spec, job, _selection, attempt, **_paths: {"job_id": job["id"], "attempt": attempt},
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_write_jobs",
+        lambda *_args: (_ for _ in ()).throw(OSError("jobs projection interrupted")),
+    )
+
+    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        experiment_pipeline._load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
+
+
 def test_pipeline_jobs_planned_event_is_reconciled_after_append_failure(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     root.mkdir()
@@ -505,6 +538,53 @@ def test_retry_registration_failure_is_not_recorded_as_preflight_failure(tmp_pat
 
     assert "retry_preparation_error" not in attempts[0]
     assert len(attempts) == 1
+
+
+def test_retry_jobs_projection_failure_is_recoverable(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    spec = _spec(root)
+    attempts = [{"job_id": spec["jobs"][0]["id"], "attempt": 1, "status": "failed", "verified": "false"}]
+
+    def attempt_recipe(_pipeline_dir, _spec, job, _selection, attempt):
+        base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
+        return {"job": job["id"]}, base.with_suffix(".yaml"), base / "plan", base / "results"
+
+    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(experiment_pipeline, "_ensure_retry_preflight", lambda *_args: None)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_prepare_attempt_registration_groups",
+        lambda _root, _spec, items, **_kwargs: {items[0][0]["id"]: None},
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_materialize_attempt",
+        lambda _root, _spec, job, _selection, attempt, **_paths: {
+            "job_id": job["id"],
+            "attempt": attempt,
+            "status": "planned",
+            "verified": "false",
+        },
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_write_jobs",
+        lambda *_args: (_ for _ in ()).throw(OSError("jobs projection interrupted")),
+    )
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
+
+    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        experiment_pipeline._create_needed_retries(
+            root,
+            pipeline_dir,
+            spec,
+            {"age": {"variant": "sleep2vec2"}},
+            attempts,
+        )
+
+    assert [int(row["attempt"]) for row in attempts] == [1, 2]
 
 
 @pytest.mark.parametrize("failure_kind", ["topology", "target"])
