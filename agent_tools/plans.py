@@ -49,9 +49,10 @@ from .experiment_workspace import (
     experiment_metadata_issues,
     experiment_root,
     file_sha256,
-    managed_run_key,
     merge_run_manifest,
     next_run_index,
+    plan_registration_lock,
+    plan_registration_rows_state,
     read_experiment_events,
     read_registered_steps,
     read_run_manifest,
@@ -507,11 +508,10 @@ _LOCAL_PLAN_LOCKS_GUARD = threading.Lock()
 
 
 @contextmanager
-def plan_publication_lock(out: Path, *, namespace: str = "plan-output"):
+def plan_publication_lock(out: Path):
     lock_root = Path(tempfile.gettempdir()).resolve() / "agent-tools-plan-locks"
     lock_root.mkdir(mode=0o700, exist_ok=True)
-    identity = str(out) if namespace == "plan-output" else f"{namespace}\0{out}"
-    lock_name = hashlib.sha256(identity.encode()).hexdigest() + ".lock"
+    lock_name = hashlib.sha256(str(out).encode()).hexdigest() + ".lock"
     lock_path = lock_root / lock_name
     exp_io.validate_managed_output_paths(Path(lock_path.anchor), [lock_path])
     with _LOCAL_PLAN_LOCKS_GUARD:
@@ -1047,6 +1047,49 @@ def build_plan(
     run_index_offset: int | None = None,
     validate_only: bool = False,
 ) -> DecisionReport:
+    build_kwargs = {
+        "recipe_path": recipe_path,
+        "output_dir": output_dir,
+        "user_decisions_path": user_decisions_path,
+        "allow_unresolved": allow_unresolved,
+        "unlock_final_test": unlock_final_test,
+        "source_config_sha256": source_config_sha256,
+        "expected_recipe": expected_recipe,
+        "expected_base_recipe": expected_base_recipe,
+        "staging_dir": staging_dir,
+        "defer_commit": defer_commit,
+        "registered_recipe_path": registered_recipe_path,
+        "allow_adaptive_workflow": allow_adaptive_workflow,
+        "plan_controller": plan_controller,
+        "run_index_offset": run_index_offset,
+        "validate_only": validate_only,
+    }
+    if defer_commit or validate_only:
+        return _build_plan(**build_kwargs)
+    root = experiment_root(load_recipe_with_base(recipe_path))
+    registration_lock = plan_registration_lock(root) if root is not None else nullcontext()
+    with registration_lock:
+        return _build_plan(**build_kwargs)
+
+
+def _build_plan(
+    *,
+    recipe_path: str | Path,
+    output_dir: str | Path,
+    user_decisions_path: str | Path | None,
+    allow_unresolved: bool,
+    unlock_final_test: bool,
+    source_config_sha256: str | None,
+    expected_recipe: dict[str, Any] | None,
+    expected_base_recipe: dict[str, Any] | None,
+    staging_dir: str | Path | None,
+    defer_commit: bool,
+    registered_recipe_path: str | Path | None,
+    allow_adaptive_workflow: bool,
+    plan_controller: str | None,
+    run_index_offset: int | None,
+    validate_only: bool,
+) -> DecisionReport:
     out = canonical_local_experiment_root(output_dir, Path.cwd())
     recipe, cfg, report = preflight_plan(
         recipe_path=recipe_path,
@@ -1136,12 +1179,6 @@ def build_plan(
     if root is None:
         raise ValueError("experiment.root is required.")
     recipe["experiment"]["root"] = str(root)
-    ensure_experiment_workspace(
-        recipe,
-        out,
-        plan_controller=plan_controller,
-        validate_only=True,
-    )
     input_snapshots = []
     if plan_adapter is not None:
         input_paths = plan_adapter.frozen_input_paths(recipe)
@@ -1193,67 +1230,49 @@ def build_plan(
         validated_config_sha256,
     )
 
-    step_id = str((recipe.get("step") or {}).get("id") or "")
-    registration_lock = (
-        nullcontext()
-        if defer_commit or validate_only
-        else plan_publication_lock(root / "steps" / step_id / "step.yaml", namespace="step-registration")
+    ensure_experiment_workspace(
+        recipe,
+        out,
+        plan_controller=plan_controller,
+        validate_only=True,
     )
-    with registration_lock:
-        if not defer_commit and not validate_only:
-            _assert_no_incomplete_step_registration(recipe, out)
-        if run_index_offset is None:
-            run_index_offset = _registered_plan_run_index(recipe, out)
+    if not defer_commit and not validate_only:
+        _assert_no_incomplete_step_registration(recipe, out)
+    if run_index_offset is None:
+        run_index_offset = _registered_plan_run_index(recipe, out)
 
-        write_out = out
-        generated_staging = False
-        output_identity = None
-        if plan_adapter is not None and os.path.lexists(out):
-            output_stat = out.lstat()
-            output_identity = (output_stat.st_dev, output_stat.st_ino)
-        if defer_commit and staging_dir is None:
-            raise ValueError("Deferred plan commit requires a staging directory.")
-        if staging_dir is not None:
-            if out.exists() and not defer_commit:
-                raise ValueError(f"Atomic plan output already exists: {out}")
-            write_out = canonical_local_experiment_root(staging_dir, Path.cwd())
-            try:
-                write_out.relative_to(root)
-            except ValueError as exc:
-                raise ValueError(f"Atomic plan staging directory must be inside experiment.root: {write_out}") from exc
-            if write_out.is_symlink() or write_out.exists():
-                raise ValueError(f"Atomic plan staging directory must not exist: {write_out}")
-            write_out.mkdir(parents=True)
-        elif plan_adapter is not None:
-            staging_parent = out.parent
-            if os.path.lexists(out) and out.lstat().st_dev != out.parent.lstat().st_dev:
-                # A plan may itself be a mount point, so its parent is not always the destination filesystem.
-                staging_parent = out
-            while not os.path.lexists(staging_parent):
-                staging_parent = staging_parent.parent
-            write_out = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".staging", dir=staging_parent))
-            generated_staging = True
+    write_out = out
+    generated_staging = False
+    output_identity = None
+    if plan_adapter is not None and os.path.lexists(out):
+        output_stat = out.lstat()
+        output_identity = (output_stat.st_dev, output_stat.st_ino)
+    if defer_commit and staging_dir is None:
+        raise ValueError("Deferred plan commit requires a staging directory.")
+    if staging_dir is not None:
+        if out.exists() and not defer_commit:
+            raise ValueError(f"Atomic plan output already exists: {out}")
+        write_out = canonical_local_experiment_root(staging_dir, Path.cwd())
+        try:
+            write_out.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Atomic plan staging directory must be inside experiment.root: {write_out}") from exc
+        if write_out.is_symlink() or write_out.exists():
+            raise ValueError(f"Atomic plan staging directory must not exist: {write_out}")
+        write_out.mkdir(parents=True)
+    elif plan_adapter is not None:
+        staging_parent = out.parent
+        if os.path.lexists(out) and out.lstat().st_dev != out.parent.lstat().st_dev:
+            # A plan may itself be a mount point, so its parent is not always the destination filesystem.
+            staging_parent = out
+        while not os.path.lexists(staging_parent):
+            staging_parent = staging_parent.parent
+        write_out = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".staging", dir=staging_parent))
+        generated_staging = True
 
-        if plan_adapter is not None and plan_adapter.materializes_plan:
-            return _materialize_adapter_plan(
-                plan_adapter=plan_adapter,
-                recipe=recipe,
-                report=report,
-                out=out,
-                write_out=write_out,
-                output_identity=output_identity,
-                generated_staging=generated_staging,
-                staging_dir=staging_dir,
-                defer_commit=defer_commit,
-                plan_controller=plan_controller,
-                run_index_offset=run_index_offset,
-                validate_only=validate_only,
-                unlock_final_test=unlock_final_test,
-                validated_config_bytes=validated_config_bytes,
-                validated_config_sha256=validated_config_sha256,
-            )
-        return _materialize_single_run_plan(
-            task=task,
+    if plan_adapter is not None and plan_adapter.materializes_plan:
+        return _materialize_adapter_plan(
+            plan_adapter=plan_adapter,
             recipe=recipe,
             report=report,
             out=out,
@@ -1264,9 +1283,26 @@ def build_plan(
             defer_commit=defer_commit,
             plan_controller=plan_controller,
             run_index_offset=run_index_offset,
+            validate_only=validate_only,
             unlock_final_test=unlock_final_test,
             validated_config_bytes=validated_config_bytes,
+            validated_config_sha256=validated_config_sha256,
         )
+    return _materialize_single_run_plan(
+        task=task,
+        recipe=recipe,
+        report=report,
+        out=out,
+        write_out=write_out,
+        output_identity=output_identity,
+        generated_staging=generated_staging,
+        staging_dir=staging_dir,
+        defer_commit=defer_commit,
+        plan_controller=plan_controller,
+        run_index_offset=run_index_offset,
+        unlock_final_test=unlock_final_test,
+        validated_config_bytes=validated_config_bytes,
+    )
 
 
 def _validate_published_pass_envelope(out: Path) -> None:
@@ -1391,7 +1427,11 @@ def preflight_plan(
         for issue in report.blocking_issues()
     )
     if not metadata_unresolved:
-        workspace_issue = validate_plan_output(recipe, out)
+        workspace_issue = validate_plan_output(
+            recipe,
+            out,
+            allow_published_plan=_is_unowned_published_plan(recipe, out),
+        )
         if workspace_issue:
             report = _append_issues(
                 report,
@@ -1579,6 +1619,10 @@ def _registered_plan_owners(recipe: dict[str, Any], out: Path) -> list[dict[str,
     ]
 
 
+def _is_unowned_published_plan(recipe: dict[str, Any], out: Path) -> bool:
+    return exp_io.path_exists_at(out / "plan.json") and not _registered_plan_owners(recipe, out)
+
+
 def _registered_plan_run_index(recipe: dict[str, Any], out: Path) -> int | None:
     owners = _registered_plan_owners(recipe, out)
     step_id = str((recipe.get("step") or {}).get("id") or "")
@@ -1642,9 +1686,7 @@ def _plan_registration_state(
     root = experiment_root(recipe)
     if root is None:
         raise ValueError("experiment.root is required.")
-    expected_keys = [managed_run_key(row) for row in expected_rows]
-    if not expected_rows or any(key is None for key in expected_keys) or len(expected_keys) != len(set(expected_keys)):
-        raise ValueError(f"Plan registration rows are invalid: {out}")
+    row_state = plan_registration_rows_state(root, expected_rows, source="Canonical plan")
     event_payload = {
         "step_id": (recipe.get("step") or {}).get("id"),
         "plan_dir": str(out),
@@ -1659,6 +1701,21 @@ def _plan_registration_state(
     if not owners:
         if related_events:
             raise ValueError(f"Plan-created event exists before plan ownership registration: {out}")
+        if row_state == "present":
+            raise ValueError(f"Canonical run registration exists before plan ownership registration: {out}")
+        if exp_io.path_exists_at(out / "plan.json"):
+            ensure_experiment_workspace(
+                recipe,
+                out,
+                plan_controller=plan_controller,
+                validate_only=True,
+                allow_published_plan=True,
+            )
+            tree_matches = expected_tree_sha256 is not None and artifacts.plan_tree_sha256(out) == expected_tree_sha256
+            if tree_matches:
+                return "owner_missing"
+            if _overwrite_policy(recipe) is not True:
+                raise ValueError(f"Published plan differs from deterministic regeneration: {out}")
         return "unregistered"
     step_id = str((recipe.get("step") or {}).get("id") or "")
     if len(owners) != 1 or str((owners[0].get("step") or {}).get("id") or "") != step_id:
@@ -1673,17 +1730,10 @@ def _plan_registration_state(
     if expected_tree_sha256 is not None and artifacts.plan_tree_sha256(out) != expected_tree_sha256:
         raise ValueError(f"Registered plan differs from deterministic regeneration: {out}")
 
-    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(root)}
-    present_keys = {key for key in expected_keys if key in canonical_by_key}
-    if present_keys and len(present_keys) != len(expected_keys):
-        missing = ", ".join(
-            f"{step_id} / {run_id}" for step_id, run_id in expected_keys if (step_id, run_id) not in present_keys
-        )
-        raise ValueError(f"Canonical plan registration is partial; missing {missing}")
     exact_events = [event for event in related_events if event_matches(event, "plan_created", event_payload)]
     if len(related_events) != len(exact_events) or len(exact_events) > 1:
         raise ValueError(f"Plan-created event conflicts with canonical registration: {out}")
-    if not present_keys:
+    if row_state == "missing":
         if exact_events:
             raise ValueError(f"Plan-created event exists before canonical run registration: {out}")
         return "rows_missing"
@@ -1776,6 +1826,7 @@ def _guard_pass_plan_publication(
     owners = _registered_plan_owners(recipe, out)
     step_id = str((recipe.get("step") or {}).get("id") or "")
     owned_by_current_step = len(owners) == 1 and str((owners[0].get("step") or {}).get("id") or "") == step_id
+    recovering_unowned_plan = _is_unowned_published_plan(recipe, out)
     if owners and not allow_existing and not owned_by_current_step:
         report = _registered_plan_immutable_report(report, out)
     planned_paths = _planned_plan_paths(recipe, out, report, False, unlock_final_test)
@@ -1784,7 +1835,7 @@ def _guard_pass_plan_publication(
         planned_paths,
         _overwrite_policy(recipe),
         root=out,
-        allow_existing=allow_existing or owned_by_current_step,
+        allow_existing=allow_existing or owned_by_current_step or recovering_unowned_plan,
     )
     # Blocked bundles are human-editable evidence; reusing one would mix PASS and blocked envelopes.
     return _guard_existing_outputs(

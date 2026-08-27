@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import errno
 import hashlib
 import json
@@ -654,6 +655,64 @@ def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
     replay = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
     assert replay.exit_code == 1
     assert "Registered plan directories are immutable" in replay.blocking_issues()[0].message
+
+
+def test_hparam_plan_recovers_exact_unowned_publication(tmp_path: Path, monkeypatch):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    monkeypatch.setattr(
+        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+    )
+    real_publish = plans.publish_staged_plan_locked
+
+    def publish_then_fail(*args, **kwargs):
+        real_publish(*args, **kwargs)
+        raise RuntimeError("injected post-publication failure")
+
+    monkeypatch.setattr(plans, "publish_staged_plan_locked", publish_then_fail)
+    with pytest.raises(RuntimeError, match="injected post-publication failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    monkeypatch.setattr(plans, "publish_staged_plan_locked", real_publish)
+
+    frozen_tree = run_artifacts.plan_tree_sha256(plan_dir)
+    assert read_run_manifest(workspace) == []
+    assert not (workspace / "steps" / "unit-finetune" / "step.yaml").exists()
+
+    recovered = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert recovered.exit_code == 0
+    assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
+    assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000"]
+    events = [json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines()]
+    assert (
+        len([event for event in events if event["event_type"] == "plan_created" and event["plan_dir"] == str(plan_dir)])
+        == 1
+    )
+
+
+def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, monkeypatch):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    monkeypatch.setattr(
+        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+    )
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    manifest_path = workspace / "run_manifest.tsv"
+    rows = read_run_manifest(workspace)
+    rows[0]["config"] = str(workspace / "foreign.yaml")
+    with manifest_path.open("w", newline="") as file_obj:
+        fieldnames = sorted({field for row in rows for field in row})
+        writer = csv.DictWriter(file_obj, fieldnames=fieldnames, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+    before = manifest_path.read_bytes()
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert "Frozen run field differs" in report.blocking_issues()[0].message
+    assert "config" in report.blocking_issues()[0].message
+    assert manifest_path.read_bytes() == before
 
 
 def test_hparam_registration_drift_preserves_existing_overwrite_destination(tmp_path: Path, monkeypatch):

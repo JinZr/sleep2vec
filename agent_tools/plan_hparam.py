@@ -37,12 +37,11 @@ from .experiment_workspace import (
     ensure_experiment_workspace,
     experiment_root,
     file_sha256,
-    managed_run_key,
     managed_run_parameters,
     merge_run_manifest,
     next_run_index,
     parameter_summary,
-    read_run_manifest,
+    plan_registration_rows_state,
     run_identity,
 )
 from .manifests import read_json, write_json, write_text
@@ -1198,12 +1197,7 @@ def _hparam_registration_state(plan: dict[str, Any]) -> tuple[Path, list[dict[st
     if root is None:
         raise ValueError("experiment.root is required.")
     manifest_rows = hparam_manifest_rows(plan)
-    expected_keys = {managed_run_key(row) for row in manifest_rows}
-    existing_rows = read_run_manifest(root) if (root / "run_manifest.tsv").exists() else []
-    existing_keys = {managed_run_key(row) for row in existing_rows if managed_run_key(row) in expected_keys}
-    if existing_keys and existing_keys != expected_keys:
-        missing = ", ".join(f"{step_id} / {run_id}" for step_id, run_id in sorted(expected_keys - existing_keys))
-        raise ValueError(f"Canonical hparam plan registration is partial; missing {missing}")
+    plan_registration_rows_state(root, manifest_rows, source="Canonical hparam plan")
     return root, manifest_rows
 
 

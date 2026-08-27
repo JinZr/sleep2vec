@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import csv
 import hashlib
 import io
@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import threading
 from typing import Any
 
 import yaml
@@ -262,6 +263,24 @@ def canonical_local_experiment_root(raw: str | Path, base_dir: str | Path) -> Pa
     if path.is_symlink():
         raise ValueError(f"Local experiment root must not be a symlink: {path}")
     return path.resolve()
+
+
+_PLAN_REGISTRATION_LOCKS: dict[Path, threading.Lock] = {}
+_PLAN_REGISTRATION_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def plan_registration_lock(root: str | Path):
+    root = Path(root)
+    lock_path = root.parent / f".{root.name}.plan-registration.lock"
+    if not root.parent.exists():
+        exp_io.validate_managed_output_paths(Path(root.anchor), [lock_path])
+        root.parent.mkdir(parents=True, exist_ok=True)
+    exp_io.validate_managed_output_paths(root.parent, [lock_path])
+    with _PLAN_REGISTRATION_LOCKS_GUARD:
+        local_lock = _PLAN_REGISTRATION_LOCKS.setdefault(lock_path, threading.Lock())
+    with local_lock, exp_io.blocking_file_lock(lock_path):
+        yield
 
 
 def read_managed_yaml_mapping(text: str, *, source: str | Path) -> dict[str, Any]:
@@ -1012,6 +1031,30 @@ def validate_frozen_run_update(
             if frozen_dir.is_symlink() or candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
                 step_id, run_id = key or ("", "")
                 raise ValueError(f"checkpoint_path is not a regular managed checkpoint for {step_id} / {run_id}.")
+
+
+def plan_registration_rows_state(
+    root: str | Path,
+    expected_rows: list[dict[str, Any]],
+    *,
+    source: str,
+) -> str:
+    root = Path(root)
+    if not expected_rows:
+        raise ValueError(f"{source} must contain at least one run.")
+    validate_managed_run_rows(expected_rows, source=source, cardinality="one_per_run")
+    expected_by_key = {managed_run_key(row): row for row in expected_rows}
+    existing_rows = read_run_manifest(root) if exp_io.path_exists_at(root / "run_manifest.tsv") else []
+    canonical_by_key = {managed_run_key(row): row for row in existing_rows}
+    present_keys = set(expected_by_key) & set(canonical_by_key)
+    if present_keys and len(present_keys) != len(expected_by_key):
+        missing = ", ".join(f"{step_id} / {run_id}" for step_id, run_id in sorted(set(expected_by_key) - present_keys))
+        raise ValueError(f"{source} registration is partial; missing {missing}")
+    if not present_keys:
+        return "missing"
+    for key, expected in expected_by_key.items():
+        validate_frozen_run_update(canonical_by_key[key], expected, allow_execution_identity_fill=True)
+    return "present"
 
 
 def scheduler_type(row: dict[str, Any]) -> str:

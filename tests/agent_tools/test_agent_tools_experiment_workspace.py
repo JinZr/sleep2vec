@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 from types import SimpleNamespace
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
@@ -2465,6 +2466,57 @@ def test_single_run_plan_recovers_registered_plan_after_manifest_failure(tmp_pat
     assert len(created) == 1
 
 
+def test_single_run_plan_recovers_exact_unowned_publication(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    plan_dir = tmp_path / "plans" / "interrupted"
+    real_publish = plans.publish_staged_plan_locked
+
+    def publish_then_fail(*args, **kwargs):
+        real_publish(*args, **kwargs)
+        raise RuntimeError("injected post-publication failure")
+
+    monkeypatch.setattr(plans, "publish_staged_plan_locked", publish_then_fail)
+    with pytest.raises(RuntimeError, match="injected post-publication failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    monkeypatch.setattr(plans, "publish_staged_plan_locked", real_publish)
+
+    frozen_tree = run_artifacts.plan_tree_sha256(plan_dir)
+    assert read_step_manifest(tmp_path, "unit-finetune", allow_missing=True) is None
+    assert read_run_manifest(tmp_path) == []
+
+    recovered = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert recovered.exit_code == 0
+    assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
+    assert read_step_manifest(tmp_path, "unit-finetune")["plans"] == [str(plan_dir)]
+    assert [row["run_id"] for row in read_run_manifest(tmp_path)] == ["run-000"]
+    created = [
+        event
+        for event in (json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines())
+        if event["event_type"] == "plan_created" and event["plan_dir"] == str(plan_dir)
+    ]
+    assert len(created) == 1
+
+
+def test_complete_registration_recovery_rejects_foreign_canonical_row(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    manifest_path = tmp_path / "run_manifest.tsv"
+    rows = read_run_manifest(tmp_path)
+    rows[0]["config"] = str(tmp_path / "foreign.yaml")
+    with manifest_path.open("w", newline="") as file_obj:
+        writer = csv.DictWriter(file_obj, fieldnames=sorted(rows[0]), delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+    before = manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="Frozen run field differs.*config"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert manifest_path.read_bytes() == before
+
+
 def test_single_run_registration_recovery_rejects_changed_frozen_plan(tmp_path: Path, monkeypatch):
     recipe = write_finetune_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -2493,8 +2545,22 @@ def test_single_run_registration_recovery_rejects_changed_frozen_plan(tmp_path: 
     assert not list(plan_dir.parent.glob(f".{plan_dir.name}.*.staging"))
 
 
-def test_same_step_plan_registration_serializes_run_index_allocation(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("different_step", [False, True], ids=["same-step", "different-step"])
+def test_plan_registration_serializes_run_index_allocation_and_workspace_initialization(
+    tmp_path: Path,
+    monkeypatch,
+    different_step: bool,
+):
     recipe = write_finetune_recipe(tmp_path)
+    second_recipe = recipe
+    if different_step:
+        payload = yaml.safe_load(recipe.read_text())
+        payload["step"] = {
+            "id": "other-step",
+            "phase": "train",
+            "purpose": "Exercise concurrent workspace initialization.",
+        }
+        second_recipe = write_yaml(tmp_path / "other.yaml", payload)
     original_check = plans._assert_no_incomplete_step_registration
     first_checking = threading.Event()
     second_checking = threading.Event()
@@ -2518,14 +2584,14 @@ def test_same_step_plan_registration_serializes_run_index_allocation(tmp_path: P
     reports = []
     errors = []
 
-    def create_plan(name):
+    def create_plan(recipe_path, name):
         try:
-            reports.append(plans.build_plan(recipe_path=recipe, output_dir=tmp_path / "plans" / name))
+            reports.append(plans.build_plan(recipe_path=recipe_path, output_dir=tmp_path / "plans" / name))
         except BaseException as exc:
             errors.append(exc)
 
-    first = threading.Thread(target=create_plan, args=("first",))
-    second = threading.Thread(target=create_plan, args=("second",))
+    first = threading.Thread(target=create_plan, args=(recipe, "first"))
+    second = threading.Thread(target=create_plan, args=(second_recipe, "second"))
     first.start()
     assert first_checking.wait(timeout=10)
     second.start()
@@ -2542,10 +2608,162 @@ def test_same_step_plan_registration_serializes_run_index_allocation(tmp_path: P
         json.loads((tmp_path / "plans" / name / "plan.json").read_text())["runs"][0]["run_id"]
         for name in ("first", "second")
     }
+    assert run_ids == ({"run-000"} if different_step else {"run-000", "run-001"})
+
+
+def test_plan_registration_serializes_fresh_workspace_initialization(tmp_path: Path, monkeypatch):
+    source_dir = tmp_path / "source"
+    recipe = write_finetune_recipe(source_dir)
+    workspace = tmp_path / "fresh-workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    second_payload = yaml.safe_load(recipe.read_text())
+    second_payload["step"] = {
+        "id": "other-step",
+        "phase": "train",
+        "purpose": "Exercise concurrent workspace initialization.",
+    }
+    second_recipe = source_dir / "other.yaml"
+    second_recipe.write_text(yaml.safe_dump(second_payload, sort_keys=False))
+
+    original_initialize = experiment_workspace.initialize_run_manifest
+    first_manifest_written = threading.Event()
+    release_first = threading.Event()
+    second_checking = threading.Event()
+
+    def pause_first_initialization(root, *, remote=None):
+        if threading.current_thread().name == "first-planner":
+            first_manifest_written.set()
+            if not release_first.wait(timeout=10):
+                raise AssertionError("first planner was not released")
+        return original_initialize(root, remote=remote)
+
+    original_check = plans._assert_no_incomplete_step_registration
+
+    def observe_second_check(recipe_payload, out):
+        if threading.current_thread().name == "second-planner":
+            second_checking.set()
+        return original_check(recipe_payload, out)
+
+    monkeypatch.setattr(experiment_workspace, "initialize_run_manifest", pause_first_initialization)
+    monkeypatch.setattr(plans, "_assert_no_incomplete_step_registration", observe_second_check)
+    reports = []
+    errors = []
+
+    def create_plan(recipe_path, name):
+        try:
+            reports.append(plans.build_plan(recipe_path=recipe_path, output_dir=workspace / "plans" / name))
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=create_plan, args=(recipe, "first"), name="first-planner")
+    second = threading.Thread(target=create_plan, args=(second_recipe, "second"), name="second-planner")
+    first.start()
+    assert first_manifest_written.wait(timeout=10)
+    second.start()
+    try:
+        assert not second_checking.wait(timeout=0.5)
+    finally:
+        release_first.set()
+    first.join(timeout=20)
+    second.join(timeout=20)
+
+    if errors:
+        raise errors[0]
+    assert len(reports) == 2
+    assert all(report.exit_code == 0 for report in reports)
+    assert {(row["step_id"], row["run_id"]) for row in read_run_manifest(workspace)} == {
+        ("unit-finetune", "run-000"),
+        ("other-step", "run-000"),
+    }
+
+
+def test_plan_registration_lock_is_shared_across_controller_temp_roots(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    recipe = write_finetune_recipe(workspace)
+    release = tmp_path / "release"
+    runner = """
+import sys
+import time
+from pathlib import Path
+
+from agent_tools import plans
+
+recipe = Path(sys.argv[1])
+output = Path(sys.argv[2])
+entered = Path(sys.argv[3])
+release = Path(sys.argv[4])
+wait_for_release = sys.argv[5] == "wait"
+original_check = plans._assert_no_incomplete_step_registration
+
+def observe_check(recipe_payload, out):
+    entered.touch()
+    if wait_for_release:
+        while not release.exists():
+            time.sleep(0.01)
+    return original_check(recipe_payload, out)
+
+plans._assert_no_incomplete_step_registration = observe_check
+report = plans.build_plan(recipe_path=recipe, output_dir=output)
+raise SystemExit(report.exit_code)
+"""
+    processes = []
+    second_entered_early = False
+    try:
+        for name in ("first", "second"):
+            lock_root = tmp_path / f"{name}-tmp"
+            lock_root.mkdir()
+            env = {**os.environ, "TMPDIR": str(lock_root)}
+            processes.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        runner,
+                        str(recipe),
+                        str(workspace / "plans" / name),
+                        str(tmp_path / f"{name}-entered"),
+                        str(release),
+                        "wait" if name == "first" else "continue",
+                    ],
+                    cwd=Path(__file__).parents[2],
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            )
+            if name == "first":
+                entered = tmp_path / "first-entered"
+                deadline = time.monotonic() + 10
+                while not entered.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert entered.exists()
+        time.sleep(0.5)
+        second_entered_early = (tmp_path / "second-entered").exists()
+    finally:
+        release.touch()
+    results = [process.communicate(timeout=30) for process in processes]
+
+    assert not second_entered_early
+    assert [process.returncode for process in processes] == [0, 0], results
+    assert (tmp_path / "second-entered").exists()
+    run_ids = {
+        json.loads((workspace / "plans" / name / "plan.json").read_text())["runs"][0]["run_id"]
+        for name in ("first", "second")
+    }
     assert run_ids == {"run-000", "run-001"}
+    assert {row["run_id"] for row in read_run_manifest(workspace)} == run_ids
+    assert set(read_step_manifest(workspace, "unit-finetune")["plans"]) == {
+        str(workspace / "plans" / "first"),
+        str(workspace / "plans" / "second"),
+    }
+    events = [json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines()]
+    assert len([event for event in events if event["event_type"] == "plan_created"]) == 2
 
 
-def test_step_registration_lock_namespace_cannot_deadlock_with_plan_output(tmp_path: Path):
+def test_plan_registration_lock_cannot_deadlock_with_plan_output(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     runner = Path(__file__).with_name("agent_tools_cli_stub.py")
     output = tmp_path / "steps" / "unit-finetune" / "step.yaml"
