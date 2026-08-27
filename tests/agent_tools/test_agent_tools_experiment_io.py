@@ -14,6 +14,92 @@ import pytest
 from agent_tools import experiment_io, manifests, python_programs
 
 
+def test_local_event_append_uses_managed_writer(tmp_path: Path, monkeypatch):
+    calls = []
+
+    def record(path, text, *, managed_root):
+        calls.append((path, text, managed_root))
+
+    monkeypatch.setattr(experiment_io, "append_managed_text_at", record)
+
+    experiment_io.append_event_at(tmp_path, "step_registered", {"step_id": "train"})
+
+    assert len(calls) == 1
+    path, text, managed_root = calls[0]
+    assert path == tmp_path / "events.jsonl"
+    assert managed_root == tmp_path
+    row = json.loads(text)
+    assert isinstance(row.pop("time"), str)
+    assert row == {
+        "event_type": "step_registered",
+        "step_id": "train",
+    }
+
+
+def test_remote_event_append_uses_managed_cas_program(monkeypatch):
+    calls = []
+
+    def fake_run(host, command, **kwargs):
+        calls.append((host, command, kwargs))
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(experiment_io.transport, "run_ssh", fake_run)
+
+    experiment_io.append_event_at(Path("/remote/workspace"), "step_registered", {"step_id": "train"}, remote="host")
+
+    host, remote_command, kwargs = calls[0]
+    assert host == "host"
+    assert "append_mode" in remote_command
+    assert 'f".{target_name}.cas.lock"' in remote_command
+    assert "cat >>" not in remote_command
+    assert json.loads(kwargs["input"])["event_type"] == "step_registered"
+
+
+def test_embedded_remote_event_append_uses_shared_cas_lock(tmp_path: Path):
+    path = tmp_path / "events.jsonl"
+    command = [
+        sys.executable,
+        "-c",
+        python_programs.source("experiment_io.conditional_atomic_replace_text"),
+        str(tmp_path),
+        str(path),
+        "",
+        "",
+        "",
+        "",
+        "",
+        "append",
+    ]
+
+    for event_type in ("first", "second"):
+        result = subprocess.run(
+            command,
+            input=(json.dumps({"event_type": event_type}) + "\n").encode(),
+            capture_output=True,
+            timeout=5,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+
+    assert [json.loads(line)["event_type"] for line in path.read_text().splitlines()] == ["first", "second"]
+    assert (tmp_path / ".events.jsonl.cas.lock").is_file()
+
+
+def test_remote_event_append_does_not_retry_unknown_outcome(monkeypatch):
+    calls = 0
+
+    def fail_after_unknown_commit(_host, command, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(command, 255, b"", b"connection lost")
+
+    monkeypatch.setattr(experiment_io.transport, "run_ssh", fail_after_unknown_commit)
+
+    with pytest.raises(RuntimeError, match="outcome may be unknown"):
+        experiment_io.append_event_at(Path("/remote/workspace"), "step_registered", {}, remote="host")
+
+    assert calls == 1
+
+
 @pytest.mark.parametrize(
     ("returncode", "expected"),
     [(0, True), (experiment_io.REMOTE_MISSING_RETURN_CODE, False)],

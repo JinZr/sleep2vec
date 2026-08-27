@@ -393,6 +393,13 @@ _DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOE
 _FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
+def _close_descriptor(descriptor: int) -> None:
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
 def _open_managed_root(managed_root: Path) -> int:
     current = os.open(managed_root.anchor, _DIRECTORY_OPEN_FLAGS)
     try:
@@ -444,6 +451,107 @@ def _read_regular_file_at(parent_descriptor: int, name: str) -> tuple[bytes, int
             os.close(descriptor)
 
 
+def append_managed_text_at(path: str | Path, text: str, *, managed_root: str | Path) -> None:
+    root = Path(str(managed_root))
+    target = Path(str(path))
+    _validate_raw_managed_path(root, target)
+    payload = text.encode()
+    with ExitStack() as stack:
+        try:
+            root_descriptor = _open_managed_root(root)
+        except OSError as exc:
+            raise ValueError(f"Managed output paths must be independent regular files: {root}") from exc
+        stack.callback(_close_descriptor, root_descriptor)
+        root_info = os.fstat(root_descriptor)
+        parent_descriptor, target_name = _open_managed_parent(
+            root_descriptor,
+            target.relative_to(root),
+            create=False,
+        )
+        stack.callback(_close_descriptor, parent_descriptor)
+        parent_info = os.fstat(parent_descriptor)
+        stack.enter_context(_blocking_file_lock_at(parent_descriptor, f".{target_name}.cas.lock"))
+        try:
+            current, target_mode = _read_regular_file_at(parent_descriptor, target_name)
+            target_exists = True
+        except FileNotFoundError:
+            current = b""
+            target_mode = 0o644
+            target_exists = False
+        except ValueError as exc:
+            raise ValueError(f"Managed output path is missing or aliased: {target}") from exc
+        file_descriptor, temporary = _open_temporary_at(parent_descriptor, target_name)
+        try:
+            temporary_info = os.fstat(file_descriptor)
+            if not stat.S_ISREG(temporary_info.st_mode) or temporary_info.st_nlink != 1:
+                raise ValueError(f"Managed append temporary is aliased: {target}")
+            with os.fdopen(file_descriptor, "wb") as file_obj:
+                file_descriptor = -1
+                file_obj.write(current + payload)
+                os.fchmod(file_obj.fileno(), target_mode)
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+                temporary_info = os.fstat(file_obj.fileno())
+                if not stat.S_ISREG(temporary_info.st_mode) or temporary_info.st_nlink != 1:
+                    raise ValueError(f"Managed append temporary is aliased: {target}")
+            try:
+                public_root = _open_managed_root(root)
+            except OSError as exc:
+                raise ValueError(f"Managed output path changed while it was written: {target}") from exc
+            try:
+                try:
+                    public_parent, public_name = _open_managed_parent(
+                        public_root,
+                        target.relative_to(root),
+                        create=False,
+                    )
+                except OSError as exc:
+                    raise ValueError(f"Managed output path changed while it was written: {target}") from exc
+                try:
+                    public_root_info = os.fstat(public_root)
+                    public_parent_info = os.fstat(public_parent)
+                    if (public_root_info.st_dev, public_root_info.st_ino) != (
+                        root_info.st_dev,
+                        root_info.st_ino,
+                    ) or (public_parent_info.st_dev, public_parent_info.st_ino) != (
+                        parent_info.st_dev,
+                        parent_info.st_ino,
+                    ):
+                        raise ValueError(f"Managed output path changed while it was written: {target}")
+                    try:
+                        public_current, _public_mode = _read_regular_file_at(public_parent, public_name)
+                    except FileNotFoundError:
+                        if target_exists:
+                            raise ValueError(f"Managed output path changed while it was written: {target}")
+                    except ValueError as exc:
+                        raise ValueError(f"Managed output path is missing or aliased: {target}") from exc
+                    else:
+                        if not target_exists or public_current != current:
+                            raise ValueError(f"Managed output path changed while it was written: {target}")
+                    # Supported event writers share this lock; this binds the namespace for the following rename.
+                    if target_exists:
+                        os.replace(
+                            temporary,
+                            public_name,
+                            src_dir_fd=public_parent,
+                            dst_dir_fd=public_parent,
+                        )
+                    elif not _rename_noreplace_at(public_parent, temporary, public_name):
+                        raise RuntimeError(f"Managed output path changed while it was written: {target}")
+                finally:
+                    _close_descriptor(public_parent)
+            finally:
+                _close_descriptor(public_root)
+        except BaseException:
+            if file_descriptor >= 0:
+                _close_descriptor(file_descriptor)
+            try:
+                os.unlink(temporary, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+            raise
+
+
 @contextmanager
 def _blocking_file_lock_at(parent_descriptor: int, name: str) -> Iterator[None]:
     for attempt in range(4):
@@ -487,7 +595,7 @@ def _blocking_file_lock_at(parent_descriptor: int, name: str) -> Iterator[None]:
     try:
         yield
     finally:
-        os.close(descriptor)
+        _close_descriptor(descriptor)
 
 
 def _open_temporary_at(parent_descriptor: int, target_name: str) -> tuple[int, str]:
@@ -689,15 +797,25 @@ def append_event_at(
     row = json.dumps({"time": utc_now(), "event_type": event_type, **json_ready(payload)}, sort_keys=True) + "\n"
     path = root / "events.jsonl"
     if not remote:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as file_obj:
-            file_obj.write(row)
+        append_managed_text_at(path, row, managed_root=root)
         return
-    command = transport.remote_append_command(path)
-    transport.run_ssh(
+    command = transport.remote_python_program_command(
+        "experiment_io.conditional_atomic_replace_text",
+        str(root),
+        str(path),
+        "",
+        "",
+        "",
+        "",
+        "",
+        "append",
+    )
+    result = transport.run_ssh(
         remote,
         command,
-        input=row,
-        text=True,
-        check=True,
+        input=row.encode(),
     )
+    if result.returncode != 0:
+        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
+        detail = stderr.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"SSH managed event append failed on {remote}; outcome may be unknown: {detail}")

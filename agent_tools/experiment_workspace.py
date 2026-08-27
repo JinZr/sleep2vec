@@ -723,11 +723,8 @@ def ensure_experiment_workspace(
 def append_event(root: str | Path, event_type: str, payload: dict[str, Any]) -> None:
     root = Path(root)
     path = root / "events.jsonl"
-    exp_io.validate_managed_output_paths(root, [path])
-    path.parent.mkdir(parents=True, exist_ok=True)
     row = {"time": _now(), "event_type": event_type, **json_ready(payload)}
-    with path.open("a") as file_obj:
-        file_obj.write(json.dumps(row, sort_keys=True) + "\n")
+    exp_io.append_managed_text_at(path, json.dumps(row, sort_keys=True) + "\n", managed_root=root)
 
 
 def run_identity(

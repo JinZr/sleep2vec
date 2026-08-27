@@ -778,6 +778,226 @@ def test_append_event_rejects_canonical_manifest_alias(tmp_path: Path):
     assert manifest_path.read_bytes() == before
 
 
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_append_event_rejects_leaf_alias_created_after_parent_open(tmp_path: Path, monkeypatch, alias_kind: str):
+    events_path = tmp_path / "events.jsonl"
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("sentinel\n")
+    before = outside.read_bytes()
+    original_open_parent = experiment_io._open_managed_parent
+    swapped = False
+
+    def swap_leaf(root_descriptor, relative, *, create):
+        nonlocal swapped
+        parent_descriptor, target_name = original_open_parent(root_descriptor, relative, create=create)
+        if target_name == "events.jsonl" and not swapped:
+            swapped = True
+            if alias_kind == "symlink":
+                events_path.symlink_to(outside)
+            else:
+                events_path.hardlink_to(outside)
+        return parent_descriptor, target_name
+
+    monkeypatch.setattr(experiment_io, "_open_managed_parent", swap_leaf)
+
+    with pytest.raises((OSError, ValueError)):
+        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
+
+    assert outside.read_bytes() == before
+
+
+def test_append_event_does_not_follow_workspace_drift_after_root_open(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    moved_workspace = tmp_path / "workspace-moved"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_events = outside / "events.jsonl"
+    outside_events.write_text("sentinel\n")
+    before = outside_events.read_bytes()
+    original_open_parent = experiment_io._open_managed_parent
+    swapped = False
+
+    def swap_workspace(root_descriptor, relative, *, create):
+        nonlocal swapped
+        parent_descriptor, target_name = original_open_parent(root_descriptor, relative, create=create)
+        if target_name == "events.jsonl" and not swapped:
+            swapped = True
+            workspace.rename(moved_workspace)
+            workspace.symlink_to(outside, target_is_directory=True)
+        return parent_descriptor, target_name
+
+    monkeypatch.setattr(experiment_io, "_open_managed_parent", swap_workspace)
+
+    with pytest.raises(ValueError, match="Managed output path changed"):
+        append_event(workspace, "run_status_changed", {"run_id": "run-000"})
+
+    assert outside_events.read_bytes() == before
+    assert not (moved_workspace / "events.jsonl").exists()
+
+
+def test_append_event_does_not_modify_hardlink_added_after_snapshot(tmp_path: Path, monkeypatch):
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text('{"event_type": "before"}\n')
+    outside = tmp_path / "outside.jsonl"
+    before = events_path.read_bytes()
+    original_open_temporary = experiment_io._open_temporary_at
+
+    def add_hardlink(parent_descriptor, target_name):
+        outside.hardlink_to(events_path)
+        return original_open_temporary(parent_descriptor, target_name)
+
+    monkeypatch.setattr(experiment_io, "_open_temporary_at", add_hardlink)
+
+    with pytest.raises(ValueError, match="missing or aliased"):
+        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
+
+    assert events_path.read_bytes() == before
+    assert outside.read_bytes() == before
+
+
+def test_append_event_rejects_aliased_temporary_before_writing(tmp_path: Path, monkeypatch):
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text('{"event_type": "before"}\n')
+    before = events_path.read_bytes()
+    outside = tmp_path / "outside.jsonl"
+    original_open_temporary = experiment_io._open_temporary_at
+
+    def alias_temporary(parent_descriptor, target_name):
+        descriptor, temporary = original_open_temporary(parent_descriptor, target_name)
+        outside.hardlink_to(tmp_path / temporary)
+        return descriptor, temporary
+
+    monkeypatch.setattr(experiment_io, "_open_temporary_at", alias_temporary)
+
+    with pytest.raises(ValueError, match="temporary is aliased"):
+        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
+
+    assert events_path.read_bytes() == before
+    assert outside.read_bytes() == b""
+
+
+def test_append_event_rejects_replacement_workspace_carrying_target_inode(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "experiment.yaml").write_text("experiment:\n  id: original\n")
+    events_path = workspace / "events.jsonl"
+    events_path.write_text('{"event_type": "before"}\n')
+    before = events_path.read_bytes()
+    moved_workspace = tmp_path / "workspace-moved"
+    original_open_temporary = experiment_io._open_temporary_at
+
+    def replace_workspace(parent_descriptor, target_name):
+        workspace.rename(moved_workspace)
+        workspace.mkdir()
+        (workspace / "experiment.yaml").write_text("experiment:\n  id: replacement\n")
+        (moved_workspace / "events.jsonl").replace(workspace / "events.jsonl")
+        return original_open_temporary(parent_descriptor, target_name)
+
+    monkeypatch.setattr(experiment_io, "_open_temporary_at", replace_workspace)
+
+    with pytest.raises(ValueError, match="Managed output path changed"):
+        append_event(workspace, "run_status_changed", {"run_id": "run-000"})
+
+    assert (workspace / "events.jsonl").read_bytes() == before
+    assert "replacement" in (workspace / "experiment.yaml").read_text()
+
+
+def test_append_event_leaves_original_log_intact_when_temporary_write_fails(tmp_path: Path, monkeypatch):
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text('{"event_type": "before"}\n')
+    before = events_path.read_bytes()
+    original_fsync = experiment_io.os.fsync
+
+    def fail_fsync(_descriptor):
+        raise OSError("injected temporary write failure")
+
+    monkeypatch.setattr(experiment_io.os, "fsync", fail_fsync)
+    with pytest.raises(OSError, match="injected temporary write failure"):
+        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
+
+    assert events_path.read_bytes() == before
+    monkeypatch.setattr(experiment_io.os, "fsync", original_fsync)
+    append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert [event["event_type"] for event in events] == ["before", "run_status_changed"]
+
+
+def test_concurrent_append_events_share_the_managed_cas_lock(tmp_path: Path, monkeypatch):
+    original_lock = experiment_io._blocking_file_lock_at
+    first_locked = threading.Event()
+    second_attempted = threading.Event()
+    release_first = threading.Event()
+    state_lock = threading.Lock()
+    attempts = 0
+
+    @contextmanager
+    def observe_lock(parent_descriptor, name):
+        nonlocal attempts
+        with state_lock:
+            attempts += 1
+            if attempts == 2:
+                second_attempted.set()
+        with original_lock(parent_descriptor, name):
+            first_holder = not first_locked.is_set()
+            if first_holder:
+                first_locked.set()
+                assert release_first.wait(timeout=10)
+            yield
+
+    monkeypatch.setattr(experiment_io, "_blocking_file_lock_at", observe_lock)
+    errors = []
+
+    def write_event(event_type):
+        try:
+            append_event(tmp_path, event_type, {})
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=write_event, args=("first",))
+    second = threading.Thread(target=write_event, args=("second",))
+    first.start()
+    assert first_locked.wait(timeout=10)
+    second.start()
+    assert second_attempted.wait(timeout=10)
+    release_first.set()
+    first.join(timeout=20)
+    second.join(timeout=20)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events] == ["first", "second"]
+
+
+def test_append_event_has_no_failing_tail_after_commit(tmp_path: Path, monkeypatch):
+    (tmp_path / "events.jsonl").write_text('{"event_type": "before"}\n')
+    original_replace = experiment_io.os.replace
+    original_close = experiment_io.os.close
+    committed = False
+
+    def mark_commit(*args, **kwargs):
+        nonlocal committed
+        result = original_replace(*args, **kwargs)
+        committed = True
+        return result
+
+    def fail_close_after_commit(descriptor):
+        if committed:
+            raise OSError("injected post-commit close failure")
+        return original_close(descriptor)
+
+    monkeypatch.setattr(experiment_io.os, "replace", mark_commit)
+    monkeypatch.setattr(experiment_io.os, "close", fail_close_after_commit)
+
+    append_event(tmp_path, "committed", {})
+
+    monkeypatch.setattr(experiment_io.os, "close", original_close)
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events] == ["before", "committed"]
+
+
 def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch):
     existing = [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "failed"}]
     reads = []

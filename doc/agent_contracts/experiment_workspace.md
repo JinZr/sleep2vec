@@ -65,6 +65,14 @@ merged through their reducers. Missing files may be created only by their
 designated first producer; blank, malformed, incomplete, or conflicting
 metadata is never repaired by overwriting it.
 
+`events.jsonl` is modified only through the canonical managed append owner. All
+supported local and SSH writers execute on the workspace-owning host and share
+the descriptor-anchored `.events.jsonl.cas.lock`; under that lock, the final
+public root, parent, and prior-content check binds the namespace for the
+immediately following atomic rename. Raw shell appends and concurrent lockless
+workspace renames or alias changes are unsupported. An SSH transport failure
+has an unknown commit outcome and must not be blindly retried.
+
 `experiment_manifest.tsv` is optional for plan-created workspaces. When present, it contains exactly one row whose experiment id and root match `experiment.yaml`.
 
 Local recipe roots are based at the repository root; local experiment CLI roots

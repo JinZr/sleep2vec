@@ -1259,7 +1259,7 @@ def test_experiment_init_remote_writes_remote_not_local(tmp_path: Path, monkeypa
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        if "mkdir -p" in command[-1] or "seen_inodes" in command[-1]:
+        if "mkdir -p" in command[-1] or "seen_inodes" in command[-1] or "append_mode" in command[-1]:
             return subprocess.CompletedProcess(command, 0, "", "")
         return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
 
@@ -1273,8 +1273,11 @@ def test_experiment_init_remote_writes_remote_not_local(tmp_path: Path, monkeypa
     assert any("/wujidata/remote_run/experiment.yaml" in target for target in write_targets)
     assert any("/wujidata/remote_run/RESEARCH_LOG.md" in target for target in write_targets)
     assert any("/wujidata/remote_run/README.md" in target for target in write_targets)
-    assert any("/wujidata/remote_run/events.jsonl" in target for target in write_targets)
     assert any("/wujidata/remote_run/experiment_manifest.tsv" in target for target in write_targets)
+    assert any(
+        "append_mode" in command[-1] and "/wujidata/remote_run/events.jsonl" in command[-1]
+        for command, _kwargs in calls
+    )
     assert not (tmp_path / "reports").exists()
 
 
