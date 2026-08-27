@@ -302,6 +302,40 @@ def test_doctor_rejects_output_directory_owned_by_pass_plan(tmp_path: Path):
     assert not (output_dir / "decisions.yaml").exists()
 
 
+def test_doctor_rejects_registered_blocked_plan_directory_without_mutation(tmp_path: Path):
+    blocked_recipe = write_finetune_recipe(tmp_path / "blocked-source", include_label=False)
+    workspace = Path(yaml.safe_load(blocked_recipe.read_text())["experiment"]["root"])
+    output_dir = workspace / "plans" / "blocked"
+    blocked = _run("plan", "--recipe", str(blocked_recipe), "--output-dir", str(output_dir))
+    assert blocked.returncode == 2, blocked.stderr
+    before = {path.relative_to(output_dir): path.read_bytes() for path in output_dir.rglob("*") if path.is_file()}
+    doctor_recipe = write_finetune_recipe(tmp_path / "doctor-source", include_label=False)
+
+    result = _run("doctor", "--recipe", str(doctor_recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "doctor output requires a fresh --output-dir" in result.stderr
+    assert {
+        path.relative_to(output_dir): path.read_bytes() for path in output_dir.rglob("*") if path.is_file()
+    } == before
+
+
+def test_doctor_rejects_unregistered_blocked_plan_marker(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path / "source", include_label=False)
+    output_dir = tmp_path / "doctor"
+    output_dir.mkdir()
+    marker = output_dir / "plan.blocked.md"
+    marker.write_text("user marker\n")
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "doctor output requires a fresh --output-dir" in result.stderr
+    assert marker.read_text() == "user marker\n"
+    assert not (output_dir / "questions.json").exists()
+    assert not (output_dir / "decisions.yaml").exists()
+
+
 def test_user_decision_template_skips_non_decisions_and_deduplicates_base_issue():
     report = DecisionReport(
         status=DecisionStatus.NEEDS_USER_INPUT,

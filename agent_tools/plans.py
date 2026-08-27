@@ -562,16 +562,16 @@ def write_doctor_outputs(
     with plan_publication_lock(out):
         locked_report = _guard_existing_outputs(
             report,
-            plan_contract.blocked_plan_control_paths(out),
-            True,
+            [*plan_contract.blocked_plan_marker_paths(out), *plan_contract.pass_plan_control_paths(out)],
+            False,
             root=out,
+            require_fresh="Plan artifacts already exist; doctor output requires a fresh --output-dir.",
         )
         locked_report = _guard_existing_outputs(
             locked_report,
-            plan_contract.pass_plan_control_paths(out),
-            _overwrite_policy(recipe),
+            plan_contract.doctor_control_paths(out),
+            True,
             root=out,
-            require_fresh="PASS plan artifacts already exist; doctor output requires a fresh --output-dir.",
         )
         if _has_output_artifact_issue(locked_report):
             raise ValueError(locked_report.blocking_issues()[-1].message)

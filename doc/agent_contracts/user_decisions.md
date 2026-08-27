@@ -18,6 +18,8 @@ values the user has actually decided, then pass the file explicitly with
 `--user-decisions`. A blocked-plan retry must use a fresh `--output-dir`.
 Existing independent `decisions.yaml` files are not overwritten by doctor;
 a file that appears during blocked-plan publication fails before canonical registration.
+Doctor may reuse a doctor-only output directory, but any blocked or PASS plan marker
+makes that directory plan-owned and requires a fresh doctor `--output-dir`.
 
 No template is written for PASS/WARN, FAIL or mixed FAIL/NEEDS_USER_INPUT results,
 non-decision-only blockers, `plan --validate-only`, unsafe or occupied plan
