@@ -2633,6 +2633,57 @@ def test_plan_registration_serializes_run_index_allocation_and_workspace_initial
     assert run_ids == ({"run-000"} if different_step else {"run-000", "run-001"})
 
 
+def test_plan_registration_rejects_recipe_root_change_after_lock_selection(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    changed_root = tmp_path / "changed-root"
+    output_dir = changed_root / "plans" / "drifted"
+    original_load = plans.load_recipe_with_base
+    loads = 0
+
+    def load_with_drift(path):
+        nonlocal loads
+        loads += 1
+        payload = original_load(path)
+        if loads > 1:
+            payload["experiment"]["root"] = str(changed_root)
+        return payload
+
+    monkeypatch.setattr(plans, "load_recipe_with_base", load_with_drift)
+
+    with pytest.raises(ValueError, match="root changed while acquiring"):
+        plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert not changed_root.exists()
+
+
+def test_plan_registration_rejects_root_added_after_lock_selection(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    output_dir = tmp_path / "plans" / "drifted"
+    experiment_path = tmp_path / "experiment.yaml"
+    manifest_path = tmp_path / "run_manifest.tsv"
+    experiment_before = experiment_path.read_bytes() if experiment_path.exists() else None
+    manifest_before = manifest_path.read_bytes() if manifest_path.exists() else None
+    original_load = plans.load_recipe_with_base
+    loads = 0
+
+    def load_with_drift(path):
+        nonlocal loads
+        loads += 1
+        payload = original_load(path)
+        if loads == 1:
+            payload["experiment"].pop("root")
+        return payload
+
+    monkeypatch.setattr(plans, "load_recipe_with_base", load_with_drift)
+
+    with pytest.raises(ValueError, match="root changed while acquiring"):
+        plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert not output_dir.exists()
+    assert (experiment_path.read_bytes() if experiment_path.exists() else None) == experiment_before
+    assert (manifest_path.read_bytes() if manifest_path.exists() else None) == manifest_before
+
+
 def test_plan_registration_serializes_fresh_workspace_initialization(tmp_path: Path, monkeypatch):
     source_dir = tmp_path / "source"
     recipe = write_finetune_recipe(source_dir)

@@ -1075,11 +1075,11 @@ def build_plan(
         "validate_only": validate_only,
     }
     if defer_commit or validate_only:
-        return _build_plan(**build_kwargs)
+        return _build_plan(**build_kwargs, locked_root=None, check_locked_root=False)
     root = experiment_root(load_recipe_with_base(recipe_path))
     registration_lock = plan_registration_lock(root) if root is not None else nullcontext()
     with registration_lock:
-        return _build_plan(**build_kwargs)
+        return _build_plan(**build_kwargs, locked_root=root, check_locked_root=True)
 
 
 def _build_plan(
@@ -1099,6 +1099,8 @@ def _build_plan(
     plan_controller: str | None,
     run_index_offset: int | None,
     validate_only: bool,
+    locked_root: Path | None,
+    check_locked_root: bool,
 ) -> DecisionReport:
     out = canonical_local_experiment_root(output_dir, Path.cwd())
     recipe, cfg, report = preflight_plan(
@@ -1110,6 +1112,8 @@ def _build_plan(
         allow_existing_output_artifacts=defer_commit,
         allow_adaptive_workflow=allow_adaptive_workflow,
     )
+    if check_locked_root and experiment_root(recipe) != locked_root:
+        raise ValueError("Experiment root changed while acquiring the plan registration lock.")
     validated_config_bytes, validated_config_sha256 = _validate_bound_recipe(
         recipe,
         cfg,
