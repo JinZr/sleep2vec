@@ -1,0 +1,1 @@
+import subprocess, sys; observed = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(); observed == sys.argv[1] or sys.exit('Target runtime commit differs from the frozen plan: expected ' + sys.argv[1] + ', observed ' + observed)

@@ -1,0 +1,75 @@
+
+import hashlib
+import json
+import os
+import stat
+import sys
+
+root, targets, exact_directory_entries = json.loads(sys.argv[1])
+
+def reject(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(2)
+
+def directory_info(path):
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        reject(f"Managed directory is missing: {path}")
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        reject(f"Managed directory is missing or aliased: {path}")
+
+directory_info(root)
+seen_inodes = set()
+payload = {}
+for target in targets:
+    relative = os.path.relpath(target, root)
+    current = root
+    for part in relative.split(os.sep)[:-1]:
+        current = os.path.join(current, part)
+        directory_info(current)
+    try:
+        before = os.lstat(target)
+    except FileNotFoundError:
+        reject(f"Managed file is missing: {target}")
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        reject(f"Managed file is missing or aliased: {target}")
+    inode = (before.st_dev, before.st_ino)
+    if inode in seen_inodes:
+        reject(f"Managed files must be independent regular files: {target}")
+    seen_inodes.add(inode)
+    try:
+        with open(target, "rb") as file_obj:
+            opened = os.fstat(file_obj.fileno())
+            data = file_obj.read()
+            after = os.fstat(file_obj.fileno())
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if (opened.st_dev, opened.st_ino) != inode or (after.st_dev, after.st_ino) != inode:
+        reject(f"Managed file changed while it was read: {target}")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeError:
+        reject(f"Managed file is not valid UTF-8: {target}")
+    payload[target] = {"text": text, "sha256": hashlib.sha256(data).hexdigest()}
+if exact_directory_entries:
+    parents = {os.path.dirname(target) for target in targets}
+    if len(parents) != 1:
+        reject("Exact managed control bundle files must share one directory.")
+    parent = parents.pop()
+    try:
+        actual_entries = sorted(os.listdir(parent))
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    expected_entries = sorted(os.path.basename(target) for target in targets)
+    if actual_entries != expected_entries:
+        reject(f"Managed control bundle directory entries differ: {parent}")
+print(json.dumps(payload, sort_keys=True))

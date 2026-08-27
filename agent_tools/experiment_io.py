@@ -56,31 +56,9 @@ def mkdir_experiment_dirs(root: Path, *, remote: str | None = None) -> None:
 
 
 def remote_dir_nonempty(root: Path, remote: str) -> bool:
-    script = f"""
-import os
-import sys
-
-path = sys.argv[1]
-try:
-    os.lstat(path)
-except FileNotFoundError:
-    raise SystemExit({REMOTE_MISSING_RETURN_CODE})
-except OSError as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-
-try:
-    entries = os.listdir(path)
-except OSError as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-
-if entries:
-    print("nonempty")
-"""
     result = transport.run_ssh(
         remote,
-        transport.remote_python_command(script, str(root)),
+        transport.remote_python_program_command("experiment_io.remote_dir_nonempty", str(root)),
         text=True,
     )
     if result.returncode == REMOTE_MISSING_RETURN_CODE:
@@ -95,21 +73,9 @@ def path_exists_at(path: str | Path, *, remote: str | None = None) -> bool:
     if not remote:
         target = Path(path)
         return target.exists() or target.is_symlink()
-    script = f"""
-import os
-import sys
-
-try:
-    os.lstat(sys.argv[1])
-except FileNotFoundError:
-    raise SystemExit({REMOTE_MISSING_RETURN_CODE})
-except OSError as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-"""
     result = transport.run_ssh(
         remote,
-        transport.remote_python_command(script, str(path)),
+        transport.remote_python_program_command("experiment_io.path_exists", str(path)),
         text=True,
     )
     if result.returncode == REMOTE_MISSING_RETURN_CODE:
@@ -130,61 +96,10 @@ def list_managed_subdirectories_at(
     directory = Path(directory)
     _validate_raw_managed_path(root, directory)
     if remote:
-        script = """
-import json
-import os
-import stat
-import sys
-
-root, directory = json.loads(sys.argv[1])
-
-def reject(message):
-    print(message, file=sys.stderr)
-    raise SystemExit(2)
-
-def validate_directory(path):
-    try:
-        info = os.lstat(path)
-    except FileNotFoundError:
-        return False
-    except OSError as exc:
-        print(exc, file=sys.stderr)
-        raise SystemExit(1)
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        reject(f"Managed directory is missing or aliased: {path}")
-    return True
-
-if not validate_directory(root):
-    reject(f"Managed workspace root is missing: {root}")
-relative = os.path.relpath(directory, root)
-current = root
-for part in [] if relative == "." else relative.split(os.sep):
-    current = os.path.join(current, part)
-    if not validate_directory(current):
-        print("[]")
-        raise SystemExit(0)
-
-names = []
-try:
-    entries = list(os.scandir(directory))
-except OSError as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-for entry in entries:
-    try:
-        info = entry.stat(follow_symlinks=False)
-    except OSError as exc:
-        print(exc, file=sys.stderr)
-        raise SystemExit(1)
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        reject(f"Managed directory contains a non-directory entry: {entry.path}")
-    names.append(entry.name)
-print(json.dumps(sorted(names)))
-"""
         payload = json.dumps([str(root), str(directory)])
         result = transport.run_ssh(
             remote,
-            transport.remote_python_command(script, payload),
+            transport.remote_python_program_command("experiment_io.list_managed_subdirectories", payload),
             text=True,
         )
         if result.returncode == 2:
@@ -233,86 +148,10 @@ def read_managed_files_at(
     if len(targets) != len(set(targets)):
         raise ValueError("Managed file paths must be unique.")
     if remote:
-        script = """
-import hashlib
-import json
-import os
-import stat
-import sys
-
-root, targets, exact_directory_entries = json.loads(sys.argv[1])
-
-def reject(message):
-    print(message, file=sys.stderr)
-    raise SystemExit(2)
-
-def directory_info(path):
-    try:
-        info = os.lstat(path)
-    except FileNotFoundError:
-        reject(f"Managed directory is missing: {path}")
-    except OSError as exc:
-        print(exc, file=sys.stderr)
-        raise SystemExit(1)
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        reject(f"Managed directory is missing or aliased: {path}")
-
-directory_info(root)
-seen_inodes = set()
-payload = {}
-for target in targets:
-    relative = os.path.relpath(target, root)
-    current = root
-    for part in relative.split(os.sep)[:-1]:
-        current = os.path.join(current, part)
-        directory_info(current)
-    try:
-        before = os.lstat(target)
-    except FileNotFoundError:
-        reject(f"Managed file is missing: {target}")
-    except OSError as exc:
-        print(exc, file=sys.stderr)
-        raise SystemExit(1)
-    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-        reject(f"Managed file is missing or aliased: {target}")
-    inode = (before.st_dev, before.st_ino)
-    if inode in seen_inodes:
-        reject(f"Managed files must be independent regular files: {target}")
-    seen_inodes.add(inode)
-    try:
-        with open(target, "rb") as file_obj:
-            opened = os.fstat(file_obj.fileno())
-            data = file_obj.read()
-            after = os.fstat(file_obj.fileno())
-    except OSError as exc:
-        print(exc, file=sys.stderr)
-        raise SystemExit(1)
-    if (opened.st_dev, opened.st_ino) != inode or (after.st_dev, after.st_ino) != inode:
-        reject(f"Managed file changed while it was read: {target}")
-    try:
-        text = data.decode("utf-8")
-    except UnicodeError:
-        reject(f"Managed file is not valid UTF-8: {target}")
-    payload[target] = {"text": text, "sha256": hashlib.sha256(data).hexdigest()}
-if exact_directory_entries:
-    parents = {os.path.dirname(target) for target in targets}
-    if len(parents) != 1:
-        reject("Exact managed control bundle files must share one directory.")
-    parent = parents.pop()
-    try:
-        actual_entries = sorted(os.listdir(parent))
-    except OSError as exc:
-        print(exc, file=sys.stderr)
-        raise SystemExit(1)
-    expected_entries = sorted(os.path.basename(target) for target in targets)
-    if actual_entries != expected_entries:
-        reject(f"Managed control bundle directory entries differ: {parent}")
-print(json.dumps(payload, sort_keys=True))
-"""
         request = json.dumps([str(root), [str(path) for path in targets], exact_directory_entries])
         result = transport.run_ssh(
             remote,
-            transport.remote_python_command(script, request),
+            transport.remote_python_program_command("experiment_io.read_managed_files", request),
             text=True,
         )
         if result.returncode == 2:
@@ -434,95 +273,10 @@ def validate_managed_output_paths(
     if not paths:
         return
     if remote:
-        script = """
-import json
-import os
-import stat
-import sys
-
-root, *targets = json.loads(sys.argv[1])
-root = os.path.abspath(root)
-seen_paths = set()
-seen_inodes = set()
-
-def reject(path):
-    print(f"Managed output paths must be independent regular files: {path}", file=sys.stderr)
-    raise SystemExit(2)
-
-current = os.path.sep
-for part in root.split(os.sep)[1:-1]:
-    current = os.path.join(current, part)
-    try:
-        info = os.lstat(current)
-    except FileNotFoundError:
-        break
-    except OSError as exc:
-        print(exc, file=sys.stderr)
-        raise SystemExit(1)
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        reject(current)
-
-try:
-    root_info = os.lstat(root)
-except FileNotFoundError:
-    pass
-except OSError as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-else:
-    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
-        reject(root)
-
-for raw_target in targets:
-    target = os.path.abspath(raw_target)
-    try:
-        if os.path.commonpath([root, target]) != root:
-            reject(target)
-    except ValueError:
-        reject(target)
-    if target in seen_paths:
-        reject(target)
-    seen_paths.add(target)
-
-    relative = os.path.relpath(target, root)
-    ancestors = []
-    current = root
-    for part in relative.split(os.sep)[:-1]:
-        current = os.path.join(current, part)
-        ancestors.append(current)
-    missing_ancestor = False
-    for ancestor in ancestors:
-        try:
-            info = os.lstat(ancestor)
-        except FileNotFoundError:
-            missing_ancestor = True
-            break
-        except OSError as exc:
-            print(exc, file=sys.stderr)
-            raise SystemExit(1)
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            reject(ancestor)
-    if missing_ancestor:
-        continue
-
-    try:
-        info = os.lstat(target)
-    except FileNotFoundError:
-        continue
-    except OSError as exc:
-        print(exc, file=sys.stderr)
-        raise SystemExit(1)
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-        reject(target)
-    inode = (info.st_dev, info.st_ino)
-    if inode in seen_inodes:
-        reject(target)
-    seen_inodes.add(inode)
-"""
         payload = json.dumps([str(root), *(str(path) for path in paths)])
         result = transport.run_ssh(
             remote,
-            transport.remote_python_command(script, payload),
+            transport.remote_python_program_command("experiment_io.validate_managed_output_paths", payload),
             text=True,
         )
         if result.returncode == 2:
@@ -594,27 +348,7 @@ def read_text_at(path: str | Path, *, remote: str | None = None) -> str:
     if not remote:
         target = Path(path)
         return target.read_bytes().decode() if target.exists() else ""
-    script = f"""
-import os
-import sys
-
-path = sys.argv[1]
-try:
-    os.lstat(path)
-except FileNotFoundError:
-    raise SystemExit({REMOTE_MISSING_RETURN_CODE})
-except OSError as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-
-try:
-    with open(path, encoding="utf-8", newline="") as file_obj:
-        sys.stdout.write(file_obj.read())
-except (OSError, UnicodeError) as exc:
-    print(exc, file=sys.stderr)
-    raise SystemExit(1)
-"""
-    result = transport.run_ssh(remote, transport.remote_python_command(script, str(path)))
+    result = transport.run_ssh(remote, transport.remote_python_program_command("experiment_io.read_text", str(path)))
     if result.returncode == REMOTE_MISSING_RETURN_CODE:
         return ""
     if result.returncode != 0:
@@ -741,103 +475,10 @@ def conditional_atomic_replace_text_at(
                 raise
         return True
 
-    script = f"""
-from contextlib import ExitStack
-import ctypes
-import errno
-import fcntl
-import hashlib
-import os
-import stat
-import sys
-import tempfile
-
-path = sys.argv[1]
-expected = sys.argv[2]
-dependency_path = sys.argv[3]
-dependency_expected = sys.argv[4]
-guard_path = sys.argv[5]
-guard_expected = sys.argv[6]
-expect_missing = not expected
-parent = os.path.dirname(path) or "."
-os.makedirs(parent, exist_ok=True)
-
-lock_paths = ([dependency_path + ".lock"] if dependency_path else []) + [path + ".lock"]
-with ExitStack() as lock_stack:
-    for lock_path in dict.fromkeys(lock_paths):
-        lock_file = lock_stack.enter_context(open(lock_path, "a+"))
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-    if dependency_path:
-        try:
-            with open(dependency_path, "rb") as file_obj:
-                dependency_current = file_obj.read()
-        except FileNotFoundError:
-            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
-        if hashlib.sha256(dependency_current).hexdigest() != dependency_expected:
-            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
-    if guard_path:
-        try:
-            with open(guard_path, "rb") as file_obj:
-                guard_current = file_obj.read()
-        except FileNotFoundError:
-            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
-        if hashlib.sha256(guard_current).hexdigest() != guard_expected:
-            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
-    if expect_missing:
-        if os.path.lexists(path):
-            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
-        target_mode = 0o644
-    else:
-        try:
-            with open(path, "rb") as file_obj:
-                current = file_obj.read()
-                target_mode = stat.S_IMODE(os.fstat(file_obj.fileno()).st_mode)
-        except FileNotFoundError:
-            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
-        if hashlib.sha256(current).hexdigest() != expected:
-            raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
-    payload = sys.stdin.buffer.read()
-    descriptor, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".", dir=parent)
-    try:
-        with os.fdopen(descriptor, "wb") as file_obj:
-            file_obj.write(payload)
-            os.fchmod(file_obj.fileno(), target_mode)
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
-        if expect_missing:
-            libc = ctypes.CDLL(None, use_errno=True)
-            source = os.fsencode(temporary)
-            destination = os.fsencode(path)
-            if hasattr(libc, "renameat2"):
-                rename = libc.renameat2
-                rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-                rename.restype = ctypes.c_int
-                result = rename(-100, source, -100, destination, 1)
-            elif hasattr(libc, "renamex_np"):
-                rename = libc.renamex_np
-                rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-                rename.restype = ctypes.c_int
-                result = rename(source, destination, 4)
-            else:
-                raise RuntimeError("Atomic no-replace rename is unavailable on this platform.")
-            if result != 0:
-                error = ctypes.get_errno()
-                if error == errno.EEXIST:
-                    raise SystemExit({REMOTE_CONFLICT_RETURN_CODE})
-                raise OSError(error, os.strerror(error), path)
-        else:
-            os.replace(temporary, path)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
-"""
     result = transport.run_ssh(
         remote,
-        transport.remote_python_command(
-            script,
+        transport.remote_python_program_command(
+            "experiment_io.conditional_atomic_replace_text",
             str(target),
             expected_sha256 or "",
             str(dependency) if dependency is not None else "",

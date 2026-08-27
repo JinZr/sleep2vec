@@ -22,20 +22,27 @@ L0-level domain leaf.
 
 Mirrors the three frozensets in `layering.py`.
 
-### Kernel — reusable (28, zero domain signal)
-decision_models, transport, manifests, schema_map, gpu_rules, repo,
-experiment_io, experiment_workspace, experiment_tracking, experiments,
-run_artifacts, run_evidence, hparam, hparam_runtime, hparam_selection,
+### Kernel — reusable (33, zero domain signal)
+decision_models, transport, python_programs, manifests, schema_map, gpu_rules, repo,
+experiment_io, research_log, experiment_workspace, experiment_sources,
+experiment_tracking, experiments,
+run_artifacts, run_evidence, checkpoint_test_results, hparam, hparam_runtime, hparam_selection,
 adaptive_hparam, adaptive_proposals, recipes, progress, markdown, skills,
 decisions, plans, plan_contract, decision_rules, managed_scheduler, slurm,
-experiment_pipeline.
+experiment_pipeline, experiment_pipeline_results.
 
 These must stay domain-free — the layering guard allows them **no** domain
 imports.
 
+`python_programs` owns the canonical loader for embedded kernel program source
+files used by transport and experiment-control modules.
+
 `adaptive_proposals` owns the pure snapshot, parameter-envelope, and external
 submission-validation contract. `adaptive_hparam` owns the surrounding digest,
 preflight, round registration, launch, and lifecycle orchestration.
+
+`checkpoint_test_results` owns pure saved-epoch expectation and checkpoint-test
+result validation shared by hparam selection and adaptive objective extraction.
 
 `decision_rules` owns the pure, dictionary-only recipe structure contract:
 registered task and variant, top-level closure, runtime, task sections,
@@ -51,10 +58,14 @@ validation. Task adapters may derive that contract only from the frozen recipe,
 including its strict creator-host plan context and input snapshots, and
 plan-owned config bytes.
 
-`experiment_workspace` owns the one-way step `plan_controller` binding used to
-classify ordinary, adaptive, and pipeline plans. `experiment_tracking` consumes
-that owner for status advice; recipe and canonical pipeline fields are only
-consistency guards, while `run_manifest.tsv` remains the lifecycle owner.
+`experiment_workspace` owns managed manifests and the one-way step
+`plan_controller` binding used to classify ordinary, adaptive, and pipeline
+plans. `research_log` owns append-only semantic note validation, rendering, and
+CAS publication behind the workspace facade. `experiment_sources` owns W&B and
+checkpoint evidence acquisition; `experiment_tracking` consumes those sources
+for projections, status advice, and ranking validation. Recipe and canonical
+pipeline fields are only consistency guards, while `run_manifest.tsv` remains
+the lifecycle owner.
 
 `managed_scheduler` owns backend selection plus the reusable direct
 GPU-capacity/process lifecycle and Slurm submit/observe lifecycle shared by
@@ -62,7 +73,9 @@ managed launchers. `slurm` owns scheduler resource/script contracts, CLI
 transport, machine-readable job and sidecar identity parsing, state
 normalization, compute-wrapper execution, and cancellation primitives.
 `experiment_pipeline` owns the strict validation-to-external-test state machine
-and exposes it through the `experiments` facade.
+and exposes it through the `experiments` facade. `experiment_pipeline_results`
+owns terminal job reduction, result-manifest validation, and final matrix
+aggregation behind that orchestrator.
 
 ### Domain — sleep2vec-specific
 `domain/` (sidecar_summaries, finetune_summary, finetune_hparam_profile,
@@ -136,7 +149,7 @@ Legal edges outside the reverse-edge table:
 
 ## Frozen surfaces
 
-- `cli_contract`: 33 subcommand names + argument contracts + task/variant
+- `cli_contract`: 35 subcommand names + argument contracts + task/variant
   routing matrix + the `cli.export_hparam_logits` attribute name (a monkeypatch
   anchor).
 - The adapter-boundary guard's `KERNEL_MODULES` file list (7 modules, resolved

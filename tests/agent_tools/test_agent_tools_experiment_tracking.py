@@ -10,7 +10,15 @@ import types
 
 import pytest
 
-from agent_tools import experiment_io, experiment_tracking, experiment_workspace, experiments, run_evidence
+from agent_tools import (
+    experiment_io,
+    experiment_tracking,
+    experiment_workspace,
+    experiments,
+    python_programs,
+    run_evidence,
+    transport,
+)
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -38,6 +46,10 @@ def _managed_file_payload(files: dict[str, str]) -> str:
     return json.dumps(
         {path: {"text": text, "sha256": hashlib.sha256(text.encode()).hexdigest()} for path, text in files.items()}
     )
+
+
+def _is_remote_python_program(command: str, name: str) -> bool:
+    return command.startswith(f"python3 -c {transport.sh(python_programs.source(name))}")
 
 
 def _experiment_spec(tmp_path: Path) -> Path:
@@ -1842,11 +1854,11 @@ def test_experiment_monitor_observes_remote_artifacts_over_ssh_and_preserves_the
 
     def fake_remote_command(_row, command):
         commands.append(command)
-        if "sys.stdout.write(file_obj.read())" in command:
+        if _is_remote_python_program(command, "run_evidence.read_pid_text"):
             return subprocess.CompletedProcess([], 0, "123\n", "")
         if command.startswith("ps "):
             return subprocess.CompletedProcess([], 0, "123\n", "")
-        if "checkpoint_dir = sys.argv[2]" in command:
+        if _is_remote_python_program(command, "run_evidence.runtime_artifacts"):
             payload = json.dumps(
                 {
                     "run_manifest": "/remote/runtime/run-000/run_manifest.json",

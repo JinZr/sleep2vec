@@ -5,6 +5,7 @@ from pathlib import Path
 import shlex
 from typing import Any
 
+from . import python_programs
 from .experiment_workspace import MONITOR_EXIT_CODE_PREFIX
 from .models import REPO_ROOT, coerce_list, module_for_variant
 
@@ -233,45 +234,40 @@ def script_lines(
     if experiment_root is not None:
         if lifecycle_python is None:
             raise ValueError("Lifecycle scripts require an explicit Python interpreter.")
-        commit_code = (
-            "import sys; "
-            "from agent_tools.experiment_workspace import merge_run_manifest; "
-            "rows = merge_run_manifest(sys.argv[1], "
-            "[{'step_id': sys.argv[2], 'run_id': sys.argv[3], 'status': sys.argv[4]}]); "
-            "row = next((row for row in rows "
-            "if row.get('step_id') == sys.argv[2] and row.get('run_id') == sys.argv[3]), None); "
-            "(row is not None and row.get('status') == sys.argv[4]) or "
-            "sys.exit('Canonical run status did not commit as ' + sys.argv[4])"
-        )
         commit_command = (
-            render_command([lifecycle_python, "-c", commit_code, experiment_root, step_id, run_id]) + ' "$1"'
+            render_command(
+                [
+                    lifecycle_python,
+                    "-c",
+                    python_programs.source("plan_rendering.commit_status"),
+                    experiment_root,
+                    step_id,
+                    run_id,
+                ]
+            )
+            + ' "$1"'
         )
         prelaunch_verification_lines = []
         if expected_runtime_commit is not None:
-            runtime_commit_code = (
-                "import subprocess, sys; "
-                "observed = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(); "
-                "observed == sys.argv[1] or "
-                "sys.exit('Target runtime commit differs from the frozen plan: expected ' "
-                "+ sys.argv[1] + ', observed ' + observed)"
-            )
             prelaunch_verification_lines = [
-                render_command([lifecycle_python, "-c", runtime_commit_code, expected_runtime_commit]),
+                render_command(
+                    [
+                        lifecycle_python,
+                        "-c",
+                        python_programs.source("plan_rendering.runtime_commit_guard"),
+                        expected_runtime_commit,
+                    ]
+                ),
                 "",
             ]
         if input_snapshots:
-            input_snapshot_code = (
-                "import json, sys; "
-                "from agent_tools.experiment_workspace import verify_run_snapshot; "
-                "verify_run_snapshot({'input_snapshots': json.loads(sys.argv[1])})"
-            )
             prelaunch_verification_lines.extend(
                 [
                     render_command(
                         [
                             lifecycle_python,
                             "-c",
-                            input_snapshot_code,
+                            python_programs.source("plan_rendering.verify_input_snapshots"),
                             json.dumps(input_snapshots, sort_keys=True, separators=(",", ":")),
                         ]
                     ),

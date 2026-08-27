@@ -1,0 +1,33 @@
+script, log_path, pid_path, workdir = sys.argv[1:]
+
+with open(log_path, "ab", buffering=0) as log_file:
+    process = subprocess.Popen(
+        ["bash", script],
+        cwd=workdir,
+        env=os.environ.copy(),
+        stdin=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        identity = {
+            "pid": process.pid,
+            "process_group_id": os.getpgid(process.pid),
+            "process_start_token": start_token(process.pid),
+        }
+        if identity["process_start_token"] is None:
+            raise RuntimeError(f"Cannot read process start time for PID {process.pid}")
+        descriptor = os.open(pid_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file_obj:
+            json.dump(identity, file_obj, sort_keys=True)
+            file_obj.write("\n")
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+    except BaseException:
+        # An unrecorded process group cannot be managed safely, so stop it before surfacing launch failure.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        raise

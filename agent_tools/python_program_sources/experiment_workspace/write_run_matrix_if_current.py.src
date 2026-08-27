@@ -1,0 +1,39 @@
+
+import fcntl
+import hashlib
+import json
+import os
+import sys
+import tempfile
+
+manifest_path, matrix_path, report_path, expected = sys.argv[1:]
+payload = json.load(sys.stdin)
+with open(manifest_path + ".lock", "a+") as lock_file:
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    try:
+        with open(manifest_path, "rb") as file_obj:
+            current = file_obj.read()
+    except FileNotFoundError:
+        raise SystemExit(45)
+    if hashlib.sha256(current).hexdigest() != expected:
+        raise SystemExit(45)
+    staged = []
+    try:
+        for path, text in ((matrix_path, payload["matrix"]), (report_path, payload["report"])):
+            parent = os.path.dirname(path) or "."
+            os.makedirs(parent, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".", dir=parent)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as file_obj:
+                file_obj.write(text)
+                os.fchmod(file_obj.fileno(), 0o644)
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+            staged.append((temporary, path))
+        for temporary, path in staged:
+            os.replace(temporary, path)
+    finally:
+        for temporary, _path in staged:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass

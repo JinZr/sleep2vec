@@ -1,0 +1,19 @@
+
+import os
+import sys
+
+path = sys.argv[1]
+try:
+    os.lstat(path)
+except FileNotFoundError:
+    raise SystemExit(44)
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    with open(path, encoding="utf-8", newline="") as file_obj:
+        sys.stdout.write(file_obj.read())
+except (OSError, UnicodeError) as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)

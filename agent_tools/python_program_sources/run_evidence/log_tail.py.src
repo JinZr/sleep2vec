@@ -1,0 +1,21 @@
+
+import os
+import sys
+
+path = sys.argv[1]
+try:
+    os.lstat(path)
+except FileNotFoundError:
+    raise SystemExit(44)
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    with open(path, encoding="utf-8", errors="replace") as file_obj:
+        lines = file_obj.readlines()
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+
+sys.stdout.write("".join(lines[-100:]))

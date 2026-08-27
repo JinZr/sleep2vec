@@ -1,0 +1,11 @@
+
+import os
+import sys
+
+try:
+    os.lstat(sys.argv[1])
+except FileNotFoundError:
+    raise SystemExit(44)
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)

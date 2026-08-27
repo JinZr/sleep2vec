@@ -10,12 +10,12 @@ import yaml
 
 
 def run_execution_preflight_fixture(execution: dict, command: list[str]) -> subprocess.CompletedProcess:
-    from agent_tools import managed_scheduler
+    from agent_tools import python_programs
 
     python_command, flag, script, *arguments = command
     if flag != "-c":
         raise AssertionError(f"Unexpected execution preflight command: {command}")
-    if script == managed_scheduler._RUNTIME_IDENTITY_SCRIPT:
+    if script == python_programs.source("managed_scheduler.runtime_identity"):
         (module,) = arguments
         repo_root = str(execution.get("workdir") or Path(__file__).resolve().parents[1])
         payload = {

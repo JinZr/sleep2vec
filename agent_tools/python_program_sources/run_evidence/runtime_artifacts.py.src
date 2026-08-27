@@ -1,0 +1,73 @@
+
+import json
+import os
+import stat
+import sys
+
+runtime_dir = sys.argv[1]
+checkpoint_dir = sys.argv[2]
+payload = {"run_manifest": "", "manifest": {}, "checkpoints": []}
+
+if runtime_dir:
+    try:
+        runtime_info = os.lstat(runtime_dir)
+    except FileNotFoundError:
+        runtime_info = None
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    if runtime_info is not None and (stat.S_ISLNK(runtime_info.st_mode) or not stat.S_ISDIR(runtime_info.st_mode)):
+        print(f"Remote runtime path is not a directory: {runtime_dir}", file=sys.stderr)
+        raise SystemExit(1)
+    manifest = os.path.join(runtime_dir, "run_manifest.json")
+    try:
+        manifest_info = os.lstat(manifest)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    else:
+        if (
+            stat.S_ISLNK(manifest_info.st_mode)
+            or not stat.S_ISREG(manifest_info.st_mode)
+            or manifest_info.st_nlink != 1
+        ):
+            print(f"Remote run manifest is not an independent regular file: {manifest}", file=sys.stderr)
+            raise SystemExit(1)
+        try:
+            with open(manifest, encoding="utf-8") as file_obj:
+                manifest_payload = json.load(file_obj)
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print(exc, file=sys.stderr)
+            raise SystemExit(1)
+        if not isinstance(manifest_payload, dict):
+            print(f"Remote run manifest is corrupt: {manifest}", file=sys.stderr)
+            raise SystemExit(1)
+        payload["run_manifest"] = manifest
+        payload["manifest"] = manifest_payload
+
+if checkpoint_dir:
+    try:
+        checkpoint_info = os.lstat(checkpoint_dir)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    else:
+        if stat.S_ISLNK(checkpoint_info.st_mode) or not stat.S_ISDIR(checkpoint_info.st_mode):
+            print(f"Remote checkpoint path is not a directory: {checkpoint_dir}", file=sys.stderr)
+            raise SystemExit(1)
+        try:
+            payload["checkpoints"] = sorted(
+                name
+                for name in os.listdir(checkpoint_dir)
+                if name.endswith(".ckpt")
+                and stat.S_ISREG(os.lstat(os.path.join(checkpoint_dir, name)).st_mode)
+            )
+        except OSError as exc:
+            print(exc, file=sys.stderr)
+            raise SystemExit(1)
+
+sys.stdout.write(json.dumps(payload))

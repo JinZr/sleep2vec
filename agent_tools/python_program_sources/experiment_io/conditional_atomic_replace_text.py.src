@@ -1,0 +1,92 @@
+
+from contextlib import ExitStack
+import ctypes
+import errno
+import fcntl
+import hashlib
+import os
+import stat
+import sys
+import tempfile
+
+path = sys.argv[1]
+expected = sys.argv[2]
+dependency_path = sys.argv[3]
+dependency_expected = sys.argv[4]
+guard_path = sys.argv[5]
+guard_expected = sys.argv[6]
+expect_missing = not expected
+parent = os.path.dirname(path) or "."
+os.makedirs(parent, exist_ok=True)
+
+lock_paths = ([dependency_path + ".lock"] if dependency_path else []) + [path + ".lock"]
+with ExitStack() as lock_stack:
+    for lock_path in dict.fromkeys(lock_paths):
+        lock_file = lock_stack.enter_context(open(lock_path, "a+"))
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    if dependency_path:
+        try:
+            with open(dependency_path, "rb") as file_obj:
+                dependency_current = file_obj.read()
+        except FileNotFoundError:
+            raise SystemExit(45)
+        if hashlib.sha256(dependency_current).hexdigest() != dependency_expected:
+            raise SystemExit(45)
+    if guard_path:
+        try:
+            with open(guard_path, "rb") as file_obj:
+                guard_current = file_obj.read()
+        except FileNotFoundError:
+            raise SystemExit(45)
+        if hashlib.sha256(guard_current).hexdigest() != guard_expected:
+            raise SystemExit(45)
+    if expect_missing:
+        if os.path.lexists(path):
+            raise SystemExit(45)
+        target_mode = 0o644
+    else:
+        try:
+            with open(path, "rb") as file_obj:
+                current = file_obj.read()
+                target_mode = stat.S_IMODE(os.fstat(file_obj.fileno()).st_mode)
+        except FileNotFoundError:
+            raise SystemExit(45)
+        if hashlib.sha256(current).hexdigest() != expected:
+            raise SystemExit(45)
+    payload = sys.stdin.buffer.read()
+    descriptor, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".", dir=parent)
+    try:
+        with os.fdopen(descriptor, "wb") as file_obj:
+            file_obj.write(payload)
+            os.fchmod(file_obj.fileno(), target_mode)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        if expect_missing:
+            libc = ctypes.CDLL(None, use_errno=True)
+            source = os.fsencode(temporary)
+            destination = os.fsencode(path)
+            if hasattr(libc, "renameat2"):
+                rename = libc.renameat2
+                rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+                rename.restype = ctypes.c_int
+                result = rename(-100, source, -100, destination, 1)
+            elif hasattr(libc, "renamex_np"):
+                rename = libc.renamex_np
+                rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+                rename.restype = ctypes.c_int
+                result = rename(source, destination, 4)
+            else:
+                raise RuntimeError("Atomic no-replace rename is unavailable on this platform.")
+            if result != 0:
+                error = ctypes.get_errno()
+                if error == errno.EEXIST:
+                    raise SystemExit(45)
+                raise OSError(error, os.strerror(error), path)
+        else:
+            os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
