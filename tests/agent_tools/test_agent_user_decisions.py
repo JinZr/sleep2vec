@@ -136,6 +136,36 @@ def test_doctor_writes_fillable_user_decision_template(tmp_path: Path):
     assert "Status: PASS" in resolved.stdout
 
 
+def test_doctor_writes_template_through_output_ancestor_alias(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path / "source", include_label=False)
+    physical_parent = tmp_path / "physical"
+    physical_parent.mkdir()
+    alias_parent = tmp_path / "alias"
+    alias_parent.symlink_to(physical_parent, target_is_directory=True)
+    output_dir = alias_parent / "doctor"
+    physical_template = physical_parent / "doctor" / "decisions.yaml"
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert str(physical_template) in result.stdout
+    assert yaml.safe_load(physical_template.read_text())["decisions"]["label_name"]["value"] == "ASK_USER"
+
+
+def test_doctor_rejects_exact_output_symlink(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path / "source", include_label=False)
+    target = tmp_path / "target"
+    target.mkdir()
+    output_dir = tmp_path / "doctor"
+    output_dir.symlink_to(target, target_is_directory=True)
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "must not be a symlink" in result.stderr
+    assert list(target.iterdir()) == []
+
+
 def test_doctor_template_does_not_promote_scalar_recipe_decision_to_user(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     payload = yaml.safe_load(recipe.read_text())

@@ -574,10 +574,7 @@ def write_doctor_outputs(
 ) -> tuple[Path, bool] | None:
     if output_dir is None or _has_output_artifact_issue(report):
         return None
-    out = Path(output_dir).expanduser()
-    if not out.is_absolute():
-        out = Path.cwd() / out
-    out = Path(os.path.normpath(out))
+    out = canonical_local_experiment_root(output_dir, Path.cwd())
     with plan_publication_lock(out):
         locked_report = _guard_existing_outputs(
             report,
