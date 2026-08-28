@@ -1684,10 +1684,15 @@ def _assert_no_incomplete_step_registration(recipe: dict[str, Any], out: Path) -
         runs = plan.get("runs") if isinstance(plan, dict) else None
         if not isinstance(frozen_recipe, dict) or not isinstance(runs, list):
             raise ValueError(f"Registered plan is incomplete: {plan_dir}")
+        expected_rows = runs
+        if frozen_recipe.get("task") == "hparam_tune":
+            from . import plan_hparam
+
+            expected_rows = plan_hparam.hparam_manifest_rows(plan)
         state = _plan_registration_state(
             frozen_recipe,
             plan_dir,
-            runs,
+            expected_rows,
             expected_tree_sha256=None,
             plan_controller=step_manifest["plan_controller"],
         )

@@ -1897,6 +1897,24 @@ def test_frozen_validator_allows_only_one_trusted_process_identity_fill():
         validate_frozen_run_update({**existing, "pid": 123}, {"pid": 456}, allow_execution_identity_fill=True)
 
 
+def test_plan_registration_accepts_canonical_execution_identity_fill(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    expected = {
+        "experiment_id": "unit",
+        "step_id": "train",
+        "run_id": "run-000",
+        "status": "planned",
+    }
+    merge_run_manifest(tmp_path, [expected])
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": "train", "run_id": "run-000", "status": "launched", "target": "local", "gpus": "0"}],
+    )
+
+    assert experiment_workspace.plan_registration_rows_state(tmp_path, [expected], source="unit plan") == "present"
+
+
 def _slurm_identity(tmp_path: Path) -> dict[str, str]:
     return {
         "scheduler_type": "slurm",

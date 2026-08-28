@@ -1057,7 +1057,7 @@ def plan_registration_rows_state(
         raise ValueError(f"{source} registration is partial; missing {missing}")
     if not present_keys:
         return "missing"
-    allowed_canonical_only = SCHEDULER_BINDING_FIELDS | PROCESS_IDENTITY_FIELDS | {"parameter_summary"}
+    allowed_canonical_only = EXECUTION_IDENTITY_FIELDS | SCHEDULER_BINDING_FIELDS | {"parameter_summary"}
     for key, expected in expected_by_key.items():
         canonical = canonical_by_key[key]
         canonical_fields = set(FROZEN_RUN_FIELDS & canonical.keys()) | set(managed_run_parameters(canonical))
