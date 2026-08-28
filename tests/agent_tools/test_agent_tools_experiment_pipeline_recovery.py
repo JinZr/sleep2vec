@@ -13,7 +13,15 @@ from agent_tool_test_helpers import write_finetune_recipe
 import pytest
 import yaml
 
-from agent_tools import experiment_pipeline, experiments, managed_scheduler, plan_contract, plans, python_programs
+from agent_tools import (
+    experiment_pipeline,
+    experiment_pipeline_results,
+    experiments,
+    managed_scheduler,
+    plan_contract,
+    plans,
+    python_programs,
+)
 from agent_tools.experiment_workspace import commit_step_manifest, file_sha256, read_run_manifest
 from agent_tools.manifests import write_rows
 
@@ -160,6 +168,29 @@ def test_initial_jobs_projection_failure_is_recoverable(tmp_path: Path, monkeypa
 
     with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
         experiment_pipeline._load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
+
+
+def test_registered_jobs_retry_cleans_interrupted_atomic_temp(tmp_path: Path, monkeypatch):
+    jobs_path = tmp_path / "jobs.tsv"
+    rows = [{"run_id": "run-001", "status": "planned"}]
+    replace = experiment_pipeline_results.os.replace
+    calls = 0
+
+    def fail_once(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("jobs projection interrupted")
+        replace(source, destination)
+
+    monkeypatch.setattr(experiment_pipeline_results.os, "replace", fail_once)
+
+    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        experiment_pipeline._write_registered_jobs(jobs_path, rows)
+
+    assert not list(tmp_path.glob(".jobs.tsv.*.tmp"))
+    experiment_pipeline._write_registered_jobs(jobs_path, rows)
+    assert experiment_pipeline.read_rows(jobs_path) == rows
 
 
 def test_pipeline_jobs_planned_event_is_reconciled_after_append_failure(tmp_path: Path, monkeypatch):
