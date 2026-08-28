@@ -592,10 +592,12 @@ def test_hparam_registration_rejects_partial_canonical_rows_before_workspace_wri
 
 
 @pytest.mark.parametrize("failure_stage", ["rows", "event"])
+@pytest.mark.parametrize("root_resident", [False, True], ids=["nested", "root"])
 def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
     tmp_path: Path,
     monkeypatch,
     failure_stage: str,
+    root_resident: bool,
 ):
     recipe, workspace = _recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -604,8 +606,12 @@ def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
         "max_runs": 2,
         "parameters": {"runtime.lr": [1e-6, 2e-6]},
     }
+    if root_resident:
+        workspace = tmp_path / "workspace"
+        payload["experiment"]["root"] = str(workspace)
+        recipe = tmp_path / "root-recovery.yaml"
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    plan_dir = workspace / "plans" / "tune"
+    plan_dir = workspace if root_resident else workspace / "plans" / "tune"
     monkeypatch.setattr(
         managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
     )
@@ -635,14 +641,17 @@ def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
         real_commit,
     )
 
-    frozen_tree = run_artifacts.plan_tree_sha256(plan_dir)
+    frozen_plan = (plan_dir / "plan.json").read_bytes()
+    frozen_tree = None if root_resident else run_artifacts.plan_tree_sha256(plan_dir)
     frozen_run_ids = [run["run_id"] for run in json.loads((plan_dir / "plan.json").read_text())["runs"]]
     assert len(read_run_manifest(workspace)) == (0 if failure_stage == "rows" else 2)
 
     recovered = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
 
     assert recovered.exit_code == 0
-    assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
+    assert (plan_dir / "plan.json").read_bytes() == frozen_plan
+    if frozen_tree is not None:
+        assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
     assert [run["run_id"] for run in json.loads((plan_dir / "plan.json").read_text())["runs"]] == frozen_run_ids
     assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000", "run-001"]
     events = [json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines()]
@@ -655,6 +664,41 @@ def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
     replay = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
     assert replay.exit_code == 1
     assert "Registered plan directories are immutable" in replay.blocking_issues()[0].message
+
+
+def test_root_hparam_registration_recovery_rejects_plan_drift(tmp_path: Path, monkeypatch):
+    recipe, _workspace = _recipe(tmp_path)
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe = tmp_path / "root-drift.yaml"
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+    )
+    real_merge = plan_hparam.merge_run_manifest
+    monkeypatch.setattr(
+        plan_hparam,
+        "merge_run_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected canonical rows failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="injected canonical rows failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=workspace)
+    monkeypatch.setattr(plan_hparam, "merge_run_manifest", real_merge)
+    next((workspace / "runs").glob("*/run.json")).write_text('{"tampered": true}\n')
+
+    with pytest.raises(ValueError, match="differs from deterministic regeneration"):
+        plans.build_plan(recipe_path=recipe, output_dir=workspace)
+
+    assert read_run_manifest(workspace) == []
+    assert not any(
+        event["event_type"] == "plan_created"
+        for event in (json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines())
+    )
+    assert not _staging_dirs(workspace, workspace)
 
 
 @pytest.mark.parametrize("overwrite", [False, True])

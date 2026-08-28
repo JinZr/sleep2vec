@@ -791,11 +791,22 @@ def _validate_hparam_execution_snapshot(
         raise ValueError(f"Hparam execution snapshot must be a mapping: {snapshot_path}")
 
 
-def plan_tree_sha256(root: Path) -> str:
+def plan_tree_sha256(root: Path, *, top_level_entries: frozenset[str] | None = None) -> str:
     if root.is_symlink() or not root.is_dir():
         raise ValueError(f"Managed plan is missing or aliased: {root}")
     digest = hashlib.sha256()
-    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+    if top_level_entries is None:
+        paths = list(root.rglob("*"))
+    else:
+        paths = []
+        for name in top_level_entries:
+            entry = root / name
+            if not os.path.lexists(entry):
+                continue
+            paths.append(entry)
+            if entry.is_dir() and not entry.is_symlink():
+                paths.extend(entry.rglob("*"))
+    for path in sorted(paths, key=lambda item: item.relative_to(root).as_posix()):
         info = os.lstat(path)
         relative = path.relative_to(root).as_posix().encode()
         digest.update(len(relative).to_bytes(8, "big"))

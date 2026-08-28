@@ -2394,6 +2394,22 @@ def test_single_run_versions_are_unique_across_repeated_plans(tmp_path: Path):
     assert "run-001" in second_run["version"]
 
 
+def test_single_run_plan_directory_may_equal_fresh_experiment_root(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path / "source")
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=workspace)
+
+    assert report.exit_code == 0
+    assert (workspace / "plan.json").is_file()
+    assert (workspace / "experiment.yaml").is_file()
+    assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000"]
+    assert not list(tmp_path.glob(".workspace.*.staging"))
+
+
 @pytest.mark.parametrize("change_step", [False, True], ids=["same-step", "different-step"])
 def test_repeated_single_run_plan_rejects_registered_output_directory(tmp_path: Path, change_step: bool):
     recipe = write_finetune_recipe(tmp_path)
@@ -2482,6 +2498,56 @@ def test_single_run_plan_recovers_registered_plan_after_manifest_failure(tmp_pat
         event for event in events if event["event_type"] == "plan_created" and event["plan_dir"] == str(plan_dir)
     ]
     assert len(created) == 1
+
+
+@pytest.mark.parametrize("tamper", [False, True], ids=["exact", "drifted"])
+def test_root_single_run_plan_recovers_registered_plan_after_manifest_failure(
+    tmp_path: Path,
+    monkeypatch,
+    tamper: bool,
+):
+    recipe = write_finetune_recipe(tmp_path / "source")
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    real_merge = plans.merge_run_manifest
+    monkeypatch.setattr(
+        plans,
+        "merge_run_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected canonical commit failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="injected canonical commit failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=workspace)
+    monkeypatch.setattr(plans, "merge_run_manifest", real_merge)
+
+    assert read_step_manifest(workspace, "unit-finetune")["plans"] == [str(workspace)]
+    assert read_run_manifest(workspace) == []
+    if tamper:
+        next((workspace / "runs").glob("*/run.json")).write_text('{"tampered": true}\n')
+
+    if tamper:
+        with pytest.raises(ValueError, match="differs from deterministic regeneration"):
+            plans.build_plan(recipe_path=recipe, output_dir=workspace)
+        assert read_run_manifest(workspace) == []
+        assert not any(
+            event["event_type"] == "plan_created"
+            for event in (json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines())
+        )
+        return
+
+    recovered = plans.build_plan(recipe_path=recipe, output_dir=workspace)
+
+    assert recovered.exit_code == 0
+    assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000"]
+    created = [
+        event
+        for event in (json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines())
+        if event["event_type"] == "plan_created" and event["plan_dir"] == str(workspace)
+    ]
+    assert len(created) == 1
+    assert not list(tmp_path.glob(".workspace.*.staging"))
 
 
 @pytest.mark.parametrize("overwrite", [False, True])

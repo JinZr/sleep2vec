@@ -833,6 +833,7 @@ def _materialize_adapter_plan(
 
     registration_rows = plan_adapter.registration_rows(read_json(write_out / "plan.json"))
     staged_tree_sha256 = artifacts.plan_tree_sha256(write_out)
+    plan_tree_entries = frozenset(path.name for path in write_out.iterdir()) if out == experiment_root(recipe) else None
     with plan_publication_lock(out):
         report = _guard_pass_plan_publication(
             report,
@@ -857,6 +858,7 @@ def _materialize_adapter_plan(
                 out,
                 registration_rows,
                 expected_tree_sha256=staged_tree_sha256,
+                expected_tree_entries=plan_tree_entries,
                 plan_controller=plan_controller,
             )
         except BaseException:
@@ -917,8 +919,6 @@ def _materialize_single_run_plan(
     unlock_final_test: bool,
     validated_config_bytes: bytes,
 ) -> DecisionReport:
-    if staging_dir is None:
-        ensure_experiment_workspace(recipe, out, register_step=False, plan_controller=plan_controller)
     root = experiment_root(recipe)
     if root is None:
         raise ValueError("experiment.root is required.")
@@ -971,6 +971,7 @@ def _materialize_single_run_plan(
         "parameter_summary": "single resolved recipe",
     }
     staged_tree_sha256 = artifacts.plan_tree_sha256(write_out)
+    plan_tree_entries = frozenset(path.name for path in write_out.iterdir()) if out == root else None
     # Generic plans stay staged until the same locked publication gate as materialized hparam plans.
     with plan_publication_lock(out):
         report = _guard_pass_plan_publication(
@@ -996,6 +997,7 @@ def _materialize_single_run_plan(
                 out,
                 [manifest_row],
                 expected_tree_sha256=staged_tree_sha256,
+                expected_tree_entries=plan_tree_entries,
                 plan_controller=plan_controller,
             )
         except BaseException:
@@ -1691,6 +1693,7 @@ def _assert_no_incomplete_step_registration(recipe: dict[str, Any], out: Path) -
             plan_dir,
             expected_rows,
             expected_tree_sha256=None,
+            expected_tree_entries=None,
             plan_controller=step_manifest["plan_controller"],
         )
         if state != "complete":
@@ -1705,6 +1708,7 @@ def _plan_registration_state(
     expected_rows: list[dict[str, Any]],
     *,
     expected_tree_sha256: str | None,
+    expected_tree_entries: frozenset[str] | None,
     plan_controller: str | None,
 ) -> str:
     root = experiment_root(recipe)
@@ -1735,7 +1739,10 @@ def _plan_registration_state(
                 validate_only=True,
                 allow_published_plan=True,
             )
-            tree_matches = expected_tree_sha256 is not None and artifacts.plan_tree_sha256(out) == expected_tree_sha256
+            tree_matches = (
+                expected_tree_sha256 is not None
+                and artifacts.plan_tree_sha256(out, top_level_entries=expected_tree_entries) == expected_tree_sha256
+            )
             if tree_matches:
                 return "owner_missing"
             if _overwrite_policy(recipe) is not True:
@@ -1751,7 +1758,10 @@ def _plan_registration_state(
         validate_only=True,
         allow_published_plan=True,
     )
-    if expected_tree_sha256 is not None and artifacts.plan_tree_sha256(out) != expected_tree_sha256:
+    if (
+        expected_tree_sha256 is not None
+        and artifacts.plan_tree_sha256(out, top_level_entries=expected_tree_entries) != expected_tree_sha256
+    ):
         raise ValueError(f"Registered plan differs from deterministic regeneration: {out}")
 
     exact_events = [event for event in related_events if event_matches(event, "plan_created", event_payload)]
