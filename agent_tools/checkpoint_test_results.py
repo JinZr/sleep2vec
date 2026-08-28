@@ -75,3 +75,10 @@ def validate_checkpoint_test_results(
     if missing_paths:
         raise ValueError(f"checkpoint_test_results is incomplete for {step_id} / {run_id}: " + ", ".join(missing_paths))
     return rows
+
+
+def best_checkpoint_test_result(rows: list[dict[str, Any]], mode: str) -> dict[str, Any]:
+    ordered = sorted(rows, key=lambda row: (int(row["epoch"]), str(row["checkpoint_path"])))
+    # Stable score sorting keeps the earlier epoch/path first when scores tie.
+    ordered.sort(key=lambda row: float(row["score"]), reverse=mode == "max")
+    return ordered[0]

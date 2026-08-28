@@ -414,11 +414,14 @@ def _build_hparam_selection(
             if plan_has_selection:
                 raise ValueError("Frozen checkpoint test ranking referenced by candidate_selected event is missing.")
             checkpoint_audits_to_write.append((audit_path, expected_audit))
-        best_by_run = {}
+        candidates_by_run = {}
         for row in ranked:
-            candidate = dict(row)
+            candidates_by_run.setdefault(managed_run_key(row), []).append(row)
+        best_by_run = {}
+        for key, candidates in candidates_by_run.items():
+            candidate = dict(checkpoint_test_results.best_checkpoint_test_result(candidates, mode))
             candidate["checkpoint_rank"] = candidate["rank"]
-            best_by_run.setdefault(managed_run_key(row), candidate)
+            best_by_run[key] = candidate
         step_ranked = artifacts.assign_ranks(list(best_by_run.values()), key="score", reverse=reverse)
     else:
         step_ranked = ranked
