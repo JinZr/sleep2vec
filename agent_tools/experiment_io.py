@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import secrets
 import stat
-import subprocess  # noqa: F401 -- tests patch experiment_io.subprocess.run (stdlib global)
+import subprocess
 import time
 from typing import Any, Iterator
 
@@ -24,6 +24,14 @@ from .transport import (  # noqa: F401 -- SSH_TIMEOUT_SECONDS re-exported for ex
     REMOTE_MISSING_RETURN_CODE,
     SSH_TIMEOUT_SECONDS,
 )
+
+
+def _run_remote_text_program(remote: str, name: str, payload: str) -> subprocess.CompletedProcess:
+    return transport.run_ssh(
+        remote,
+        transport.remote_python_program_command(name, payload),
+        text=True,
+    )
 
 
 @contextmanager
@@ -56,11 +64,7 @@ def mkdir_experiment_dirs(root: Path, *, remote: str | None = None) -> None:
 
 
 def remote_dir_nonempty(root: Path, remote: str) -> bool:
-    result = transport.run_ssh(
-        remote,
-        transport.remote_python_program_command("experiment_io.remote_dir_nonempty", str(root)),
-        text=True,
-    )
+    result = _run_remote_text_program(remote, "experiment_io.remote_dir_nonempty", str(root))
     if result.returncode == REMOTE_MISSING_RETURN_CODE:
         return False
     if result.returncode != 0:
@@ -73,11 +77,7 @@ def path_exists_at(path: str | Path, *, remote: str | None = None) -> bool:
     if not remote:
         target = Path(path)
         return target.exists() or target.is_symlink()
-    result = transport.run_ssh(
-        remote,
-        transport.remote_python_program_command("experiment_io.path_exists", str(path)),
-        text=True,
-    )
+    result = _run_remote_text_program(remote, "experiment_io.path_exists", str(path))
     if result.returncode == REMOTE_MISSING_RETURN_CODE:
         return False
     if result.returncode != 0:
@@ -97,11 +97,7 @@ def list_managed_subdirectories_at(
     _validate_raw_managed_path(root, directory)
     if remote:
         payload = json.dumps([str(root), str(directory)])
-        result = transport.run_ssh(
-            remote,
-            transport.remote_python_program_command("experiment_io.list_managed_subdirectories", payload),
-            text=True,
-        )
+        result = _run_remote_text_program(remote, "experiment_io.list_managed_subdirectories", payload)
         if result.returncode == 2:
             raise ValueError(result.stderr.strip() or f"Managed directory is invalid: {directory}")
         if result.returncode != 0:
@@ -150,11 +146,7 @@ def read_managed_files_at(
         raise ValueError("Managed file paths must be unique.")
     if remote:
         request = json.dumps([str(root), [str(path) for path in targets], exact_directory_entries, allow_invalid_utf8])
-        result = transport.run_ssh(
-            remote,
-            transport.remote_python_program_command("experiment_io.read_managed_files", request),
-            text=True,
-        )
+        result = _run_remote_text_program(remote, "experiment_io.read_managed_files", request)
         if result.returncode == 2:
             raise ValueError(result.stderr.strip() or "Managed control bundle is invalid.")
         if result.returncode != 0:
@@ -277,11 +269,7 @@ def validate_managed_output_paths(
         return
     if remote:
         payload = json.dumps([str(root), *(str(path) for path in paths)])
-        result = transport.run_ssh(
-            remote,
-            transport.remote_python_program_command("experiment_io.validate_managed_output_paths", payload),
-            text=True,
-        )
+        result = _run_remote_text_program(remote, "experiment_io.validate_managed_output_paths", payload)
         if result.returncode == 2:
             raise ValueError(result.stderr.strip() or "Managed output paths must be independent regular files.")
         if result.returncode != 0:
@@ -351,6 +339,7 @@ def read_text_at(path: str | Path, *, remote: str | None = None) -> str:
     if not remote:
         target = Path(path)
         return target.read_bytes().decode() if target.exists() else ""
+    # Keep SSH output binary so explicit decoding preserves remote line endings.
     result = transport.run_ssh(remote, transport.remote_python_program_command("experiment_io.read_text", str(path)))
     if result.returncode == REMOTE_MISSING_RETURN_CODE:
         return ""
