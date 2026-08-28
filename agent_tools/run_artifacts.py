@@ -161,6 +161,16 @@ def is_registered_blocked_plan(
         resolved_recipe_path, remote=remote
     ):
         return False
+    if plan_dir == workspace:
+        residue = [
+            path
+            for path in plan_contract.pass_plan_artifact_paths(plan_dir)
+            if path not in {plan_path, resolved_recipe_path} and exp_io.path_exists_at(path, remote=remote)
+        ]
+        if residue:
+            raise ValueError(
+                f"Registered blocked plan contains PASS planning artifacts: {', '.join(map(str, residue))}"
+            )
     blocked_files = [plan_dir / "questions.json", plan_dir / "questions.md", blocked_path]
     if user_decisions_path in blocked_entries:
         blocked_files.append(user_decisions_path)

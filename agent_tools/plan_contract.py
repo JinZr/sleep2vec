@@ -24,6 +24,17 @@ _BLOCKED_PLAN_MARKER_NAMES = (
     "plan.draft.json",
 )
 _PASS_PLAN_CONTROL_NAMES = ("plan.json", "recipe.resolved.yaml")
+_PASS_PLAN_RESIDUE_NAMES = (
+    "config.source.yaml",
+    FROZEN_FINAL_EVAL_CONFIG_NAME,
+    "execution_snapshot.json",
+    "final_external_test.sh",
+    "plan.md",
+    "run.sh",
+    "run_all.sh",
+    "runs",
+    "validation.sh",
+)
 
 
 def blocked_plan_control_paths(plan_dir: Path) -> list[Path]:
@@ -40,6 +51,10 @@ def blocked_plan_marker_paths(plan_dir: Path) -> list[Path]:
 
 def pass_plan_control_paths(plan_dir: Path) -> list[Path]:
     return [plan_dir / name for name in _PASS_PLAN_CONTROL_NAMES]
+
+
+def pass_plan_artifact_paths(plan_dir: Path) -> list[Path]:
+    return [*pass_plan_control_paths(plan_dir), *(plan_dir / name for name in _PASS_PLAN_RESIDUE_NAMES)]
 
 
 def bind_plan_context(recipe: dict[str, Any]) -> None:

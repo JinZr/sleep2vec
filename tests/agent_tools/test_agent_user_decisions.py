@@ -380,6 +380,23 @@ def test_doctor_rejects_unregistered_blocked_plan_marker(tmp_path: Path):
     assert not (output_dir / "decisions.yaml").exists()
 
 
+@pytest.mark.parametrize("suffix", ["staging", "backup"])
+def test_doctor_rejects_interrupted_plan_publication(tmp_path: Path, suffix: str):
+    recipe = write_finetune_recipe(tmp_path / "source", include_label=False)
+    output_dir = tmp_path / "doctor"
+    output_dir.mkdir()
+    residue = output_dir / f".{output_dir.name}.interrupted.{suffix}"
+    residue.mkdir()
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "doctor output requires a fresh --output-dir" in result.stderr
+    assert not (output_dir / "questions.json").exists()
+    assert not (output_dir / "decisions.yaml").exists()
+    assert residue.is_dir()
+
+
 def test_user_decision_template_skips_non_decisions_and_deduplicates_base_issue():
     report = DecisionReport(
         status=DecisionStatus.NEEDS_USER_INPUT,

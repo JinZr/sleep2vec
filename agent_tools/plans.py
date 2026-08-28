@@ -521,6 +521,15 @@ def plan_publication_lock(out: Path):
         yield
 
 
+def _plan_publication_temporary_paths(out: Path) -> list[Path]:
+    if out.is_symlink() or not out.is_dir():
+        return []
+    prefix = f".{out.name}."
+    return sorted(
+        path for path in out.iterdir() if path.name.startswith(prefix) and path.name.endswith((".staging", ".backup"))
+    )
+
+
 def write_user_decision_template(
     output_dir: str | Path,
     recipe: dict,
@@ -578,7 +587,11 @@ def write_doctor_outputs(
     with plan_publication_lock(out):
         locked_report = _guard_existing_outputs(
             report,
-            [*plan_contract.blocked_plan_marker_paths(out), *plan_contract.pass_plan_control_paths(out)],
+            [
+                *plan_contract.blocked_plan_marker_paths(out),
+                *plan_contract.pass_plan_artifact_paths(out),
+                *_plan_publication_temporary_paths(out),
+            ],
             False,
             root=out,
             require_fresh="Plan artifacts already exist; doctor output requires a fresh --output-dir.",
@@ -1073,8 +1086,11 @@ def build_plan(
         "run_index_offset": run_index_offset,
         "validate_only": validate_only,
     }
-    if defer_commit or validate_only:
+    if defer_commit:
         return _build_plan(**build_kwargs, locked_root=None, check_locked_root=False)
+    if validate_only:
+        with plan_publication_lock(Path(output_dir)):
+            return _build_plan(**build_kwargs, locked_root=None, check_locked_root=False)
     root = experiment_root(load_recipe_with_base(recipe_path))
     registration_lock = plan_registration_lock(root) if root is not None else nullcontext()
     with registration_lock:
@@ -1795,24 +1811,30 @@ def _guard_existing_outputs(
     allow_existing: bool = False,
     require_fresh: str | None = None,
 ) -> DecisionReport:
-    try:
-        exp_io.validate_managed_output_paths(root, paths)
-    except ValueError as exc:
-        return _append_issues(
-            report,
-            [
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "output_artifacts",
-                    f"Output artifacts are unsafe: {exc}",
-                    None,
-                    {"paths": [str(path) for path in paths]},
-                )
-            ],
-        )
-    if allow_existing:
-        return report
-    existing = sorted(str(path) for path in paths if path.exists())
+    existing = (
+        sorted(str(path) for path in paths if os.path.lexists(path))
+        if require_fresh is not None and not allow_existing
+        else []
+    )
+    if not existing:
+        try:
+            exp_io.validate_managed_output_paths(root, paths)
+        except ValueError as exc:
+            return _append_issues(
+                report,
+                [
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "output_artifacts",
+                        f"Output artifacts are unsafe: {exc}",
+                        None,
+                        {"paths": [str(path) for path in paths]},
+                    )
+                ],
+            )
+        if allow_existing:
+            return report
+        existing = sorted(str(path) for path in paths if path.exists())
     if not existing:
         return report
     if require_fresh is not None:
@@ -1907,20 +1929,26 @@ def _guard_blocked_plan_publication(
             root=out,
             allow_existing=allow_existing,
         )
+    root_resident = out == experiment_root(recipe)
+    pass_plan_paths = (
+        plan_contract.pass_plan_artifact_paths(out) if root_resident else plan_contract.pass_plan_control_paths(out)
+    )
+    if root_resident:
+        pass_plan_paths.extend(_plan_publication_temporary_paths(out))
     report = _guard_existing_outputs(
         report,
-        plan_contract.pass_plan_control_paths(out),
+        pass_plan_paths,
         overwrite_policy,
         root=out,
         require_fresh="PASS plan artifacts already exist; retry with a fresh --output-dir.",
     )
-    if _has_output_artifact_issue(report) or not out.is_dir() or out == experiment_root(recipe):
+    if _has_output_artifact_issue(report) or not out.is_dir() or root_resident:
         return report
     allowed_names = {path.name for path in plan_contract.blocked_plan_control_paths(out)}
     unexpected = sorted(str(path) for path in out.iterdir() if path.name not in allowed_names)
     if not unexpected:
         return report
-    # Blocked-plan readers enforce an exact envelope, so foreign entries must fail before step registration.
+    # Blocked-plan readers enforce an exact nested envelope, so reject foreign entries before registration.
     return _append_issues(
         report,
         [

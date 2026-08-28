@@ -250,9 +250,12 @@ events, so the marker cannot authorize work before initialization is complete.
   do not authorize a launch or mutation.
   A registered directory containing `questions.json`, `questions.md`, and
   `plan.blocked.md`, plus optional `decisions.yaml` and `plan.draft.json`, is a
-  non-runnable planning outcome and is skipped; missing required, extra, or
-  aliased entries fail closed. The physical bundle is completed and validated
-  before its step manifest publishes canonical ownership. Historical blocked plans without
+  non-runnable planning outcome and is skipped. Nested plan directories use an
+  exact envelope, so missing required, extra, or aliased entries fail closed.
+  When the plan directory is the workspace root, plan-owned artifacts remain
+  strict while canonical workspace siblings are outside the plan envelope. The
+  physical bundle is completed and validated before its step manifest publishes
+  canonical ownership. Historical blocked plans without
   `decisions.yaml` remain readable. A
   plan binds to the registered step's core `id`, `phase`, and `purpose`, while
   manifest-owned `inputs` and `outputs` remain valid step metadata.

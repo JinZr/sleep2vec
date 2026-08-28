@@ -10,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
@@ -494,6 +495,49 @@ def test_hparam_validate_only_failure_leaves_no_staging_or_canonical_state(tmp_p
     assert _workspace_files(workspace) == before
     assert not plan_dir.exists()
     assert _staging_dirs(workspace, plan_dir) == []
+
+
+def test_hparam_validate_only_holds_publication_lock(tmp_path: Path, monkeypatch):
+    plan_dir = tmp_path / "plan"
+    build_entered = threading.Event()
+    release_build = threading.Event()
+    competing_lock_started = threading.Event()
+    competing_lock_entered = threading.Event()
+    result = object()
+    returned = []
+
+    def pause_build(**_kwargs):
+        build_entered.set()
+        release_build.wait(timeout=10)
+        return result
+
+    def acquire_competing_lock():
+        competing_lock_started.set()
+        with plans.plan_publication_lock(plan_dir):
+            competing_lock_entered.set()
+
+    monkeypatch.setattr(plans, "_build_plan", pause_build)
+    validate_thread = threading.Thread(
+        target=lambda: returned.append(
+            plans.build_plan(recipe_path=tmp_path / "unused.yaml", output_dir=plan_dir, validate_only=True)
+        )
+    )
+    lock_thread = threading.Thread(target=acquire_competing_lock)
+    validate_thread.start()
+    assert build_entered.wait(timeout=10)
+    lock_thread.start()
+    assert competing_lock_started.wait(timeout=10)
+    try:
+        assert not competing_lock_entered.wait(timeout=0.5)
+    finally:
+        release_build.set()
+    validate_thread.join(timeout=10)
+    lock_thread.join(timeout=10)
+
+    assert not validate_thread.is_alive()
+    assert not lock_thread.is_alive()
+    assert competing_lock_entered.is_set()
+    assert returned == [result]
 
 
 def test_hparam_registration_recheck_rejects_target_drift_without_writes(tmp_path: Path, monkeypatch):

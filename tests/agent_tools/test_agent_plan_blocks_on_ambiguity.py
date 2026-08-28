@@ -349,6 +349,60 @@ def test_blocked_plan_directory_may_equal_fresh_experiment_root(tmp_path: Path, 
     step = yaml.safe_load((workspace / "steps" / payload["step"]["id"] / "step.yaml").read_text())
     assert step["plans"] == [str(workspace)]
     assert read_run_manifest(workspace) == []
+    assert experiments.experiment_status(workspace)["summary"]["state"] == "empty"
+
+
+@pytest.mark.parametrize(
+    ("residue_name", "is_directory"),
+    [
+        ("run.sh", False),
+        ("runs", True),
+        (".workspace.interrupted.staging", True),
+        (".workspace.interrupted.backup", True),
+    ],
+    ids=["pass-file", "pass-directory", "staging", "backup"],
+)
+def test_root_blocked_plan_rejects_interrupted_pass_residue(
+    tmp_path: Path,
+    residue_name: str,
+    is_directory: bool,
+):
+    source = tmp_path / "source"
+    recipe = write_finetune_recipe(source, include_label=False)
+    payload = yaml.safe_load(recipe.read_text())
+    workspace = tmp_path / "workspace"
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    ensure_experiment_workspace(payload, workspace, register_step=False)
+    residue = workspace / residue_name
+    if is_directory:
+        residue.mkdir()
+    else:
+        residue.write_text("interrupted publication\n")
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace))
+
+    assert result.returncode == 1
+    assert not (workspace / "plan.blocked.md").exists()
+    assert not (workspace / "decisions.yaml").exists()
+    assert not (workspace / "steps" / payload["step"]["id"] / "step.yaml").exists()
+    assert residue.exists()
+
+
+def test_registered_root_blocked_plan_reader_rejects_pass_residue(tmp_path: Path):
+    source = tmp_path / "source"
+    recipe = write_finetune_recipe(source, include_label=False)
+    payload = yaml.safe_load(recipe.read_text())
+    workspace = tmp_path / "workspace"
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace)).returncode == 2
+    (workspace / "run.sh").write_text("interrupted publication\n")
+
+    with pytest.raises(ValueError, match="contains PASS planning artifacts"):
+        run_artifacts.is_registered_blocked_plan(workspace, workspace=workspace)
+    with pytest.raises(ValueError, match="contains PASS planning artifacts"):
+        experiments.experiment_status(workspace)
 
 
 def test_generic_blocked_plan_retry_rejects_same_output_dir(tmp_path: Path):
