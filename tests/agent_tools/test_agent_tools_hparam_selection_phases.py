@@ -5,6 +5,67 @@ import pytest
 from agent_tools import hparam_selection
 
 
+def test_hparam_selection_build_runs_read_only_phases_in_order(monkeypatch: pytest.MonkeyPatch):
+    inputs = object()
+    preserved = [{"step_id": "previous"}]
+    existing_checkpoint_ranked = [{"step_id": "current"}]
+    selection = object()
+    calls = []
+
+    def preflight(run_dir, *, metric, mode):
+        calls.append(("preflight", run_dir, metric, mode))
+        return inputs
+
+    def validate(received_inputs):
+        calls.append(("validate", received_inputs))
+        return preserved, existing_checkpoint_ranked
+
+    def rank(received_inputs, received_preserved, received_checkpoint_ranked):
+        calls.append(("rank", received_inputs, received_preserved, received_checkpoint_ranked))
+        return selection
+
+    monkeypatch.setattr(hparam_selection, "_preflight_hparam_selection", preflight)
+    monkeypatch.setattr(hparam_selection, "_validate_existing_hparam_selection", validate)
+    monkeypatch.setattr(hparam_selection, "_rank_hparam_selection_candidates", rank)
+
+    assert hparam_selection._build_hparam_selection("plan", metric="score", mode="max") is selection
+    assert calls == [
+        ("preflight", "plan", "score", "max"),
+        ("validate", inputs),
+        ("rank", inputs, preserved, existing_checkpoint_ranked),
+    ]
+
+
+def test_hparam_selection_validation_failure_stops_ranking_and_publication(monkeypatch: pytest.MonkeyPatch):
+    inputs = object()
+    ranking_started = False
+    publication_started = False
+
+    monkeypatch.setattr(hparam_selection, "_preflight_hparam_selection", lambda *_args, **_kwargs: inputs)
+
+    def validate(received_inputs):
+        assert received_inputs is inputs
+        raise ValueError("invalid frozen selection")
+
+    def rank(*_args):
+        nonlocal ranking_started
+        ranking_started = True
+
+    def commit(_selection):
+        nonlocal publication_started
+        publication_started = True
+
+    monkeypatch.setattr(hparam_selection, "_validate_existing_hparam_selection", validate)
+    monkeypatch.setattr(hparam_selection, "_rank_hparam_selection_candidates", rank)
+    monkeypatch.setattr(hparam_selection, "_commit_hparam_selection", commit)
+
+    with pytest.raises(ValueError, match="invalid frozen selection"):
+        hparam_selection.select_hparam_candidates("plan")
+
+    assert ranking_started is False
+    assert publication_started is False
+
+
 def test_hparam_selection_build_failure_does_not_start_publication(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         hparam_selection.artifacts,
