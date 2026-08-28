@@ -509,9 +509,10 @@ _LOCAL_PLAN_LOCKS_GUARD = threading.Lock()
 
 @contextmanager
 def plan_publication_lock(out: Path):
-    lock_root = Path(tempfile.gettempdir()).resolve() / "agent-tools-plan-locks"
+    canonical_out = canonical_local_experiment_root(out, Path.cwd())
+    lock_root = Path("/tmp").resolve() / f"agent-tools-plan-locks-{os.getuid()}"
     lock_root.mkdir(mode=0o700, exist_ok=True)
-    lock_name = hashlib.sha256(str(out).encode()).hexdigest() + ".lock"
+    lock_name = hashlib.sha256(str(canonical_out).encode()).hexdigest() + ".lock"
     lock_path = lock_root / lock_name
     exp_io.validate_managed_output_paths(Path(lock_path.anchor), [lock_path])
     with _LOCAL_PLAN_LOCKS_GUARD:

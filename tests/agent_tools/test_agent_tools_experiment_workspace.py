@@ -2854,6 +2854,68 @@ raise SystemExit(report.exit_code)
     assert len([event for event in events if event["event_type"] == "plan_created"]) == 2
 
 
+def test_plan_publication_lock_is_shared_across_controller_temp_roots(tmp_path: Path):
+    output = tmp_path / "plan"
+    release = tmp_path / "release"
+    runner = """
+import sys
+import time
+from pathlib import Path
+
+from agent_tools.plans import plan_publication_lock
+
+output = Path(sys.argv[1])
+entered = Path(sys.argv[2])
+release = Path(sys.argv[3])
+wait_for_release = sys.argv[4] == "wait"
+with plan_publication_lock(output):
+    entered.touch()
+    if wait_for_release:
+        while not release.exists():
+            time.sleep(0.01)
+"""
+    processes = []
+    second_entered_early = False
+    try:
+        for name in ("first", "second"):
+            temp_root = tmp_path / f"{name}-tmp"
+            temp_root.mkdir()
+            env = {**os.environ, "TMPDIR": str(temp_root)}
+            processes.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        runner,
+                        str(output),
+                        str(tmp_path / f"{name}-entered"),
+                        str(release),
+                        "wait" if name == "first" else "continue",
+                    ],
+                    cwd=Path(__file__).parents[2],
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            )
+            if name == "first":
+                entered = tmp_path / "first-entered"
+                deadline = time.monotonic() + 10
+                while not entered.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert entered.exists()
+        time.sleep(0.5)
+        second_entered_early = (tmp_path / "second-entered").exists()
+    finally:
+        release.touch()
+    results = [process.communicate(timeout=30) for process in processes]
+
+    assert not second_entered_early
+    assert [process.returncode for process in processes] == [0, 0], results
+    assert (tmp_path / "second-entered").exists()
+
+
 def test_plan_registration_lock_cannot_deadlock_with_plan_output(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     runner = Path(__file__).with_name("agent_tools_cli_stub.py")
