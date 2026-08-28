@@ -69,6 +69,23 @@ def test_checkpoint_test_results_keep_selection_error_text():
         )
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_epoch"),
+    [("max", 1), ("min", 3)],
+)
+def test_best_checkpoint_test_result_uses_score_then_epoch_path(mode, expected_epoch):
+    rows = [
+        {"checkpoint_path": "/checkpoints/epoch=2.ckpt", "epoch": 2, "score": 0.5},
+        {"checkpoint_path": "/checkpoints/epoch=1.ckpt", "epoch": 1, "score": 0.5},
+        {"checkpoint_path": "/checkpoints/epoch=3.ckpt", "epoch": 3, "score": 0.4},
+    ]
+
+    selected = checkpoint_test_results.best_checkpoint_test_result(rows, mode)
+
+    assert selected["epoch"] == expected_epoch
+    assert rows[0]["epoch"] == 2
+
+
 def test_hparam_selection_keeps_evidence_and_hash_order(monkeypatch):
     calls = []
     original_expected = checkpoint_test_results.expected_epoch_checkpoints

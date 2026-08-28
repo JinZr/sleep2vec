@@ -15,6 +15,46 @@ from agent_tools.experiment_workspace import commit_step_manifest, file_sha256
 from agent_tools.manifests import write_rows
 
 
+def test_freeze_attempt_recipe_writes_once_and_reuses_exact_yaml(tmp_path: Path, monkeypatch):
+    recipe_path = tmp_path / "recipes" / "attempt-001.yaml"
+    recipe = {"task": "infer", "runtime": {"seed": 4523}}
+    writes = []
+
+    def write(path, text):
+        writes.append((path, text))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    monkeypatch.setattr(experiment_pipeline, "_atomic_write_text", write)
+
+    experiment_pipeline._freeze_attempt_recipe(recipe, recipe_path, drift_message="recipe drifted")
+    experiment_pipeline._freeze_attempt_recipe(recipe, recipe_path, drift_message="recipe drifted")
+
+    assert writes == [(recipe_path, yaml.safe_dump(recipe, sort_keys=False))]
+
+
+@pytest.mark.parametrize("existing_kind", ["changed", "directory", "symlink"])
+def test_freeze_attempt_recipe_rejects_existing_drift(tmp_path: Path, existing_kind: str):
+    recipe_path = tmp_path / "attempt-001.yaml"
+    if existing_kind == "changed":
+        recipe_path.write_text("task: changed\n")
+    elif existing_kind == "directory":
+        recipe_path.mkdir()
+    else:
+        target = tmp_path / "other.yaml"
+        target.write_text("task: infer\n")
+        recipe_path.symlink_to(target)
+
+    with pytest.raises(ValueError) as exc_info:
+        experiment_pipeline._freeze_attempt_recipe(
+            {"task": "infer"},
+            recipe_path,
+            drift_message="recipe drifted",
+        )
+
+    assert str(exc_info.value) == f"recipe drifted: {recipe_path}"
+
+
 def _spec(root: Path) -> dict:
     return {
         "schema_version": 1,

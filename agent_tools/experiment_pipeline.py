@@ -864,6 +864,16 @@ def _assert_job_semantic_assertions(spec: dict[str, Any], source_id: str, select
                 raise ValueError(f"External job {job['id']} {field} assertion differs from its source plan.")
 
 
+def _freeze_attempt_recipe(recipe: dict[str, Any], recipe_path: Path, *, drift_message: str) -> None:
+    recipe_text = yaml.safe_dump(recipe, sort_keys=False)
+    # Existing attempt recipes are immutable resume evidence; reuse only the same serialized YAML.
+    if recipe_path.exists():
+        if recipe_path.is_symlink() or not recipe_path.is_file() or recipe_path.read_text() != recipe_text:
+            raise ValueError(f"{drift_message}: {recipe_path}")
+        return
+    _atomic_write_text(recipe_path, recipe_text)
+
+
 def _load_or_create_initial_attempts(
     root: Path,
     pipeline_dir: Path,
@@ -880,12 +890,11 @@ def _load_or_create_initial_attempts(
         selection = selections[job["checkpoint_source"]]
         attempt = 1
         recipe, recipe_path, plan_dir, result_root = _attempt_recipe(pipeline_dir, spec, job, selection, attempt)
-        recipe_text = yaml.safe_dump(recipe, sort_keys=False)
-        if recipe_path.exists():
-            if recipe_path.is_symlink() or not recipe_path.is_file() or recipe_path.read_text() != recipe_text:
-                raise ValueError(f"External job recipe changed during resume: {recipe_path}")
-        else:
-            _atomic_write_text(recipe_path, recipe_text)
+        _freeze_attempt_recipe(
+            recipe,
+            recipe_path,
+            drift_message="External job recipe changed during resume",
+        )
         recipes.append((job, selection, attempt, recipe_path, plan_dir, result_root))
 
     _ensure_initial_preflight(pipeline_dir, spec, recipes)
@@ -1810,12 +1819,7 @@ def _create_needed_retries(
         selection = selections[job["checkpoint_source"]]
         attempt = int(latest["attempt"]) + 1
         recipe, recipe_path, plan_dir, result_root = _attempt_recipe(pipeline_dir, spec, job, selection, attempt)
-        recipe_text = yaml.safe_dump(recipe, sort_keys=False)
-        if recipe_path.exists():
-            if recipe_path.is_symlink() or not recipe_path.is_file() or recipe_path.read_text() != recipe_text:
-                raise ValueError(f"Retry recipe changed during resume: {recipe_path}")
-        else:
-            _atomic_write_text(recipe_path, recipe_text)
+        _freeze_attempt_recipe(recipe, recipe_path, drift_message="Retry recipe changed during resume")
         candidates.append((latest, job, selection, attempt, recipe_path, plan_dir, result_root))
 
     ready = []

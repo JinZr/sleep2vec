@@ -2318,9 +2318,7 @@ def _test_checkpoint_objective(
         )
     except ValueError:
         return None
-    candidates.sort(key=lambda row: (int(row["epoch"]), str(row["checkpoint_path"])))
-    candidates.sort(key=lambda row: float(row["score"]), reverse=objective["mode"] == "max")
-    return candidates[0]
+    return checkpoint_test_results.best_checkpoint_test_result(candidates, objective["mode"])
 
 
 def _digest_markdown(rows: list[dict[str, Any]], objective: dict[str, str]) -> str:

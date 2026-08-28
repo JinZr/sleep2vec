@@ -120,6 +120,9 @@ def test_remote_path_probe_distinguishes_existing_from_missing(monkeypatch, retu
     assert "os.lstat" in command[-1]
     assert "[ -e" not in command[-1]
     assert kwargs["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
+    assert kwargs["text"] is True
+    assert "check" not in kwargs
+    assert "input" not in kwargs
 
 
 @pytest.mark.parametrize("returncode", [1, 255])
@@ -156,13 +159,16 @@ def test_remote_read_distinguishes_contents_from_missing(monkeypatch, returncode
 
 
 def test_remote_read_preserves_exact_line_endings(monkeypatch):
-    monkeypatch.setattr(
-        experiment_io.subprocess,
-        "run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, b"a\r\nb\r\n", b""),
-    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, b"a\r\nb\r\n", b"")
+
+    monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
 
     assert experiment_io.read_text_at("/remote/file", remote="host") == "a\r\nb\r\n"
+    assert "text" not in calls[0][1]
 
 
 def test_local_managed_control_reads_reject_aliases_and_non_directory_entries(tmp_path):
