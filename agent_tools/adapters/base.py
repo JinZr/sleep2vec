@@ -160,6 +160,10 @@ class TaskAdapter:
         materializes_plan is True."""
         raise NotImplementedError
 
+    def registration_rows(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
+        """Project frozen plan runs into their canonical registration rows."""
+        return plan["runs"]
+
     def precommit_plan(self, out: Path, *, write_out: Path) -> str | None:
         """Validate a materialized plan before publication or registration."""
         return None

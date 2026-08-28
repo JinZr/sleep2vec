@@ -829,9 +829,8 @@ def _materialize_adapter_plan(
         return report
     if defer_commit:
         return report
-    from . import plan_hparam
 
-    registration_rows = plan_hparam.hparam_manifest_rows(read_json(write_out / "plan.json"))
+    registration_rows = plan_adapter.registration_rows(read_json(write_out / "plan.json"))
     staged_tree_sha256 = artifacts.plan_tree_sha256(write_out)
     with plan_publication_lock(out):
         report = _guard_pass_plan_publication(
@@ -1684,11 +1683,8 @@ def _assert_no_incomplete_step_registration(recipe: dict[str, Any], out: Path) -
         runs = plan.get("runs") if isinstance(plan, dict) else None
         if not isinstance(frozen_recipe, dict) or not isinstance(runs, list):
             raise ValueError(f"Registered plan is incomplete: {plan_dir}")
-        expected_rows = runs
-        if frozen_recipe.get("task") == "hparam_tune":
-            from . import plan_hparam
-
-            expected_rows = plan_hparam.hparam_manifest_rows(plan)
+        adapter = get_adapter(frozen_recipe.get("task"))
+        expected_rows = adapter.registration_rows(plan) if adapter is not None else runs
         state = _plan_registration_state(
             frozen_recipe,
             plan_dir,

@@ -196,6 +196,11 @@ class HparamTuneAdapter(TaskAdapter):
         except plan_hparam.HparamRegistrationPreflightError as exc:
             raise PlanRegistrationPreflightError(str(exc)) from exc
 
+    def registration_rows(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
+        from .. import plan_hparam
+
+        return plan_hparam.hparam_manifest_rows(plan)
+
     def precommit_plan(self, out: Path, *, write_out: Path) -> str:
         from .. import plan_hparam
 
