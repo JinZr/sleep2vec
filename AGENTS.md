@@ -85,7 +85,7 @@ Agents must not silently guess high-impact experiment decisions.
 
 Before generating runnable commands for preset preparation, finetuning, inference, evaluation, embedding extraction, or hyper-parameter tuning, run the relevant agent consultation checks through `agent_tools doctor` or `agent_tools plan`. `agent_tools context` is diagnostic-only and does not authorize runnable commands.
 
-If the tool returns `NEEDS_USER_INPUT`, stop and ask the user the generated questions. Do not run training. Do not generate executable scripts. Do not evaluate external test data.
+If the tool returns `NEEDS_USER_INPUT`, stop and ask the user the generated questions. When `doctor --output-dir` or a safely published blocked `plan` emits `decisions.yaml`, fill only user-authorized values and pass that file back with `--user-decisions`. A blocked-plan retry must use a fresh output directory. `context` remains diagnostic-only and does not emit this template. Do not run training. Do not generate executable scripts. Do not evaluate external test data.
 
 Generated runtime commands must respect recipe `variant`; do not route `sleep2vec2` or `sleep2expert` recipes through root `sleep2vec` entrypoints.
 

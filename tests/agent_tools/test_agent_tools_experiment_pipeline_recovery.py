@@ -1,19 +1,313 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import copy
 import hashlib
 import json
 from pathlib import Path
 import shutil
+import threading
 from types import SimpleNamespace
 
 from agent_tool_test_helpers import write_finetune_recipe
 import pytest
 import yaml
 
-from agent_tools import experiment_pipeline, experiments, managed_scheduler, plan_contract, plans, python_programs
+from agent_tools import (
+    experiment_pipeline,
+    experiment_pipeline_results,
+    experiments,
+    managed_scheduler,
+    plan_contract,
+    plans,
+    python_programs,
+)
 from agent_tools.experiment_workspace import commit_step_manifest, file_sha256, read_run_manifest
 from agent_tools.manifests import write_rows
+
+
+def test_attempt_materialization_enters_plan_publication_lock(tmp_path: Path, monkeypatch):
+    plan_dir = tmp_path / "attempt"
+    lock_active = False
+
+    @contextmanager
+    def publication_lock(out):
+        nonlocal lock_active
+        assert out == plan_dir
+        lock_active = True
+        try:
+            yield
+        finally:
+            lock_active = False
+
+    def materialize_locked(*_args, **_kwargs):
+        assert lock_active
+        return {"status": "planned"}
+
+    monkeypatch.setattr(experiment_pipeline, "plan_publication_lock", publication_lock)
+    monkeypatch.setattr(experiment_pipeline, "_materialize_attempt_locked", materialize_locked)
+
+    result = experiment_pipeline._materialize_attempt(
+        tmp_path,
+        {},
+        {},
+        {},
+        1,
+        recipe_path=tmp_path / "recipe.yaml",
+        plan_dir=plan_dir,
+        result_root=tmp_path / "result",
+    )
+
+    assert result == {"status": "planned"}
+
+
+def test_pipeline_group_registration_waits_for_ordinary_plan(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    ordinary_recipe = write_finetune_recipe(root)
+    ordinary_plan = root / "plans" / "ordinary"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    spec = _spec(root)
+    selections = {"age": {"variant": "sleep2vec2"}}
+    ordinary_holding = threading.Event()
+    release_ordinary = threading.Event()
+    pipeline_preparing = threading.Event()
+    original_check = plans._assert_no_incomplete_step_registration
+
+    def pause_ordinary(recipe, out):
+        if out == ordinary_plan:
+            ordinary_holding.set()
+            if not release_ordinary.wait(timeout=10):
+                raise AssertionError("ordinary planner was not released")
+        return original_check(recipe, out)
+
+    def attempt_recipe(_pipeline_dir, _spec, job, _selection, attempt):
+        base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
+        return {"name": job["id"]}, base / "recipe.yaml", base / "plan", base / "results"
+
+    def prepare_registration(_root, _spec, items, **_kwargs):
+        pipeline_preparing.set()
+        return {item[0]["id"]: item[4] for item in items}
+
+    monkeypatch.setattr(plans, "_assert_no_incomplete_step_registration", pause_ordinary)
+    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(experiment_pipeline, "_ensure_initial_preflight", lambda *_args: None)
+    monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_registration_groups", prepare_registration)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_materialize_attempt",
+        lambda _root, _spec, job, _selection, attempt, **_paths: {"job_id": job["id"], "attempt": attempt},
+    )
+    monkeypatch.setattr(experiment_pipeline, "_write_jobs", lambda *_args: None)
+    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_pipeline, "_reconcile_pipeline_jobs_planned_event", lambda *_args: None)
+    ordinary_reports = []
+    errors = []
+    pipeline_rows = []
+
+    def run_ordinary():
+        try:
+            ordinary_reports.append(plans.build_plan(recipe_path=ordinary_recipe, output_dir=ordinary_plan))
+        except BaseException as exc:
+            errors.append(exc)
+
+    def run_pipeline():
+        try:
+            pipeline_rows.extend(
+                experiment_pipeline._load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    ordinary = threading.Thread(target=run_ordinary)
+    pipeline = threading.Thread(target=run_pipeline)
+    ordinary.start()
+    assert ordinary_holding.wait(timeout=10)
+    pipeline.start()
+    try:
+        assert not pipeline_preparing.wait(timeout=0.5)
+    finally:
+        release_ordinary.set()
+    ordinary.join(timeout=30)
+    pipeline.join(timeout=30)
+
+    assert not errors
+    assert ordinary_reports[0].exit_code == 0
+    assert pipeline_preparing.is_set()
+    assert [row["job_id"] for row in pipeline_rows] == [spec["jobs"][0]["id"]]
+
+
+def test_initial_jobs_projection_failure_is_recoverable(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    spec = _spec(root)
+    selections = {"age": {"variant": "sleep2vec2"}}
+
+    def attempt_recipe(_pipeline_dir, _spec, job, _selection, attempt):
+        base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
+        return {"name": job["id"]}, base / "recipe.yaml", base / "plan", base / "results"
+
+    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(experiment_pipeline, "_ensure_initial_preflight", lambda *_args: None)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_prepare_attempt_registration_groups",
+        lambda _root, _spec, items, **_kwargs: {item[0]["id"]: item[4] for item in items},
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_materialize_attempt",
+        lambda _root, _spec, job, _selection, attempt, **_paths: {"job_id": job["id"], "attempt": attempt},
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_write_jobs",
+        lambda *_args: (_ for _ in ()).throw(OSError("jobs projection interrupted")),
+    )
+
+    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        experiment_pipeline._load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
+
+
+def test_registered_jobs_retry_cleans_interrupted_atomic_temp(tmp_path: Path, monkeypatch):
+    jobs_path = tmp_path / "jobs.tsv"
+    rows = [{"run_id": "run-001", "status": "planned"}]
+    replace = experiment_pipeline_results.os.replace
+    calls = 0
+
+    def fail_once(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("jobs projection interrupted")
+        replace(source, destination)
+
+    monkeypatch.setattr(experiment_pipeline_results.os, "replace", fail_once)
+
+    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        experiment_pipeline._write_registered_jobs(jobs_path, rows)
+
+    assert not list(tmp_path.glob(".jobs.tsv.*.tmp"))
+    experiment_pipeline._write_registered_jobs(jobs_path, rows)
+    assert experiment_pipeline.read_rows(jobs_path) == rows
+
+
+def test_pipeline_jobs_planned_event_is_reconciled_after_append_failure(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    spec = _spec(root)
+    original_append = experiment_pipeline.append_event
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "append_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("event append interrupted")),
+    )
+
+    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        experiment_pipeline._reconcile_pipeline_jobs_planned_event(root, spec)
+
+    monkeypatch.setattr(experiment_pipeline, "append_event", original_append)
+    experiment_pipeline._reconcile_pipeline_jobs_planned_event(root, spec)
+    experiment_pipeline._reconcile_pipeline_jobs_planned_event(root, spec)
+
+    events = [
+        event
+        for event in experiment_pipeline.read_experiment_events(root)
+        if event.get("event_type") == "pipeline_jobs_planned"
+    ]
+    assert len(events) == 1
+    assert events[0]["pipeline_id"] == spec["pipeline"]["id"]
+    assert events[0]["job_count"] == len(spec["jobs"])
+
+
+@pytest.mark.parametrize("failed_read", [1, 2])
+def test_pipeline_jobs_planned_event_read_failure_is_recoverable(tmp_path: Path, monkeypatch, failed_read: int):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    spec = _spec(root)
+    reads = 0
+
+    def read_events(_root):
+        nonlocal reads
+        reads += 1
+        if reads == failed_read:
+            raise OSError("event read interrupted")
+        return []
+
+    monkeypatch.setattr(experiment_pipeline, "read_experiment_events", read_events)
+    monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        experiment_pipeline._reconcile_pipeline_jobs_planned_event(root, spec)
+
+
+def test_pipeline_retry_planned_event_is_reconciled_after_append_failure(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    spec = _spec(root)
+    attempt = {"job_id": spec["jobs"][0]["id"], "attempt": 2}
+    original_append = experiment_pipeline.append_event
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "append_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("event append interrupted")),
+    )
+
+    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        experiment_pipeline._reconcile_pipeline_retry_planned_event(root, spec, attempt)
+
+    monkeypatch.setattr(experiment_pipeline, "append_event", original_append)
+    experiment_pipeline._reconcile_pipeline_retry_planned_event(root, spec, attempt)
+    experiment_pipeline._reconcile_pipeline_retry_planned_event(root, spec, attempt)
+
+    events = [
+        event
+        for event in experiment_pipeline.read_experiment_events(root)
+        if event.get("event_type") == "pipeline_job_retry_planned"
+    ]
+    assert len(events) == 1
+    assert events[0]["pipeline_id"] == spec["pipeline"]["id"]
+    assert events[0]["job_id"] == attempt["job_id"]
+    assert events[0]["attempt"] == 2
+
+
+def test_pipeline_registration_recovery_error_does_not_mark_pipeline_failed(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "pipeline.json").write_text(json.dumps({"status": "ready"}) + "\n")
+    spec_path = tmp_path / "external.yaml"
+    spec_path.write_text(yaml.safe_dump(_spec(root), sort_keys=False))
+    monkeypatch.setattr(
+        experiment_pipeline.artifacts,
+        "read_hparam_plan",
+        lambda *_args, **_kwargs: {"recipe": {"execution": {"target": "local"}}},
+    )
+    monkeypatch.setattr(experiment_pipeline, "_validate_experiment", lambda *_args, **_kwargs: {"status": "active"})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_frozen_pipeline",
+        lambda *_args, **_kwargs: {"status": "ready"},
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_execute_pipeline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            experiment_pipeline.PipelineRegistrationRecoveryError("resume registration")
+        ),
+    )
+
+    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="resume registration"):
+        experiment_pipeline.run_experiment_pipeline(
+            root,
+            spec_path,
+            unlock_final_test=True,
+            execute=True,
+            resume=True,
+        )
+
+    assert json.loads((pipeline_dir / "pipeline.json").read_text())["status"] == "ready"
 
 
 def _spec(root: Path) -> dict:
@@ -162,6 +456,7 @@ def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path
     )
     monkeypatch.setattr(experiment_pipeline, "_materialize_attempt", materialize)
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_pipeline, "_reconcile_pipeline_retry_planned_event", lambda *_args: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
 
     updated, created = experiment_pipeline._create_needed_retries(
@@ -216,6 +511,7 @@ def test_retry_registration_preflight_failure_does_not_block_independent_retry(t
     monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_registration_groups", prepare_registration)
     monkeypatch.setattr(experiment_pipeline, "_materialize_attempt", materialize)
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(experiment_pipeline, "_reconcile_pipeline_retry_planned_event", lambda *_args: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
 
     updated, created = experiment_pipeline._create_needed_retries(
@@ -235,6 +531,91 @@ def test_retry_registration_preflight_failure_does_not_block_independent_retry(t
     assert updated[0]["retry_preparation_error"] == "target argv rejected"
     assert [row["attempt"] for row in updated if row["job_id"] == "age-hsp-i2-psg"] == [1]
     assert [row["attempt"] for row in updated if row["job_id"] == "age-hsp-i2-bcg"] == [1, 2]
+
+
+def test_retry_registration_failure_is_not_recorded_as_preflight_failure(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    spec = _spec(root)
+    attempts = [{"job_id": spec["jobs"][0]["id"], "attempt": 1, "status": "failed", "verified": "false"}]
+
+    def attempt_recipe(_pipeline_dir, _spec, job, _selection, attempt):
+        base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
+        return {"job": job["id"]}, base.with_suffix(".yaml"), base / "plan", base / "results"
+
+    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(experiment_pipeline, "_ensure_retry_preflight", lambda *_args: None)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_prepare_attempt_registration_groups",
+        lambda _root, _spec, items, **_kwargs: {items[0][0]["id"]: None},
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_materialize_attempt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("canonical commit failed")),
+    )
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
+
+    with pytest.raises(RuntimeError, match="canonical commit failed"):
+        experiment_pipeline._create_needed_retries(
+            root,
+            pipeline_dir,
+            spec,
+            {"age": {"variant": "sleep2vec2"}},
+            attempts,
+        )
+
+    assert "retry_preparation_error" not in attempts[0]
+    assert len(attempts) == 1
+
+
+def test_retry_jobs_projection_failure_is_recoverable(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    spec = _spec(root)
+    attempts = [{"job_id": spec["jobs"][0]["id"], "attempt": 1, "status": "failed", "verified": "false"}]
+
+    def attempt_recipe(_pipeline_dir, _spec, job, _selection, attempt):
+        base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
+        return {"job": job["id"]}, base.with_suffix(".yaml"), base / "plan", base / "results"
+
+    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(experiment_pipeline, "_ensure_retry_preflight", lambda *_args: None)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_prepare_attempt_registration_groups",
+        lambda _root, _spec, items, **_kwargs: {items[0][0]["id"]: None},
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_materialize_attempt",
+        lambda _root, _spec, job, _selection, attempt, **_paths: {
+            "job_id": job["id"],
+            "attempt": attempt,
+            "status": "planned",
+            "verified": "false",
+        },
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_write_jobs",
+        lambda *_args: (_ for _ in ()).throw(OSError("jobs projection interrupted")),
+    )
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
+
+    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        experiment_pipeline._create_needed_retries(
+            root,
+            pipeline_dir,
+            spec,
+            {"age": {"variant": "sleep2vec2"}},
+            attempts,
+        )
+
+    assert [int(row["attempt"]) for row in attempts] == [1, 2]
 
 
 @pytest.mark.parametrize("failure_kind", ["topology", "target"])
@@ -310,6 +691,10 @@ def test_initial_registration_preflight_groups_variants_before_publishing_any_at
     topology_calls = []
 
     def reject_unsafe_group(root_path, paths, *, remote=None):
+        if [Path(path) for path in paths] == [root.parent / ".workspace.plan-registration.lock"]:
+            assert Path(root_path) == root.parent
+            assert remote is None
+            return
         assert Path(root_path) == Path("/")
         assert remote is None
         topology_calls.append([Path(path) for path in paths])
@@ -428,16 +813,19 @@ def test_registration_preflight_freezes_complete_group_and_rejects_drift(tmp_pat
     monkeypatch.setattr(experiment_pipeline.exp_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_pipeline.managed_scheduler, "inspect_execution_target", inspect)
 
+    snapshot_owner = pipeline_dir / "initial_schedulers" / "sleep2vec2"
+    assert not snapshot_owner.exists()
     prepared = experiment_pipeline._prepare_attempt_registration_groups(
         root,
         spec,
         attempts,
-        snapshot_owner_dirs={"sleep2vec2": pipeline_dir},
+        snapshot_owner_dirs={"sleep2vec2": snapshot_owner},
     )
 
-    snapshot_path = pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
-    assert prepared[spec["jobs"][0]["id"]] is None
-    assert prepared[second["id"]] is not None
+    snapshot_path = snapshot_owner / managed_scheduler.EXECUTION_SNAPSHOT_NAME
+    assert prepared[spec["jobs"][0]["id"]] == first_plan_dir
+    assert prepared[second["id"]] != attempts[1][4]
+    assert stage_count == 1
     assert json.loads(snapshot_path.read_text()) == target_snapshot
     shutil.rmtree(prepared[second["id"]])
 
@@ -447,7 +835,7 @@ def test_registration_preflight_freezes_complete_group_and_rejects_drift(tmp_pat
             root,
             spec,
             attempts,
-            snapshot_owner_dirs={"sleep2vec2": pipeline_dir},
+            snapshot_owner_dirs={"sleep2vec2": snapshot_owner},
         )
 
     assert json.loads(snapshot_path.read_text()) == {"validated_argv_sha256": "a" * 64}
@@ -599,7 +987,10 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     assert snapshot["required_options"] == ["--config"]
 
 
-@pytest.mark.parametrize("outcome", ["success", "tamper", "interrupt_after_commit"])
+@pytest.mark.parametrize(
+    "outcome",
+    ["success", "prepared_public", "staging_tamper", "tamper", "interrupt_after_commit"],
+)
 def test_uncommitted_attempt_plan_is_deterministically_validated(
     tmp_path: Path,
     monkeypatch,
@@ -667,11 +1058,32 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
     )
     assert report.exit_code == 0
     plan_dir.parent.mkdir(parents=True, exist_ok=True)
-    staging_dir.replace(plan_dir)
     step_manifest = root / "steps" / spec["pipeline"]["step"]["id"] / "step.yaml"
     assert yaml.safe_load(step_manifest.read_text())["plans"] == []
     assert read_run_manifest(root) == []
-    frozen_plan = json.loads((plan_dir / "plan.json").read_text())
+    frozen_plan = json.loads((staging_dir / "plan.json").read_text())
+    if outcome == "staging_tamper":
+        semantic_launch = Path(frozen_plan["runs"][0]["script"])
+        physical_launch = staging_dir / semantic_launch.relative_to(plan_dir)
+        physical_launch.write_text("tampered\n")
+        with pytest.raises(ValueError, match="attempt script changed"):
+            experiment_pipeline._materialize_attempt(
+                root,
+                spec,
+                spec["jobs"][0],
+                selection,
+                1,
+                recipe_path=recipe_path,
+                plan_dir=plan_dir,
+                result_root=result_root,
+                prepared_plan_dir=staging_dir,
+            )
+        assert not plan_dir.exists()
+        assert read_run_manifest(root) == []
+        assert yaml.safe_load(step_manifest.read_text())["plans"] == []
+        return
+
+    staging_dir.replace(plan_dir)
     frozen_identity = {
         "target": "local",
         "workdir": spec["runtime"]["workdir"],
@@ -742,6 +1154,13 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
         assert terminal["decision"]["blocked_actions"] == ["finalize", "pipeline_advance"]
         return
 
+    original_prepare = experiment_pipeline._prepare_attempt_plan
+    if outcome == "prepared_public":
+        monkeypatch.setattr(
+            experiment_pipeline,
+            "_prepare_attempt_plan",
+            lambda *_args, **_kwargs: pytest.fail("validated public plan must not be rebuilt"),
+        )
     row = experiment_pipeline._materialize_attempt(
         root,
         spec,
@@ -751,6 +1170,7 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
         recipe_path=recipe_path,
         plan_dir=plan_dir,
         result_root=result_root,
+        prepared_plan_dir=plan_dir if outcome == "prepared_public" else None,
     )
 
     canonical = read_run_manifest(root)
@@ -770,6 +1190,7 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
         [{key: value for key, value in canonical[0].items() if key not in ownership_fields}],
     )
 
+    monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_plan", original_prepare)
     experiment_pipeline._materialize_attempt(
         root,
         spec,

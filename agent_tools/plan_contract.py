@@ -7,12 +7,54 @@ import sys
 from typing import Any
 
 from . import plan_rendering as rendering
+from .decision_models import USER_DECISIONS_FILENAME
 from .experiment_workspace import run_identity, safe_artifact_name
 from .models import REPO_ROOT, recipe_name
 
 FROZEN_FINAL_EVAL_CONFIG_NAME = "config.final_eval.yaml"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _PLAN_CONTEXT_FIELDS = {"home", "python", "repo_root"}
+_DOCTOR_CONTROL_NAMES = (
+    "questions.json",
+    "questions.md",
+    USER_DECISIONS_FILENAME,
+)
+_BLOCKED_PLAN_MARKER_NAMES = (
+    "plan.blocked.md",
+    "plan.draft.json",
+)
+_PASS_PLAN_CONTROL_NAMES = ("plan.json", "recipe.resolved.yaml")
+_PASS_PLAN_RESIDUE_NAMES = (
+    "config.source.yaml",
+    FROZEN_FINAL_EVAL_CONFIG_NAME,
+    "execution_snapshot.json",
+    "final_external_test.sh",
+    "plan.md",
+    "run.sh",
+    "run_all.sh",
+    "runs",
+    "validation.sh",
+)
+
+
+def blocked_plan_control_paths(plan_dir: Path) -> list[Path]:
+    return [*doctor_control_paths(plan_dir), *blocked_plan_marker_paths(plan_dir)]
+
+
+def doctor_control_paths(output_dir: Path) -> list[Path]:
+    return [output_dir / name for name in _DOCTOR_CONTROL_NAMES]
+
+
+def blocked_plan_marker_paths(plan_dir: Path) -> list[Path]:
+    return [plan_dir / name for name in _BLOCKED_PLAN_MARKER_NAMES]
+
+
+def pass_plan_control_paths(plan_dir: Path) -> list[Path]:
+    return [plan_dir / name for name in _PASS_PLAN_CONTROL_NAMES]
+
+
+def pass_plan_artifact_paths(plan_dir: Path) -> list[Path]:
+    return [*pass_plan_control_paths(plan_dir), *(plan_dir / name for name in _PASS_PLAN_RESIDUE_NAMES)]
 
 
 def bind_plan_context(recipe: dict[str, Any]) -> None:

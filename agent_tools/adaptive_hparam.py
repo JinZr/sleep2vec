@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import copy
+import csv
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timezone
 import hashlib
+import io
 import json
 import math
 import os
@@ -30,21 +32,26 @@ from .experiment_workspace import (
     TERMINAL_STATUSES,
     append_event as _write_experiment_event,
     canonical_local_experiment_root,
+    event_matches,
     experiment_root,
     file_sha256,
     managed_run_key,
     managed_run_parameters,
     merge_run_manifest,
+    plan_registration_lock,
+    plan_registration_rows_state,
+    read_experiment_events,
     read_run_manifest,
     scheduler_direct_controller,
     scheduler_type,
     validate_frozen_run_update,
     validate_managed_run_rows,
+    validate_step_registration,
 )
 from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, stop_hparam_run
-from .manifests import read_json, read_rows, utc_now, write_json, write_rows, write_text
+from .manifests import read_json, read_rows, utc_now, validate_managed_header, write_rows, write_text
 from .models import resolve_repo_path
-from .plans import build_plan, preflight_plan
+from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 from .recipes import load_recipe_with_base, recipe_name
 
 _EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
@@ -69,8 +76,29 @@ def _accepted_start_keys(rows: list[dict[str, Any]]) -> set[tuple[str, str]]:
     return {managed_run_key(row) for row in rows if _is_accepted_start(row)}
 
 
+def _validate_adaptive_step_registration(workspace: Path, round_dir: Path, plan: dict[str, Any]) -> None:
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    validate_step_registration(
+        workspace,
+        {
+            "step": recipe["step"],
+            "experiment_id": recipe["experiment"]["id"],
+            "plan_controller": "adaptive",
+            "recipe_path": recipe.get("_recipe_path", ""),
+            "plans": [str(round_dir.resolve())],
+        },
+    )
+
+
 def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> Path:
     root = canonical_local_experiment_root(output_dir, Path.cwd())
+    workspace = experiment_root(load_recipe_with_base(recipe_path))
+    registration_root = workspace if workspace is not None else root
+    with plan_registration_lock(registration_root):
+        return _init_adaptive_workflow_locked(recipe_path, root, locked_workspace=registration_root)
+
+
+def _init_adaptive_workflow_locked(recipe_path: str | Path, root: Path, *, locked_workspace: Path) -> Path:
     resolved_recipe_path = resolve_repo_path(recipe_path)
     if resolved_recipe_path is None:
         raise FileNotFoundError("Path is required.")
@@ -78,11 +106,10 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
     adaptive_dir = root / "adaptive"
     round_dir = adaptive_dir / "rounds" / "round_000"
     workflow_path = adaptive_dir / "workflow.json"
-    recovering = os.path.lexists(round_dir) or os.path.lexists(workflow_path)
     recipe, config, preflight = preflight_plan(
         recipe_path=recipe_path,
         output_dir=round_dir,
-        allow_existing_output_artifacts=recovering,
+        allow_existing_output_artifacts=True,
         allow_adaptive_workflow=True,
     )
     if preflight.exit_code != 0:
@@ -98,6 +125,8 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    if workspace != locked_workspace:
+        raise ValueError("Adaptive experiment.root changed while acquiring the registration lock.")
     initial_run_count = _hparam_count(recipe)
     initial_run_count = min(initial_run_count, int((recipe.get("search") or {}).get("max_runs") or initial_run_count))
     if initial_run_count > int(_adaptive(recipe).get("max_runs_total") or 10**9):
@@ -121,70 +150,159 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
         "objective_metric": str(_adaptive(recipe).get("objective_metric") or "test_auroc"),
         "objective_mode": str(_adaptive(recipe).get("objective_mode") or "max"),
     }
+    readme_text = _adaptive_readme(workflow)
+    adaptive_event = {"round": 0, "recipe_path": str(recipe_path), "round_dir": str(round_dir)}
 
-    if os.path.lexists(workflow_path):
-        _validate_initial_round(round_dir, round_recipe_payload, source_config_bytes)
-        if _workflow(root) != workflow:
-            raise ValueError(f"Existing adaptive workflow differs from the requested initialization: {workflow_path}")
-        return root
-
-    emit_plan_event = True
-    registration_prevalidated = False
-    if os.path.lexists(round_dir):
-        plan = _validate_initial_round(round_dir, round_recipe_payload, source_config_bytes)
-        expected_keys = {managed_run_key(run) for run in plan["runs"]}
-        registered_keys = {
-            managed_run_key(row) for row in read_run_manifest(workspace) if managed_run_key(row) in expected_keys
-        }
-        if registered_keys and registered_keys != expected_keys:
-            missing = ", ".join(f"{step_id} / {run_id}" for step_id, run_id in sorted(expected_keys - registered_keys))
-            raise ValueError(f"Canonical adaptive round registration is partial; missing {missing}")
-        emit_plan_event = not registered_keys
-        if not registered_keys:
-            candidate_dir = _stage_round(round_dir, recipe, recipe_path, 0, source_config_sha256)
-            try:
-                if artifacts.plan_tree_sha256(round_dir) != artifacts.plan_tree_sha256(candidate_dir):
-                    raise ValueError(f"Uncommitted adaptive round differs from deterministic regeneration: {round_dir}")
-            finally:
-                shutil.rmtree(candidate_dir)
-            registration_prevalidated = True
-    else:
+    staging_dir = None
+    cleanup_staging = False
+    if not os.path.lexists(round_dir):
         staging_dir = _stage_round(round_dir, recipe, recipe_path, 0, source_config_sha256)
-        try:
-            _publish_staged_round(staging_dir, round_dir)
-        except BaseException:
-            if staging_dir.exists() and not staging_dir.is_symlink():
-                shutil.rmtree(staging_dir)
-            raise
-        _validate_initial_round(round_dir, round_recipe_payload, source_config_bytes)
-        registration_prevalidated = True
-
+        cleanup_staging = True
     try:
-        plan = plan_hparam.commit_hparam_plan(
-            round_dir,
-            emit_event=emit_plan_event,
-            preflight_validated=registration_prevalidated,
-        )
-    except plan_hparam.HparamRegistrationPreflightError:
-        if not recovering and round_dir.exists() and not round_dir.is_symlink():
-            shutil.rmtree(round_dir)
-        raise
-    _write_initial_registry(root, round_dir, plan)
-    write_text(adaptive_dir / "README.md", _adaptive_readme(workflow))
-    _validate_workflow_payload(root, workflow, require_adaptive_commit=False)
-    workflow_text = json.dumps(workflow, indent=2, sort_keys=True) + "\n"
-    created_workflow = exp_io.conditional_atomic_replace_text_at(workflow_path, workflow_text, None)
-    if not created_workflow:
-        if read_json(workflow_path) != workflow:
-            raise ValueError(f"Existing adaptive workflow differs from the requested initialization: {workflow_path}")
-        _workflow(root)
-    else:
-        _write_experiment_event(
-            workspace,
-            "adaptive_init",
-            {"round": 0, "recipe_path": str(recipe_path), "round_dir": str(round_dir)},
-        )
-    return root
+        with plan_publication_lock(round_dir):
+            # Recovery decisions must use state reread after the publication lock is acquired.
+            if os.path.lexists(workflow_path):
+                committed_plan = _validate_initial_round(round_dir, round_recipe_payload, source_config_bytes)
+                _validate_adaptive_step_registration(workspace, round_dir, committed_plan)
+                if (
+                    plan_registration_rows_state(
+                        workspace,
+                        plan_hparam.hparam_manifest_rows(committed_plan),
+                        source="Canonical adaptive round",
+                    )
+                    != "present"
+                ):
+                    raise ValueError("Adaptive workflow exists before canonical round registration.")
+                _validate_public_initial_workflow(root, workflow, readme_text)
+                plan_event = _plan_event(round_dir, committed_plan)
+                _validate_initial_event_order(workspace, plan_event, adaptive_event, allow_ready_event=True)
+                _reconcile_plan_event(workspace, round_dir, committed_plan)
+                _reconcile_event(
+                    workspace,
+                    "adaptive_init",
+                    adaptive_event,
+                    identity_field="round_dir",
+                )
+                _validate_initial_event_order(workspace, plan_event, adaptive_event, allow_ready_event=True)
+                return root
+            round_exists = os.path.lexists(round_dir)
+            registered_keys = set()
+            if round_exists:
+                plan = _validate_initial_round(round_dir, round_recipe_payload, source_config_bytes)
+                expected_keys = {managed_run_key(run) for run in plan["runs"]}
+            else:
+                if staging_dir is None:
+                    staging_dir = _stage_round(round_dir, recipe, recipe_path, 0, source_config_sha256)
+                    cleanup_staging = True
+                plan = read_json(staging_dir / "plan.json")
+                expected_keys = {managed_run_key(run) for run in plan["runs"]}
+            _validate_adaptive_step_registration(workspace, round_dir, plan)
+            if (
+                plan_registration_rows_state(
+                    workspace,
+                    plan_hparam.hparam_manifest_rows(plan),
+                    source="Canonical adaptive round",
+                )
+                == "present"
+            ):
+                registered_keys = expected_keys
+            plan_event = _plan_event(round_dir, plan)
+            plan_event_exists = _validate_event_history(
+                workspace,
+                "plan_created",
+                plan_event,
+                identity_field="plan_dir",
+            )
+            if plan_event_exists and not registered_keys:
+                raise ValueError("Adaptive plan-created event exists before canonical registration.")
+            _validate_initial_event_order(workspace, plan_event, adaptive_event, allow_ready_event=False)
+            if round_exists:
+                if not registered_keys:
+                    candidate_dir = staging_dir or _stage_round(
+                        round_dir,
+                        recipe,
+                        recipe_path,
+                        0,
+                        source_config_sha256,
+                    )
+                    owns_candidate = staging_dir is None
+                    try:
+                        if artifacts.plan_tree_sha256(round_dir) != artifacts.plan_tree_sha256(candidate_dir):
+                            raise ValueError(
+                                f"Uncommitted adaptive round differs from deterministic regeneration: {round_dir}"
+                            )
+                    finally:
+                        if owns_candidate:
+                            shutil.rmtree(candidate_dir)
+                committed_plan = plan_hparam.commit_hparam_plan(
+                    round_dir,
+                    emit_event=False,
+                    preflight_validated=not registered_keys,
+                )
+                _ensure_initial_registry(root, round_dir, committed_plan)
+            else:
+                staged_plan_sha256 = artifacts.plan_tree_sha256(staging_dir)
+                placeholder_backup = _publish_staged_round_locked(staging_dir, round_dir)
+                try:
+                    _validate_initial_round(round_dir, round_recipe_payload, source_config_bytes)
+                except BaseException:
+                    cleanup_staging = False
+                    cleanup_staging = _restore_uncommitted_round(
+                        staging_dir,
+                        round_dir,
+                        placeholder_backup,
+                        staged_plan_sha256,
+                    )
+                    raise
+                try:
+                    committed_plan = plan_hparam.commit_hparam_plan(
+                        round_dir,
+                        emit_event=False,
+                        preflight_validated=True,
+                    )
+                except plan_hparam.HparamRegistrationPreflightError:
+                    cleanup_staging = False
+                    cleanup_staging = _restore_uncommitted_round(
+                        staging_dir,
+                        round_dir,
+                        placeholder_backup,
+                        staged_plan_sha256,
+                    )
+                    raise
+                if placeholder_backup is not None:
+                    shutil.rmtree(placeholder_backup)
+                _ensure_initial_registry(root, round_dir, committed_plan)
+            _reconcile_plan_event(workspace, round_dir, committed_plan)
+            _ensure_initial_readme(root, readme_text)
+            registry_path = adaptive_dir / "run_registry.tsv"
+            readme_path = adaptive_dir / "README.md"
+            support_snapshots = exp_io.read_managed_files_at(root, [registry_path, readme_path])
+            _validate_initial_support_snapshots(root, workflow, readme_text, support_snapshots)
+            workflow_text = json.dumps(workflow, indent=2, sort_keys=True) + "\n"
+            created_workflow = exp_io.conditional_atomic_replace_text_at(
+                workflow_path,
+                workflow_text,
+                None,
+                managed_root=root,
+                dependency_path=registry_path,
+                expected_dependency_sha256=support_snapshots[str(registry_path)]["sha256"],
+                guard_path=readme_path,
+                expected_guard_sha256=support_snapshots[str(readme_path)]["sha256"],
+            )
+            if not created_workflow:
+                raise RuntimeError("Adaptive workflow inputs changed before readiness publication.")
+            _validate_public_initial_workflow(root, workflow, readme_text)
+            _reconcile_event(
+                workspace,
+                "adaptive_init",
+                adaptive_event,
+                identity_field="round_dir",
+            )
+            _validate_initial_event_order(workspace, plan_event, adaptive_event, allow_ready_event=True)
+            return root
+    finally:
+        if cleanup_staging and staging_dir is not None and staging_dir.exists() and not staging_dir.is_symlink():
+            shutil.rmtree(staging_dir)
 
 
 def digest_hparam_run(run_dir: str | Path) -> Path:
@@ -333,6 +451,8 @@ def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | No
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    if workspace != _workflow_workspace(root):
+        raise ValueError("Adaptive source experiment.root differs from the frozen workflow workspace.")
     if strategy == "agent_proposal":
         current_round = _latest_round_index(root)
         round_dir = _round_dir(root, current_round)
@@ -530,21 +650,9 @@ def _write_agent_proposal_input(
 
 
 def _proposal_request_events(workspace: Path) -> list[dict[str, Any]]:
-    events_path = workspace / "events.jsonl"
-    exp_io.validate_managed_output_paths(workspace, [events_path])
-    if not events_path.exists():
-        return []
-    events = []
-    for line in events_path.read_text().splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Malformed experiment event log: {events_path}") from exc
-        if not isinstance(event, dict):
-            raise ValueError(f"Experiment event log contains a non-object row: {events_path}")
-        if event.get("event_type") == "agent_proposal_requested":
-            events.append(event)
-    return events
+    return [
+        event for event in read_experiment_events(workspace) if event.get("event_type") == "agent_proposal_requested"
+    ]
 
 
 def _proposal_request_event_fields(
@@ -677,10 +785,6 @@ def _load_agent_proposal(
     validated = adaptive_proposals.validate_proposal(proposal, proposal_input)
     if _budget_exhausted(root, recipe, prospective_runs=validated["max_runs"]):
         raise ValueError("Agent proposal no longer fits the remaining adaptive budget.")
-    accepted_path = root / "adaptive" / "proposals" / f"round_{target_round:03d}.json"
-    suggestion_path = root / "adaptive" / "suggestions" / f"round_{target_round:03d}.yaml"
-    if accepted_path.exists() or suggestion_path.exists():
-        raise ValueError(f"Round {target_round:03d} already has an accepted proposal or suggestion.")
     return proposal_file, input_path, validated, proposal_sha256, input_sha256
 
 
@@ -725,6 +829,34 @@ def _agent_suggestion_rationale(validated: dict[str, Any]) -> str:
         lines.extend(["## Parameters", ""])
         lines.extend(f"- {key}: {value}" for key, value in validated["parameters"].items())
     return "\n".join(lines) + "\n"
+
+
+def _write_exact_bytes(path: Path, content: bytes, *, managed_root: Path) -> None:
+    expected_sha256 = hashlib.sha256(content).hexdigest()
+    if os.path.lexists(path):
+        try:
+            snapshot = exp_io.read_managed_files_at(managed_root, [path], allow_invalid_utf8=True)[str(path)]
+        except ValueError as exc:
+            raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {path}") from exc
+        if snapshot["sha256"] != expected_sha256:
+            raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {path}")
+        return
+    created = exp_io.conditional_atomic_replace_text_at(
+        path,
+        content.decode(),
+        None,
+        managed_root=managed_root,
+    )
+    try:
+        snapshot = exp_io.read_managed_files_at(managed_root, [path], allow_invalid_utf8=True)[str(path)]
+    except ValueError as exc:
+        if created:
+            raise RuntimeError(f"Adaptive projection changed after publication: {path}") from exc
+        raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {path}") from exc
+    if snapshot["sha256"] != expected_sha256:
+        if created:
+            raise RuntimeError(f"Adaptive projection changed after publication: {path}")
+        raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {path}")
 
 
 def _ids_or_none(keys: list[tuple[str, str]]) -> str:
@@ -965,6 +1097,18 @@ def adaptive_step(
     execute: bool = False,
 ) -> Path | None:
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
+    if not execute:
+        return _adaptive_step(root, proposal_path=proposal_path, execute=False)
+    with plan_registration_lock(_workflow_workspace(root)):
+        return _adaptive_step(root, proposal_path=proposal_path, execute=True)
+
+
+def _adaptive_step(
+    root: Path,
+    *,
+    proposal_path: str | Path | None,
+    execute: bool,
+) -> Path | None:
     workflow = _workflow(root)
     next_round = _next_round_index(root)
     next_dir = _round_dir(root, next_round)
@@ -988,6 +1132,8 @@ def adaptive_step(
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    if workspace != _workflow_workspace(root):
+        raise ValueError("Adaptive source experiment.root differs from the frozen workflow workspace.")
     bound_config_path: Path | None = None
     bound_config_sha256: str | None = None
     round_recipe_payload: dict[str, Any] | None = None
@@ -1028,6 +1174,8 @@ def adaptive_step(
         workspace = experiment_root(recipe)
         if workspace is None:
             raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+        if workspace != _workflow_workspace(root):
+            raise ValueError("Adaptive source experiment.root differs from the frozen workflow workspace.")
         refreshed_candidate_payload = _agent_suggestion_payload(recipe, workflow, next_round, validated)
         if refreshed_candidate_payload != candidate_payload:
             # Effective semantics can stay constant across offsetting base/local edits, so use the refreshed pair.
@@ -1091,25 +1239,23 @@ def adaptive_step(
             ],
         )
         _reject_unresolved_launch_attempts(root, workspace)
-        bound_config_path.parent.mkdir(parents=True, exist_ok=True)
-        bound_config_path.write_bytes(bound_config_bytes)
-        accepted_path.parent.mkdir(parents=True, exist_ok=True)
-        suggestion_dir.mkdir(parents=True, exist_ok=True)
-        write_json(
-            accepted_path,
-            {
-                "schema_version": 1,
-                **validated,
-                "input_path": str(input_path),
-                "input_sha256": input_sha256,
-                "proposal_path": str(proposal_file),
-                "proposal_sha256": proposal_sha256,
-            },
-        )
-        suggestion.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
-        write_text(rationale_path, _agent_suggestion_rationale(validated))
-        _append_event(
-            root,
+        accepted_payload = {
+            "schema_version": 1,
+            **validated,
+            "input_path": str(input_path),
+            "input_sha256": input_sha256,
+            "proposal_path": str(proposal_file),
+            "proposal_sha256": proposal_sha256,
+        }
+        accepted_bytes = (json.dumps(accepted_payload, indent=2, sort_keys=True) + "\n").encode()
+        suggestion_bytes = yaml.safe_dump(candidate_payload, sort_keys=False).encode()
+        rationale_bytes = _agent_suggestion_rationale(validated).encode()
+        _write_exact_bytes(bound_config_path, bound_config_bytes, managed_root=workspace)
+        _write_exact_bytes(accepted_path, accepted_bytes, managed_root=workspace)
+        _write_exact_bytes(suggestion, suggestion_bytes, managed_root=workspace)
+        _write_exact_bytes(rationale_path, rationale_bytes, managed_root=workspace)
+        _reconcile_event(
+            workspace,
             "agent_proposal_accepted",
             {
                 "round": next_round,
@@ -1117,8 +1263,9 @@ def adaptive_step(
                 "proposal_path": str(proposal_file),
                 "proposal_sha256": proposal_sha256,
                 "suggestion": str(suggestion),
-                "suggestion_sha256": file_sha256(suggestion),
+                "suggestion_sha256": hashlib.sha256(suggestion_bytes).hexdigest(),
             },
+            identity_field="request_id",
         )
         digest = input_path
         budget_exhausted = False
@@ -1145,6 +1292,10 @@ def adaptive_step(
     if execute and not budget_exhausted:
         if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
             raise ValueError("Agent proposal frozen source config changed before round materialization.")
+        if bound_config_path is not None:
+            _write_exact_bytes(accepted_path, accepted_bytes, managed_root=workspace)
+            _write_exact_bytes(suggestion, suggestion_bytes, managed_root=workspace)
+            _write_exact_bytes(rationale_path, rationale_bytes, managed_root=workspace)
         recipe_payload = round_recipe_payload if round_recipe_payload is not None else load_recipe_with_base(suggestion)
         recipe_source = workflow["recipe_path"] if round_recipe_payload is not None else suggestion
         expected_recipe = (
@@ -1173,32 +1324,68 @@ def adaptive_step(
                 bound_config_path is not None
                 and next_dir.is_dir()
                 and not next_dir.is_symlink()
-                and list(next_dir.iterdir()) == [bound_config_path]
+                and _is_bound_config_placeholder(next_dir, bound_config_path)
                 and not bound_config_path.is_symlink()
             ):
                 bound_config_path.unlink()
+                lock_path = bound_config_path.with_name(f".{bound_config_path.name}.cas.lock")
+                if os.path.lexists(lock_path):
+                    lock_path.unlink()
                 next_dir.rmdir()
             raise
+        cleanup_staging = True
         try:
             if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
                 raise ValueError("Agent proposal frozen source config changed during plan materialization.")
-            _publish_staged_round(
-                staging_dir,
-                next_dir,
-                bound_config_path=bound_config_path,
-                bound_config_sha256=bound_config_sha256,
-            )
+            with plan_publication_lock(next_dir):
+                staged_plan = read_json(staging_dir / "plan.json")
+                _validate_adaptive_step_registration(workspace, next_dir, staged_plan)
+                plan_registration_rows_state(
+                    workspace,
+                    plan_hparam.hparam_manifest_rows(staged_plan),
+                    source="Canonical adaptive round",
+                )
+                staged_plan_sha256 = artifacts.plan_tree_sha256(staging_dir)
+                published_now = not (next_dir / "plan.json").exists()
+                if published_now:
+                    placeholder_backup = _publish_staged_round_locked(
+                        staging_dir,
+                        next_dir,
+                        bound_config_path=bound_config_path,
+                        bound_config_sha256=bound_config_sha256,
+                    )
+                else:
+                    if artifacts.plan_tree_sha256(next_dir) != staged_plan_sha256:
+                        raise ValueError(
+                            f"Published adaptive round differs from deterministic regeneration: {next_dir}"
+                        )
+                    placeholder_backup = None
+                try:
+                    committed_plan = plan_hparam.commit_hparam_plan(
+                        next_dir,
+                        emit_event=False,
+                        preflight_validated=True,
+                    )
+                except plan_hparam.HparamRegistrationPreflightError:
+                    if published_now:
+                        cleanup_staging = False
+                        cleanup_staging = _restore_uncommitted_round(
+                            staging_dir,
+                            next_dir,
+                            placeholder_backup,
+                            staged_plan_sha256,
+                        )
+                    raise
+                _reconcile_plan_event(workspace, next_dir, committed_plan)
+                if placeholder_backup is not None:
+                    shutil.rmtree(placeholder_backup)
+                _append_registry_rows(root, next_round, next_dir)
+                if staging_dir.exists() and not staging_dir.is_symlink():
+                    shutil.rmtree(staging_dir)
         except BaseException:
-            if staging_dir.exists() and not staging_dir.is_symlink():
+            if cleanup_staging and staging_dir.exists() and not staging_dir.is_symlink():
                 shutil.rmtree(staging_dir)
             raise
-        try:
-            plan_hparam.commit_hparam_plan(next_dir, preflight_validated=True)
-        except plan_hparam.HparamRegistrationPreflightError:
-            if next_dir.exists() and not next_dir.is_symlink():
-                shutil.rmtree(next_dir)
-            raise
-        _append_registry_rows(root, next_round, next_dir)
         execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
         scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
         if scheduler.get("type") == "slurm":
@@ -1258,6 +1445,8 @@ def adaptive_loop(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    if workspace != _workflow_workspace(root):
+        raise ValueError("Adaptive source experiment.root differs from the frozen workflow workspace.")
     exp_io.validate_managed_output_paths(workspace, [workspace / "events.jsonl"])
     last = root
     while not _budget_exhausted(root, recipe):
@@ -1298,12 +1487,17 @@ def _append_event(root: Path, event_type: str, payload: dict[str, Any]) -> None:
     workflow_path = root / "adaptive" / "workflow.json"
     target = root
     if workflow_path.exists():
-        initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
-        recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
-        target = experiment_root(recipe)
-        if target is None:
-            raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+        target = _workflow_workspace(root)
     _write_experiment_event(target, event_type, payload)
+
+
+def _workflow_workspace(root: Path) -> Path:
+    initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
+    recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
+    return workspace
 
 
 def _objective(root: Path, recipe: dict[str, Any]) -> dict[str, str]:
@@ -1328,6 +1522,7 @@ def _validate_workflow_payload(
     workflow: dict[str, Any],
     *,
     require_adaptive_commit: bool = True,
+    registry_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     path = root / "adaptive" / "workflow.json"
     if not isinstance(workflow, dict):
@@ -1348,9 +1543,10 @@ def _validate_workflow_payload(
     if legacy_registry.exists():
         raise ValueError(f"Legacy adaptive registry is read-only and cannot be managed: {legacy_registry}")
     registry_path = root / "adaptive" / "run_registry.tsv"
-    if not registry_path.exists():
-        raise FileNotFoundError(f"Missing adaptive run registry: {registry_path}")
-    registry_rows = read_rows(registry_path, require_managed_identity=True)
+    if registry_rows is None:
+        if not registry_path.exists():
+            raise FileNotFoundError(f"Missing adaptive run registry: {registry_path}")
+        registry_rows = read_rows(registry_path, require_managed_identity=True)
     validate_managed_run_rows(registry_rows, source=str(registry_path), cardinality="one_per_run")
     round_index = _latest_round_index(root) if require_adaptive_commit else 0
     round_dir = _round_dir(root, round_index)
@@ -1467,27 +1663,226 @@ def _stage_round(
         raise
 
 
-def _publish_staged_round(
+def _publish_staged_round_locked(
     staging_dir: Path,
     round_dir: Path,
     *,
     bound_config_path: Path | None = None,
     bound_config_sha256: str | None = None,
-) -> None:
+) -> Path | None:
+    placeholder_backup = None
     if os.path.lexists(round_dir):
         if bound_config_path is None or bound_config_sha256 is None:
             raise ValueError(f"Adaptive round output already exists: {round_dir}")
         if round_dir.is_symlink() or not round_dir.is_dir():
             raise ValueError(f"Adaptive round output is not a physical directory: {round_dir}")
-        if list(round_dir.iterdir()) != [bound_config_path] or file_sha256(bound_config_path) != bound_config_sha256:
+        if (
+            not _is_bound_config_placeholder(round_dir, bound_config_path)
+            or file_sha256(bound_config_path) != bound_config_sha256
+        ):
             raise ValueError(f"Adaptive round output changed before publication: {round_dir}")
-        bound_config_path.unlink()
-        round_dir.rmdir()
-    round_dir.parent.mkdir(parents=True, exist_ok=True)
-    staging_dir.replace(round_dir)
+        placeholder_backup = round_dir.parent / f".{round_dir.name}.{os.getpid()}.{time.time_ns()}.backup"
+        round_dir.replace(placeholder_backup)
+    try:
+        publish_staged_plan_locked(staging_dir, round_dir, out_preexisted=False)
+    except BaseException:
+        if placeholder_backup is not None and not os.path.lexists(round_dir):
+            placeholder_backup.replace(round_dir)
+        raise
+    return placeholder_backup
 
 
-def _write_initial_registry(root: Path, round_dir: Path, plan: dict[str, Any]) -> None:
+def _is_bound_config_placeholder(round_dir: Path, bound_config_path: Path) -> bool:
+    lock_path = bound_config_path.with_name(f".{bound_config_path.name}.cas.lock")
+    contents = set(round_dir.iterdir())
+    return contents == {bound_config_path} or contents == {bound_config_path, lock_path}
+
+
+def _restore_uncommitted_round(
+    staging_dir: Path,
+    round_dir: Path,
+    placeholder_backup: Path | None,
+    staged_plan_sha256: str,
+) -> bool:
+    # Registration preflight has not mutated the workspace, so the physical publication can still be undone.
+    if os.path.lexists(round_dir) and not os.path.lexists(staging_dir):
+        round_dir.replace(staging_dir)
+        try:
+            unchanged = artifacts.plan_tree_sha256(staging_dir) == staged_plan_sha256
+        except (OSError, ValueError):
+            unchanged = False
+        if not unchanged:
+            if not os.path.lexists(round_dir):
+                staging_dir.replace(round_dir)
+            return False
+    elif os.path.lexists(staging_dir):
+        return False
+    if placeholder_backup is not None and not os.path.lexists(round_dir):
+        placeholder_backup.replace(round_dir)
+    return True
+
+
+def _parse_registry(text: str | None, path: Path) -> list[dict[str, str]]:
+    if text is None:
+        raise ValueError(f"Managed table is not valid UTF-8: {path}")
+    try:
+        reader = csv.DictReader(io.StringIO(text), delimiter="\t", strict=True)
+        fieldnames = reader.fieldnames
+        if not fieldnames:
+            raise ValueError(f"Managed table has no header: {path}")
+        if len(fieldnames) != len(set(fieldnames)):
+            raise ValueError(f"Managed table has duplicate header fields: {path}")
+        validate_managed_header(fieldnames, path)
+        rows = list(reader)
+    except csv.Error as exc:
+        raise ValueError(f"Managed table is malformed: {path}") from exc
+    if any(None in row or any(value is None for value in row.values()) for row in rows):
+        raise ValueError(f"Managed table has a non-rectangular row: {path}")
+    validate_managed_run_rows(rows, source=str(path), cardinality="one_per_run")
+    return rows
+
+
+def _registry_text(rows: list[dict[str, Any]]) -> str:
+    fieldnames = sorted({key for row in rows for key in row})
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames, delimiter="\t")
+    writer.writeheader()
+    writer.writerows(rows)
+    return buffer.getvalue()
+
+
+def _ensure_initial_readme(root: Path, expected: str) -> None:
+    readme_path = root / "adaptive" / "README.md"
+    if not os.path.lexists(readme_path):
+        exp_io.conditional_atomic_replace_text_at(
+            readme_path,
+            expected,
+            None,
+            managed_root=root,
+        )
+    snapshot = exp_io.read_managed_files_at(root, [readme_path])[str(readme_path)]
+    if snapshot["text"] != expected:
+        raise ValueError(f"Existing adaptive README differs from requested initialization: {readme_path}")
+
+
+def _validate_public_initial_workflow(root: Path, expected: dict[str, Any], expected_readme: str) -> None:
+    workflow_path = root / "adaptive" / "workflow.json"
+    registry_path = root / "adaptive" / "run_registry.tsv"
+    readme_path = root / "adaptive" / "README.md"
+    snapshots = exp_io.read_managed_files_at(root, [workflow_path, registry_path, readme_path])
+    try:
+        actual = json.loads(snapshots[str(workflow_path)]["text"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Adaptive workflow is malformed: {workflow_path}") from exc
+    if actual != expected:
+        raise ValueError(f"Existing adaptive workflow differs from requested initialization: {workflow_path}")
+    _validate_initial_support_snapshots(root, actual, expected_readme, snapshots)
+
+
+def _validate_initial_support_snapshots(
+    root: Path,
+    workflow: dict[str, Any],
+    expected_readme: str,
+    snapshots: dict[str, dict[str, str | None]],
+) -> None:
+    registry_path = root / "adaptive" / "run_registry.tsv"
+    readme_path = root / "adaptive" / "README.md"
+    if snapshots[str(readme_path)]["text"] != expected_readme:
+        raise ValueError(f"Existing adaptive README differs from requested initialization: {readme_path}")
+    registry_rows = _parse_registry(snapshots[str(registry_path)]["text"], registry_path)
+    _validate_workflow_payload(
+        root,
+        workflow,
+        require_adaptive_commit=False,
+        registry_rows=registry_rows,
+    )
+
+
+def _reconcile_event(
+    workspace: Path,
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    identity_field: str,
+) -> None:
+    if _validate_event_history(workspace, event_type, payload, identity_field=identity_field):
+        return
+    _write_experiment_event(workspace, event_type, payload)
+    if not _validate_event_history(workspace, event_type, payload, identity_field=identity_field):
+        raise ValueError(f"Experiment event was not committed exactly once: {event_type}")
+
+
+def _validate_event_history(
+    workspace: Path,
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    identity_field: str,
+) -> bool:
+    related = [
+        event
+        for event in read_experiment_events(workspace)
+        if _is_related_event(event, event_type, payload, identity_field)
+    ]
+    exact = [event for event in related if event_matches(event, event_type, payload)]
+    if len(related) != len(exact) or len(exact) > 1:
+        raise ValueError(f"Experiment event history conflicts: {event_type}")
+    return bool(exact)
+
+
+def _is_related_event(
+    event: dict[str, Any],
+    event_type: str,
+    payload: dict[str, Any],
+    identity_field: str,
+) -> bool:
+    return event.get("event_type") == event_type and event.get(identity_field) == payload[identity_field]
+
+
+def _validate_initial_event_order(
+    workspace: Path,
+    plan_event: dict[str, Any],
+    ready_event: dict[str, Any],
+    *,
+    allow_ready_event: bool,
+) -> None:
+    events = read_experiment_events(workspace)
+    plan_positions = [
+        index for index, event in enumerate(events) if _is_related_event(event, "plan_created", plan_event, "plan_dir")
+    ]
+    ready_positions = [
+        index
+        for index, event in enumerate(events)
+        if _is_related_event(event, "adaptive_init", ready_event, "round_dir")
+    ]
+    if ready_positions and not plan_positions:
+        raise ValueError("Adaptive initialization event exists without its plan-created event.")
+    if ready_positions and not allow_ready_event:
+        raise ValueError("Adaptive readiness event exists without its workflow marker.")
+    if plan_positions and ready_positions and max(plan_positions) >= min(ready_positions):
+        raise ValueError("Adaptive initialization events are out of order.")
+
+
+def _plan_event(round_dir: Path, plan: dict[str, Any]) -> dict[str, Any]:
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    return {
+        "step_id": (recipe.get("step") or {}).get("id"),
+        "plan_dir": str(round_dir),
+        "run_count": len(plan.get("runs", [])),
+    }
+
+
+def _reconcile_plan_event(workspace: Path, round_dir: Path, plan: dict[str, Any]) -> None:
+    _reconcile_event(
+        workspace,
+        "plan_created",
+        _plan_event(round_dir, plan),
+        identity_field="plan_dir",
+    )
+
+
+def _ensure_initial_registry(root: Path, round_dir: Path, plan: dict[str, Any]) -> None:
+    registry_path = root / "adaptive" / "run_registry.tsv"
     registered_at = utc_now()
     rows = [
         {
@@ -1504,8 +1899,38 @@ def _write_initial_registry(root: Path, round_dir: Path, plan: dict[str, Any]) -
         }
         for run in plan.get("runs", [])
     ]
-    validate_managed_run_rows(rows, source=str(root / "adaptive" / "run_registry.tsv"), cardinality="one_per_run")
-    write_rows(root / "adaptive" / "run_registry.tsv", rows)
+    validate_managed_run_rows(rows, source=str(registry_path), cardinality="one_per_run")
+    exp_io.validate_managed_output_paths(root, [registry_path])
+    existing = []
+    existing_sha256 = None
+    existing_is_invalid = False
+    if os.path.lexists(registry_path):
+        snapshot = exp_io.read_managed_files_at(root, [registry_path], allow_invalid_utf8=True)[str(registry_path)]
+        exp_io.validate_managed_output_paths(root, [registry_path])
+        existing_sha256 = snapshot["sha256"]
+        try:
+            existing = _parse_registry(snapshot["text"], registry_path)
+        except ValueError:
+            existing_is_invalid = True
+    stable_fields = tuple(field for field in rows[0] if field != "registered_at")
+    expected_fields = set(rows[0])
+    if existing_sha256 is not None and not existing_is_invalid:
+        expected_stable = [
+            {field: "" if row[field] is None else str(row[field]) for field in stable_fields} for row in rows
+        ]
+        if len(existing) == len(rows) and all(set(row) == expected_fields for row in existing):
+            existing_stable = [{field: row[field] for field in stable_fields} for row in existing]
+            if existing_stable == expected_stable:
+                return
+        raise ValueError(f"Existing adaptive initial registry differs from the frozen round: {registry_path}")
+    if not exp_io.conditional_atomic_replace_text_at(
+        registry_path,
+        _registry_text(rows),
+        existing_sha256,
+        managed_root=root,
+    ):
+        raise RuntimeError(f"Adaptive initial registry changed during recovery: {registry_path}")
+    exp_io.validate_managed_output_paths(root, [registry_path])
 
 
 def _write_round_recipe(
@@ -1591,23 +2016,53 @@ def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -
 def _append_registry_rows(root: Path, round_index: int, round_dir: Path) -> None:
     path = root / "adaptive" / "run_registry.tsv"
     plan = artifacts.read_hparam_plan(round_dir)
-    rows = read_rows(path, require_managed_identity=True) if path.exists() else []
-    for run in plan.get("runs", []):
-        rows.append(
-            {
-                "round": round_index,
-                "experiment_id": run.get("experiment_id"),
-                "step_id": run.get("step_id"),
-                "run_id": run.get("run_id"),
-                "run_name": run.get("run_name"),
-                "version": run.get("version"),
-                "config": run.get("config"),
-                "script": run.get("script"),
-                "round_dir": str(round_dir),
-                "registered_at": utc_now(),
-            }
-        )
-    write_rows(path, rows)
+    snapshot = exp_io.read_managed_files_at(root, [path])[str(path)]
+    rows = _parse_registry(snapshot["text"], path)
+    registered_at = utc_now()
+    expected = [
+        {
+            "round": round_index,
+            "experiment_id": run.get("experiment_id"),
+            "step_id": run.get("step_id"),
+            "run_id": run.get("run_id"),
+            "run_name": run.get("run_name"),
+            "version": run.get("version"),
+            "config": run.get("config"),
+            "script": run.get("script"),
+            "round_dir": str(round_dir),
+            "registered_at": registered_at,
+        }
+        for run in plan.get("runs", [])
+    ]
+    validate_managed_run_rows(expected, source=str(path), cardinality="one_per_run")
+    stable_fields = tuple(field for field in expected[0] if field != "registered_at")
+    existing_round = [row for row in rows if str(row.get("round")) == str(round_index)]
+    expected_stable = [
+        {field: "" if row[field] is None else str(row[field]) for field in stable_fields} for row in expected
+    ]
+    existing_stable = [{field: row.get(field, "") for field in stable_fields} for row in existing_round]
+    if existing_round:
+        if (
+            len(existing_round) == len(expected)
+            and all(set(row) == set(expected[0]) for row in existing_round)
+            and existing_stable == expected_stable
+        ):
+            return
+        raise ValueError(f"Existing adaptive registry round differs from the frozen plan: {round_dir}")
+    expected_keys = {managed_run_key(row) for row in expected}
+    if any(managed_run_key(row) in expected_keys for row in rows):
+        raise ValueError(f"Adaptive registry run identity is already bound to another round: {round_dir}")
+    replacement = _registry_text([*rows, *expected])
+    if not exp_io.conditional_atomic_replace_text_at(
+        path,
+        replacement,
+        snapshot["sha256"],
+        managed_root=root,
+    ):
+        raise RuntimeError(f"Adaptive registry changed during round registration: {path}")
+    committed = exp_io.read_managed_files_at(root, [path])[str(path)]
+    if committed["text"] != replacement:
+        raise RuntimeError(f"Adaptive registry changed after round registration: {path}")
 
 
 def _resolve_workflow_round(path: Path) -> tuple[Path, Path, int]:
@@ -1707,14 +2162,37 @@ def _reject_unresolved_launch_attempts(root: Path, workspace: Path) -> None:
         plan_path = round_dir / "plan.json"
         if not plan_path.exists() and round_index not in registered_by_round:
             continue
-        plan = artifacts.read_hparam_plan(round_dir)
-        run_keys = set(registered_by_round.get(round_index, set()))
-        run_keys.update(managed_run_key(run) for run in plan.get("runs", []))
+        registered_keys = set(registered_by_round.get(round_index, set()))
+        plan = (
+            artifacts.read_hparam_plan(round_dir)
+            if registered_keys
+            else artifacts.read_hparam_plan(
+                round_dir,
+                require_workspace_state=False,
+                require_adaptive_commit=False,
+            )
+        )
+        plan_keys = {managed_run_key(run) for run in plan.get("runs", [])}
+        if registered_keys and registered_keys != plan_keys:
+            raise ValueError(f"Adaptive registry differs from the frozen round: {round_dir}")
+        if not registered_keys:
+            row_state = plan_registration_rows_state(
+                workspace,
+                plan_hparam.hparam_manifest_rows(plan),
+                source="Canonical adaptive round",
+            )
+            if row_state == "missing":
+                continue
+        run_keys = registered_keys or plan_keys
         for run_key in sorted(run_keys):
             row = canonical_by_key.get(run_key)
             if row is None:
                 raise ValueError(f"Uncommitted adaptive run is missing from the canonical manifest: {run_key}")
             status = str(row.get("status") or "")
+            if not registered_keys:
+                if status not in {"planned", "pending"}:
+                    unresolved.append((round_index, str(row["run_id"])))
+                continue
             if scheduler_type(row) == "slurm":
                 if status in {"submitting", "unknown_scheduler"} or _is_accepted_start(row):
                     unresolved.append((round_index, str(row["run_id"])))
@@ -1780,14 +2258,9 @@ def _committed_round_indexes(root: Path) -> set[int]:
     initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
     recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
     workspace = experiment_root(recipe)
-    events_path = workspace / "events.jsonl" if workspace is not None else None
-    if events_path is None:
+    if workspace is None:
         return committed
-    exp_io.validate_managed_output_paths(workspace, [events_path])
-    if not events_path.exists():
-        return committed
-    for line in events_path.read_text().splitlines():
-        event = json.loads(line)
+    for event in read_experiment_events(workspace):
         if event.get("event_type") != "launch_round":
             continue
         round_index = int(event["round"])
@@ -1808,12 +2281,7 @@ def _next_round_index(root: Path) -> int:
     registry_path = root / "adaptive" / "run_registry.tsv"
     registry = read_rows(registry_path, require_managed_identity=True) if registry_path.exists() else []
     registered = [int(row["round"]) for row in registry]
-    existing = [
-        int(path.name.removeprefix("round_"))
-        for path in (root / "adaptive" / "rounds").glob("round_*")
-        if path.name.removeprefix("round_").isdigit()
-    ]
-    return max([0, *registered, *existing]) + 1
+    return max([0, *registered]) + 1
 
 
 def _manifest_metrics(manifest: dict[str, Any]) -> dict[str, Any]:

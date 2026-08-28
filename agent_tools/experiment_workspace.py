@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import csv
 import hashlib
 import io
@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import threading
 from typing import Any
 
 import yaml
@@ -264,6 +265,24 @@ def canonical_local_experiment_root(raw: str | Path, base_dir: str | Path) -> Pa
     return path.resolve()
 
 
+_PLAN_REGISTRATION_LOCKS: dict[Path, threading.Lock] = {}
+_PLAN_REGISTRATION_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def plan_registration_lock(root: str | Path):
+    root = Path(root)
+    lock_path = root.parent / f".{root.name}.plan-registration.lock"
+    if not root.parent.exists():
+        exp_io.validate_managed_output_paths(Path(root.anchor), [lock_path])
+        root.parent.mkdir(parents=True, exist_ok=True)
+    exp_io.validate_managed_output_paths(root.parent, [lock_path])
+    with _PLAN_REGISTRATION_LOCKS_GUARD:
+        local_lock = _PLAN_REGISTRATION_LOCKS.setdefault(lock_path, threading.Lock())
+    with local_lock, exp_io.blocking_file_lock(lock_path):
+        yield
+
+
 def read_managed_yaml_mapping(text: str, *, source: str | Path) -> dict[str, Any]:
     label = str(source)
     if not text.strip():
@@ -407,6 +426,11 @@ def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> d
     }
 
 
+def validate_step_registration(root: str | Path, incoming: dict[str, Any]) -> None:
+    existing = read_step_manifest(root, str(incoming["step"]["id"]), allow_missing=True)
+    merge_step_manifest(existing or {}, incoming)
+
+
 def _validated_step_manifest(text: str, path: Path, step_id: str) -> dict[str, Any]:
     payload = read_managed_yaml_mapping(text, source=f"Managed step manifest {path}")
     normalized = merge_step_manifest(payload, {})
@@ -503,6 +527,7 @@ def commit_step_manifest(
             path,
             replacement,
             expected_sha256,
+            managed_root=root,
             remote=remote,
         ):
             return merged, not exists
@@ -707,11 +732,11 @@ def ensure_experiment_workspace(
     root.mkdir(parents=True, exist_ok=True)
     (root / "reports").mkdir(exist_ok=True)
     step_dir = root / "steps" / str(step["id"])
-    step_dir.mkdir(parents=True, exist_ok=True)
     if not manifest_exists:
         write_initial_experiment_manifest(root, experiment)
         append_event(root, "experiment_initialized", {"experiment_id": experiment["id"]})
     if register_step:
+        step_dir.mkdir(parents=True, exist_ok=True)
         _merged_step_payload, created_step = commit_step_manifest(root, step_payload)
         if created_step:
             append_event(root, "step_registered", {"step_id": step["id"], "phase": step["phase"]})
@@ -722,11 +747,34 @@ def ensure_experiment_workspace(
 def append_event(root: str | Path, event_type: str, payload: dict[str, Any]) -> None:
     root = Path(root)
     path = root / "events.jsonl"
-    exp_io.validate_managed_output_paths(root, [path])
-    path.parent.mkdir(parents=True, exist_ok=True)
     row = {"time": _now(), "event_type": event_type, **json_ready(payload)}
-    with path.open("a") as file_obj:
-        file_obj.write(json.dumps(row, sort_keys=True) + "\n")
+    exp_io.append_managed_text_at(path, json.dumps(row, sort_keys=True) + "\n", managed_root=root)
+
+
+def read_experiment_events(root: str | Path) -> list[dict[str, Any]]:
+    root = Path(root)
+    path = root / "events.jsonl"
+    exp_io.validate_managed_output_paths(root, [path])
+    if not os.path.lexists(path):
+        return []
+    snapshot = exp_io.read_managed_files_at(root, [path])[str(path)]
+    events = []
+    for line_number, line in enumerate(snapshot["text"].splitlines(), start=1):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Experiment event log is malformed at line {line_number}: {path}") from exc
+        if not isinstance(event, dict):
+            raise ValueError(f"Experiment event log must contain mappings: {path}")
+        events.append(event)
+    return events
+
+
+def event_matches(event: dict[str, Any], event_type: str, payload: dict[str, Any]) -> bool:
+    return event.get("event_type") == event_type and all(
+        field in event and type(event[field]) is type(value) and event[field] == value
+        for field, value in payload.items()
+    )
 
 
 def run_identity(
@@ -990,6 +1038,42 @@ def validate_frozen_run_update(
                 raise ValueError(f"checkpoint_path is not a regular managed checkpoint for {step_id} / {run_id}.")
 
 
+def plan_registration_rows_state(
+    root: str | Path,
+    expected_rows: list[dict[str, Any]],
+    *,
+    source: str,
+) -> str:
+    root = Path(root)
+    if not expected_rows:
+        raise ValueError(f"{source} must contain at least one run.")
+    validate_managed_run_rows(expected_rows, source=source, cardinality="one_per_run")
+    expected_by_key = {managed_run_key(row): row for row in expected_rows}
+    existing_rows = read_run_manifest(root) if exp_io.path_exists_at(root / "run_manifest.tsv") else []
+    canonical_by_key = {managed_run_key(row): row for row in existing_rows}
+    present_keys = set(expected_by_key) & set(canonical_by_key)
+    if present_keys and len(present_keys) != len(expected_by_key):
+        missing = ", ".join(f"{step_id} / {run_id}" for step_id, run_id in sorted(set(expected_by_key) - present_keys))
+        raise ValueError(f"{source} registration is partial; missing {missing}")
+    if not present_keys:
+        return "missing"
+    allowed_canonical_only = EXECUTION_IDENTITY_FIELDS | SCHEDULER_BINDING_FIELDS | {"parameter_summary"}
+    for key, expected in expected_by_key.items():
+        canonical = canonical_by_key[key]
+        canonical_fields = set(FROZEN_RUN_FIELDS & canonical.keys()) | set(managed_run_parameters(canonical))
+        expected_fields = set(FROZEN_RUN_FIELDS & expected.keys()) | set(managed_run_parameters(expected))
+        unexpected = sorted(
+            field
+            for field in canonical_fields - expected_fields - allowed_canonical_only
+            if canonical.get(field) not in (None, "")
+        )
+        if unexpected:
+            step_id, run_id = key
+            raise ValueError(f"Frozen run field differs for {step_id} / {run_id}: {unexpected[0]}")
+        validate_frozen_run_update(canonical, expected, allow_execution_identity_fill=True)
+    return "present"
+
+
 def scheduler_type(row: dict[str, Any]) -> str:
     value = str(row.get("scheduler_type") or "direct")
     if value not in {"direct", "slurm"}:
@@ -1146,6 +1230,7 @@ def merge_run_manifest(
                 path,
                 replacement,
                 expected_sha256,
+                managed_root=root,
                 remote=remote,
                 guard_path=experiment_path,
                 expected_guard_sha256=hashlib.sha256(experiment_text.encode()).hexdigest(),

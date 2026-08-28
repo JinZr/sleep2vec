@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 from types import SimpleNamespace
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
@@ -778,6 +779,265 @@ def test_append_event_rejects_canonical_manifest_alias(tmp_path: Path):
     assert manifest_path.read_bytes() == before
 
 
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_append_event_rejects_leaf_alias_created_after_parent_open(tmp_path: Path, monkeypatch, alias_kind: str):
+    events_path = tmp_path / "events.jsonl"
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("sentinel\n")
+    before = outside.read_bytes()
+    original_open_parent = experiment_io._open_managed_parent
+    swapped = False
+
+    def swap_leaf(root_descriptor, relative, *, create):
+        nonlocal swapped
+        parent_descriptor, target_name = original_open_parent(root_descriptor, relative, create=create)
+        if target_name == "events.jsonl" and not swapped:
+            swapped = True
+            if alias_kind == "symlink":
+                events_path.symlink_to(outside)
+            else:
+                events_path.hardlink_to(outside)
+        return parent_descriptor, target_name
+
+    monkeypatch.setattr(experiment_io, "_open_managed_parent", swap_leaf)
+
+    with pytest.raises((OSError, ValueError)):
+        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
+
+    assert outside.read_bytes() == before
+
+
+def test_append_event_does_not_follow_workspace_drift_after_root_open(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    moved_workspace = tmp_path / "workspace-moved"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_events = outside / "events.jsonl"
+    outside_events.write_text("sentinel\n")
+    before = outside_events.read_bytes()
+    original_open_parent = experiment_io._open_managed_parent
+    swapped = False
+
+    def swap_workspace(root_descriptor, relative, *, create):
+        nonlocal swapped
+        parent_descriptor, target_name = original_open_parent(root_descriptor, relative, create=create)
+        if target_name == "events.jsonl" and not swapped:
+            swapped = True
+            workspace.rename(moved_workspace)
+            workspace.symlink_to(outside, target_is_directory=True)
+        return parent_descriptor, target_name
+
+    monkeypatch.setattr(experiment_io, "_open_managed_parent", swap_workspace)
+
+    with pytest.raises(ValueError, match="Managed output path changed"):
+        append_event(workspace, "run_status_changed", {"run_id": "run-000"})
+
+    assert outside_events.read_bytes() == before
+    assert not (moved_workspace / "events.jsonl").exists()
+
+
+@pytest.mark.parametrize("target_exists", [False, True])
+def test_append_event_reports_unknown_when_workspace_moves_during_rename(
+    tmp_path: Path,
+    monkeypatch,
+    target_exists: bool,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    moved_workspace = tmp_path / "workspace-moved"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    events_path = workspace / "events.jsonl"
+    outside_events = outside / "events.jsonl"
+    outside_events.write_text("outside\n")
+    if target_exists:
+        events_path.write_text('{"event_type": "before"}\n')
+
+    def move_workspace():
+        workspace.rename(moved_workspace)
+        workspace.symlink_to(outside, target_is_directory=True)
+
+    rename_owner = experiment_io.os if target_exists else experiment_io
+    rename_name = "replace" if target_exists else "_rename_noreplace_at"
+    original_rename = getattr(rename_owner, rename_name)
+
+    def rename_after_workspace_moves(*args, **kwargs):
+        move_workspace()
+        return original_rename(*args, **kwargs)
+
+    monkeypatch.setattr(rename_owner, rename_name, rename_after_workspace_moves)
+
+    with pytest.raises(RuntimeError, match="publication outcome is unknown"):
+        append_event(workspace, "after", {})
+
+    assert outside_events.read_text() == "outside\n"
+    events = [json.loads(line) for line in (moved_workspace / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events] == (["before", "after"] if target_exists else ["after"])
+
+
+def test_append_event_does_not_modify_hardlink_added_after_snapshot(tmp_path: Path, monkeypatch):
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text('{"event_type": "before"}\n')
+    outside = tmp_path / "outside.jsonl"
+    before = events_path.read_bytes()
+    original_open_temporary = experiment_io._open_temporary_at
+
+    def add_hardlink(parent_descriptor, target_name):
+        outside.hardlink_to(events_path)
+        return original_open_temporary(parent_descriptor, target_name)
+
+    monkeypatch.setattr(experiment_io, "_open_temporary_at", add_hardlink)
+
+    with pytest.raises(ValueError, match="missing or aliased"):
+        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
+
+    assert events_path.read_bytes() == before
+    assert outside.read_bytes() == before
+
+
+def test_append_event_rejects_aliased_temporary_before_writing(tmp_path: Path, monkeypatch):
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text('{"event_type": "before"}\n')
+    before = events_path.read_bytes()
+    outside = tmp_path / "outside.jsonl"
+    original_open_temporary = experiment_io._open_temporary_at
+
+    def alias_temporary(parent_descriptor, target_name):
+        descriptor, temporary = original_open_temporary(parent_descriptor, target_name)
+        outside.hardlink_to(tmp_path / temporary)
+        return descriptor, temporary
+
+    monkeypatch.setattr(experiment_io, "_open_temporary_at", alias_temporary)
+
+    with pytest.raises(ValueError, match="temporary is aliased"):
+        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
+
+    assert events_path.read_bytes() == before
+    assert outside.read_bytes() == b""
+
+
+def test_append_event_rejects_replacement_workspace_carrying_target_inode(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "experiment.yaml").write_text("experiment:\n  id: original\n")
+    events_path = workspace / "events.jsonl"
+    events_path.write_text('{"event_type": "before"}\n')
+    before = events_path.read_bytes()
+    moved_workspace = tmp_path / "workspace-moved"
+    original_open_temporary = experiment_io._open_temporary_at
+
+    def replace_workspace(parent_descriptor, target_name):
+        workspace.rename(moved_workspace)
+        workspace.mkdir()
+        (workspace / "experiment.yaml").write_text("experiment:\n  id: replacement\n")
+        (moved_workspace / "events.jsonl").replace(workspace / "events.jsonl")
+        return original_open_temporary(parent_descriptor, target_name)
+
+    monkeypatch.setattr(experiment_io, "_open_temporary_at", replace_workspace)
+
+    with pytest.raises(ValueError, match="Managed output path changed"):
+        append_event(workspace, "run_status_changed", {"run_id": "run-000"})
+
+    assert (workspace / "events.jsonl").read_bytes() == before
+    assert "replacement" in (workspace / "experiment.yaml").read_text()
+
+
+def test_append_event_leaves_original_log_intact_when_temporary_write_fails(tmp_path: Path, monkeypatch):
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text('{"event_type": "before"}\n')
+    before = events_path.read_bytes()
+    original_fsync = experiment_io.os.fsync
+
+    def fail_fsync(_descriptor):
+        raise OSError("injected temporary write failure")
+
+    monkeypatch.setattr(experiment_io.os, "fsync", fail_fsync)
+    with pytest.raises(OSError, match="injected temporary write failure"):
+        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
+
+    assert events_path.read_bytes() == before
+    monkeypatch.setattr(experiment_io.os, "fsync", original_fsync)
+    append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert [event["event_type"] for event in events] == ["before", "run_status_changed"]
+
+
+def test_concurrent_append_events_share_the_managed_cas_lock(tmp_path: Path, monkeypatch):
+    original_lock = experiment_io._blocking_file_lock_at
+    first_locked = threading.Event()
+    second_attempted = threading.Event()
+    release_first = threading.Event()
+    state_lock = threading.Lock()
+    attempts = 0
+
+    @contextmanager
+    def observe_lock(parent_descriptor, name):
+        nonlocal attempts
+        with state_lock:
+            attempts += 1
+            if attempts == 2:
+                second_attempted.set()
+        with original_lock(parent_descriptor, name):
+            first_holder = not first_locked.is_set()
+            if first_holder:
+                first_locked.set()
+                assert release_first.wait(timeout=10)
+            yield
+
+    monkeypatch.setattr(experiment_io, "_blocking_file_lock_at", observe_lock)
+    errors = []
+
+    def write_event(event_type):
+        try:
+            append_event(tmp_path, event_type, {})
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=write_event, args=("first",))
+    second = threading.Thread(target=write_event, args=("second",))
+    first.start()
+    assert first_locked.wait(timeout=10)
+    second.start()
+    assert second_attempted.wait(timeout=10)
+    release_first.set()
+    first.join(timeout=20)
+    second.join(timeout=20)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events] == ["first", "second"]
+
+
+def test_append_event_has_no_failing_tail_after_commit(tmp_path: Path, monkeypatch):
+    (tmp_path / "events.jsonl").write_text('{"event_type": "before"}\n')
+    original_replace = experiment_io.os.replace
+    original_close = experiment_io.os.close
+    committed = False
+
+    def mark_commit(*args, **kwargs):
+        nonlocal committed
+        result = original_replace(*args, **kwargs)
+        committed = True
+        return result
+
+    def fail_close_after_commit(descriptor):
+        if committed:
+            raise OSError("injected post-commit close failure")
+        return original_close(descriptor)
+
+    monkeypatch.setattr(experiment_io.os, "replace", mark_commit)
+    monkeypatch.setattr(experiment_io.os, "close", fail_close_after_commit)
+
+    append_event(tmp_path, "committed", {})
+
+    monkeypatch.setattr(experiment_io.os, "close", original_close)
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events] == ["before", "committed"]
+
+
 def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch):
     existing = [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "failed"}]
     reads = []
@@ -1201,7 +1461,11 @@ def test_interrupted_atomic_replace_preserves_the_complete_old_manifest(tmp_path
         [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
     )
     before = (tmp_path / "run_manifest.tsv").read_bytes()
-    monkeypatch.setattr(experiment_io.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("interrupted")))
+    monkeypatch.setattr(
+        experiment_io.os,
+        "replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("interrupted")),
+    )
 
     with pytest.raises(OSError, match="interrupted"):
         merge_run_manifest(tmp_path, [{"step_id": "train", "run_id": "run-000", "status": "running"}])
@@ -1631,6 +1895,24 @@ def test_frozen_validator_allows_only_one_trusted_process_identity_fill():
 
     with pytest.raises(ValueError, match="pid"):
         validate_frozen_run_update({**existing, "pid": 123}, {"pid": 456}, allow_execution_identity_fill=True)
+
+
+def test_plan_registration_accepts_canonical_execution_identity_fill(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    expected = {
+        "experiment_id": "unit",
+        "step_id": "train",
+        "run_id": "run-000",
+        "status": "planned",
+    }
+    merge_run_manifest(tmp_path, [expected])
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": "train", "run_id": "run-000", "status": "launched", "target": "local", "gpus": "0"}],
+    )
+
+    assert experiment_workspace.plan_registration_rows_state(tmp_path, [expected], source="unit plan") == "present"
 
 
 def _slurm_identity(tmp_path: Path) -> dict[str, str]:
@@ -2110,3 +2392,606 @@ def test_single_run_versions_are_unique_across_repeated_plans(tmp_path: Path):
     assert first_run["version"] != second_run["version"]
     assert "run-000" in first_run["version"]
     assert "run-001" in second_run["version"]
+
+
+def test_single_run_plan_directory_may_equal_fresh_experiment_root(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path / "source")
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=workspace)
+
+    assert report.exit_code == 0
+    assert (workspace / "plan.json").is_file()
+    assert (workspace / "experiment.yaml").is_file()
+    assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000"]
+    assert not list(tmp_path.glob(".workspace.*.staging"))
+
+
+@pytest.mark.parametrize("change_step", [False, True], ids=["same-step", "different-step"])
+def test_repeated_single_run_plan_rejects_registered_output_directory(tmp_path: Path, change_step: bool):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["artifacts"]["overwrite"] = True
+    payload["decisions"]["overwrite_policy"] = {"value": True, "source": "explicit_recipe"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+
+    first = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert first.returncode == 0, first.stderr
+    first_run_dir = plan_dir / "runs" / "run-000--unit"
+    first_run_bytes = {
+        path.relative_to(first_run_dir): path.read_bytes() for path in first_run_dir.rglob("*") if path.is_file()
+    }
+    first_plan_bytes = (plan_dir / "plan.json").read_bytes()
+    if change_step:
+        payload["step"] = {
+            "id": "unit-follow-up",
+            "phase": "train",
+            "purpose": "Exercise cross-step plan ownership.",
+        }
+        payload["artifacts"]["version_name"] = "unit-follow-up"
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    second = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+
+    assert second.returncode == 1
+    assert "Registered plan directories are immutable" in second.stdout
+    assert {
+        path.relative_to(first_run_dir): path.read_bytes() for path in first_run_dir.rglob("*") if path.is_file()
+    } == first_run_bytes
+    assert (plan_dir / "plan.json").read_bytes() == first_plan_bytes
+    assert not (plan_dir / "runs" / "run-001--unit").exists()
+    assert [row["run_id"] for row in read_run_manifest(tmp_path)] == ["run-000"]
+
+
+def test_single_run_plan_recovers_registered_plan_after_manifest_failure(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    plan_dir = tmp_path / "plans" / "interrupted"
+    real_merge = plans.merge_run_manifest
+    failed = False
+
+    def fail_first_merge(root, rows):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("injected canonical commit failure")
+        return real_merge(root, rows)
+
+    monkeypatch.setattr(plans, "merge_run_manifest", fail_first_merge)
+    with pytest.raises(RuntimeError, match="injected canonical commit failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    frozen_tree = run_artifacts.plan_tree_sha256(plan_dir)
+    assert read_run_manifest(tmp_path) == []
+    step = read_step_manifest(tmp_path, "unit-finetune")
+    assert step["plans"] == [str(plan_dir)]
+
+    with pytest.raises(ValueError, match="recover it before creating another plan"):
+        plans.build_plan(recipe_path=recipe, output_dir=tmp_path / "plans" / "fresh")
+    assert not (tmp_path / "plans" / "fresh").exists()
+
+    other_payload = yaml.safe_load(recipe.read_text())
+    other_payload["step"] = {
+        "id": "other-step",
+        "phase": "train",
+        "purpose": "Register an intervening canonical run.",
+    }
+    other_payload["artifacts"]["version_name"] = "other"
+    other_recipe = write_yaml(tmp_path / "other.yaml", other_payload)
+    other_report = plans.build_plan(recipe_path=other_recipe, output_dir=tmp_path / "plans" / "other")
+    assert other_report.exit_code == 0
+
+    recovered = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert recovered.exit_code == 0
+    assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
+    rows = read_run_manifest(tmp_path)
+    assert {(row["step_id"], row["run_id"]) for row in rows} == {
+        ("unit-finetune", "run-000"),
+        ("other-step", "run-000"),
+    }
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    created = [
+        event for event in events if event["event_type"] == "plan_created" and event["plan_dir"] == str(plan_dir)
+    ]
+    assert len(created) == 1
+
+
+@pytest.mark.parametrize("tamper", [False, True], ids=["exact", "drifted"])
+def test_root_single_run_plan_recovers_registered_plan_after_manifest_failure(
+    tmp_path: Path,
+    monkeypatch,
+    tamper: bool,
+):
+    recipe = write_finetune_recipe(tmp_path / "source")
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    real_merge = plans.merge_run_manifest
+    monkeypatch.setattr(
+        plans,
+        "merge_run_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected canonical commit failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="injected canonical commit failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=workspace)
+    monkeypatch.setattr(plans, "merge_run_manifest", real_merge)
+
+    assert read_step_manifest(workspace, "unit-finetune")["plans"] == [str(workspace)]
+    assert read_run_manifest(workspace) == []
+    if tamper:
+        next((workspace / "runs").glob("*/run.json")).write_text('{"tampered": true}\n')
+
+    if tamper:
+        with pytest.raises(ValueError, match="differs from deterministic regeneration"):
+            plans.build_plan(recipe_path=recipe, output_dir=workspace)
+        assert read_run_manifest(workspace) == []
+        assert not any(
+            event["event_type"] == "plan_created"
+            for event in (json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines())
+        )
+        return
+
+    recovered = plans.build_plan(recipe_path=recipe, output_dir=workspace)
+
+    assert recovered.exit_code == 0
+    assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000"]
+    created = [
+        event
+        for event in (json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines())
+        if event["event_type"] == "plan_created" and event["plan_dir"] == str(workspace)
+    ]
+    assert len(created) == 1
+    assert not list(tmp_path.glob(".workspace.*.staging"))
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+@pytest.mark.parametrize("mutate", [False, True], ids=["exact", "drifted"])
+def test_single_run_plan_handles_unowned_publication(
+    tmp_path: Path,
+    monkeypatch,
+    overwrite: bool,
+    mutate: bool,
+):
+    recipe = write_finetune_recipe(tmp_path)
+    if overwrite:
+        payload = yaml.safe_load(recipe.read_text())
+        payload["artifacts"]["overwrite"] = True
+        payload["decisions"]["overwrite_policy"] = {"value": True, "source": "explicit_recipe"}
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plans" / "interrupted"
+    real_publish = plans.publish_staged_plan_locked
+
+    def publish_then_fail(*args, **kwargs):
+        real_publish(*args, **kwargs)
+        raise RuntimeError("injected post-publication failure")
+
+    monkeypatch.setattr(plans, "publish_staged_plan_locked", publish_then_fail)
+    with pytest.raises(RuntimeError, match="injected post-publication failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    monkeypatch.setattr(plans, "publish_staged_plan_locked", real_publish)
+
+    frozen_tree = run_artifacts.plan_tree_sha256(plan_dir)
+    assert read_step_manifest(tmp_path, "unit-finetune", allow_missing=True) is None
+    assert read_run_manifest(tmp_path) == []
+    if mutate:
+        next((plan_dir / "runs").glob("*/run.json")).write_text('{"tampered": true}\n')
+
+    if mutate and not overwrite:
+        with pytest.raises(ValueError, match="differs from deterministic regeneration"):
+            plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+        assert run_artifacts.plan_tree_sha256(plan_dir) != frozen_tree
+        assert read_step_manifest(tmp_path, "unit-finetune", allow_missing=True) is None
+        assert read_run_manifest(tmp_path) == []
+        return
+
+    recovered = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    assert recovered.exit_code == 0
+    assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
+    assert read_step_manifest(tmp_path, "unit-finetune")["plans"] == [str(plan_dir)]
+    assert [row["run_id"] for row in read_run_manifest(tmp_path)] == ["run-000"]
+    created = [
+        event
+        for event in (json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines())
+        if event["event_type"] == "plan_created" and event["plan_dir"] == str(plan_dir)
+    ]
+    assert len(created) == 1
+
+
+@pytest.mark.parametrize("field", ["config", "pipeline_id"])
+def test_complete_registration_recovery_rejects_foreign_canonical_row(tmp_path: Path, field: str):
+    recipe = write_finetune_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    manifest_path = tmp_path / "run_manifest.tsv"
+    rows = read_run_manifest(tmp_path)
+    rows[0][field] = str(tmp_path / "foreign.yaml") if field == "config" else "foreign-pipeline"
+    with manifest_path.open("w", newline="") as file_obj:
+        writer = csv.DictWriter(file_obj, fieldnames=sorted(rows[0]), delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+    before = manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match=f"Frozen run field differs.*{field}"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert manifest_path.read_bytes() == before
+
+
+def test_single_run_registration_recovery_rejects_changed_frozen_plan(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    real_merge = plans.merge_run_manifest
+    monkeypatch.setattr(
+        plans,
+        "merge_run_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected canonical commit failure")),
+    )
+    with pytest.raises(RuntimeError, match="injected canonical commit failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    monkeypatch.setattr(plans, "merge_run_manifest", real_merge)
+
+    frozen_tree = run_artifacts.plan_tree_sha256(plan_dir)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["runtime"]["lr"] = 9e-6
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    with pytest.raises(ValueError, match="differs from deterministic regeneration"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
+    assert read_run_manifest(tmp_path) == []
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert not any(event["event_type"] == "plan_created" for event in events)
+    assert not list(plan_dir.parent.glob(f".{plan_dir.name}.*.staging"))
+
+
+@pytest.mark.parametrize("different_step", [False, True], ids=["same-step", "different-step"])
+def test_plan_registration_serializes_run_index_allocation_and_workspace_initialization(
+    tmp_path: Path,
+    monkeypatch,
+    different_step: bool,
+):
+    recipe = write_finetune_recipe(tmp_path)
+    second_recipe = recipe
+    if different_step:
+        payload = yaml.safe_load(recipe.read_text())
+        payload["step"] = {
+            "id": "other-step",
+            "phase": "train",
+            "purpose": "Exercise concurrent workspace initialization.",
+        }
+        second_recipe = write_yaml(tmp_path / "other.yaml", payload)
+    original_check = plans._assert_no_incomplete_step_registration
+    first_checking = threading.Event()
+    second_checking = threading.Event()
+    release_first = threading.Event()
+    calls_lock = threading.Lock()
+    calls = 0
+
+    def pause_first_check(recipe_payload, out):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            call = calls
+        if call == 1:
+            first_checking.set()
+            assert release_first.wait(timeout=10)
+        else:
+            second_checking.set()
+        return original_check(recipe_payload, out)
+
+    monkeypatch.setattr(plans, "_assert_no_incomplete_step_registration", pause_first_check)
+    reports = []
+    errors = []
+
+    def create_plan(recipe_path, name):
+        try:
+            reports.append(plans.build_plan(recipe_path=recipe_path, output_dir=tmp_path / "plans" / name))
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=create_plan, args=(recipe, "first"))
+    second = threading.Thread(target=create_plan, args=(second_recipe, "second"))
+    first.start()
+    assert first_checking.wait(timeout=10)
+    second.start()
+    assert not second_checking.wait(timeout=0.2)
+    release_first.set()
+    first.join(timeout=20)
+    second.join(timeout=20)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert [report.exit_code for report in reports] == [0, 0]
+    run_ids = {
+        json.loads((tmp_path / "plans" / name / "plan.json").read_text())["runs"][0]["run_id"]
+        for name in ("first", "second")
+    }
+    assert run_ids == ({"run-000"} if different_step else {"run-000", "run-001"})
+
+
+def test_plan_registration_rejects_recipe_root_change_after_lock_selection(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    changed_root = tmp_path / "changed-root"
+    output_dir = changed_root / "plans" / "drifted"
+    original_load = plans.load_recipe_with_base
+    loads = 0
+
+    def load_with_drift(path):
+        nonlocal loads
+        loads += 1
+        payload = original_load(path)
+        if loads > 1:
+            payload["experiment"]["root"] = str(changed_root)
+        return payload
+
+    monkeypatch.setattr(plans, "load_recipe_with_base", load_with_drift)
+
+    with pytest.raises(ValueError, match="root changed while acquiring"):
+        plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert not changed_root.exists()
+
+
+def test_plan_registration_rejects_root_added_after_lock_selection(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    output_dir = tmp_path / "plans" / "drifted"
+    experiment_path = tmp_path / "experiment.yaml"
+    manifest_path = tmp_path / "run_manifest.tsv"
+    experiment_before = experiment_path.read_bytes() if experiment_path.exists() else None
+    manifest_before = manifest_path.read_bytes() if manifest_path.exists() else None
+    original_load = plans.load_recipe_with_base
+    loads = 0
+
+    def load_with_drift(path):
+        nonlocal loads
+        loads += 1
+        payload = original_load(path)
+        if loads == 1:
+            payload["experiment"].pop("root")
+        return payload
+
+    monkeypatch.setattr(plans, "load_recipe_with_base", load_with_drift)
+
+    with pytest.raises(ValueError, match="root changed while acquiring"):
+        plans.build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert not output_dir.exists()
+    assert (experiment_path.read_bytes() if experiment_path.exists() else None) == experiment_before
+    assert (manifest_path.read_bytes() if manifest_path.exists() else None) == manifest_before
+
+
+def test_plan_registration_serializes_fresh_workspace_initialization(tmp_path: Path, monkeypatch):
+    source_dir = tmp_path / "source"
+    recipe = write_finetune_recipe(source_dir)
+    workspace = tmp_path / "fresh-workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    second_payload = yaml.safe_load(recipe.read_text())
+    second_payload["step"] = {
+        "id": "other-step",
+        "phase": "train",
+        "purpose": "Exercise concurrent workspace initialization.",
+    }
+    second_recipe = source_dir / "other.yaml"
+    second_recipe.write_text(yaml.safe_dump(second_payload, sort_keys=False))
+
+    original_initialize = experiment_workspace.initialize_run_manifest
+    first_manifest_written = threading.Event()
+    release_first = threading.Event()
+    second_checking = threading.Event()
+
+    def pause_first_initialization(root, *, remote=None):
+        if threading.current_thread().name == "first-planner":
+            first_manifest_written.set()
+            if not release_first.wait(timeout=10):
+                raise AssertionError("first planner was not released")
+        return original_initialize(root, remote=remote)
+
+    original_check = plans._assert_no_incomplete_step_registration
+
+    def observe_second_check(recipe_payload, out):
+        if threading.current_thread().name == "second-planner":
+            second_checking.set()
+        return original_check(recipe_payload, out)
+
+    monkeypatch.setattr(experiment_workspace, "initialize_run_manifest", pause_first_initialization)
+    monkeypatch.setattr(plans, "_assert_no_incomplete_step_registration", observe_second_check)
+    reports = []
+    errors = []
+
+    def create_plan(recipe_path, name):
+        try:
+            reports.append(plans.build_plan(recipe_path=recipe_path, output_dir=workspace / "plans" / name))
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=create_plan, args=(recipe, "first"), name="first-planner")
+    second = threading.Thread(target=create_plan, args=(second_recipe, "second"), name="second-planner")
+    first.start()
+    assert first_manifest_written.wait(timeout=10)
+    second.start()
+    try:
+        assert not second_checking.wait(timeout=0.5)
+    finally:
+        release_first.set()
+    first.join(timeout=20)
+    second.join(timeout=20)
+
+    if errors:
+        raise errors[0]
+    assert len(reports) == 2
+    assert all(report.exit_code == 0 for report in reports)
+    assert {(row["step_id"], row["run_id"]) for row in read_run_manifest(workspace)} == {
+        ("unit-finetune", "run-000"),
+        ("other-step", "run-000"),
+    }
+
+
+def test_plan_registration_lock_is_shared_across_controller_temp_roots(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    recipe = write_finetune_recipe(workspace)
+    release = tmp_path / "release"
+    runner = """
+import sys
+import time
+from pathlib import Path
+
+from agent_tools import plans
+
+recipe = Path(sys.argv[1])
+output = Path(sys.argv[2])
+entered = Path(sys.argv[3])
+release = Path(sys.argv[4])
+wait_for_release = sys.argv[5] == "wait"
+original_check = plans._assert_no_incomplete_step_registration
+
+def observe_check(recipe_payload, out):
+    entered.touch()
+    if wait_for_release:
+        while not release.exists():
+            time.sleep(0.01)
+    return original_check(recipe_payload, out)
+
+plans._assert_no_incomplete_step_registration = observe_check
+report = plans.build_plan(recipe_path=recipe, output_dir=output)
+raise SystemExit(report.exit_code)
+"""
+    processes = []
+    second_entered_early = False
+    try:
+        for name in ("first", "second"):
+            lock_root = tmp_path / f"{name}-tmp"
+            lock_root.mkdir()
+            env = {**os.environ, "TMPDIR": str(lock_root)}
+            processes.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        runner,
+                        str(recipe),
+                        str(workspace / "plans" / name),
+                        str(tmp_path / f"{name}-entered"),
+                        str(release),
+                        "wait" if name == "first" else "continue",
+                    ],
+                    cwd=Path(__file__).parents[2],
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            )
+            if name == "first":
+                entered = tmp_path / "first-entered"
+                deadline = time.monotonic() + 10
+                while not entered.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert entered.exists()
+        time.sleep(0.5)
+        second_entered_early = (tmp_path / "second-entered").exists()
+    finally:
+        release.touch()
+    results = [process.communicate(timeout=30) for process in processes]
+
+    assert not second_entered_early
+    assert [process.returncode for process in processes] == [0, 0], results
+    assert (tmp_path / "second-entered").exists()
+    run_ids = {
+        json.loads((workspace / "plans" / name / "plan.json").read_text())["runs"][0]["run_id"]
+        for name in ("first", "second")
+    }
+    assert run_ids == {"run-000", "run-001"}
+    assert {row["run_id"] for row in read_run_manifest(workspace)} == run_ids
+    assert set(read_step_manifest(workspace, "unit-finetune")["plans"]) == {
+        str(workspace / "plans" / "first"),
+        str(workspace / "plans" / "second"),
+    }
+    events = [json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines()]
+    assert len([event for event in events if event["event_type"] == "plan_created"]) == 2
+
+
+def test_plan_publication_lock_is_shared_across_controller_temp_roots(tmp_path: Path):
+    output = tmp_path / "plan"
+    release = tmp_path / "release"
+    runner = """
+import sys
+import time
+from pathlib import Path
+
+from agent_tools.plans import plan_publication_lock
+
+output = Path(sys.argv[1])
+entered = Path(sys.argv[2])
+release = Path(sys.argv[3])
+wait_for_release = sys.argv[4] == "wait"
+with plan_publication_lock(output):
+    entered.touch()
+    if wait_for_release:
+        while not release.exists():
+            time.sleep(0.01)
+"""
+    processes = []
+    second_entered_early = False
+    try:
+        for name in ("first", "second"):
+            temp_root = tmp_path / f"{name}-tmp"
+            temp_root.mkdir()
+            env = {**os.environ, "TMPDIR": str(temp_root)}
+            processes.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        runner,
+                        str(output),
+                        str(tmp_path / f"{name}-entered"),
+                        str(release),
+                        "wait" if name == "first" else "continue",
+                    ],
+                    cwd=Path(__file__).parents[2],
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            )
+            if name == "first":
+                entered = tmp_path / "first-entered"
+                deadline = time.monotonic() + 10
+                while not entered.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert entered.exists()
+        time.sleep(0.5)
+        second_entered_early = (tmp_path / "second-entered").exists()
+    finally:
+        release.touch()
+    results = [process.communicate(timeout=30) for process in processes]
+
+    assert not second_entered_early
+    assert [process.returncode for process in processes] == [0, 0], results
+    assert (tmp_path / "second-entered").exists()
+
+
+def test_plan_registration_lock_cannot_deadlock_with_plan_output(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
+    output = tmp_path / "steps" / "unit-finetune" / "step.yaml"
+
+    result = subprocess.run(
+        [sys.executable, str(runner), "plan", "--recipe", str(recipe), "--output-dir", str(output)],
+        text=True,
+        capture_output=True,
+        timeout=5,
+    )
+
+    assert result.returncode != 0

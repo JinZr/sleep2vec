@@ -4,6 +4,29 @@ User-decision files resolve high-impact ambiguity with explicit user intent. The
 
 Decision names are task-aware: each name must be applicable to the current task through `agent_policies/consultation_policy.yaml` or an existing owner-local optional decision. Mapping entries accept only `value`, `source`, `meaning`, `question`, and `rationale`; scalar shorthand is also accepted. Unknown names and misspelled entry fields fail before context or plan output is written.
 
+## Generated decision templates
+
+For a pure `NEEDS_USER_INPUT` result, `doctor --output-dir` and a safely
+published blocked `plan` write `decisions.yaml` when at least one blocker maps
+to a task-valid user decision. The template uses this same schema, preserves
+already resolved `explicit_user` entries, and represents each unanswered value
+as `ASK_USER` with its existing question. It does not add recommendations,
+consequences, or inferred rationale.
+
+An unedited template remains unresolved and is not authorization. Fill only
+values the user has actually decided, then pass the file explicitly with
+`--user-decisions`. A blocked-plan retry must use a fresh `--output-dir`.
+Existing independent `decisions.yaml` files are not overwritten by doctor;
+a file that appears during blocked-plan publication fails before canonical registration.
+Doctor may reuse a doctor-only output directory, but any blocked or PASS plan marker
+makes that directory plan-owned and requires a fresh doctor `--output-dir`.
+
+No template is written for PASS/WARN, FAIL or mixed FAIL/NEEDS_USER_INPUT results,
+non-decision-only blockers, `plan --validate-only`, unsafe or occupied plan
+outputs, or registration preflight failures. `context` remains diagnostic-only
+and never emits the file. `questions.json`, `questions.md`, and
+`plan.blocked.md` remain explanatory views rather than decision inputs.
+
 Concrete values with a task-owned canonical field are materialized into the
 effective recipe's existing `inputs`, `evaluation_policy`, `preset`, `search`,
 or artifact fields before config inspection and consultation are rerun.

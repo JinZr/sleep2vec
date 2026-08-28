@@ -75,13 +75,14 @@ def test_experiment_status_skips_registered_blocked_plan_after_successful_retry(
     assert blocked.exit_code == 2
     blocked_path = blocked_dir / "plan.blocked.md"
     assert blocked_path.exists()
+    assert (blocked_dir / "decisions.yaml").exists()
     assert not (blocked_dir / "plan.json").exists()
     assert not (blocked_dir / "recipe.resolved.yaml").exists()
     assert (blocked_dir / "plan.draft.json").exists() is allow_unresolved
-    decisions_path = write_yaml(
-        root / "decisions.yaml",
-        {"decisions": {"label_name": {"value": "ahi", "source": "explicit_user"}}},
-    )
+    decisions_path = blocked_dir / "decisions.yaml"
+    decisions = yaml.safe_load(decisions_path.read_text())
+    decisions["decisions"]["label_name"]["value"] = "ahi"
+    decisions_path.write_text(yaml.safe_dump(decisions, sort_keys=False))
     retry_dir = root / "plans" / "retry"
     retry = plans.build_plan(
         recipe_path=recipe,
@@ -220,6 +221,29 @@ def test_experiment_status_rejects_blocked_artifacts_beside_pass_plan(tmp_path):
     assert _workspace_files(root) == before
 
 
+def test_experiment_status_rejects_user_decisions_beside_pass_plan(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = write_finetune_recipe(root)
+    plan_dir = root / "plans" / "train"
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    (plan_dir / "decisions.yaml").write_text("decisions: {}\n")
+
+    with pytest.raises(ValueError, match="both PASS and blocked"):
+        experiments.experiment_status(root)
+
+
+def test_experiment_status_accepts_historical_blocked_plan_without_user_decisions(tmp_path):
+    root = tmp_path / "experiment"
+    recipe = write_finetune_recipe(root, include_label=False)
+    blocked_dir = root / "plans" / "blocked"
+    assert plans.build_plan(recipe_path=recipe, output_dir=blocked_dir).exit_code == 2
+    (blocked_dir / "decisions.yaml").unlink()
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "empty"
+
+
 @pytest.mark.parametrize(
     "mutation",
     ["missing_questions_json", "missing_questions_md", "launch_script", "config", "runs"],
@@ -249,15 +273,16 @@ def test_experiment_status_rejects_partial_registered_blocked_plan(tmp_path, mut
 
 
 @pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
-def test_experiment_status_rejects_aliased_registered_blocked_plan(tmp_path, alias_kind):
+@pytest.mark.parametrize("artifact_name", ["plan.blocked.md", "decisions.yaml"])
+def test_experiment_status_rejects_aliased_registered_blocked_plan(tmp_path, alias_kind, artifact_name):
     root = tmp_path / "experiment"
     recipe = write_finetune_recipe(root, include_label=False)
     blocked_dir = root / "plans" / "blocked"
     assert plans.build_plan(recipe_path=recipe, output_dir=blocked_dir).exit_code == 2
-    blocked_path = blocked_dir / "plan.blocked.md"
+    blocked_path = blocked_dir / artifact_name
     contents = blocked_path.read_bytes()
     blocked_path.unlink()
-    outside = root / "outside-blocked.md"
+    outside = root / f"outside-{artifact_name}"
     outside.write_bytes(contents)
     if alias_kind == "symlink":
         blocked_path.symlink_to(outside)

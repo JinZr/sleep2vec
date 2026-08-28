@@ -22,6 +22,8 @@ __all__ = [
     "ResolvedDecision",
     "evaluate_consultation_gates",
     "merge_status",
+    "resolved_user_decisions",
+    "user_decision_template",
 ]
 
 _EXPLICIT_HIGH_IMPACT_SOURCES = {"explicit_user", "explicit_cli", "explicit_recipe", "explicit_config"}
@@ -82,6 +84,8 @@ def decision_entry_contract_issues(
 
 
 def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
+    if task in ("", "ASK_USER"):
+        task = None
     task_scope = {task}
     scope_adapter = get_adapter(task)
     if scope_adapter is not None and scope_adapter.base_task is not None:
@@ -99,6 +103,52 @@ def _decision_fields_for_task(task: str | None, policy: dict) -> set[str]:
     elif scope_adapter is not None:
         allowed |= scope_adapter.extra_decision_fields
     return allowed
+
+
+def user_decision_template(
+    task: str | None,
+    report: DecisionReport,
+    policy: dict,
+) -> dict[str, Any]:
+    if report.status != DecisionStatus.NEEDS_USER_INPUT:
+        return {}
+
+    allowed = _decision_fields_for_task(task, policy)
+    template_fields: list[tuple[str, DecisionIssue]] = []
+    seen = set()
+    for issue in report.issues:
+        if issue.status != DecisionStatus.NEEDS_USER_INPUT:
+            continue
+        field = issue.evidence.get("user_decision_field", issue.field)
+        if field not in allowed or field in seen:
+            continue
+        template_fields.append((field, issue))
+        seen.add(field)
+    if not template_fields:
+        return {}
+
+    decisions = {}
+    for field, decision in report.decisions.items():
+        if field not in allowed or decision.source != "explicit_user":
+            continue
+        entry = {"value": decision.value, "source": "explicit_user"}
+        for metadata_field in ("meaning", "question", "rationale"):
+            if metadata_field in decision.evidence:
+                entry[metadata_field] = decision.evidence[metadata_field]
+        decisions[field] = entry
+
+    for field, issue in template_fields:
+        entry = decisions.setdefault(field, {"value": "ASK_USER", "source": "explicit_user"})
+        if "question" not in entry:
+            entry["question"] = issue.question or issue.message
+    return {"decisions": decisions}
+
+
+def resolved_user_decisions(user_decisions: dict[str, Any]) -> dict[str, ResolvedDecision]:
+    return {
+        field: _decision_from_mapping(field, raw_decision, "explicit_user")
+        for field, raw_decision in user_decisions.items()
+    }
 
 
 def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
@@ -140,6 +190,8 @@ def evaluate_consultation_gates(
             )
         )
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=decisions)
+    # Preserve user-file entries when an unresolved task stops consultation before later fields are evaluated.
+    decisions.update(resolved_user_decisions(user_decisions))
     supported_tasks = SUPPORTED_TASKS
     task_decision = _resolve_decision(
         "task",
@@ -151,7 +203,7 @@ def evaluate_consultation_gates(
     )
     task_value = task_decision.value
     decisions["task"] = task_decision
-    if task_value in (None, ""):
+    if task_value in (None, "", "ASK_USER"):
         issues.append(needs_issue("task", "Task is missing.", high_impact))
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=decisions)
     if task_value not in supported_tasks:
@@ -336,7 +388,8 @@ def _resolve_decision(
 ) -> ResolvedDecision:
     if field in user_decisions:
         return _decision_from_mapping(field, user_decisions[field], "explicit_user")
-    if task_override not in (None, "") and field == "task":
+    # ASK_USER is an unresolved sentinel; generated templates must not turn it into a task name.
+    if task_override not in (None, "", "ASK_USER") and field == "task":
         return ResolvedDecision(field, task_override, "explicit_cli", "high", {"task": task_override})
     if field in cli_args and cli_args[field] not in (None, ""):
         return ResolvedDecision(field, cli_args[field], "explicit_cli", "high", {"cli": cli_args[field]})
@@ -477,16 +530,21 @@ def _base_task_issues(
         policy,
         require_experiment=False,
     )
-    return [
-        DecisionIssue(
-            issue.status,
-            f"base_{base_task}.{issue.field}",
-            f"Base {base_task} readiness issue: {issue.message}",
-            issue.question,
-            issue.evidence,
+    issues = []
+    for issue in report.blocking_issues():
+        evidence = dict(issue.evidence)
+        if issue.field in report.decisions:
+            evidence["user_decision_field"] = issue.field
+        issues.append(
+            DecisionIssue(
+                issue.status,
+                f"base_{base_task}.{issue.field}",
+                f"Base {base_task} readiness issue: {issue.message}",
+                issue.question,
+                evidence,
+            )
         )
-        for issue in report.blocking_issues()
-    ]
+    return issues
 
 
 def _output_paths_missing(recipe: dict) -> bool:

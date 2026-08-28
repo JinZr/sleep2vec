@@ -213,7 +213,7 @@ def test_plan_allows_existing_workspace_matrix_and_events_for_new_plan(tmp_path:
     assert (workspace / "plan-2" / "plan.json").exists()
 
 
-def test_plan_refuses_existing_blocked_artifact_when_overwrite_missing(tmp_path: Path):
+def test_plan_requires_fresh_directory_for_existing_blocked_artifact(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     payload = yaml.safe_load(recipe.read_text())
     payload["decisions"].pop("overwrite_policy")
@@ -226,7 +226,8 @@ def test_plan_refuses_existing_blocked_artifact_when_overwrite_missing(tmp_path:
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
-    assert result.returncode == 2
+    assert result.returncode == 1
+    assert "Blocked plan artifacts already exist; retry with a fresh --output-dir." in result.stdout
     assert blocked_plan.read_text() == "keep me"
 
 
@@ -296,7 +297,7 @@ def test_single_run_materialization_failure_does_not_register_plan(tmp_path: Pat
     step_path = workspace / "steps" / payload["step"]["id"] / "step.yaml"
     assert not step_path.exists()
     assert read_run_manifest(workspace) == []
-    assert output_dir.exists()
+    assert not output_dir.exists()
     assert not (output_dir / "plan.json").exists()
 
     monkeypatch.setattr(plans, "write_json", original_write_json)
@@ -740,6 +741,7 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
         recipe["inputs"] = {"config": recipe["inputs"]["config"]}
         recipe["evaluation_policy"] = {"external_test_locked": True}
         recipe["artifacts"] = {"overwrite": False}
+    recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     recipe["_recipe_path"] = str(recipe_path.resolve())
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
@@ -790,6 +792,7 @@ def test_infer_plan_uses_frozen_runtime_python_for_workload_and_lifecycle(tmp_pa
         "python": runtime_python,
         "runtime_commit": _RUNTIME_COMMIT,
     }
+    recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
@@ -828,6 +831,7 @@ def test_infer_runtime_commit_mismatch_fails_before_running_or_payload(tmp_path:
         "python": sys.executable,
         "runtime_commit": "0" * 40,
     }
+    recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
@@ -852,6 +856,7 @@ def test_non_hparam_run_script_records_failure_and_preserves_runtime_exit_code(t
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
     recipe["experiment"]["root"] = str(workspace)
+    recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
@@ -873,6 +878,7 @@ def test_non_hparam_run_script_propagates_terminal_commit_failure(tmp_path: Path
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
     recipe["experiment"]["root"] = str(workspace)
+    recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
@@ -895,6 +901,7 @@ def test_non_hparam_run_script_refuses_to_execute_terminal_run(tmp_path: Path, m
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
     recipe["experiment"]["root"] = str(workspace)
+    recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))

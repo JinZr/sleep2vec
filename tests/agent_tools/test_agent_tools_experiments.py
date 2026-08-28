@@ -529,7 +529,7 @@ def test_remote_research_log_retries_conflict_and_preserves_competing_entry(tmp_
         state["paths"] = [Path(path) for path in paths]
         assert remote == "unit-host"
 
-    def commit(_path, replacement, _expected_sha256, *, remote=None):
+    def commit(_path, replacement, _expected_sha256, *, remote=None, **_kwargs):
         state["attempts"] += 1
         if state["attempts"] == 1:
             marker = "<!-- agent-tools-research-entry " f'id="obs-competing" sha256="{competing_digest}" -->\n'
@@ -558,6 +558,7 @@ def test_remote_research_log_retries_conflict_and_preserves_competing_entry(tmp_
     assert appended is True
     assert state["attempts"] == 2
     assert root / "RESEARCH_LOG.md.lock" in state["paths"]
+    assert root / ".RESEARCH_LOG.md.cas.lock" in state["paths"]
     assert state["text"].count('id="obs-competing"') == 1
     assert state["text"].count('id="obs-new"') == 1
 
@@ -567,7 +568,7 @@ def test_uncertain_remote_research_log_commit_is_idempotent_on_retry(tmp_path: P
     entry = json.loads(_research_entry(tmp_path, "obs-timeout").read_text())
     state = {"text": experiment_workspace.RESEARCH_LOG_PREAMBLE, "raise_timeout": True}
 
-    def commit(_path, replacement, _expected_sha256, *, remote=None):
+    def commit(_path, replacement, _expected_sha256, *, remote=None, **_kwargs):
         state["text"] = replacement
         if state["raise_timeout"]:
             state["raise_timeout"] = False
@@ -918,10 +919,10 @@ def test_interrupted_finalization_preserves_complete_experiment_manifest(tmp_pat
     before = manifest.read_bytes()
     real_replace = experiment_io.os.replace
 
-    def interrupt_manifest_replace(source, target):
-        if Path(target) == manifest:
+    def interrupt_manifest_replace(source, target, **kwargs):
+        if target == manifest.name:
             raise OSError("interrupted")
-        return real_replace(source, target)
+        return real_replace(source, target, **kwargs)
 
     monkeypatch.setattr(experiment_io.os, "replace", interrupt_manifest_replace)
 
@@ -1259,7 +1260,7 @@ def test_experiment_init_remote_writes_remote_not_local(tmp_path: Path, monkeypa
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        if "mkdir -p" in command[-1] or "seen_inodes" in command[-1]:
+        if "mkdir -p" in command[-1] or "seen_inodes" in command[-1] or "append_mode" in command[-1]:
             return subprocess.CompletedProcess(command, 0, "", "")
         return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
 
@@ -1273,8 +1274,11 @@ def test_experiment_init_remote_writes_remote_not_local(tmp_path: Path, monkeypa
     assert any("/wujidata/remote_run/experiment.yaml" in target for target in write_targets)
     assert any("/wujidata/remote_run/RESEARCH_LOG.md" in target for target in write_targets)
     assert any("/wujidata/remote_run/README.md" in target for target in write_targets)
-    assert any("/wujidata/remote_run/events.jsonl" in target for target in write_targets)
     assert any("/wujidata/remote_run/experiment_manifest.tsv" in target for target in write_targets)
+    assert any(
+        "append_mode" in command[-1] and "/wujidata/remote_run/events.jsonl" in command[-1]
+        for command, _kwargs in calls
+    )
     assert not (tmp_path / "reports").exists()
 
 

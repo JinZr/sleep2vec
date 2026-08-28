@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from .. import slurm
+from .. import plan_contract, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
 from ..models import coerce_list
@@ -164,6 +164,7 @@ class HparamTuneAdapter(TaskAdapter):
         out: Path,
         *,
         write_out: Path | None = None,
+        run_index_offset: int | None = None,
         unlock_final_test: bool,
         source_config_bytes: bytes,
         source_config_sha256: str,
@@ -184,6 +185,7 @@ class HparamTuneAdapter(TaskAdapter):
             source_config_bytes=source_config_bytes,
             source_config_sha256=source_config_sha256,
             profile_audit=profile_audit,
+            run_index_offset=run_index_offset,
         )
 
     def commit_plan(self, out: Path, *, preflight_validated: bool = False) -> None:
@@ -193,6 +195,11 @@ class HparamTuneAdapter(TaskAdapter):
             plan_hparam.commit_hparam_plan(out, preflight_validated=preflight_validated)
         except plan_hparam.HparamRegistrationPreflightError as exc:
             raise PlanRegistrationPreflightError(str(exc)) from exc
+
+    def registration_rows(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
+        from .. import plan_hparam
+
+        return plan_hparam.hparam_manifest_rows(plan)
 
     def precommit_plan(self, out: Path, *, write_out: Path) -> str:
         from .. import plan_hparam
@@ -250,7 +257,7 @@ class HparamTuneAdapter(TaskAdapter):
         from ..experiment_workspace import next_run_index
 
         if report.exit_code != 0:
-            paths = [out / "questions.json", out / "questions.md", out / "plan.blocked.md"]
+            paths = plan_contract.blocked_plan_control_paths(out)
             evaluation = recipe.get("evaluation_policy") or {}
             if plan_hparam.final_test_unlocked(evaluation, unlock_final_test):
                 paths.extend(
@@ -259,8 +266,6 @@ class HparamTuneAdapter(TaskAdapter):
                         out / plan_hparam.FROZEN_FINAL_EVAL_CONFIG_NAME,
                     ]
                 )
-            if allow_unresolved and report.exit_code == 2:
-                paths.append(out / "plan.draft.json")
             return paths
         paths = [
             out / "plan.json",

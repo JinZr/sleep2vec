@@ -375,7 +375,12 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     recipe, _cfg, report = evaluate_recipe(args.recipe, args.user_decisions)
     report = prepare_doctor_report(args.output_dir, recipe, report)
     print(report_text(report))
-    write_doctor_outputs(args.output_dir, recipe, report)
+    template = write_doctor_outputs(args.output_dir, recipe, report)
+    if template is not None:
+        path, created = template
+        action = "Wrote" if created else "Preserved existing"
+        print(f"{action} user decisions file: {path}")
+        print(f"Fill it and rerun with --user-decisions {path}.")
     return report.exit_code
 
 
@@ -402,6 +407,11 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         validate_only=args.validate_only,
     )
     print(report_text(report))
+    if report.exit_code == 2 and report.published_user_decisions_path is not None:
+        decisions_path = Path(report.published_user_decisions_path)
+        print(f"User decisions file: {decisions_path}")
+        print(f"Fill it and rerun with --user-decisions {decisions_path}.")
+        print("The retry must use a fresh --output-dir.")
     return report.exit_code
 
 

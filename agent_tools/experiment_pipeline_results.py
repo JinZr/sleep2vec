@@ -260,11 +260,18 @@ def summary_markdown(
 def atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with temp.open("x") as file_obj:
-        file_obj.write(text)
-        file_obj.flush()
-        os.fsync(file_obj.fileno())
-    os.replace(temp, path)
+    created = False
+    try:
+        with temp.open("x") as file_obj:
+            created = True
+            file_obj.write(text)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(temp, path)
+    except BaseException:
+        if created:
+            temp.unlink(missing_ok=True)
+        raise
 
 
 def write_rows_atomic(path: Path, rows: list[dict[str, Any]]) -> None:

@@ -606,7 +606,10 @@ def test_generated_config_validation_failure_precedes_workspace_mutation(tmp_pat
     after = {
         str(path.relative_to(tmp_path)): path.read_bytes() for path in sorted(tmp_path.rglob("*")) if path.is_file()
     }
+    lock_path = workspace.parent / f".{workspace.name}.plan-registration.lock"
     assert report.exit_code == 1
+    assert lock_path.is_file() and not lock_path.is_symlink()
+    assert after.pop(str(lock_path.relative_to(tmp_path))) == b""
     assert before == after
     assert not workspace.exists()
     issue = next(issue for issue in report.issues if issue.field == "hparam_search_space")

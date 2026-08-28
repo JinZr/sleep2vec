@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import errno
 import hashlib
 import json
@@ -9,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 
 from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
@@ -495,6 +497,49 @@ def test_hparam_validate_only_failure_leaves_no_staging_or_canonical_state(tmp_p
     assert _staging_dirs(workspace, plan_dir) == []
 
 
+def test_hparam_validate_only_holds_publication_lock(tmp_path: Path, monkeypatch):
+    plan_dir = tmp_path / "plan"
+    build_entered = threading.Event()
+    release_build = threading.Event()
+    competing_lock_started = threading.Event()
+    competing_lock_entered = threading.Event()
+    result = object()
+    returned = []
+
+    def pause_build(**_kwargs):
+        build_entered.set()
+        release_build.wait(timeout=10)
+        return result
+
+    def acquire_competing_lock():
+        competing_lock_started.set()
+        with plans.plan_publication_lock(plan_dir):
+            competing_lock_entered.set()
+
+    monkeypatch.setattr(plans, "_build_plan", pause_build)
+    validate_thread = threading.Thread(
+        target=lambda: returned.append(
+            plans.build_plan(recipe_path=tmp_path / "unused.yaml", output_dir=plan_dir, validate_only=True)
+        )
+    )
+    lock_thread = threading.Thread(target=acquire_competing_lock)
+    validate_thread.start()
+    assert build_entered.wait(timeout=10)
+    lock_thread.start()
+    assert competing_lock_started.wait(timeout=10)
+    try:
+        assert not competing_lock_entered.wait(timeout=0.5)
+    finally:
+        release_build.set()
+    validate_thread.join(timeout=10)
+    lock_thread.join(timeout=10)
+
+    assert not validate_thread.is_alive()
+    assert not lock_thread.is_alive()
+    assert competing_lock_entered.is_set()
+    assert returned == [result]
+
+
 def test_hparam_registration_recheck_rejects_target_drift_without_writes(tmp_path: Path, monkeypatch):
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
@@ -568,7 +613,7 @@ def test_hparam_registration_rejects_partial_canonical_rows_before_workspace_wri
         if calls == 1:
             run = dict(runs[0])
             run["script"] = str(plan_dir / Path(run["script"]).relative_to(staging_dir))
-            row = plan_hparam._hparam_manifest_rows({"runs": [run]})[0]
+            row = plan_hparam.hparam_manifest_rows({"runs": [run]})[0]
             merge_run_manifest(workspace, [row])
         return _snapshot(execution, runs)
 
@@ -588,6 +633,196 @@ def test_hparam_registration_rejects_partial_canonical_rows_before_workspace_wri
     assert not (workspace / "steps" / "unit-finetune" / "step.yaml").exists()
     assert (events_path.read_bytes() if events_path.exists() else None) == events_before
     assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000"]
+
+
+@pytest.mark.parametrize("failure_stage", ["rows", "event"])
+@pytest.mark.parametrize("root_resident", [False, True], ids=["nested", "root"])
+def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
+    tmp_path: Path,
+    monkeypatch,
+    failure_stage: str,
+    root_resident: bool,
+):
+    recipe, workspace = _recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"] = {
+        "method": "grid",
+        "max_runs": 2,
+        "parameters": {"runtime.lr": [1e-6, 2e-6]},
+    }
+    if root_resident:
+        workspace = tmp_path / "workspace"
+        payload["experiment"]["root"] = str(workspace)
+        recipe = tmp_path / "root-recovery.yaml"
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = workspace if root_resident else workspace / "plans" / "tune"
+    monkeypatch.setattr(
+        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+    )
+
+    if failure_stage == "rows":
+        real_commit = plan_hparam.merge_run_manifest
+        monkeypatch.setattr(
+            plan_hparam,
+            "merge_run_manifest",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected canonical rows failure")),
+        )
+        expected_error = "injected canonical rows failure"
+    else:
+        real_commit = plan_hparam.append_event
+        monkeypatch.setattr(
+            plan_hparam,
+            "append_event",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected plan event failure")),
+        )
+        expected_error = "injected plan event failure"
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    monkeypatch.setattr(
+        plan_hparam,
+        "merge_run_manifest" if failure_stage == "rows" else "append_event",
+        real_commit,
+    )
+
+    frozen_plan = (plan_dir / "plan.json").read_bytes()
+    frozen_tree = None if root_resident else run_artifacts.plan_tree_sha256(plan_dir)
+    frozen_run_ids = [run["run_id"] for run in json.loads((plan_dir / "plan.json").read_text())["runs"]]
+    assert len(read_run_manifest(workspace)) == (0 if failure_stage == "rows" else 2)
+
+    recovered = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert recovered.exit_code == 0
+    assert (plan_dir / "plan.json").read_bytes() == frozen_plan
+    if frozen_tree is not None:
+        assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
+    assert [run["run_id"] for run in json.loads((plan_dir / "plan.json").read_text())["runs"]] == frozen_run_ids
+    assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000", "run-001"]
+    events = [json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines()]
+    created = [
+        event for event in events if event["event_type"] == "plan_created" and event["plan_dir"] == str(plan_dir)
+    ]
+    assert len(created) == 1
+    assert not _staging_dirs(workspace, plan_dir)
+
+    replay = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    assert replay.exit_code == 1
+    assert "Registered plan directories are immutable" in replay.blocking_issues()[0].message
+
+
+def test_root_hparam_registration_recovery_rejects_plan_drift(tmp_path: Path, monkeypatch):
+    recipe, _workspace = _recipe(tmp_path)
+    workspace = tmp_path / "workspace"
+    payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe = tmp_path / "root-drift.yaml"
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+    )
+    real_merge = plan_hparam.merge_run_manifest
+    monkeypatch.setattr(
+        plan_hparam,
+        "merge_run_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected canonical rows failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="injected canonical rows failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=workspace)
+    monkeypatch.setattr(plan_hparam, "merge_run_manifest", real_merge)
+    next((workspace / "runs").glob("*/run.json")).write_text('{"tampered": true}\n')
+
+    with pytest.raises(ValueError, match="differs from deterministic regeneration"):
+        plans.build_plan(recipe_path=recipe, output_dir=workspace)
+
+    assert read_run_manifest(workspace) == []
+    assert not any(
+        event["event_type"] == "plan_created"
+        for event in (json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines())
+    )
+    assert not _staging_dirs(workspace, workspace)
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+@pytest.mark.parametrize("mutate", [False, True], ids=["exact", "drifted"])
+def test_hparam_plan_handles_unowned_publication(
+    tmp_path: Path,
+    monkeypatch,
+    overwrite: bool,
+    mutate: bool,
+):
+    recipe, workspace = _recipe(tmp_path)
+    if overwrite:
+        payload = yaml.safe_load(recipe.read_text())
+        payload["artifacts"] = {**payload.get("artifacts", {}), "overwrite": True}
+        payload["decisions"]["overwrite_policy"] = {"value": True, "source": "explicit_recipe"}
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = workspace / "plans" / "tune"
+    monkeypatch.setattr(
+        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+    )
+    real_publish = plans.publish_staged_plan_locked
+
+    def publish_then_fail(*args, **kwargs):
+        real_publish(*args, **kwargs)
+        raise RuntimeError("injected post-publication failure")
+
+    monkeypatch.setattr(plans, "publish_staged_plan_locked", publish_then_fail)
+    with pytest.raises(RuntimeError, match="injected post-publication failure"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    monkeypatch.setattr(plans, "publish_staged_plan_locked", real_publish)
+
+    frozen_tree = run_artifacts.plan_tree_sha256(plan_dir)
+    assert read_run_manifest(workspace) == []
+    assert not (workspace / "steps" / "unit-finetune" / "step.yaml").exists()
+    if mutate:
+        next((plan_dir / "runs").glob("*/run.json")).write_text('{"tampered": true}\n')
+
+    if mutate and not overwrite:
+        with pytest.raises(ValueError, match="differs from deterministic regeneration"):
+            plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+        assert run_artifacts.plan_tree_sha256(plan_dir) != frozen_tree
+        assert read_run_manifest(workspace) == []
+        assert not (workspace / "steps" / "unit-finetune" / "step.yaml").exists()
+        return
+
+    recovered = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    assert recovered.exit_code == 0
+    assert run_artifacts.plan_tree_sha256(plan_dir) == frozen_tree
+    assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000"]
+    events = [json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines()]
+    assert (
+        len([event for event in events if event["event_type"] == "plan_created" and event["plan_dir"] == str(plan_dir)])
+        == 1
+    )
+
+
+@pytest.mark.parametrize("field", ["config", "pipeline_id"])
+def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, monkeypatch, field: str):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    monkeypatch.setattr(
+        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+    )
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    manifest_path = workspace / "run_manifest.tsv"
+    rows = read_run_manifest(workspace)
+    rows[0][field] = str(workspace / "foreign.yaml") if field == "config" else "foreign-pipeline"
+    with manifest_path.open("w", newline="") as file_obj:
+        fieldnames = sorted({field for row in rows for field in row})
+        writer = csv.DictWriter(file_obj, fieldnames=fieldnames, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+    before = manifest_path.read_bytes()
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert "Frozen run field differs" in report.blocking_issues()[0].message
+    assert field in report.blocking_issues()[0].message
+    assert manifest_path.read_bytes() == before
 
 
 def test_hparam_registration_drift_preserves_existing_overwrite_destination(tmp_path: Path, monkeypatch):
@@ -709,6 +944,88 @@ def test_hparam_overwrite_publish_failure_restores_existing_plan(tmp_path: Path,
     assert not list(workspace.parent.rglob(f".{plan_dir.name}.*.backup"))
 
 
+def test_staged_plan_publish_rejects_existing_run_directory(tmp_path: Path):
+    plan_dir = tmp_path / "plan"
+    staging_dir = tmp_path / ".plan.staging"
+    existing_run = plan_dir / "runs" / "run-000--unit"
+    staged_run = staging_dir / "runs" / "run-000--unit"
+    existing_run.mkdir(parents=True)
+    staged_run.mkdir(parents=True)
+    (plan_dir / "plan.json").write_text('{"old": true}\n')
+    (existing_run / "run.json").write_text('{"old": true}\n')
+    (staging_dir / "plan.json").write_text('{"new": true}\n')
+    (staged_run / "run.json").write_text('{"new": true}\n')
+    before = _workspace_files(tmp_path)
+
+    with pytest.raises(ValueError, match="Published run directories are immutable: run-000--unit"):
+        plans.publish_staged_plan_locked(staging_dir, plan_dir, out_preexisted=True)
+
+    assert _workspace_files(tmp_path) == before
+    assert not list(tmp_path.rglob(".plan.*.backup"))
+
+
+def test_unowned_plan_replacement_failure_restores_existing_runs(tmp_path: Path, monkeypatch):
+    plan_dir = tmp_path / "plan"
+    staging_dir = tmp_path / ".plan.staging"
+    for root, marker in ((plan_dir, "old"), (staging_dir, "new")):
+        run_dir = root / "runs" / "run-000--unit"
+        run_dir.mkdir(parents=True)
+        (root / "plan.json").write_text(f'{{"plan": "{marker}"}}\n')
+        (root / "plan.md").write_text(f"{marker} plan\n")
+        (run_dir / "run.json").write_text(f'{{"run": "{marker}"}}\n')
+    before = _workspace_files(tmp_path)
+    real_replace = Path.replace
+
+    def fail_final_manifest(path, target):
+        if path == staging_dir / "plan.json":
+            raise OSError(errno.EIO, "injected final manifest failure")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_final_manifest)
+
+    with pytest.raises(OSError, match="injected final manifest failure"):
+        plans.publish_staged_plan_locked(
+            staging_dir,
+            plan_dir,
+            out_preexisted=True,
+            replace_unowned_plan=True,
+        )
+
+    assert _workspace_files(tmp_path) == before
+    assert not list(tmp_path.rglob(".plan.*.backup"))
+
+
+def test_staged_plan_publish_failure_restores_appended_runs(tmp_path: Path, monkeypatch):
+    plan_dir = tmp_path / "plan"
+    staging_dir = tmp_path / ".plan.staging"
+    existing_run = plan_dir / "runs" / "run-000--unit"
+    existing_run.mkdir(parents=True)
+    (plan_dir / "plan.json").write_text('{"old": true}\n')
+    (plan_dir / "plan.md").write_text("old plan\n")
+    (existing_run / "run.json").write_text('{"old": true}\n')
+    for run_name in ("run-001--unit", "run-002--unit"):
+        run_dir = staging_dir / "runs" / run_name
+        run_dir.mkdir(parents=True)
+        (run_dir / "run.json").write_text(f'{{"run": "{run_name}"}}\n')
+    (staging_dir / "plan.json").write_text('{"new": true}\n')
+    (staging_dir / "plan.md").write_text("new plan\n")
+    before = _workspace_files(tmp_path)
+    real_replace = Path.replace
+
+    def fail_second_run(path, target):
+        if path == staging_dir / "runs" / "run-002--unit":
+            raise OSError(errno.EIO, "injected run publish failure")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_second_run)
+
+    with pytest.raises(OSError, match="injected run publish failure"):
+        plans.publish_staged_plan_locked(staging_dir, plan_dir, out_preexisted=True)
+
+    assert _workspace_files(tmp_path) == before
+    assert not list(tmp_path.rglob(".plan.*.backup"))
+
+
 def test_hparam_plan_rejects_destination_appearing_during_preflight(tmp_path: Path, monkeypatch):
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
@@ -731,6 +1048,82 @@ def test_hparam_plan_rejects_destination_appearing_during_preflight(tmp_path: Pa
         plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
 
     assert (plan_dir / "other-session.txt").read_text() == "do not replace\n"
+    assert not (plan_dir / "plan.json").exists()
+    assert read_run_manifest(workspace) == []
+    assert _staging_dirs(workspace, plan_dir) == []
+
+
+def test_hparam_plan_rechecks_blocked_artifacts_created_after_preflight(tmp_path: Path, monkeypatch):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    effective, _cfg, _report = plans.evaluate_recipe(recipe)
+    ensure_experiment_workspace(effective, plan_dir, register_step=False)
+    competitor = plan_dir / "decisions.yaml"
+    validate_bound_recipe = plans._validate_bound_recipe
+
+    def inject_competitor(*args, **kwargs):
+        result = validate_bound_recipe(*args, **kwargs)
+        plan_dir.mkdir(parents=True)
+        competitor.write_text("user competitor\n")
+        return result
+
+    monkeypatch.setattr(plans, "_validate_bound_recipe", inject_competitor)
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+    )
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 1
+    assert competitor.read_text() == "user competitor\n"
+    assert not (plan_dir / "plan.json").exists()
+    assert not (plan_dir / "runs").exists()
+    assert read_run_manifest(workspace) == []
+    assert _staging_dirs(workspace, plan_dir) == []
+
+
+@pytest.mark.parametrize("competitor_kind", ["file", "symlink"])
+def test_hparam_plan_rolls_back_blocked_artifact_created_after_final_guard(
+    tmp_path: Path,
+    monkeypatch,
+    competitor_kind: str,
+):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    effective, _cfg, _report = plans.evaluate_recipe(recipe)
+    ensure_experiment_workspace(effective, plan_dir, register_step=False)
+    plan_dir.mkdir(parents=True)
+    competitor = plan_dir / "decisions.yaml"
+    guard_pass = plans._guard_pass_plan_publication
+    guard_calls = 0
+
+    def inject_after_final_guard(*args, **kwargs):
+        nonlocal guard_calls
+        guarded = guard_pass(*args, **kwargs)
+        guard_calls += 1
+        if guard_calls == 2:
+            if competitor_kind == "symlink":
+                target = tmp_path / "user-decisions.yaml"
+                target.write_text("user competitor\n")
+                competitor.symlink_to(target)
+            else:
+                competitor.write_text("user competitor\n")
+        return guarded
+
+    monkeypatch.setattr(plans, "_guard_pass_plan_publication", inject_after_final_guard)
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+    )
+
+    with pytest.raises(ValueError, match="planning artifacts|Managed output paths"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert competitor.read_text() == "user competitor\n"
+    assert competitor.is_symlink() is (competitor_kind == "symlink")
     assert not (plan_dir / "plan.json").exists()
     assert read_run_manifest(workspace) == []
     assert _staging_dirs(workspace, plan_dir) == []

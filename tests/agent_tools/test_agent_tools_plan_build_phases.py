@@ -13,7 +13,7 @@ from agent_tools.adapters.base import TaskAdapter
 from agent_tools.experiment_workspace import read_run_manifest
 
 
-def test_single_run_deferred_plan_preserves_frozen_bytes_and_registration_boundary(tmp_path: Path):
+def test_single_run_deferred_plan_preserves_frozen_bytes_and_registration_boundary(tmp_path: Path, monkeypatch):
     recipe_path = write_finetune_recipe(tmp_path / "workspace")
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = Path(recipe["experiment"]["root"])
@@ -23,6 +23,11 @@ def test_single_run_deferred_plan_preserves_frozen_bytes_and_registration_bounda
     plan_dir = workspace / "plans" / "finetune"
     staging_dir = workspace / "plans" / ".finetune.staging"
     registered_recipe_path = plan_dir / "recipe.resolved.yaml"
+    monkeypatch.setattr(
+        plans,
+        "plan_registration_lock",
+        lambda *_args, **_kwargs: pytest.fail("deferred plans must not acquire the registration lock"),
+    )
 
     report = plans.build_plan(
         recipe_path=recipe_path,
@@ -93,6 +98,7 @@ class _PrecommitFailureAdapter(TaskAdapter):
         out,
         *,
         write_out=None,
+        run_index_offset=None,
         unlock_final_test,
         source_config_bytes,
         source_config_sha256,
@@ -125,6 +131,8 @@ def test_adapter_precommit_failure_removes_staging_without_publication(tmp_path:
         generated_staging=False,
         staging_dir=staging,
         defer_commit=False,
+        plan_controller=None,
+        run_index_offset=None,
         validate_only=False,
         unlock_final_test=False,
         validated_config_bytes=b"model: {}\n",

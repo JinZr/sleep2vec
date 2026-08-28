@@ -65,6 +65,14 @@ merged through their reducers. Missing files may be created only by their
 designated first producer; blank, malformed, incomplete, or conflicting
 metadata is never repaired by overwriting it.
 
+`events.jsonl` is modified only through the canonical managed append owner. All
+supported local and SSH writers execute on the workspace-owning host and share
+the descriptor-anchored `.events.jsonl.cas.lock`; under that lock, the final
+public root, parent, and prior-content check binds the namespace for the
+immediately following atomic rename. Raw shell appends and concurrent lockless
+workspace renames or alias changes are unsupported. An SSH transport failure
+has an unknown commit outcome and must not be blindly retried.
+
 `experiment_manifest.tsv` is optional for plan-created workspaces. When present, it contains exactly one row whose experiment id and root match `experiment.yaml`.
 
 Local recipe roots are based at the repository root; local experiment CLI roots
@@ -199,7 +207,12 @@ and its README is written after canonical plan registration, then
 an adaptive round while that marker is absent. A retry may accept a complete
 unregistered round only when deterministic regeneration produces an identical
 plan tree; incomplete, partial-canonical, or differing visible rounds remain
-invalid and are not repaired in place.
+invalid and are not repaired in place. Recovery rereads canonical state under
+the round publication lock, repairs only a missing or malformed initial
+registry, and rejects a valid registry whose frozen rows differ. Workflow
+publication binds validated registry and README hashes to the no-clobber marker
+commit. Consumers require the exact ordered `plan_created` and `adaptive_init`
+events, so the marker cannot authorize work before initialization is complete.
 
 ## Lifecycle entrypoints
 
@@ -235,9 +248,15 @@ invalid and are not repaired in place.
   paths and complete launch scripts across creator and controller hosts.
   Suggested commands are advisory argv arrays and
   do not authorize a launch or mutation.
-  A registered directory containing exactly `questions.json`, `questions.md`,
-  `plan.blocked.md`, and optional `plan.draft.json` is a non-runnable planning
-  outcome and is skipped; missing, extra, or aliased entries fail closed. A
+  A registered directory containing `questions.json`, `questions.md`, and
+  `plan.blocked.md`, plus optional `decisions.yaml` and `plan.draft.json`, is a
+  non-runnable planning outcome and is skipped. Nested plan directories use an
+  exact envelope, so missing required, extra, or aliased entries fail closed.
+  When the plan directory is the workspace root, plan-owned artifacts remain
+  strict while canonical workspace siblings are outside the plan envelope. The
+  physical bundle is completed and validated before its step manifest publishes
+  canonical ownership. Historical blocked plans without
+  `decisions.yaml` remain readable. A
   plan binds to the registered step's core `id`, `phase`, and `purpose`, while
   manifest-owned `inputs` and `outputs` remain valid step metadata.
   Status classifies launch advice and controller-deferred blockers only from

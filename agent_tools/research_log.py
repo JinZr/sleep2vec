@@ -275,8 +275,9 @@ def append_research_log(
 ) -> tuple[Path, str, bool]:
     root = Path(root)
     path = root / RESEARCH_LOG_NAME
-    lock_path = Path(f"{path}.lock") if remote else path.with_name(f".{path.name}.cas.lock")
-    managed_paths = [path, lock_path]
+    managed_paths = [path, path.with_name(f".{path.name}.cas.lock")]
+    if remote:
+        managed_paths.append(Path(f"{path}.lock"))
     scope = entry.get("scope") if isinstance(entry, dict) else None
     if isinstance(scope, dict) and isinstance(scope.get("step_id"), str):
         managed_paths.append(root / "steps" / scope["step_id"] / "step.yaml")
@@ -311,6 +312,12 @@ def append_research_log(
         replacement = current + marker + block
         _research_log_blocks(replacement, path)
         expected_sha256 = hashlib.sha256(current.encode()).hexdigest() if exists else None
-        if io.conditional_atomic_replace_text_at(path, replacement, expected_sha256, remote=remote):
+        if io.conditional_atomic_replace_text_at(
+            path,
+            replacement,
+            expected_sha256,
+            managed_root=root,
+            remote=remote,
+        ):
             return path, normalized["id"], True
     raise RuntimeError(f"Managed research log changed during three append attempts: {path}")
