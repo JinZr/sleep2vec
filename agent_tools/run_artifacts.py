@@ -171,7 +171,7 @@ def is_registered_blocked_plan(
         workspace,
         blocked_files,
         remote=remote,
-        exact_directory_entries=True,
+        exact_directory_entries=plan_dir != workspace,
     )
     return True
 

@@ -1914,7 +1914,7 @@ def _guard_blocked_plan_publication(
         root=out,
         require_fresh="PASS plan artifacts already exist; retry with a fresh --output-dir.",
     )
-    if _has_output_artifact_issue(report) or not out.is_dir():
+    if _has_output_artifact_issue(report) or not out.is_dir() or out == experiment_root(recipe):
         return report
     allowed_names = {path.name for path in plan_contract.blocked_plan_control_paths(out)}
     unexpected = sorted(str(path) for path in out.iterdir() if path.name not in allowed_names)

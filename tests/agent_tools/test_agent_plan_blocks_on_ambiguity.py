@@ -326,6 +326,31 @@ def test_blocked_plan_initializes_workspace_and_retry_uses_new_plan_dir(tmp_path
     assert (retry_dir / "run.sh").exists()
 
 
+@pytest.mark.parametrize("task", ["finetune", "hparam_tune"])
+def test_blocked_plan_directory_may_equal_fresh_experiment_root(tmp_path: Path, task: str):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    if task == "hparam_tune":
+        recipe = _hparam_recipe(source)
+        payload = yaml.safe_load(recipe.read_text())
+        payload["decisions"]["overwrite_policy"]["value"] = "ASK_USER"
+    else:
+        recipe = write_finetune_recipe(source, include_label=False)
+        payload = yaml.safe_load(recipe.read_text())
+    payload["experiment"]["root"] = str(workspace)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace))
+
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert (workspace / "plan.blocked.md").is_file()
+    assert (workspace / "decisions.yaml").is_file()
+    assert run_artifacts.is_registered_blocked_plan(workspace, workspace=workspace)
+    step = yaml.safe_load((workspace / "steps" / payload["step"]["id"] / "step.yaml").read_text())
+    assert step["plans"] == [str(workspace)]
+    assert read_run_manifest(workspace) == []
+
+
 def test_generic_blocked_plan_retry_rejects_same_output_dir(tmp_path: Path):
     source = tmp_path / "source"
     recipe = write_finetune_recipe(source, include_label=False)
