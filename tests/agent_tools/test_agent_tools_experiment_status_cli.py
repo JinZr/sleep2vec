@@ -188,7 +188,8 @@ def test_experiment_status_human_output_scopes_same_code_blockers(tmp_path):
     assert "`unmaterialized_step` [step=second]" in rendered
 
 
-def test_experiment_status_separates_control_host_from_execution_transport():
+@pytest.mark.parametrize(("remote", "control_host"), [("baichuan3", "baichuan3"), (None, None)])
+def test_experiment_status_separates_control_host_from_execution_transport(remote, control_host):
     root = Path("/remote/experiment")
     row = {
         "step_id": "train",
@@ -220,16 +221,16 @@ def test_experiment_status_separates_control_host_from_execution_transport():
         registered_steps,
         [row],
         root=root,
-        remote="baichuan3",
+        remote=remote,
     )
     action = snapshot["decision"]["recommended_next"]
 
-    assert action["control_host"] == "baichuan3"
+    assert action["control_host"] == control_host
     assert snapshot["runs"][0]["execution"] == {"target": "ssh", "host": "gpu-worker"}
     rendered = experiment_tracking.format_experiment_status(snapshot)
     assert "| train | train | ordinary | planned=1 |" in rendered
     assert "ssh:gpu-worker" in rendered
-    assert "control host: `baichuan3`" in rendered
+    assert ("control host: `baichuan3`" in rendered) is (control_host is not None)
     assert f"bash {root / 'plans' / 'train' / 'run.sh'}" in rendered
 
 

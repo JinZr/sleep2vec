@@ -1419,8 +1419,7 @@ def _plan_advice(
             else:
                 argv = ["bash", plan["launch_script"]]
                 action_id = "run-plan"
-                hosts = sorted({str(row["host"]) for row in plan_rows if row.get("host") not in (None, "")})
-                control_host = remote or (hosts[0] if len(hosts) == 1 else None)
+                control_host = remote
             candidates.append(
                 _status_action(
                     action_id,

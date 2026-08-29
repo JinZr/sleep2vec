@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -276,6 +277,38 @@ def test_doctor_runtime_card_does_not_echo_timed_out_command(monkeypatch):
 
     assert card == "Doctor runtime unavailable: diagnostic probe timed out"
     assert "do-not-print" not in card
+
+
+def test_doctor_runtime_card_uses_manager_python_by_default(monkeypatch):
+    calls = []
+
+    def run(_execution, command):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            '{"host": "runtime-host", "python": "/opt/python", "python_version": "3.10.0", '
+            '"pytorch_lightning_version": "2.6.1"}\n',
+            "",
+        )
+
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", run)
+
+    plans.doctor_runtime_card({"task": "hparam_tune"})
+
+    assert calls[0][0] == sys.executable
+
+
+def test_doctor_runtime_card_handles_rejected_probe(monkeypatch):
+    def reject(_execution, _command):
+        raise ValueError("private fixture detail")
+
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", reject)
+
+    card = plans.doctor_runtime_card({"task": "hparam_tune"})
+
+    assert card == "Doctor runtime unavailable: diagnostic probe could not start"
+    assert "private fixture detail" not in card
 
 
 def test_doctor_runtime_card_does_not_echo_failed_probe_output(monkeypatch):

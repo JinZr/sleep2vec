@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import sys
 from typing import Any
 
 from .. import plan_contract, slurm
@@ -164,7 +165,7 @@ class HparamTuneAdapter(TaskAdapter):
         from .. import managed_scheduler
 
         execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-        python = str(execution.get("python") or "python")
+        python = str(execution.get("python") or sys.executable)
         program = (
             "import importlib.metadata, json, socket, sys; "
             "pl_version = next((dist.version for dist in importlib.metadata.distributions() "
@@ -176,7 +177,7 @@ class HparamTuneAdapter(TaskAdapter):
             result = managed_scheduler.run_execution_command(execution, [python, "-c", program])
         except subprocess.TimeoutExpired:
             return "Doctor runtime unavailable: diagnostic probe timed out"
-        except OSError:
+        except (OSError, ValueError):
             return "Doctor runtime unavailable: diagnostic probe could not start"
         if result.returncode != 0:
             return f"Doctor runtime unavailable: diagnostic probe exited with code {result.returncode}"
