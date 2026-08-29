@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import sys
 import time
 
@@ -122,30 +123,46 @@ def _preflight_finetune_run_directory(args, exp_root: Path) -> None:
             raise FileExistsError(f"Another launch already claimed finetune run directory: {exp_root}.") from None
         return
 
+    allowed_files = {"config.yaml", "cli_args.yaml"}
     deadline = time.monotonic() + 30.0
     while True:
-        if marker_path.is_file() and not marker_path.is_symlink():
-            marker_text = marker_path.read_text()
+        matching_marker = False
+        try:
+            marker_mode = marker_path.lstat().st_mode
+        except FileNotFoundError:
+            marker_mode = None
+        if marker_mode is not None:
+            if not stat.S_ISREG(marker_mode):
+                raise FileExistsError(f"Finetune run directory belongs to a different launch: {exp_root}.")
+            try:
+                marker_text = marker_path.read_text()
+            except FileNotFoundError:
+                marker_text = ""
             if marker_text.endswith("\n"):
                 if marker_text.rstrip("\n") != launch_id:
                     raise FileExistsError(f"Finetune run directory belongs to a different launch: {exp_root}.")
-                break
-        elif marker_path.exists():
-            raise FileExistsError(f"Finetune run directory belongs to a different launch: {exp_root}.")
-        elif exp_root.exists() and any(exp_root.iterdir()):
-            raise FileExistsError(f"Finetune run directory has no current distributed preflight: {exp_root}.")
+                matching_marker = True
+        if exp_root.exists():
+            for entry in exp_root.iterdir():
+                if entry == marker_path:
+                    continue
+                valid_file = entry.name in allowed_files and entry.is_file() and not entry.is_symlink()
+                valid_checkpoint_dir = (
+                    entry.name == "checkpoints"
+                    and entry.is_dir()
+                    and not entry.is_symlink()
+                    and not any(entry.iterdir())
+                )
+                if not (valid_file or valid_checkpoint_dir):
+                    raise FileExistsError(f"Finetune run directory contains stale artifact: {entry}.")
+        if matching_marker:
+            break
         if time.monotonic() >= deadline:
+            if marker_mode is None and exp_root.exists() and any(exp_root.iterdir()):
+                raise FileExistsError(f"Finetune run directory has no current distributed preflight: {exp_root}.")
             raise RuntimeError(f"Timed out waiting for rank-zero finetune preflight: {exp_root}.")
+        # Shared filesystems may expose sibling startup files before the marker claim becomes visible.
         time.sleep(0.05)
-
-    allowed_files = {marker_path.name, "config.yaml", "cli_args.yaml"}
-    for entry in exp_root.iterdir():
-        valid_file = entry.name in allowed_files and entry.is_file() and not entry.is_symlink()
-        valid_checkpoint_dir = (
-            entry.name == "checkpoints" and entry.is_dir() and not entry.is_symlink() and not any(entry.iterdir())
-        )
-        if not (valid_file or valid_checkpoint_dir):
-            raise FileExistsError(f"Stale artifact in finetune run directory: {entry}.")
 
 
 def supervised(args, config_bundle):
