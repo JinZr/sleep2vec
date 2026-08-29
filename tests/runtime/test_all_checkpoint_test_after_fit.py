@@ -336,7 +336,7 @@ def test_finetune_nonzero_rank_accepts_current_launch_marker(
     finetune_mod._preflight_finetune_run_directory(args, run_dir)
 
     (run_dir / "checkpoints" / "epoch=00.ckpt").write_text("stale\n")
-    with pytest.raises(FileExistsError, match="Stale artifact"):
+    with pytest.raises(FileExistsError, match="stale artifact"):
         finetune_mod._preflight_finetune_run_directory(args, run_dir)
 
 
@@ -422,6 +422,62 @@ def test_finetune_nonzero_rank_waits_for_complete_marker(
     monkeypatch.setattr(finetune_mod.time, "sleep", lambda _seconds: marker.write_text("current-launch\n"))
 
     finetune_mod._preflight_finetune_run_directory(argparse.Namespace(devices=[0, 1]), run_dir)
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_finetune_nonzero_rank_waits_when_startup_file_is_visible_before_marker(
+    module_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetune_mod = _load_finetune_module(module_name, monkeypatch)
+    run_dir = tmp_path / "log-finetune" / "unit-test"
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.yaml").write_text("current config\n")
+    marker = run_dir / ".distributed-preflight"
+    sleep_calls = 0
+    monkeypatch.setenv("_SLEEP2VEC_FINETUNE_LAUNCH_ID", "current-launch")
+    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
+
+    def publish_marker(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        marker.write_text("current-launch\n")
+
+    monkeypatch.setattr(finetune_mod.time, "sleep", publish_marker)
+
+    finetune_mod._preflight_finetune_run_directory(argparse.Namespace(devices=[0, 1]), run_dir)
+    assert sleep_calls == 1
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_finetune_nonzero_rank_uses_one_marker_metadata_snapshot(
+    module_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    finetune_mod = _load_finetune_module(module_name, monkeypatch)
+    run_dir = tmp_path / "log-finetune" / "unit-test"
+    run_dir.mkdir(parents=True)
+    marker = run_dir / ".distributed-preflight"
+    marker.write_text("current-launch\n")
+    monkeypatch.setenv("_SLEEP2VEC_FINETUNE_LAUNCH_ID", "current-launch")
+    monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
+    original_stat = Path.stat
+    marker_stat_calls = 0
+
+    def single_marker_stat(path: Path, *args, **kwargs):
+        nonlocal marker_stat_calls
+        if path == marker:
+            marker_stat_calls += 1
+            if marker_stat_calls > 1:
+                raise AssertionError("marker metadata was queried more than once")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", single_marker_stat)
+
+    finetune_mod._preflight_finetune_run_directory(argparse.Namespace(devices=[0, 1]), run_dir)
+    assert marker_stat_calls == 1
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)
