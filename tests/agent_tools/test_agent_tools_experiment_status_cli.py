@@ -233,6 +233,35 @@ def test_experiment_status_separates_control_host_from_execution_transport():
     assert f"bash {root / 'plans' / 'train' / 'run.sh'}" in rendered
 
 
+def test_experiment_status_projects_recorded_scheduler_node():
+    run = experiment_tracking._status_run_payload(
+        {
+            "step_id": "train",
+            "run_id": "run-000",
+            "status": "running",
+            "scheduler_type": "slurm",
+            "scheduler_node": "gpu-node-02",
+        }
+    )
+    snapshot = {
+        "experiment": {"id": "status-unit", "title": "Scheduler status", "root": "/experiment"},
+        "summary": {"state": "active"},
+        "lifecycle_source": "run_manifest.tsv",
+        "steps": [],
+        "runs": [run],
+        "blockers": [],
+        "decision": {
+            "recommended_next": None,
+            "other_legal_actions": [],
+            "manual_choice_required": False,
+            "blocked_actions": [],
+        },
+    }
+
+    assert run["scheduler"]["node"] == "gpu-node-02"
+    assert "node=gpu-node-02" in experiment_tracking.format_experiment_status(snapshot)
+
+
 def test_experiment_status_keeps_local_hparam_queue_on_controller(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)

@@ -1280,6 +1280,7 @@ def format_experiment_status(snapshot: dict[str, Any]) -> str:
                 f"{name}={value}"
                 for name, value in (
                     ("job", scheduler["job_id"]),
+                    ("node", scheduler["node"]),
                     ("state", scheduler["raw_state"]),
                     ("reason", scheduler["reason"]),
                     ("observed", scheduler["observed_at"]),
@@ -1448,6 +1449,7 @@ def _status_run_payload(row: dict[str, Any]) -> dict[str, Any]:
             "type": _optional_text(row.get("scheduler_type")),
             "job_id": _optional_text(row.get("scheduler_job_id")),
             "cluster": _optional_text(row.get("scheduler_cluster")),
+            "node": _optional_text(row.get("scheduler_node")),
             "raw_state": _optional_text(row.get("scheduler_raw_state")),
             "reason": _optional_text(row.get("scheduler_reason")),
             "observed_at": _optional_text(row.get("scheduler_observed_at")),
