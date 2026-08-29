@@ -257,10 +257,15 @@ validate-only contract is hparam-specific.
 
 Every new hparam `plan.md` includes a human-readable registration-preflight
 card. Target Python, runtime commit, module origin, run/argv counts, and the
-argv digest come from the frozen execution snapshot. Variant, runtime module,
+argv digest come from the frozen execution snapshot. The card distinguishes
+the control transport from the validated preflight host and shows the actual
+Python executable/version reported by that target. Variant, runtime module,
 actual config loader, architecture, and channels come from each final generated
 config and are grouped with their run IDs. The card is a projection for audit;
-the frozen generated config bytes and hashes remain semantic authority. This
+it names the frozen scheduler and, for Slurm, the single-node task/GPU/rank
+topology plus per-task resources and controller routing. The topology is
+derived from the same normalized scheduler request used by the launcher. The
+frozen generated config bytes and hashes remain semantic authority. This
 deterministic preflight does not inspect free bytes, estimate checkpoint storage,
 or turn unavailable Slurm accounting into a plan blocker; accounting capability
 remains a time-stamped `doctor` diagnostic.

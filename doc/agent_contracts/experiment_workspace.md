@@ -246,6 +246,11 @@ events, so the marker cannot authorize work before initialization is complete.
   other external input is reopened. The frozen plan context, not the status
   reader's repository root or Python interpreter, reproduces relative source
   paths and complete launch scripts across creator and controller hosts.
+  Step output projects the registered `plan_controller`; run output projects
+  the canonical execution transport and host, while recorded Slurm node
+  evidence stays under the scheduler projection. Advisory actions use
+  `control_host` only for the host where the control command must be invoked,
+  so it is not confused with either execution evidence.
   Suggested commands are advisory argv arrays and
   do not authorize a launch or mutation.
   A registered directory containing `questions.json`, `questions.md`, and

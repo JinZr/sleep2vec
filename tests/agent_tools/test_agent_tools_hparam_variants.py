@@ -23,8 +23,10 @@ def _snapshot(module: str) -> dict:
         "target": "local",
         "host": "",
         "python": "/target/python",
+        "python_version": "3.10.0",
         "python_command": "python",
         "runtime_commit": "a" * 40,
+        "runtime_hostname": "runtime-host",
         "module": module,
         "module_origin": f"/target/repo/{module.replace('.', '/')}.py",
         "validated_argv_sha256": "b" * 64,
@@ -110,4 +112,43 @@ def test_hparam_preflight_card_uses_variant_config_provenance(
             for name, input_dim in _SIGNAL_CHANNELS
         )
 
+    assert "- Scheduler: `direct`" in card
+    assert "- Control transport: `local`" in card
+    assert "- Validated preflight host: `runtime-host`" in card
+    assert "- Runtime Python: `/target/python` (version `3.10.0`; frozen command: `python`)" in card
     assert f"| {variant} | {module} | {loader} | {architecture} | {channels} | run-000 |" in card
+
+
+@pytest.mark.parametrize(
+    ("direct_controller", "controller_label"),
+    [(False, "bound cluster"), (True, "direct controller")],
+)
+def test_hparam_preflight_card_projects_slurm_topology(direct_controller: bool, controller_label: str):
+    config_path = "configs/sleep2vec_dense_finetune_cls.yaml"
+    card = render_hparam_preflight_card(
+        {
+            "variant": "sleep2vec",
+            "inputs": {"config": config_path},
+            "execution": {
+                "gpus_per_run": 8,
+                "scheduler": {
+                    "type": "slurm",
+                    "partition": "gpu",
+                    "cpus_per_task": 6,
+                    "memory": "64G",
+                    "walltime": "12:00:00",
+                    "direct_controller": direct_controller,
+                },
+            },
+        },
+        _snapshot("sleep2vec.finetune"),
+        [({"run_id": "run-000"}, (REPO_ROOT / config_path).read_bytes())],
+    )
+
+    assert "- Scheduler: `slurm`" in card
+    assert (
+        "- Planned allocation topology: nodes/run=1, tasks/run=8, GPUs/run=8, "
+        "one Slurm task per Lightning rank" in card
+    )
+    assert "- Planned task resources: CPUs/task=6, total CPUs=48, memory=64G/allocation, walltime=12:00:00" in card
+    assert f"- Scheduler controller: {controller_label}" in card

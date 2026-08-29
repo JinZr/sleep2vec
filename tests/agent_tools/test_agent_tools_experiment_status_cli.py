@@ -151,11 +151,15 @@ def test_experiment_status_human_output_quotes_advisory_argv(tmp_path):
     rendered = experiment_tracking.format_experiment_status(experiments.experiment_status(root))
 
     assert "recorded evidence, not live" in rendered
-    assert "| Run | Canonical | Scheduler | Process | Checkpoints | Runtime manifest | Blocker |" in rendered
+    assert "| Step | Phase | Plan controller | Status counts |" in rendered
+    assert (
+        "| Run | Canonical | Execution transport | Scheduler | Process | Checkpoints | Runtime manifest | Blocker |"
+        in rendered
+    )
     assert "Test evidence" not in rendered
     assert "Next legal action" in rendered
     assert "'" in rendered
-    assert "execution host:" not in rendered
+    assert "control host:" not in rendered
     assert "Advisory only; this output does not authorize execution." in rendered
 
 
@@ -184,13 +188,15 @@ def test_experiment_status_human_output_scopes_same_code_blockers(tmp_path):
     assert "`unmaterialized_step` [step=second]" in rendered
 
 
-def test_experiment_status_renders_remote_launch_execution_host():
+def test_experiment_status_separates_control_host_from_execution_transport():
     root = Path("/remote/experiment")
     row = {
         "step_id": "train",
         "run_id": "run-000",
         "run_name": "default",
         "status": "planned",
+        "target": "ssh",
+        "host": "gpu-worker",
     }
     registered_steps = [
         {
@@ -218,9 +224,12 @@ def test_experiment_status_renders_remote_launch_execution_host():
     )
     action = snapshot["decision"]["recommended_next"]
 
-    assert action["execution_host"] == "baichuan3"
+    assert action["control_host"] == "baichuan3"
+    assert snapshot["runs"][0]["execution"] == {"target": "ssh", "host": "gpu-worker"}
     rendered = experiment_tracking.format_experiment_status(snapshot)
-    assert "execution host: `baichuan3`" in rendered
+    assert "| train | train | ordinary | planned=1 |" in rendered
+    assert "ssh:gpu-worker" in rendered
+    assert "control host: `baichuan3`" in rendered
     assert f"bash {root / 'plans' / 'train' / 'run.sh'}" in rendered
 
 
@@ -239,7 +248,7 @@ def test_experiment_status_keeps_local_hparam_queue_on_controller(tmp_path):
     action = snapshot["decision"]["recommended_next"]
 
     assert action["id"] == "hparam-run-queue"
-    assert action["execution_host"] is None
+    assert action["control_host"] is None
     assert action["argv"] == [
         "python",
         "-m",
@@ -249,7 +258,7 @@ def test_experiment_status_keeps_local_hparam_queue_on_controller(tmp_path):
         str(plan_dir),
         "--execute",
     ]
-    assert "execution host:" not in experiment_tracking.format_experiment_status(snapshot)
+    assert "control host:" not in experiment_tracking.format_experiment_status(snapshot)
 
 
 def test_experiment_status_keeps_remote_finalize_on_controller():
@@ -279,7 +288,7 @@ def test_experiment_status_keeps_remote_finalize_on_controller():
     )
     action = snapshot["decision"]["other_legal_actions"][0]
 
-    assert action["execution_host"] is None
+    assert action["control_host"] is None
     assert action["argv"][-2:] == ["--remote", "baichuan3"]
 
 
