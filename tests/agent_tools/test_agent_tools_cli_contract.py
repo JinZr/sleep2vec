@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
-from agent_tools import cli, models, plans
+from agent_tools import cli, managed_scheduler, models, plans
 from agent_tools.decisions import evaluate_consultation_gates
 from agent_tools.manifests import write_rows
 from agent_tools.recipes import load_consultation_policy
@@ -158,6 +160,139 @@ def test_plan_cli_contract():
 
     validated = parser.parse_args(["plan", "--recipe", "recipe.yaml", "--output-dir", "plan-dir", "--validate-only"])
     assert validated.validate_only is True
+
+
+def test_doctor_reports_pid_phases_and_runtime_diagnostics(monkeypatch, capsys):
+    report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "evaluate_recipe",
+        lambda *_args: calls.append("consultation") or ({"task": "hparam_tune"}, None, report),
+    )
+    monkeypatch.setattr(
+        cli,
+        "doctor_runtime_card",
+        lambda _recipe: calls.append("runtime") or "Doctor runtime: python=/target/python",
+    )
+    monkeypatch.setattr(
+        cli,
+        "prepare_doctor_report",
+        lambda *_args: calls.append("task diagnostics") or report,
+    )
+    monkeypatch.setattr(cli, "write_doctor_outputs", lambda *_args: calls.append("publish"))
+
+    assert cli.main(["doctor", "--recipe", "recipe.yaml", "--output-dir", "doctor-out"]) == 0
+    captured = capsys.readouterr()
+    assert calls == ["consultation", "runtime", "task diagnostics", "publish"]
+    assert captured.err.splitlines() == [
+        f"Doctor started: pid={os.getpid()} recipe=recipe.yaml output_dir=doctor-out",
+        "Doctor phase: consultation",
+        "Doctor phase: runtime diagnostics",
+        "Doctor runtime: python=/target/python",
+        "Doctor phase: task diagnostics",
+        "Doctor phase: publish outputs",
+        "Doctor finished: exit_code=0",
+    ]
+    assert "Status: PASS" in captured.out
+
+
+def test_doctor_skips_runtime_diagnostics_when_consultation_blocks(monkeypatch, capsys):
+    issue = plans.DecisionIssue(plans.DecisionStatus.FAIL, "recipe", "blocked", None, {})
+    report = plans.DecisionReport(status=plans.DecisionStatus.FAIL, issues=[issue], decisions={})
+    monkeypatch.setattr(cli, "evaluate_recipe", lambda *_args: ({"task": "hparam_tune"}, None, report))
+    monkeypatch.setattr(cli, "doctor_runtime_card", lambda _recipe: pytest.fail("unexpected runtime diagnostics"))
+    monkeypatch.setattr(
+        cli,
+        "prepare_doctor_report",
+        lambda *_args: report,
+    )
+    monkeypatch.setattr(cli, "write_doctor_outputs", lambda *_args: None)
+
+    assert cli.main(["doctor", "--recipe", "recipe.yaml"]) == 1
+    captured = capsys.readouterr()
+    assert "Doctor phase: runtime diagnostics" not in captured.err
+    assert "Doctor phase: task diagnostics" in captured.err
+    assert "Doctor phase: publish outputs" in captured.err
+    assert "Doctor finished: exit_code=1" in captured.err
+
+
+def test_doctor_skips_hparam_runtime_probe_for_other_tasks(monkeypatch, capsys):
+    report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
+    monkeypatch.setattr(cli, "evaluate_recipe", lambda *_args: ({"task": "finetune"}, None, report))
+    monkeypatch.setattr(cli, "doctor_runtime_card", lambda _recipe: pytest.fail("unexpected runtime diagnostics"))
+    monkeypatch.setattr(cli, "prepare_doctor_report", lambda *_args: report)
+    monkeypatch.setattr(cli, "write_doctor_outputs", lambda *_args: None)
+
+    assert cli.main(["doctor", "--recipe", "recipe.yaml"]) == 0
+    captured = capsys.readouterr()
+    assert "Doctor phase: runtime diagnostics" not in captured.err
+    assert "Doctor phase: task diagnostics" in captured.err
+
+
+def test_doctor_runtime_card_probes_target_versions_without_importing_lightning(monkeypatch):
+    calls = []
+
+    def run(execution, command):
+        calls.append((execution, command))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            '{"host": "runtime-host", "python": "/opt/python", "python_version": "3.10.0", '
+            '"pytorch_lightning_version": "2.6.1"}\n',
+            "",
+        )
+
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", run)
+    recipe = {
+        "task": "hparam_tune",
+        "execution": {
+            "target": "ssh",
+            "host": "baichuan3",
+            "workdir": "/runtime/repo",
+            "python": "/opt/python",
+        },
+    }
+
+    card = plans.doctor_runtime_card(recipe)
+
+    assert card == (
+        "Doctor runtime: transport=ssh:baichuan3, host=runtime-host, python=/opt/python, "
+        "python_version=3.10.0, pytorch-lightning=2.6.1"
+    )
+    assert calls[0][0] is recipe["execution"]
+    assert calls[0][1][:2] == ["/opt/python", "-c"]
+    assert "import pytorch_lightning" not in calls[0][1][2]
+
+
+def test_doctor_runtime_card_does_not_echo_timed_out_command(monkeypatch):
+    def timeout(_execution, _command):
+        raise subprocess.TimeoutExpired(["env", "SECRET_TOKEN=do-not-print"], 30)
+
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", timeout)
+    recipe = {"task": "hparam_tune", "execution": {"python": "/opt/python"}}
+
+    card = plans.doctor_runtime_card(recipe)
+
+    assert card == "Doctor runtime unavailable: diagnostic probe timed out"
+    assert "do-not-print" not in card
+
+
+def test_doctor_runtime_card_does_not_echo_failed_probe_output(monkeypatch):
+    result = subprocess.CompletedProcess(
+        ["ssh", "runtime-host"],
+        23,
+        "SECRET_TOKEN=do-not-print\n",
+        "private target path: /secret/path\n",
+    )
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", lambda *_args: result)
+    recipe = {"task": "hparam_tune", "execution": {"python": "/opt/python"}}
+
+    card = plans.doctor_runtime_card(recipe)
+
+    assert card == "Doctor runtime unavailable: diagnostic probe exited with code 23"
+    assert "do-not-print" not in card
+    assert "/secret/path" not in card
 
 
 def test_collect_runs_cli_contract():

@@ -96,6 +96,8 @@ class TaskAdapter:
     accepts_pretrain_config: bool = False
     #: Run preflight_issues while consultation choices remain unresolved.
     preflight_on_unresolved: bool = False
+    #: Task owns a read-only target runtime diagnostic for doctor.
+    supports_doctor_runtime_diagnostics: bool = False
 
     def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
         """Full replacement for the kernel's per-section recipe contract walk
@@ -139,6 +141,10 @@ class TaskAdapter:
     def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
         """Add task-specific read-only doctor findings."""
         return report
+
+    def doctor_runtime_card(self, recipe: dict[str, Any]) -> str | None:
+        """Return a read-only target runtime diagnostic for doctor."""
+        return None
 
     def write_plan(
         self,

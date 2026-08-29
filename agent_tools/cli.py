@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -47,7 +48,16 @@ from .index_csv import index_summary
 from .manifests import read_rows
 from .markdown import report_text
 from .models import json_ready
-from .plans import build_context, build_plan, collect_runs, evaluate_recipe, prepare_doctor_report, write_doctor_outputs
+from .plans import (
+    build_context,
+    build_plan,
+    collect_runs,
+    doctor_runtime_card,
+    doctor_runtime_diagnostics_supported,
+    evaluate_recipe,
+    prepare_doctor_report,
+    write_doctor_outputs,
+)
 from .progress import format_progress, read_progress
 from .repo import repo_summary
 from .skills import list_skills, validate_skills
@@ -374,15 +384,30 @@ def _cmd_preset_summary(args: argparse.Namespace) -> int:
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
+    output_dir = args.output_dir or "-"
+    print(
+        f"Doctor started: pid={os.getpid()} recipe={args.recipe} output_dir={output_dir}",
+        file=sys.stderr,
+        flush=True,
+    )
+    print("Doctor phase: consultation", file=sys.stderr, flush=True)
     recipe, _cfg, report = evaluate_recipe(args.recipe, args.user_decisions)
+    if not report.blocking_issues() and doctor_runtime_diagnostics_supported(recipe):
+        print("Doctor phase: runtime diagnostics", file=sys.stderr, flush=True)
+        runtime_card = doctor_runtime_card(recipe)
+        if runtime_card is not None:
+            print(runtime_card, file=sys.stderr, flush=True)
+    print("Doctor phase: task diagnostics", file=sys.stderr, flush=True)
     report = prepare_doctor_report(args.output_dir, recipe, report)
-    print(report_text(report))
+    print(report_text(report), flush=True)
+    print("Doctor phase: publish outputs", file=sys.stderr, flush=True)
     template = write_doctor_outputs(args.output_dir, recipe, report)
     if template is not None:
         path, created = template
         action = "Wrote" if created else "Preserved existing"
         print(f"{action} user decisions file: {path}")
         print(f"Fill it and rerun with --user-decisions {path}.")
+    print(f"Doctor finished: exit_code={report.exit_code}", file=sys.stderr, flush=True)
     return report.exit_code
 
 

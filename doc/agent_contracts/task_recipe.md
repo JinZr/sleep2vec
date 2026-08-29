@@ -307,6 +307,10 @@ The optional `execution` block configures the managed launcher.
   capabilities through read-only `scontrol` queries. Advice never changes the
   frozen scheduler request: `nice=0` is the highest unprivileged nice setting,
   and no user-side option guarantees first priority.
+- `doctor` emits its PID and synchronous phase on stderr before potentially
+  slow probes. For an unblocked hparam recipe it separately reports the target
+  host, actual Python executable/version, and installed PyTorch Lightning
+  distribution version without importing Lightning or changing PASS/FAIL.
 - Only the canonical manager runtime—a local target at `REPO_ROOT` without a
   conda wrapper—may omit Python and commit identity. Planning then freezes the
   current manager interpreter and repository HEAD. SSH targets, separate local

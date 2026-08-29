@@ -216,6 +216,7 @@ events, so the marker cannot authorize work before initialization is complete.
 
 ## Lifecycle entrypoints
 
+- `doctor` prints its PID and current phase to stderr before synchronous consultation or target diagnostics. For an unblocked hparam recipe it also reports the target's actual Python and PyTorch Lightning distribution versions as read-only diagnostics; probe failure does not alter the consultation result.
 - `plan` freezes the effective recipe, configs, commands, hashes, and planned runs.
 - `hparam-launch` validates frozen artifacts and explicitly starts one eligible wave; dry-run remains the default. Its CLI output names the mode and reports the recorded lifecycle-state counts from the written projection.
 - `hparam-run-queue` is the explicit long-running action that repeatedly fills available capacity until every current-plan run is terminal; dry-run performs one preview and returns. Its CLI output likewise distinguishes preview from execute and reports the recorded lifecycle-state counts.
