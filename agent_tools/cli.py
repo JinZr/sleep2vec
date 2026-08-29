@@ -154,6 +154,11 @@ def _build_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--run-dir", required=True)
     monitor.add_argument("--once", action="store_true")
     monitor.add_argument("--health", action="store_true")
+    monitor.add_argument(
+        "--include-log-tail",
+        action="store_true",
+        help="Print recorded raw log tails; they may contain sensitive data.",
+    )
     monitor.add_argument("--poll-seconds", type=float, default=60)
     monitor.set_defaults(func=_cmd_hparam_monitor)
 
@@ -506,8 +511,9 @@ def _cmd_hparam_monitor(args: argparse.Namespace) -> int:
             if row.get(field):
                 details.append(f"{label}={row[field]}")
         print(f"- {row['step_id']} / {row['run_id']}: {'; '.join(details)}")
-        for line in str(row.get("log_tail") or "").splitlines():
-            print(f"  {line}")
+        if args.include_log_tail:
+            for line in str(row.get("log_tail") or "").splitlines():
+                print(f"  {line}")
     print(f"Wrote {status}")
     return 0
 

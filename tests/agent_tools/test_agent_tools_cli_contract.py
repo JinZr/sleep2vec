@@ -406,7 +406,18 @@ def test_hparam_monitor_cli_contract(tmp_path: Path, monkeypatch):
     parser, subcommands = _parser_contract()
     actions = _actions(subcommands["hparam-monitor"])
     defaults = parser.parse_args(["hparam-monitor", "--run-dir", "run-dir"])
-    args = parser.parse_args(["hparam-monitor", "--run-dir", "run-dir", "--once", "--health", "--poll-seconds", "17"])
+    args = parser.parse_args(
+        [
+            "hparam-monitor",
+            "--run-dir",
+            "run-dir",
+            "--once",
+            "--health",
+            "--include-log-tail",
+            "--poll-seconds",
+            "17",
+        ]
+    )
     status = tmp_path / "run_status.tsv"
     calls = []
 
@@ -419,7 +430,9 @@ def test_hparam_monitor_cli_contract(tmp_path: Path, monkeypatch):
     assert {name for name, action in actions.items() if action.required} == {"run_dir"}
     assert defaults.once is False
     assert defaults.health is False
+    assert defaults.include_log_tail is False
     assert defaults.poll_seconds == 60
+    assert args.include_log_tail is True
     assert cli._cmd_hparam_monitor(defaults) == 0
     assert cli._cmd_hparam_monitor(args) == 0
     assert calls == [
@@ -428,7 +441,7 @@ def test_hparam_monitor_cli_contract(tmp_path: Path, monkeypatch):
     ]
 
 
-def test_hparam_monitor_surfaces_bounded_failure_evidence(tmp_path: Path, monkeypatch, capsys):
+def test_hparam_monitor_requires_opt_in_for_raw_log_tail(tmp_path: Path, monkeypatch, capsys):
     status = tmp_path / "run_status.tsv"
     write_rows(
         status,
@@ -448,6 +461,15 @@ def test_hparam_monitor_surfaces_bounded_failure_evidence(tmp_path: Path, monkey
     monkeypatch.setattr(cli, "monitor_hparam_runs", lambda *_args, **_kwargs: status)
 
     assert cli.main(["hparam-monitor", "--run-dir", "run-dir", "--once", "--health"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "Lifecycle states: completed=1, failed=1",
+        "Failure evidence:",
+        "- tune / run-001: status=failed; scheduler reason=NonZeroExitCode; "
+        "scheduler health error=accounting unavailable; log=/logs/run-001.log",
+        f"Wrote {status}",
+    ]
+
+    assert cli.main(["hparam-monitor", "--run-dir", "run-dir", "--once", "--health", "--include-log-tail"]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "Lifecycle states: completed=1, failed=1",
         "Failure evidence:",
