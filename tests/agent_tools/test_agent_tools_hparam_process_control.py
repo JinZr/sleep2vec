@@ -762,12 +762,30 @@ def test_status_fails_closed_without_monitor_owned_exit_code(tmp_path: Path, mon
     assert observed["status"] == "failed"
 
 
+@pytest.mark.parametrize("prefix", ["", "0: "])
 @pytest.mark.parametrize(("exit_code", "expected"), [(0, False), (7, True)])
-def test_log_failure_projection_recognizes_monitor_exit_code(tmp_path: Path, exit_code: int, expected: bool):
+def test_log_failure_projection_recognizes_monitor_exit_code(
+    tmp_path: Path, prefix: str, exit_code: int, expected: bool
+):
     log_path = tmp_path / "managed.log"
-    log_path.write_text(f"{MONITOR_EXIT_CODE_PREFIX}{exit_code}\n")
+    log_path.write_text(f"{prefix}{MONITOR_EXIT_CODE_PREFIX}{exit_code}\n")
+    row = {"scheduler_type": "slurm"} if prefix else None
 
-    assert run_evidence.log_has_failure(log_path) is expected
+    assert run_evidence.log_has_failure(log_path, row, require_exit_code=True) is expected
+
+
+def test_log_failure_projection_rejects_nonzero_rank_exit_marker(tmp_path: Path):
+    log_path = tmp_path / "managed.log"
+    log_path.write_text(f"1: {MONITOR_EXIT_CODE_PREFIX}0\n")
+
+    assert run_evidence.log_has_failure(log_path, {"scheduler_type": "slurm"}, require_exit_code=True) is True
+
+
+def test_log_failure_projection_keeps_labeled_traceback_detection(tmp_path: Path):
+    log_path = tmp_path / "managed.log"
+    log_path.write_text("2: Traceback: CUDA out of memory\n")
+
+    assert run_evidence.log_has_failure(log_path, {"scheduler_type": "slurm"}) is True
 
 
 def test_status_preserves_remote_uncertainty_when_monitor_exit_log_is_unreadable(tmp_path: Path, monkeypatch):

@@ -515,6 +515,9 @@ def log_has_failure(
             tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-100:])
     lines = tail.splitlines()
     final_line = lines[-1] if lines else ""
+    # srun --label prefixes the rank-zero terminal marker; other ranks cannot own it.
+    if str((row or {}).get("scheduler_type") or "") == "slurm" and final_line.startswith("0:"):
+        final_line = final_line[2:].lstrip()
     if final_line.startswith(MONITOR_EXIT_CODE_PREFIX):
         raw_exit_code = final_line.removeprefix(MONITOR_EXIT_CODE_PREFIX)
         valid_exit_code = raw_exit_code and raw_exit_code.isascii() and raw_exit_code.isdecimal()

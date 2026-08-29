@@ -330,8 +330,8 @@ untracked or ignored importable code, and the run's frozen script/config hashes.
 For Slurm, the allocation wrapper also requires `SLURM_NTASKS` to match the
 frozen `gpus_per_run`, then compares its observed Python executable and version
 with the plan-level execution snapshot before starting the leaf script through
-one `srun --kill-on-bad-exit=1 --quit-on-interrupt` child without explicit
-task-level GPU binding. This preserves the complete allocated GPU visibility
+one labeled `srun --kill-on-bad-exit=1 --quit-on-interrupt` child without
+explicit task-level GPU binding. This preserves the complete allocated GPU visibility
 expected by the frozen Lightning device list in every externally launched rank.
 The launcher freezes the snapshot's raw SHA-256 in every canonical run and
 passes it as a batch-script argument, so the allocation verifies the exact
@@ -343,8 +343,11 @@ upgraded in place.
 Each Slurm run additionally freezes `job.sbatch`, its hash, a deterministic
 submit token, log path, allocation-identity path, and terminal-sidecar path.
 Only the allocation wrapper writes the two scheduler sidecars; ranks share the
-Slurm log, and only global rank zero writes the diagnostic exit marker. The
-terminal sidecar records the aggregate `srun` exit code.
+Slurm log, where `srun` labels each task's output and every task emits one
+bounded startup-identity record before the runtime command. Only global rank
+zero writes the diagnostic exit marker. The terminal sidecar records the
+aggregate `srun` exit code; labeled log evidence never becomes a lifecycle
+owner.
 Submission commits `submitting` before `sbatch`; a timeout or SSH disconnect is
 reconciled by the exact token and is never retried blindly. Monitoring uses
 `squeue`/`scontrol` for controller state, then queries the exact bound-cluster

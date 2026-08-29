@@ -727,11 +727,43 @@ def test_hparam_exit_marker_is_written_only_by_slurm_rank_zero(tmp_path: Path, s
         ["bash", str(script)],
         text=True,
         capture_output=True,
-        env={**os.environ, "SLURM_PROCID": slurm_procid},
+        env={
+            **os.environ,
+            "SLURM_JOB_ID": "3880",
+            "SLURM_STEP_ID": "2",
+            "SLURM_PROCID": slurm_procid,
+            "SLURM_LOCALID": slurm_procid,
+            "SLURM_NODEID": "0",
+            "SLURM_NTASKS": "2",
+            "SLURMD_NODENAME": "gpu-01",
+            "CUDA_VISIBLE_DEVICES": "0,1",
+            "MASTER_ADDR": "secret-master",
+            "WANDB_API_KEY": "secret-wandb",
+        },
     )
 
     assert result.returncode == 7
     assert result.stdout.count(MONITOR_EXIT_CODE_PREFIX) == marker_count
+    start_lines = [line for line in result.stdout.splitlines() if line.startswith("AGENT_TOOLS_SLURM_TASK_START ")]
+    assert len(start_lines) == 1
+    assert re.fullmatch(
+        rf"AGENT_TOOLS_SLURM_TASK_START job_id=3880 step_id=2 procid={slurm_procid} "
+        rf"localid={slurm_procid} nodeid=0 ntasks=2 node=gpu-01 pid=[1-9][0-9]* "
+        rf"cuda_visible_devices=0,1",
+        start_lines[0],
+    )
+    assert "secret-master" not in result.stdout
+    assert "secret-wandb" not in result.stdout
+
+
+def test_hparam_script_omits_slurm_task_start_record_for_direct_run(tmp_path: Path):
+    script = tmp_path / "launch.sh"
+    script.write_text("\n".join(plan_rendering.hparam_script_lines(["true"], run_cwd=tmp_path)) + "\n")
+
+    result = subprocess.run(["bash", str(script)], text=True, capture_output=True)
+
+    assert result.returncode == 0
+    assert "AGENT_TOOLS_SLURM_TASK_START" not in result.stdout
 
 
 @pytest.mark.parametrize(
