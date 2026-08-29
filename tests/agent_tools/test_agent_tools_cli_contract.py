@@ -7,6 +7,7 @@ import pytest
 
 from agent_tools import cli, models, plans
 from agent_tools.decisions import evaluate_consultation_gates
+from agent_tools.manifests import write_rows
 from agent_tools.recipes import load_consultation_policy
 
 SUBCOMMANDS = {
@@ -181,6 +182,25 @@ def test_hparam_launch_cli_contract():
         parser.parse_args(["hparam-launch", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
 
 
+def test_hparam_launch_reports_dry_run_and_lifecycle_counts(tmp_path: Path, monkeypatch, capsys):
+    manifest = tmp_path / "launch_manifest.tsv"
+    write_rows(
+        manifest,
+        [
+            {"step_id": "tune", "run_id": "run-001", "status": "planned"},
+            {"step_id": "tune", "run_id": "run-002", "status": "planned"},
+        ],
+    )
+    monkeypatch.setattr(cli, "launch_hparam_runs", lambda *_args, **_kwargs: manifest)
+
+    assert cli.main(["hparam-launch", "--plan-dir", "plan-dir"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "Mode: dry-run (no launch attempted)",
+        "Lifecycle states: planned=2",
+        f"Wrote {manifest}",
+    ]
+
+
 def test_hparam_run_queue_cli_contract():
     parser, subcommands = _parser_contract()
     actions = _actions(subcommands["hparam-run-queue"])
@@ -193,6 +213,25 @@ def test_hparam_run_queue_cli_contract():
 
     with pytest.raises(SystemExit):
         parser.parse_args(["hparam-run-queue", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
+
+
+def test_hparam_run_queue_reports_execute_and_lifecycle_counts(tmp_path: Path, monkeypatch, capsys):
+    status = tmp_path / "run_status.tsv"
+    write_rows(
+        status,
+        [
+            {"step_id": "tune", "run_id": "run-001", "status": "completed"},
+            {"step_id": "tune", "run_id": "run-002", "status": "failed"},
+        ],
+    )
+    monkeypatch.setattr(cli, "run_hparam_queue", lambda *_args, **_kwargs: status)
+
+    assert cli.main(["hparam-run-queue", "--plan-dir", "plan-dir", "--execute"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "Mode: execute (state changes enabled)",
+        "Lifecycle states: completed=1, failed=1",
+        f"Wrote {status}",
+    ]
 
 
 def test_hparam_monitor_cli_contract(tmp_path: Path, monkeypatch):
@@ -218,6 +257,37 @@ def test_hparam_monitor_cli_contract(tmp_path: Path, monkeypatch):
     assert calls == [
         ("run-dir", False, False, 60),
         ("run-dir", True, True, 17),
+    ]
+
+
+def test_hparam_monitor_surfaces_bounded_failure_evidence(tmp_path: Path, monkeypatch, capsys):
+    status = tmp_path / "run_status.tsv"
+    write_rows(
+        status,
+        [
+            {
+                "step_id": "tune",
+                "run_id": "run-001",
+                "status": "failed",
+                "scheduler_reason": "NonZeroExitCode",
+                "scheduler_health_error": "accounting unavailable",
+                "log_path": "/logs/run-001.log",
+                "log_tail": "rank 2: Traceback\nrank 2: CUDA out of memory",
+            },
+            {"step_id": "tune", "run_id": "run-002", "status": "completed"},
+        ],
+    )
+    monkeypatch.setattr(cli, "monitor_hparam_runs", lambda *_args, **_kwargs: status)
+
+    assert cli.main(["hparam-monitor", "--run-dir", "run-dir", "--once", "--health"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "Lifecycle states: completed=1, failed=1",
+        "Failure evidence:",
+        "- tune / run-001: status=failed; scheduler reason=NonZeroExitCode; "
+        "scheduler health error=accounting unavailable; log=/logs/run-001.log",
+        "  rank 2: Traceback",
+        "  rank 2: CUDA out of memory",
+        f"Wrote {status}",
     ]
 
 
