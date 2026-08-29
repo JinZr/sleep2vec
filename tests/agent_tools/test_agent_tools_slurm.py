@@ -784,6 +784,7 @@ def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, 
         "--ntasks-per-node=1",
         "--kill-on-bad-exit=1",
         "--quit-on-interrupt",
+        "--label",
         kwargs["script"],
     ]
     for env_name in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
@@ -948,6 +949,7 @@ def test_run_frozen_job_records_aggregate_srun_failure(tmp_path: Path, monkeypat
         "--ntasks-per-node=2",
         "--kill-on-bad-exit=1",
         "--quit-on-interrupt",
+        "--label",
         kwargs["script"],
     ]
     assert created_sidecars == [Path(kwargs["allocation_identity_path"]), Path(kwargs["result_path"])]

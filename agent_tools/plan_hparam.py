@@ -1026,11 +1026,32 @@ def render_hparam_preflight_card(
     target = str(snapshot["target"])
     if snapshot.get("host"):
         target += f":{snapshot['host']}"
+    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+    scheduler_type = str(scheduler.get("type") or "direct")
+    topology_lines = [f"- Scheduler: `{scheduler_type}`"]
+    if scheduler_type == "slurm":
+        resources = slurm.normalize_resources(scheduler, execution.get("gpus_per_run", 1))
+        tasks = resources["gpus_per_run"]
+        controller = "direct controller" if resources["direct_controller"] else "bound cluster"
+        topology_lines.extend(
+            [
+                f"- Planned allocation topology: nodes/run=1, tasks/run={tasks}, GPUs/run={tasks}, "
+                "one Slurm task per Lightning rank",
+                f"- Planned task resources: CPUs/task={resources['cpus_per_task']}, "
+                f"total CPUs={tasks * resources['cpus_per_task']}, memory={resources['memory']}/allocation, "
+                f"walltime={resources['walltime']}",
+                f"- Scheduler controller: {controller}",
+            ]
+        )
     lines = [
         "## Hparam Registration Preflight Provenance",
         "",
-        f"- Execution target: `{target}`",
-        f"- Target Python: `{snapshot['python']}` (frozen command: `{snapshot['python_command']}`)",
+        *topology_lines,
+        f"- Control transport: `{target}`",
+        f"- Validated preflight host: `{snapshot['runtime_hostname']}`",
+        f"- Runtime Python: `{snapshot['python']}` (version `{snapshot['python_version']}`; "
+        f"frozen command: `{snapshot['python_command']}`)",
         f"- Runtime commit: `{snapshot['runtime_commit']}`",
         f"- Module origin: `{snapshot['module_origin']}`",
         f"- Validated run count: {len(run_configs)}",

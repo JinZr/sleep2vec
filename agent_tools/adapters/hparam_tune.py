@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import subprocess
+import sys
 from typing import Any
 
 from .. import plan_contract, slurm
@@ -34,6 +36,7 @@ class HparamTuneAdapter(TaskAdapter):
     uses_finetune_config = True
     enforces_required_channels = True
     materializes_plan = True
+    supports_doctor_runtime_diagnostics = True
     decision_recipe_targets = {
         "hparam_search_space": ("search", "parameters"),
         "hparam_budget": ("search", "max_runs"),
@@ -157,6 +160,44 @@ class HparamTuneAdapter(TaskAdapter):
             )
         issues = [*report.issues, issue]
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
+
+    def doctor_runtime_card(self, recipe: dict[str, Any]) -> str | None:
+        from .. import managed_scheduler
+
+        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        python = str(execution.get("python") or sys.executable)
+        program = (
+            "import importlib.metadata, json, socket, sys; "
+            "pl_version = next((dist.version for dist in importlib.metadata.distributions() "
+            "if str(dist.metadata.get('Name', '')).lower() == 'pytorch-lightning'), 'unavailable'); "
+            "print(json.dumps({'host': socket.gethostname(), 'python': sys.executable, "
+            "'python_version': sys.version.split()[0], 'pytorch_lightning_version': pl_version}, sort_keys=True))"
+        )
+        try:
+            result = managed_scheduler.run_execution_command(execution, [python, "-c", program])
+        except subprocess.TimeoutExpired:
+            return "Doctor runtime unavailable: diagnostic probe timed out"
+        except (OSError, ValueError):
+            return "Doctor runtime unavailable: diagnostic probe could not start"
+        if result.returncode != 0:
+            return f"Doctor runtime unavailable: diagnostic probe exited with code {result.returncode}"
+        try:
+            payload = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError):
+            return "Doctor runtime unavailable: malformed diagnostic output"
+        fields = ("host", "python", "python_version", "pytorch_lightning_version")
+        if not isinstance(payload, dict) or any(
+            not isinstance(payload.get(field), str) or not payload[field] for field in fields
+        ):
+            return "Doctor runtime unavailable: incomplete diagnostic output"
+        target = str(execution.get("target") or "local")
+        if execution.get("host"):
+            target += f":{execution['host']}"
+        return (
+            f"Doctor runtime: transport={target}, host={payload['host']}, python={payload['python']}, "
+            f"python_version={payload['python_version']}, "
+            f"pytorch-lightning={payload['pytorch_lightning_version']}"
+        )
 
     def write_plan(
         self,

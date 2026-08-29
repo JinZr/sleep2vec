@@ -257,10 +257,15 @@ validate-only contract is hparam-specific.
 
 Every new hparam `plan.md` includes a human-readable registration-preflight
 card. Target Python, runtime commit, module origin, run/argv counts, and the
-argv digest come from the frozen execution snapshot. Variant, runtime module,
+argv digest come from the frozen execution snapshot. The card distinguishes
+the control transport from the validated preflight host and shows the actual
+Python executable/version reported by that target. Variant, runtime module,
 actual config loader, architecture, and channels come from each final generated
 config and are grouped with their run IDs. The card is a projection for audit;
-the frozen generated config bytes and hashes remain semantic authority. This
+it names the frozen scheduler and, for Slurm, the single-node task/GPU/rank
+topology plus per-task resources and controller routing. The topology is
+derived from the same normalized scheduler request used by the launcher. The
+frozen generated config bytes and hashes remain semantic authority. This
 deterministic preflight does not inspect free bytes, estimate checkpoint storage,
 or turn unavailable Slurm accounting into a plan blocker; accounting capability
 remains a time-stamped `doctor` diagnostic.
@@ -302,6 +307,10 @@ The optional `execution` block configures the managed launcher.
   capabilities through read-only `scontrol` queries. Advice never changes the
   frozen scheduler request: `nice=0` is the highest unprivileged nice setting,
   and no user-side option guarantees first priority.
+- `doctor` emits its PID and synchronous phase on stderr before potentially
+  slow probes. For an unblocked hparam recipe it separately reports the target
+  host, actual Python executable/version, and installed PyTorch Lightning
+  distribution version without importing Lightning or changing PASS/FAIL.
 - Only the canonical manager runtime—a local target at `REPO_ROOT` without a
   conda wrapper—may omit Python and commit identity. Planning then freezes the
   current manager interpreter and repository HEAD. SSH targets, separate local
@@ -325,8 +334,8 @@ untracked or ignored importable code, and the run's frozen script/config hashes.
 For Slurm, the allocation wrapper also requires `SLURM_NTASKS` to match the
 frozen `gpus_per_run`, then compares its observed Python executable and version
 with the plan-level execution snapshot before starting the leaf script through
-one `srun --kill-on-bad-exit=1 --quit-on-interrupt` child without explicit
-task-level GPU binding. This preserves the complete allocated GPU visibility
+one labeled `srun --kill-on-bad-exit=1 --quit-on-interrupt` child without
+explicit task-level GPU binding. This preserves the complete allocated GPU visibility
 expected by the frozen Lightning device list in every externally launched rank.
 The launcher freezes the snapshot's raw SHA-256 in every canonical run and
 passes it as a batch-script argument, so the allocation verifies the exact
@@ -338,8 +347,11 @@ upgraded in place.
 Each Slurm run additionally freezes `job.sbatch`, its hash, a deterministic
 submit token, log path, allocation-identity path, and terminal-sidecar path.
 Only the allocation wrapper writes the two scheduler sidecars; ranks share the
-Slurm log, and only global rank zero writes the diagnostic exit marker. The
-terminal sidecar records the aggregate `srun` exit code.
+Slurm log, where `srun` labels each task's output and every task emits one
+bounded startup-identity record before the runtime command. Only global rank
+zero writes the diagnostic exit marker. The terminal sidecar records the
+aggregate `srun` exit code; labeled log evidence never becomes a lifecycle
+owner.
 Submission commits `submitting` before `sbatch`; a timeout or SSH disconnect is
 reconciled by the exact token and is never retried blindly. Monitoring uses
 `squeue`/`scontrol` for controller state, then queries the exact bound-cluster

@@ -1150,5 +1150,5 @@ def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
     assert calls[3][-3:] == ("", "baichuan3", 0)
     assert snapshot["experiment"]["remote"] == "baichuan3"
     action = snapshot["decision"]["recommended_next"]
-    assert action["execution_host"] is None
+    assert action["control_host"] is None
     assert action["argv"][-2:] == ["--remote", "baichuan3"]

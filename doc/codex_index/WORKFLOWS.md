@@ -243,7 +243,9 @@ variant and must pass consultation first.
 
 The control flow is:
 
-1. `doctor` evaluates recipe decisions and stop-and-consult gates;
+1. `doctor` evaluates recipe decisions and stop-and-consult gates, emitting its
+   PID, synchronous phase, and read-only target runtime diagnostics without
+   turning diagnostic availability into a gate;
 2. `context` records repository, config, index, preset, skill, and ownership
    facts without authorizing execution;
 3. `plan` freezes the resolved recipe, commands, hashes, experiment, step, and
@@ -287,6 +289,9 @@ command. It
 uses the step manifest's one-way `plan_controller` binding as the sole
 ordinary/adaptive/pipeline classification owner; frozen recipes and pipeline
 row identity are consistency guards rather than alternate owners. It
+labels advisory command location as `control_host` and keeps the canonical
+execution transport/host plus recorded scheduler node in the run projection,
+so control location is not presented as runtime evidence. It
 reuses the pure `decision_rules` recipe structure owner without consultation or
 external input probes. Active adaptive and pipeline plans defer only their
 controller-owned advance/finalize actions, so an unrelated ordinary candidate

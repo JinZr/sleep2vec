@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
-from agent_tools import cli, models, plans
+from agent_tools import cli, managed_scheduler, models, plans
 from agent_tools.decisions import evaluate_consultation_gates
+from agent_tools.manifests import write_rows
 from agent_tools.recipes import load_consultation_policy
 
 SUBCOMMANDS = {
@@ -159,6 +163,171 @@ def test_plan_cli_contract():
     assert validated.validate_only is True
 
 
+def test_doctor_reports_pid_phases_and_runtime_diagnostics(monkeypatch, capsys):
+    report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "evaluate_recipe",
+        lambda *_args: calls.append("consultation") or ({"task": "hparam_tune"}, None, report),
+    )
+    monkeypatch.setattr(
+        cli,
+        "doctor_runtime_card",
+        lambda _recipe: calls.append("runtime") or "Doctor runtime: python=/target/python",
+    )
+    monkeypatch.setattr(
+        cli,
+        "prepare_doctor_report",
+        lambda *_args: calls.append("task diagnostics") or report,
+    )
+    monkeypatch.setattr(cli, "write_doctor_outputs", lambda *_args: calls.append("publish"))
+
+    assert cli.main(["doctor", "--recipe", "recipe.yaml", "--output-dir", "doctor-out"]) == 0
+    captured = capsys.readouterr()
+    assert calls == ["consultation", "runtime", "task diagnostics", "publish"]
+    assert captured.err.splitlines() == [
+        f"Doctor started: pid={os.getpid()} recipe=recipe.yaml output_dir=doctor-out",
+        "Doctor phase: consultation",
+        "Doctor phase: runtime diagnostics",
+        "Doctor runtime: python=/target/python",
+        "Doctor phase: task diagnostics",
+        "Doctor phase: publish outputs",
+        "Doctor finished: exit_code=0",
+    ]
+    assert "Status: PASS" in captured.out
+
+
+def test_doctor_skips_runtime_diagnostics_when_consultation_blocks(monkeypatch, capsys):
+    issue = plans.DecisionIssue(plans.DecisionStatus.FAIL, "recipe", "blocked", None, {})
+    report = plans.DecisionReport(status=plans.DecisionStatus.FAIL, issues=[issue], decisions={})
+    monkeypatch.setattr(cli, "evaluate_recipe", lambda *_args: ({"task": "hparam_tune"}, None, report))
+    monkeypatch.setattr(cli, "doctor_runtime_card", lambda _recipe: pytest.fail("unexpected runtime diagnostics"))
+    monkeypatch.setattr(
+        cli,
+        "prepare_doctor_report",
+        lambda *_args: report,
+    )
+    monkeypatch.setattr(cli, "write_doctor_outputs", lambda *_args: None)
+
+    assert cli.main(["doctor", "--recipe", "recipe.yaml"]) == 1
+    captured = capsys.readouterr()
+    assert "Doctor phase: runtime diagnostics" not in captured.err
+    assert "Doctor phase: task diagnostics" in captured.err
+    assert "Doctor phase: publish outputs" in captured.err
+    assert "Doctor finished: exit_code=1" in captured.err
+
+
+def test_doctor_skips_hparam_runtime_probe_for_other_tasks(monkeypatch, capsys):
+    report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
+    monkeypatch.setattr(cli, "evaluate_recipe", lambda *_args: ({"task": "finetune"}, None, report))
+    monkeypatch.setattr(cli, "doctor_runtime_card", lambda _recipe: pytest.fail("unexpected runtime diagnostics"))
+    monkeypatch.setattr(cli, "prepare_doctor_report", lambda *_args: report)
+    monkeypatch.setattr(cli, "write_doctor_outputs", lambda *_args: None)
+
+    assert cli.main(["doctor", "--recipe", "recipe.yaml"]) == 0
+    captured = capsys.readouterr()
+    assert "Doctor phase: runtime diagnostics" not in captured.err
+    assert "Doctor phase: task diagnostics" in captured.err
+
+
+def test_doctor_runtime_card_probes_target_versions_without_importing_lightning(monkeypatch):
+    calls = []
+
+    def run(execution, command):
+        calls.append((execution, command))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            '{"host": "runtime-host", "python": "/opt/python", "python_version": "3.10.0", '
+            '"pytorch_lightning_version": "2.6.1"}\n',
+            "",
+        )
+
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", run)
+    recipe = {
+        "task": "hparam_tune",
+        "execution": {
+            "target": "ssh",
+            "host": "baichuan3",
+            "workdir": "/runtime/repo",
+            "python": "/opt/python",
+        },
+    }
+
+    card = plans.doctor_runtime_card(recipe)
+
+    assert card == (
+        "Doctor runtime: transport=ssh:baichuan3, host=runtime-host, python=/opt/python, "
+        "python_version=3.10.0, pytorch-lightning=2.6.1"
+    )
+    assert calls[0][0] is recipe["execution"]
+    assert calls[0][1][:2] == ["/opt/python", "-c"]
+    assert "import pytorch_lightning" not in calls[0][1][2]
+
+
+def test_doctor_runtime_card_does_not_echo_timed_out_command(monkeypatch):
+    def timeout(_execution, _command):
+        raise subprocess.TimeoutExpired(["env", "SECRET_TOKEN=do-not-print"], 30)
+
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", timeout)
+    recipe = {"task": "hparam_tune", "execution": {"python": "/opt/python"}}
+
+    card = plans.doctor_runtime_card(recipe)
+
+    assert card == "Doctor runtime unavailable: diagnostic probe timed out"
+    assert "do-not-print" not in card
+
+
+def test_doctor_runtime_card_uses_manager_python_by_default(monkeypatch):
+    calls = []
+
+    def run(_execution, command):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            '{"host": "runtime-host", "python": "/opt/python", "python_version": "3.10.0", '
+            '"pytorch_lightning_version": "2.6.1"}\n',
+            "",
+        )
+
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", run)
+
+    plans.doctor_runtime_card({"task": "hparam_tune"})
+
+    assert calls[0][0] == sys.executable
+
+
+def test_doctor_runtime_card_handles_rejected_probe(monkeypatch):
+    def reject(_execution, _command):
+        raise ValueError("private fixture detail")
+
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", reject)
+
+    card = plans.doctor_runtime_card({"task": "hparam_tune"})
+
+    assert card == "Doctor runtime unavailable: diagnostic probe could not start"
+    assert "private fixture detail" not in card
+
+
+def test_doctor_runtime_card_does_not_echo_failed_probe_output(monkeypatch):
+    result = subprocess.CompletedProcess(
+        ["ssh", "runtime-host"],
+        23,
+        "SECRET_TOKEN=do-not-print\n",
+        "private target path: /secret/path\n",
+    )
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", lambda *_args: result)
+    recipe = {"task": "hparam_tune", "execution": {"python": "/opt/python"}}
+
+    card = plans.doctor_runtime_card(recipe)
+
+    assert card == "Doctor runtime unavailable: diagnostic probe exited with code 23"
+    assert "do-not-print" not in card
+    assert "/secret/path" not in card
+
+
 def test_collect_runs_cli_contract():
     parser, subcommands = _parser_contract()
     actions = _actions(subcommands["collect-runs"])
@@ -181,6 +350,25 @@ def test_hparam_launch_cli_contract():
         parser.parse_args(["hparam-launch", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
 
 
+def test_hparam_launch_reports_dry_run_and_lifecycle_counts(tmp_path: Path, monkeypatch, capsys):
+    manifest = tmp_path / "launch_manifest.tsv"
+    write_rows(
+        manifest,
+        [
+            {"step_id": "tune", "run_id": "run-001", "status": "planned"},
+            {"step_id": "tune", "run_id": "run-002", "status": "planned"},
+        ],
+    )
+    monkeypatch.setattr(cli, "launch_hparam_runs", lambda *_args, **_kwargs: manifest)
+
+    assert cli.main(["hparam-launch", "--plan-dir", "plan-dir"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "Mode: dry-run (no launch attempted)",
+        "Lifecycle states: planned=2",
+        f"Wrote {manifest}",
+    ]
+
+
 def test_hparam_run_queue_cli_contract():
     parser, subcommands = _parser_contract()
     actions = _actions(subcommands["hparam-run-queue"])
@@ -195,11 +383,41 @@ def test_hparam_run_queue_cli_contract():
         parser.parse_args(["hparam-run-queue", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
 
 
+def test_hparam_run_queue_reports_execute_and_lifecycle_counts(tmp_path: Path, monkeypatch, capsys):
+    status = tmp_path / "run_status.tsv"
+    write_rows(
+        status,
+        [
+            {"step_id": "tune", "run_id": "run-001", "status": "completed"},
+            {"step_id": "tune", "run_id": "run-002", "status": "failed"},
+        ],
+    )
+    monkeypatch.setattr(cli, "run_hparam_queue", lambda *_args, **_kwargs: status)
+
+    assert cli.main(["hparam-run-queue", "--plan-dir", "plan-dir", "--execute"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "Mode: execute (state changes enabled)",
+        "Lifecycle states: completed=1, failed=1",
+        f"Wrote {status}",
+    ]
+
+
 def test_hparam_monitor_cli_contract(tmp_path: Path, monkeypatch):
     parser, subcommands = _parser_contract()
     actions = _actions(subcommands["hparam-monitor"])
     defaults = parser.parse_args(["hparam-monitor", "--run-dir", "run-dir"])
-    args = parser.parse_args(["hparam-monitor", "--run-dir", "run-dir", "--once", "--health", "--poll-seconds", "17"])
+    args = parser.parse_args(
+        [
+            "hparam-monitor",
+            "--run-dir",
+            "run-dir",
+            "--once",
+            "--health",
+            "--include-log-tail",
+            "--poll-seconds",
+            "17",
+        ]
+    )
     status = tmp_path / "run_status.tsv"
     calls = []
 
@@ -212,12 +430,54 @@ def test_hparam_monitor_cli_contract(tmp_path: Path, monkeypatch):
     assert {name for name, action in actions.items() if action.required} == {"run_dir"}
     assert defaults.once is False
     assert defaults.health is False
+    assert defaults.include_log_tail is False
     assert defaults.poll_seconds == 60
+    assert args.include_log_tail is True
     assert cli._cmd_hparam_monitor(defaults) == 0
     assert cli._cmd_hparam_monitor(args) == 0
     assert calls == [
         ("run-dir", False, False, 60),
         ("run-dir", True, True, 17),
+    ]
+
+
+def test_hparam_monitor_requires_opt_in_for_raw_log_tail(tmp_path: Path, monkeypatch, capsys):
+    status = tmp_path / "run_status.tsv"
+    write_rows(
+        status,
+        [
+            {
+                "step_id": "tune",
+                "run_id": "run-001",
+                "status": "failed",
+                "scheduler_reason": "NonZeroExitCode",
+                "scheduler_health_error": "accounting unavailable",
+                "log_path": "/logs/run-001.log",
+                "log_tail": "rank 2: Traceback\nrank 2: CUDA out of memory",
+            },
+            {"step_id": "tune", "run_id": "run-002", "status": "completed"},
+        ],
+    )
+    monkeypatch.setattr(cli, "monitor_hparam_runs", lambda *_args, **_kwargs: status)
+
+    assert cli.main(["hparam-monitor", "--run-dir", "run-dir", "--once", "--health"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "Lifecycle states: completed=1, failed=1",
+        "Failure evidence:",
+        "- tune / run-001: status=failed; scheduler reason=NonZeroExitCode; "
+        "scheduler health error=accounting unavailable; log=/logs/run-001.log",
+        f"Wrote {status}",
+    ]
+
+    assert cli.main(["hparam-monitor", "--run-dir", "run-dir", "--once", "--health", "--include-log-tail"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "Lifecycle states: completed=1, failed=1",
+        "Failure evidence:",
+        "- tune / run-001: status=failed; scheduler reason=NonZeroExitCode; "
+        "scheduler health error=accounting unavailable; log=/logs/run-001.log",
+        "  rank 2: Traceback",
+        "  rank 2: CUDA out of memory",
+        f"Wrote {status}",
     ]
 
 

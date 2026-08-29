@@ -580,6 +580,7 @@ def experiment_status_snapshot(
                 "id": step_id,
                 "phase": str(manifest["step"]["phase"]),
                 "purpose": str(manifest["step"]["purpose"]),
+                "plan_controller": str(manifest["plan_controller"]),
                 "plans": sorted(plan["path"] for plan in registered["plans"]),
                 "status_counts": _status_counts(step_rows),
             }
@@ -1209,7 +1210,7 @@ def _hparam_select_action(step_id: str, plan_path: str, remote: str | None) -> d
         "Rank terminal successful candidates and regenerate the deterministic selection report.",
         ["python", "-m", "agent_tools", "hparam-select", "--run-dir", plan_path],
         step_id=step_id,
-        execution_host=remote,
+        control_host=remote,
     )
 
 
@@ -1243,19 +1244,43 @@ def format_experiment_status(snapshot: dict[str, Any]) -> str:
         "- Evidence mode: recorded evidence, not live",
         "",
     ]
+    if snapshot["steps"]:
+        lines.extend(
+            [
+                "| Step | Phase | Plan controller | Status counts |",
+                "|---|---|---|---|",
+            ]
+        )
+        for step in snapshot["steps"]:
+            counts = ", ".join(f"{status}={count}" for status, count in sorted(step["status_counts"].items()))
+            lines.append(
+                "| {step} | {phase} | {controller} | {counts} |".format(
+                    step=_table_text(step["id"]),
+                    phase=_table_text(step["phase"]),
+                    controller=_table_text(step["plan_controller"]),
+                    counts=_table_text(counts),
+                )
+            )
+        lines.append("")
     if snapshot["runs"]:
         lines.extend(
             [
-                "| Run | Canonical | Scheduler | Process | Checkpoints | Runtime manifest | Blocker |",
-                "|---|---|---|---|---:|---|---|",
+                "| Run | Canonical | Execution transport | Scheduler | Process | Checkpoints | Runtime manifest | "
+                "Blocker |",
+                "|---|---|---|---|---|---:|---|---|",
             ]
         )
         for run in snapshot["runs"]:
+            execution = run["execution"]
+            execution_text = execution["target"] or ""
+            if execution["host"]:
+                execution_text += f":{execution['host']}"
             scheduler = run["scheduler"]
             scheduler_text = " ".join(
                 f"{name}={value}"
                 for name, value in (
                     ("job", scheduler["job_id"]),
+                    ("node", scheduler["node"]),
                     ("state", scheduler["raw_state"]),
                     ("reason", scheduler["reason"]),
                     ("observed", scheduler["observed_at"]),
@@ -1274,9 +1299,11 @@ def format_experiment_status(snapshot: dict[str, Any]) -> str:
                 if value is not None
             )
             lines.append(
-                "| {run_id} | {status} | {scheduler} | {process} | {checkpoints} | {test} | {blocker} |".format(
+                "| {run_id} | {status} | {execution} | {scheduler} | {process} | {checkpoints} | {test} | "
+                "{blocker} |".format(
                     run_id=_table_text(f"{run['step_id']} / {run['run_id']} — {run['run_name']}"),
                     status=_table_text(run["status"]),
+                    execution=_table_text(execution_text),
                     scheduler=_table_text(scheduler_text),
                     process=_table_text(process_text),
                     checkpoints=_table_text(run["evidence"]["checkpoint_count"]),
@@ -1310,8 +1337,8 @@ def format_experiment_status(snapshot: dict[str, Any]) -> str:
         lines.append("Manual choice required.")
     if actions:
         for action in actions:
-            execution_host = action.get("execution_host")
-            host_text = f" (execution host: `{execution_host}`)" if execution_host else ""
+            control_host = action.get("control_host")
+            host_text = f" (control host: `{control_host}`)" if control_host else ""
             lines.append(f"- `{action['id']}`{host_text}: `{shlex.join(action['argv'])}` — {action['reason']}")
             if action.get("required_inputs"):
                 lines.append(f"  Required inputs: {', '.join(action['required_inputs'])}")
@@ -1388,19 +1415,18 @@ def _plan_advice(
                     "--execute",
                 ]
                 action_id = "hparam-run-queue"
-                execution_host = remote
+                control_host = remote
             else:
                 argv = ["bash", plan["launch_script"]]
                 action_id = "run-plan"
-                hosts = sorted({str(row["host"]) for row in plan_rows if row.get("host") not in (None, "")})
-                execution_host = remote or (hosts[0] if len(hosts) == 1 else None)
+                control_host = remote
             candidates.append(
                 _status_action(
                     action_id,
                     "Launch only after explicit user authorization and the command's own preflight succeeds.",
                     argv,
                     step_id=step_id,
-                    execution_host=execution_host,
+                    control_host=control_host,
                 )
             )
     candidates.sort(key=lambda action: (action["step_id"] or "", action["id"], action["argv"]))
@@ -1414,10 +1440,15 @@ def _status_run_payload(row: dict[str, Any]) -> dict[str, Any]:
         "run_name": str(row.get("run_name") or ""),
         "parameter_summary": str(row.get("parameter_summary") or ""),
         "status": str(row["status"]),
+        "execution": {
+            "target": _optional_text(row.get("target")),
+            "host": _optional_text(row.get("host")),
+        },
         "scheduler": {
             "type": _optional_text(row.get("scheduler_type")),
             "job_id": _optional_text(row.get("scheduler_job_id")),
             "cluster": _optional_text(row.get("scheduler_cluster")),
+            "node": _optional_text(row.get("scheduler_node")),
             "raw_state": _optional_text(row.get("scheduler_raw_state")),
             "reason": _optional_text(row.get("scheduler_reason")),
             "observed_at": _optional_text(row.get("scheduler_observed_at")),
@@ -1485,12 +1516,12 @@ def _status_action(
     argv: list[str],
     *,
     step_id: str | None = None,
-    execution_host: str | None = None,
+    control_host: str | None = None,
 ) -> dict[str, Any]:
     return {
         "id": action_id,
         "step_id": step_id,
-        "execution_host": execution_host,
+        "control_host": control_host,
         "reason": reason,
         "advisory": True,
         "mutates": True,

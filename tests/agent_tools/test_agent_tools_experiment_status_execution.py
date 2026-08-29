@@ -44,6 +44,8 @@ def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence
     assert "schema_version" not in first
     assert "generated_at" not in first
     assert first["summary"] == {"state": "blocked", "run_count": 1, "status_counts": {"unknown_scheduler": 1}}
+    assert first["steps"][0]["plan_controller"] == "ordinary"
+    assert first["runs"][0]["execution"] == {"target": None, "host": None}
     assert first["runs"][0]["scheduler"]["observed_at"] == "2026-08-25T01:02:03Z"
     assert first["runs"][0]["process"]["pid"] is None
     assert first["runs"][0]["evidence"]["checkpoint_count"] == "50"

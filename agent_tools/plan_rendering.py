@@ -363,6 +363,18 @@ def hparam_script_lines(
             "trap _agent_tools_record_exit EXIT",
             "",
         ]
+    slurm_task_lines = [
+        'if [[ -n "${SLURM_PROCID:-}" ]]; then',
+        (
+            "    printf 'AGENT_TOOLS_SLURM_TASK_START job_id=%s step_id=%s procid=%s localid=%s "
+            "nodeid=%s ntasks=%s node=%s pid=%s cuda_visible_devices=%s\\n' "
+            '"${SLURM_JOB_ID:-}" "${SLURM_STEP_ID:-}" "${SLURM_PROCID:-}" "${SLURM_LOCALID:-}" '
+            '"${SLURM_NODEID:-}" "${SLURM_NTASKS:-}" "${SLURMD_NODENAME:-}" "$$" '
+            '"${CUDA_VISIBLE_DEVICES:-}" || :'
+        ),
+        "fi",
+        "",
+    ]
     return [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
@@ -371,6 +383,7 @@ def hparam_script_lines(
         f"cd {root}",
         f"export PYTHONPATH={root}",
         "",
+        *slurm_task_lines,
         "# Agent policy status: PASS",
         "# This script was generated only after consultation gates passed.",
         "# High-impact decisions were resolved by explicit recipe/config/user inputs.",

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -43,9 +45,19 @@ from .hparam import (
     threshold_hparam_outputs,
 )
 from .index_csv import index_summary
+from .manifests import read_rows
 from .markdown import report_text
 from .models import json_ready
-from .plans import build_context, build_plan, collect_runs, evaluate_recipe, prepare_doctor_report, write_doctor_outputs
+from .plans import (
+    build_context,
+    build_plan,
+    collect_runs,
+    doctor_runtime_card,
+    doctor_runtime_diagnostics_supported,
+    evaluate_recipe,
+    prepare_doctor_report,
+    write_doctor_outputs,
+)
 from .progress import format_progress, read_progress
 from .repo import repo_summary
 from .skills import list_skills, validate_skills
@@ -142,6 +154,11 @@ def _build_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--run-dir", required=True)
     monitor.add_argument("--once", action="store_true")
     monitor.add_argument("--health", action="store_true")
+    monitor.add_argument(
+        "--include-log-tail",
+        action="store_true",
+        help="Print recorded raw log tails; they may contain sensitive data.",
+    )
     monitor.add_argument("--poll-seconds", type=float, default=60)
     monitor.set_defaults(func=_cmd_hparam_monitor)
 
@@ -372,15 +389,30 @@ def _cmd_preset_summary(args: argparse.Namespace) -> int:
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
+    output_dir = args.output_dir or "-"
+    print(
+        f"Doctor started: pid={os.getpid()} recipe={args.recipe} output_dir={output_dir}",
+        file=sys.stderr,
+        flush=True,
+    )
+    print("Doctor phase: consultation", file=sys.stderr, flush=True)
     recipe, _cfg, report = evaluate_recipe(args.recipe, args.user_decisions)
+    if not report.blocking_issues() and doctor_runtime_diagnostics_supported(recipe):
+        print("Doctor phase: runtime diagnostics", file=sys.stderr, flush=True)
+        runtime_card = doctor_runtime_card(recipe)
+        if runtime_card is not None:
+            print(runtime_card, file=sys.stderr, flush=True)
+    print("Doctor phase: task diagnostics", file=sys.stderr, flush=True)
     report = prepare_doctor_report(args.output_dir, recipe, report)
-    print(report_text(report))
+    print(report_text(report), flush=True)
+    print("Doctor phase: publish outputs", file=sys.stderr, flush=True)
     template = write_doctor_outputs(args.output_dir, recipe, report)
     if template is not None:
         path, created = template
         action = "Wrote" if created else "Preserved existing"
         print(f"{action} user decisions file: {path}")
         print(f"Fill it and rerun with --user-decisions {path}.")
+    print(f"Doctor finished: exit_code={report.exit_code}", file=sys.stderr, flush=True)
     return report.exit_code
 
 
@@ -422,6 +454,12 @@ def _cmd_collect_runs(args: argparse.Namespace) -> int:
 
 def _cmd_hparam_launch(args: argparse.Namespace) -> int:
     manifest = launch_hparam_runs(args.plan_dir, dry_run=not args.execute)
+    rows = read_rows(manifest, require_managed_identity=True)
+    counts = Counter(str(row.get("status") or "unknown") for row in rows)
+    mode = "execute (state changes enabled)" if args.execute else "dry-run (no launch attempted)"
+    states = ", ".join(f"{status}={count}" for status, count in sorted(counts.items())) or "none"
+    print(f"Mode: {mode}")
+    print(f"Lifecycle states: {states}")
     print(f"Wrote {manifest}")
     return 0
 
@@ -432,6 +470,12 @@ def _cmd_hparam_run_queue(args: argparse.Namespace) -> int:
         dry_run=not args.execute,
         poll_seconds=args.poll_seconds,
     )
+    rows = read_rows(status, require_managed_identity=True)
+    counts = Counter(str(row.get("status") or "unknown") for row in rows)
+    mode = "execute (state changes enabled)" if args.execute else "dry-run (no launch attempted)"
+    states = ", ".join(f"{run_status}={count}" for run_status, count in sorted(counts.items())) or "none"
+    print(f"Mode: {mode}")
+    print(f"Lifecycle states: {states}")
     print(f"Wrote {status}")
     return 0
 
@@ -443,6 +487,33 @@ def _cmd_hparam_monitor(args: argparse.Namespace) -> int:
         health=args.health,
         poll_seconds=args.poll_seconds,
     )
+    rows = read_rows(status, require_managed_identity=True)
+    counts = Counter(str(row.get("status") or "unknown") for row in rows)
+    states = ", ".join(f"{status}={count}" for status, count in sorted(counts.items())) or "none"
+    print(f"Lifecycle states: {states}")
+    evidence_rows = [
+        row
+        for row in rows
+        if row.get("status") in {"failed", "missing_pid", "unknown_remote", "unknown_scheduler"}
+        or row.get("process_identity_error")
+        or row.get("scheduler_health_error")
+    ]
+    if evidence_rows:
+        print("Failure evidence:")
+    for row in evidence_rows:
+        details = [f"status={row.get('status') or 'unknown'}"]
+        for label, field in (
+            ("scheduler reason", "scheduler_reason"),
+            ("process identity error", "process_identity_error"),
+            ("scheduler health error", "scheduler_health_error"),
+            ("log", "log_path"),
+        ):
+            if row.get(field):
+                details.append(f"{label}={row[field]}")
+        print(f"- {row['step_id']} / {row['run_id']}: {'; '.join(details)}")
+        if args.include_log_tail:
+            for line in str(row.get("log_tail") or "").splitlines():
+                print(f"  {line}")
     print(f"Wrote {status}")
     return 0
 

@@ -576,6 +576,16 @@ def prepare_doctor_report(output_dir: str | Path | None, recipe: dict, report: D
     return adapter.prepare_doctor_report(recipe, report) if adapter is not None else report
 
 
+def doctor_runtime_diagnostics_supported(recipe: dict[str, Any]) -> bool:
+    adapter = get_adapter(recipe.get("task"))
+    return bool(adapter is not None and adapter.supports_doctor_runtime_diagnostics)
+
+
+def doctor_runtime_card(recipe: dict[str, Any]) -> str | None:
+    adapter = get_adapter(recipe.get("task"))
+    return adapter.doctor_runtime_card(recipe) if adapter is not None else None
+
+
 def write_doctor_outputs(
     output_dir: str | Path | None,
     recipe: dict,

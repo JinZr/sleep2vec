@@ -319,6 +319,7 @@ def run_frozen_job(
                                 f"--ntasks-per-node={expected_tasks}",
                                 "--kill-on-bad-exit=1",
                                 "--quit-on-interrupt",
+                                "--label",
                                 script,
                             ],
                             cwd=workdir,

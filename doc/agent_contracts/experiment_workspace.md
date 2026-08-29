@@ -216,10 +216,11 @@ events, so the marker cannot authorize work before initialization is complete.
 
 ## Lifecycle entrypoints
 
+- `doctor` prints its PID and current phase to stderr before synchronous consultation or target diagnostics. For an unblocked hparam recipe it also reports the target's actual Python and PyTorch Lightning distribution versions as read-only diagnostics; probe failure does not alter the consultation result.
 - `plan` freezes the effective recipe, configs, commands, hashes, and planned runs.
-- `hparam-launch` validates frozen artifacts and explicitly starts one eligible wave; dry-run remains the default.
-- `hparam-run-queue` is the explicit long-running action that repeatedly fills available capacity until every current-plan run is terminal; dry-run performs one preview and returns.
-- `hparam-monitor` observes registered runs and never schedules pending work. By default it rereads the canonical manifest and observes the frozen current plan every `--poll-seconds` (60 seconds) until all of its runs are terminal; `--once` performs exactly one observation round.
+- `hparam-launch` validates frozen artifacts and explicitly starts one eligible wave; dry-run remains the default. Its CLI output names the mode and reports the recorded lifecycle-state counts from the written projection.
+- `hparam-run-queue` is the explicit long-running action that repeatedly fills available capacity until every current-plan run is terminal; dry-run performs one preview and returns. Its CLI output likewise distinguishes preview from execute and reports the recorded lifecycle-state counts.
+- `hparam-monitor` observes registered runs and never schedules pending work. By default it rereads the canonical manifest and observes the frozen current plan every `--poll-seconds` (60 seconds) until all of its runs are terminal; `--once` performs exactly one observation round. The terminal CLI summary projects structured failure evidence already recorded in `run_status.tsv`; it does not reread logs or infer a second lifecycle state. Raw recorded `log_tail` text is printed only with the explicit `--include-log-tail` opt-in because it may contain sensitive data.
 - `hparam-stop` requires a reason. Direct runs verify and stop the complete
   process group before committing terminal state. Slurm runs atomically record
   nonterminal `stopping`, request time, reason, and job binding before
@@ -246,6 +247,11 @@ events, so the marker cannot authorize work before initialization is complete.
   other external input is reopened. The frozen plan context, not the status
   reader's repository root or Python interpreter, reproduces relative source
   paths and complete launch scripts across creator and controller hosts.
+  Step output projects the registered `plan_controller`; run output projects
+  the canonical execution transport and host, while recorded Slurm node
+  evidence stays under the scheduler projection. Advisory actions use
+  `control_host` only for the host where the control command must be invoked,
+  so it is not confused with either execution evidence.
   Suggested commands are advisory argv arrays and
   do not authorize a launch or mutation.
   A registered directory containing `questions.json`, `questions.md`, and
