@@ -405,7 +405,7 @@ def test_preset_plan_blocks_multilabel_sidecars_missing_from_execution_workdir(t
         tmp_path,
         config=config,
         index=config_payload["data"]["finetune_data_index"],
-        execution={"workdir": str(runtime)},
+        execution={"workdir": str(runtime), "python": sys.executable, "runtime_commit": _RUNTIME_COMMIT},
         name="preset_multilabel_relative_sidecars",
     )
     output_dir = tmp_path / "plan_multilabel_sidecars"
@@ -462,7 +462,10 @@ def test_preset_plan_skips_local_index_summary_for_remote_deferred_index(tmp_pat
             "inputs": {"config": config, "index": ["/wujidata/index.csv"], "dataset_name": "unit"},
             "preset": {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False},
             "execution": {
-                "target": "ssh",
+                "target": "local",
+                "workdir": str(tmp_path),
+                "python": sys.executable,
+                "runtime_commit": _RUNTIME_COMMIT,
                 "host": "baichuan3",
                 "path_context": "remote",
                 "path_validation": "defer",
