@@ -1455,7 +1455,10 @@ def _slurm_artifact_observation(row: dict[str, Any], *, health: bool = False, he
     if observed_artifacts is not None:
         run_manifest, _manifest, checkpoints = observed_artifacts
         row.update({"run_manifest": run_manifest, "checkpoints": ";".join(checkpoints)})
-    row["log_tail"] = evidence.log_tail(row.get("log_path"), row)
+    if health:
+        row["log_tail"], log_age = evidence.log_tail_and_age(row.get("log_path"), row)
+    else:
+        row["log_tail"] = evidence.log_tail(row.get("log_path"), row)
     if health:
         status = str(row.get("status") or "")
         if health_error or status in {"submitting", "unknown_scheduler"}:
@@ -1466,7 +1469,6 @@ def _slurm_artifact_observation(row: dict[str, Any], *, health: bool = False, he
             health_status = "scheduler_running"
         else:
             health_status = status
-        log_age = evidence.log_age_seconds(row.get("log_path"), row)
         queue_age = _timestamp_age_seconds(row.get("launched_at")) if status == "queued" else None
         allocation_age = _timestamp_age_seconds(row.get("scheduler_started_at"))
         row.update(

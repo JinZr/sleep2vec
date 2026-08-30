@@ -42,6 +42,7 @@ _PROGRAMS = {
         "run_evidence/_process_stop_body.py.src",
     ),
     "run_evidence.log_tail": ("run_evidence/log_tail.py.src",),
+    "run_evidence.log_tail_and_age": ("run_evidence/log_tail_and_age.py.src",),
     "managed_scheduler.runtime_identity": ("managed_scheduler/runtime_identity.py.src",),
     "managed_scheduler.process_launch": (
         "managed_scheduler/_process_launch_header.py.src",

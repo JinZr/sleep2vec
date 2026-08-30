@@ -46,6 +46,15 @@ observation without a comparison baseline reports `health_unknown`;
 progress. Remote artifact uncertainty preserves the last checkpoint inventory
 while leaving the current health poll's `checkpoint_count` blank.
 
+Local log evidence reads only the needed suffix of seekable UTF-8 regular logs,
+expanding for long lines; other text encodings and stream inputs retain their
+text-read behavior. Encountered read errors still propagate. A tail is not a
+whole-file integrity check or an atomic snapshot of concurrent log writes.
+Slurm SSH health obtains the display tail and later path-mtime age in one
+remote operation, preserving their independent failures. An invalid paired
+response falls back once to the existing separate probes. Direct-process health
+keeps its probe order; no log evidence is cached across observations.
+
 Runtime `run_manifest.json` supplies metrics and checkpoint evidence only. It does not own lifecycle status. A truly missing runtime manifest means evidence is not yet available; an existing alias, non-regular file, invalid encoding/JSON, or non-mapping payload is corrupt.
 
 For test-selected hparam runs, the terminal runtime manifest also contains
