@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -10,17 +11,271 @@ import threading
 import pytest
 from test_agent_tools_hparam_runtime import (
     _embedded_process_group_running,
+    _hparam_recipe,
     _is_remote_python_program,
     _process_identity,
     _read_table,
+    _run,
     _write_proc_stat,
     _write_process_identity,
     _write_runtime_rows,
 )
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
+import yaml
 
-from agent_tools import hparam_runtime, manifests, run_evidence, transport
-from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, merge_run_manifest
+from agent_tools import experiments, hparam_runtime, manifests, run_artifacts, run_evidence, slurm, transport
+from agent_tools.experiment_workspace import EXECUTION_IDENTITY_FIELDS, MONITOR_EXIT_CODE_PREFIX, merge_run_manifest
+
+
+@pytest.mark.parametrize(
+    ("target", "status", "dry_run"),
+    [("local", "planned", False), ("local", "pending", True), ("ssh", "planned", True), ("ssh", "pending", False)],
+)
+def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(
+    tmp_path: Path, monkeypatch, target, status, dry_run
+):
+    execution = {"target": target, "workdir": str(tmp_path)}
+    if target == "ssh":
+        execution["host"] = "unit-host"
+    recipe = _hparam_recipe(tmp_path, execution=execution)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr
+    plan = run_artifacts.read_hparam_plan(plan_dir)
+    run = plan["runs"][0]
+    if dry_run:
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
+        assert _read_table(plan_dir / "launch_manifest.tsv")[0]["target"] == target
+    merge_run_manifest(tmp_path, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": status}])
+    frozen_paths = [plan_dir / "plan.json", plan_dir / "recipe.resolved.yaml", Path(run["script"]), Path(run["config"])]
+    frozen = {path: path.read_bytes() for path in frozen_paths}
+    before = _read_table(tmp_path / "run_manifest.tsv")[0]
+    now = "2026-08-30T04:05:06Z"
+    reason = "Cancel before launch: superseded experiment"
+    monkeypatch.setattr(hparam_runtime, "utc_now", lambda: now)
+    monkeypatch.setattr(run_evidence, "read_pid", lambda *_a, **_k: pytest.fail("no PID read"))
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_a, **_k: pytest.fail("no identity read"))
+    monkeypatch.setattr(run_evidence, "run_row_command", lambda *_a, **_k: pytest.fail("no remote command"))
+    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
+    monkeypatch.setattr(slurm, "active_jobs", lambda *_a, **_k: pytest.fail("no scheduler lookup"))
+    monkeypatch.setattr(slurm, "cancel", lambda *_a, **_k: pytest.fail("no scheduler cancel"))
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_a, **_k: pytest.fail("no launch"))
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+
+    def validate_local(root, paths, *, remote=None):
+        assert remote is None
+        return real_validate(root, paths)
+
+    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_local)
+
+    assert hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason) == plan_dir / "run_status.tsv"
+
+    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert canonical == _read_table(plan_dir / "run_status.tsv")[0] == _read_table(plan_dir / "launch_manifest.tsv")[0]
+    assert canonical["status"] == "stopped"
+    assert canonical["stop_reason"] == reason
+    assert canonical["stopped_at"] == now
+    assert all(canonical.get(field, "") == before.get(field, "") == "" for field in EXECUTION_IDENTITY_FIELDS)
+    assert canonical.get("launched_at", "") == canonical.get("stop_requested_at", "") == ""
+    assert run_artifacts.read_hparam_plan(plan_dir) == plan
+    snapshot = experiments.experiment_status(tmp_path)
+    assert snapshot["summary"]["status_counts"] == {"stopped": 1}
+    assert snapshot["summary"]["state"] == "ready_to_report"
+    assert any(blocker["code"] == "failure_report_required" for blocker in snapshot["blockers"])
+    assert {path: path.read_bytes() for path in frozen_paths} == frozen
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("run_stopped") == 1
+    stopped_event = next(event for event in events if event["event_type"] == "run_stopped")
+    assert (stopped_event["step_id"], stopped_event["run_id"], stopped_event["reason"]) == (
+        run["step_id"],
+        run["run_id"],
+        reason,
+    )
+    assert not any(event["event_type"] == "run_stop_requested" for event in events)
+    before_repeat = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    with pytest.raises(ValueError, match="already terminal"):
+        hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason)
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before_repeat
+    monkeypatch.setattr(
+        hparam_runtime.exp_io,
+        "validate_managed_output_paths",
+        lambda root, paths, remote=None: None if remote else real_validate(root, paths),
+    )
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "stopped"
+    monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", lambda *_a, **_k: pytest.fail("no queue monitor"))
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_a, **_k: pytest.fail("no queue launch"))
+    assert hparam_runtime.run_hparam_queue(plan_dir, dry_run=False) == plan_dir / "run_status.tsv"
+
+
+def test_hparam_unlaunched_stop_leaves_other_runs_launchable(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 2
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr
+    cancelled, remaining = run_artifacts.read_hparam_plan(plan_dir)["runs"]
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
+    )
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
+
+    hparam_runtime.stop_hparam_run(plan_dir, cancelled["run_id"], reason="cancel one candidate")
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
+    assert rows[cancelled["run_id"]]["status"] == "stopped"
+    assert rows[remaining["run_id"]]["status"] == "launched"
+    assert len(started) == 1
+    assert remaining["script"] in started[0]
+    assert cancelled["script"] not in started[0]
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"target": "local"},
+        {"command": "unconfirmed launch"},
+        {"pid": "123"},
+        {"launched_at": "2026-08-30T04:00:00Z"},
+        {"stop_requested_at": "2026-08-30T04:00:00Z"},
+        {"status": "launched"},
+        {"status": "missing_pid"},
+        {"status": "unknown_remote"},
+    ],
+)
+def test_hparam_stop_does_not_metadata_cancel_uncertain_launch(tmp_path: Path, monkeypatch, evidence):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr
+    rows = _read_table(tmp_path / "run_manifest.tsv")
+    rows[0].update(evidence)
+    manifests.write_rows(tmp_path / "run_manifest.tsv", rows)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_a, **_k: pytest.fail("no identity read"))
+    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
+
+    with pytest.raises(ValueError):
+        hparam_runtime.stop_hparam_run(plan_dir, rows[0]["run_id"], reason="unconfirmed launch")
+
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("first_operation", ["stop", "launch"])
+def test_hparam_unlaunched_stop_serializes_with_launch(tmp_path: Path, monkeypatch, first_operation):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr
+    run = run_artifacts.read_hparam_plan(plan_dir)["runs"][0]
+    first_ready = threading.Event()
+    release_first = threading.Event()
+    second_attempted = threading.Event()
+    second_acquired = threading.Event()
+    failures = []
+    started = []
+    stopped = []
+    real_lock = hparam_runtime.scheduler.managed_run_lock
+    real_merge = hparam_runtime.merge_run_manifest
+
+    @contextmanager
+    def track_lock(root):
+        second = threading.current_thread().name == "second-operation"
+        if second:
+            second_attempted.set()
+        with real_lock(root):
+            if second:
+                second_acquired.set()
+            yield
+
+    def merge(root, rows, **kwargs):
+        if first_operation == "stop" and threading.current_thread().name == "first-operation":
+            first_ready.set()
+            assert release_first.wait(timeout=5)
+        return real_merge(root, rows, **kwargs)
+
+    def start(_execution, command):
+        started.append(command)
+        canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+        _write_process_identity(canonical["pid_path"])
+        first_ready.set()
+        assert release_first.wait(timeout=5)
+        return "launched"
+
+    def operation(name):
+        try:
+            if name == "stop":
+                hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="cancel race")
+            else:
+                hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+        except BaseException as exc:
+            failures.append(exc)
+
+    monkeypatch.setattr(hparam_runtime.scheduler, "managed_run_lock", track_lock)
+    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge)
+    monkeypatch.setattr(hparam_runtime, "_start_process", start)
+    monkeypatch.setattr(run_evidence, "stop_process_group", lambda _row, identity: stopped.append(identity))
+    first = threading.Thread(target=operation, args=(first_operation,), name="first-operation")
+    second = threading.Thread(
+        target=operation, args=("launch" if first_operation == "stop" else "stop",), name="second-operation"
+    )
+    first.start()
+    try:
+        assert first_ready.wait(timeout=5), failures
+        second.start()
+        assert second_attempted.wait(timeout=5)
+        assert not second_acquired.is_set()
+    finally:
+        release_first.set()
+        first.join(timeout=5)
+        if second.ident is not None:
+            second.join(timeout=5)
+    assert not first.is_alive() and not second.is_alive()
+    assert failures == []
+    assert len(started) == (first_operation == "launch")
+    assert stopped == ([_process_identity()] if first_operation == "launch" else [])
+    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert canonical["status"] == "stopped"
+    assert canonical["stop_reason"] == "cancel race"
+
+
+def test_hparam_unlaunched_stop_survives_stale_monitor_commit(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr
+    run = run_artifacts.read_hparam_plan(plan_dir)["runs"][0]
+    real_merge = hparam_runtime.merge_run_manifest
+    cancelled = False
+    monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-30T04:05:06Z")
+
+    def merge_after_cancel(root, rows, **kwargs):
+        nonlocal cancelled
+        if not cancelled:
+            cancelled = True
+            hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="cancel before launch")
+            rows = [{**row, "stopped_at": "", "stop_reason": ""} for row in rows]
+        return real_merge(root, rows, **kwargs)
+
+    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge_after_cancel)
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_a, **_k: pytest.fail("no identity read"))
+    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert canonical == _read_table(plan_dir / "run_status.tsv")[0] == _read_table(plan_dir / "launch_manifest.tsv")[0]
+    assert canonical["status"] == "stopped"
+    assert canonical["stop_reason"] == "cancel before launch"
+    assert canonical["stopped_at"] == "2026-08-30T04:05:06Z"
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("run_stopped") == 1
 
 
 def test_remote_stop_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):

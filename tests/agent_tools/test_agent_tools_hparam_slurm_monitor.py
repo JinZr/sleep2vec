@@ -8,8 +8,171 @@ import pytest
 from test_agent_tools_hparam_runtime import _read_table, _write_slurm_plan
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 
-from agent_tools import hparam_runtime, managed_scheduler, run_artifacts, run_evidence, slurm
-from agent_tools.experiment_workspace import merge_run_manifest
+from agent_tools import experiments, hparam_runtime, managed_scheduler, manifests, run_artifacts, run_evidence, slurm
+from agent_tools.experiment_workspace import (
+    EXECUTION_IDENTITY_FIELDS,
+    SCHEDULER_PLAN_IDENTITY_FIELDS,
+    merge_run_manifest,
+)
+
+
+@pytest.mark.parametrize(
+    ("direct_controller", "target", "status", "dry_run"),
+    [(False, "local", "planned", False), (True, "local", "pending", True), (False, "ssh", "planned", False)],
+)
+def test_slurm_stop_cancels_unsubmitted_run_without_scheduler_probes(
+    tmp_path: Path, monkeypatch, direct_controller, target, status, dry_run
+):
+    execution = {"target": target}
+    if target == "ssh":
+        execution["host"] = "unit-host"
+    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
+    monkeypatch.setattr(
+        hparam_runtime.exp_io,
+        "validate_managed_output_paths",
+        lambda root, paths, remote=None: None if remote else real_validate(root, paths),
+    )
+    plan_dir, plan = _write_slurm_plan(tmp_path, execution=execution, direct_controller=direct_controller)
+    run = plan["runs"][0]
+    if dry_run:
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
+    update = {"step_id": run["step_id"], "run_id": run["run_id"], "status": status}
+    if dry_run:
+        update["execution_snapshot_sha256"] = plan["execution_snapshot"]["sha256"]
+    merge_run_manifest(tmp_path, [update])
+    before = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert before["log_path"] == run["log_path"]
+    snapshot_path = plan_dir / "execution_snapshot.json"
+    snapshot_bytes = snapshot_path.read_bytes()
+    for name in ("active_jobs", "accounting_job", "show_job", "cancel", "controller_cluster", "submit"):
+        monkeypatch.setattr(slurm, name, lambda *_a, **_k: pytest.fail("no scheduler command"))
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_a, **_k: pytest.fail("no identity read"))
+    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
+    monkeypatch.setattr(managed_scheduler, "observe_slurm_run", lambda *_a, **_k: pytest.fail("no scheduler probe"))
+
+    def validate_local(root, paths, *, remote=None):
+        assert remote is None
+        return real_validate(root, paths)
+
+    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_local)
+    monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-30T04:05:06Z")
+
+    hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="cancel before submission")
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical == _read_table(plan_dir / "run_status.tsv")[0] == _read_table(plan_dir / "launch_manifest.tsv")[0]
+    assert canonical["status"] == "stopped"
+    assert canonical["stop_reason"] == "cancel before submission"
+    assert canonical["stopped_at"] == "2026-08-30T04:05:06Z"
+    for field in SCHEDULER_PLAN_IDENTITY_FIELDS | {"log_path", "execution_snapshot_sha256"}:
+        assert canonical.get(field, "") == before.get(field, "")
+    for field in EXECUTION_IDENTITY_FIELDS - {"log_path"} | {
+        "scheduler_job_id",
+        "scheduler_cluster",
+        "launched_at",
+        "stop_requested_at",
+    }:
+        assert canonical.get(field, "") == ""
+    assert run_artifacts.read_hparam_plan(plan_dir) == plan
+    snapshot = experiments.experiment_status(tmp_path)
+    assert snapshot["summary"]["status_counts"] == {"planned": 1, "stopped": 1}
+    assert next(row for row in snapshot["runs"] if row["run_id"] == run["run_id"])["status"] == "stopped"
+    assert snapshot_path.read_bytes() == snapshot_bytes
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("run_stopped") == 1
+    stopped_event = next(event for event in events if event["event_type"] == "run_stopped")
+    assert (stopped_event["step_id"], stopped_event["run_id"], stopped_event["reason"]) == (
+        run["step_id"],
+        run["run_id"],
+        "cancel before submission",
+    )
+    assert not any(event["event_type"] == "run_stop_requested" for event in events)
+    before_repeat = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    with pytest.raises(ValueError, match="already terminal"):
+        hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="cancel before submission")
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before_repeat
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    assert _read_table(plan_dir / "run_status.tsv")[0]["status"] == "stopped"
+
+
+def test_slurm_unsubmitted_stop_leaves_other_runs_launchable(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path, run_count=2)
+    cancelled, remaining = plan["runs"]
+    submitted = []
+
+    def submit(_execution, script, token, **_kwargs):
+        submitted.append((script, token))
+        return slurm.JobIdentity("3880", "wuji-h20")
+
+    monkeypatch.setattr(slurm, "submit", submit)
+
+    hparam_runtime.stop_hparam_run(plan_dir, cancelled["run_id"], reason="cancel one candidate")
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
+    assert submitted == [(remaining["scheduler_script"], remaining["scheduler_submit_token"])]
+    assert rows[cancelled["run_id"]]["status"] == "stopped"
+    assert rows[cancelled["run_id"]].get("target", "") == ""
+    assert rows[cancelled["run_id"]].get("scheduler_job_id", "") == ""
+    assert rows[remaining["run_id"]]["status"] == "queued"
+    assert rows[remaining["run_id"]]["scheduler_job_id"] == "3880"
+    assert run_artifacts.read_hparam_plan(plan_dir) == plan
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"status": "submitting"},
+        {"status": "submitting", "scheduler_cluster": "wuji-h20"},
+        {"status": "unknown_scheduler", "scheduler_job_id": "3880"},
+        {"launched_at": "2026-08-30T04:00:00Z"},
+        {"stop_requested_at": "2026-08-30T04:00:00Z"},
+    ],
+)
+def test_slurm_stop_does_not_metadata_cancel_uncertain_submission(tmp_path: Path, monkeypatch, evidence):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    rows = _read_table(tmp_path / "run_manifest.tsv")
+    next(row for row in rows if row["run_id"] == run["run_id"]).update(evidence)
+    manifests.write_rows(tmp_path / "run_manifest.tsv", rows)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    monkeypatch.setattr(slurm, "active_jobs", lambda *_a, **_k: pytest.fail("no scheduler lookup"))
+    monkeypatch.setattr(slurm, "cancel", lambda *_a, **_k: pytest.fail("no scheduler cancel"))
+
+    with pytest.raises(ValueError):
+        hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="unconfirmed submission")
+
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_slurm_unsubmitted_stop_survives_stale_monitor_without_duplicate_event(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    real_merge = hparam_runtime.merge_run_manifest
+    cancelled = False
+    monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-30T04:05:06Z")
+
+    def merge_after_cancel(root, rows, **kwargs):
+        nonlocal cancelled
+        if not cancelled:
+            cancelled = True
+            hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="cancel before submission")
+            rows = [{**row, "stopped_at": "", "stop_reason": ""} for row in rows]
+        return real_merge(root, rows, **kwargs)
+
+    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge_after_cancel)
+    monkeypatch.setattr(slurm, "active_jobs", lambda *_a, **_k: pytest.fail("no scheduler lookup"))
+    monkeypatch.setattr(slurm, "cancel", lambda *_a, **_k: pytest.fail("no scheduler cancel"))
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical == _read_table(plan_dir / "run_status.tsv")[0] == _read_table(plan_dir / "launch_manifest.tsv")[0]
+    assert canonical["status"] == "stopped"
+    assert canonical["stop_reason"] == "cancel before submission"
+    assert canonical["stopped_at"] == "2026-08-30T04:05:06Z"
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [event["event_type"] for event in events].count("run_stopped") == 1
 
 
 def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypatch):
@@ -1222,6 +1385,7 @@ def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch, dir
         ("queued", "CANCELLED", False, 0, "stopped"),
         ("running", "CANCELLED", False, 0, "stopped"),
         ("running", "CANCELLED", True, 143, "stopped"),
+        ("unknown_scheduler", "CANCELLED", False, 0, "stopped"),
         ("running", "COMPLETED", True, 0, "completed"),
         ("running", "FAILED", True, 143, "failed"),
     ],
@@ -1252,6 +1416,9 @@ def test_slurm_stop_request_waits_for_matching_scheduler_cancellation(
     monkeypatch.setattr(slurm, "cancel", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-21T03:40:00Z")
     hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")
+    if initial_status == "unknown_scheduler":
+        requested = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+        merge_run_manifest(tmp_path, [{**requested, "status": "unknown_scheduler"}])
     if terminal_sidecar:
         Path(run["scheduler_result_path"]).write_text(
             json.dumps(

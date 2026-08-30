@@ -326,6 +326,17 @@ The optional `execution` block configures the managed launcher.
 - Generated leaf scripts use only `execution.workdir` on `PYTHONPATH`;
   `execution.env.PYTHONPATH` is rejected rather than merged.
 
+`hparam-stop` with a non-empty reason can cancel a canonical `planned` or
+`pending` run before any execution identity is bound. It rereads the canonical
+row under the same lock as launch, records `stopped`, the reason, and stop time,
+then updates the existing projections and `run_stopped` event. This applies to
+direct and Slurm plans without process, SSH, sidecar, or scheduler probes.
+Dry-run preview identity does not count; Slurm's plan-owned log path and
+preflight snapshot also do not prove submission. Any partial or complete launch
+identity, launch time, or existing stop request keeps the authenticated runtime
+stop path mandatory. Already terminal runs still reject another stop request.
+Canceled runs retain their frozen artifacts and cannot be launched later.
+
 Registration preflight records verified Python/version, host, repository and
 commit, module origin, explicit-environment digest, normalized supported-option
 digest, and exact validated argv digest in `execution_snapshot.json` before a
@@ -387,7 +398,7 @@ scheduler evidence on the frozen route. Incomplete evidence remains
 `submitting` when canonical job identity is absent, otherwise
 `unknown_scheduler`. Legacy empty-cluster rows may finish using ordinary
 scheduler plus sidecar evidence but cannot acquire a cluster from the sidecar.
-Stop first records the
+For submitted Slurm runs, stop first records the
 frozen scheduler job id, nonterminal `stopping`, request time, and reason in the
 canonical manifest, then uses that job id with `scancel`, not PID evidence. An
 interrupted or failed cancellation keeps the request recoverable; the same
