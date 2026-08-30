@@ -707,6 +707,32 @@ def test_merge_run_row_accepts_observation_bound_to_current_stop_intent(incoming
     assert merged["stop_reason"] == "validation diverged"
 
 
+@pytest.mark.parametrize("incoming_status", ["planned", "pending", "running"])
+@pytest.mark.parametrize("stop_requested_at", ["", "2026-08-30T03:40:00Z"])
+def test_merge_run_row_preserves_stopped_metadata_against_stale_observations(
+    incoming_status: str, stop_requested_at: str
+):
+    existing = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "status": "stopped",
+        "stop_requested_at": stop_requested_at,
+        "stop_reason": "budget withdrawn",
+        "stopped_at": "2026-08-30T03:41:00Z",
+    }
+    stale = {
+        "status": incoming_status,
+        "stop_requested_at": "",
+        "stop_reason": "",
+        "stopped_at": "",
+    }
+
+    merged = merge_run_row(existing, stale)
+
+    assert merged == existing
+    assert merge_run_row(merged, stale) == existing
+
+
 def test_merge_run_row_is_idempotent():
     existing = {"step_id": "train", "run_id": "run-000", "status": "completed"}
     incoming = {"status": "running", "score": 0.8}
@@ -1926,6 +1952,93 @@ def _slurm_identity(tmp_path: Path) -> dict[str, str]:
         "scheduler_result_path": str(tmp_path / "slurm_terminal.json"),
         "allocation_identity_path": str(tmp_path / "allocation_identity.json"),
     }
+
+
+@pytest.mark.parametrize("backend", ["direct", "slurm"])
+@pytest.mark.parametrize("status", ["planned", "pending", "stopped"])
+def test_managed_launch_evidence_ignores_status_and_slurm_plan_identity(tmp_path: Path, backend: str, status: str):
+    row = {"scheduler_type": backend, "status": status}
+    if backend == "slurm":
+        row.update(
+            **_slurm_identity(tmp_path),
+            scheduler_direct_controller="false",
+            execution_snapshot_sha256="b" * 64,
+            log_path=str(tmp_path / "slurm-%j.log"),
+        )
+
+    assert not experiment_workspace.has_managed_launch_evidence(row)
+
+
+@pytest.mark.parametrize("backend", ["direct", "slurm"])
+@pytest.mark.parametrize(
+    "field",
+    sorted(EXECUTION_IDENTITY_FIELDS | {"scheduler_job_id", "scheduler_cluster", "launched_at", "stop_requested_at"}),
+)
+def test_managed_launch_evidence_recognizes_each_runtime_binding(tmp_path: Path, backend: str, field: str):
+    row = {"scheduler_type": backend, "status": "planned", field: "recorded"}
+    if backend == "slurm":
+        row.update(_slurm_identity(tmp_path))
+
+    expected = not (backend == "slurm" and field == "log_path")
+    assert experiment_workspace.has_managed_launch_evidence(row) is expected
+
+
+@pytest.mark.parametrize("backend", ["direct", "slurm"])
+@pytest.mark.parametrize("status", ["planned", "pending"])
+def test_manifest_accepts_metadata_only_stop_without_launch_evidence(tmp_path: Path, backend: str, status: str):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    identity = {"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "scheduler_type": backend}
+    if backend == "slurm":
+        identity.update(
+            **_slurm_identity(tmp_path),
+            scheduler_direct_controller="false",
+            execution_snapshot_sha256="b" * 64,
+            log_path=str(tmp_path / "slurm-%j.log"),
+        )
+    merge_run_manifest(tmp_path, [{**identity, "status": status}])
+
+    stopped = merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": "train",
+                "run_id": "run-000",
+                "status": "stopped",
+                "stop_reason": "budget withdrawn",
+                "stopped_at": "2026-08-30T03:41:00Z",
+            }
+        ],
+    )[0]
+
+    assert stopped["status"] == "stopped"
+    assert stopped["stop_reason"] == "budget withdrawn"
+    assert stopped["stopped_at"] == "2026-08-30T03:41:00Z"
+    for field in {"scheduler_job_id", "scheduler_cluster", "launched_at", "stop_requested_at"}:
+        assert not stopped.get(field)
+    for field, value in identity.items():
+        assert stopped[field] == value
+    assert read_run_manifest(tmp_path)[0] == stopped
+
+
+@pytest.mark.parametrize(
+    "field",
+    sorted((EXECUTION_IDENTITY_FIELDS - {"log_path"}) | {"scheduler_cluster", "launched_at", "stop_requested_at"}),
+)
+def test_scheduler_identity_rejects_stopped_without_job_when_launch_evidence_exists(tmp_path: Path, field: str):
+    row = {"status": "stopped", field: "recorded", **_slurm_identity(tmp_path)}
+    expected = "PID process identity" if field in PROCESS_IDENTITY_FIELDS else "scheduler_job_id"
+
+    with pytest.raises(ValueError, match=expected):
+        validate_scheduler_run_identity(row)
+
+
+@pytest.mark.parametrize(
+    "status", ["queued", "running", "stopping", "unknown_scheduler", "completed", "finished", "failed"]
+)
+def test_scheduler_identity_requires_job_for_other_active_and_terminal_states(tmp_path: Path, status: str):
+    with pytest.raises(ValueError, match="requires scheduler_job_id"):
+        validate_scheduler_run_identity({"status": status, **_slurm_identity(tmp_path)})
 
 
 def test_scheduler_identity_allows_one_trusted_job_binding(tmp_path: Path):

@@ -86,6 +86,8 @@ The current vocabulary includes scheduled `planned`/`pending`, scheduler handoff
 
 - An update without status preserves the existing status.
 - Terminal status is sticky, except incoming `failed` evidence may correct `completed` or `finished`.
+- Recorded stop request, reason, and stop time remain unchanged through stale
+  observations of a `stopping` or `stopped` run.
 - Active status cannot regress through stale `planned` or `pending` evidence.
 - `superseded` commits only when the freshly read canonical state is still `planned` or `pending`.
 - Monitoring preserves finished-to-completed normalization for evidence whose script does not own terminal commits.
@@ -94,6 +96,14 @@ The current vocabulary includes scheduled `planned`/`pending`, scheduler handoff
 - A lifecycle-enabled generated script owns its terminal commit. Confirmed disappearance of its process group without a canonical `completed` or `failed` commit is `failed`, never inferred success. New hparam launch scripts are explicitly monitor-owned and append a structured shell exit code to their log: only code `0` becomes `finished`; nonzero, missing, or malformed exit evidence becomes `failed`. Historical owner-less hparam plans retain the legacy failure-marker inference.
 
 All lifecycle callers reuse the same row reducer. They do not implement source-specific precedence.
+
+A run canceled while still `planned` or `pending` may be `stopped` without
+execution identity. This shape requires no populated execution fields, scheduler
+job or cluster binding, launch time, or stop request. Slurm's frozen plan
+`log_path` and preflight execution-snapshot hash do not establish launch. Slurm
+`completed`, `finished`, and `failed` states, and stopped Slurm runs with launch
+evidence, still require a scheduler job id. Cancellation records a reason and
+stop time; it is not evidence of successful execution or scheduler cancellation.
 
 ## Evidence ownership
 
