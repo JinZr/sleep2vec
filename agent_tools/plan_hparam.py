@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from . import (
+    configs,
     experiment_io as exp_io,
     managed_scheduler,
     plan_context,
@@ -990,9 +991,17 @@ def render_hparam_preflight_card(
         else f"{config_module}.load_finetune_config"
     )
     routes: dict[tuple[str, str, str, str, tuple[str, ...]], list[str]] = {}
+    models: dict[bytes, dict[str, Any]] = {}
     for run, config_bytes in run_configs:
-        summary = plan_context.load_config_summary_for_recipe(recipe, config_bytes=config_bytes)
-        model = (summary or {}).get("model") or {}
+        if config_bytes not in models:
+            summary = configs.config_summary(
+                recipe["inputs"]["config"],
+                variant=variant,
+                validate_survival_local_paths=False,
+                config_bytes=config_bytes,
+            )
+            models[config_bytes] = summary.get("model") or {}
+        model = models[config_bytes]
         architecture = model.get("backbone") or model.get("name")
         if architecture in (None, ""):
             raise ValueError(f"Generated hparam config lacks architecture provenance: {run['run_id']}")
