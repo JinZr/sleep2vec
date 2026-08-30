@@ -21,6 +21,7 @@ __all__ = [
     "DecisionStatus",
     "ResolvedDecision",
     "evaluate_consultation_gates",
+    "experiment_consultation_issues",
     "merge_status",
     "resolved_user_decisions",
     "user_decision_template",
@@ -151,6 +152,28 @@ def resolved_user_decisions(user_decisions: dict[str, Any]) -> dict[str, Resolve
     }
 
 
+def experiment_consultation_issues(task: str | None, recipe: dict) -> list[DecisionIssue]:
+    task_adapter = get_adapter(task)
+    metadata_recipe = recipe
+    if (
+        task_adapter is not None
+        and task_adapter.base_task is not None
+        and isinstance(recipe.get("_local_recipe"), dict)
+    ):
+        # A layered task must author its own ownership, even when the merge filled it from the base.
+        metadata_recipe = recipe["_local_recipe"]
+    return [
+        DecisionIssue(
+            DecisionStatus(issue["status"]),
+            issue["field"],
+            issue["message"],
+            issue.get("question"),
+            issue.get("evidence", {}),
+        )
+        for issue in experiment_metadata_issues(metadata_recipe)
+    ]
+
+
 def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
     return DecisionIssue(
         DecisionStatus.FAIL,
@@ -223,23 +246,7 @@ def evaluate_consultation_gates(
     issues.extend(consultation_contract_issues(str(task_value), recipe, policy, source_layer="effective"))
 
     if require_experiment:
-        metadata_recipe = recipe
-        if (
-            task_adapter is not None
-            and task_adapter.base_task is not None
-            and isinstance(recipe.get("_local_recipe"), dict)
-        ):
-            metadata_recipe = recipe["_local_recipe"]
-        for issue in experiment_metadata_issues(metadata_recipe):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus(issue["status"]),
-                    issue["field"],
-                    issue["message"],
-                    issue.get("question"),
-                    issue.get("evidence", {}),
-                )
-            )
+        issues.extend(experiment_consultation_issues(str(task_value), recipe))
 
     for decision_field, rule in high_impact.items():
         if task_value not in rule.get("required_for_tasks", []):

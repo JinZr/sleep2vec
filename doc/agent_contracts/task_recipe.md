@@ -29,7 +29,7 @@ Planning produces one effective recipe:
 ```text
 recipe fields + recipe decisions + explicit user decisions
   -> materialized recipe
-  -> cheap authored-input checks
+  -> cheap authored-input checks and static ownership consultation
   -> config summary and consultation
   -> frozen plan and resolved recipe
 ```
@@ -64,6 +64,15 @@ converted. Task-owned checks also reject known hard input errors at this point,
 including malformed hparam search spaces. These checks use the effective values
 after user overrides and do not turn missing decisions into new hard failures.
 Config-dependent profile expansion and full consultation still run afterward.
+
+Static experiment/step consultation also runs before config or data reads. A
+layered hparam recipe must supply its own local ownership; complete base-recipe
+metadata does not satisfy that requirement. Missing or unresolved ownership
+returns the existing `NEEDS_USER_INPUT` questions without probing config, data,
+workspace identity, or runtime. Legal user decisions still materialize first;
+ownership is filled in recipe fields, not new decision aliases. Base-task
+consultation with `require_experiment=False` and standalone diagnostics keep
+their existing scope.
 
 Plan preflight also compares an existing `experiment.yaml` with the effective
 experiment identity before config/data inspection. Doctor does not add this

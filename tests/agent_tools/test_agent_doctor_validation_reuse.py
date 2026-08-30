@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from agent_tools import cli, experiment_workspace, managed_scheduler, plan_context, plans
+from agent_tools import cli, decisions, experiment_workspace, managed_scheduler, plan_context, plans
 from agent_tools.configs import config_summary
 from agent_tools.domain import index_csv
 from agent_tools.models import REPO_ROOT
@@ -393,21 +393,192 @@ def test_authored_blockers_precede_optional_workspace_identity_read(tmp_path, mo
     )
 
     with monkeypatch.context() as guarded:
-        if blocked == "search":
-            _forbid_config_reads(guarded, tmp_path / "config.yaml")
+        _forbid_config_reads(guarded, tmp_path / "config.yaml")
         _recipe, cfg, report = plans.preflight_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
 
+    assert cfg is None
+    assert not csv_reads
     if blocked == "metadata":
         assert report.exit_code == 2
         assert any(issue.field == "experiment.title" for issue in report.blocking_issues())
-        assert cfg is not None
-        assert csv_reads
     else:
         assert report.exit_code == 1
         assert any("search.parameters must be a mapping" in issue.message for issue in report.blocking_issues())
-        assert cfg is None
-        assert not csv_reads
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    "kind,entrypoint,missing",
+    [
+        ("survival", "doctor", "both_layers"),
+        ("multilabel", "plan", "base_only"),
+        ("survival", "plan", "experiment"),
+        ("multilabel", "doctor", "step"),
+        ("survival", "doctor", "partial"),
+        ("multilabel", "plan", "ask_user"),
+        ("survival", "plan", "null"),
+        ("multilabel", "doctor", "empty"),
+    ],
+)
+def test_static_hparam_ownership_blocks_before_heavy_reads(
+    tmp_path, monkeypatch, capsys, csv_reads, runtime_probes, kind, entrypoint, missing
+):
+    recipe_path = _sidecar_recipe(tmp_path, kind, hparam=True)
+    payload = yaml.safe_load(recipe_path.read_text())
+    if missing in {"both_layers", "base_only"}:
+        payload.pop("experiment")
+        payload.pop("step")
+        if missing == "both_layers":
+            base_path = tmp_path / "recipe.yaml"
+            base = yaml.safe_load(base_path.read_text())
+            base.pop("experiment")
+            base.pop("step")
+            base_path.write_text(yaml.safe_dump(base))
+    elif missing in {"experiment", "step"}:
+        payload.pop(missing)
+    elif missing == "partial":
+        payload["experiment"].pop("objective")
+        payload["step"].pop("purpose")
+    elif missing == "ask_user":
+        payload["experiment"]["title"] = "ASK_USER"
+    elif missing == "null":
+        payload["step"]["purpose"] = None
+    else:
+        payload["experiment"]["objective"] = ""
+    recipe_path.write_text(yaml.safe_dump(payload))
+    expected = experiment_workspace.experiment_metadata_issues(payload)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    for name in ("context_index_summary", "context_preset_summary"):
+        monkeypatch.setattr(
+            plan_context,
+            name,
+            lambda *_args, **_kwargs: pytest.fail("Static ownership consultation reached data diagnostics"),
+        )
+    monkeypatch.setattr(
+        plans.exp_io,
+        "read_managed_output_texts_at",
+        lambda *_args, **_kwargs: pytest.fail("Static ownership consultation reached workspace identity"),
+    )
+
+    with monkeypatch.context() as guarded:
+        _forbid_config_reads(guarded, tmp_path / "config.yaml")
+        if entrypoint == "doctor":
+            _recipe, cfg, report = plans.evaluate_recipe(recipe_path)
+        else:
+            _recipe, cfg, report = plans.preflight_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
+        assert cfg is None
+        assert report.exit_code == 2
+        assert [
+            (issue.status.value, issue.field, issue.message, issue.question) for issue in report.blocking_issues()
+        ] == [(issue["status"], issue["field"], issue["message"], issue["question"]) for issue in expected]
+        assert all(issue.evidence["preflight_before_workspace"] for issue in report.blocking_issues())
+        args = [entrypoint, "--recipe", str(recipe_path)]
+        if entrypoint == "plan":
+            args.extend(["--output-dir", str(tmp_path / "plan")])
+
+        assert cli.main(args) == 2
+
+    output = capsys.readouterr()
+    assert "Status: NEEDS_USER_INPUT" in output.out
+    assert all(issue["question"] in output.out for issue in expected)
+    assert not csv_reads
+    assert not runtime_probes
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("kind", ["survival", "multilabel"])
+def test_static_ownership_preserves_user_override_before_and_after_resolution(tmp_path, monkeypatch, csv_reads, kind):
+    recipe_path = _sidecar_recipe(tmp_path, kind, hparam=True)
+    payload = yaml.safe_load(recipe_path.read_text())
+    step = payload.pop("step")
+    recipe_path.write_text(yaml.safe_dump(payload))
+    decision = {
+        "value": {"runtime.lr": [0.002]},
+        "source": "explicit_user",
+        "rationale": "Approved search override",
+    }
+    decisions_path = write_yaml(tmp_path / "decisions.yaml", {"decisions": {"hparam_search_space": decision}})
+    with monkeypatch.context() as guarded:
+        _forbid_config_reads(guarded, tmp_path / "config.yaml")
+        recipe, cfg, report = plans.evaluate_recipe(recipe_path, decisions_path)
+
+    assert cfg is None
+    assert report.exit_code == 2
+    assert recipe["search"]["parameters"] == decision["value"]
+    assert set(report.decisions) == {"hparam_search_space"}
+    assert report.decisions["hparam_search_space"].source == "explicit_user"
+    assert report.decisions["hparam_search_space"].evidence["rationale"] == decision["rationale"]
+    assert not csv_reads
+    payload["step"] = step
+    recipe_path.write_text(yaml.safe_dump(payload))
+
+    recipe, cfg, report = plans.evaluate_recipe(recipe_path, decisions_path)
+
+    assert report.exit_code == 0
+    assert cfg is not None
+    assert recipe["search"]["parameters"] == decision["value"]
+    assert report.decisions["hparam_search_space"].source == "explicit_user"
+    assert report.decisions["hparam_search_space"].evidence["rationale"] == decision["rationale"]
+    assert csv_reads == (
+        {"event_time.csv": 1, "is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
+        if kind == "survival"
+        else {"is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
+    )
+
+
+def test_doctor_publishes_only_canonical_static_ownership_questions(
+    tmp_path, monkeypatch, capsys, csv_reads, runtime_probes
+):
+    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
+    payload = yaml.safe_load(recipe_path.read_text())
+    payload.pop("experiment")
+    payload.pop("step")
+    payload["execution"] = {
+        "scheduler": {"type": "slurm", "partition": "gpu", "cpus_per_task": 1, "memory": "1G", "walltime": "00:01:00"}
+    }
+    recipe_path.write_text(yaml.safe_dump(payload))
+    expected = experiment_workspace.experiment_metadata_issues(payload)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "cluster_scheduling_capabilities",
+        lambda *_args, **_kwargs: pytest.fail("Blocked doctor reached Slurm capability inspection"),
+    )
+    output_dir = tmp_path / "doctor"
+
+    with monkeypatch.context() as guarded:
+        _forbid_config_reads(guarded, tmp_path / "config.yaml")
+        assert cli.main(["doctor", "--recipe", str(recipe_path), "--output-dir", str(output_dir)]) == 2
+
+    assert "Status: NEEDS_USER_INPUT" in capsys.readouterr().out
+    questions = json.loads((output_dir / "questions.json").read_text())["questions"]
+    assert [{key: value for key, value in issue.items() if key != "evidence"} for issue in questions] == expected
+    assert all(issue["question"] in (output_dir / "questions.md").read_text() for issue in expected)
+    assert set(path.name for path in output_dir.iterdir()) == {"questions.json", "questions.md"}
+    assert {path: path.read_bytes() for path in before} == before
+    assert not csv_reads
+    assert not runtime_probes
+
+
+def test_workspace_free_consultation_keeps_full_data_diagnostics(tmp_path, monkeypatch, csv_reads):
+    recipe_path = _sidecar_recipe(tmp_path, "multilabel")
+    recipe, cfg, report = plans.evaluate_recipe(recipe_path)
+    assert report.exit_code == 0
+    assert csv_reads == {"is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
+    recipe.pop("experiment")
+    recipe.pop("step")
+    monkeypatch.setattr(
+        decisions,
+        "experiment_metadata_issues",
+        lambda *_args, **_kwargs: pytest.fail("require_experiment=False reached ownership consultation"),
+    )
+
+    report = decisions.evaluate_consultation_gates(
+        "finetune", recipe, cfg, {}, plans.load_consultation_policy(), require_experiment=False
+    )
+
+    assert report.exit_code == 0
+    assert all(not issue.field.startswith(("experiment", "step")) for issue in report.issues)
 
 
 def test_early_identity_comparison_preserves_relative_authored_root(tmp_path, monkeypatch, csv_reads):

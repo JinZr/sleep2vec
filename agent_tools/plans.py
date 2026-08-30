@@ -37,6 +37,7 @@ from .decisions import (
     consultation_contract_issues,
     decision_entry_contract_issues,
     evaluate_consultation_gates,
+    experiment_consultation_issues,
     merge_status,
     resolved_user_decisions,
     user_decision_template,
@@ -330,7 +331,22 @@ def evaluate_recipe(
             ),
         )
 
-    if check_existing_experiment and not materialization_issues and not experiment_metadata_issues(recipe):
+    metadata_issues = experiment_consultation_issues(recipe.get("task"), recipe)
+    if metadata_issues:
+        for issue in metadata_issues:
+            issue.evidence["preflight_before_workspace"] = True
+        issues = [*materialization_issues, *metadata_issues]
+        return (
+            recipe,
+            None,
+            DecisionReport(
+                status=merge_status(issues),
+                issues=issues,
+                decisions=resolved_user_decisions(user_decisions),
+            ),
+        )
+
+    if check_existing_experiment and not materialization_issues:
         root = experiment_root(recipe)
         assert root is not None
         manifest_path = root / "experiment.yaml"
@@ -1519,10 +1535,9 @@ def preflight_plan(
     allow_adaptive_workflow: bool = False,
 ) -> tuple[dict, dict | None, DecisionReport]:
     recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path, check_existing_experiment=True)
-    # Input failures have no config snapshot; do not restart reads through the later freeze checks.
+    # Static blockers, including NEEDS_USER_INPUT, must not restart reads through the later freeze checks.
     if cfg is None and any(
-        issue.status == DecisionStatus.FAIL and issue.evidence.get("preflight_before_workspace") is True
-        for issue in report.issues
+        issue.evidence.get("preflight_before_workspace") is True for issue in report.blocking_issues()
     ):
         return recipe, cfg, report
     adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
