@@ -557,17 +557,17 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                     },
                 )
                 committed = merge_run_manifest(workspace, [final], lock_held=True)
-    committed_by_key = {managed_run_key(item): item for item in committed}
-    final_status_rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
-    write_rows(status_path, final_status_rows)
-    write_rows(manifest_path, final_status_rows)
-    if backend != "slurm" or metadata_stop:
-        append_event(
-            workspace,
-            "run_stopped",
-            {"step_id": key[0], "run_id": run_id, "reason": reason},
-        )
-    write_status_report(workspace)
+        committed_by_key = {managed_run_key(item): item for item in committed}
+        final_status_rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
+        write_rows(status_path, final_status_rows)
+        write_rows(manifest_path, final_status_rows)
+        if backend != "slurm" or metadata_stop:
+            append_event(
+                workspace,
+                "run_stopped",
+                {"step_id": key[0], "run_id": run_id, "reason": reason},
+            )
+        write_status_report(workspace)
     return status_path
 
 

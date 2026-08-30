@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -276,6 +277,84 @@ def test_hparam_unlaunched_stop_survives_stale_monitor_commit(tmp_path: Path, mo
     assert canonical["stopped_at"] == "2026-08-30T04:05:06Z"
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_stopped") == 1
+
+
+def test_hparam_concurrent_stops_keep_plan_projections_canonical(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["max_runs"] = 2
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr
+    runs = run_artifacts.read_hparam_plan(plan_dir)["runs"]
+    projection_ready = threading.Event()
+    release_projection = threading.Event()
+    second_attempted = threading.Event()
+    second_done = threading.Event()
+    projection_lock_held = []
+    failures = []
+    real_write = hparam_runtime.write_rows
+    real_lock = hparam_runtime.scheduler.managed_run_lock
+
+    def write_projection(path, rows):
+        if threading.current_thread().name == "first-stop" and path == plan_dir / "run_status.tsv":
+            with (tmp_path / "run_manifest.tsv.lock").open("a+") as lock_file:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    projection_lock_held.append(True)
+                else:
+                    projection_lock_held.append(False)
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            projection_ready.set()
+            assert release_projection.wait(timeout=5)
+        return real_write(path, rows)
+
+    @contextmanager
+    def track_lock(root):
+        if threading.current_thread().name == "second-stop":
+            second_attempted.set()
+        with real_lock(root):
+            yield
+
+    def stop(index):
+        try:
+            hparam_runtime.stop_hparam_run(plan_dir, runs[index]["run_id"], reason=f"cancel candidate {index}")
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            if index == 1:
+                second_done.set()
+
+    monkeypatch.setattr(hparam_runtime, "write_rows", write_projection)
+    monkeypatch.setattr(hparam_runtime.scheduler, "managed_run_lock", track_lock)
+    first = threading.Thread(target=stop, args=(0,), name="first-stop")
+    second = threading.Thread(target=stop, args=(1,), name="second-stop")
+    first.start()
+    try:
+        assert projection_ready.wait(timeout=5), failures
+        second.start()
+        assert second_attempted.wait(timeout=5)
+        if not projection_lock_held[0]:
+            assert second_done.wait(timeout=5), failures
+    finally:
+        release_projection.set()
+        first.join(timeout=5)
+        if second.ident is not None:
+            second.join(timeout=5)
+    assert not first.is_alive() and not second.is_alive()
+    assert failures == []
+    canonical = _read_table(tmp_path / "run_manifest.tsv")
+    assert [row["status"] for row in canonical] == ["stopped", "stopped"]
+    assert _read_table(plan_dir / "run_status.tsv") == canonical
+    assert _read_table(plan_dir / "launch_manifest.tsv") == canonical
+    assert projection_lock_held == [True]
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert sorted(event["run_id"] for event in events if event["event_type"] == "run_stopped") == [
+        run["run_id"] for run in runs
+    ]
 
 
 def test_remote_stop_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
