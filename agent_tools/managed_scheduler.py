@@ -1106,16 +1106,77 @@ def _reconcile_slurm_submission(
 
 
 class SlurmMonitorContext:
-    def __init__(self, rows: Iterable[dict[str, Any]], *, remote: str | None = None):
+    def __init__(self, rows: Iterable[dict[str, Any]], *, owner_dir: str | Path, remote: str | None = None):
+        self.owner_dir = Path(owner_dir)
         groups: dict[tuple[str, str, str, bool], set[str]] = {}
+        file_groups: dict[tuple[str, str], list[tuple[str, str]]] = {}
         for row in rows:
             if remote and not row.get("host"):
                 continue
             route = self._route(row)
             if route is not None:
                 groups.setdefault(route, set()).add(str(row["scheduler_job_id"]))
+            file_route = self._file_route(row)
+            paths = (str(row.get("scheduler_result_path") or ""), str(row.get("allocation_identity_path") or ""))
+            if file_route is not None and all(paths):
+                file_groups.setdefault(file_route, []).append(paths)
         self.groups = {route: tuple(sorted(job_ids)) for route, job_ids in groups.items() if len(job_ids) > 1}
         self.snapshots: dict[tuple[str, str, str, bool], dict[str, slurm.JobObservation] | None] = {}
+        self.file_groups = {route: paths for route, paths in file_groups.items() if len(paths) > 1}
+        self.file_snapshots: dict[tuple[str, str, str], dict[str, str | None] | None] = {}
+
+    @staticmethod
+    def _file_route(row: dict[str, Any]) -> tuple[str, str] | None:
+        target = row.get("target")
+        host = str(row.get("host") or "").strip() if target == "ssh" else ""
+        if (
+            row.get("scheduler_type") != "slurm"
+            or row.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH
+            or target not in {"local", "ssh"}
+            or (target == "ssh" and not host)
+            or not row.get("scheduler_submit_token")
+        ):
+            return None
+        return target, host
+
+    def sidecar(self, owner_dir: Path, execution: dict[str, Any], row: dict[str, Any], field: str) -> dict[str, Any]:
+        path = str(row[field])
+        route = self._file_route(row)
+        group = self.file_groups.get(route, ())
+        row_paths = (str(row.get("scheduler_result_path") or ""), str(row.get("allocation_identity_path") or ""))
+        target = execution.get("target", "local")
+        host = str(execution.get("host") or "").strip() if target == "ssh" else ""
+        if owner_dir != self.owner_dir or route != (target, host) or row_paths not in group:
+            return _read_slurm_json(owner_dir, execution, path)
+        key = (*route, field)
+        if key not in self.file_snapshots:
+            if field == "scheduler_result_path":
+                paths = [terminal for terminal, _allocation in group]
+            else:
+                terminals = self.file_snapshots.get((*route, "scheduler_result_path"))
+                if terminals is None:
+                    return _read_slurm_json(owner_dir, execution, path)
+                paths = []
+                for terminal, allocation in group:
+                    try:
+                        payload = _parse_slurm_json(terminals[terminal], terminal)
+                    except ValueError:
+                        # A future row's bad terminal must neither fail this row nor prefetch its allocation.
+                        continue
+                    if not payload:
+                        paths.append(allocation)
+            try:
+                self.file_snapshots[key] = exp_io.read_managed_output_texts_at(
+                    self.owner_dir, list(dict.fromkeys(paths)), remote=host if target == "ssh" else None
+                )
+            except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+                # Discard the whole batch; exact reads retain per-run errors and the phase is not retried.
+                self.file_snapshots[key] = None
+        snapshot = self.file_snapshots[key]
+        if snapshot is None:
+            return _read_slurm_json(owner_dir, execution, path)
+        # Missing text is a snapshot only for this round; the next context rechecks newly published sidecars.
+        return _parse_slurm_json(snapshot[path], path)
 
     @staticmethod
     def _route(row: dict[str, Any]) -> tuple[str, str, str, bool] | None:
@@ -1180,7 +1241,11 @@ def observe_slurm_run(
         and (execution_scheduler.get("direct_controller") is True) == canonical_direct_controller
     )
     stop_requested = row.get("stop_requested_at") not in (None, "")
-    terminal = _read_slurm_json(owner, execution, row["scheduler_result_path"])
+    terminal = (
+        monitor_context.sidecar(owner, execution, row, "scheduler_result_path")
+        if monitor_context is not None
+        else _read_slurm_json(owner, execution, row["scheduler_result_path"])
+    )
     observation: dict[str, Any] = {**row, "scheduler_observed_at": utc_now()}
     terminal_exit_code: int | None = None
     terminal_identity: slurm.JobIdentity | None = None
@@ -1199,7 +1264,11 @@ def observe_slurm_run(
             }
         )
     else:
-        allocation = _read_slurm_json(owner, execution, row["allocation_identity_path"])
+        allocation = (
+            monitor_context.sidecar(owner, execution, row, "allocation_identity_path")
+            if monitor_context is not None
+            else _read_slurm_json(owner, execution, row["allocation_identity_path"])
+        )
         if allocation:
             allocation_identity = slurm.sidecar_identity(allocation, token, expected_job_id=job_id or None)
             if cluster and allocation_identity.cluster and allocation_identity.cluster != cluster:
@@ -1221,7 +1290,7 @@ def observe_slurm_run(
             job_id = active.job_id
         else:
             active = None
-            if monitor_context is not None and routing_identity_matches:
+            if monitor_context is not None and monitor_context.owner_dir == owner and routing_identity_matches:
                 active = monitor_context.active_job(execution, row)
             if active is None:
                 matches = slurm.active_jobs(execution, job_id=job_id, cluster=cluster or None)
@@ -1366,6 +1435,10 @@ def observe_slurm_run(
 def _read_slurm_json(owner_dir: Path, execution: dict[str, Any], path: str | Path) -> dict[str, Any]:
     remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
     text = exp_io.read_managed_output_texts_at(owner_dir, [path], remote=remote)[str(path)]
+    return _parse_slurm_json(text, path)
+
+
+def _parse_slurm_json(text: str | None, path: str | Path) -> dict[str, Any]:
     if not text:
         return {}
     try:

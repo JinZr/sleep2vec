@@ -514,7 +514,7 @@ def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> dic
         remote=remote,
     )
     run_rows = tracking.experiment_run_rows(root, remote=remote)
-    monitor_context = managed_scheduler.SlurmMonitorContext(run_rows, remote=remote)
+    monitor_context = managed_scheduler.SlurmMonitorContext(run_rows, owner_dir=root, remote=remote)
     observations = [
         tracking.monitor_run_row(root, row, previous_rows, remote=remote, monitor_context=monitor_context)
         for row in run_rows

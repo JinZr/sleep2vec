@@ -329,7 +329,8 @@ def monitor_hparam_runs(
             step_id, run_id = sorted(missing)[0]
             raise ValueError(f"Canonical run is missing for the current hparam plan: {step_id} / {run_id}")
         previous_rows = {key: workspace_by_key[key] for key in expected_keys}
-        monitor_context = scheduler.SlurmMonitorContext(previous_rows.values())
+        # Anchor CLI-relative owners without resolving aliases or removing raw '..' components.
+        monitor_context = scheduler.SlurmMonitorContext(previous_rows.values(), owner_dir=root.absolute())
         rows = []
         for run in plan["runs"]:
             key = managed_run_key(run)
@@ -344,7 +345,9 @@ def monitor_hparam_runs(
                 if scheduler_direct_controller(prior):
                     execution["scheduler"] = {"direct_controller": True}
                 rows.append(
-                    scheduler.observe_slurm_run(root, execution, prior, health=health, monitor_context=monitor_context)
+                    scheduler.observe_slurm_run(
+                        monitor_context.owner_dir, execution, prior, health=health, monitor_context=monitor_context
+                    )
                 )
             else:
                 rows.append(
