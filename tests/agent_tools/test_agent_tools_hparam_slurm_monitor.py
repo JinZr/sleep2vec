@@ -1064,6 +1064,123 @@ def test_slurm_monitor_health_reports_queue_diagnostics_without_pid_or_gpu_probe
     assert int(canonical["scheduler_queue_age_seconds"]) >= 0
 
 
+@pytest.mark.parametrize("health", [False, True])
+def test_slurm_monitor_reuses_successful_controller_fallback(tmp_path: Path, monkeypatch, health: bool):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    token = run["scheduler_submit_token"]
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "target": "local",
+                "status": "queued",
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+            }
+        ],
+    )
+    calls = []
+    details = iter(
+        [
+            slurm.JobObservation("3880", "RUNNING", "", "node-a", token, details={"priority": "42"}),
+            slurm.JobObservation("3880", "PENDING", "Resources", "node-b", token, details={"priority": "99"}),
+        ]
+    )
+    monkeypatch.setattr(slurm, "active_jobs", lambda *_a, **_k: calls.append("squeue") or [])
+
+    def show_job(*_args, **_kwargs):
+        calls.append("scontrol")
+        return next(details)
+
+    monkeypatch.setattr(slurm, "show_job", show_job)
+    monkeypatch.setattr(slurm, "accounting_job", lambda *_a, **_k: pytest.fail("controller already found the job"))
+
+    hparam_runtime.monitor_hparam_runs(plan_dir, health=health)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert calls == ["squeue", "scontrol"]
+    assert canonical["status"] == "running"
+    assert canonical["scheduler_raw_state"] == "RUNNING"
+    assert canonical["scheduler_node"] == "node-a"
+    assert canonical["scheduler_priority"] == "42"
+    if health:
+        assert canonical["health_status"] == "scheduler_running"
+        assert canonical["scheduler_health_error"] == ""
+    else:
+        assert "health_status" not in canonical
+
+
+@pytest.mark.parametrize("detail_result", ["running", "missing", "error"])
+def test_slurm_monitor_health_refreshes_controller_after_accounting(tmp_path: Path, monkeypatch, detail_result: str):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    token = run["scheduler_submit_token"]
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": run["step_id"],
+                "run_id": run["run_id"],
+                "target": "local",
+                "status": "queued",
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+            }
+        ],
+    )
+    Path(run["scheduler_result_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": token,
+                "exit_code": 0,
+            }
+        )
+    )
+    calls = []
+    monkeypatch.setattr(slurm, "active_jobs", lambda *_a, **_k: calls.append("squeue") or [])
+
+    def show_job(*_args, **_kwargs):
+        calls.append("scontrol")
+        if calls == ["squeue", "scontrol"] or detail_result == "missing":
+            return None
+        if detail_result == "error":
+            raise RuntimeError("detail probe unavailable")
+        return slurm.JobObservation("3880", "RUNNING", "", "node-current", token, details={"priority": "43"})
+
+    def accounting_job(*_args, **_kwargs):
+        calls.append("sacct")
+        return slurm.JobObservation("3880", "COMPLETED", "", "node-accounting", token, exit_code="0:0")
+
+    monkeypatch.setattr(slurm, "show_job", show_job)
+    monkeypatch.setattr(slurm, "accounting_job", accounting_job)
+
+    hparam_runtime.monitor_hparam_runs(plan_dir, health=True)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert calls == ["squeue", "scontrol", "sacct", "scontrol"]
+    if detail_result == "running":
+        assert canonical["status"] == "running"
+        assert canonical["scheduler_raw_state"] == "RUNNING"
+        assert canonical["scheduler_node"] == "node-current"
+        assert canonical["scheduler_priority"] == "43"
+        assert canonical["health_status"] == "scheduler_running"
+        assert canonical["scheduler_health_error"] == ""
+    else:
+        assert canonical["status"] == "completed"
+        assert canonical["scheduler_raw_state"] == "COMPLETED"
+        assert canonical["scheduler_node"] == "node-accounting"
+        assert canonical["health_status"] == "health_unknown"
+        assert canonical["scheduler_health_error"] == (
+            "detail probe unavailable" if detail_result == "error" else "Slurm job details are unavailable."
+        )
+
+
 def test_slurm_monitor_health_uses_allocation_start_and_preserves_lifecycle_on_detail_failure(
     tmp_path: Path, monkeypatch
 ):

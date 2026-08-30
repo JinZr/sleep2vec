@@ -1171,8 +1171,10 @@ def observe_slurm_run(
         else:
             matches = slurm.active_jobs(execution, job_id=job_id, cluster=cluster or None)
             active = matches[0] if matches else None
+        controller_observation = None
         if active is None:
-            active = slurm.show_job(execution, job_id, cluster=cluster or None)
+            controller_observation = slurm.show_job(execution, job_id, cluster=cluster or None)
+            active = controller_observation
         from_accounting = False
         accounting_error = ""
         accounting_disabled = False
@@ -1236,7 +1238,8 @@ def observe_slurm_run(
                 health=health,
                 health_error=accounting_error,
             )
-        if health:
+        # Reuse successful details, but keep the fresh controller retry after accounting.
+        if health and controller_observation is None:
             try:
                 detailed = slurm.show_job(execution, job_id, cluster=cluster or None)
                 if detailed is None:
