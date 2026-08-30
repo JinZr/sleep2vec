@@ -297,7 +297,7 @@ def test_hparam_monitor_uses_canonical_slurm_controller_topology(
     monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda _path: plan)
     observed_executions = []
 
-    def observe_slurm_run(_root, execution, row, *, health=False):
+    def observe_slurm_run(_root, execution, row, *, health=False, monitor_context=None):
         observed_executions.append(execution)
         return row
 

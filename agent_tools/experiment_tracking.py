@@ -292,6 +292,7 @@ def monitor_run_row(
     previous_rows: list[dict[str, str]],
     *,
     remote: str | None = None,
+    monitor_context: managed_scheduler.SlurmMonitorContext | None = None,
 ) -> dict[str, Any]:
     previous = resolve_run_row(previous_rows, row) or {}
     observation_row = dict(row)
@@ -308,7 +309,13 @@ def monitor_run_row(
                 execution["host"] = observation_row.get("host")
             if scheduler_direct_controller(scheduler_row):
                 execution["scheduler"] = {"direct_controller": True}
-            status = managed_scheduler.observe_slurm_run(root, execution, observation_row, health=True)
+            status = managed_scheduler.observe_slurm_run(
+                root,
+                execution,
+                observation_row,
+                health=True,
+                monitor_context=None if transport_override else monitor_context,
+            )
         else:
             status = observation_row
     else:

@@ -1237,7 +1237,7 @@ def test_experiment_monitor_routes_slurm_observation_by_transport(
         row["scheduler_direct_controller"] = controller_topology
     observed = []
 
-    def fake_slurm_observation(owner_dir, execution, observed_row, *, health):
+    def fake_slurm_observation(owner_dir, execution, observed_row, *, health, monitor_context=None):
         observed.append((owner_dir, execution, dict(observed_row), health))
         return {
             **observed_row,

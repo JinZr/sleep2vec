@@ -59,6 +59,7 @@ __all__ = [
     "LaunchResult",
     "MissingPidCapacityError",
     "SchedulerHooks",
+    "SlurmMonitorContext",
     "build_launch_command",
     "capacity_state",
     "gpu_groups",
@@ -1104,12 +1105,62 @@ def _reconcile_slurm_submission(
     return unresolved, RuntimeError(f"Slurm submission outcome is uncertain: {detail}")
 
 
+class SlurmMonitorContext:
+    def __init__(self, rows: Iterable[dict[str, Any]], *, remote: str | None = None):
+        groups: dict[tuple[str, str, str, bool], set[str]] = {}
+        for row in rows:
+            if remote and not row.get("host"):
+                continue
+            route = self._route(row)
+            if route is not None:
+                groups.setdefault(route, set()).add(str(row["scheduler_job_id"]))
+        self.groups = {route: tuple(sorted(job_ids)) for route, job_ids in groups.items() if len(job_ids) > 1}
+        self.snapshots: dict[tuple[str, str, str, bool], dict[str, slurm.JobObservation] | None] = {}
+
+    @staticmethod
+    def _route(row: dict[str, Any]) -> tuple[str, str, str, bool] | None:
+        target = row.get("target")
+        host = str(row.get("host") or "").strip() if target == "ssh" else ""
+        topology = row.get("scheduler_direct_controller")
+        if (
+            row.get("scheduler_type") != "slurm"
+            or row.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH
+            or target not in {"local", "ssh"}
+            or (target == "ssh" and not host)
+            or topology not in {"true", "false"}
+            or not all(row.get(field) for field in ("scheduler_job_id", "scheduler_cluster", "scheduler_submit_token"))
+        ):
+            return None
+        return target, host, str(row["scheduler_cluster"]), topology == "true"
+
+    def active_job(self, execution: dict[str, Any], row: dict[str, Any]) -> slurm.JobObservation | None:
+        route = self._route(row)
+        job_ids = self.groups.get(route, ())
+        job_id = str(row.get("scheduler_job_id") or "")
+        if job_id not in job_ids:
+            return None
+        if route not in self.snapshots:
+            try:
+                matches = slurm.active_jobs(execution, job_id=job_ids, cluster=route[2])
+                snapshot = {item.job_id: item for item in matches}
+                if len(snapshot) != len(matches):
+                    raise ValueError("A Slurm monitor batch returned duplicate job ids.")
+            except (slurm.SlurmCommandError, subprocess.TimeoutExpired, RuntimeError, ValueError):
+                # A failed batch is not negative scheduler evidence; exact queries retain their original errors.
+                self.snapshots[route] = None
+            else:
+                self.snapshots[route] = snapshot
+        snapshot = self.snapshots[route]
+        return snapshot.get(job_id) if snapshot is not None else None
+
+
 def observe_slurm_run(
     owner_dir: str | Path,
     execution: dict[str, Any],
     row: dict[str, Any],
     *,
     health: bool = False,
+    monitor_context: SlurmMonitorContext | None = None,
 ) -> dict[str, Any]:
     if row.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
         return _slurm_artifact_observation({**row, "scheduler_observed_at": utc_now()}, health=health)
@@ -1169,8 +1220,12 @@ def observe_slurm_run(
             active = matches[0]
             job_id = active.job_id
         else:
-            matches = slurm.active_jobs(execution, job_id=job_id, cluster=cluster or None)
-            active = matches[0] if matches else None
+            active = None
+            if monitor_context is not None and routing_identity_matches:
+                active = monitor_context.active_job(execution, row)
+            if active is None:
+                matches = slurm.active_jobs(execution, job_id=job_id, cluster=cluster or None)
+                active = matches[0] if matches else None
         controller_observation = None
         if active is None:
             controller_observation = slurm.show_job(execution, job_id, cluster=cluster or None)

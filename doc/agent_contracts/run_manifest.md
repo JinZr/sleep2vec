@@ -199,6 +199,23 @@ sidecars or query the scheduler for it; stop rejects before recording intent
 or cancelling. Queue and direct launch both block further submissions in that
 plan. There is no automatic conflict-clearing or legacy-cluster recovery path.
 
+Within one `hparam-monitor` or `experiment-monitor` round, runs with complete
+canonical job, cluster, token, transport, and explicit controller topology may
+share a successful exact-ID `squeue` query on the same frozen route. Groups
+require at least two distinct job IDs. The first participating run queries only
+after its sidecar validation; every run still validates its own evidence before
+using the shared result. Only positive matches are reused. Missing IDs take the
+normal single-job query path; failed or ambiguous batches publish no partial
+results and disable sharing for that group for the rest of the round. Legacy
+identities, submission-cluster conflicts, and transport overrides are excluded.
+Each round starts fresh, and launch, stop, and submission reconciliation never
+consume these monitor snapshots. `scheduler_observed_at` remains the per-run
+observation processing time, not a promise of a separate scheduler sampling time.
+Health observation reuses a successful controller fallback's details, but keeps
+the fresh controller retry after accounting when the first controller query
+returned no record. This changes query timing, never frozen identity or the
+evidence required to commit lifecycle state.
+
 Live controller state comes from `squeue` and `scontrol`. If both no longer know
 a bound job, monitoring queries duplicate allocation records through `sacct`
 on the bound cluster when accounting is available. Accounting identity requires

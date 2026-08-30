@@ -1794,7 +1794,7 @@ def test_slurm_monitor_preserves_concurrent_stop_intent(tmp_path: Path, monkeypa
     monkeypatch.setattr(slurm, "cancel", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-21T03:40:00Z")
 
-    def observe_stale_row(_root, _execution, row, *, health=False):
+    def observe_stale_row(_root, _execution, row, *, health=False, monitor_context=None):
         assert row["status"] == "running"
         assert row.get("stop_requested_at", "") == ""
         hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")

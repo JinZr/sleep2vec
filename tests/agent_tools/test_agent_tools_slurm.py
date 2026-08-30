@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 
 import pytest
 
@@ -395,6 +396,98 @@ def test_active_jobs_filters_exact_submit_token(monkeypatch):
     jobs = slurm.active_jobs({"target": "local"}, submit_token="token-b")
 
     assert jobs == [slurm.JobObservation("3881", "RUNNING", "", "h20-bj-96", "token-b")]
+
+
+@pytest.mark.parametrize("host", [None, "scheduler"], ids=["local", "ssh"])
+@pytest.mark.parametrize("direct_controller", [False, True])
+def test_active_jobs_batch_uses_real_transport_and_exact_ids(
+    tmp_path: Path, monkeypatch, host: str | None, direct_controller: bool
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    captured = tmp_path / "query.json"
+    executable = fake_bin / "squeue"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        f"with open({str(captured)!r}, 'w') as stream:\n"
+        "    json.dump({'argv': sys.argv[1:], 'env': {key: os.environ.get(key) for key in "
+        "['SLURM_CLUSTERS', 'SLURM_CONF', 'SBATCH_PARTITION', 'KEEP_ME']}}, stream)\n"
+        "print('3880|RUNNING|None|node-a|token-a')\n"
+        "print('3881|PENDING|Resources|(null)|token-b')\n"
+        "print('9999|RUNNING|None|other-node|other-token')\n"
+    )
+    executable.chmod(0o755)
+    fake_ssh = fake_bin / "ssh"
+    fake_ssh.write_text('#!/bin/bash\n[ "$1" = scheduler ] || exit 99\nexec /bin/bash -c "$2"\n')
+    fake_ssh.chmod(0o755)
+    child_path = f"{fake_bin}{os.pathsep}{os.environ['PATH']}"
+    bash_env = tmp_path / "bash-env.sh"
+    bash_env.write_text(f"export PATH={shlex.quote(child_path)}\n")
+    for key, value in {
+        "PATH": child_path,
+        "BASH_ENV": str(bash_env),
+        "SLURM_CLUSTERS": "wrong-cluster",
+        "SLURM_CONF": "/etc/selected slurm.conf",
+        "SBATCH_PARTITION": "preserved",
+        "KEEP_ME": "kept",
+    }.items():
+        monkeypatch.setenv(key, value)
+    parent_environment = dict(os.environ)
+    execution = {"target": "ssh", "host": host} if host else {"target": "local"}
+    execution["scheduler"] = {"direct_controller": direct_controller}
+
+    jobs = slurm.active_jobs(execution, job_id=("3880", "3881"), cluster="wuji-h20")
+
+    assert jobs == [
+        slurm.JobObservation("3880", "RUNNING", "", "node-a", "token-a"),
+        slurm.JobObservation("3881", "PENDING", "Resources", "", "token-b"),
+    ]
+    payload = json.loads(captured.read_text())
+    assert payload["argv"] == [
+        "--noheader",
+        "--format=%i|%T|%R|%N|%k",
+        *([] if direct_controller else ["--clusters=wuji-h20"]),
+        "--jobs",
+        "3880,3881",
+    ]
+    assert payload["env"] == {
+        "SLURM_CLUSTERS": None,
+        "SLURM_CONF": "/etc/selected slurm.conf",
+        "SBATCH_PARTITION": "preserved",
+        "KEEP_ME": "kept",
+    }
+    assert dict(os.environ) == parent_environment
+
+
+@pytest.mark.parametrize("returncode", [1, 255])
+def test_active_jobs_batch_rejects_partial_output_on_missing_job_error(monkeypatch, returncode: int):
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            [], returncode, "3880|RUNNING|None|node-a|token-a\n", "Invalid job id specified"
+        ),
+    )
+    with pytest.raises(slurm.SlurmCommandError, match="active-job query"):
+        slurm.active_jobs({"target": "local"}, job_id=("3880", "3881"))
+
+
+@pytest.mark.parametrize("job_ids", [(), ("3880", "bad;job")])
+def test_active_jobs_batch_validates_ids_before_transport(monkeypatch, job_ids):
+    monkeypatch.setattr(slurm, "run_command", lambda *_a, **_k: pytest.fail("invalid IDs must not run a command"))
+    with pytest.raises(ValueError):
+        slurm.active_jobs({"target": "local"}, job_id=job_ids)
+
+
+def test_active_jobs_batch_does_not_return_partially_parsed_records(monkeypatch):
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0, "3880|RUNNING|None|node-a|token-a\n3881|RUN", ""),
+    )
+    with pytest.raises(ValueError, match="Invalid squeue output"):
+        slurm.active_jobs({"target": "local"}, job_id=("3880", "3881"))
 
 
 @pytest.mark.parametrize(
