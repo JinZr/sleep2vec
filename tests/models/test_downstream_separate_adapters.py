@@ -105,31 +105,30 @@ def test_separate_adapters_only_train_channel_lora_weights(monkeypatch, module_n
     assert encoder.active_adapter == "ch_breath"
 
 
-def test_sleep2vec2_real_peft_lora_forward_backward_smoke():
-    from sleep2vec2.config import (
-        BackboneConfig,
-        ChannelAggConfig,
-        ChannelConfig,
-        ClsConfig,
-        HeadConfig,
-        ModelConfig,
-        ProjectionConfig,
-        TemporalAggConfig,
-        TokenizerConfig,
-    )
-    from sleep2vec2.downstream_model import Sleep2vecDownstreamModel
-    import sleep2vec2.downstreams.heads  # noqa: F401
-    from sleep2vec2.pretrain_model import Sleep2vecPretrainModel
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+@pytest.mark.parametrize("layer_mix_enabled", [False, True])
+def test_real_peft_lora_forward_backward_smoke(variant: str, layer_mix_enabled: bool):
+    from peft import PeftModelForFeatureExtraction
 
-    model_config = ModelConfig(
+    config = importlib.import_module(f"{variant}.config")
+    Sleep2vecDownstreamModel = importlib.import_module(f"{variant}.downstream_model").Sleep2vecDownstreamModel
+    importlib.import_module(f"{variant}.downstreams.heads")
+    Sleep2vecPretrainModel = importlib.import_module(f"{variant}.pretrain_model").Sleep2vecPretrainModel
+    torch.manual_seed(0)
+
+    model_config = config.ModelConfig(
         channels=[
-            ChannelConfig(name="heartbeat", input_dim=8, tokenizer=TokenizerConfig(name="linear", out_dim=16)),
-            ChannelConfig(name="breath", input_dim=8, tokenizer=TokenizerConfig(name="linear", out_dim=16)),
+            config.ChannelConfig(
+                name="heartbeat", input_dim=8, tokenizer=config.TokenizerConfig(name="linear", out_dim=16)
+            ),
+            config.ChannelConfig(
+                name="breath", input_dim=8, tokenizer=config.TokenizerConfig(name="linear", out_dim=16)
+            ),
         ],
-        backbone=BackboneConfig(
+        backbone=config.BackboneConfig(
             name="roformer",
             hidden_size=16,
-            num_hidden_layers=1,
+            num_hidden_layers=2,
             num_attention_heads=4,
             vocab_size=1,
             config_overrides={
@@ -139,12 +138,12 @@ def test_sleep2vec2_real_peft_lora_forward_backward_smoke():
                 "max_position_embeddings": 16,
             },
         ),
-        projection=ProjectionConfig(name="simclr", enabled=False, hidden_dim=16, out_dim=8),
-        cls=ClsConfig(downstream="tokens", embedding_type=None),
-        head=HeadConfig(
+        projection=config.ProjectionConfig(name="simclr", enabled=False, hidden_dim=16, out_dim=8),
+        cls=config.ClsConfig(downstream="tokens", embedding_type=None),
+        head=config.HeadConfig(
             name="classification",
-            channel_agg=ChannelAggConfig(name="mean"),
-            temporal_agg=TemporalAggConfig(name="mean"),
+            channel_agg=config.ChannelAggConfig(name="mean"),
+            temporal_agg=config.TemporalAggConfig(name="mean"),
             hidden_dim=8,
             dropout=0.0,
         ),
@@ -160,6 +159,11 @@ def test_sleep2vec2_real_peft_lora_forward_backward_smoke():
         device="cpu",
         model_config=model_config,
         head_config=model_config.head,
+        layer_mix_cfg=(
+            config.LayerMixConfig(enabled=True, layer_indices=[1, 2], shared_across_modalities=False)
+            if layer_mix_enabled
+            else None
+        ),
     ).train()
     downstream.freeze_backbone_and_insert_lora(
         insert_lora=True,
@@ -168,6 +172,7 @@ def test_sleep2vec2_real_peft_lora_forward_backward_smoke():
         lora_dropout=0.0,
         target_modules=["query", "key", "value"],
     )
+    assert isinstance(backbone.get_encoder(), PeftModelForFeatureExtraction)
 
     batch = {
         "tokens": {
@@ -188,8 +193,17 @@ def test_sleep2vec2_real_peft_lora_forward_backward_smoke():
     lora_params = [(name, param) for name, param in downstream.named_parameters() if "lora_" in name]
     trainable_names = [name for name, param in downstream.named_parameters() if param.requires_grad]
     assert output.shape == (2, 2)
+    assert torch.isfinite(output).all()
     assert lora_params
     assert all(param.requires_grad for _, param in lora_params)
     assert any(param.grad is not None and param.grad.abs().sum() > 0 for _, param in lora_params)
+    assert all(torch.isfinite(param.grad).all() for _, param in lora_params if param.grad is not None)
+    assert any(param.grad is not None and param.grad.abs().sum() > 0 for param in downstream.head.parameters())
     assert any(name.startswith("head.") for name in trainable_names)
     assert all("lora_" in name or not name.startswith("backbone.") for name in trainable_names)
+    if layer_mix_enabled:
+        assert downstream.layer_mix.weight.grad is not None
+        assert torch.isfinite(downstream.layer_mix.weight.grad).all()
+        assert downstream.layer_mix.weight.grad.abs().sum() > 0
+    else:
+        assert downstream.layer_mix is None
