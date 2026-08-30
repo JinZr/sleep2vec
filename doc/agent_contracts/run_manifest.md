@@ -6,6 +6,12 @@
 
 The canonical managed key is `(step_id, run_id)`. Both fields are required and one canonical table contains at most one row per key. A run uses the next stable step-local `run-NNN` id. `run_name` is human-readable, and `version` is the bounded slug of experiment id, step id, run id, and run name. Version may resolve external evidence only when a complete managed key is absent and the match is unique.
 
+Hyperparameter run names and parameter summaries use lexicographically sorted
+full parameter keys, independent of mapping insertion order. Sorting happens
+before shortened field names are assigned. Nested mapping values are likewise
+order-independent, while list values retain their authored order. Frozen names,
+versions, paths, and hashes are not rewritten to migrate historical plans.
+
 Plan-owned identity, semantic parameters, config/script hashes, artifact paths, runtime/checkpoint directories, and execution identity are frozen after registration. Shared execution identity consists of target, host, workdir, GPUs, log path, and command. Direct execution additionally owns the PID path, launched PID, process-group id, and OS process-start token. Slurm execution instead freezes scheduler type, optional `scheduler_direct_controller` topology, submit token, sbatch path/hash, allocation-identity path, and terminal-sidecar path; the execution-snapshot SHA-256, numeric scheduler job id, and optional cluster are trusted one-time bindings. New Slurm plans materialize the topology as `true` or `false`; older rows may omit it and retain the default bound-cluster routing. PID and scheduler bindings are mutually exclusive. Only the canonical owner may perform each trusted first fill.
 
 Pipeline-managed inference rows may additionally freeze `pipeline_id`,
