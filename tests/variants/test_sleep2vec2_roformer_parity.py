@@ -226,7 +226,9 @@ def test_sleep2vec2_roformer_sdpa_matches_eager_with_padding_mask():
     assert torch.allclose(sdpa_output, eager_output, atol=1e-5, rtol=1e-5)
 
 
-def test_sleep2vec2_roformer_sdpa_config_keeps_output_attentions():
+@pytest.mark.parametrize("return_dict", [None, True, False])
+@pytest.mark.parametrize("output_attentions", [False, True])
+def test_sleep2vec2_roformer_return_modes_preserve_hidden_states_and_attentions(return_dict, output_attentions):
     config = RoFormerConfig(
         vocab_size=37,
         embedding_size=16,
@@ -243,11 +245,34 @@ def test_sleep2vec2_roformer_sdpa_config_keeps_output_attentions():
     inputs_embeds = torch.randn(2, 6, 16)
 
     with torch.no_grad():
-        output = model(inputs_embeds=inputs_embeds, output_attentions=True, return_dict=True)
+        expected = model(inputs_embeds=inputs_embeds, output_hidden_states=True, output_attentions=output_attentions)
+        output = model(
+            inputs_embeds=inputs_embeds,
+            output_hidden_states=True,
+            output_attentions=output_attentions,
+            return_dict=return_dict,
+        )
 
-    assert output.attentions is not None
-    assert len(output.attentions) == config.num_hidden_layers
-    assert output.attentions[0].shape == (2, config.num_attention_heads, 6, 6)
+    if return_dict is False:
+        assert isinstance(output, tuple)
+        assert len(output) == 2 + int(output_attentions)
+        last_hidden_state, hidden_states = output[:2]
+        attentions = output[2] if output_attentions else None
+    else:
+        assert isinstance(output, type(expected))
+        last_hidden_state, hidden_states, attentions = output.last_hidden_state, output.hidden_states, output.attentions
+
+    torch.testing.assert_close(last_hidden_state, expected.last_hidden_state)
+    assert len(hidden_states) == config.num_hidden_layers + 1
+    for hidden, expected_hidden in zip(hidden_states, expected.hidden_states):
+        torch.testing.assert_close(hidden, expected_hidden)
+    if output_attentions:
+        assert len(attentions) == config.num_hidden_layers
+        assert attentions[0].shape == (2, config.num_attention_heads, 6, 6)
+        for attention, expected_attention in zip(attentions, expected.attentions):
+            torch.testing.assert_close(attention, expected_attention)
+    else:
+        assert attentions is None
 
 
 def test_sleep2vec2_roformer_matches_hf_forward_with_copied_weights():

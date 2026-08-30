@@ -65,10 +65,14 @@ class RoFormerEncoderModel(nn.Module):
         attention_mask: torch.Tensor | None = None,
         output_hidden_states: bool = False,
         output_attentions: bool = False,
-        return_dict: bool = True,
+        return_dict: bool | None = True,
         input_ids: torch.LongTensor | None = None,
         token_type_ids: torch.LongTensor | None = None,
     ):
+        # PEFT forwards None explicitly; keep the default structured output.
+        if return_dict is None:
+            return_dict = True
+
         if inputs_embeds is not None:
             input_shape = inputs_embeds.size()[:-1]
         elif input_ids is not None:
