@@ -352,8 +352,17 @@ bounded startup-identity record before the runtime command. Only global rank
 zero writes the diagnostic exit marker. The terminal sidecar records the
 aggregate `srun` exit code; labeled log evidence never becomes a lifecycle
 owner.
-Submission commits `submitting` before `sbatch`; a timeout or SSH disconnect is
-reconciled by the exact token and is never retried blindly. Monitoring uses
+After launch preflight, submission queries the controller's unique valid
+`ClusterName` and commits it together with execution identity and `submitting`
+before `sbatch`. Query failure leaves that run unsubmitted and untransitioned;
+dry-run never binds a cluster. Bare job-id receipts retain the prebound cluster.
+A timeout or SSH disconnect is reconciled by the exact token on that frozen
+route and is never retried blindly. A receipt naming a different cluster saves
+the returned job id and original cluster as `unknown_scheduler` with sticky raw
+state `SUBMISSION_CLUSTER_MISMATCH`, then aborts the batch. Such plans cannot
+continue direct launch or queue execution; monitor performs no Slurm sidecar or
+scheduler lookup, and stop rejects before intent or cancellation. No automatic
+conflict clearing or historical cluster recovery is provided. Monitoring uses
 `squeue`/`scontrol` for controller state, then queries the exact bound-cluster
 `sacct` allocation when the job has aged out of the controller. It requires
 `--clusters=<scheduler_cluster>` for bound-cluster routing unless the canonical
@@ -367,8 +376,14 @@ exact bound job to be absent from `squeue`, explicitly invalid in `scontrol`,
 and `sacct` to report disabled accounting, then uses a sidecar matching the
 frozen job, token, and non-empty canonical cluster, with frozen transport and
 controller topology matching the actual query route, to recover exit zero as
-`completed` or non-zero as `failed` while retaining raw state `MISSING`. Other
-incomplete terminal evidence is `unknown_scheduler`. Stop first records the
+`completed` or non-zero as `failed` while retaining raw state `MISSING`. Sidecars
+provide job lookup candidates only, never canonical cluster bindings or query
+routes. First job binding needs a submission receipt or positive exact-token
+scheduler evidence on the frozen route. Incomplete evidence remains
+`submitting` when canonical job identity is absent, otherwise
+`unknown_scheduler`. Legacy empty-cluster rows may finish using ordinary
+scheduler plus sidecar evidence but cannot acquire a cluster from the sidecar.
+Stop first records the
 frozen scheduler job id, nonterminal `stopping`, request time, and reason in the
 canonical manifest, then uses that job id with `scancel`, not PID evidence. An
 interrupted or failed cancellation keeps the request recoverable; the same
@@ -382,9 +397,11 @@ is not canonical `stopped`. When Slurm reports raw `REVOKED` federation sibling
 state, sibling-cluster rebinding is unsupported; the run fails closed as active
 `unknown_scheduler`, the frozen job, cluster, scheduler reason, and stop intent
 remain canonical, and the run is not relaunched.
-The submission command strips every ambient `SBATCH_*` variable on the local or
-SSH submission host before invoking `sbatch`, while preserving ordinary runtime
-environment such as `PATH` and Slurm client configuration.
+Every Slurm client subprocess strips ambient `SLURM_CLUSTERS` on the local or
+SSH submission host. The submission command additionally strips every
+`SBATCH_*` variable before invoking `sbatch`; recorded and executed submission
+commands share one renderer. `SLURM_CONF`, `PATH`, other environment, and the
+parent process remain unchanged.
 
 Frozen per-run execution identity and its canonical owner are defined in
 [run_manifest.md](run_manifest.md).

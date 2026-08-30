@@ -9,7 +9,7 @@ import subprocess
 
 import pytest
 
-from agent_tools import slurm
+from agent_tools import managed_scheduler, slurm
 
 
 def _frozen_job_inputs(tmp_path: Path, *, script_text: str = "#!/usr/bin/env bash\ntrue\n"):
@@ -135,7 +135,8 @@ def test_submit_rejects_malformed_execution_snapshot_digest_before_transport(mon
     assert calls == []
 
 
-def test_submit_strips_ambient_sbatch_environment_on_submission_host(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("host", [None, "scheduler"], ids=["local", "ssh"])
+def test_submit_strips_ambient_sbatch_environment_on_submission_host(tmp_path: Path, monkeypatch, host: str | None):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     capture_env = tmp_path / "env.txt"
@@ -159,6 +160,8 @@ def test_submit_strips_ambient_sbatch_environment_on_submission_host(tmp_path: P
             "CAPTURE_ARGV": str(capture_argv),
             "SBATCH_PARTITION": "wrong-partition",
             "SBATCH_FUTURE_OPTION": "wrong-future-value",
+            "SLURM_CLUSTERS": "wrong-cluster",
+            "SLURM_CONF": "/etc/selected slurm.conf",
             "KEEP_ME": "kept",
         }
         return subprocess.run(["bash", "-c", command], text=True, capture_output=True, timeout=timeout, env=env)
@@ -167,16 +170,19 @@ def test_submit_strips_ambient_sbatch_environment_on_submission_host(tmp_path: P
     digest = "d" * 64
 
     identity = slurm.submit(
-        {"target": "ssh", "host": "baichuan3"},
+        {"target": "ssh", "host": host} if host else {"target": "local"},
         "/shared/job.sbatch",
         "token",
         execution_snapshot_sha256=digest,
     )
 
     assert identity == slurm.JobIdentity("3880", "wuji-h20")
-    assert calls == [("baichuan3", slurm.submission_command("/shared/job.sbatch", "token", digest), 10)]
+    assert calls == [(host, slurm.submission_command("/shared/job.sbatch", "token", digest), 10)]
     environment = capture_env.read_text().splitlines()
     assert not any(line.startswith("SBATCH_") for line in environment)
+    assert not any(line.startswith("SLURM_CLUSTERS=") for line in environment)
+    assert "SLURM_CONF=/etc/selected slurm.conf" in environment
+    assert f"PATH={fake_bin}{os.pathsep}{os.environ['PATH']}" in environment
     assert "KEEP_ME=kept" in environment
     assert capture_argv.read_text().splitlines() == [
         "--parsable",
@@ -184,6 +190,193 @@ def test_submit_strips_ambient_sbatch_environment_on_submission_host(tmp_path: P
         "/shared/job.sbatch",
         digest,
     ]
+
+
+@pytest.mark.parametrize("host", [None, "scheduler"], ids=["local", "ssh"])
+def test_submit_real_transport_matches_canonical_command_and_preserves_parent_environment(
+    tmp_path: Path, monkeypatch, host: str | None
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    capture_env = tmp_path / "env.txt"
+    capture_argv = tmp_path / "argv.txt"
+    capture_ssh = tmp_path / "ssh.txt"
+    fake_sbatch = fake_bin / "sbatch"
+    fake_sbatch.write_text(
+        "#!/bin/bash\n" 'env > "$CAPTURE_ENV"\n' 'printf "%s\\n" "$@" > "$CAPTURE_ARGV"\n' 'printf "3880;wuji-h20\\n"\n'
+    )
+    fake_sbatch.chmod(0o755)
+    fake_ssh = fake_bin / "ssh"
+    fake_ssh.write_text("#!/bin/bash\n" 'printf "%s\\n" "$@" > "$CAPTURE_SSH"\n' 'exec /bin/bash -c "$2"\n')
+    fake_ssh.chmod(0o755)
+    child_path = f"{fake_bin}{os.pathsep}{os.environ['PATH']}"
+    bash_env = tmp_path / "bash-env.sh"
+    bash_env.write_text(f"export PATH={shlex.quote(child_path)}\n")
+    for name, value in {
+        "PATH": child_path,
+        "BASH_ENV": str(bash_env),
+        "CAPTURE_ENV": str(capture_env),
+        "CAPTURE_ARGV": str(capture_argv),
+        "CAPTURE_SSH": str(capture_ssh),
+        "SBATCH_PARTITION": "wrong-partition",
+        "SBATCH_FUTURE_OPTION": "wrong-future-value",
+        "SLURM_CLUSTERS": "wrong-cluster",
+        "SLURM_CONF": "/etc/selected slurm.conf",
+        "KEEP_ME": "kept",
+    }.items():
+        monkeypatch.setenv(name, value)
+    parent_environment = dict(os.environ)
+    calls = []
+    real_run = subprocess.run
+
+    def record_run(argv, **kwargs):
+        calls.append(argv)
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(slurm.transport.subprocess, "run", record_run)
+    execution = {"target": "ssh", "host": host} if host else {"target": "local"}
+    script = "/shared/run dir/job.sbatch"
+    token = "token;$(touch nope)"
+    digest = "d" * 64
+    canonical = managed_scheduler._slurm_execution_identity(
+        execution,
+        {"scheduler_script": script, "scheduler_submit_token": token, "log_path": str(tmp_path / "slurm.log")},
+        digest,
+    )["command"]
+
+    identity = slurm.submit(execution, script, token, execution_snapshot_sha256=digest)
+
+    assert identity == slurm.JobIdentity("3880", "wuji-h20")
+    inner = slurm.submission_command(script, token, digest)
+    if host:
+        assert canonical == shlex.join(["ssh", host, inner])
+        assert calls == [["ssh", host, inner]]
+        assert capture_ssh.read_text().splitlines() == [host, inner]
+    else:
+        assert canonical == inner
+        assert calls == [["bash", "-lc", canonical]]
+        assert not capture_ssh.exists()
+    environment = capture_env.read_text().splitlines()
+    assert not any(line.startswith(("SBATCH_", "SLURM_CLUSTERS=")) for line in environment)
+    assert "SLURM_CONF=/etc/selected slurm.conf" in environment
+    assert f"PATH={child_path}" in environment
+    assert "KEEP_ME=kept" in environment
+    assert capture_argv.read_text().splitlines() == ["--parsable", f"--comment={token}", script, digest]
+    assert dict(os.environ) == parent_environment
+
+
+@pytest.mark.parametrize("host", [None, "scheduler"], ids=["local", "ssh"])
+@pytest.mark.parametrize("client", ["scontrol", "squeue", "sacct", "scancel"])
+def test_slurm_clients_strip_only_cluster_routing_environment(
+    tmp_path: Path, monkeypatch, host: str | None, client: str
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    capture_env = tmp_path / "env.txt"
+    capture_argv = tmp_path / "argv.txt"
+    executable = fake_bin / client
+    executable.write_text(
+        "#!/usr/bin/env bash\n" 'env | sort > "$CAPTURE_ENV"\n' 'printf "%s\\n" "$@" > "$CAPTURE_ARGV"\n'
+    )
+    executable.chmod(0o755)
+    calls = []
+
+    def fake_run_shell(observed_host, command, *, timeout):
+        calls.append((observed_host, command, timeout))
+        env = {
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "CAPTURE_ENV": str(capture_env),
+            "CAPTURE_ARGV": str(capture_argv),
+            "SLURM_CLUSTERS": "wrong-cluster",
+            "SLURM_CONF": "/etc/selected slurm.conf",
+            "SBATCH_PARTITION": "unchanged-for-non-submission",
+            "KEEP_ME": "kept",
+        }
+        return subprocess.run(["bash", "-c", command], text=True, capture_output=True, timeout=timeout, env=env)
+
+    monkeypatch.setattr(slurm.transport, "run_shell", fake_run_shell)
+    execution = {"target": "ssh", "host": host} if host else {"target": "local"}
+    arguments = ["argument with spaces", "token;$(touch nope)"]
+
+    result = slurm.run_command(execution, [client, *arguments], timeout=7)
+
+    assert result.returncode == 0
+    assert calls == [(host, "env -u SLURM_CLUSTERS " + shlex.join([client, *arguments]), 7)]
+    environment = capture_env.read_text().splitlines()
+    assert not any(line.startswith("SLURM_CLUSTERS=") for line in environment)
+    assert "SLURM_CONF=/etc/selected slurm.conf" in environment
+    assert f"PATH={fake_bin}{os.pathsep}{os.environ['PATH']}" in environment
+    assert "SBATCH_PARTITION=unchanged-for-non-submission" in environment
+    assert "KEEP_ME=kept" in environment
+    assert capture_argv.read_text().splitlines() == arguments
+
+
+@pytest.mark.parametrize("host", [None, "scheduler"], ids=["local", "ssh"])
+def test_controller_cluster_queries_submission_controller(monkeypatch, host: str | None):
+    calls = []
+
+    def fake_run_shell(observed_host, command, *, timeout):
+        calls.append((observed_host, command, timeout))
+        return subprocess.CompletedProcess([], 0, "Other = ignored\n  ClusterName = wuji-h20\n", "")
+
+    monkeypatch.setattr(slurm.transport, "run_shell", fake_run_shell)
+    execution = {"target": "ssh", "host": host} if host else {"target": "local"}
+
+    assert slurm.controller_cluster(execution, timeout=7) == "wuji-h20"
+    assert calls == [(host, "env -u SLURM_CLUSTERS scontrol show config", 7)]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "",
+        "Other = ignored\n",
+        "ClusterName\n",
+        "ClusterName = \n",
+        "ClusterName = wuji-h20\nClusterName = wuji-h20\n",
+        "ClusterName = wuji-h20\nClusterName = other\n",
+    ],
+)
+def test_controller_cluster_rejects_missing_empty_or_duplicate_identity(monkeypatch, output: str):
+    monkeypatch.setattr(slurm, "run_command", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, output, ""))
+
+    with pytest.raises(ValueError, match="exactly one non-empty ClusterName"):
+        slurm.controller_cluster({"target": "local"})
+
+
+@pytest.mark.parametrize("cluster", ["bad cluster", "wuji;scancel 3880", "$(touch nope)"])
+def test_controller_cluster_rejects_invalid_identity(monkeypatch, cluster: str):
+    monkeypatch.setattr(
+        slurm, "run_command", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, f"ClusterName={cluster}", "")
+    )
+
+    with pytest.raises(ValueError, match="cluster name is invalid"):
+        slurm.controller_cluster({"target": "local"})
+
+
+@pytest.mark.parametrize("returncode", [1, 255])
+def test_controller_cluster_preserves_command_failure(monkeypatch, returncode: int):
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], returncode, "ClusterName=wuji-h20\n", "query failed"),
+    )
+
+    with pytest.raises(slurm.SlurmCommandError, match="controller cluster query") as exc_info:
+        slurm.controller_cluster({"target": "local"})
+
+    assert exc_info.value.returncode == returncode
+
+
+def test_controller_cluster_preserves_timeout(monkeypatch):
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("scontrol", 7)
+
+    monkeypatch.setattr(slurm, "run_command", timeout)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        slurm.controller_cluster({"target": "local"}, timeout=7)
 
 
 def test_active_jobs_filters_exact_submit_token(monkeypatch):
@@ -500,7 +693,7 @@ PreemptType               = preempt/none
 
     def fake_run_shell(host, command, *, timeout):
         calls.append((host, command, timeout))
-        return subprocess.CompletedProcess([], 0, outputs[command], "")
+        return subprocess.CompletedProcess([], 0, outputs[command.removeprefix("env -u SLURM_CLUSTERS ")], "")
 
     monkeypatch.setattr(slurm.transport, "run_shell", fake_run_shell)
 
@@ -521,7 +714,9 @@ PreemptType               = preempt/none
         "partition_max_time": "2-00:00:00",
         "reservation_count": 0,
     }
-    assert [command for _host, command, _timeout in calls] == list(outputs)
+    assert [command for _host, command, _timeout in calls] == [
+        "env -u SLURM_CLUSTERS " + command for command in outputs
+    ]
     assert not any("sprio" in command or "sacctmgr" in command for _host, command, _timeout in calls)
 
 
@@ -556,7 +751,7 @@ def test_cancel_uses_exact_numeric_job_id(monkeypatch):
 
     slurm.cancel({"target": "local"}, "3880")
 
-    assert calls == [(None, "scancel 3880")]
+    assert calls == [(None, "env -u SLURM_CLUSTERS scancel 3880")]
     with pytest.raises(ValueError):
         slurm.cancel({"target": "local"}, "3880_2")
 

@@ -309,6 +309,9 @@ among mutable plan artifacts alone is not semantic authority. Recompilation
 uses the frozen creator-host plan context rather than the reader's Python or
 repository root.
 Managed direct and Slurm follow-up always uses frozen canonical identity.
+Slurm binds the controller cluster before submission; sidecars never establish
+canonical cluster identity. Conflicting receipt clusters durably quarantine the
+run and block submission and stop, without automatic recovery.
 Slurm terminal truth normally combines scheduler and sidecar evidence; a purged
 job with explicitly disabled accounting has one narrow authenticated recovery
 path. Other uncertain observations remain nonterminal and never authorize

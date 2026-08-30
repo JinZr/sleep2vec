@@ -21,6 +21,7 @@ PLAN_CONTROLLERS = {"unassigned", "ordinary", "adaptive", "pipeline"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
 SUCCESS_STATUSES = frozenset({"completed", "finished"})
 LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
+SUBMISSION_CLUSTER_MISMATCH = "SUBMISSION_CLUSTER_MISMATCH"
 MONITOR_EXIT_CODE_PREFIX = "AGENT_TOOLS_EXIT_CODE="
 PROCESS_IDENTITY_FIELDS = {"pid", "process_group_id", "process_start_token"}
 SCHEDULER_PLAN_IDENTITY_FIELDS = {
@@ -958,6 +959,14 @@ def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
         and incoming.get("stop_requested_at") != existing_stop_requested_at
     )
     merged = {**existing, **json_ready(incoming)}
+    # A conflicting submission receipt is quarantined; later scheduler observations cannot authenticate its route.
+    if existing.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
+        merged.update(
+            status="unknown_scheduler",
+            scheduler_raw_state=SUBMISSION_CLUSTER_MISMATCH,
+            scheduler_reason=existing.get("scheduler_reason", ""),
+        )
+        return merged
     if existing_status in TERMINAL_STATUSES:
         if incoming_status == "failed" and existing_status in {"completed", "finished"}:
             merged["status"] = "failed"
@@ -1113,12 +1122,12 @@ def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
     job_id = str(row.get("scheduler_job_id") or "")
     if job_id and re.fullmatch(r"[1-9][0-9]*", job_id) is None:
         raise ValueError(f"Slurm scheduler_job_id must be a positive integer: {job_id!r}")
-    if row.get("scheduler_cluster") not in (None, "") and not job_id:
-        raise ValueError("Slurm scheduler_cluster requires scheduler_job_id.")
+    status = str(row.get("status") or "planned")
+    if row.get("scheduler_cluster") not in (None, "") and not job_id and status not in {"submitting", "launch_failed"}:
+        raise ValueError("Slurm scheduler_cluster requires scheduler_job_id outside submitting or launch_failed.")
     execution_snapshot_sha256 = str(row.get("execution_snapshot_sha256") or "")
     if execution_snapshot_sha256 and re.fullmatch(r"[0-9a-f]{64}", execution_snapshot_sha256) is None:
         raise ValueError("Slurm execution_snapshot_sha256 must be 64 lowercase hexadecimal characters.")
-    status = str(row.get("status") or "planned")
     if status in {"planned", "pending", "submitting", "launch_failed", "superseded"} and job_id:
         raise ValueError(f"Slurm managed run status {status} cannot define scheduler_job_id.")
     if (

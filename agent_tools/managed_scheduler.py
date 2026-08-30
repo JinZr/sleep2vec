@@ -22,6 +22,7 @@ from .experiment_workspace import (
     LAUNCHABLE_STATUSES,
     PROCESS_IDENTITY_FIELDS,
     SCHEDULER_PLAN_IDENTITY_FIELDS,
+    SUBMISSION_CLUSTER_MISMATCH,
     append_event,
     file_sha256,
     managed_run_key,
@@ -807,6 +808,10 @@ def _launch_slurm_runs(
     if missing:
         step_id, run_id = sorted(missing)[0]
         raise ValueError(f"Canonical run is missing: {step_id} / {run_id}")
+    if not dry_run:
+        for key in expected_keys:
+            if workspace_by_key[key].get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
+                raise ValueError(f"Slurm plan is blocked by {SUBMISSION_CLUSTER_MISMATCH}: {key[0]} / {key[1]}")
     planned_fields = {
         "experiment_id",
         "step_id",
@@ -918,10 +923,12 @@ def _launch_slurm_runs(
         for run in launchable:
             key = managed_run_key(run)
             previous = workspace_by_key[key]
+            cluster = slurm.controller_cluster(execution, timeout=LAUNCH_TIMEOUT_SECONDS)
             submitting = {
                 **previous,
                 **_slurm_execution_identity(execution, run, execution_snapshot_sha256),
                 "status": "submitting",
+                "scheduler_cluster": cluster,
                 "scheduler_observed_at": utc_now(),
             }
             committed = hooks.merge_manifest(workspace, [submitting], lock_held=True)
@@ -938,6 +945,17 @@ def _launch_slurm_runs(
                     timeout=LAUNCH_TIMEOUT_SECONDS,
                 )
                 submitted = _submitted_slurm_row(submitting, identity, raw_state="SUBMITTED")
+                if identity.cluster and identity.cluster != submitting["scheduler_cluster"]:
+                    reason = (
+                        f"{SUBMISSION_CLUSTER_MISMATCH}: submitted job {identity.job_id} returned cluster "
+                        f"{identity.cluster!r}, differing from frozen controller {submitting['scheduler_cluster']!r}."
+                    )
+                    submitted.update(
+                        status="unknown_scheduler",
+                        scheduler_raw_state=SUBMISSION_CLUSTER_MISMATCH,
+                        scheduler_reason=reason,
+                    )
+                    uncertain_error = RuntimeError(reason)
             except slurm.SlurmCommandError as exc:
                 if exc.returncode != 255:
                     failed = {
@@ -1029,7 +1047,7 @@ def _submitted_slurm_row(
         **row,
         "status": status,
         "scheduler_job_id": identity.job_id,
-        "scheduler_cluster": identity.cluster,
+        "scheduler_cluster": row.get("scheduler_cluster") or identity.cluster,
         "scheduler_raw_state": raw_state,
         "scheduler_reason": "",
         "scheduler_observed_at": utc_now(),
@@ -1045,9 +1063,16 @@ def _reconcile_slurm_submission(
 ) -> tuple[dict[str, Any], RuntimeError | None]:
     terminal = _read_slurm_json(owner_dir, execution, row["scheduler_result_path"])
     if terminal:
-        return observe_slurm_run(owner_dir, execution, row), None
+        observed = observe_slurm_run(owner_dir, execution, row)
+        if observed.get("scheduler_job_id"):
+            return observed, None
+        detail = f"{cause}; {observed['scheduler_reason']}"
+        observed["scheduler_reason"] = detail
+        return observed, RuntimeError(f"Slurm submission outcome is uncertain: {detail}")
     try:
-        matches = slurm.active_jobs(execution, submit_token=row["scheduler_submit_token"])
+        matches = slurm.active_jobs(
+            execution, submit_token=row["scheduler_submit_token"], cluster=row.get("scheduler_cluster") or None
+        )
     except Exception as reconcile_error:
         detail = f"{cause}; reconciliation failed: {reconcile_error}"
         unresolved = {**row, "scheduler_reason": detail, "scheduler_observed_at": utc_now()}
@@ -1086,6 +1111,8 @@ def observe_slurm_run(
     *,
     health: bool = False,
 ) -> dict[str, Any]:
+    if row.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
+        return _slurm_artifact_observation({**row, "scheduler_observed_at": utc_now()}, health=health)
     owner = Path(owner_dir)
     token = str(row["scheduler_submit_token"])
     canonical_job_id = str(row.get("scheduler_job_id") or "")
@@ -1095,6 +1122,12 @@ def observe_slurm_run(
     execution_target = str(execution.get("target", "local") or "local")
     execution_host = str(execution.get("host") or "").strip()
     execution_scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+    canonical_direct_controller = str(row.get("scheduler_direct_controller") or "") == "true"
+    routing_identity_matches = (
+        execution_target == row.get("target")
+        and (execution_target != "ssh" or execution_host == str(row.get("host") or "").strip())
+        and (execution_scheduler.get("direct_controller") is True) == canonical_direct_controller
+    )
     stop_requested = row.get("stop_requested_at") not in (None, "")
     terminal = _read_slurm_json(owner, execution, row["scheduler_result_path"])
     observation: dict[str, Any] = {**row, "scheduler_observed_at": utc_now()}
@@ -1106,16 +1139,12 @@ def observe_slurm_run(
             raise ValueError("Slurm terminal sidecar cluster differs from the canonical run.")
         terminal_identity = identity
         job_id = identity.job_id
-        cluster = identity.cluster or cluster
         terminal_exit_code = slurm.terminal_exit_code(terminal)
         observation.update(
             {
-                "scheduler_job_id": job_id,
-                "scheduler_cluster": cluster,
                 "scheduler_node": terminal.get("node", ""),
                 "scheduler_exit_code": terminal_exit_code,
                 "scheduler_started_at": terminal.get("started_at", ""),
-                "launched_at": row.get("launched_at") or utc_now(),
             }
         )
     else:
@@ -1124,12 +1153,8 @@ def observe_slurm_run(
             allocation_identity = slurm.sidecar_identity(allocation, token, expected_job_id=job_id or None)
             if cluster and allocation_identity.cluster and allocation_identity.cluster != cluster:
                 raise ValueError("Slurm allocation sidecar cluster differs from the canonical run.")
-            cluster = allocation_identity.cluster or cluster
             if not job_id:
                 job_id = allocation_identity.job_id
-                observation["scheduler_job_id"] = job_id
-                observation["launched_at"] = row.get("launched_at") or utc_now()
-            observation["scheduler_cluster"] = cluster
             observation["scheduler_node"] = allocation.get("node", "")
             observation["scheduler_started_at"] = allocation.get("started_at", "")
     health_error = ""
@@ -1143,8 +1168,6 @@ def observe_slurm_run(
                 return _slurm_artifact_observation(observation, health=health)
             active = matches[0]
             job_id = active.job_id
-            observation["scheduler_job_id"] = job_id
-            observation["launched_at"] = row.get("launched_at") or utc_now()
         else:
             matches = slurm.active_jobs(execution, job_id=job_id, cluster=cluster or None)
             active = matches[0] if matches else None
@@ -1171,12 +1194,6 @@ def observe_slurm_run(
                 accounting_error = str(exc)
             from_accounting = active is not None
         if active is None:
-            canonical_direct_controller = str(row.get("scheduler_direct_controller") or "") == "true"
-            routing_identity_matches = (
-                execution_target == row.get("target")
-                and (execution_target != "ssh" or execution_host == str(row.get("host") or "").strip())
-                and (execution_scheduler.get("direct_controller") is True) == canonical_direct_controller
-            )
             fallback_identity_is_frozen = (
                 bool(canonical_job_id)
                 and bool(canonical_cluster)
@@ -1199,8 +1216,6 @@ def observe_slurm_run(
                     }
                 )
                 return _slurm_artifact_observation(observation, health=health)
-            if not canonical_cluster:
-                observation["scheduler_cluster"] = canonical_cluster
             if terminal:
                 reason = "Slurm job disappeared before terminal scheduler state was observed."
             else:
@@ -1211,7 +1226,7 @@ def observe_slurm_run(
                 reason = f"{reason} {accounting_error}"
             observation.update(
                 {
-                    "status": "unknown_scheduler",
+                    "status": "unknown_scheduler" if canonical_job_id else "submitting",
                     "scheduler_raw_state": "MISSING",
                     "scheduler_reason": reason,
                 }
@@ -1233,6 +1248,12 @@ def observe_slurm_run(
                 health_error = str(exc)
         if not from_accounting and active.comment != token:
             raise ValueError("Observed Slurm job comment differs from the frozen submit token.")
+        # Sidecars supply lookup candidates, never first-bind identity without scheduler evidence on the frozen route.
+        if not canonical_job_id:
+            if not routing_identity_matches:
+                raise ValueError("Slurm query route differs from the canonical run.")
+            observation["scheduler_job_id"] = job_id
+            observation["launched_at"] = row.get("launched_at") or utc_now()
         category = slurm.state_category(active.state)
         reason = active.reason
         if slurm.normalize_state(active.state) == "REVOKED":
@@ -1276,7 +1297,7 @@ def observe_slurm_run(
     except (slurm.SlurmCommandError, subprocess.TimeoutExpired, RuntimeError) as exc:
         observation.update(
             {
-                "status": "unknown_scheduler" if job_id else "submitting",
+                "status": "unknown_scheduler" if canonical_job_id else "submitting",
                 "scheduler_reason": str(exc),
             }
         )

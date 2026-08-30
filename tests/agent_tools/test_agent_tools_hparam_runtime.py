@@ -42,6 +42,7 @@ def _stub_execution_snapshot_preflight(monkeypatch, request):
         return None, False
 
     monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", validated_snapshot)
+    monkeypatch.setattr(managed_scheduler.slurm, "controller_cluster", lambda *_args, **_kwargs: "wuji-h20")
     if not request.node.name.startswith("test_execution_probe_"):
         monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
 

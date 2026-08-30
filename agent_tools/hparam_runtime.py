@@ -18,6 +18,7 @@ from . import (
 from .experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     PROCESS_IDENTITY_FIELDS,
+    SUBMISSION_CLUSTER_MISMATCH,
     TERMINAL_STATUSES,
     append_event,
     experiment_root,
@@ -426,6 +427,8 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         previous = workspace_by_key[key]
         backend = scheduler_type(previous)
         if backend == "slurm":
+            if previous.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
+                raise ValueError(f"Slurm stop is blocked by {SUBMISSION_CLUSTER_MISMATCH}: {run_id}")
             if previous.get("status") in TERMINAL_STATUSES:
                 raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
             pending_stop = previous.get("stop_requested_at") not in (None, "")

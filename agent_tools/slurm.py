@@ -375,8 +375,23 @@ def run_command(
         host = str(execution.get("host") or "").strip()
         if not host:
             raise ValueError("execution.host is required for an SSH Slurm submission host.")
-    command = " ".join(transport.sh(part) for part in argv)
-    return transport.run_shell(host, command, timeout=timeout)
+    return transport.run_shell(host, _shell_command(argv), timeout=timeout)
+
+
+def controller_cluster(
+    execution: dict[str, Any],
+    *,
+    timeout: float = transport.SSH_TIMEOUT_SECONDS,
+) -> str:
+    result = run_command(execution, ["scontrol", "show", "config"], timeout=timeout)
+    if result.returncode != 0:
+        raise SlurmCommandError("controller cluster query", result)
+    output = str(result.stdout or "")
+    cluster_lines = [line for line in output.splitlines() if line.partition("=")[0].strip() == "ClusterName"]
+    cluster = _parse_scontrol_config(output).get("ClusterName", "")
+    if len(cluster_lines) != 1 or not cluster:
+        raise ValueError("scontrol show config must return exactly one non-empty ClusterName.")
+    return _cluster_name(cluster)
 
 
 def parse_sbatch_output(stdout: str) -> JobIdentity:
@@ -657,7 +672,11 @@ def parse_exit_code(value: str) -> tuple[int, int]:
 
 
 def submission_command(script: str, submit_token: str, execution_snapshot_sha256: str | None = None) -> str:
-    return " ".join(transport.sh(part) for part in _submission_argv(script, submit_token, execution_snapshot_sha256))
+    return _shell_command(_submission_argv(script, submit_token, execution_snapshot_sha256))
+
+
+def _shell_command(argv: list[str]) -> str:
+    return " ".join(transport.sh(part) for part in ["env", "-u", "SLURM_CLUSTERS", *argv])
 
 
 def _submission_argv(script: str, submit_token: str, execution_snapshot_sha256: str | None = None) -> list[str]:
