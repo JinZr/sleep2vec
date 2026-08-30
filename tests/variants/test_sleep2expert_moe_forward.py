@@ -12,6 +12,7 @@ from sleep2expert.config import (
     ChannelConfig,
     ClsConfig,
     HeadConfig,
+    LayerMixConfig,
     ModelConfig,
     MoeConfig,
     ProjectionConfig,
@@ -536,7 +537,8 @@ def test_sleep2expert_downstream_train_collects_moe_aux_when_enabled():
         assert [aux.layer_idx for aux in record["aux"]] == [1, 3]
 
 
-def test_sleep2expert_expert_lora_real_peft_forward_backward_smoke():
+@pytest.mark.parametrize("layer_mix_enabled", [False, True])
+def test_sleep2expert_expert_lora_real_peft_forward_backward_smoke(layer_mix_enabled: bool):
     pytest.importorskip("peft")
     torch.manual_seed(0)
     Sleep2vecDownstreamModel = _downstream_model_cls()
@@ -552,6 +554,11 @@ def test_sleep2expert_expert_lora_real_peft_forward_backward_smoke():
         device="cpu",
         model_config=model_config,
         head_config=model_config.head,
+        layer_mix_cfg=(
+            LayerMixConfig(enabled=True, layer_indices=[1, 3], shared_across_modalities=False)
+            if layer_mix_enabled
+            else None
+        ),
     ).train()
     downstream.collect_train_moe_aux = True
     downstream.freeze_backbone_and_insert_lora(
@@ -573,7 +580,17 @@ def test_sleep2expert_expert_lora_real_peft_forward_backward_smoke():
         if ".moe_ffn.experts." in name and (".dense_in." in name or ".dense_out." in name)
     ]
     assert output.shape == (2, 2)
+    assert torch.isfinite(output).all()
     assert backbone.last_moe_aux is not None
+    assert [record["modality"] for record in backbone.last_moe_aux] == ["eeg", "ppg"]
+    for record in backbone.last_moe_aux:
+        assert record["aux"] is not None
+        assert [aux.layer_idx for aux in record["aux"]] == [1, 3]
     assert expert_lora_params
     assert not any("moe_ffn.router" in name for name, _ in lora_params)
     assert any(param.grad is not None and param.grad.abs().sum() > 0 for _, param in expert_lora_params)
+    assert all(torch.isfinite(param.grad).all() for _, param in expert_lora_params if param.grad is not None)
+    if layer_mix_enabled:
+        assert downstream.layer_mix.weight.grad is not None
+        assert torch.isfinite(downstream.layer_mix.weight.grad).all()
+        assert downstream.layer_mix.weight.grad.abs().sum() > 0

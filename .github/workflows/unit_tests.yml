@@ -243,4 +243,8 @@ jobs:
             tests/config/test_common_finetune_apply.py \
             tests/config/test_registries_and_builders.py \
             tests/models/test_losses.py \
+            tests/models/test_downstream_separate_adapters.py \
+            tests/variants/test_sleep2vec2_roformer_parity.py \
+            tests/variants/test_sleep2expert_roformer_parity.py \
+            tests/variants/test_sleep2expert_moe_forward.py \
             tests/runtime/test_checkpoints.py
