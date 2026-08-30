@@ -37,6 +37,7 @@ from .decisions import (
     consultation_contract_issues,
     decision_entry_contract_issues,
     evaluate_consultation_gates,
+    experiment_consultation_issues,
     merge_status,
     resolved_user_decisions,
     user_decision_template,
@@ -57,11 +58,12 @@ from .experiment_workspace import (
     read_registered_steps,
     read_run_manifest,
     read_step_manifest,
+    validate_existing_experiment_manifest,
     validate_plan_output,
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import REPO_ROOT, resolve_repo_path
+from .models import REPO_ROOT, json_ready, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions
 
 
@@ -267,6 +269,8 @@ def _materialize_task_defaults(recipe: dict, policy: dict, user_decisions: dict)
 def evaluate_recipe(
     recipe_path: str | Path,
     user_decisions_path: str | Path | None = None,
+    *,
+    check_existing_experiment: bool = False,
 ) -> tuple[dict, dict | None, DecisionReport]:
     recipe = load_recipe_with_base(recipe_path)
     source_recipe = copy.deepcopy(recipe)
@@ -299,6 +303,79 @@ def evaluate_recipe(
     materialization_issues = _materialize_decisions(recipe, recipe_decisions)
     materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))
     _materialize_task_defaults(recipe, policy, user_decisions)
+
+    try:
+        json.dumps(json_ready(recipe), sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        sources = f"recipe {recipe_path}"
+        if user_decisions_path is not None:
+            sources += f" and user decisions {user_decisions_path}"
+        raise ValueError(
+            f"Cannot freeze {sources} as JSON: {exc}. Quote YAML dates/timestamps if a string was intended."
+        ) from exc
+
+    recipe_adapter = get_adapter(recipe.get("task"))
+    input_issues = list(materialization_issues)
+    if recipe_adapter is not None:
+        input_issues.extend(recipe_adapter.recipe_input_issues(recipe))
+    if any(issue.status == DecisionStatus.FAIL for issue in input_issues):
+        for issue in input_issues:
+            issue.evidence["preflight_before_workspace"] = True
+        return (
+            recipe,
+            None,
+            DecisionReport(
+                status=merge_status(input_issues),
+                issues=input_issues,
+                decisions=resolved_user_decisions(user_decisions),
+            ),
+        )
+
+    metadata_issues = experiment_consultation_issues(recipe.get("task"), recipe)
+    if metadata_issues:
+        for issue in metadata_issues:
+            issue.evidence["preflight_before_workspace"] = True
+        issues = [*materialization_issues, *metadata_issues]
+        return (
+            recipe,
+            None,
+            DecisionReport(
+                status=merge_status(issues),
+                issues=issues,
+                decisions=resolved_user_decisions(user_decisions),
+            ),
+        )
+
+    if check_existing_experiment and not materialization_issues:
+        root = experiment_root(recipe)
+        assert root is not None
+        manifest_path = root / "experiment.yaml"
+        existing_text = exp_io.read_managed_output_texts_at(root, [manifest_path])[str(manifest_path)]
+        if existing_text is not None:
+            experiment = {
+                key: json_ready(value) for key, value in recipe["experiment"].items() if not str(key).startswith("_")
+            }
+            experiment["root"] = str(root)
+            try:
+                validate_existing_experiment_manifest(existing_text, experiment, root)
+            except ValueError as exc:
+                return (
+                    recipe,
+                    None,
+                    DecisionReport(
+                        status=DecisionStatus.FAIL,
+                        issues=[
+                            DecisionIssue(
+                                DecisionStatus.FAIL,
+                                "experiment",
+                                str(exc),
+                                None,
+                                {"preflight_before_workspace": True},
+                            )
+                        ],
+                        decisions=resolved_user_decisions(user_decisions),
+                    ),
+                )
 
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     source_config = inputs.get("config")
@@ -335,7 +412,6 @@ def evaluate_recipe(
     consultation_cfg = dict(cfg) if cfg is not None else None
     if consultation_cfg is not None:
         consultation_cfg.pop("_source_config_bytes", None)
-    recipe_adapter = get_adapter(recipe.get("task"))
     binding_issues = (
         recipe_adapter.bind_effective_recipe(recipe, consultation_cfg, source_recipe=source_recipe)
         if recipe_adapter is not None
@@ -1458,7 +1534,12 @@ def preflight_plan(
     allow_existing_output_artifacts: bool = False,
     allow_adaptive_workflow: bool = False,
 ) -> tuple[dict, dict | None, DecisionReport]:
-    recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path)
+    recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path, check_existing_experiment=True)
+    # Static blockers, including NEEDS_USER_INPUT, must not restart reads through the later freeze checks.
+    if cfg is None and any(
+        issue.evidence.get("preflight_before_workspace") is True for issue in report.blocking_issues()
+    ):
+        return recipe, cfg, report
     adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
     if adaptive.get("enabled") is True and not allow_adaptive_workflow:
         report = _append_issues(

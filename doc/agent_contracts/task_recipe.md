@@ -29,6 +29,7 @@ Planning produces one effective recipe:
 ```text
 recipe fields + recipe decisions + explicit user decisions
   -> materialized recipe
+  -> cheap authored-input checks and static ownership consultation
   -> config summary and consultation
   -> frozen plan and resolved recipe
 ```
@@ -55,6 +56,28 @@ Materialization follows these rules:
 - Empty or null rendered decisions remain unresolved instead of falling back
   to older canonical values. Explicit `pretrained_backbone_path: null` retains
   its established train-without-pretraining meaning.
+
+Before config or data reads, the effective recipe and its retained source layers
+must be serializable by the existing frozen-JSON writer. YAML dates/timestamps
+must be quoted when a string is intended; unsupported values are not silently
+converted. Task-owned checks also reject known hard input errors at this point,
+including malformed hparam search spaces. These checks use the effective values
+after user overrides and do not turn missing decisions into new hard failures.
+Config-dependent profile expansion and full consultation still run afterward.
+
+Static experiment/step consultation also runs before config or data reads. A
+layered hparam recipe must supply its own local ownership; complete base-recipe
+metadata does not satisfy that requirement. Missing or unresolved ownership
+returns the existing `NEEDS_USER_INPUT` questions without probing config, data,
+workspace identity, or runtime. Legal user decisions still materialize first;
+ownership is filled in recipe fields, not new decision aliases. Base-task
+consultation with `require_experiment=False` and standalone diagnostics keep
+their existing scope.
+
+Plan preflight also compares an existing `experiment.yaml` with the effective
+experiment identity before config/data inspection. Doctor does not add this
+workspace read. An absent manifest is not a reservation or authorization to
+register: final workspace validation and registration locks remain authoritative.
 
 `plan.json` and `recipe.resolved.yaml` must contain the same complete effective
 recipe. Retained base/local recipe copies are source audit only; launch,

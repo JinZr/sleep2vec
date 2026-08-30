@@ -336,7 +336,7 @@ def _hparam_config_issues(
     return issues
 
 
-def _hparam_search_issues(
+def hparam_search_issues(
     search: dict[str, Any],
     *,
     profile_mode: bool,
@@ -590,7 +590,7 @@ def hparam_tune_issues(
 
     issues = hparam_recipe_contract_issues(recipe, source_layer="effective")
     issues.extend(_hparam_config_issues(recipe, config_summary, decisions, high_impact))
-    issues.extend(_hparam_search_issues(search, profile_mode=profile_mode, high_impact=high_impact))
+    issues.extend(hparam_search_issues(search, profile_mode=profile_mode, high_impact=high_impact))
     issues.extend(
         _hparam_execution_issues(
             execution,

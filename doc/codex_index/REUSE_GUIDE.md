@@ -128,6 +128,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 
 - Treat `decisions.py`, `plans.py`, `hparam.py`, and `experiments.py` as public facades.
 - Extend tasks through adapters and declarations; keep the reusable kernel free of new sleep-specific branches.
+- Put task-specific effective-input checks in the adapter and shared experiment/step consultation in `decisions.py`, after decision materialization and before config/data reads; reuse existing validators rather than duplicating rules.
 - Run consultation before runnable plans and stop on `NEEDS_USER_INPUT`; when doctor or a blocked plan emits `decisions.yaml`, fill it from explicit user choices and retry through the existing `--user-decisions` input.
 - Keep validated config/sidecar reuse within one `evaluate_recipe` consultation: index coverage consumes keys from successful full validation; later calls, registration, and launch check inputs independently. See the [recipe contract](../agent_contracts/task_recipe.md).
 - Reuse the finetune hparam profile compiler for supported bounded automatic tuning; the authored profile is the generation intent and the resolved complete configurations are its frozen executable expansion.

@@ -2642,7 +2642,8 @@ def test_planner_rejects_duplicate_workspace_ownership_without_writing(tmp_path:
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(second))
 
     assert result.returncode == 1
-    assert "duplicate key" in result.stderr
+    assert "Status: FAIL" in result.stdout
+    assert "duplicate key" in result.stdout
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
     assert not second.exists()
 

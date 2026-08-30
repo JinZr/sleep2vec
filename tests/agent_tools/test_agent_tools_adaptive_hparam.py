@@ -211,7 +211,27 @@ def test_adaptive_runtime_never_stops_runs_for_non_boolean_replacement_flags(
     assert adaptive_hparam._bad_running_run_keys(tmp_path, tmp_path / "missing-round", recipe) == set()
 
 
-def test_adaptive_rejects_removed_run_budget_and_gpu_fields(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("section", "removed_field", "current_field"),
+    [
+        ("search", "max_trials", "max_runs"),
+        ("adaptive", "max_trials_total", "max_runs_total"),
+        ("execution", "gpus_per_trial", None),
+    ],
+)
+def test_adaptive_rejects_removed_run_budget_and_gpu_fields(tmp_path: Path, section, removed_field, current_field):
+    recipe = _adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload[section][removed_field] = payload[section].pop(current_field) if current_field else 1
+    recipe.write_text(yaml.safe_dump(payload))
+
+    result = _run("doctor", "--recipe", str(recipe))
+
+    assert result.returncode == 1
+    assert f"{section}.{removed_field} is no longer supported" in result.stdout
+
+
+def test_adaptive_combined_removed_fields_stop_at_search_preflight(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["max_trials"] = payload["search"].pop("max_runs")
@@ -223,8 +243,9 @@ def test_adaptive_rejects_removed_run_budget_and_gpu_fields(tmp_path: Path):
 
     assert result.returncode == 1
     assert "search.max_trials is no longer supported" in result.stdout
-    assert "adaptive.max_trials_total is no longer supported" in result.stdout
-    assert "execution.gpus_per_trial is no longer supported" in result.stdout
+    assert "preflight_before_workspace: True" in result.stdout
+    assert "adaptive.max_trials_total is no longer supported" not in result.stdout
+    assert "execution.gpus_per_trial is no longer supported" not in result.stdout
 
 
 def test_hparam_count_does_not_materialize_search_values():
