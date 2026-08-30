@@ -7,7 +7,7 @@ import sys
 from typing import Any
 
 from .. import plan_contract, slurm
-from ..decision_hparam import hparam_recipe_contract_issues, hparam_tune_issues
+from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
 from ..models import coerce_list
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, finetune_loaded_split_values, variant_module
@@ -51,6 +51,14 @@ class HparamTuneAdapter(TaskAdapter):
 
     def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
         return hparam_recipe_contract_issues(recipe, source_layer=source_layer)
+
+    def recipe_input_issues(self, recipe: dict[str, Any]) -> list[DecisionIssue]:
+        search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+        return [
+            issue
+            for issue in hparam_search_issues(search, profile_mode="profile" in search, high_impact={})
+            if issue.status == DecisionStatus.FAIL
+        ]
 
     def bind_effective_recipe(
         self,

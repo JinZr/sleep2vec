@@ -105,6 +105,10 @@ class TaskAdapter:
         use the generic path."""
         return None
 
+    def recipe_input_issues(self, recipe: dict[str, Any]) -> list[DecisionIssue]:
+        """Known hard failures after decision materialization, without config or I/O."""
+        return []
+
     def config_override_issues(
         self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
     ) -> list[DecisionIssue] | None:

@@ -61,7 +61,7 @@ from .experiment_workspace import (
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import REPO_ROOT, resolve_repo_path
+from .models import REPO_ROOT, json_ready, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions
 
 
@@ -300,6 +300,33 @@ def evaluate_recipe(
     materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))
     _materialize_task_defaults(recipe, policy, user_decisions)
 
+    try:
+        json.dumps(json_ready(recipe), sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        sources = f"recipe {recipe_path}"
+        if user_decisions_path is not None:
+            sources += f" and user decisions {user_decisions_path}"
+        raise ValueError(
+            f"Cannot freeze {sources} as JSON: {exc}. Quote YAML dates/timestamps if a string was intended."
+        ) from exc
+
+    recipe_adapter = get_adapter(recipe.get("task"))
+    input_issues = list(materialization_issues)
+    if recipe_adapter is not None:
+        input_issues.extend(recipe_adapter.recipe_input_issues(recipe))
+    if any(issue.status == DecisionStatus.FAIL for issue in input_issues):
+        for issue in input_issues:
+            issue.evidence["preflight_before_workspace"] = True
+        return (
+            recipe,
+            None,
+            DecisionReport(
+                status=merge_status(input_issues),
+                issues=input_issues,
+                decisions=resolved_user_decisions(user_decisions),
+            ),
+        )
+
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     source_config = inputs.get("config")
     source_config_path = resolve_repo_path(source_config)
@@ -335,7 +362,6 @@ def evaluate_recipe(
     consultation_cfg = dict(cfg) if cfg is not None else None
     if consultation_cfg is not None:
         consultation_cfg.pop("_source_config_bytes", None)
-    recipe_adapter = get_adapter(recipe.get("task"))
     binding_issues = (
         recipe_adapter.bind_effective_recipe(recipe, consultation_cfg, source_recipe=source_recipe)
         if recipe_adapter is not None
@@ -1459,6 +1485,12 @@ def preflight_plan(
     allow_adaptive_workflow: bool = False,
 ) -> tuple[dict, dict | None, DecisionReport]:
     recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path)
+    # Input failures have no config snapshot; do not restart reads through the later freeze checks.
+    if cfg is None and any(
+        issue.status == DecisionStatus.FAIL and issue.evidence.get("preflight_before_workspace") is True
+        for issue in report.issues
+    ):
+        return recipe, cfg, report
     adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
     if adaptive.get("enabled") is True and not allow_adaptive_workflow:
         report = _append_issues(

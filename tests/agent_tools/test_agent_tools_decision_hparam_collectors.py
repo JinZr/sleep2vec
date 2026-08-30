@@ -15,7 +15,7 @@ def test_hparam_tune_facade_preserves_collector_order(monkeypatch):
         lambda *_args, **_kwargs: [_sentinel("contract")],
     )
     monkeypatch.setattr(decision_hparam, "_hparam_config_issues", lambda *_args, **_kwargs: [_sentinel("config")])
-    monkeypatch.setattr(decision_hparam, "_hparam_search_issues", lambda *_args, **_kwargs: [_sentinel("search")])
+    monkeypatch.setattr(decision_hparam, "hparam_search_issues", lambda *_args, **_kwargs: [_sentinel("search")])
     monkeypatch.setattr(
         decision_hparam,
         "_hparam_execution_issues",

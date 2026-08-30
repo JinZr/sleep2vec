@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict
+from datetime import date, datetime, timezone
 import json
 from pathlib import Path
 import subprocess
@@ -117,6 +118,157 @@ def runtime_probes(monkeypatch):
 def _without_reuse(*args, **kwargs):
     kwargs.pop("validated_summary", None)
     return index_csv.index_summary(*args, **kwargs)
+
+
+def _forbid_config_reads(monkeypatch, config_path):
+    original_open = Path.open
+
+    def guarded_open(path, mode="r", *args, **kwargs):
+        if path == config_path and "r" in mode:
+            pytest.fail("Invalid authored input reached a config read")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    monkeypatch.setattr(
+        plan_context,
+        "load_config_summary_for_recipe",
+        lambda *_args, **_kwargs: pytest.fail("Invalid authored input reached config validation"),
+    )
+
+
+@pytest.mark.parametrize("entrypoint", ["doctor", "plan"])
+@pytest.mark.parametrize("decision_owner", ["recipe", "user"])
+def test_search_explanation_fails_before_config_or_data(
+    tmp_path, monkeypatch, capsys, csv_reads, runtime_probes, entrypoint, decision_owner
+):
+    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
+    decision = {"value": "Try a few learning rates", "source": "explicit_recipe"}
+    args = [entrypoint, "--recipe", str(recipe_path)]
+    if decision_owner == "recipe":
+        recipe = yaml.safe_load(recipe_path.read_text())
+        recipe["decisions"]["hparam_search_space"] = decision
+        write_yaml(recipe_path, recipe)
+    else:
+        decision["source"] = "explicit_user"
+        decisions_path = write_yaml(tmp_path / "decisions.yaml", {"decisions": {"hparam_search_space": decision}})
+        args.extend(["--user-decisions", str(decisions_path)])
+    if entrypoint == "plan":
+        args.extend(["--output-dir", str(tmp_path / "plan")])
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with monkeypatch.context() as guarded:
+        _forbid_config_reads(guarded, tmp_path / "config.yaml")
+        assert cli.main(args) == 1
+
+    output = capsys.readouterr()
+    assert "search.parameters must be a mapping" in output.out
+    assert "string indices must be integers" not in output.out + output.err
+    assert not csv_reads
+    assert not runtime_probes
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    "search, message",
+    [
+        ({"parameters": {"runtime.lr": 0.1}}, "non-empty list"),
+        ({"parameters": {"runtime.lr": []}}, "non-empty list"),
+        ({"configurations": {}}, "non-empty list"),
+        ({"configurations": [{}]}, "non-empty mapping"),
+        ({"parameters": {"runtime.lr": [0.1]}, "configurations": [{}]}, "mutually exclusive"),
+    ],
+)
+def test_invalid_effective_search_shape_skips_config(tmp_path, monkeypatch, csv_reads, search, message):
+    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
+    payload = yaml.safe_load(recipe_path.read_text())
+    payload["search"] = {"method": "grid", "max_runs": 1, **search}
+    write_yaml(recipe_path, payload)
+    _forbid_config_reads(monkeypatch, tmp_path / "config.yaml")
+
+    _recipe, cfg, report = plans.evaluate_recipe(recipe_path)
+
+    assert cfg is None
+    assert report.exit_code == 1
+    assert any(message in issue.message for issue in report.blocking_issues())
+    assert all(issue.evidence["preflight_before_workspace"] for issue in report.blocking_issues())
+    assert not csv_reads
+
+
+def test_valid_user_search_override_reaches_normal_config_validation(tmp_path, csv_reads):
+    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
+    payload = yaml.safe_load(recipe_path.read_text())
+    payload["search"]["parameters"] = "overridden source value"
+    write_yaml(recipe_path, payload)
+    decisions_path = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {"hparam_search_space": {"value": {"runtime.lr": [0.001]}, "source": "explicit_user"}}},
+    )
+
+    recipe, cfg, report = plans.evaluate_recipe(recipe_path, decisions_path)
+
+    assert report.exit_code == 0
+    assert cfg is not None
+    assert recipe["search"]["parameters"] == {"runtime.lr": [0.001]}
+    assert csv_reads == {"event_time.csv": 1, "is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
+
+
+@pytest.mark.parametrize("entrypoint", ["doctor", "plan"])
+@pytest.mark.parametrize("value", [date(2026, 8, 31), datetime(2026, 8, 31, tzinfo=timezone.utc), b"binary metadata"])
+def test_non_json_yaml_values_fail_before_config_or_outputs(tmp_path, monkeypatch, csv_reads, entrypoint, value):
+    recipe_path = _sidecar_recipe(tmp_path, "survival")
+    payload = yaml.safe_load(recipe_path.read_text())
+    payload["experiment"]["baseline"]["note"] = value
+    write_yaml(recipe_path, payload)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    args = [entrypoint, "--recipe", str(recipe_path), "--output-dir", str(tmp_path / "output")]
+
+    with monkeypatch.context() as guarded:
+        _forbid_config_reads(guarded, tmp_path / "config.yaml")
+        with pytest.raises(ValueError, match="JSON") as caught:
+            cli.main(args)
+
+    assert str(recipe_path) in str(caught.value)
+    assert "quot" in str(caught.value).lower()
+    assert not csv_reads
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_quoted_yaml_timestamp_is_preserved(tmp_path, csv_reads):
+    recipe_path = _sidecar_recipe(tmp_path, "survival")
+    payload = yaml.safe_load(recipe_path.read_text())
+    timestamp = "2026-08-31T00:00:00Z"
+    payload["experiment"]["baseline"]["note"] = timestamp
+    write_yaml(recipe_path, payload)
+
+    recipe, cfg, report = plans.evaluate_recipe(recipe_path)
+
+    assert report.exit_code == 0
+    assert cfg is not None
+    assert recipe["experiment"]["baseline"]["note"] == timestamp
+    assert csv_reads
+
+
+def test_non_json_user_decision_metadata_names_its_source(tmp_path, monkeypatch, csv_reads):
+    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
+    decisions_path = write_yaml(
+        tmp_path / "decisions.yaml",
+        {
+            "decisions": {
+                "hparam_search_space": {
+                    "value": {"runtime.lr": [0.001]},
+                    "source": "explicit_user",
+                    "rationale": date(2026, 8, 31),
+                }
+            }
+        },
+    )
+    _forbid_config_reads(monkeypatch, tmp_path / "config.yaml")
+
+    with pytest.raises(ValueError, match="JSON") as caught:
+        plans.evaluate_recipe(recipe_path, decisions_path)
+
+    assert str(decisions_path) in str(caught.value)
+    assert not csv_reads
 
 
 @pytest.mark.parametrize("kind", ["survival", "multilabel"])

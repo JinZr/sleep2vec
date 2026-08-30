@@ -29,6 +29,7 @@ Planning produces one effective recipe:
 ```text
 recipe fields + recipe decisions + explicit user decisions
   -> materialized recipe
+  -> cheap authored-input checks
   -> config summary and consultation
   -> frozen plan and resolved recipe
 ```
@@ -55,6 +56,14 @@ Materialization follows these rules:
 - Empty or null rendered decisions remain unresolved instead of falling back
   to older canonical values. Explicit `pretrained_backbone_path: null` retains
   its established train-without-pretraining meaning.
+
+Before config or data reads, the effective recipe and its retained source layers
+must be serializable by the existing frozen-JSON writer. YAML dates/timestamps
+must be quoted when a string is intended; unsupported values are not silently
+converted. Task-owned checks also reject known hard input errors at this point,
+including malformed hparam search spaces. These checks use the effective values
+after user overrides and do not turn missing decisions into new hard failures.
+Config-dependent profile expansion and full consultation still run afterward.
 
 `plan.json` and `recipe.resolved.yaml` must contain the same complete effective
 recipe. Retained base/local recipe copies are source audit only; launch,
