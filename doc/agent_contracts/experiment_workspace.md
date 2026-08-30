@@ -221,9 +221,14 @@ events, so the marker cannot authorize work before initialization is complete.
 - `hparam-launch` validates frozen artifacts and explicitly starts one eligible wave; dry-run remains the default. Its CLI output names the mode and reports the recorded lifecycle-state counts from the written projection.
 - `hparam-run-queue` is the explicit long-running action that repeatedly fills available capacity until every current-plan run is terminal; dry-run performs one preview and returns. Its CLI output likewise distinguishes preview from execute and reports the recorded lifecycle-state counts.
 - `hparam-monitor` observes registered runs and never schedules pending work. By default it rereads the canonical manifest and observes the frozen current plan every `--poll-seconds` (60 seconds) until all of its runs are terminal; `--once` performs exactly one observation round. The terminal CLI summary projects structured failure evidence already recorded in `run_status.tsv`; it does not reread logs or infer a second lifecycle state. Raw recorded `log_tail` text is printed only with the explicit `--include-log-tail` opt-in because it may contain sensitive data.
-- `hparam-stop` requires a reason. Direct runs verify and stop the complete
-  process group before committing terminal state. Slurm runs atomically record
-  nonterminal `stopping`, request time, reason, and job binding before
+- `hparam-stop` requires a reason. A canonical `planned` or `pending` run with
+  no launch evidence is canceled under the shared launch lock by recording
+  `stopped`, the reason, and stop time without runtime probes. Slurm's
+  plan-owned log path and preflight snapshot do not establish launch. Partial
+  or complete launch identity still requires the authenticated runtime path:
+  direct runs verify and stop the complete process group before committing
+  terminal state; submitted Slurm runs atomically record nonterminal
+  `stopping`, request time, reason, and job binding before
   `scancel`; an interrupted request is retriable only with the same reason, and
   `stopped` is committed only after the matching job is observed as
   `CANCELLED`.
