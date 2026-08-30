@@ -131,6 +131,10 @@ Foreign, unmatched, incomplete, or drifting evidence fails or remains in raw inv
 
 The workspace owner reads, reduces, and commits the complete canonical table.
 
+`experiment-monitor` observes one owner-validated input snapshot per round. A
+concurrent registration is retained by the commit but first observed next round;
+the snapshot never replaces the commit owner's fresh read or concurrency checks.
+
 - Local commits hold a stable lock from canonical read through same-directory temporary write, `fsync`, `os.replace`, and run-matrix projection.
 - SSH commits lock remotely, compare the expected digest, and conditionally replace a same-directory temporary file.
 - An SSH conflict causes a fresh read and merge, with at most three attempts. Exhausted conflicts fail without overwriting newer state.
