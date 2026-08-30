@@ -196,6 +196,15 @@ def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypat
             }
         )
     )
+    Path(run["allocation_identity_path"]).symlink_to(tmp_path / "missing-allocation.json")
+    read_calls = []
+    real_read = managed_scheduler.exp_io.read_managed_output_texts_at
+
+    def read_output_texts(root, paths, *, remote=None):
+        read_calls.append([str(path) for path in paths])
+        return real_read(root, paths, remote=remote)
+
+    monkeypatch.setattr(managed_scheduler.exp_io, "read_managed_output_texts_at", read_output_texts)
     monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         managed_scheduler.slurm,
@@ -217,6 +226,74 @@ def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypat
     assert canonical["scheduler_raw_state"] == "COMPLETED"
     assert canonical["scheduler_exit_code"] == "0"
     assert canonical["scheduler_node"] == "h20-bj-96"
+    assert read_calls == [[run["scheduler_result_path"]]]
+
+
+@pytest.mark.parametrize(
+    ("terminal_text", "expected_error"),
+    [
+        (None, None),
+        ("", None),
+        ("{}", None),
+        (" \n", "not valid JSON"),
+        ("{", "not valid JSON"),
+        ("[]", "must be a mapping"),
+        ("null", "must be a mapping"),
+    ],
+    ids=["missing", "empty", "empty-mapping", "whitespace", "invalid-json", "array", "null"],
+)
+def test_slurm_monitor_reads_allocation_only_for_absent_terminal_mapping(
+    tmp_path: Path, monkeypatch, terminal_text: str | None, expected_error: str | None
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    row = {
+        **plan["runs"][0],
+        "target": "local",
+        "scheduler_job_id": "3880",
+        "scheduler_cluster": "wuji-h20",
+        "status": "queued",
+    }
+    if terminal_text is not None:
+        Path(row["scheduler_result_path"]).write_text(terminal_text)
+    Path(row["allocation_identity_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": row["scheduler_submit_token"],
+                "node": "h20-bj-96",
+            }
+        )
+    )
+    read_calls = []
+    scheduler_calls = []
+    real_read = managed_scheduler.exp_io.read_managed_output_texts_at
+
+    def read_output_texts(root, paths, *, remote=None):
+        read_calls.append([str(path) for path in paths])
+        return real_read(root, paths, remote=remote)
+
+    def active_jobs(_execution, **kwargs):
+        scheduler_calls.append(kwargs)
+        return [slurm.JobObservation("3880", "PENDING", "", "", row["scheduler_submit_token"])]
+
+    monkeypatch.setattr(managed_scheduler.exp_io, "read_managed_output_texts_at", read_output_texts)
+    monkeypatch.setattr(slurm, "active_jobs", active_jobs)
+
+    if expected_error:
+        with pytest.raises(ValueError, match=expected_error):
+            managed_scheduler.observe_slurm_run(plan_dir, {"target": "local"}, row)
+        assert read_calls == [[row["scheduler_result_path"]]]
+        assert scheduler_calls == []
+    else:
+        observed = managed_scheduler.observe_slurm_run(plan_dir, {"target": "local"}, row)
+        assert read_calls == [[row["scheduler_result_path"]], [row["allocation_identity_path"]]]
+        assert len(scheduler_calls) == 1
+        assert observed["status"] == "queued"
+        assert observed["scheduler_node"] == "h20-bj-96"
+        assert observed["scheduler_job_id"] == row["scheduler_job_id"]
+        assert observed["scheduler_cluster"] == row["scheduler_cluster"]
 
 
 @pytest.mark.parametrize(
@@ -621,7 +698,16 @@ def test_slurm_accounting_disabled_recovery_requires_matching_ssh_host(tmp_path:
         "node": "h20-bj-96",
         "exit_code": 0,
     }
-    monkeypatch.setattr(managed_scheduler, "_read_slurm_json", lambda *_args, **_kwargs: terminal)
+
+    def read_output_texts(root, paths, *, remote=None):
+        assert root == plan_dir
+        assert paths == [row["scheduler_result_path"]]
+        assert remote == "other-host"
+        return {row["scheduler_result_path"]: json.dumps(terminal)}
+
+    monkeypatch.setattr(managed_scheduler.exp_io, "read_managed_output_texts_at", read_output_texts)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
+    monkeypatch.setattr(run_evidence, "log_tail", lambda *_args, **_kwargs: "")
 
     def run_command(_execution, argv, *, timeout):
         if argv[0] == "squeue":
@@ -736,6 +822,8 @@ def test_slurm_monitor_requires_complete_matching_canonical_identity_for_account
         return subprocess.CompletedProcess([], 1, "", "Slurm accounting storage is disabled")
 
     monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
+    monkeypatch.setattr(run_evidence, "log_tail", lambda *_args, **_kwargs: "")
 
     observed = managed_scheduler.observe_slurm_run(plan_dir, execution, row)
 
@@ -766,7 +854,16 @@ def test_slurm_monitor_keeps_ssh_transport_failure_unknown_when_output_mentions_
         "node": "h20-bj-96",
         "exit_code": 0,
     }
-    monkeypatch.setattr(managed_scheduler, "_read_slurm_json", lambda *_args, **_kwargs: terminal)
+
+    def read_output_texts(root, paths, *, remote=None):
+        assert root == plan_dir
+        assert paths == [row["scheduler_result_path"]]
+        assert remote == "baichuan3"
+        return {row["scheduler_result_path"]: json.dumps(terminal)}
+
+    monkeypatch.setattr(managed_scheduler.exp_io, "read_managed_output_texts_at", read_output_texts)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
+    monkeypatch.setattr(run_evidence, "log_tail", lambda *_args, **_kwargs: "")
 
     def run_command(_execution, argv, *, timeout):
         if argv[0] == "squeue":

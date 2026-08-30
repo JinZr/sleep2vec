@@ -1365,8 +1365,7 @@ def observe_slurm_run(
 
 def _read_slurm_json(owner_dir: Path, execution: dict[str, Any], path: str | Path) -> dict[str, Any]:
     remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
-    exp_io.validate_managed_output_paths(owner_dir, [path], remote=remote)
-    text = exp_io.read_text_at(path, remote=remote)
+    text = exp_io.read_managed_output_texts_at(owner_dir, [path], remote=remote)[str(path)]
     if not text:
         return {}
     try:
