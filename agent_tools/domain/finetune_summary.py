@@ -35,6 +35,7 @@ def finetune_summary_body(
     *,
     validate_survival_local_paths: bool = True,
     local_path_base: str | Path | None = None,
+    validated_sidecar_keys: dict[str, set[str]] | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_repo_path(config_path)
     if resolved is None:
@@ -49,12 +50,14 @@ def finetune_summary_body(
         task,
         validate_local_paths=validate_survival_local_paths,
         local_path_base=local_path_base,
+        validated_sidecar_keys=validated_sidecar_keys,
     )
     multilabel = multilabel_summary(
         finetune,
         task,
         validate_local_paths=validate_survival_local_paths,
         local_path_base=local_path_base,
+        validated_sidecar_keys=validated_sidecar_keys,
     )
     preset_build = data.get("preset_build") if isinstance(data.get("preset_build"), dict) else {}
     head = model.get("head") if isinstance(model.get("head"), dict) else {}

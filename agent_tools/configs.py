@@ -20,6 +20,7 @@ def config_summary(
     validate_survival_local_paths: bool = True,
     local_path_base: str | Path | None = None,
     config_bytes: bytes | None = None,
+    validated_sidecar_keys: dict[str, set[str]] | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_repo_path(config_path)
     if resolved is None:
@@ -51,6 +52,7 @@ def config_summary(
                     summary_path,
                     validate_survival_local_paths=validate_survival_local_paths,
                     local_path_base=local_path_base,
+                    validated_sidecar_keys=validated_sidecar_keys,
                 )
                 summary["config_path"] = repo_relative(resolved)
                 # Structural ownership is authoritative; variant_guess may only reflect the config's directory name.
@@ -61,6 +63,7 @@ def config_summary(
             summary_path,
             validate_survival_local_paths=validate_survival_local_paths,
             local_path_base=local_path_base,
+            validated_sidecar_keys=validated_sidecar_keys,
         )
         summary["config_path"] = repo_relative(resolved)
         summary["variant_guess"] = guess_variant(resolved)

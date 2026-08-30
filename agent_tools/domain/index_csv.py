@@ -24,15 +24,21 @@ def index_summary(
     preset_path: str | Path | None = None,
     sample_path_check: int = 0,
     sample_npz_check: int = 0,
+    validated_summary: tuple[dict[str, Any], dict[str, set[str]]] | None = None,
 ) -> dict[str, Any]:
     resolved_paths = [resolve_repo_path(path, relative_to=local_path_base) for path in index_paths]
     paths = [path for path in resolved_paths if path is not None]
-    cfg = config_summary(config, config_bytes=config_bytes, local_path_base=local_path_base) if config else None
+    if validated_summary is None:
+        cfg = config_summary(config, config_bytes=config_bytes, local_path_base=local_path_base) if config else None
+        survival_sidecar_keys = _survival_sidecar_keys(cfg, local_path_base=local_path_base)
+        multilabel_sidecar_keys = _multilabel_sidecar_keys(cfg, local_path_base=local_path_base)
+    else:
+        cfg, validated_sidecar_keys = validated_summary
+        survival_sidecar_keys = validated_sidecar_keys.get("survival")
+        multilabel_sidecar_keys = validated_sidecar_keys.get("multilabel")
     survival_key_column = _survival_key_column(cfg)
-    survival_sidecar_keys = _survival_sidecar_keys(cfg, local_path_base=local_path_base)
     survival_covariate_names = _survival_covariates(cfg)
     multilabel_key_column = _multilabel_key_column(cfg)
-    multilabel_sidecar_keys = _multilabel_sidecar_keys(cfg, local_path_base=local_path_base)
     data_summary = (cfg or {}).get("data") or {}
     split_column = str(data_summary.get("split_column") or "split")
     read_csv_kwargs: dict[str, Any] = {"low_memory": False}

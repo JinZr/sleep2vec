@@ -26,6 +26,7 @@ def survival_summary(
     *,
     validate_local_paths: bool = True,
     local_path_base: str | Path | None = None,
+    validated_sidecar_keys: dict[str, set[str]] | None = None,
 ) -> dict[str, Any] | None:
     if task.get("type") != "survival":
         return None
@@ -88,6 +89,8 @@ def survival_summary(
         summary["valid"] = True
         summary["disease_count"] = len(labels.label_names)
         summary["sidecar_key_count"] = len(labels.event_time)
+        if validated_sidecar_keys is not None:
+            validated_sidecar_keys["survival"] = set(labels.event_time)
     return summary
 
 
@@ -97,6 +100,7 @@ def multilabel_summary(
     *,
     validate_local_paths: bool = True,
     local_path_base: str | Path | None = None,
+    validated_sidecar_keys: dict[str, set[str]] | None = None,
 ) -> dict[str, Any] | None:
     if task.get("type") != "multilabel_classification":
         return None
@@ -153,4 +157,6 @@ def multilabel_summary(
         summary["valid"] = True
         summary["disease_count"] = len(labels.label_names)
         summary["sidecar_key_count"] = len(labels.disease_label)
+        if validated_sidecar_keys is not None:
+            validated_sidecar_keys["multilabel"] = set(labels.disease_label)
     return summary

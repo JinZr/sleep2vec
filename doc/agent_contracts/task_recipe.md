@@ -331,6 +331,13 @@ The optional `execution` block configures the managed launcher.
   slow probes. For an unblocked hparam recipe it separately reports the target
   host, actual Python executable/version, and installed PyTorch Lightning
   distribution version without importing Lightning or changing PASS/FAIL.
+- Within one `doctor` or `plan` consultation, index checks reuse the accepted
+  config summary and subject keys from successful, complete local survival or
+  multilabel sidecar validation. This is a single validation view, not a cache
+  across calls: subsequent invocations reread inputs, and registration and
+  launch retain their independent checks. Failed or deferred validation keeps
+  its existing path, and config-byte drift checks remain in force. Full subject
+  key sets stay in memory only and are not added to reports or frozen artifacts.
 - Only the canonical manager runtime—a local target at `REPO_ROOT` without a
   conda wrapper—may omit Python and commit identity. Planning then freezes the
   current manager interpreter and repository HEAD. SSH targets, separate local
