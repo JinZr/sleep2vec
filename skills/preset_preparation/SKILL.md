@@ -27,9 +27,12 @@ Stop and consult the user if:
 
 ## Canonical commands
 Use the generated plan script so the workload and lifecycle commits share the
-planned interpreter. A complete local `execution.python`,
-`execution.runtime_commit`, and absolute `execution.workdir` identity is
-supported; use an absolute Python path to avoid launcher PATH drift. The script
+planned interpreter. New local plans at the manager checkout freeze its current
+Python and Git HEAD by default. For a different workdir or remote path context,
+provide a complete local `execution.python`, `execution.runtime_commit`, and
+absolute `execution.workdir` identity in the recipe; use an absolute Python path
+to avoid launcher PATH drift. Plan on the execution host: preset plans do not
+provide an SSH launcher. Do not patch old plans to add identity. The script
 checks the workdir's Git HEAD before marking the run `running`. Entry points
 remain variant-local: `preprocess/save_dataset_presets.py`,
 `sleep2vec2/preprocess/save_dataset_presets.py`, or

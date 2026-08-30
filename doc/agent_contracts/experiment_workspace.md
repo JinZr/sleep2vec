@@ -319,6 +319,13 @@ use the frozen Python for the workload and every lifecycle commit. The managed
 scheduler's execution snapshot and pre-start probe remain the authoritative
 launch checks.
 
+New preset plans at the local manager checkout freeze that complete identity
+even when it is omitted from the source recipe. Separate workdirs or remote
+path-validation context need an explicit local identity; missing manager Git
+identity fails before workspace creation. Existing registered preset plans are
+read without rebinding or rewriting their original commands. See the
+[runtime identity contract](task_recipe.md#non-hparam-runtime-identity).
+
 ## Execution snapshot and capacity
 
 The first `hparam-launch --execute` or `hparam-run-queue --execute` with an

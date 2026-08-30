@@ -181,6 +181,17 @@ explicit executable name remains PATH-resolved.
 `execution.target` and `execution.host` on other non-hparam tasks remain
 path-validation context; they do not provide a generic SSH launcher.
 
+New `preset_prepare` recipes without Python/commit identity freeze the planning
+interpreter (`sys.executable`), manager Git HEAD, and `REPO_ROOT` workdir before
+command generation. This default applies only to local/default-local execution
+at the exact manager checkout with no remote path context. A separate workdir
+or remote path context requires a complete explicit local identity; SSH is not
+a preset launcher. An unavailable manager commit fails before workspace
+creation. Partial authored identities are rejected, not filled with defaults.
+Historical registered preset plans without identity retain their original
+commands and are never rebound or migrated by readers. This identity binds
+the interpreter path and Git commit, not package versions or dirty file bytes.
+
 ## Hparam workflow
 
 ### Search space
