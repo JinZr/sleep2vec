@@ -3,10 +3,8 @@ import ctypes
 import errno
 import fcntl
 import hashlib
-import os
 from pathlib import Path
 import secrets
-import stat
 import sys
 import time
 
@@ -19,16 +17,6 @@ guard_path = Path(sys.argv[6]) if sys.argv[6] else None
 guard_expected = sys.argv[7]
 append_mode = len(sys.argv) > 8 and sys.argv[8] == "append"
 expect_missing = not expected and not append_mode
-
-DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
-
-
-def close_descriptor(descriptor):
-    try:
-        os.close(descriptor)
-    except OSError:
-        pass
 
 
 def managed_relative(target):
@@ -48,55 +36,6 @@ def managed_relative(target):
 target_relative = managed_relative(path)
 dependency_relative = managed_relative(dependency_path) if dependency_path is not None else None
 guard_relative = managed_relative(guard_path) if guard_path is not None else None
-
-
-def open_managed_root():
-    current = os.open(managed_root.anchor, DIRECTORY_OPEN_FLAGS)
-    try:
-        for part in managed_root.relative_to(managed_root.anchor).parts:
-            opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
-            close_descriptor(current)
-            current = opened
-    except BaseException:
-        close_descriptor(current)
-        raise
-    return current
-
-
-def open_managed_parent(root_descriptor, relative, create):
-    current = os.dup(root_descriptor)
-    try:
-        for part in relative.parts[:-1]:
-            try:
-                opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
-            except FileNotFoundError:
-                if not create:
-                    raise
-                try:
-                    os.mkdir(part, 0o755, dir_fd=current)
-                except FileExistsError:
-                    pass
-                opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
-            close_descriptor(current)
-            current = opened
-    except BaseException:
-        close_descriptor(current)
-        raise
-    return current, relative.name
-
-
-def read_regular_file_at(parent_descriptor, name):
-    descriptor = os.open(name, FILE_OPEN_FLAGS, dir_fd=parent_descriptor)
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise ValueError(f"Managed CAS file is missing or aliased: {name}")
-        with os.fdopen(descriptor, "rb") as file_obj:
-            descriptor = -1
-            return file_obj.read(), stat.S_IMODE(info.st_mode)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
 
 
 def publication_matches(root_info, parent_info, published_info, payload):

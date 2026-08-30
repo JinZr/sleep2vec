@@ -32,6 +32,7 @@ def command_category(state, command):
         if name not in {
             "experiment_io.path_exists",
             "experiment_io.read_managed_files",
+            "experiment_io.read_managed_output_texts",
             "experiment_io.validate_managed_output_paths",
             "experiment_io.read_text",
             "experiment_io.conditional_atomic_replace_text",
@@ -41,6 +42,8 @@ def command_category(state, command):
         }:
             raise RuntimeError(f"Benchmark refuses unexpected remote Python program: {name}")
         if name == "experiment_io.read_text" and argv[-1].endswith(("slurm_terminal.json", "allocation_identity.json")):
+            return "sidecar_read"
+        if name == "experiment_io.read_managed_output_texts":
             return "sidecar_read"
         if name == "experiment_io.validate_managed_output_paths":
             paths = json.loads(argv[-1])[1:]

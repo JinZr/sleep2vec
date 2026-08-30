@@ -208,6 +208,97 @@ def read_managed_files_at(
     return payload
 
 
+def read_managed_output_texts_at(
+    root: str | Path,
+    paths: list[str | Path],
+    *,
+    remote: str | None = None,
+) -> dict[str, str | None]:
+    root = Path(root)
+    path_keys = [str(path) for path in paths]
+    targets = [Path(path) for path in path_keys]
+    for target in targets:
+        _validate_raw_managed_path(root, target)
+        if target == root:
+            raise ValueError("Managed output target must name a file below its workspace root.")
+    if len(targets) != len(set(targets)):
+        raise ValueError("Managed output paths must be unique.")
+    if not targets:
+        return {}
+    if remote:
+        request = json.dumps([str(root), path_keys])
+        result = _run_remote_text_program(remote, "experiment_io.read_managed_output_texts", request)
+        if result.returncode == 2:
+            raise ValueError(result.stderr.strip() or "Managed output files are invalid.")
+        if result.returncode != 0:
+            detail = result.stderr.strip() or f"exit code {result.returncode}"
+            raise RuntimeError(f"SSH managed-output read failed on {remote}: {detail}")
+
+        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            payload = {}
+            for key, value in pairs:
+                if key in payload:
+                    raise ValueError("SSH managed-output read returned duplicate paths.")
+                payload[key] = value
+            return payload
+
+        payload = json.loads(result.stdout, object_pairs_hook=unique_object)
+        # A complete positive response is required even when SSH rewrites a failed child's exit status.
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != set(path_keys)
+            or any(value is not None and not isinstance(value, str) for value in payload.values())
+        ):
+            raise ValueError("SSH managed-output read returned an invalid or incomplete response.")
+        return payload
+
+    payload: dict[str, str | None] = {}
+    seen_inodes = set()
+    with ExitStack() as stack:
+        try:
+            root_descriptor = _open_managed_root(root)
+        except FileNotFoundError:
+            return dict.fromkeys(path_keys)
+        except OSError as exc:
+            if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                raise
+            raise ValueError(f"Managed output path is invalid or aliased: {root}") from exc
+        stack.callback(_close_descriptor, root_descriptor)
+        for path_key, target in zip(path_keys, targets):
+            with ExitStack() as target_stack:
+                try:
+                    parent_descriptor, name = _open_managed_parent(
+                        root_descriptor, target.relative_to(root), create=False
+                    )
+                except FileNotFoundError:
+                    payload[path_key] = None
+                    continue
+                except OSError as exc:
+                    if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                        raise
+                    raise ValueError(f"Managed output path is invalid or aliased: {target}") from exc
+                target_stack.callback(_close_descriptor, parent_descriptor)
+                try:
+                    descriptor, _mode = _open_regular_file_at(parent_descriptor, name)
+                except FileNotFoundError:
+                    payload[path_key] = None
+                    continue
+                except OSError as exc:
+                    if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                        raise
+                    raise ValueError(f"Managed output path is invalid or aliased: {target}") from exc
+                target_stack.callback(_close_descriptor, descriptor)
+                info = os.fstat(descriptor)
+                inode = (info.st_dev, info.st_ino)
+                if inode in seen_inodes:
+                    raise ValueError(f"Managed output paths must be independent regular files: {target}")
+                seen_inodes.add(inode)
+                # Only a missing open is absence; decoding and reading this validated descriptor must succeed.
+                with os.fdopen(descriptor, "rb", closefd=False) as file_obj:
+                    payload[path_key] = file_obj.read().decode("utf-8")
+    return payload
+
+
 def _validate_raw_managed_path(root: Path, target: Path) -> None:
     if not root.is_absolute() or not target.is_absolute():
         raise ValueError("Managed control paths must be absolute.")
@@ -426,15 +517,24 @@ def _open_managed_parent(root_descriptor: int, relative: Path, *, create: bool) 
     return current, relative.name
 
 
-def _read_regular_file_at(parent_descriptor: int, name: str) -> tuple[bytes, int]:
+def _open_regular_file_at(parent_descriptor: int, name: str) -> tuple[int, int]:
     descriptor = os.open(name, _FILE_OPEN_FLAGS, dir_fd=parent_descriptor)
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise ValueError(f"Managed CAS file is missing or aliased: {name}")
+        return descriptor, stat.S_IMODE(info.st_mode)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_regular_file_at(parent_descriptor: int, name: str) -> tuple[bytes, int]:
+    descriptor, mode = _open_regular_file_at(parent_descriptor, name)
+    try:
         with os.fdopen(descriptor, "rb") as file_obj:
             descriptor = -1
-            return file_obj.read(), stat.S_IMODE(info.st_mode)
+            return file_obj.read(), mode
     finally:
         if descriptor >= 0:
             os.close(descriptor)

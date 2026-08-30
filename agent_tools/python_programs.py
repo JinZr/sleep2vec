@@ -5,6 +5,7 @@ from pathlib import Path
 _SOURCE_ROOT = Path(__file__).with_name("python_program_sources")
 
 _FRAGMENTS = {
+    "managed_descriptors": "experiment_io/_managed_descriptors.py.src",
     "process_start_token": "run_evidence/process_start_token.py.src",
     "process_group_running": "run_evidence/process_group_running.py.src",
 }
@@ -14,9 +15,16 @@ _PROGRAMS = {
     "experiment_io.path_exists": ("experiment_io/path_exists.py.src",),
     "experiment_io.list_managed_subdirectories": ("experiment_io/list_managed_subdirectories.py.src",),
     "experiment_io.read_managed_files": ("experiment_io/read_managed_files.py.src",),
+    "experiment_io.read_managed_output_texts": (
+        _FRAGMENTS["managed_descriptors"],
+        "experiment_io/read_managed_output_texts.py.src",
+    ),
     "experiment_io.validate_managed_output_paths": ("experiment_io/validate_managed_output_paths.py.src",),
     "experiment_io.read_text": ("experiment_io/read_text.py.src",),
-    "experiment_io.conditional_atomic_replace_text": ("experiment_io/conditional_atomic_replace_text.py.src",),
+    "experiment_io.conditional_atomic_replace_text": (
+        _FRAGMENTS["managed_descriptors"],
+        "experiment_io/conditional_atomic_replace_text.py.src",
+    ),
     "experiment_workspace.write_run_matrix_if_current": ("experiment_workspace/write_run_matrix_if_current.py.src",),
     "run_evidence.runtime_artifacts": ("run_evidence/runtime_artifacts.py.src",),
     "run_evidence.checkpoint_file_sha256": ("run_evidence/checkpoint_file_sha256.py.src",),

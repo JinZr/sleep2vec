@@ -1,0 +1,70 @@
+import os
+import stat
+
+DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def close_descriptor(descriptor):
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+def open_managed_root():
+    current = os.open(managed_root.anchor, DIRECTORY_OPEN_FLAGS)
+    try:
+        for part in managed_root.relative_to(managed_root.anchor).parts:
+            opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
+            close_descriptor(current)
+            current = opened
+    except BaseException:
+        close_descriptor(current)
+        raise
+    return current
+
+
+def open_managed_parent(root_descriptor, relative, create):
+    current = os.dup(root_descriptor)
+    try:
+        for part in relative.parts[:-1]:
+            try:
+                opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(part, 0o755, dir_fd=current)
+                except FileExistsError:
+                    pass
+                opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
+            close_descriptor(current)
+            current = opened
+    except BaseException:
+        close_descriptor(current)
+        raise
+    return current, relative.name
+
+
+def open_regular_file_at(parent_descriptor, name):
+    descriptor = os.open(name, FILE_OPEN_FLAGS, dir_fd=parent_descriptor)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError(f"Managed CAS file is missing or aliased: {name}")
+        return descriptor, stat.S_IMODE(info.st_mode)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def read_regular_file_at(parent_descriptor, name):
+    descriptor, mode = open_regular_file_at(parent_descriptor, name)
+    try:
+        with os.fdopen(descriptor, "rb") as file_obj:
+            descriptor = -1
+            return file_obj.read(), mode
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)

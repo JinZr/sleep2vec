@@ -1,0 +1,74 @@
+from contextlib import ExitStack
+import errno
+import json
+from pathlib import Path
+import sys
+
+root, paths = json.loads(sys.argv[1])
+managed_root = Path(root)
+targets = [Path(path) for path in paths]
+
+try:
+    for target in targets:
+        if not managed_root.is_absolute() or not target.is_absolute():
+            raise ValueError("Managed output paths must be absolute.")
+        if ".." in managed_root.parts or ".." in target.parts:
+            raise ValueError("Managed output paths must not contain '..' components.")
+        relative = target.relative_to(managed_root)
+        if not relative.parts:
+            raise ValueError("Managed output target must name a file below its workspace root.")
+    if len(targets) != len(set(targets)):
+        raise ValueError("Managed output paths must be unique.")
+
+    payload = {}
+    seen_inodes = set()
+    if targets:
+        with ExitStack() as stack:
+            try:
+                root_descriptor = open_managed_root()
+            except FileNotFoundError:
+                payload = dict.fromkeys(paths)
+            except OSError as exc:
+                if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                    raise
+                raise ValueError(f"Managed output path is invalid or aliased: {managed_root}") from exc
+            else:
+                stack.callback(close_descriptor, root_descriptor)
+                for path_key, target in zip(paths, targets):
+                    with ExitStack() as target_stack:
+                        try:
+                            parent_descriptor, name = open_managed_parent(
+                                root_descriptor, target.relative_to(managed_root), False
+                            )
+                        except FileNotFoundError:
+                            payload[path_key] = None
+                            continue
+                        except OSError as exc:
+                            if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                                raise
+                            raise ValueError(f"Managed output path is invalid or aliased: {target}") from exc
+                        target_stack.callback(close_descriptor, parent_descriptor)
+                        try:
+                            descriptor, _mode = open_regular_file_at(parent_descriptor, name)
+                        except FileNotFoundError:
+                            payload[path_key] = None
+                            continue
+                        except OSError as exc:
+                            if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                                raise
+                            raise ValueError(f"Managed output path is invalid or aliased: {target}") from exc
+                        target_stack.callback(close_descriptor, descriptor)
+                        info = os.fstat(descriptor)
+                        inode = (info.st_dev, info.st_ino)
+                        if inode in seen_inodes:
+                            raise ValueError(f"Managed output paths must be independent regular files: {target}")
+                        seen_inodes.add(inode)
+                        # Do not turn a read error into missing after the validated file was opened.
+                        with os.fdopen(descriptor, "rb", closefd=False) as file_obj:
+                            payload[path_key] = file_obj.read().decode("utf-8")
+except ValueError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(2)
+
+# No partial output: every requested path must be read successfully or confirmed missing.
+print(json.dumps(payload, sort_keys=True))

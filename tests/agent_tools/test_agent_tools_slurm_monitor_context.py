@@ -14,12 +14,12 @@ from agent_tools.experiment_workspace import merge_run_manifest
 
 @pytest.fixture(autouse=True)
 def _isolate_execution_evidence(monkeypatch):
-    read_slurm_json = managed_scheduler._read_slurm_json
+    read_outputs = managed_scheduler.exp_io.read_managed_output_texts_at
     monkeypatch.setattr(
-        managed_scheduler,
-        "_read_slurm_json",
-        lambda owner, execution, path: (
-            {} if execution.get("target") == "ssh" else read_slurm_json(owner, execution, path)
+        managed_scheduler.exp_io,
+        "read_managed_output_texts_at",
+        lambda owner, paths, remote=None: (
+            {str(path): None for path in paths} if remote else read_outputs(owner, paths)
         ),
     )
     monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: ("", {}, []))
@@ -202,7 +202,7 @@ def test_context_separates_same_job_ids_by_frozen_route(tmp_path: Path, monkeypa
         return subprocess.CompletedProcess(argv, 0, _queue_output(grouped[key]), "")
 
     monkeypatch.setattr(slurm, "run_command", run_command)
-    context = managed_scheduler.SlurmMonitorContext(rows)
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
     for row in rows:
         observed = managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context)
         assert observed["scheduler_node"] == f"node-{row['run_id']}"
@@ -220,7 +220,7 @@ def test_context_does_not_batch_duplicate_input_job_ids(tmp_path: Path, monkeypa
         return subprocess.CompletedProcess(argv, 0, _queue_output(rows[:1]), "")
 
     monkeypatch.setattr(slurm, "run_command", run_command)
-    context = managed_scheduler.SlurmMonitorContext(rows)
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
     assert calls == []
     for row in rows:
         managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context)
@@ -237,7 +237,7 @@ def test_shared_queue_hit_still_requires_exact_submit_token(tmp_path: Path, monk
         return subprocess.CompletedProcess(argv, 0, output, "")
 
     monkeypatch.setattr(slurm, "run_command", run_command)
-    context = managed_scheduler.SlurmMonitorContext(rows)
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
 
     with pytest.raises(ValueError, match="comment differs from the frozen submit token"):
         managed_scheduler.observe_slurm_run(tmp_path, _execution(rows[0]), rows[0], monitor_context=context)
@@ -259,7 +259,7 @@ def test_context_is_lazy_until_after_sidecar_validation(tmp_path: Path, monkeypa
     Path(rows[0]["scheduler_result_path"]).write_text(json.dumps(terminal) if failure == "cluster" else "{")
     monkeypatch.setattr(slurm, "run_command", lambda *_a, **_k: pytest.fail("sidecar must fail before any query"))
 
-    context = managed_scheduler.SlurmMonitorContext(rows)
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
 
     with pytest.raises(ValueError, match="cluster differs|not valid JSON"):
         managed_scheduler.observe_slurm_run(tmp_path, _execution(rows[0]), rows[0], monitor_context=context)
@@ -291,7 +291,7 @@ def test_bad_batch_disables_only_its_group_and_requeries_every_job(tmp_path: Pat
         return subprocess.CompletedProcess(argv, 0, _queue_output(queried), "")
 
     monkeypatch.setattr(slurm, "run_command", run_command)
-    context = managed_scheduler.SlurmMonitorContext(rows)
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
     observed = [
         managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context) for row in rows
     ]
@@ -314,7 +314,7 @@ def test_failed_batch_preserves_each_exact_query_failure(tmp_path: Path, monkeyp
         return subprocess.CompletedProcess(argv, 1, "", "Access denied")
 
     monkeypatch.setattr(slurm, "run_command", run_command)
-    context = managed_scheduler.SlurmMonitorContext(rows)
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
     observed = [
         managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context) for row in rows
     ]
@@ -346,7 +346,7 @@ def test_successful_batch_missing_job_keeps_per_job_query(tmp_path: Path, monkey
         return subprocess.CompletedProcess(argv, 1, "", "Slurm accounting storage is disabled")
 
     monkeypatch.setattr(slurm, "run_command", run_command)
-    context = managed_scheduler.SlurmMonitorContext(rows)
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
     observed = [
         managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context) for row in rows
     ]
@@ -381,7 +381,7 @@ def test_context_excludes_incomplete_and_quarantined_rows(tmp_path: Path, monkey
         return subprocess.CompletedProcess(argv, 0, _queue_output(rows[:2]), "")
 
     monkeypatch.setattr(slurm, "run_command", run_command)
-    context = managed_scheduler.SlurmMonitorContext(rows)
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
     if override.get("scheduler_raw_state") == "SUBMISSION_CLUSTER_MISMATCH":
         observed = managed_scheduler.observe_slurm_run(tmp_path, _execution(rows[2]), rows[2], monitor_context=context)
         assert observed["scheduler_raw_state"] == "SUBMISSION_CLUSTER_MISMATCH"
@@ -426,7 +426,7 @@ def test_context_never_promotes_legacy_sidecar_identity_across_rounds(tmp_path: 
 
     monkeypatch.setattr(slurm, "run_command", run_command)
     for phase in ("error", "missing"):
-        context = managed_scheduler.SlurmMonitorContext(rows)
+        context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
         rows = [
             managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context) for row in rows
         ]
@@ -446,7 +446,7 @@ def test_context_does_not_consume_snapshot_on_different_execution_route(tmp_path
         return subprocess.CompletedProcess(argv, 0, _queue_output(rows), "")
 
     monkeypatch.setattr(slurm, "run_command", run_command)
-    context = managed_scheduler.SlurmMonitorContext(rows)
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
     managed_scheduler.observe_slurm_run(
         tmp_path, {"target": "ssh", "host": "other-host"}, rows[0], monitor_context=context
     )
@@ -464,7 +464,7 @@ def test_remote_transport_override_rows_do_not_share_snapshot(tmp_path: Path, mo
         return subprocess.CompletedProcess(argv, 0, _queue_output(rows), "")
 
     monkeypatch.setattr(slurm, "run_command", run_command)
-    context = managed_scheduler.SlurmMonitorContext(rows, remote="unit-host")
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path, remote="unit-host")
     for row in rows:
         observation = {**row, "target": "ssh", "host": "unit-host"}
         managed_scheduler.observe_slurm_run(tmp_path, _execution(observation), observation, monitor_context=context)
@@ -548,7 +548,7 @@ def test_context_preserves_complete_observation_for_same_seed(tmp_path: Path, mo
 
     monkeypatch.setattr(slurm, "run_command", run_command)
     unshared = [managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, health=health) for row in rows]
-    context = managed_scheduler.SlurmMonitorContext(rows)
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
     shared = [
         managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, health=health, monitor_context=context)
         for row in rows

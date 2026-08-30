@@ -199,6 +199,26 @@ sidecars or query the scheduler for it; stop rejects before recording intent
 or cancelling. Queue and direct launch both block further submissions in that
 plan. There is no automatic conflict-clearing or legacy-cluster recovery path.
 
+Slurm sidecar reads validate the managed path and read the same opened regular
+file in one local/SSH operation. Raw `..` components, symlinks in any traversed
+directory or leaf, hardlinked files, and non-regular leaves are rejected. Only
+a missing open means absent evidence; read and UTF-8 failures remain errors.
+Remote reads require one complete response for every requested path, including
+explicit missing values; empty or partial command output is not absence. These
+checks do not promote sidecar job or cluster values to canonical identity.
+
+One monitor round may share sidecar text within one managed owner and matching
+execution host, independently of scheduler job, cluster, or controller topology.
+Terminal files are read first; allocation reads include only runs with missing
+or empty terminal text, or a valid empty terminal mapping. Malformed or nonempty
+terminal data never causes allocation prefetch. Each run still parses and
+validates its own identity before scheduler queries. A future run's invalid file
+does not change the current run's error order: a failed batch is discarded and
+that phase uses exact per-file reads for the rest of the round. Conflicted runs
+and mismatched or overridden transports are excluded from prefetch. Missing or
+empty snapshots last only this round; a sidecar published afterward is observed
+in the next successful round. Absence never establishes a terminal state.
+
 Within one `hparam-monitor` or `experiment-monitor` round, runs with complete
 canonical job, cluster, token, transport, and explicit controller topology may
 share a successful exact-ID `squeue` query on the same frozen route. Groups

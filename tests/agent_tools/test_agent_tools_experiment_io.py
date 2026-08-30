@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import threading
@@ -326,6 +327,333 @@ def test_remote_managed_control_read_fails_closed_on_transport_error(monkeypatch
             ["/remote/workspace/step.yaml"],
             remote="host",
         )
+
+
+def _run_managed_output_reader(implementation, root, paths, *, prefix=""):
+    if implementation == "local":
+        source = """import json, sys
+from agent_tools import experiment_io
+root, paths = json.loads(sys.argv[1])
+print(json.dumps(experiment_io.read_managed_output_texts_at(root, paths)))
+"""
+    else:
+        source = python_programs.source("experiment_io.read_managed_output_texts")
+    return subprocess.run(
+        [sys.executable, "-c", prefix + source, json.dumps([str(root), [str(path) for path in paths]])],
+        cwd=Path(__file__).resolve().parents[2],
+        text=True,
+        capture_output=True,
+        timeout=5,
+    )
+
+
+@pytest.mark.parametrize("implementation", ["local", "embedded-remote"])
+def test_managed_output_reader_preserves_requested_keys_empty_text_and_missing(tmp_path, implementation):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "terminal.json").write_bytes("状态\r\nready\r\n".encode())
+    empty = root / "empty.json"
+    empty.write_text("")
+    paths = [str(root) + "/./terminal.json", str(empty), str(root / "missing.json"), str(root / "absent" / "file")]
+
+    result = _run_managed_output_reader(implementation, root, paths)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == dict(zip(paths, ["状态\r\nready\r\n", "", None, None]))
+    assert not (root / "absent").exists()
+
+
+@pytest.mark.parametrize("implementation", ["local", "embedded-remote"])
+@pytest.mark.parametrize("missing", ["root", "parent", "leaf"])
+def test_managed_output_reader_only_missing_opens_return_none(tmp_path, implementation, missing):
+    root = tmp_path / "workspace"
+    parent = root / "outputs"
+    if missing != "root":
+        root.mkdir()
+    if missing == "leaf":
+        parent.mkdir()
+    paths = [parent / "terminal.json", parent / "allocation.json"]
+
+    result = _run_managed_output_reader(implementation, root, paths)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {str(path): None for path in paths}
+    assert not paths[0].exists()
+
+
+@pytest.mark.parametrize("implementation", ["local", "embedded-remote"])
+@pytest.mark.parametrize(
+    "topology",
+    [
+        "ancestor_symlink",
+        "root_symlink",
+        "parent_symlink",
+        "leaf_symlink",
+        "dangling_symlink",
+        "hardlink",
+        "fifo",
+        "root_file",
+        "parent_file",
+        "leaf_directory",
+    ],
+)
+def test_managed_output_reader_rejects_unsafe_objects(tmp_path, implementation, topology):
+    root = tmp_path / "workspace"
+    parent = root / "outputs"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "terminal.json"
+    secret.write_text("outside\n")
+    if topology == "root_file":
+        root.write_text("not a directory\n")
+    else:
+        root.mkdir()
+        if topology == "parent_file":
+            parent.write_text("not a directory\n")
+        elif topology == "parent_symlink":
+            parent.symlink_to(outside, target_is_directory=True)
+        else:
+            parent.mkdir()
+    target = parent / "terminal.json"
+    if topology == "ancestor_symlink":
+        alias = tmp_path / "alias"
+        alias.symlink_to(tmp_path, target_is_directory=True)
+        target.write_text("inside\n")
+        root = alias / root.name
+        target = root / "outputs" / target.name
+    elif topology == "root_symlink":
+        moved = tmp_path / "workspace-original"
+        target.write_text("inside\n")
+        root.rename(moved)
+        root.symlink_to(moved, target_is_directory=True)
+    elif topology in {"leaf_symlink", "dangling_symlink"}:
+        target.symlink_to(secret if topology == "leaf_symlink" else outside / "missing.json")
+    elif topology == "hardlink":
+        target.hardlink_to(secret)
+    elif topology == "fifo":
+        os.mkfifo(target)
+    elif topology == "leaf_directory":
+        target.mkdir()
+
+    result = _run_managed_output_reader(implementation, root, [target])
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert secret.read_text() == "outside\n"
+
+
+@pytest.mark.parametrize("implementation", ["local", "embedded-remote"])
+@pytest.mark.parametrize("location", ["root", "target"])
+@pytest.mark.parametrize("component", ["absent", "alias"])
+def test_managed_output_reader_rejects_raw_parent_components(tmp_path, implementation, location, component):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    if component == "alias":
+        (root / component).symlink_to(tmp_path, target_is_directory=True)
+    if location == "root":
+        root = root / component / ".."
+        target = root / "terminal.json"
+    else:
+        target = root / component / ".." / "terminal.json"
+
+    result = _run_managed_output_reader(implementation, root, [target])
+
+    assert result.returncode != 0
+    assert "must not contain '..'" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("implementation", ["local", "embedded-remote"])
+@pytest.mark.parametrize("alias", [False, True])
+def test_managed_output_reader_rejects_duplicate_requested_targets(tmp_path, implementation, alias):
+    target = str(tmp_path / "terminal.json")
+    duplicate = str(tmp_path) + "/./terminal.json" if alias else target
+
+    result = _run_managed_output_reader(implementation, tmp_path, [target, duplicate])
+
+    assert result.returncode != 0
+    assert "must be unique" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("implementation", ["local", "embedded-remote"])
+def test_managed_output_reader_rejects_invalid_utf8_without_partial_output(tmp_path, implementation):
+    good = tmp_path / "allocation.json"
+    bad = tmp_path / "terminal.json"
+    good.write_text("{}")
+    bad.write_bytes(b"\xff")
+
+    result = _run_managed_output_reader(implementation, tmp_path, [good, bad])
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "utf-8" in result.stderr
+
+
+@pytest.mark.parametrize("implementation", ["local", "embedded-remote"])
+def test_managed_output_reader_does_not_hide_permission_errors(tmp_path, implementation):
+    if os.geteuid() == 0:
+        pytest.skip("Root bypasses the file permission used by this test")
+    target = tmp_path / "terminal.json"
+    target.write_text("{}")
+    target.chmod(0)
+    try:
+        result = _run_managed_output_reader(implementation, tmp_path, [target])
+    finally:
+        target.chmod(0o600)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "PermissionError" in result.stderr
+
+
+@pytest.mark.parametrize("implementation", ["local", "embedded-remote"])
+@pytest.mark.parametrize("error_number", [errno.EIO, errno.ENOENT])
+def test_managed_output_reader_does_not_treat_descriptor_read_errors_as_missing(tmp_path, implementation, error_number):
+    target = tmp_path / "terminal.json"
+    target.write_text("{}")
+    prefix = f"""from contextlib import contextmanager
+import os
+from types import SimpleNamespace
+_original_fdopen = os.fdopen
+def _failed_read():
+    raise OSError({error_number}, "injected descriptor read failure")
+@contextmanager
+def _failed_fdopen(*args, **kwargs):
+    with _original_fdopen(*args, **kwargs):
+        yield SimpleNamespace(read=_failed_read)
+os.fdopen = _failed_fdopen
+"""
+
+    result = _run_managed_output_reader(implementation, tmp_path, [target], prefix=prefix)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "injected descriptor read failure" in result.stderr
+
+
+@pytest.mark.parametrize("implementation", ["local", "embedded-remote"])
+@pytest.mark.parametrize("replaced", ["parent", "leaf"])
+def test_managed_output_reader_reads_opened_descriptor_after_path_replacement(tmp_path, implementation, replaced):
+    root = tmp_path / "workspace"
+    parent = root / "outputs"
+    parent.mkdir(parents=True)
+    target = parent / "terminal.json"
+    target.write_text("original\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / target.name).write_text("outside\n")
+    prefix = f"""import json, os, sys
+from pathlib import Path
+_race_root, _race_paths = json.loads(sys.argv[1])
+_race_target = Path(_race_paths[0])
+_race_outside = Path(_race_root).parent / "outside"
+_original_open = os.open
+_replaced = False
+def _replace_after_open(name, flags, *args, **kwargs):
+    global _replaced
+    descriptor = _original_open(name, flags, *args, **kwargs)
+    watched = _race_target.parent.name if {replaced!r} == "parent" else _race_target.name
+    if not _replaced and name == watched:
+        _replaced = True
+        path = _race_target.parent if {replaced!r} == "parent" else _race_target
+        path.rename(path.with_name(path.name + "-original"))
+        path.symlink_to(_race_outside if {replaced!r} == "parent" else _race_outside / path.name)
+    return descriptor
+os.open = _replace_after_open
+"""
+
+    result = _run_managed_output_reader(implementation, root, [target], prefix=prefix)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {str(target): "original\n"}
+    assert (parent if replaced == "parent" else target).is_symlink()
+    assert (outside / target.name).read_text() == "outside\n"
+
+
+def test_remote_managed_output_reader_uses_one_complete_read_operation(monkeypatch):
+    paths = ["/remote/root/./terminal.json", "/remote/root/empty.json", "/remote/root/missing.json"]
+    expected = dict(zip(paths, ["{}\r\n", "", None]))
+    calls = []
+
+    def complete_read(host, command, **kwargs):
+        calls.append((host, shlex.split(command), kwargs))
+        return subprocess.CompletedProcess(command, 0, json.dumps(expected), "")
+
+    monkeypatch.setattr(experiment_io.transport, "run_ssh", complete_read)
+
+    assert experiment_io.read_managed_output_texts_at("/remote/root", paths, remote="host") == expected
+    assert len(calls) == 1
+    host, command, kwargs = calls[0]
+    assert host == "host"
+    assert command[:2] == ["python3", "-c"]
+    assert command[2] == python_programs.source("experiment_io.read_managed_output_texts")
+    assert json.loads(command[3]) == ["/remote/root", paths]
+    assert kwargs == {"text": True}
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        "{",
+        "null",
+        "[]",
+        "{}",
+        '{"/remote/root/a": null}',
+        '{"/remote/root/a": null, "/remote/root/b": "", "/remote/root/extra": null}',
+        '{"/remote/root/a": null, "/remote/root/a": "", "/remote/root/b": ""}',
+        '{"/remote/root/a": true, "/remote/root/b": ""}',
+        '{"/remote/root/a": 1, "/remote/root/b": ""}',
+        '{"/remote/root/a": [], "/remote/root/b": ""}',
+        '{"/remote/root/a": {}, "/remote/root/b": ""}',
+    ],
+)
+def test_remote_managed_output_reader_requires_positive_complete_output(monkeypatch, stdout):
+    monkeypatch.setattr(
+        experiment_io.transport,
+        "run_ssh",
+        lambda _host, command, **_kwargs: subprocess.CompletedProcess(command, 0, stdout, ""),
+    )
+
+    with pytest.raises(ValueError):
+        experiment_io.read_managed_output_texts_at("/remote/root", ["/remote/root/a", "/remote/root/b"], remote="host")
+
+
+@pytest.mark.parametrize("returncode", [1, 2, 255])
+def test_remote_managed_output_reader_rejects_failed_transport_with_complete_stdout(monkeypatch, returncode):
+    path = "/remote/root/a"
+    monkeypatch.setattr(
+        experiment_io.transport,
+        "run_ssh",
+        lambda _host, command, **_kwargs: subprocess.CompletedProcess(
+            command, returncode, json.dumps({path: None}), "failed"
+        ),
+    )
+
+    with pytest.raises(ValueError if returncode == 2 else RuntimeError, match="failed"):
+        experiment_io.read_managed_output_texts_at("/remote/root", [path], remote="host")
+
+
+def test_remote_managed_output_reader_rejects_real_child_failure_hidden_by_outer_zero(tmp_path, monkeypatch):
+    good = tmp_path / "allocation.json"
+    bad = tmp_path / "terminal.json"
+    good.write_text("{}")
+    bad.write_bytes(b"\xff")
+    children = []
+
+    def rewritten_exit(_host, command, **kwargs):
+        child = subprocess.run([sys.executable, *shlex.split(command)[1:]], capture_output=True, timeout=5, **kwargs)
+        children.append(child)
+        return subprocess.CompletedProcess(command, 0, child.stdout, child.stderr)
+
+    monkeypatch.setattr(experiment_io.transport, "run_ssh", rewritten_exit)
+
+    with pytest.raises(ValueError):
+        experiment_io.read_managed_output_texts_at(tmp_path, [good, bad], remote="host")
+    assert len(children) == 1
+    assert children[0].returncode != 0
+    assert children[0].stdout == ""
 
 
 def test_local_conditional_replace_requires_expected_digest(tmp_path: Path):
