@@ -13,7 +13,7 @@ from test_agent_plan_blocks_on_ambiguity import _write_preset_recipe
 from test_agent_tools_experiment_status import _workspace_files
 import yaml
 
-from agent_tools import decisions, experiments, plans
+from agent_tools import cli, decisions, experiments, plans
 from agent_tools.adapters import preset_prepare as preset_adapter
 from agent_tools.experiment_workspace import file_sha256, read_run_manifest
 from agent_tools.manifests import write_rows
@@ -424,6 +424,56 @@ def test_preset_missing_manager_commit_fails_before_workspace_creation(
     issue = next(issue for issue in report.blocking_issues() if issue.field == "execution.runtime_commit")
     assert issue.evidence["preflight_before_workspace"] is True
     assert not preset_runtime["workspace"].exists()
+
+
+@pytest.mark.parametrize("entrypoint", ["evaluate_recipe", "build_plan"])
+@pytest.mark.parametrize("has_preset_build", [True, False])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("python", "/tmp/runtime with space/bin/python"),
+        ("python", ""),
+        ("python", "python --isolated"),
+        ("runtime_commit", "A" * 40),
+    ],
+)
+def test_preset_invalid_auto_bound_identity_fails_before_workspace_creation(
+    tmp_path: Path, preset_runtime, monkeypatch, capsys, entrypoint, has_preset_build, field, value
+):
+    preset_runtime["execution"] = {}
+    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    if not has_preset_build:
+        payload = yaml.safe_load(recipe.read_text())
+        config_path = Path(payload["inputs"]["config"])
+        config = yaml.safe_load(config_path.read_text())
+        config.pop("preset_build")
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+        payload["preset"].update({"channels": ["ppg", "ahi", "stage5"], "min_channels": 3})
+        for decision_field in ("required_channels", "min_channels"):
+            payload["decisions"][decision_field]["source"] = "explicit_recipe"
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    if field == "python":
+        monkeypatch.setattr(sys, "executable", value)
+    else:
+        monkeypatch.setattr(preset_adapter, "repo_summary", lambda: {"git": {"available": True, "commit": value}})
+    plan_dir = preset_runtime["workspace"] / "plan"
+
+    if entrypoint == "evaluate_recipe":
+        _recipe, _config, report = plans.evaluate_recipe(recipe)
+    else:
+        report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.status == plans.DecisionStatus.FAIL
+    issue = next(issue for issue in report.blocking_issues() if issue.field == f"execution.{field}")
+    assert issue.evidence["preflight_before_workspace"] is True
+    assert not preset_runtime["workspace"].exists()
+    assert not plan_dir.exists()
+    if entrypoint == "evaluate_recipe":
+        assert cli.main(["doctor", "--recipe", str(recipe)]) == 1
+        output = capsys.readouterr().out
+        assert f"execution.{field}" in output
+        assert "FAIL" in output
+        assert not preset_runtime["workspace"].exists()
 
 
 @pytest.mark.parametrize("historical", [False, True])

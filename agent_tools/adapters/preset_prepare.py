@@ -4,7 +4,7 @@ import sys
 from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
-from ..decision_paths import multilabel_sidecar_issue, survival_sidecar_issue
+from ..decision_paths import execution_contract_issues, multilabel_sidecar_issue, survival_sidecar_issue
 from ..models import REPO_ROOT, coerce_list
 from ..plan_rendering import PRESET_FIELDS, preset_cli_args, render_command
 from ..repo import repo_summary
@@ -86,6 +86,12 @@ class PresetPrepareAdapter(TaskAdapter):
                         "runtime_commit": repository["commit"],
                         "workdir": str(REPO_ROOT),
                     }
+                    # Binding follows source validation; generated identity must pass the same contract.
+                    issues.extend(
+                        execution_contract_issues(
+                            recipe, source_layer="effective", supports_runtime_identity=self.supports_runtime_identity
+                        )
+                    )
         preset_build = (config_summary or {}).get("preset_build") or {}
         if not preset_build:
             return issues
