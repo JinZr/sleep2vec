@@ -65,6 +65,11 @@ including malformed hparam search spaces. These checks use the effective values
 after user overrides and do not turn missing decisions into new hard failures.
 Config-dependent profile expansion and full consultation still run afterward.
 
+Plan preflight also compares an existing `experiment.yaml` with the effective
+experiment identity before config/data inspection. Doctor does not add this
+workspace read. An absent manifest is not a reservation or authorization to
+register: final workspace validation and registration locks remain authoritative.
+
 `plan.json` and `recipe.resolved.yaml` must contain the same complete effective
 recipe. Retained base/local recipe copies are source audit only; launch,
 selection, adaptive, and postprocess consumers read the effective recipe.

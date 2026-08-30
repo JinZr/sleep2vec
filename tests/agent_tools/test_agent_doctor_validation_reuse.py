@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from agent_tools import cli, managed_scheduler, plan_context, plans
+from agent_tools import cli, experiment_workspace, managed_scheduler, plan_context, plans
 from agent_tools.configs import config_summary
 from agent_tools.domain import index_csv
 from agent_tools.models import REPO_ROOT
@@ -269,6 +269,210 @@ def test_non_json_user_decision_metadata_names_its_source(tmp_path, monkeypatch,
 
     assert str(decisions_path) in str(caught.value)
     assert not csv_reads
+
+
+@pytest.mark.parametrize("field", ["id", "title", "objective", "root", "baseline"])
+def test_plan_identity_mismatch_fails_before_config_or_data(tmp_path, monkeypatch, csv_reads, field):
+    recipe_path = _sidecar_recipe(tmp_path, "survival")
+    manifest_path = tmp_path / "experiment.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["experiment"][field] = {"type": "different"} if field == "baseline" else "different-identity"
+    write_yaml(manifest_path, manifest)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with monkeypatch.context() as guarded:
+        _forbid_config_reads(guarded, tmp_path / "config.yaml")
+        _recipe, cfg, report = plans.preflight_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
+
+    assert cfg is None
+    assert report.exit_code == 1
+    message = "different experiment" if field == "id" else f"experiment.{field} differs"
+    assert any(message in issue.message for issue in report.blocking_issues())
+    assert all(issue.evidence["preflight_before_workspace"] for issue in report.blocking_issues())
+    assert not csv_reads
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_doctor_does_not_read_existing_experiment_identity(tmp_path, monkeypatch, capsys, csv_reads):
+    recipe_path = _sidecar_recipe(tmp_path, "survival")
+    (tmp_path / "experiment.yaml").write_text("")
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    monkeypatch.setattr(
+        plans.exp_io,
+        "read_managed_output_texts_at",
+        lambda *_args, **_kwargs: pytest.fail("Doctor must not depend on the plan-only workspace read"),
+    )
+
+    assert cli.main(["doctor", "--recipe", str(recipe_path)]) == 0
+
+    assert "Status: PASS" in capsys.readouterr().out
+    assert csv_reads == {"event_time.csv": 1, "is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("state", ["missing_root", "missing_manifest", "identical"])
+def test_plan_identity_read_is_optional_and_manifest_only(tmp_path, monkeypatch, csv_reads, state):
+    recipe_path = _sidecar_recipe(tmp_path, "survival")
+    root = tmp_path
+    if state != "identical":
+        root = tmp_path / "new-workspace"
+        payload = yaml.safe_load(recipe_path.read_text())
+        payload["experiment"]["root"] = str(root)
+        recipe_path.write_text(yaml.safe_dump(payload))
+        if state == "missing_manifest":
+            root.mkdir()
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    read = plans.exp_io.read_managed_output_texts_at
+    calls = []
+
+    def counted(root, paths, *, remote=None):
+        calls.append((root, paths, remote))
+        return read(root, paths, remote=remote)
+
+    monkeypatch.setattr(plans.exp_io, "read_managed_output_texts_at", counted)
+
+    _recipe, cfg, report = plans.preflight_plan(recipe_path=recipe_path, output_dir=root / "plan")
+
+    assert report.exit_code == 0
+    assert cfg is not None
+    assert calls == [(root, [root / "experiment.yaml"], None)]
+    assert csv_reads == {"event_time.csv": 1, "is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("state", ["empty", "symlink", "read_error"])
+def test_plan_identity_read_failures_are_not_missing_state(tmp_path, monkeypatch, csv_reads, state):
+    recipe_path = _sidecar_recipe(tmp_path, "survival")
+    manifest_path = tmp_path / "experiment.yaml"
+    if state == "empty":
+        manifest_path.write_text("")
+    elif state == "symlink":
+        target = tmp_path / "other-identity.yaml"
+        target.write_bytes(manifest_path.read_bytes())
+        manifest_path.unlink()
+        manifest_path.symlink_to(target)
+    else:
+
+        def denied(*_args, **_kwargs):
+            raise PermissionError("injected manifest read denial")
+
+        monkeypatch.setattr(plans.exp_io, "read_managed_output_texts_at", denied)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with monkeypatch.context() as guarded:
+        _forbid_config_reads(guarded, tmp_path / "config.yaml")
+        if state == "empty":
+            _recipe, cfg, report = plans.preflight_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
+            assert cfg is None
+            assert report.exit_code == 1
+            assert all(issue.evidence["preflight_before_workspace"] for issue in report.blocking_issues())
+        else:
+            error = PermissionError if state == "read_error" else ValueError
+            message = "injected manifest read denial" if state == "read_error" else "aliased"
+            with pytest.raises(error, match=message):
+                plans.preflight_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
+
+    assert not csv_reads
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("blocked", ["metadata", "search"])
+def test_authored_blockers_precede_optional_workspace_identity_read(tmp_path, monkeypatch, csv_reads, blocked):
+    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=blocked == "search")
+    payload = yaml.safe_load(recipe_path.read_text())
+    if blocked == "metadata":
+        payload["experiment"]["title"] = "ASK_USER"
+    else:
+        payload["search"]["parameters"] = "explanation instead of parameters"
+    recipe_path.write_text(yaml.safe_dump(payload))
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    monkeypatch.setattr(
+        plans.exp_io,
+        "read_managed_output_texts_at",
+        lambda *_args, **_kwargs: pytest.fail("Authored blockers must precede the optional workspace read"),
+    )
+
+    with monkeypatch.context() as guarded:
+        if blocked == "search":
+            _forbid_config_reads(guarded, tmp_path / "config.yaml")
+        _recipe, cfg, report = plans.preflight_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
+
+    if blocked == "metadata":
+        assert report.exit_code == 2
+        assert any(issue.field == "experiment.title" for issue in report.blocking_issues())
+        assert cfg is not None
+        assert csv_reads
+    else:
+        assert report.exit_code == 1
+        assert any("search.parameters must be a mapping" in issue.message for issue in report.blocking_issues())
+        assert cfg is None
+        assert not csv_reads
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_early_identity_comparison_preserves_relative_authored_root(tmp_path, monkeypatch, csv_reads):
+    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
+    relative_root = f"./{tmp_path.name}"
+    for path in (tmp_path / "recipe.yaml", recipe_path):
+        payload = yaml.safe_load(path.read_text())
+        payload["experiment"]["root"] = relative_root
+        path.write_text(yaml.safe_dump(payload))
+    monkeypatch.setattr(experiment_workspace, "REPO_ROOT", tmp_path.parent)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    recipe, cfg, report = plans.evaluate_recipe(recipe_path, check_existing_experiment=True)
+
+    assert report.exit_code == 0
+    assert cfg is not None
+    assert recipe["experiment"]["root"] == relative_root
+    assert recipe["_base_recipe"]["experiment"]["root"] == relative_root
+    assert recipe["_local_recipe"]["experiment"]["root"] == relative_root
+    assert csv_reads
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("early_manifest", ["identical", "missing"])
+def test_final_workspace_check_rejects_identity_changed_after_early_read(
+    tmp_path, monkeypatch, csv_reads, early_manifest
+):
+    recipe_path = _sidecar_recipe(tmp_path, "survival")
+    manifest_path = tmp_path / "experiment.yaml"
+    changed_manifest = yaml.safe_load(manifest_path.read_text())
+    changed_manifest["experiment"]["title"] = "Changed after early read"
+    if early_manifest == "missing":
+        manifest_path.unlink()
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file() and path != manifest_path}
+    read = plans.exp_io.read_managed_output_texts_at
+    ensure = plans.ensure_experiment_workspace
+    reads = []
+    ensure_calls = []
+
+    def changed_after_read(root, paths, *, remote=None):
+        result = read(root, paths, remote=remote)
+        assert paths == [manifest_path]
+        reads.append(result[str(manifest_path)])
+        write_yaml(manifest_path, changed_manifest)
+        return result
+
+    def checked_ensure(*args, **kwargs):
+        ensure_calls.append(kwargs.get("validate_only", False))
+        return ensure(*args, **kwargs)
+
+    monkeypatch.setattr(plans.exp_io, "read_managed_output_texts_at", changed_after_read)
+    monkeypatch.setattr(plans, "ensure_experiment_workspace", checked_ensure)
+
+    with pytest.raises(ValueError, match="experiment.title differs"):
+        plans.build_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
+
+    assert len(reads) == 1
+    assert (reads[0] is None) is (early_manifest == "missing")
+    assert ensure_calls == [True]
+    assert csv_reads
+    assert not (tmp_path / "plan").exists()
+    assert yaml.safe_load(manifest_path.read_text()) == changed_manifest
+    assert {
+        path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file() and path != manifest_path
+    } == before
 
 
 @pytest.mark.parametrize("kind", ["survival", "multilabel"])

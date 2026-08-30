@@ -57,6 +57,7 @@ from .experiment_workspace import (
     read_registered_steps,
     read_run_manifest,
     read_step_manifest,
+    validate_existing_experiment_manifest,
     validate_plan_output,
 )
 from .manifests import read_json, write_json, write_text
@@ -267,6 +268,8 @@ def _materialize_task_defaults(recipe: dict, policy: dict, user_decisions: dict)
 def evaluate_recipe(
     recipe_path: str | Path,
     user_decisions_path: str | Path | None = None,
+    *,
+    check_existing_experiment: bool = False,
 ) -> tuple[dict, dict | None, DecisionReport]:
     recipe = load_recipe_with_base(recipe_path)
     source_recipe = copy.deepcopy(recipe)
@@ -326,6 +329,37 @@ def evaluate_recipe(
                 decisions=resolved_user_decisions(user_decisions),
             ),
         )
+
+    if check_existing_experiment and not materialization_issues and not experiment_metadata_issues(recipe):
+        root = experiment_root(recipe)
+        assert root is not None
+        manifest_path = root / "experiment.yaml"
+        existing_text = exp_io.read_managed_output_texts_at(root, [manifest_path])[str(manifest_path)]
+        if existing_text is not None:
+            experiment = {
+                key: json_ready(value) for key, value in recipe["experiment"].items() if not str(key).startswith("_")
+            }
+            experiment["root"] = str(root)
+            try:
+                validate_existing_experiment_manifest(existing_text, experiment, root)
+            except ValueError as exc:
+                return (
+                    recipe,
+                    None,
+                    DecisionReport(
+                        status=DecisionStatus.FAIL,
+                        issues=[
+                            DecisionIssue(
+                                DecisionStatus.FAIL,
+                                "experiment",
+                                str(exc),
+                                None,
+                                {"preflight_before_workspace": True},
+                            )
+                        ],
+                        decisions=resolved_user_decisions(user_decisions),
+                    ),
+                )
 
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     source_config = inputs.get("config")
@@ -1484,7 +1518,7 @@ def preflight_plan(
     allow_existing_output_artifacts: bool = False,
     allow_adaptive_workflow: bool = False,
 ) -> tuple[dict, dict | None, DecisionReport]:
-    recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path)
+    recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path, check_existing_experiment=True)
     # Input failures have no config snapshot; do not restart reads through the later freeze checks.
     if cfg is None and any(
         issue.status == DecisionStatus.FAIL and issue.evidence.get("preflight_before_workspace") is True
