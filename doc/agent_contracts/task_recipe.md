@@ -335,6 +335,8 @@ Dry-run preview identity does not count; Slurm's plan-owned log path and
 preflight snapshot also do not prove submission. Any partial or complete launch
 identity, launch time, or existing stop request keeps the authenticated runtime
 stop path mandatory. Already terminal runs still reject another stop request.
+Post-commit publication failures propagate without rolling back the canonical
+stop; `hparam-stop` does not resume publication for terminal runs.
 Canceled runs retain their frozen artifacts and cannot be launched later.
 
 Registration preflight records verified Python/version, host, repository and

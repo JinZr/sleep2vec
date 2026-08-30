@@ -20,6 +20,7 @@ from test_agent_tools_hparam_runtime import (
     _write_proc_stat,
     _write_process_identity,
     _write_runtime_rows,
+    _write_slurm_plan,
 )
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
@@ -135,6 +136,54 @@ def test_hparam_unlaunched_stop_leaves_other_runs_launchable(tmp_path: Path, mon
     assert len(started) == 1
     assert remaining["script"] in started[0]
     assert cancelled["script"] not in started[0]
+
+
+@pytest.mark.parametrize("backend", ["direct", "slurm"])
+@pytest.mark.parametrize("publication", ["write_rows", "append_event", "write_status_report"])
+def test_hparam_metadata_stop_publication_failure_keeps_terminal_commit(
+    tmp_path: Path, monkeypatch, backend, publication
+):
+    if backend == "slurm":
+        plan_dir, plan = _write_slurm_plan(tmp_path)
+    else:
+        recipe = _hparam_recipe(tmp_path)
+        plan_dir = tmp_path / "plan"
+        result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+        assert result.returncode == 0, result.stderr
+        plan = run_artifacts.read_hparam_plan(plan_dir)
+    run = plan["runs"][0]
+    reason = "cancel before execution"
+    stopped_at = "2026-08-30T04:05:06Z"
+    monkeypatch.setattr(hparam_runtime, "utc_now", lambda: stopped_at)
+
+    def fail_publication(*_args, **_kwargs):
+        raise RuntimeError(f"{publication} failed")
+
+    monkeypatch.setattr(hparam_runtime, publication, fail_publication)
+
+    with pytest.raises(RuntimeError, match=f"{publication} failed"):
+        hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["status"] == "stopped"
+    assert canonical["stop_reason"] == reason
+    assert canonical["stopped_at"] == stopped_at
+    before_retry = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    for name in ("merge_run_manifest", "write_rows", "append_event", "write_status_report"):
+        monkeypatch.setattr(hparam_runtime, name, lambda *_a, **_k: pytest.fail("terminal retry must not write"))
+
+    with pytest.raises(ValueError, match="already terminal"):
+        hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason)
+
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before_retry
+    snapshot = experiments.experiment_status(tmp_path)
+    assert next(row for row in snapshot["runs"] if row["run_id"] == run["run_id"])["status"] == "stopped"
+    assert snapshot["summary"]["status_counts"] == (
+        {"stopped": 1} if backend == "direct" else {"planned": 1, "stopped": 1}
+    )
+    if backend == "direct":
+        assert snapshot["summary"]["state"] == "ready_to_report"
+        assert any(blocker["code"] == "failure_report_required" for blocker in snapshot["blockers"])
 
 
 @pytest.mark.parametrize(
