@@ -39,6 +39,7 @@ def command_category(state, command):
             "experiment_workspace.write_run_matrix_if_current",
             "run_evidence.runtime_artifacts",
             "run_evidence.log_tail",
+            "run_evidence.log_tail_and_age",
         }:
             raise RuntimeError(f"Benchmark refuses unexpected remote Python program: {name}")
         if name == "experiment_io.read_text" and argv[-1].endswith(("slurm_terminal.json", "allocation_identity.json")):

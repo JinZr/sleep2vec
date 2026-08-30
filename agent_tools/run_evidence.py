@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import calendar
+import codecs
 import json
+import locale
 import os
 from pathlib import Path
 import signal
@@ -512,7 +515,7 @@ def log_has_failure(
         if not log_path.exists():
             tail = ""
         else:
-            tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-100:])
+            tail = _local_log_tail(log_path, 100)
     lines = tail.splitlines()
     final_line = lines[-1] if lines else ""
     # srun --label prefixes the rank-zero terminal marker; other ranks cannot own it.
@@ -549,7 +552,66 @@ def log_tail(path: Any, row: dict[str, Any] | None = None, lines: int = 8) -> st
     log_path = Path(str(path))
     if not log_path.exists():
         return ""
-    return "\n".join(log_path.read_text(errors="replace").splitlines()[-lines:])
+    return _local_log_tail(log_path, lines)
+
+
+def _local_log_tail(path: Path, lines: int) -> str:
+    with path.open(errors="replace") as source:
+        info = os.fstat(source.fileno())
+        if (
+            lines <= 0
+            or codecs.lookup(source.encoding).name != "utf-8"
+            or not source.seekable()
+            or not stat.S_ISREG(info.st_mode)
+            or not info.st_size
+        ):
+            return "\n".join(source.read().splitlines()[-lines:])
+        end = source.buffer.seek(0, os.SEEK_END)
+        window = 65536
+        while True:
+            start = max(0, end - window)
+            source.buffer.seek(start)
+            parts = source.buffer.read(end - start).decode("utf-8", errors="replace").splitlines()
+            # A nonzero window may start inside a UTF-8 character or line separator; discard that first line.
+            if start == 0 or len(parts) > lines:
+                return "\n".join(parts[-lines:])
+            window *= 2
+
+
+def log_tail_and_age(path: Any, row: dict[str, Any], lines: int = 8) -> tuple[str, int | None]:
+    if not path or not is_remote_row(row):
+        return log_tail(path, row, lines), log_age_seconds(path, row)
+    result = run_row_command(
+        row,
+        transport.remote_python_program_command("run_evidence.log_tail_and_age", str(path), int(lines)),
+    )
+    try:
+        if result.returncode != 0:
+            raise ValueError("Remote log probe failed.")
+        payload = json.loads(result.stdout)
+        if (
+            not isinstance(payload, list)
+            or len(payload) != 2
+            or any(
+                not isinstance(part, list)
+                or len(part) != 3
+                or type(part[0]) is not int
+                or not all(isinstance(value, str) for value in part[1:])
+                for part in payload
+            )
+        ):
+            raise ValueError("Remote log probe returned an incomplete response.")
+        decoded = [(part[0], *(base64.b64decode(value, validate=True) for value in part[1:])) for part in payload]
+    except (TypeError, ValueError):
+        # A broken paired response is not missing evidence; retain the two exact probes for this observation.
+        return log_tail(path, row, lines), log_age_seconds(path, row)
+    outputs = []
+    for returncode, stdout, stderr in decoded:
+        encoding = locale.getpreferredencoding(False)
+        text = stdout.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
+        stderr.decode(encoding)  # Preserve the original text subprocess's strict decoding, including stderr.
+        outputs.append(text.strip() if returncode == 0 else "")
+    return outputs[0], to_int(outputs[1])
 
 
 def health_fields(

@@ -362,4 +362,5 @@ def test_real_subprocess_sidecar_counts_scale_with_hosts(tmp_path, routes):
         assert counts["ssh:sidecar_read"] == 2 * routes
         assert counts.get("ssh:sidecar_validate", 0) == 0
         assert counts["squeue"] == routes
-        assert counts["ssh"] == (8 if sample["mode"] == "ordinary" else 16) + 3 * routes
+        assert counts["ssh"] == (8 if sample["mode"] == "ordinary" else 12) + 3 * routes
+        assert counts.get("ssh:run_evidence.log_tail_and_age", 0) == (0 if sample["mode"] == "ordinary" else 4)

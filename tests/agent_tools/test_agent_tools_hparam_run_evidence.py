@@ -765,6 +765,11 @@ def test_hparam_monitor_health_classifies_stalled_and_unknown_remote(tmp_path: P
     def fake_running(row, _identity):
         return None if row["run_id"] == "remote" else True
 
+    monkeypatch.setattr(
+        run_evidence,
+        "run_row_command",
+        lambda _row, command: subprocess.CompletedProcess(command, 255, "", "unreachable test host"),
+    )
     monkeypatch.setattr(run_evidence, "process_identity_running", fake_running)
     monkeypatch.setattr(run_evidence, "gpu_summary", lambda row, pid: "")
     monkeypatch.setattr(run_evidence, "proc_io", lambda row, pid: {"read_bytes": 100, "write_bytes": 50})
