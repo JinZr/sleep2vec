@@ -1,0 +1,28 @@
+import json
+import os
+from pathlib import Path
+import sys
+
+from agent_tools import experiment_io, slurm
+
+root, expected_text, resources_text, runtime_commit = sys.argv[1:]
+expected = json.loads(expected_text)
+resources = json.loads(resources_text)
+run_path = str(Path(expected["run_dir"]) / "run.json")
+files = experiment_io.read_managed_files_at(root, [run_path, expected["script"]])
+run = json.loads(files[run_path]["text"])
+if not isinstance(run, dict) or any(run.get(field) != value for field, value in expected.items()):
+    raise ValueError("Slurm worker run identity differs from its frozen script.")
+if run.get("script_sha256") != files[expected["script"]]["sha256"]:
+    raise ValueError("Slurm worker script differs from its frozen run digest.")
+# Derive the token from the loaded script digest; embedding it would create a token/script hash cycle.
+token = slurm.submit_token(run, resources, runtime_commit)
+if run.get("scheduler_submit_token") != token:
+    raise ValueError("Slurm worker submit token differs from its frozen run.")
+allocation_path = expected["allocation_identity_path"]
+text = experiment_io.read_managed_output_texts_at(root, [allocation_path])[allocation_path]
+if text is None:
+    raise ValueError("Slurm worker requires its outer worker's allocation identity.")
+identity = slurm.sidecar_identity(json.loads(text), token, expected_job_id=os.environ.get("SLURM_JOB_ID", ""))
+if identity.cluster != str(os.environ.get("SLURM_CLUSTER_NAME") or ""):
+    raise ValueError("Slurm worker cluster differs from its allocation identity.")

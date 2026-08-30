@@ -92,6 +92,8 @@ class TaskAdapter:
     materializes_plan: bool = False
     #: Task accepts a frozen Python/workdir/commit execution identity.
     supports_runtime_identity: bool = False
+    #: Public manager entrypoint for a generic task's single Slurm run.
+    slurm_launch_subcommand: str | None = None
     #: Task accepts either a pretrain or finetune model config.
     accepts_pretrain_config: bool = False
     #: Run preflight_issues while consultation choices remain unresolved.
@@ -172,7 +174,13 @@ class TaskAdapter:
 
     def registration_rows(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
         """Project frozen plan runs into their canonical registration rows."""
-        return plan["runs"]
+        return [
+            {
+                **{key: value for key, value in run.items() if key != "command"},
+                "parameter_summary": "single resolved recipe",
+            }
+            for run in plan["runs"]
+        ]
 
     def precommit_plan(self, out: Path, *, write_out: Path) -> str | None:
         """Validate a materialized plan before publication or registration."""
@@ -258,7 +266,7 @@ class TaskAdapter:
         run_index_offset: int,
         config_bytes: bytes,
     ) -> dict[str, Any]:
-        from .. import plan_contract
+        from .. import plan_contract, plan_rendering, slurm
 
         frozen_inputs = plan_contract.frozen_input_snapshots(recipe)
         source_config = plan_contract.resolve_frozen_repo_path(recipe, (recipe.get("inputs") or {}).get("config"))
@@ -280,7 +288,7 @@ class TaskAdapter:
         if input_snapshots:
             run["input_snapshots"] = input_snapshots
         commands = plan_contract.generic_commands(recipe, run, self, config_bytes)
-        return {
+        contract = {
             "runs": [run],
             "commands": commands,
             "script_text": plan_contract.generic_script_text(
@@ -291,6 +299,46 @@ class TaskAdapter:
                 input_snapshots,
             ),
         }
+        if run.get("scheduler_type") == "slurm":
+            execution = recipe["execution"]
+            resources = slurm.normalize_resources(execution["scheduler"], execution.get("gpus_per_run", 1))
+            run.update(command=commands[0], script_sha256=hashlib.sha256(contract["script_text"].encode()).hexdigest())
+            token = slurm.submit_token(run, resources, execution["runtime_commit"])
+            scheduler_text = slurm.render_batch_script(
+                run=run,
+                execution=execution,
+                resources=resources,
+                token=token,
+                result_path=run["scheduler_result_path"],
+                allocation_identity_path=run["allocation_identity_path"],
+                execution_snapshot_path=out / "execution_snapshot.json",
+                log_path=run["log_path"],
+                module=self.frozen_command_prefix(recipe)[2],
+            )
+            run.update(
+                scheduler_submit_token=token,
+                scheduler_script_sha256=hashlib.sha256(scheduler_text.encode()).hexdigest(),
+            )
+            manager_command = plan_rendering.render_command(
+                [
+                    plan_contract.frozen_plan_context(recipe)["python"],
+                    "-m",
+                    "agent_tools",
+                    self.slurm_launch_subcommand,
+                    "--plan-dir",
+                    out,
+                ]
+            )
+            contract["launch_script_text"] = (
+                "\n".join(
+                    plan_rendering.script_lines(
+                        [manager_command + ' "$@"'], run_cwd=plan_contract.frozen_plan_context(recipe)["repo_root"]
+                    )
+                )
+                + "\n"
+            )
+            contract["scheduler_script_text"] = scheduler_text
+        return contract
 
     def validation_commands(self, recipe: dict[str, Any]) -> list[str] | None:
         """Full replacement for the kernel's generic validation command list;
