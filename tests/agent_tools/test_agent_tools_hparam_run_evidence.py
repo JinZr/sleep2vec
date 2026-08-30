@@ -241,7 +241,7 @@ def test_hparam_monitor_polls_until_the_current_plan_is_terminal(tmp_path: Path,
     monkeypatch.setattr(hparam_runtime.scheduler, "observe_run", observe)
     monkeypatch.setattr(hparam_runtime.time, "sleep", sleep)
     monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
-    monkeypatch.setattr(hparam_runtime.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
+    monkeypatch.setattr(hparam_runtime.scheduler.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
 
     out = monitor_hparam_runs(tmp_path, once=False, poll_seconds=60)
 
@@ -450,7 +450,7 @@ def test_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("once monitor must not sleep"))
     monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
-    monkeypatch.setattr(hparam_runtime.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
+    monkeypatch.setattr(hparam_runtime.scheduler.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
 
     monitor_hparam_runs(tmp_path, once=True, poll_seconds=60)
 
@@ -476,7 +476,7 @@ def test_continuous_hparam_monitor_never_launches_pending_runs(tmp_path: Path, m
     monkeypatch.setattr(hparam_runtime.time, "sleep", stop_polling)
     monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args, **_kwargs: pytest.fail("no start"))
     monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
-    monkeypatch.setattr(hparam_runtime.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
+    monkeypatch.setattr(hparam_runtime.scheduler.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
 
     with pytest.raises(StopPolling):
         monitor_hparam_runs(tmp_path, once=False, poll_seconds=60)

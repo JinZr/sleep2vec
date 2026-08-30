@@ -9,13 +9,15 @@ import shutil
 import subprocess
 import sys
 
-from agent_tool_test_helpers import config_payload, run_execution_preflight_fixture, write_yaml
+from agent_tool_test_helpers import config_payload, run_execution_preflight_fixture, write_survival_sidecars, write_yaml
 import pytest
 import yaml
 
 from agent_tools import (
+    cli,
     experiment_io,
     experiment_workspace,
+    experiments,
     managed_scheduler,
     plan_rendering,
     plans,
@@ -66,6 +68,16 @@ def _runtime_commit():
     ).stdout.strip()
 
 
+@pytest.fixture
+def _local_ssh(tmp_path: Path, _no_external_scheduler):
+    guarded_bin = tmp_path / "guarded-bin"
+    ssh = guarded_bin / "ssh"
+    ssh.write_text('#!/bin/sh\n[ "$#" -eq 2 ] && [ "$1" = "infer-fixture" ] || exit 98\nexec /bin/bash -c "$2"\n')
+    python = guarded_bin / "python3"
+    python.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
+    python.chmod(0o755)
+
+
 def _infer_slurm_recipe(tmp_path: Path, *, variant: str, task: str, runtime_commit: str) -> Path:
     workspace = tmp_path / "workspace"
     inputs_dir = workspace / "inputs"
@@ -73,9 +85,13 @@ def _infer_slurm_recipe(tmp_path: Path, *, variant: str, task: str, runtime_comm
     workdir = tmp_path / "runtime"
     workdir.mkdir()
     if variant == "sex_age_baseline":
-        from tests.agent_tools.test_agent_sex_age_baseline import _write_survival_config
-
-        config = _write_survival_config(inputs_dir)
+        index = inputs_dir / "index.csv"
+        index.write_text("eid,split,age,sex\n001,train,50,0\n002,val,60,1\n")
+        config_values = yaml.safe_load((REPO_ROOT / "configs" / "sex_age_baseline" / "cox.yaml").read_text())
+        config_values["data"]["finetune_data_index"] = str(index)
+        config_values["finetune"]["task"]["output_dim"] = 2
+        config_values["finetune"]["survival"].update(write_survival_sidecars(inputs_dir))
+        config = write_yaml(inputs_dir / "config.yaml", config_values)
         label = "incident_cox"
     else:
         index = inputs_dir / "index.csv"
@@ -144,6 +160,61 @@ def _read_registered_infer_plan(plan_dir: Path):
         workspace_rows=rows,
         expected_recipe_path=str(workspace / "recipe.yaml"),
     )
+
+
+def _build_infer_slurm_plan(tmp_path: Path, runtime_commit: str, *, target="local", direct_controller=False):
+    recipe_path = _infer_slurm_recipe(tmp_path, variant="sleep2vec", task="infer", runtime_commit=runtime_commit)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    recipe["execution"]["target"] = target
+    if target == "ssh":
+        recipe["execution"]["host"] = "infer-fixture"
+        recipe["execution"]["path_validation"] = "ssh"
+    recipe["execution"]["scheduler"]["direct_controller"] = direct_controller
+    recipe_path.write_text(yaml.safe_dump(recipe))
+    plan_dir = recipe_path.parent / "plan"
+    report = plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
+    assert report.exit_code == 0, [(issue.field, issue.message) for issue in report.blocking_issues()]
+    return plan_dir, _read_registered_infer_plan(plan_dir)
+
+
+def _stub_queued_slurm(monkeypatch, plan_dir: Path, plan: dict):
+    (run,) = plan["runs"]
+    frozen_execution = plan["recipe"]["execution"]
+    calls = []
+
+    def run_command(execution, argv, *, timeout):
+        calls.append(argv)
+        assert execution["target"] == frozen_execution["target"]
+        assert execution.get("host", "") == frozen_execution.get("host", "")
+        if argv == ["scontrol", "show", "config"]:
+            return subprocess.CompletedProcess(argv, 0, "ClusterName = unit-cluster\n", "")
+        if argv[0] == "bash":
+            (row,) = experiment_workspace.read_run_manifest(plan_dir.parent)
+            assert row["status"] == "submitting"
+            assert row["scheduler_cluster"] == "unit-cluster"
+            assert not row.get("scheduler_job_id")
+            assert row["execution_snapshot_sha256"]
+            inner = slurm.submission_command(
+                run["scheduler_script"], run["scheduler_submit_token"], row["execution_snapshot_sha256"]
+            )
+            assert shlex.split(inner) == ["env", "-u", "SLURM_CLUSTERS", *argv]
+            expected = f"ssh infer-fixture {shlex.quote(inner)}" if frozen_execution["target"] == "ssh" else inner
+            assert row["command"] == expected
+            return subprocess.CompletedProcess(argv, 0, "3880\n", "")
+        assert ("--clusters=unit-cluster" in argv) is not frozen_execution["scheduler"]["direct_controller"]
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess(argv, 0, f"3880|PENDING|Priority||{run['scheduler_submit_token']}\n", "")
+        if argv[0] == "scontrol":
+            assert argv[-1] == "3880"
+            return subprocess.CompletedProcess(
+                argv, 0, f"JobId=3880 JobState=PENDING Reason=None Comment={run['scheduler_submit_token']}\n", ""
+            )
+        assert argv[0] == "scancel", argv
+        assert argv[-1] == "3880"
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(slurm, "run_command", run_command)
+    return calls
 
 
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert", "sex_age_baseline"])
@@ -383,3 +454,290 @@ def test_infer_slurm_worker_authenticates_allocation_before_workload(
     else:
         assert result.returncode != 0
     assert manifest_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("target", ["local", "ssh"])
+@pytest.mark.parametrize("direct_controller", [False, True])
+def test_infer_launch_dry_run_and_reexecute_preserve_submission_identity(
+    tmp_path: Path, monkeypatch, target, direct_controller, _runtime_commit, _runtime_probe, _local_ssh
+):
+    plan_dir, plan = _build_infer_slurm_plan(
+        tmp_path, _runtime_commit, target=target, direct_controller=direct_controller
+    )
+    calls = _stub_queued_slurm(monkeypatch, plan_dir, plan)
+    manifest = plan_dir.parent / "run_manifest.tsv"
+    before = manifest.read_bytes()
+
+    preview = experiments.launch_infer_run(plan_dir)
+    assert cli.main(["infer-launch", "--plan-dir", str(plan_dir)]) == 0
+
+    assert manifest.read_bytes() == before
+    assert calls == []
+    assert not (plan_dir / "execution_snapshot.json").exists()
+    assert preview.launch_rows[0]["target"] == target
+    assert not experiment_workspace.has_managed_launch_evidence(preview.committed_rows[0])
+    launched = experiments.launch_infer_run(plan_dir, dry_run=False)
+    assert launched.committed_rows[0]["status"] == "queued"
+    assert launched.committed_rows[0]["scheduler_job_id"] == "3880"
+    assert launched.started_keys == frozenset({("unit-infer", "run-000")})
+
+    repeated = experiments.launch_infer_run(plan_dir, dry_run=False)
+
+    assert not repeated.started_keys
+    assert repeated.committed_rows[0]["scheduler_cluster"] == "unit-cluster"
+    assert sum(argv[0] == "bash" for argv in calls) == 1
+    assert sum(argv == ["scontrol", "show", "config"] for argv in calls) == 1
+
+
+@pytest.mark.parametrize(("failure", "unique_match"), [("timeout", False), ("ssh255", False), ("timeout", True)])
+def test_infer_launch_lost_receipt_never_resubmits(
+    tmp_path: Path, monkeypatch, failure, unique_match, _runtime_commit, _runtime_probe, _local_ssh
+):
+    target = "ssh" if failure == "ssh255" else "local"
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit, target=target)
+    calls = _stub_queued_slurm(monkeypatch, plan_dir, plan)
+    queued_command = slurm.run_command
+
+    def lose_receipt(execution, argv, *, timeout):
+        result = queued_command(execution, argv, timeout=timeout)
+        if argv[0] == "bash":
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(argv, timeout)
+            return subprocess.CompletedProcess(argv, 255, "", "SSH connection closed before receipt")
+        if argv[0] == "squeue" and not unique_match:
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return result
+
+    monkeypatch.setattr(slurm, "run_command", lose_receipt)
+    if unique_match:
+        assert experiments.launch_infer_run(plan_dir, dry_run=False).committed_rows[0]["status"] == "queued"
+    else:
+        with pytest.raises(RuntimeError, match="submission outcome is uncertain"):
+            experiments.launch_infer_run(plan_dir, dry_run=False)
+    (first,) = experiment_workspace.read_run_manifest(plan_dir.parent)
+    assert first["status"] == ("queued" if unique_match else "submitting")
+    assert first.get("scheduler_job_id", "") == ("3880" if unique_match else "")
+    assert first["scheduler_cluster"] == "unit-cluster"
+
+    experiments.launch_infer_run(plan_dir, dry_run=False)
+
+    (repeated,) = experiment_workspace.read_run_manifest(plan_dir.parent)
+    assert repeated["status"] == first["status"]
+    assert sum(argv[0] == "bash" for argv in calls) == 1
+
+
+def test_infer_launch_guard_failure_records_definitely_unsubmitted_failure(
+    tmp_path: Path, monkeypatch, _runtime_commit, _runtime_probe
+):
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
+    calls = _stub_queued_slurm(monkeypatch, plan_dir, plan)
+
+    def failed_runtime_probe(*_args, **_kwargs):
+        raise ValueError("runtime interpreter changed")
+
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", failed_runtime_probe)
+    with pytest.raises(ValueError, match="runtime interpreter changed"):
+        experiments.launch_infer_run(plan_dir, dry_run=False)
+
+    (row,) = experiment_workspace.read_run_manifest(plan_dir.parent)
+    assert row["status"] == "launch_failed"
+    assert "Pre-submission guard failed" in row["scheduler_reason"]
+    assert not experiment_workspace.has_managed_launch_evidence(row)
+    assert calls == []
+
+
+def test_infer_launch_post_submitting_exception_never_downgrades_identity(
+    tmp_path: Path, monkeypatch, _runtime_commit, _runtime_probe
+):
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
+    calls = _stub_queued_slurm(monkeypatch, plan_dir, plan)
+    queued_command = slurm.run_command
+
+    def failed_submission(execution, argv, *, timeout):
+        result = queued_command(execution, argv, timeout=timeout)
+        if argv[0] == "bash":
+            raise OSError("transport failed after submitting was committed")
+        return result
+
+    monkeypatch.setattr(slurm, "run_command", failed_submission)
+    with pytest.raises(OSError, match="after submitting"):
+        experiments.launch_infer_run(plan_dir, dry_run=False)
+    (row,) = experiment_workspace.read_run_manifest(plan_dir.parent)
+    assert row["status"] == "submitting"
+    assert row["scheduler_cluster"] == "unit-cluster"
+    assert experiment_workspace.has_managed_launch_evidence(row)
+
+    experiments.launch_infer_run(plan_dir, dry_run=False)
+
+    (row,) = experiment_workspace.read_run_manifest(plan_dir.parent)
+    assert row["status"] == "queued"
+    assert row["scheduler_job_id"] == "3880"
+    assert sum(argv[0] == "bash" for argv in calls) == 1
+
+
+def test_infer_launch_untrusted_plan_does_not_invent_failure_state(tmp_path: Path, _runtime_commit, _runtime_probe):
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
+    script = Path(plan["runs"][0]["script"])
+    script.write_text(script.read_text() + "# edited after registration\n")
+    manifest = plan_dir.parent / "run_manifest.tsv"
+    before = manifest.read_bytes()
+
+    with pytest.raises(ValueError, match="differs|changed"):
+        experiments.launch_infer_run(plan_dir, dry_run=False)
+
+    assert manifest.read_bytes() == before
+
+
+def test_infer_cluster_mismatch_blocks_reexecute_and_stop(tmp_path: Path, monkeypatch, _runtime_commit, _runtime_probe):
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
+    calls = _stub_queued_slurm(monkeypatch, plan_dir, plan)
+    queued_command = slurm.run_command
+
+    def mismatched_receipt(execution, argv, *, timeout):
+        result = queued_command(execution, argv, timeout=timeout)
+        return subprocess.CompletedProcess(argv, 0, "3880;another-cluster\n", "") if argv[0] == "bash" else result
+
+    monkeypatch.setattr(slurm, "run_command", mismatched_receipt)
+    with pytest.raises(RuntimeError, match="SUBMISSION_CLUSTER_MISMATCH"):
+        experiments.launch_infer_run(plan_dir, dry_run=False)
+    (row,) = experiment_workspace.read_run_manifest(plan_dir.parent)
+    assert row["status"] == "unknown_scheduler"
+    assert row["scheduler_job_id"] == "3880"
+    assert row["scheduler_cluster"] == "unit-cluster"
+    before = list(calls)
+    with pytest.raises(ValueError, match="SUBMISSION_CLUSTER_MISMATCH"):
+        experiments.launch_infer_run(plan_dir, dry_run=False)
+    with pytest.raises(ValueError, match="SUBMISSION_CLUSTER_MISMATCH"):
+        experiments.stop_infer_run(plan_dir, reason="unit stop")
+    assert calls == before
+    assert not experiment_workspace.read_run_manifest(plan_dir.parent)[0].get("stop_requested_at")
+
+
+def test_infer_stop_cli_stops_unsubmitted_plan_without_scheduler(tmp_path: Path, _runtime_commit, _runtime_probe):
+    plan_dir, _plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
+    manifest = plan_dir.parent / "run_manifest.tsv"
+    before = manifest.read_bytes()
+    with pytest.raises(ValueError, match="non-empty reason"):
+        experiments.stop_infer_run(plan_dir, reason=" ")
+    assert manifest.read_bytes() == before
+
+    assert cli.main(["infer-stop", "--plan-dir", str(plan_dir), "--reason", "cancel unsubmitted unit run"]) == 0
+
+    (row,) = experiment_workspace.read_run_manifest(plan_dir.parent)
+    assert row["status"] == "stopped"
+    assert row["stop_reason"] == "cancel unsubmitted unit run"
+    assert not experiment_workspace.has_managed_launch_evidence(row)
+    assert not row.get("stop_requested_at")
+    events = experiment_workspace.read_experiment_events(plan_dir.parent)
+    assert sum(event["event_type"] == "run_stopped" for event in events) == 1
+    assert all(event["event_type"] != "run_stop_requested" for event in events)
+
+
+def test_infer_queued_stop_reuses_intent_and_converges_without_worker_sidecar(
+    tmp_path: Path, monkeypatch, _runtime_commit, _runtime_probe
+):
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
+    calls = _stub_queued_slurm(monkeypatch, plan_dir, plan)
+    experiments.launch_infer_run(plan_dir, dry_run=False)
+    queued_command = slurm.run_command
+    reason = "cancel queued unit run"
+
+    def cancel_after_durable_intent(execution, argv, *, timeout):
+        if argv[0] == "scancel":
+            (row,) = experiment_workspace.read_run_manifest(plan_dir.parent)
+            assert row["status"] == "stopping"
+            assert row["stop_requested_at"]
+            assert row["stop_reason"] == reason
+            events = experiment_workspace.read_experiment_events(plan_dir.parent)
+            assert sum(event["event_type"] == "run_stop_requested" for event in events) == 1
+        return queued_command(execution, argv, timeout=timeout)
+
+    monkeypatch.setattr(slurm, "run_command", cancel_after_durable_intent)
+    assert experiments.stop_infer_run(plan_dir, reason=reason) == plan_dir.parent / "run_manifest.tsv"
+    intent = experiment_workspace.read_run_manifest(plan_dir.parent)[0]["stop_requested_at"]
+    experiments.stop_infer_run(plan_dir, reason=reason)
+    assert experiment_workspace.read_run_manifest(plan_dir.parent)[0]["stop_requested_at"] == intent
+    assert sum(argv[0] == "scancel" for argv in calls) == 2
+    with pytest.raises(ValueError, match="different reason"):
+        experiments.stop_infer_run(plan_dir, reason="changed reason")
+    assert sum(argv[0] == "scancel" for argv in calls) == 2
+    (run,) = plan["runs"]
+    assert not Path(run["allocation_identity_path"]).exists()
+    assert not Path(run["scheduler_result_path"]).exists()
+
+    def cancelled_job(execution, argv, *, timeout):
+        result = queued_command(execution, argv, timeout=timeout)
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess(argv, 0, f"3880|CANCELLED|||{run['scheduler_submit_token']}\n", "")
+        if argv[0] == "scontrol":
+            return subprocess.CompletedProcess(
+                argv, 0, result.stdout.replace("JobState=PENDING", "JobState=CANCELLED"), ""
+            )
+        return result
+
+    monkeypatch.setattr(slurm, "run_command", cancelled_job)
+    monitored = experiments.monitor_experiment(plan_dir.parent)
+
+    assert monitored["runs"][0]["status"] == "stopped"
+    assert monitored["runs"][0]["scheduler_raw_state"] == "CANCELLED"
+    assert monitored["runs"][0]["stop_reason"] == reason
+
+
+def test_infer_external_cancel_without_intent_or_sidecar_remains_unknown(
+    tmp_path: Path, monkeypatch, _runtime_commit, _runtime_probe
+):
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
+    _stub_queued_slurm(monkeypatch, plan_dir, plan)
+    experiments.launch_infer_run(plan_dir, dry_run=False)
+    queued_command = slurm.run_command
+    (run,) = plan["runs"]
+
+    def cancelled_job(execution, argv, *, timeout):
+        result = queued_command(execution, argv, timeout=timeout)
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess(argv, 0, f"3880|CANCELLED|||{run['scheduler_submit_token']}\n", "")
+        if argv[0] == "scontrol":
+            return subprocess.CompletedProcess(
+                argv, 0, result.stdout.replace("JobState=PENDING", "JobState=CANCELLED"), ""
+            )
+        return result
+
+    monkeypatch.setattr(slurm, "run_command", cancelled_job)
+
+    monitored = experiments.monitor_experiment(plan_dir.parent)
+
+    assert monitored["runs"][0]["status"] == "unknown_scheduler"
+    assert monitored["runs"][0]["scheduler_raw_state"] == "CANCELLED"
+    assert not monitored["runs"][0].get("stop_requested_at")
+    assert not monitored["runs"][0].get("stop_reason")
+
+
+@pytest.mark.parametrize("boundary", ["intent", "event", "report"])
+def test_infer_stop_failure_preserves_cancel_order_and_committed_intent(
+    tmp_path: Path, monkeypatch, boundary: str, _runtime_commit, _runtime_probe
+):
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
+    calls = _stub_queued_slurm(monkeypatch, plan_dir, plan)
+    experiments.launch_infer_run(plan_dir, dry_run=False)
+    manifest = plan_dir.parent / "run_manifest.tsv"
+    before = manifest.read_bytes()
+
+    def fail(*_args, **_kwargs):
+        raise OSError(f"{boundary} write failed")
+
+    owner_field = {"intent": "merge_run_manifest", "event": "append_event", "report": "write_status_report"}[boundary]
+    monkeypatch.setattr(experiments, owner_field, fail)
+
+    with pytest.raises(OSError, match=f"{boundary} write failed"):
+        experiments.stop_infer_run(plan_dir, reason="cancel unit run")
+
+    assert sum(argv[0] == "scancel" for argv in calls) == (1 if boundary == "report" else 0)
+    (row,) = experiment_workspace.read_run_manifest(plan_dir.parent)
+    if boundary == "intent":
+        assert manifest.read_bytes() == before
+        assert row["status"] == "queued"
+        assert not row.get("stop_requested_at")
+    else:
+        assert row["status"] == "stopping"
+        assert row["stop_requested_at"]
+        assert row["stop_reason"] == "cancel unit run"

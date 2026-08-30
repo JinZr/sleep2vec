@@ -1423,6 +1423,10 @@ def _plan_advice(
                 ]
                 action_id = "hparam-run-queue"
                 control_host = remote
+            elif plan["task"] in {"infer", "evaluate"} and all(scheduler_type(row) == "slurm" for row in plan_rows):
+                argv = ["python", "-m", "agent_tools", "infer-launch", "--plan-dir", plan["path"], "--execute"]
+                action_id = "infer-launch"
+                control_host = remote
             else:
                 argv = ["bash", plan["launch_script"]]
                 action_id = "run-plan"
