@@ -308,8 +308,13 @@ def evaluate_recipe(
         source_config_bytes = source_config_path.read_bytes()
 
     config_error = None
+    validated_sidecar_keys: dict[str, set[str]] = {}
     try:
-        cfg = context.load_config_summary_for_recipe(recipe, config_bytes=source_config_bytes)
+        cfg = context.load_config_summary_for_recipe(
+            recipe,
+            config_bytes=source_config_bytes,
+            validated_sidecar_keys=validated_sidecar_keys,
+        )
     except Exception as exc:
         if "config" not in user_decisions:
             raise
@@ -491,7 +496,9 @@ def evaluate_recipe(
                     )
                 ],
             )
-    report = _append_issues(report, context.index_summary_issues(recipe, cfg))
+    report = _append_issues(
+        report, context.index_summary_issues(recipe, cfg, validated_sidecar_keys=validated_sidecar_keys)
+    )
     if override_issues:
         report = _append_issues(report, override_issues)
     return recipe, cfg, report

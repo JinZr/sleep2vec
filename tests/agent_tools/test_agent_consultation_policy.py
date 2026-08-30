@@ -59,6 +59,14 @@ def test_doctor_without_output_dir_is_read_only(tmp_path: Path):
     write_yaml(recipe, payload)
     implicit_output = Path.cwd() / "artifacts" / "agent_context" / payload["name"]
     assert not implicit_output.exists()
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    result = _run("doctor", "--recipe", str(recipe), cwd=Path.cwd())
+
+    assert result.returncode == 2
+    assert "Status: NEEDS_USER_INPUT" in result.stdout
+    assert not implicit_output.exists()
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
 def test_remote_deferred_config_path_warns_without_local_dummy_config(tmp_path: Path):

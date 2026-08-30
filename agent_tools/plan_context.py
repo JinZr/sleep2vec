@@ -16,7 +16,12 @@ from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, coerce_list, resolve_rep
 from .skills import list_skills
 
 
-def load_config_summary_for_recipe(recipe: dict, *, config_bytes: bytes | None = None) -> dict | None:
+def load_config_summary_for_recipe(
+    recipe: dict,
+    *,
+    config_bytes: bytes | None = None,
+    validated_sidecar_keys: dict[str, set[str]] | None = None,
+) -> dict | None:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     config = inputs.get("config")
     if not config:
@@ -37,6 +42,7 @@ def load_config_summary_for_recipe(recipe: dict, *, config_bytes: bytes | None =
         ),
         local_path_base=_runtime_path_base(recipe),
         config_bytes=config_bytes,
+        validated_sidecar_keys=validated_sidecar_keys,
     )
 
 
@@ -99,7 +105,12 @@ def skill_context(task: str) -> tuple[dict[str, Any], list[str]]:
     return {"name": None, "path": None, "owners": []}, []
 
 
-def context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
+def context_index_summary(
+    recipe: dict,
+    cfg: dict | None,
+    *,
+    validated_sidecar_keys: dict[str, set[str]] | None = None,
+) -> dict | None:
     paths, config, split_values = index_summary_inputs(recipe, cfg)
     data = (cfg or {}).get("data") or {}
     uses_kaldi_manifest = bool(
@@ -130,6 +141,17 @@ def context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
             return None
     elif skips_local_path_validation(recipe, paths):
         return None
+    validated_summary = None
+    if (
+        config
+        and validated_sidecar_keys is not None
+        and cfg is not None
+        and not cfg.get("blocking_issues")
+        and isinstance(cfg.get("_source_config_bytes"), bytes)
+        and (task_type not in {"survival", "multilabel_classification"} or label_sidecars_valid)
+    ):
+        # Reuse only a completed validation view; failed or deferred checks keep their original path.
+        validated_summary = (cfg, validated_sidecar_keys)
     try:
         # Index and sidecar checks must stay bound to the config snapshot accepted by plan preflight.
         return index_summary(
@@ -139,6 +161,7 @@ def context_index_summary(recipe: dict, cfg: dict | None) -> dict | None:
             local_path_base=_runtime_path_base(recipe),
             split_values=split_values,
             preset_path=preset_path,
+            validated_summary=validated_summary,
         )
     except Exception as exc:
         return {"blocking_issues": [f"Failed to summarize index: {exc}"]}
@@ -164,8 +187,10 @@ def index_summary_issues(
     cfg: dict | None,
     *,
     index_payload: dict | None = None,
+    validated_sidecar_keys: dict[str, set[str]] | None = None,
 ) -> list[DecisionIssue]:
-    index_payload = context_index_summary(recipe, cfg) if index_payload is None else index_payload
+    if index_payload is None:
+        index_payload = context_index_summary(recipe, cfg, validated_sidecar_keys=validated_sidecar_keys)
     blocking = (index_payload or {}).get("blocking_issues") or []
     return [
         DecisionIssue(

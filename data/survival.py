@@ -137,9 +137,10 @@ def _load_sidecar(
         raise ValueError(f"{field_name} columns must exactly match [key_column] + disease_columns_index.")
 
     values_by_key: dict[str, np.ndarray] = {}
-    for _, row in frame.iterrows():
-        key = normalize_survival_key(row[key_column], key_column)
+    for row in frame.itertuples(index=False, name=None):
+        key = normalize_survival_key(row[0], key_column)
         if key in values_by_key:
             raise ValueError(f"{field_name} contains duplicate key {key!r}.")
-        values_by_key[key] = pd.to_numeric(row[label_names], errors="coerce").to_numpy(dtype=np.float32)
+        # Preserve mixed scalar values until pandas performs numeric conversion.
+        values_by_key[key] = pd.to_numeric(np.asarray(row[1:], dtype=object), errors="coerce").astype(np.float32)
     return values_by_key
