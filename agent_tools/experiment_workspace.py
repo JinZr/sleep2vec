@@ -907,7 +907,8 @@ def semantic_run_name(parameters: dict[str, Any]) -> str:
         return "default"
     pieces = []
     used = set()
-    for key, value in parameters.items():
+    # Match sorted-key plan serialization before assigning shortened field names.
+    for key, value in sorted(parameters.items()):
         field = _parameter_field(key)
         if field in used:
             field = _bounded_slug(str(key), 32)
@@ -921,7 +922,7 @@ def safe_artifact_name(value: Any) -> str:
 
 
 def parameter_summary(parameters: dict[str, Any]) -> str:
-    return "; ".join(f"{key}={_display_value(value)}" for key, value in parameters.items())
+    return "; ".join(f"{key}={_display_value(value)}" for key, value in sorted(parameters.items()))
 
 
 def file_sha256(path: str | Path) -> str:

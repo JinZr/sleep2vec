@@ -16,7 +16,7 @@ from test_agent_tools_experiment_status import (
 from test_agent_tools_experiment_status import _stub_execution_target  # noqa: F401
 import yaml
 
-from agent_tools import cli, experiment_io, experiments, plans
+from agent_tools import cli, experiment_io, experiments, plan_hparam, plans, run_artifacts
 from agent_tools.manifests import write_rows
 
 
@@ -517,6 +517,75 @@ def test_experiment_status_accepts_public_layered_hparam_plan(tmp_path, paramete
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
+
+
+@pytest.mark.parametrize("reverse_keys", [False, True])
+def test_hparam_configurations_preserve_frozen_identity_across_json_roundtrip(tmp_path, reverse_keys):
+    root = tmp_path / "experiment"
+    configurations = [
+        {"runtime.lr": 2e-6, "runtime.weight_decay": 0.1},
+        {"runtime.lr": 1e-6, "runtime.weight_decay": 0.01},
+    ]
+    if reverse_keys:
+        configurations = [dict(reversed(list(point.items()))) for point in configurations]
+    recipe = _write_public_hparam_recipe(root, {})
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"] = {"method": "grid", "max_runs": 2, "configurations": configurations}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = root / "plans" / "tune"
+
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    runs = plan["runs"]
+    assert [run["run_id"] for run in runs] == ["run-000", "run-001"]
+    assert [run["run_name"] for run in runs] == ["lr-2e-6__weight-decay-0.1", "lr-1e-6__weight-decay-0.01"]
+    assert [run["parameter_summary"] for run in runs] == [
+        "runtime.lr=2e-06; runtime.weight_decay=0.1",
+        "runtime.lr=1e-06; runtime.weight_decay=0.01",
+    ]
+    assert [{key: run[key] for key in point} for run, point in zip(runs, configurations)] == configurations
+    canonical = _read_manifest_rows(root)
+    for run, row in zip(runs, canonical):
+        for field in (*run_artifacts.REGISTERED_PLAN_IDENTITY_FIELDS, "parameter_summary"):
+            assert str(run.get(field) or "") == str(row.get(field) or "")
+        assert run["config_sha256"] == _sha256(Path(run["config"]))
+        assert run["script_sha256"] == _sha256(Path(run["script"]))
+        assert run["command"] in Path(run["script"]).read_text()
+    before = _workspace_files(root)
+
+    assert run_artifacts.read_hparam_plan(plan_dir)["runs"] == runs
+    assert experiments.experiment_status(root)["summary"]["state"] == "ready_to_launch"
+    assert _workspace_files(root) == before
+
+
+@pytest.mark.parametrize("max_runs", [3, 4])
+def test_hparam_grid_key_order_does_not_change_run_indices_or_budget_subset(tmp_path, max_runs):
+    expected = [
+        {"runtime.lr": 2e-6, "runtime.weight_decay": 0.1},
+        {"runtime.lr": 2e-6, "runtime.weight_decay": 0.01},
+        {"runtime.lr": 1e-6, "runtime.weight_decay": 0.1},
+        {"runtime.lr": 1e-6, "runtime.weight_decay": 0.01},
+    ][:max_runs]
+    parameters = {"runtime.weight_decay": [0.1, 0.01], "runtime.lr": [2e-6, 1e-6]}
+    for index, mapping in enumerate((parameters, dict(reversed(list(parameters.items()))))):
+        root = tmp_path / f"experiment-{index}"
+        recipe = _write_public_hparam_recipe(root, mapping, max_runs=max_runs)
+        payload = yaml.safe_load(recipe.read_text())
+        payload["search"]["parameters"] = mapping
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+        assert plan_hparam.hparam_combos(payload) == expected
+        assert plan_hparam.hparam_combos(json.loads(json.dumps(payload, sort_keys=True))) == expected
+        plan_dir = root / "plans" / "tune"
+
+        assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+        runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
+        assert [run["run_id"] for run in runs] == [f"run-{run_index:03d}" for run_index in range(max_runs)]
+        assert [{key: run[key] for key in parameters} for run in runs] == expected
+        before = _workspace_files(root)
+
+        assert run_artifacts.read_hparam_plan(plan_dir)["runs"] == runs
+        assert experiments.experiment_status(root)["summary"]["state"] == "ready_to_launch"
+        assert _workspace_files(root) == before
 
 
 def test_experiment_status_requires_hparam_resolved_recipe_digest(tmp_path, capsys):

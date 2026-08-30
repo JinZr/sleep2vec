@@ -35,11 +35,13 @@ from agent_tools.experiment_workspace import (
     merge_run_manifest,
     merge_run_row,
     merge_step_manifest,
+    parameter_summary,
     read_run_manifest,
     read_step_manifest,
     resolve_external_run_row,
     resolve_run_row,
     run_evidence_key,
+    run_identity,
     semantic_run_name,
     validate_frozen_run_update,
     validate_managed_run_rows,
@@ -2206,8 +2208,60 @@ def test_scheduler_active_status_does_not_regress_to_pending():
 def test_semantic_run_name_keeps_boolean_settings_readable():
     assert (
         semantic_run_name({"runtime.lr": 2e-6, "yaml:/model/router_frozen": True, "yaml:/loss/class_weights": False})
-        == "lr-2e-6__router-frozen__class-weights-off"
+        == "lr-2e-6__class-weights-off__router-frozen"
     )
+
+
+@pytest.mark.parametrize(
+    ("parameters", "expected_name", "expected_summary"),
+    [
+        (
+            {"runtime.weight_decay": 0.1, "runtime.lr": 2e-6},
+            "lr-2e-6__weight-decay-0.1",
+            "runtime.lr=2e-06; runtime.weight_decay=0.1",
+        ),
+        (
+            {"yaml:/model/lr": 0.1, "runtime.lr": 2e-6},
+            "lr-2e-6__yaml-model-lr-0.1",
+            "runtime.lr=2e-06; yaml:/model/lr=0.1",
+        ),
+    ],
+)
+def test_semantic_run_identity_is_independent_of_parameter_key_order(parameters, expected_name, expected_summary):
+    recipe = {"experiment": {"id": "unit"}, "step": {"id": "tune"}}
+    reordered = json.loads(json.dumps(parameters, sort_keys=True))
+
+    for mapping in (parameters, reordered):
+        assert semantic_run_name(mapping) == expected_name
+        assert parameter_summary(mapping) == expected_summary
+        assert run_identity(recipe, 7, mapping) == {
+            "run_id": "run-007",
+            "run_name": expected_name,
+            "version": f"unit__tune__run-007__{expected_name}",
+        }
+
+
+def test_long_semantic_identity_canonicalizes_nested_mappings_but_preserves_list_order():
+    recipe = {"experiment": {"id": "unit"}, "step": {"id": "tune"}}
+    parameters = {
+        "yaml:/model/options": {"z": {"beta": 2, "alpha": 1}, "a": [{"z": 2, "a": 1}, "second"]},
+        "yaml:/model/description": "long-description-" * 12,
+        "yaml:/model/layers": [3, 1, 2],
+        "runtime.lr": 2e-6,
+    }
+    reordered = json.loads(json.dumps(parameters, sort_keys=True))
+    run_name = semantic_run_name(parameters)
+
+    assert len(run_name) <= 100
+    assert "--h" in run_name
+    assert semantic_run_name(reordered) == run_name
+    assert parameter_summary(reordered) == parameter_summary(parameters)
+    assert run_identity(recipe, 7, reordered) == run_identity(recipe, 7, parameters)
+
+    reordered["yaml:/model/layers"].reverse()
+    assert semantic_run_name(reordered) != run_name
+    assert parameter_summary(reordered) != parameter_summary(parameters)
+    assert run_identity(recipe, 7, reordered) != run_identity(recipe, 7, parameters)
 
 
 def test_step_manifest_merge_preserves_registered_fields_and_appends_plans():

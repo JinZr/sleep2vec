@@ -437,7 +437,7 @@ def hparam_combos(recipe: dict) -> list[dict[str, Any]]:
         combos = [dict(point) for point in configurations]
     else:
         params = search.get("parameters") or {}
-        keys = list(params)
+        keys = sorted(params)
         combos = [dict(zip(keys, values)) for values in product(*(params[key] for key in keys))]
     max_runs = int(search.get("max_runs")) if search.get("max_runs") not in (None, "") else len(combos)
     return combos[:max_runs]
