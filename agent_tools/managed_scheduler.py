@@ -22,6 +22,7 @@ from .experiment_workspace import (
     LAUNCHABLE_STATUSES,
     PROCESS_IDENTITY_FIELDS,
     SCHEDULER_PLAN_IDENTITY_FIELDS,
+    SUBMISSION_CLUSTER_MISMATCH,
     append_event,
     file_sha256,
     managed_run_key,
@@ -807,6 +808,10 @@ def _launch_slurm_runs(
     if missing:
         step_id, run_id = sorted(missing)[0]
         raise ValueError(f"Canonical run is missing: {step_id} / {run_id}")
+    if not dry_run:
+        for key in expected_keys:
+            if workspace_by_key[key].get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
+                raise ValueError(f"Slurm plan is blocked by {SUBMISSION_CLUSTER_MISMATCH}: {key[0]} / {key[1]}")
     planned_fields = {
         "experiment_id",
         "step_id",
@@ -918,10 +923,12 @@ def _launch_slurm_runs(
         for run in launchable:
             key = managed_run_key(run)
             previous = workspace_by_key[key]
+            cluster = slurm.controller_cluster(execution, timeout=LAUNCH_TIMEOUT_SECONDS)
             submitting = {
                 **previous,
                 **_slurm_execution_identity(execution, run, execution_snapshot_sha256),
                 "status": "submitting",
+                "scheduler_cluster": cluster,
                 "scheduler_observed_at": utc_now(),
             }
             committed = hooks.merge_manifest(workspace, [submitting], lock_held=True)
@@ -938,6 +945,17 @@ def _launch_slurm_runs(
                     timeout=LAUNCH_TIMEOUT_SECONDS,
                 )
                 submitted = _submitted_slurm_row(submitting, identity, raw_state="SUBMITTED")
+                if identity.cluster and identity.cluster != submitting["scheduler_cluster"]:
+                    reason = (
+                        f"{SUBMISSION_CLUSTER_MISMATCH}: submitted job {identity.job_id} returned cluster "
+                        f"{identity.cluster!r}, differing from frozen controller {submitting['scheduler_cluster']!r}."
+                    )
+                    submitted.update(
+                        status="unknown_scheduler",
+                        scheduler_raw_state=SUBMISSION_CLUSTER_MISMATCH,
+                        scheduler_reason=reason,
+                    )
+                    uncertain_error = RuntimeError(reason)
             except slurm.SlurmCommandError as exc:
                 if exc.returncode != 255:
                     failed = {
@@ -1029,7 +1047,7 @@ def _submitted_slurm_row(
         **row,
         "status": status,
         "scheduler_job_id": identity.job_id,
-        "scheduler_cluster": identity.cluster,
+        "scheduler_cluster": row.get("scheduler_cluster") or identity.cluster,
         "scheduler_raw_state": raw_state,
         "scheduler_reason": "",
         "scheduler_observed_at": utc_now(),
@@ -1045,9 +1063,16 @@ def _reconcile_slurm_submission(
 ) -> tuple[dict[str, Any], RuntimeError | None]:
     terminal = _read_slurm_json(owner_dir, execution, row["scheduler_result_path"])
     if terminal:
-        return observe_slurm_run(owner_dir, execution, row), None
+        observed = observe_slurm_run(owner_dir, execution, row)
+        if observed.get("scheduler_job_id"):
+            return observed, None
+        detail = f"{cause}; {observed['scheduler_reason']}"
+        observed["scheduler_reason"] = detail
+        return observed, RuntimeError(f"Slurm submission outcome is uncertain: {detail}")
     try:
-        matches = slurm.active_jobs(execution, submit_token=row["scheduler_submit_token"])
+        matches = slurm.active_jobs(
+            execution, submit_token=row["scheduler_submit_token"], cluster=row.get("scheduler_cluster") or None
+        )
     except Exception as reconcile_error:
         detail = f"{cause}; reconciliation failed: {reconcile_error}"
         unresolved = {**row, "scheduler_reason": detail, "scheduler_observed_at": utc_now()}
@@ -1086,6 +1111,8 @@ def observe_slurm_run(
     *,
     health: bool = False,
 ) -> dict[str, Any]:
+    if row.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
+        return _slurm_artifact_observation({**row, "scheduler_observed_at": utc_now()}, health=health)
     owner = Path(owner_dir)
     token = str(row["scheduler_submit_token"])
     canonical_job_id = str(row.get("scheduler_job_id") or "")

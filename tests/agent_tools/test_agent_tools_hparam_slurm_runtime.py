@@ -31,7 +31,238 @@ from agent_tools import (
     run_artifacts,
     slurm,
 )
-from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256, next_run_index, run_identity
+from agent_tools.experiment_workspace import (
+    MONITOR_EXIT_CODE_PREFIX,
+    file_sha256,
+    merge_run_manifest,
+    next_run_index,
+    run_identity,
+)
+
+_REAL_CONTROLLER_CLUSTER = slurm.controller_cluster
+
+
+@pytest.mark.parametrize("direct_controller", [False, True])
+@pytest.mark.parametrize(("exit_code", "status"), [(0, "completed"), (143, "failed")])
+def test_slurm_bare_receipt_survives_first_monitor_after_controller_purge(
+    tmp_path: Path, monkeypatch, direct_controller: bool, exit_code: int, status: str
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=direct_controller)
+    run = plan["runs"][0]
+    calls = []
+
+    def run_command(execution, argv, *, timeout):
+        calls.append(argv)
+        if argv == ["scontrol", "show", "config"]:
+            return subprocess.CompletedProcess(argv, 0, "ClusterName = wuji-h20\n", "")
+        if argv[0] == "bash":
+            canonical = next(
+                row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"]
+            )
+            assert canonical["status"] == "submitting"
+            assert canonical["scheduler_cluster"] == "wuji-h20"
+            assert canonical.get("scheduler_job_id", "") == ""
+            assert canonical["target"] == "local"
+            assert canonical["scheduler_direct_controller"] == str(direct_controller).lower()
+            assert canonical["command"] == slurm.submission_command(
+                run["scheduler_script"], run["scheduler_submit_token"], canonical["execution_snapshot_sha256"]
+            )
+            return subprocess.CompletedProcess(argv, 0, "3880\n", "")
+        assert ("--clusters=wuji-h20" in argv) is not direct_controller
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[0] == "scontrol":
+            return subprocess.CompletedProcess(argv, 1, "", "slurm_load_jobs error: Invalid job id specified")
+        assert argv[0] == "sacct"
+        return subprocess.CompletedProcess(argv, 1, "", "Slurm accounting storage is disabled")
+
+    monkeypatch.setattr(slurm, "controller_cluster", _REAL_CONTROLLER_CLUSTER)
+    monkeypatch.setattr(slurm, "run_command", run_command)
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
+    assert calls == []
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    submitted = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert submitted["scheduler_job_id"] == "3880"
+    assert submitted["scheduler_cluster"] == "wuji-h20"
+    Path(run["scheduler_result_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": run["scheduler_submit_token"],
+                "exit_code": exit_code,
+            }
+        )
+    )
+
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+
+    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert canonical["status"] == status
+    assert canonical["scheduler_raw_state"] == "MISSING"
+    assert canonical["scheduler_job_id"] == "3880"
+    assert canonical["scheduler_cluster"] == "wuji-h20"
+    assert [argv[0] for argv in calls] == ["scontrol", "bash", "squeue", "scontrol", "sacct"]
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "error"),
+    [
+        (1, "", "controller unavailable", slurm.SlurmCommandError),
+        (0, "ClusterName =\n", "", ValueError),
+        (0, "ClusterName = bad/cluster\n", "", ValueError),
+        (0, "ClusterName = wuji-h20\nClusterName = wuji-h20\n", "", ValueError),
+    ],
+)
+def test_slurm_controller_binding_failure_never_submits_or_transitions_run(
+    tmp_path: Path, monkeypatch, returncode: int, stdout: str, stderr: str, error
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    before = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    calls = []
+
+    def run_command(_execution, argv, *, timeout):
+        calls.append(argv)
+        assert argv == ["scontrol", "show", "config"]
+        return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+    monkeypatch.setattr(slurm, "controller_cluster", _REAL_CONTROLLER_CLUSTER)
+    monkeypatch.setattr(slurm, "run_command", run_command)
+    with pytest.raises(error):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    after = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    assert calls == [["scontrol", "show", "config"]]
+    for field in ("status", "target", "host", "scheduler_cluster", "scheduler_job_id"):
+        assert after.get(field, "") == before.get(field, "")
+
+
+def test_slurm_receipt_cluster_mismatch_durably_blocks_launch_monitor_and_stop(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path, run_count=2)
+    calls = []
+
+    def run_command(_execution, argv, *, timeout):
+        calls.append(argv)
+        if argv == ["scontrol", "show", "config"]:
+            return subprocess.CompletedProcess(argv, 0, "ClusterName = wuji-h20\n", "")
+        assert argv[0] == "bash"
+        return subprocess.CompletedProcess(argv, 0, "3880;other-cluster\n", "")
+
+    monkeypatch.setattr(slurm, "controller_cluster", _REAL_CONTROLLER_CLUSTER)
+    monkeypatch.setattr(slurm, "run_command", run_command)
+    with pytest.raises(RuntimeError, match="SUBMISSION_CLUSTER_MISMATCH"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    run_ids = {run["run_id"] for run in plan["runs"]}
+    first, second = [row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] in run_ids]
+    assert first["scheduler_job_id"] == "3880"
+    assert first["scheduler_cluster"] == "wuji-h20"
+    assert first["status"] == "unknown_scheduler"
+    assert first["scheduler_raw_state"] == "SUBMISSION_CLUSTER_MISMATCH"
+    assert "other-cluster" in first["scheduler_reason"]
+    assert "wuji-h20" in first["scheduler_reason"]
+    assert second["status"] == "planned"
+    assert second.get("scheduler_cluster", "") == ""
+    assert [argv[0] for argv in calls] == ["scontrol", "bash"]
+    merge_run_manifest(
+        tmp_path, [{**first, "status": "running", "scheduler_raw_state": "RUNNING", "scheduler_reason": ""}]
+    )
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Quarantined identity must not read sidecars or query/cancel a scheduler job")
+
+    monkeypatch.setattr(managed_scheduler, "_read_slurm_json", forbidden)
+    monkeypatch.setattr(slurm, "run_command", forbidden)
+    hparam_runtime.monitor_hparam_runs(plan_dir)
+    after_monitor = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == first["run_id"])
+    assert after_monitor["status"] == "unknown_scheduler"
+    assert after_monitor["scheduler_raw_state"] == first["scheduler_raw_state"]
+    assert after_monitor["scheduler_reason"] == first["scheduler_reason"]
+    before_stop = (tmp_path / "run_manifest.tsv").read_bytes()
+    before_events = (tmp_path / "events.jsonl").read_bytes()
+    with pytest.raises(ValueError, match="SUBMISSION_CLUSTER_MISMATCH"):
+        hparam_runtime.stop_hparam_run(plan_dir, plan["runs"][0]["run_id"], reason="test stop")
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before_stop
+    assert (tmp_path / "events.jsonl").read_bytes() == before_events
+    with pytest.raises(ValueError, match="SUBMISSION_CLUSTER_MISMATCH"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    with pytest.raises(RuntimeError, match="unknown_scheduler"):
+        hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)
+    assert (
+        next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == second["run_id"])["status"]
+        == "planned"
+    )
+
+
+@pytest.mark.parametrize("query_error", [False, True])
+def test_slurm_timeout_with_unconfirmed_terminal_sidecar_stops_submission_batch(
+    tmp_path: Path, monkeypatch, query_error
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path, run_count=2)
+    first = plan["runs"][0]
+    submissions = []
+
+    def submit(_execution, script, _token, **_kwargs):
+        submissions.append(script)
+        Path(first["scheduler_result_path"]).write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "scheduler_job_id": "3880",
+                    "scheduler_cluster": "wuji-h20",
+                    "scheduler_submit_token": first["scheduler_submit_token"],
+                    "exit_code": 0,
+                }
+            )
+        )
+        raise subprocess.TimeoutExpired("sbatch", 60)
+
+    def active_jobs(_execution, **kwargs):
+        assert kwargs["cluster"] == "wuji-h20"
+        if query_error:
+            raise RuntimeError("controller unavailable")
+        return []
+
+    monkeypatch.setattr(slurm, "submit", submit)
+    monkeypatch.setattr(slurm, "active_jobs", active_jobs)
+    monkeypatch.setattr(slurm, "show_job", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(slurm, "accounting_job", lambda *_args, **_kwargs: None)
+    with pytest.raises(RuntimeError, match="submission outcome is uncertain"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
+    unresolved = rows[first["run_id"]]
+    assert submissions == [first["scheduler_script"]]
+    assert unresolved["status"] == "submitting"
+    assert unresolved["scheduler_cluster"] == "wuji-h20"
+    assert unresolved.get("scheduler_job_id", "") == ""
+    assert rows[plan["runs"][1]["run_id"]]["status"] == "planned"
+
+
+def test_slurm_cluster_binding_must_commit_before_submission(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    real_merge = hparam_runtime.merge_run_manifest
+    submissions = []
+
+    def merge(workspace, rows, **kwargs):
+        if any(row.get("status") == "submitting" for row in rows):
+            assert rows[0]["scheduler_cluster"] == "wuji-h20"
+            raise RuntimeError("canonical binding write failed")
+        return real_merge(workspace, rows, **kwargs)
+
+    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge)
+    monkeypatch.setattr(slurm, "submit", lambda *_args, **_kwargs: submissions.append(True))
+    with pytest.raises(RuntimeError, match="canonical binding write failed"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    canonical = next(
+        row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == plan["runs"][0]["run_id"]
+    )
+    assert submissions == []
+    assert canonical["status"] == "planned"
+    assert canonical.get("target", "") == ""
+    assert canonical.get("scheduler_cluster", "") == ""
 
 
 @pytest.mark.parametrize("direct_controller", [False, True])

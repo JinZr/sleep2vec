@@ -145,13 +145,14 @@ def test_slurm_monitor_keeps_terminal_sidecar_unknown_without_scheduler_record(t
     assert "before terminal scheduler state was observed" in canonical["scheduler_reason"]
 
 
-@pytest.mark.parametrize("canonical_job_id", ["", "3880"])
+@pytest.mark.parametrize("canonical_job_id,canonical_cluster", [("", ""), ("3880", ""), ("", "wuji-h20")])
 @pytest.mark.parametrize("sidecar_kind", ["allocation", "terminal"])
 @pytest.mark.parametrize("first_observation", ["error", "missing"])
 def test_slurm_monitor_does_not_commit_sidecar_identity_without_scheduler_evidence(
     tmp_path: Path,
     monkeypatch,
     canonical_job_id: str,
+    canonical_cluster: str,
     sidecar_kind: str,
     first_observation: str,
 ):
@@ -166,6 +167,7 @@ def test_slurm_monitor_does_not_commit_sidecar_identity_without_scheduler_eviden
                 "target": "local",
                 "status": "queued" if canonical_job_id else "submitting",
                 "scheduler_job_id": canonical_job_id,
+                "scheduler_cluster": canonical_cluster,
                 "launched_at": "2026-08-21T00:00:00Z" if canonical_job_id else "",
             }
         ],
@@ -173,7 +175,7 @@ def test_slurm_monitor_does_not_commit_sidecar_identity_without_scheduler_eviden
     sidecar = {
         "schema_version": 1,
         "scheduler_job_id": "3880",
-        "scheduler_cluster": "sidecar-only-cluster",
+        "scheduler_cluster": canonical_cluster or "sidecar-only-cluster",
         "scheduler_submit_token": run["scheduler_submit_token"],
         "node": "h20-bj-96",
         "started_at": "2026-08-21T00:00:00Z",
@@ -204,11 +206,14 @@ def test_slurm_monitor_does_not_commit_sidecar_identity_without_scheduler_eviden
         canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
         assert canonical["status"] == ("unknown_scheduler" if canonical_job_id else "submitting")
         assert canonical.get("scheduler_job_id", "") == canonical_job_id
-        assert canonical.get("scheduler_cluster", "") == ""
+        assert canonical.get("scheduler_cluster", "") == canonical_cluster
         if not canonical_job_id:
             assert canonical.get("launched_at", "") == ""
         assert _read_table(plan_dir / "run_status.tsv")[0] == canonical
-    assert all(not any(arg.startswith("--clusters=") for arg in argv) for argv in scheduler_calls)
+    expected_cluster_args = [f"--clusters={canonical_cluster}"] if canonical_cluster else []
+    assert all(
+        [arg for arg in argv if arg.startswith("--clusters=")] == expected_cluster_args for argv in scheduler_calls
+    )
 
 
 @pytest.mark.parametrize("canonical_job_id", ["", "3880"])
@@ -311,12 +316,28 @@ def test_slurm_monitor_handles_purged_job_when_accounting_is_unavailable(
     plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=direct_controller)
     run = plan["runs"][0]
     token = run["scheduler_submit_token"]
-    monkeypatch.setattr(
-        managed_scheduler.slurm,
-        "submit",
-        lambda *_args, **_kwargs: slurm.JobIdentity("3880", canonical_cluster),
-    )
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    if canonical_cluster:
+        monkeypatch.setattr(
+            managed_scheduler.slurm,
+            "submit",
+            lambda *_args, **_kwargs: slurm.JobIdentity("3880", canonical_cluster),
+        )
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    else:
+        merge_run_manifest(
+            tmp_path,
+            [
+                {
+                    "step_id": run["step_id"],
+                    "run_id": run["run_id"],
+                    "target": "local",
+                    "status": "queued",
+                    "scheduler_job_id": "3880",
+                    "scheduler_cluster": "",
+                    "launched_at": "2026-08-21T00:00:00Z",
+                }
+            ],
+        )
 
     if stop_requested:
         monkeypatch.setattr(slurm, "cancel", lambda *_args, **_kwargs: None)
@@ -930,19 +951,24 @@ def test_slurm_monitor_health_uses_allocation_start_and_preserves_lifecycle_on_d
     assert int(canonical["scheduler_allocation_age_seconds"]) >= 0
 
 
-def test_slurm_submission_timeout_reconciles_exact_submit_token(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("submission_failure", ["timeout", "ssh255"])
+def test_slurm_submission_uncertainty_reconciles_exact_submit_token(
+    tmp_path: Path, monkeypatch, submission_failure: str
+):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
-    monkeypatch.setattr(
-        managed_scheduler.slurm,
-        "submit",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("sbatch", 60)),
-    )
+
+    def submit(*_args, **_kwargs):
+        if submission_failure == "timeout":
+            raise subprocess.TimeoutExpired("sbatch", 60)
+        raise slurm.SlurmCommandError("submission", subprocess.CompletedProcess([], 255, "", "ssh: connection closed"))
+
+    monkeypatch.setattr(slurm, "submit", submit)
 
     def active_jobs(_execution, *, job_id=None, submit_token=None, cluster=None, timeout=10):
         assert job_id is None
         assert submit_token == run["scheduler_submit_token"]
-        assert cluster is None
+        assert cluster == "wuji-h20"
         return [slurm.JobObservation("3880", "PENDING", "Resources", "", submit_token)]
 
     monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", active_jobs)
@@ -952,6 +978,7 @@ def test_slurm_submission_timeout_reconciles_exact_submit_token(tmp_path: Path, 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert canonical["status"] == "queued"
     assert canonical["scheduler_job_id"] == "3880"
+    assert canonical["scheduler_cluster"] == "wuji-h20"
     assert canonical["scheduler_reason"] == "Resources"
 
 
@@ -970,7 +997,7 @@ def test_slurm_submission_timeout_reconciles_revoked_without_resubmitting(tmp_pa
         else:
             assert job_id == "3880"
             assert submit_token is None
-        assert cluster is None
+        assert cluster == "wuji-h20"
         return [slurm.JobObservation("3880", "REVOKED", "Sibling", "", run["scheduler_submit_token"])]
 
     monkeypatch.setattr(managed_scheduler.slurm, "submit", timeout)
@@ -983,7 +1010,7 @@ def test_slurm_submission_timeout_reconciles_revoked_without_resubmitting(tmp_pa
     assert submitted == [True]
     assert canonical["status"] == "unknown_scheduler"
     assert canonical["scheduler_job_id"] == "3880"
-    assert canonical["scheduler_cluster"] == ""
+    assert canonical["scheduler_cluster"] == "wuji-h20"
     assert canonical["scheduler_raw_state"] == "REVOKED"
     assert canonical["scheduler_reason"] == (
         "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported. "
@@ -1014,7 +1041,7 @@ def test_slurm_submission_timeout_sidecar_still_waits_for_scheduler_terminal(tmp
     def active_jobs(_execution, *, job_id=None, submit_token=None, cluster=None, timeout=10):
         assert job_id == "3880"
         assert submit_token is None
-        assert cluster is None
+        assert cluster == "wuji-h20"
         return [slurm.JobObservation("3880", "COMPLETING", "", "h20-bj-96", token)]
 
     monkeypatch.setattr(managed_scheduler.slurm, "submit", submit)
@@ -1024,7 +1051,7 @@ def test_slurm_submission_timeout_sidecar_still_waits_for_scheduler_terminal(tmp
 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert canonical["status"] == "running"
-    assert canonical.get("scheduler_cluster", "") == ""
+    assert canonical["scheduler_cluster"] == "wuji-h20"
     assert canonical["scheduler_raw_state"] == "COMPLETING"
     assert canonical["scheduler_exit_code"] == "0"
 
@@ -1039,7 +1066,14 @@ def test_slurm_submission_timeout_never_resubmits_unresolved_run(tmp_path: Path,
         raise subprocess.TimeoutExpired("sbatch", 60)
 
     monkeypatch.setattr(managed_scheduler.slurm, "submit", timeout)
-    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
+
+    def active_jobs(_execution, *, job_id=None, submit_token=None, cluster=None, timeout=10):
+        assert job_id is None
+        assert submit_token == run["scheduler_submit_token"]
+        assert cluster == "wuji-h20"
+        return []
+
+    monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", active_jobs)
 
     with pytest.raises(RuntimeError, match="outcome is uncertain"):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
@@ -1049,6 +1083,7 @@ def test_slurm_submission_timeout_never_resubmits_unresolved_run(tmp_path: Path,
     assert calls == ["submit"]
     assert canonical["status"] == "submitting"
     assert canonical.get("scheduler_job_id", "") == ""
+    assert canonical["scheduler_cluster"] == "wuji-h20"
 
 
 @pytest.mark.parametrize("binding_source", ["queue", "allocation", "terminal"])

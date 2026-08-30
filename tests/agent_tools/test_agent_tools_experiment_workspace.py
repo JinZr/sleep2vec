@@ -1951,6 +1951,162 @@ def test_scheduler_identity_allows_one_trusted_job_binding(tmp_path: Path):
             )
 
 
+@pytest.mark.parametrize("status", ["submitting", "launch_failed"])
+def test_scheduler_identity_accepts_prebound_cluster_before_job_id(tmp_path: Path, status: str):
+    validate_scheduler_run_identity({"status": status, "scheduler_cluster": "wuji-h20", **_slurm_identity(tmp_path)})
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "planned",
+        "pending",
+        "superseded",
+        "launched",
+        "queued",
+        "running",
+        "stopping",
+        "unknown_scheduler",
+        "completed",
+        "finished",
+        "failed",
+        "stopped",
+    ],
+)
+def test_scheduler_identity_rejects_prebound_cluster_outside_submission_states(tmp_path: Path, status: str):
+    with pytest.raises(ValueError, match="scheduler_cluster"):
+        validate_scheduler_run_identity(
+            {"status": status, "scheduler_cluster": "wuji-h20", **_slurm_identity(tmp_path)}
+        )
+
+
+def test_manifest_prebinds_scheduler_cluster_before_job_id(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    identity = {
+        "experiment_id": "unit",
+        "step_id": "train",
+        "run_id": "run-000",
+        "target": "ssh",
+        **_slurm_identity(tmp_path),
+    }
+    merge_run_manifest(tmp_path, [{**identity, "status": "planned"}])
+
+    submitted = merge_run_manifest(
+        tmp_path,
+        [{**identity, "status": "submitting", "scheduler_cluster": "wuji-h20"}],
+    )[0]
+
+    assert submitted["scheduler_cluster"] == "wuji-h20"
+    assert submitted.get("scheduler_job_id", "") == ""
+    queued = merge_run_manifest(
+        tmp_path,
+        [{"step_id": "train", "run_id": "run-000", "status": "queued", "scheduler_job_id": "3880"}],
+    )[0]
+    assert queued["scheduler_cluster"] == "wuji-h20"
+    assert queued["scheduler_job_id"] == "3880"
+
+
+@pytest.mark.parametrize("incoming_cluster", ["other-cluster", ""])
+def test_manifest_rejects_changing_or_clearing_prebound_cluster(tmp_path: Path, incoming_cluster: str):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    identity = {
+        "experiment_id": "unit",
+        "step_id": "train",
+        "run_id": "run-000",
+        "target": "ssh",
+        **_slurm_identity(tmp_path),
+    }
+    merge_run_manifest(tmp_path, [{**identity, "status": "submitting", "scheduler_cluster": "wuji-h20"}])
+    before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    with pytest.raises(ValueError, match="scheduler_cluster"):
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": "train", "run_id": "run-000", "scheduler_cluster": incoming_cluster}],
+        )
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+
+
+@pytest.mark.parametrize("incoming_status", ["running", "completed", "stopping"])
+def test_merge_run_row_preserves_submission_cluster_mismatch(incoming_status: str):
+    existing = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "scheduler_type": "slurm",
+        "status": "unknown_scheduler",
+        "scheduler_raw_state": "SUBMISSION_CLUSTER_MISMATCH",
+        "scheduler_reason": "Submission returned other-cluster instead of prebound wuji-h20.",
+        "scheduler_job_id": "3880",
+        "scheduler_cluster": "wuji-h20",
+    }
+    stale = {
+        "status": incoming_status,
+        "scheduler_raw_state": "COMPLETED" if incoming_status == "completed" else "RUNNING",
+        "scheduler_reason": "stale scheduler reason",
+        "scheduler_observed_at": "2026-08-30T12:00:00Z",
+    }
+
+    merged = merge_run_row(existing, stale)
+
+    assert merged["status"] == "unknown_scheduler"
+    assert merged["scheduler_raw_state"] == "SUBMISSION_CLUSTER_MISMATCH"
+    assert merged["scheduler_reason"] == existing["scheduler_reason"]
+    assert merged["scheduler_job_id"] == "3880"
+    assert merged["scheduler_cluster"] == "wuji-h20"
+    assert merged["scheduler_observed_at"] == stale["scheduler_observed_at"]
+    assert merge_run_row(merged, stale) == merged
+
+
+@pytest.mark.parametrize("incoming_status", ["running", "completed", "stopping"])
+def test_manifest_preserves_submission_cluster_mismatch_against_stale_observation(tmp_path: Path, incoming_status: str):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    identity = {
+        "experiment_id": "unit",
+        "step_id": "train",
+        "run_id": "run-000",
+        "target": "ssh",
+        **_slurm_identity(tmp_path),
+    }
+    reason = "Submission returned other-cluster instead of prebound wuji-h20."
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                **identity,
+                "status": "unknown_scheduler",
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_raw_state": "SUBMISSION_CLUSTER_MISMATCH",
+                "scheduler_reason": reason,
+            }
+        ],
+    )
+
+    committed = merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "step_id": "train",
+                "run_id": "run-000",
+                "status": incoming_status,
+                "scheduler_raw_state": "COMPLETED" if incoming_status == "completed" else "RUNNING",
+                "scheduler_reason": "stale scheduler reason",
+            }
+        ],
+    )
+
+    assert committed[0]["status"] == "unknown_scheduler"
+    assert committed[0]["scheduler_raw_state"] == "SUBMISSION_CLUSTER_MISMATCH"
+    assert committed[0]["scheduler_reason"] == reason
+    assert committed[0]["scheduler_job_id"] == "3880"
+    assert committed[0]["scheduler_cluster"] == "wuji-h20"
+    assert read_run_manifest(tmp_path)[0] == committed[0]
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [(None, False), ("", False), ("false", False), ("true", True)],

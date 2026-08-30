@@ -156,18 +156,32 @@ after the group has exited.
 
 One Slurm-backed canonical run owns one frozen leaf `job.sbatch`. Before any
 submission, the launcher freezes the plan-level execution snapshot's raw
-SHA-256 across all canonical runs. It commits transport identity plus
-`submitting`, and passes that digest as a batch-script argument to
-`sbatch --parsable`. The returned positive job id and optional cluster are
-immutable scheduler bindings. Follow-up `squeue`, `scontrol`, and `scancel`
+SHA-256 across all canonical runs. After launch preflight, each run queries
+`scontrol show config` for exactly one non-empty valid `ClusterName`, then
+atomically commits that cluster, transport identity, and `submitting` before
+calling `sbatch --parsable` with the snapshot digest. A failed identity query
+does not submit or transition that run; dry-run does not query or bind the
+cluster. A cluster without a job id is valid only in `submitting` or
+`launch_failed`. The returned positive job id is an immutable binding; a bare
+job-id receipt retains the prebound cluster. Non-empty cluster bindings cannot
+be changed or cleared. Follow-up `squeue`, `scontrol`, and `scancel`
 commands route to the bound cluster. If submission times out, returns malformed
 output, or loses SSH after possible submission, the launcher searches the exact
-frozen comment token; zero or multiple matches remain unresolved and never
+frozen comment token on the prebound cluster and frozen controller route;
+zero or multiple matches remain unresolved and never
 authorize another submission.
-Before invoking `sbatch` on either a local or SSH submission host, the canonical
-submission command removes every inherited `SBATCH_*` variable so ambient
-client options cannot override frozen directives; other submission environment
-remains available.
+All Slurm client subprocesses on either a local or SSH submission host remove
+inherited `SLURM_CLUSTERS`; `sbatch` additionally removes every `SBATCH_*`
+variable. The recorded submission command and transport share one renderer.
+`SLURM_CONF`, `PATH`, other environment, and the parent process remain unchanged.
+
+If a receipt names a different cluster, the launcher first commits the returned
+job id with the original cluster, `unknown_scheduler`, and raw state
+`SUBMISSION_CLUSTER_MISMATCH`, then aborts the submission batch. This quarantine
+and its reason survive stale observations. Monitoring does not read Slurm
+sidecars or query the scheduler for it; stop rejects before recording intent
+or cancelling. Queue and direct launch both block further submissions in that
+plan. There is no automatic conflict-clearing or legacy-cluster recovery path.
 
 Live controller state comes from `squeue` and `scontrol`. If both no longer know
 a bound job, monitoring queries duplicate allocation records through `sacct`
@@ -182,7 +196,14 @@ runtime commit, module origin, CLI, and frozen launch/config hashes. It requires
 the allocation task count to match the frozen GPU count and starts one foreground
 `srun` step with one task per GPU. Only the wrapper writes the allocation and
 terminal JSON sidecars bound to the same token and job id; the terminal sidecar
-records the aggregate step exit code. A canonical completed or failed status
+records the aggregate step exit code. Sidecar job ids are local query candidates
+only; first binding requires a valid submission receipt or positive exact-token
+scheduler evidence on the frozen route. Sidecar clusters never select the query
+route or fill canonical identity. Query errors or missing records cannot save
+sidecar-only identity: without a canonical job id the run stays `submitting`.
+Legacy rows with a job id but no cluster can still finish with normal scheduler
+and matching sidecar evidence, without filling cluster or enabling the missing-
+evidence exception. A canonical completed or failed status
 normally requires both the matching terminal sidecar and a terminal scheduler
 observation; a scheduler failure overrides a zero wrapper exit code. The narrow
 accounting-disabled exception requires the exact bound job to be absent from
