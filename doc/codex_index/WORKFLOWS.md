@@ -309,6 +309,10 @@ among mutable plan artifacts alone is not semantic authority. Recompilation
 uses the frozen creator-host plan context rather than the reader's Python or
 repository root.
 Managed direct and Slurm follow-up always uses frozen canonical identity.
+Before launch, `hparam-stop` may cancel a canonical `planned` or `pending` run
+without execution bindings, recording the reason and terminal state under the
+shared launch lock. It does not probe or stop runtime processes; uncertain or
+bound launches still require the authenticated stop path.
 Slurm binds the controller cluster before submission; sidecars never establish
 canonical cluster identity. Conflicting receipt clusters durably quarantine the
 run and block submission and stop, without automatic recovery.

@@ -991,8 +991,8 @@ def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
         "pending",
     }:
         merged["status"] = existing_status
-    if existing_status == "stopping":
-        for field in ("stop_requested_at", "stop_reason"):
+    if existing_status in {"stopping", "stopped"}:
+        for field in ("stop_requested_at", "stop_reason", "stopped_at"):
             if existing.get(field) not in (None, ""):
                 merged[field] = existing[field]
     return merged
@@ -1101,6 +1101,19 @@ def scheduler_direct_controller(row: dict[str, Any]) -> bool:
     return value == "true"
 
 
+def has_managed_launch_evidence(row: dict[str, Any]) -> bool:
+    fields = EXECUTION_IDENTITY_FIELDS | {
+        "scheduler_job_id",
+        "scheduler_cluster",
+        "launched_at",
+        "stop_requested_at",
+    }
+    # Slurm freezes its log path in the plan; a preflight snapshot likewise does not prove submission.
+    if scheduler_type(row) == "slurm":
+        fields -= {"log_path"}
+    return any(row.get(field) not in (None, "") for field in fields)
+
+
 def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
     backend = scheduler_type(row)
     scheduler_direct_controller(row)
@@ -1144,6 +1157,7 @@ def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
             "stopped",
         }
         and not job_id
+        and (status != "stopped" or has_managed_launch_evidence(row))
     ):
         raise ValueError(f"Slurm managed run status {status} requires scheduler_job_id.")
 
