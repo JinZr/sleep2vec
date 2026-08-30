@@ -10,6 +10,7 @@ import yaml
 from . import (
     experiment_io as exp_io,
     experiment_tracking as tracking,
+    managed_scheduler,
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
@@ -513,7 +514,11 @@ def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> dic
         remote=remote,
     )
     run_rows = tracking.experiment_run_rows(root, remote=remote)
-    observations = [tracking.monitor_run_row(root, row, previous_rows, remote=remote) for row in run_rows]
+    monitor_context = managed_scheduler.SlurmMonitorContext(run_rows, remote=remote)
+    observations = [
+        tracking.monitor_run_row(root, row, previous_rows, remote=remote, monitor_context=monitor_context)
+        for row in run_rows
+    ]
     committed = merge_run_manifest(root, observations, remote=remote)
     report = tracking.monitor_report(committed)
     exp_io.write_text_at(report_path, report, remote=remote)

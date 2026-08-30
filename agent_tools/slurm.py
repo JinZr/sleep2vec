@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -425,7 +426,7 @@ def submit(
 def active_jobs(
     execution: dict[str, Any],
     *,
-    job_id: str | None = None,
+    job_id: str | Sequence[str] | None = None,
     submit_token: str | None = None,
     cluster: str | None = None,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
@@ -434,19 +435,23 @@ def active_jobs(
     cluster_name = _follow_up_cluster_name(execution, cluster)
     if cluster_name:
         argv.append(f"--clusters={cluster_name}")
+    batch = job_id is not None and not isinstance(job_id, str)
     if job_id is not None:
-        argv.extend(["--jobs", _job_id(job_id)])
+        requested_ids = tuple(job_id) if batch else (job_id,)
+        if not requested_ids:
+            raise ValueError("An active-job query requires at least one Slurm job id.")
+        argv.extend(["--jobs", ",".join(_job_id(value) for value in requested_ids)])
     result = run_command(execution, argv, timeout=timeout)
     if result.returncode != 0:
         detail = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
-        if job_id is not None and re.search(r"\b(?:invalid|unknown) job[ _-]?id\b", detail):
+        if job_id is not None and not batch and re.search(r"\b(?:invalid|unknown) job[ _-]?id\b", detail):
             return []
         raise SlurmCommandError("active-job query", result)
     observations = [_parse_squeue_line(line) for line in str(result.stdout or "").splitlines() if line.strip()]
     if submit_token is not None:
         observations = [item for item in observations if item.comment == submit_token]
     if job_id is not None:
-        observations = [item for item in observations if item.job_id == str(job_id)]
+        observations = [item for item in observations if item.job_id in requested_ids]
     return observations
 
 
