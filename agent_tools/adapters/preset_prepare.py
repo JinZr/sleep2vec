@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
-from ..decision_paths import multilabel_sidecar_issue, survival_sidecar_issue
-from ..models import coerce_list
+from ..decision_paths import execution_contract_issues, multilabel_sidecar_issue, survival_sidecar_issue
+from ..models import REPO_ROOT, coerce_list
 from ..plan_rendering import PRESET_FIELDS, preset_cli_args, render_command
+from ..repo import repo_summary
 from .base import TaskAdapter
 
 
 class PresetPrepareAdapter(TaskAdapter):
     task = "preset_prepare"
+    supports_runtime_identity = True
 
     recipe_extra_fields = frozenset({"execution", "inputs", "preset"})
     contract_sections = {
@@ -32,7 +35,9 @@ class PresetPrepareAdapter(TaskAdapter):
             "sleep2vec2": "sleep2vec2/preprocess/save_dataset_presets.py",
             "sleep2expert": "sleep2expert/preprocess/save_dataset_presets.py",
         }[str(recipe.get("variant"))]
-        return ("python", preset_script)
+        execution = recipe.get("execution") or {}
+        # Historical frozen plans without runtime identity retain their original command.
+        return (str(execution.get("python") or "python"), preset_script)
 
     def bind_effective_recipe(
         self,
@@ -41,9 +46,55 @@ class PresetPrepareAdapter(TaskAdapter):
         *,
         source_recipe: dict[str, Any] | None = None,
     ) -> list[DecisionIssue]:
+        issues: list[DecisionIssue] = []
+        execution = recipe.get("execution") or {}
+        # Bind only new effective recipes, never registered-plan reconstruction.
+        if not {"python", "runtime_commit"}.intersection(execution):
+            manager_runtime = (
+                execution.get("target") in (None, "", "local")
+                and execution.get("workdir") in (None, "", str(REPO_ROOT))
+                and execution.get("path_context") != "remote"
+            )
+            if not manager_runtime:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "execution",
+                        "Preset runtime identity cannot be inferred for this execution context. Provide "
+                        "execution.python, execution.runtime_commit, and execution.workdir together for the "
+                        "intended local runtime. This plan is not an SSH launcher; plan on the execution host.",
+                        None,
+                        {"execution": execution, "preflight_before_workspace": True},
+                    )
+                )
+            else:
+                repository = repo_summary()["git"]
+                if not repository["available"] or not repository["commit"]:
+                    issues.append(
+                        DecisionIssue(
+                            DecisionStatus.FAIL,
+                            "execution.runtime_commit",
+                            "Cannot freeze the preset runtime commit because the manager repository is unavailable.",
+                            None,
+                            {"preflight_before_workspace": True},
+                        )
+                    )
+                else:
+                    recipe["execution"] = {
+                        **execution,
+                        "python": sys.executable,
+                        "runtime_commit": repository["commit"],
+                        "workdir": str(REPO_ROOT),
+                    }
+                    # Binding follows source validation; generated identity must pass the same contract.
+                    issues.extend(
+                        execution_contract_issues(
+                            recipe, source_layer="effective", supports_runtime_identity=self.supports_runtime_identity
+                        )
+                    )
         preset_build = (config_summary or {}).get("preset_build") or {}
         if not preset_build:
-            return []
+            return issues
 
         preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
         decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
@@ -51,7 +102,6 @@ class PresetPrepareAdapter(TaskAdapter):
         source_decisions = (
             source_recipe.get("decisions") if isinstance((source_recipe or {}).get("decisions"), dict) else {}
         )
-        issues: list[DecisionIssue] = []
         for decision_field, preset_field, config_field in (
             ("required_channels", "channels", "required_channels"),
             ("min_channels", "min_channels", "min_channels"),

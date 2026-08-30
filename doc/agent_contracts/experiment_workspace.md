@@ -311,13 +311,20 @@ at `REPO_ROOT` without a conda wrapper—may omit them; planning then freezes th
 current manager interpreter and manager repository HEAD. SSH targets, separate
 local workdirs, and conda-wrapped targets must provide both values explicitly.
 
-Lifecycle-owned `infer` / `evaluate` plans may declare an all-or-none local
+Lifecycle-owned `preset_prepare`, `infer`, and `evaluate` plans may declare an all-or-none local
 `execution.workdir`, `execution.python`, and `execution.runtime_commit`
 identity. `experiment-run` requires that identity for every attempt. Its
 generated scripts verify the frozen commit before committing `running`, then
-use the frozen Python for inference and every lifecycle commit. The managed
+use the frozen Python for the workload and every lifecycle commit. The managed
 scheduler's execution snapshot and pre-start probe remain the authoritative
 launch checks.
+
+New preset plans at the local manager checkout freeze that complete identity
+even when it is omitted from the source recipe. Separate workdirs or remote
+path-validation context need an explicit local identity; missing manager Git
+identity fails before workspace creation. Existing registered preset plans are
+read without rebinding or rewriting their original commands. See the
+[runtime identity contract](task_recipe.md#non-hparam-runtime-identity).
 
 ## Execution snapshot and capacity
 
