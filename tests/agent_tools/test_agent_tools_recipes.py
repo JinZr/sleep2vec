@@ -5,8 +5,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+from agent_tools import managed_scheduler, plan_context
 from agent_tools.decision_hparam import hparam_recipe_contract_issues
 from agent_tools.decision_models import DecisionStatus
+from agent_tools.experiment_workspace import experiment_metadata_issues
+from agent_tools.models import resolve_repo_path
 from agent_tools.plans import evaluate_recipe
 from agent_tools.recipes import load_recipe_with_base, load_yaml_file
 
@@ -603,8 +606,63 @@ def test_recipe_cases_cover_checked_in_examples_and_templates():
 
 
 @pytest.mark.parametrize(("path", "expected_exit_code", "expected_status", "expected_issue_fields"), RECIPE_CASES)
-def test_checked_in_recipe(path: str, expected_exit_code: int, expected_status: str, expected_issue_fields: set[str]):
+def test_checked_in_recipe(
+    path: str,
+    expected_exit_code: int,
+    expected_status: str,
+    expected_issue_fields: set[str],
+    tmp_path: Path,
+    monkeypatch,
+):
     recipe = load_recipe_with_base(path)
+    if Path(path).parent == Path("recipes/templates"):
+        expected_questions = experiment_metadata_issues(recipe.get("_local_recipe", recipe))
+        config_path = resolve_repo_path((recipe.get("inputs") or {}).get("config"))
+        original_open = Path.open
+
+        def guarded_open(file_path, mode="r", *args, **kwargs):
+            if file_path == config_path and "r" in mode:
+                pytest.fail("Unresolved template ownership reached a config read")
+            return original_open(file_path, mode, *args, **kwargs)
+
+        with monkeypatch.context() as guarded:
+            guarded.setattr(Path, "open", guarded_open)
+            for name in ("load_config_summary_for_recipe", "context_index_summary", "context_preset_summary"):
+                guarded.setattr(
+                    plan_context,
+                    name,
+                    lambda *_args, **_kwargs: pytest.fail("Unresolved template ownership reached data validation"),
+                )
+            guarded.setattr(
+                managed_scheduler,
+                "run_execution_command",
+                lambda *_args, **_kwargs: pytest.fail("Unresolved template ownership reached runtime inspection"),
+            )
+            _recipe, cfg, report = evaluate_recipe(path)
+
+        assert cfg is None
+        assert report.exit_code == 2
+        assert report.status == DecisionStatus.NEEDS_USER_INPUT
+        assert [
+            (issue.status.value, issue.field, issue.message, issue.question) for issue in report.blocking_issues()
+        ] == [(issue["status"], issue["field"], issue["message"], issue["question"]) for issue in expected_questions]
+        assert all(issue.evidence["preflight_before_workspace"] for issue in report.blocking_issues())
+
+        # Resolve only ownership in a test copy so downstream template validation remains covered.
+        payload = load_yaml_file(path)
+        payload["experiment"] = {
+            "id": "template-validation",
+            "title": "Template validation",
+            "objective": "Exercise the template after resolving workspace ownership.",
+            "root": str(tmp_path),
+            "baseline": {"type": "none", "rationale": "unit fixture"},
+        }
+        payload["step"] = {**payload["step"], "id": "validate-template", "purpose": "Validate the authored template."}
+        if payload.get("base_recipe"):
+            payload["base_recipe"] = str(resolve_repo_path(recipe["_base_recipe"]["_recipe_path"]))
+        path = tmp_path / Path(path).name
+        path.write_text(yaml.safe_dump(payload))
+
     _recipe, cfg, report = evaluate_recipe(path)
 
     assert report.exit_code == expected_exit_code
