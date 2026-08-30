@@ -311,11 +311,11 @@ at `REPO_ROOT` without a conda wrapper—may omit them; planning then freezes th
 current manager interpreter and manager repository HEAD. SSH targets, separate
 local workdirs, and conda-wrapped targets must provide both values explicitly.
 
-Lifecycle-owned `infer` / `evaluate` plans may declare an all-or-none local
+Lifecycle-owned `preset_prepare`, `infer`, and `evaluate` plans may declare an all-or-none local
 `execution.workdir`, `execution.python`, and `execution.runtime_commit`
 identity. `experiment-run` requires that identity for every attempt. Its
 generated scripts verify the frozen commit before committing `running`, then
-use the frozen Python for inference and every lifecycle commit. The managed
+use the frozen Python for the workload and every lifecycle commit. The managed
 scheduler's execution snapshot and pre-start probe remain the authoritative
 launch checks.
 

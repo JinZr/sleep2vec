@@ -161,9 +161,9 @@ it never substitutes the status reader's host environment.
   positive integer, `best`/`last` aliases require an explicit `avg_ckpt_dir`,
   and any explicit averaging directory is validated from the runtime cwd.
 
-## Non-hparam inference runtime identity
+## Non-hparam runtime identity
 
-Only `infer` / `evaluate` accept `execution.python` and
+`preset_prepare`, `infer`, and `evaluate` accept `execution.python` and
 `execution.runtime_commit`. Declaring either turns the otherwise-common
 `execution.workdir` into an all-or-none local/default-local runtime identity.
 Python is one executable name or path without whitespace, arguments, or `~`
@@ -173,9 +173,11 @@ rendering commands that ignore them.
 
 When the identity is present, the resolved recipe and plan freeze it. The
 generated script enters that workdir, verifies its Git HEAD before the first
-lifecycle mutation, and uses the same frozen Python for inference and all
+lifecycle mutation, and uses the same frozen Python for the workload and all
 `running` / `completed` / `failed` commits. A missing interpreter or commit
-mismatch fails before `running` is committed and before inference starts.
+mismatch fails before `running` is committed and before the workload starts.
+Use an absolute Python path for independence from the launcher's PATH; an
+explicit executable name remains PATH-resolved.
 `execution.target` and `execution.host` on other non-hparam tasks remain
 path-validation context; they do not provide a generic SSH launcher.
 

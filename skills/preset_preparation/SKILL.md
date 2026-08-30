@@ -26,7 +26,14 @@ Stop and consult the user if:
 - The recipe does not say whether to reuse or regenerate presets.
 
 ## Canonical commands
-Use `python preprocess/save_dataset_presets.py --config <config> --index <csv> ...`.
+Use the generated plan script so the workload and lifecycle commits share the
+planned interpreter. A complete local `execution.python`,
+`execution.runtime_commit`, and absolute `execution.workdir` identity is
+supported; use an absolute Python path to avoid launcher PATH drift. The script
+checks the workdir's Git HEAD before marking the run `running`. Entry points
+remain variant-local: `preprocess/save_dataset_presets.py`,
+`sleep2vec2/preprocess/save_dataset_presets.py`, or
+`sleep2expert/preprocess/save_dataset_presets.py`.
 
 When the config defines `preset_build`, that block is the sole runtime owner of
 `required_channels` and `min_channels`. Keep matching decisions for provenance,

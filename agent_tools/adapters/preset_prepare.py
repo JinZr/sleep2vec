@@ -11,6 +11,7 @@ from .base import TaskAdapter
 
 class PresetPrepareAdapter(TaskAdapter):
     task = "preset_prepare"
+    supports_runtime_identity = True
 
     recipe_extra_fields = frozenset({"execution", "inputs", "preset"})
     contract_sections = {
@@ -32,7 +33,8 @@ class PresetPrepareAdapter(TaskAdapter):
             "sleep2vec2": "sleep2vec2/preprocess/save_dataset_presets.py",
             "sleep2expert": "sleep2expert/preprocess/save_dataset_presets.py",
         }[str(recipe.get("variant"))]
-        return ("python", preset_script)
+        execution = recipe.get("execution") or {}
+        return (str(execution.get("python") or "python"), preset_script)
 
     def bind_effective_recipe(
         self,
