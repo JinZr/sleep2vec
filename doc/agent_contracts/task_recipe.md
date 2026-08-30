@@ -189,10 +189,14 @@ path-validation context; they do not provide a generic SSH launcher.
 - An explicit search requires positive `search.max_runs`, uses `method: grid`,
   and is exactly one of:
   - `search.parameters`: a per-key candidate mapping expanded by Cartesian
-    product;
+    product, with axes in lexicographic full-key order and each candidate
+    value list in its authored order;
   - `search.configurations`: complete joint configuration points expanded
-    verbatim, one run per point.
-- Both shapes use the same key rules and `[:max_runs]` prefix truncation.
+    in their authored list order, one run per point. Mapping key order does
+    not affect a point's run name or parameter summary.
+- Both shapes use the same key rules and apply `[:max_runs]` prefix truncation
+  after expansion. Reordering parameter mapping keys does not change run ids
+  or the selected grid prefix.
 - `search.profile: finetune_balanced` is the alternative authored intent for
   `sleep2vec` and `sleep2vec2` finetuning labels `ahi`, `arousal`, and
   `stage4`. It is mutually exclusive with authored `parameters` or
