@@ -287,6 +287,9 @@ deterministic preflight does not inspect free bytes, estimate checkpoint storage
 or turn unavailable Slurm accounting into a plan blocker; accounting capability
 remains a time-stamped `doctor` diagnostic.
 
+Rendering this audit projection does not rescan data indexes or label sidecars;
+consultation and final-evaluation validation remain separate gates.
+
 ### Managed launcher
 
 The optional `execution` block configures the managed launcher.
