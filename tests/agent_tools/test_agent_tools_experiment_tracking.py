@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import csv
 import hashlib
 import json
@@ -1139,6 +1140,99 @@ def test_experiment_monitor_ignores_stale_auxiliary_status_rows(tmp_path: Path):
     }
 
 
+@pytest.mark.parametrize("remote", [None, "unit-host"], ids=["local", "remote"])
+def test_experiment_monitor_reads_one_validated_input_snapshot_then_fresh_commit(tmp_path: Path, monkeypatch, remote):
+    _initialize_workspace(tmp_path)
+    manifest_path = tmp_path / "run_manifest.tsv"
+    experiment_io.write_rows_at(
+        manifest_path,
+        [{"experiment_id": "unit", "step_id": "train-model", "run_id": "run-000", "status": "running"}],
+    )
+    real_managed_read = experiment_io.read_managed_files_at
+    real_read = experiment_io.read_text_at
+    real_lock = experiment_io.blocking_file_lock
+    real_commit = experiment_io.conditional_atomic_replace_text_at
+    real_managed_rows = experiments._managed_rows
+    snapshot_reads = []
+    commit_reads = []
+    commits = []
+    snapshots = []
+    observation_started = False
+    lock_held = False
+
+    def read_managed(root, paths, *, remote=None, **kwargs):
+        if manifest_path in paths:
+            snapshot_reads.append(remote)
+        return real_managed_read(root, paths, **kwargs)
+
+    def read_text(path, *, remote=None):
+        if Path(path) == manifest_path:
+            commit_reads.append((remote, observation_started, lock_held))
+        return real_read(path)
+
+    @contextmanager
+    def held_lock(path):
+        nonlocal lock_held
+        with real_lock(path):
+            lock_held = True
+            try:
+                yield
+            finally:
+                lock_held = False
+
+    def managed_rows(root, *, remote=None):
+        rows = real_managed_rows(root, remote=remote)
+        snapshots.append((rows, [dict(row) for row in rows]))
+        return rows
+
+    def fake_status(_root, row, previous, *, script_commits_terminal_status, health):
+        nonlocal observation_started
+        observation_started = True
+        assert row is not previous
+        assert previous["status"] == "running"
+        row.update(status="completed", health_status="completed")
+        return row
+
+    def commit(path, text, expected_sha256, *, remote=None, **kwargs):
+        assert expected_sha256 == hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        commits.append(remote)
+        return real_commit(path, text, expected_sha256, **kwargs)
+
+    monkeypatch.setattr(experiment_io, "read_managed_files_at", read_managed)
+    monkeypatch.setattr(experiment_io, "read_text_at", read_text)
+    monkeypatch.setattr(experiment_io, "blocking_file_lock", held_lock)
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", commit)
+    monkeypatch.setattr(experiments, "_managed_rows", managed_rows)
+    monkeypatch.setattr(run_evidence, "status_row", fake_status)
+    if remote:
+        real_exists = experiment_io.path_exists_at
+        real_validate = experiment_io.validate_managed_output_paths
+        real_write = experiment_io.write_text_at
+        monkeypatch.setattr(experiment_io, "path_exists_at", lambda path, **_kwargs: real_exists(path))
+        monkeypatch.setattr(
+            experiment_io,
+            "validate_managed_output_paths",
+            lambda root, paths, **_kwargs: real_validate(root, paths),
+        )
+        monkeypatch.setattr(experiment_io, "write_text_at", lambda path, text, **_kwargs: real_write(path, text))
+        monkeypatch.setattr(
+            experiment_workspace,
+            "_write_remote_run_matrix_if_current",
+            lambda root, rows, _text, _remote: bool(experiment_workspace.write_run_matrix(root, rows)),
+        )
+    monkeypatch.setattr(transport, "run_ssh", lambda *_args, **_kwargs: pytest.fail("Unexpected SSH in monitor test"))
+
+    result = experiments.monitor_experiment(tmp_path, remote=remote)
+
+    assert snapshot_reads == [remote]
+    assert commit_reads == [(remote, True, remote is None)]
+    assert commits == [remote]
+    assert len(snapshots) == 1
+    assert snapshots[0][0] == snapshots[0][1]
+    assert result["runs"][0]["status"] == "completed"
+    assert _read_table(manifest_path)[0]["status"] == "completed"
+
+
 def test_monitor_observation_contains_only_managed_identity_and_status_fields(tmp_path: Path, monkeypatch):
     row = {
         "experiment_id": "unit",
@@ -1239,6 +1333,7 @@ def test_experiment_monitor_routes_slurm_observation_by_transport(
 
     def fake_slurm_observation(owner_dir, execution, observed_row, *, health, monitor_context=None):
         observed.append((owner_dir, execution, dict(observed_row), health))
+        observed_row["log_tail"] = "observer-owned update"
         return {
             **observed_row,
             "scheduler_job_id": "3880",
@@ -1261,8 +1356,10 @@ def test_experiment_monitor_routes_slurm_observation_by_transport(
         lambda *_args, **_kwargs: pytest.fail("Slurm runs must not use direct PID evidence"),
     )
 
-    observation = experiment_tracking.monitor_run_row(tmp_path, dict(row), [dict(row)], remote=remote)
+    snapshot = dict(row)
+    observation = experiment_tracking.monitor_run_row(tmp_path, row, [row], remote=remote)
 
+    assert row == snapshot
     assert observed[0][0] == tmp_path
     expected_execution = dict(expected_transport)
     if controller_topology == "true":
@@ -1329,7 +1426,19 @@ def test_experiment_monitor_does_not_observe_unlaunched_slurm_run(tmp_path: Path
     assert "host" not in observation
 
 
-def test_experiment_monitor_reports_latest_committed_rows(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(
+    "concurrent_fields",
+    [
+        {"status": "failed"},
+        {
+            "status": "stopping",
+            "stop_requested_at": "2026-08-31T01:02:03Z",
+            "stop_reason": "User requested stop during monitor",
+        },
+    ],
+    ids=["terminal", "stop-intent"],
+)
+def test_experiment_monitor_reports_latest_committed_rows(tmp_path: Path, monkeypatch, concurrent_fields):
     _initialize_workspace(tmp_path)
     experiment_io.write_rows_at(
         tmp_path / "run_manifest.tsv",
@@ -1350,7 +1459,7 @@ def test_experiment_monitor_reports_latest_committed_rows(tmp_path: Path, monkey
         real_merge(
             root,
             [
-                {"step_id": "train-model", "run_id": "run-000", "status": "failed"},
+                {"step_id": "train-model", "run_id": "run-000", **concurrent_fields},
                 {
                     "experiment_id": "unit",
                     "step_id": "train-model",
@@ -1367,9 +1476,12 @@ def test_experiment_monitor_reports_latest_committed_rows(tmp_path: Path, monkey
     result = experiments.monitor_experiment(tmp_path)
 
     assert [(row["run_id"], row["status"]) for row in result["runs"]] == [
-        ("run-000", "failed"),
+        ("run-000", concurrent_fields["status"]),
         ("run-001", "planned"),
     ]
+    for field, value in concurrent_fields.items():
+        assert result["runs"][0][field] == value
+    assert _read_table(tmp_path / "run_manifest.tsv") == _read_table(tmp_path / "run_matrix.csv")
     report = (tmp_path / "reports" / "monitor.md").read_text()
     assert "train-model / run-001" in report
 
@@ -1792,31 +1904,15 @@ def test_experiment_monitor_matches_previous_rows_by_managed_identity(tmp_path: 
         "unit\tprepare-data\trun-000\tprepare\tshared\trunning\tprepare-marker\n"
         "unit\ttrain-model\trun-000\ttrain\tshared\trunning\ttrain-marker\n"
     )
-    current = [
-        {
-            "step_id": "prepare-data",
-            "run_id": "run-000",
-            "run_name": "prepare",
-            "version": "shared",
-            "status": "running",
-        },
-        {
-            "step_id": "train-model",
-            "run_id": "run-000",
-            "run_name": "train",
-            "version": "shared",
-            "status": "running",
-        },
-    ]
     matched = []
 
     def fake_status(_root, row, previous, *, script_commits_terminal_status, health):
         assert script_commits_terminal_status is False
         assert health is True
+        assert row["marker"] == previous["marker"]
         matched.append((row["step_id"], previous["step_id"], previous["marker"]))
         return {**row, "health_status": "running"}
 
-    monkeypatch.setattr(experiment_tracking, "experiment_run_rows", lambda _root, remote=None: current)
     monkeypatch.setattr(run_evidence, "status_row", fake_status)
 
     experiments.monitor_experiment(tmp_path)

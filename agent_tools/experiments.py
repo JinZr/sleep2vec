@@ -513,7 +513,8 @@ def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> dic
         ],
         remote=remote,
     )
-    run_rows = tracking.experiment_run_rows(root, remote=remote)
+    # Observe the owner-validated input snapshot; the commit still reads fresh under its lock/CAS.
+    run_rows = previous_rows
     monitor_context = managed_scheduler.SlurmMonitorContext(run_rows, owner_dir=root, remote=remote)
     observations = [
         tracking.monitor_run_row(root, row, previous_rows, remote=remote, monitor_context=monitor_context)
