@@ -5,7 +5,7 @@ import re
 import subprocess  # noqa: F401 -- tests patch decision_paths.subprocess.run (stdlib global)
 from typing import Any
 
-from . import transport
+from . import gpu_rules, slurm, transport
 from .decision_models import DecisionIssue, DecisionStatus
 from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT
 
@@ -15,7 +15,7 @@ _RUNTIME_IDENTITY_REQUIRED_FIELDS = {*_RUNTIME_IDENTITY_FIELDS, "workdir"}
 
 
 def execution_contract_issues(
-    recipe: dict, *, source_layer: str, supports_runtime_identity: bool
+    recipe: dict, *, source_layer: str, supports_runtime_identity: bool, supports_slurm: bool = False
 ) -> list[DecisionIssue]:
     if "execution" not in recipe:
         return []
@@ -23,6 +23,10 @@ def execution_contract_issues(
     if not isinstance(execution, dict):
         return [_execution_contract_issue("execution", "execution must be a mapping.", execution, source_layer)]
     allowed_fields = _EXECUTION_FIELDS | (_RUNTIME_IDENTITY_FIELDS if supports_runtime_identity else set())
+    scheduler = execution.get("scheduler")
+    is_slurm = supports_slurm and isinstance(scheduler, dict) and scheduler.get("type") == "slurm"
+    if is_slurm:
+        allowed_fields |= {"scheduler", "gpus_per_run", "env"}
     issues = []
     for field in sorted(set(execution) - allowed_fields):
         issues.append(
@@ -46,9 +50,60 @@ def execution_contract_issues(
                 source_layer,
             )
         )
-    if not supports_runtime_identity or not identity_fields:
+    if is_slurm:
+        for field in sorted(_RUNTIME_IDENTITY_REQUIRED_FIELDS):
+            if execution.get(field) in (None, "", "ASK_USER"):
+                issues.append(
+                    _execution_contract_issue(
+                        f"execution.{field}",
+                        f"Slurm execution requires explicit execution.{field}.",
+                        execution.get(field),
+                        source_layer,
+                    )
+                )
+        runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        issues.extend(
+            issue
+            for issue in managed_runtime_resource_issues(
+                execution, runtime, scheduler=scheduler, is_slurm=True, variant=str(recipe.get("variant"))
+            )
+            if issue.status == DecisionStatus.FAIL
+        )
+        # Unknown scheduler fields must fail at the recipe boundary, not first during compilation.
+        for field in sorted(set(scheduler) - slurm.RESOURCE_FIELDS):
+            issues.append(
+                _execution_contract_issue(
+                    f"execution.scheduler.{field}",
+                    f"Unknown execution.scheduler field: {field}.",
+                    scheduler[field],
+                    source_layer,
+                )
+            )
+        gpus = execution.get("gpus_per_run", 1)
+        if type(gpus) is int and gpus > 0 and "devices" in runtime and runtime["devices"] != list(range(gpus)):
+            issues.append(
+                _execution_contract_issue(
+                    "runtime.devices",
+                    "Slurm runtime.devices must match logical devices derived from execution.gpus_per_run.",
+                    runtime["devices"],
+                    source_layer,
+                )
+            )
+        for field, allowed in (("accelerator", {"gpu", "auto"}), ("device", {"cuda", "cuda:0"})):
+            if field in runtime and runtime[field] not in allowed:
+                issues.append(
+                    _execution_contract_issue(
+                        f"runtime.{field}",
+                        f"Slurm runtime.{field} must use GPU execution.",
+                        runtime[field],
+                        source_layer,
+                    )
+                )
+        issues.extend(managed_runtime_env_issues(execution, is_slurm=True))
+    if not supports_runtime_identity or (not identity_fields and not is_slurm):
         return issues
-    for field in sorted(_RUNTIME_IDENTITY_REQUIRED_FIELDS - set(execution)):
+    missing_fields = _RUNTIME_IDENTITY_REQUIRED_FIELDS - set(execution) if not is_slurm else set()
+    for field in sorted(missing_fields):
         issues.append(
             _execution_contract_issue(
                 f"execution.{field}",
@@ -58,7 +113,23 @@ def execution_contract_issues(
             )
         )
     target = execution.get("target")
-    if target not in (None, "", "local"):
+    if is_slurm:
+        if target not in (None, "local", "ssh"):
+            issues.append(
+                _execution_contract_issue(
+                    "execution.target", "execution.target must be local or ssh.", target, source_layer
+                )
+            )
+        if target == "ssh" and not execution.get("host"):
+            issues.append(
+                _execution_contract_issue(
+                    "execution.host",
+                    "execution.host is required when execution.target=ssh.",
+                    execution.get("host"),
+                    source_layer,
+                )
+            )
+    elif target not in (None, "", "local"):
         issues.append(
             _execution_contract_issue(
                 "execution.target",
@@ -107,6 +178,199 @@ def _execution_contract_issue(field: str, message: str, value: Any, source_layer
         None,
         {"value": value, "source_layer": source_layer, "preflight_before_workspace": True},
     )
+
+
+def managed_runtime_resource_issues(
+    execution: dict[str, Any],
+    runtime: dict[str, Any],
+    *,
+    scheduler: Any,
+    is_slurm: bool,
+    variant: str,
+) -> list[DecisionIssue]:
+    issues: list[DecisionIssue] = []
+    max_concurrent = None
+    if "max_concurrent" in execution and not is_slurm:
+        raw_max_concurrent = execution["max_concurrent"]
+        if type(raw_max_concurrent) is not int or raw_max_concurrent <= 0:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "execution.max_concurrent",
+                    "execution.max_concurrent must be a positive integer.",
+                    None,
+                    {"max_concurrent": execution.get("max_concurrent")},
+                )
+            )
+        else:
+            max_concurrent = raw_max_concurrent
+    if not is_slurm and "gpu_pool" in execution and not isinstance(execution["gpu_pool"], list):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.gpu_pool",
+                "execution.gpu_pool must be a list.",
+                None,
+                {"gpu_pool": execution.get("gpu_pool")},
+            )
+        )
+    gpus_per_run = None
+    if "gpus_per_run" in execution:
+        raw_gpus_per_run = execution["gpus_per_run"]
+        if type(raw_gpus_per_run) is not int or raw_gpus_per_run <= 0:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "execution.gpus_per_run",
+                    "execution.gpus_per_run must be a positive integer.",
+                    None,
+                    {"gpus_per_run": execution.get("gpus_per_run")},
+                )
+            )
+        else:
+            gpus_per_run = raw_gpus_per_run
+    if is_slurm and variant == "sex_age_baseline" and gpus_per_run is not None and gpus_per_run > 1:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.gpus_per_run",
+                "sex_age_baseline does not support multi-GPU Slurm execution.",
+                None,
+                {"gpus_per_run": gpus_per_run, "variant": variant, "preflight_before_workspace": True},
+            )
+        )
+    if is_slurm and isinstance(scheduler, dict) and not (set(scheduler) - slurm.RESOURCE_FIELDS):
+        try:
+            slurm.normalize_resources(scheduler, gpus_per_run if gpus_per_run is not None else 1)
+        except ValueError as exc:
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "execution.scheduler",
+                    str(exc),
+                    None,
+                    {"scheduler": scheduler, "preflight_before_workspace": True},
+                )
+            )
+        else:
+            priority_message = (
+                "Slurm priority is cluster-managed and cannot be guaranteed by this tool. Keep nice=0, submit "
+                "frozen jobs promptly, request the shortest credible walltime and only necessary CPU, memory, and "
+                "GPU resources, and avoid nodelist unless it is required."
+            )
+            if scheduler.get("nice", 0) > 0:
+                priority_message += f" The configured nice={scheduler['nice']} voluntarily lowers priority."
+            if scheduler.get("nodelist"):
+                priority_message += " The configured nodelist narrows eligible nodes and may delay backfill."
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.WARN,
+                    "execution.scheduler.priority",
+                    priority_message,
+                    None,
+                    {
+                        "nice": scheduler.get("nice", 0),
+                        "nodelist": scheduler.get("nodelist", ""),
+                    },
+                )
+            )
+    # An invalid (non-list) gpu_pool already failed above; drop it so the shared rules
+    # fall back to runtime.devices, matching the previous inline behaviour. An invalid
+    # gpus_per_run skips the pool rules entirely (type failure already reported).
+    if not is_slurm and (gpus_per_run is not None or "gpus_per_run" not in execution):
+        invalid_gpu_pool = "gpu_pool" in execution and not isinstance(execution["gpu_pool"], list)
+        gpu_execution = (
+            {key: value for key, value in execution.items() if key != "gpu_pool"} if invalid_gpu_pool else execution
+        )
+        _groups, gpu_issues = gpu_rules.gpu_group_plan(gpu_execution, runtime, max_concurrent=max_concurrent)
+        issues.extend(
+            DecisionIssue(
+                DecisionStatus.WARN if issue.warning else DecisionStatus.FAIL,
+                issue.field,
+                issue.message,
+                None,
+                issue.evidence,
+            )
+            for issue in gpu_issues
+        )
+    return issues
+
+
+def managed_runtime_env_issues(
+    execution: dict[str, Any],
+    *,
+    is_slurm: bool,
+) -> list[DecisionIssue]:
+    issues: list[DecisionIssue] = []
+    if "env" in execution and not isinstance(execution["env"], dict):
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "execution.env",
+                "execution.env must be a mapping.",
+                None,
+                {"env": execution.get("env")},
+            )
+        )
+    if isinstance(execution.get("env"), dict):
+        for env_name, value in execution["env"].items():
+            if not isinstance(env_name, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name) is None:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        f"execution.env.{env_name}",
+                        "execution.env keys must be POSIX environment variable names.",
+                        None,
+                        {"name": env_name},
+                    )
+                )
+            if not isinstance(value, (str, int, float, bool)):
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        f"execution.env.{env_name}",
+                        "execution.env values must be scalar strings, numbers, or booleans.",
+                        None,
+                        {"value": value},
+                    )
+                )
+            if (
+                isinstance(env_name, str)
+                and is_slurm
+                and (
+                    env_name.startswith("SLURM_")
+                    or env_name == "CUDA_VISIBLE_DEVICES"
+                    or env_name in {"RANK", "LOCAL_RANK", "WORLD_SIZE"}
+                    or env_name.startswith("MASTER_")
+                )
+            ):
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        f"execution.env.{env_name}",
+                        f"{env_name} is owned by Slurm and cannot be overridden in execution.env.",
+                        None,
+                        {env_name: value},
+                    )
+                )
+        for env_name, field in {
+            "PYTHONPATH": "execution.workdir",
+            "WANDB_PROJECT": "execution.wandb_project",
+            "WANDB_GROUP": "execution.wandb_group",
+            "WANDB_RUN_GROUP": "execution.wandb_group",
+            "WANDB_MODE": "runtime.wandb_mode",
+        }.items():
+            if env_name in execution["env"]:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        f"execution.env.{env_name}",
+                        f"{env_name} is not supported in execution.env; use {field}.",
+                        None,
+                        {env_name: execution["env"][env_name]},
+                    )
+                )
+    return issues
 
 
 def _config_data(config_summary: dict | None) -> dict[str, Any]:

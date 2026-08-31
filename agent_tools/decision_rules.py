@@ -42,6 +42,7 @@ def recipe_structure_issues(task: Any, recipe: dict[str, Any], *, source_layer: 
                 recipe,
                 source_layer=source_layer,
                 supports_runtime_identity=adapter.supports_runtime_identity,
+                supports_slurm=adapter.slurm_launch_subcommand is not None,
             )
         )
     issues.extend(_artifact_contract_issues(task, recipe, source_layer=source_layer))

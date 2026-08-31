@@ -19,24 +19,139 @@ from .experiment_workspace import (
     RESEARCH_LOG_NAME,
     SHA256_RE,
     TERMINAL_STATUSES,
+    append_event,
     append_research_log,
     canonical_local_experiment_root,
     commit_step_manifest,
     experiment_metadata_issues,
     experiment_readme_text,
+    experiment_root,
+    has_managed_launch_evidence,
     managed_run_key,
     managed_run_parameters,
     merge_run_manifest,
     read_managed_yaml_mapping,
     read_registered_steps,
     read_run_manifest,
+    scheduler_type,
     stopped_runs_without_reason,
     validate_existing_experiment_manifest,
     validate_frozen_run_update,
     validate_managed_run_rows,
     write_initial_experiment_manifest,
+    write_status_report,
 )
-from .manifests import utc_now
+from .manifests import read_json, utc_now
+
+
+def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:
+    # The initial document only locates the workspace; execution uses the strict registered-plan reader below.
+    initial = read_json(plan_dir / "plan.json")
+    recipe = initial.get("recipe") if isinstance(initial, dict) else None
+    if not isinstance(recipe, dict) or recipe.get("task") not in {"infer", "evaluate"}:
+        raise ValueError("infer-launch and infer-stop require an ordinary infer/evaluate plan.")
+    issues = experiment_metadata_issues(recipe)
+    if issues:
+        raise ValueError("Invalid inference workspace binding: " + "; ".join(issue["message"] for issue in issues))
+    workspace = experiment_root(recipe)
+    assert workspace is not None
+    experiment, rows = _managed_workspace(workspace, remote=None)
+    registered_steps = _registered_plan_steps(workspace, experiment, rows, remote=None, require_registered_rows=True)
+    for registered in registered_steps:
+        for plan in registered["plans"]:
+            if plan["path"] != str(plan_dir):
+                continue
+            if (
+                registered["manifest"]["plan_controller"] != "ordinary"
+                or plan["task"] not in {"infer", "evaluate"}
+                or len(plan["runs"]) != 1
+                or scheduler_type(plan["runs"][0]) != "slurm"
+            ):
+                raise ValueError("infer-launch and infer-stop require one ordinary managed Slurm inference run.")
+            return workspace, plan, rows
+    raise ValueError(f"Inference plan is not registered in its experiment workspace: {plan_dir}")
+
+
+def launch_infer_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_scheduler.LaunchResult:
+    owner_dir = Path(plan_dir).absolute()
+    workspace, _plan, _rows = _read_infer_slurm_plan(owner_dir)
+    with managed_scheduler.managed_run_lock(workspace):
+        locked_workspace, plan, _rows = _read_infer_slurm_plan(owner_dir)
+        if locked_workspace != workspace:
+            raise ValueError("Inference plan workspace changed before launch.")
+        recipe = plan["recipe"]
+        try:
+            return managed_scheduler.launch_managed_runs(
+                workspace,
+                owner_dir,
+                plan["runs"],
+                recipe["execution"],
+                recipe.get("runtime", {}),
+                dry_run=dry_run,
+                lock_held=True,
+            )
+        except Exception as exc:
+            if not dry_run:
+                key = managed_run_key(plan["runs"][0])
+                previous = {managed_run_key(row): row for row in read_run_manifest(workspace)}[key]
+                # A lost receipt or post-submit failure must never become a definitely-unsubmitted failure.
+                if previous["status"] in managed_scheduler.LAUNCHABLE_STATUSES and not has_managed_launch_evidence(
+                    previous
+                ):
+                    merge_run_manifest(
+                        workspace,
+                        [
+                            {
+                                "step_id": key[0],
+                                "run_id": key[1],
+                                "status": "launch_failed",
+                                "scheduler_reason": f"Pre-submission guard failed: {exc}",
+                                "scheduler_observed_at": utc_now(),
+                            }
+                        ],
+                        lock_held=True,
+                    )
+                    append_event(
+                        workspace,
+                        "run_status_changed",
+                        {"step_id": key[0], "run_id": key[1], "from": previous["status"], "to": "launch_failed"},
+                    )
+                    write_status_report(workspace)
+            raise
+
+
+def stop_infer_run(plan_dir: str | Path, *, reason: str) -> Path:
+    if not reason.strip():
+        raise ValueError("Stopping a run requires a non-empty reason.")
+    owner_dir = Path(plan_dir).absolute()
+    workspace, _plan, _rows = _read_infer_slurm_plan(owner_dir)
+    with managed_scheduler.managed_run_lock(workspace):
+        locked_workspace, plan, rows = _read_infer_slurm_plan(owner_dir)
+        if locked_workspace != workspace:
+            raise ValueError("Inference plan workspace changed before stop.")
+        exp_io.validate_managed_output_paths(
+            workspace,
+            [
+                workspace / "run_manifest.tsv",
+                workspace / "run_matrix.csv",
+                workspace / "reports" / "run_matrix.md",
+                workspace / "events.jsonl",
+                workspace / "reports" / "status.md",
+            ],
+        )
+        key = managed_run_key(plan["runs"][0])
+        _committed, metadata_stop = managed_scheduler.stop_slurm_run_locked(
+            workspace,
+            rows,
+            key,
+            reason=reason,
+            hooks=managed_scheduler.SchedulerHooks(merge_manifest=merge_run_manifest, append_event=append_event),
+            now=utc_now,
+        )
+        if metadata_stop:
+            append_event(workspace, "run_stopped", {"step_id": key[0], "run_id": key[1], "reason": reason})
+        write_status_report(workspace)
+    return workspace / "run_manifest.tsv"
 
 
 def run_experiment_pipeline(

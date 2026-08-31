@@ -23,11 +23,15 @@ from .experiment_workspace import (
     PROCESS_IDENTITY_FIELDS,
     SCHEDULER_PLAN_IDENTITY_FIELDS,
     SUBMISSION_CLUSTER_MISMATCH,
+    TERMINAL_STATUSES,
     append_event,
     file_sha256,
+    has_managed_launch_evidence,
     managed_run_key,
     merge_run_manifest,
+    merge_run_row,
     read_run_manifest,
+    scheduler_direct_controller,
     scheduler_type,
     validate_frozen_run_update,
     write_status_report,
@@ -73,6 +77,7 @@ __all__ = [
     "script_commits_terminal_status",
     "shares_capacity",
     "start_process",
+    "stop_slurm_run_locked",
     "validated_execution_snapshot",
 ]
 
@@ -1103,6 +1108,86 @@ def _reconcile_slurm_submission(
     detail = f"{cause}; reconciliation found {len(matches)} jobs for token {row['scheduler_submit_token']}"
     unresolved = {**row, "scheduler_reason": detail, "scheduler_observed_at": utc_now()}
     return unresolved, RuntimeError(f"Slurm submission outcome is uncertain: {detail}")
+
+
+def stop_slurm_run_locked(
+    workspace: Path,
+    workspace_rows: list[dict[str, Any]],
+    key: RunKey,
+    *,
+    reason: str,
+    hooks: SchedulerHooks,
+    now: Callable[[], str],
+) -> tuple[list[dict[str, Any]], bool]:
+    # The caller holds managed_run_lock and supplies its freshly read, validated canonical rows.
+    previous = next(row for row in workspace_rows if managed_run_key(row) == key)
+    run_id = key[1]
+    if previous.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
+        raise ValueError(f"Slurm stop is blocked by {SUBMISSION_CLUSTER_MISMATCH}: {run_id}")
+    if previous.get("status") in TERMINAL_STATUSES:
+        raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
+    metadata_stop = previous.get("status") in LAUNCHABLE_STATUSES and not has_managed_launch_evidence(previous)
+    if metadata_stop:
+        final = merge_run_row(
+            previous,
+            {
+                "step_id": key[0],
+                "run_id": key[1],
+                "status": "stopped",
+                "stopped_at": now(),
+                "stop_reason": reason,
+            },
+        )
+        return hooks.merge_manifest(workspace, [final], lock_held=True), True
+
+    pending_stop = previous.get("stop_requested_at") not in (None, "")
+    if pending_stop and previous.get("stop_reason") != reason:
+        raise ValueError(f"Run already has a pending stop request with a different reason: {run_id}")
+    target = previous.get("target")
+    host = previous.get("host")
+    if target not in {"local", "ssh"}:
+        raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
+    if target == "ssh" and (not isinstance(host, str) or not host.strip()):
+        raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
+    execution = {"target": target, "host": host}
+    if scheduler_direct_controller(previous):
+        execution["scheduler"] = {"direct_controller": True}
+    job_id = str(previous.get("scheduler_job_id") or "")
+    cluster = str(previous.get("scheduler_cluster") or "")
+    if pending_stop and not job_id:
+        raise ValueError(f"Pending Slurm stop request is missing scheduler job identity: {run_id}")
+    if not job_id:
+        matches = slurm.active_jobs(
+            execution,
+            submit_token=str(previous["scheduler_submit_token"]),
+            cluster=cluster or None,
+        )
+        if len(matches) != 1:
+            raise ValueError(f"Cannot resolve one Slurm job for run_id {run_id}; found {len(matches)} matching jobs.")
+        job_id = matches[0].job_id
+    if pending_stop:
+        committed = workspace_rows
+    else:
+        final = merge_run_row(
+            previous,
+            {
+                "step_id": key[0],
+                "run_id": key[1],
+                "scheduler_job_id": job_id,
+                "scheduler_cluster": cluster,
+                "status": "stopping",
+                "stop_requested_at": now(),
+                "stop_reason": reason,
+            },
+        )
+        committed = hooks.merge_manifest(workspace, [final], lock_held=True)
+        hooks.append_event(
+            workspace,
+            "run_stop_requested",
+            {"step_id": key[0], "run_id": run_id, "reason": reason},
+        )
+    slurm.cancel(execution, job_id, cluster=cluster or None)
+    return committed, False
 
 
 class SlurmMonitorContext:

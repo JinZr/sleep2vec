@@ -202,7 +202,9 @@ mismatch fails before `running` is committed and before the workload starts.
 Use an absolute Python path for independence from the launcher's PATH; an
 explicit executable name remains PATH-resolved.
 `execution.target` and `execution.host` on other non-hparam tasks remain
-path-validation context; they do not provide a generic SSH launcher.
+path-validation context; they do not provide a generic SSH launcher. Ordinary
+Slurm inference uses the managed exception below; the direct-script identity
+and lifecycle rules above remain unchanged.
 
 New `preset_prepare` recipes without Python/commit identity freeze the planning
 interpreter (`sys.executable`), manager Git HEAD, and `REPO_ROOT` workdir before
@@ -214,6 +216,40 @@ creation. Partial authored identities are rejected, not filled with defaults.
 Historical registered preset plans without identity retain their original
 commands and are never rebound or migrated by readers. This identity binds
 the interpreter path and Git commit, not package versions or dirty file bytes.
+
+### Managed ordinary inference
+
+Ordinary `infer` and `evaluate` plans may declare `execution.scheduler.type:
+slurm`. They reuse the existing single-node Slurm resource fields and protected
+environment rules in [Managed launcher](#managed-launcher), with explicit
+`execution.workdir`, `execution.python`, and lowercase 40-character
+`execution.runtime_commit`. Submission may use `target: local` or `target: ssh`;
+`scheduler.direct_controller` independently selects controller routing. Paths
+must already be available on the execution host; planning does not upload a
+runtime or input bundle.
+
+`gpus_per_run: N` freezes allocation-local `runtime.devices: [0, ..., N-1]`.
+Conflicting devices or CPU execution settings are rejected;
+`sex_age_baseline` supports only one GPU. Checkpoint choice, averaging, split,
+and external-test authorization retain their existing consultation rules.
+
+The registered plan contains one run, a top-level manager `run.sh`, a frozen
+worker `launch.sh`, and `job.sbatch`. Use `infer-launch --plan-dir <plan>` for
+a dry-run and add `--execute` only when execution is authorized; `run.sh`
+delegates to the same operation and also defaults to dry-run. Do not submit or
+run the worker separately. Its exact model command stays in the frozen plan,
+while the canonical submission command is bound by the shared launch
+transaction. Registration and dry-run do not bind a job, cluster, or execution
+identity.
+
+Use `experiment-monitor` to refresh scheduler evidence and `experiment-status`
+for read-only advice. `infer-stop --plan-dir <plan> --reason <reason>` acts on
+the unique run through the shared Slurm stop transaction. Repeated execute
+does not resubmit a queued, active, terminal, or uncertain run. The
+[Slurm evidence contract](run_manifest.md#slurm-scheduler-evidence) owns terminal
+and lost-receipt rules, including failures before the workload starts. This
+does not extend external-evaluation pipelines or migrate historical manually
+wrapped inference plans.
 
 ## Hparam workflow
 

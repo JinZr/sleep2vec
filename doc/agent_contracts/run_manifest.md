@@ -183,14 +183,23 @@ after the group has exited.
 
 ## Slurm scheduler evidence
 
+Both hparam and ordinary infer/evaluate use the same Slurm lifecycle owner.
+Ordinary inference freezes its model command in the plan and worker, but its
+initial canonical row contains no transport identity, submission command, job,
+or cluster. The planned log path and preflight snapshot are not launch evidence.
+The worker does not write canonical status or rely on an inner EXIT trap:
+`run-frozen-job` owns its allocation and terminal sidecars.
+
 One Slurm-backed canonical run owns one frozen leaf `job.sbatch`. Before any
 submission, the launcher freezes the plan-level execution snapshot's raw
 SHA-256 across all canonical runs. After launch preflight, each run queries
 `scontrol show config` for exactly one non-empty valid `ClusterName`, then
 atomically commits that cluster, transport identity, and `submitting` before
 calling `sbatch --parsable` with the snapshot digest. A failed identity query
-does not submit or transition that run; dry-run does not query or bind the
-cluster. A cluster without a job id is valid only in `submitting` or
+does not submit or bind the cluster; hparam leaves that run's state unchanged.
+The ordinary inference facade records an unsubmitted guard failure as described
+below. Dry-run does not query or bind the cluster. A cluster without a job id
+is valid only in `submitting` or
 `launch_failed`. The returned positive job id is an immutable binding; a bare
 job-id receipt retains the prebound cluster. Non-empty cluster bindings cannot
 be changed or cleared. Follow-up `squeue`, `scontrol`, and `scancel`
@@ -284,7 +293,7 @@ Other unavailable controller or accounting evidence, a vanished job, or an
 incomplete terminal evidence pair becomes active `unknown_scheduler` rather
 than inferred success or failure. An accounting terminal record is scheduler
 evidence only; ordinary completion or failure still requires the matching
-sidecar. Before `scancel`, `hparam-stop` atomically records nonterminal
+sidecar. Before `scancel`, `hparam-stop` and `infer-stop` atomically record nonterminal
 `stopping` with its reason, request time, and frozen job binding. A failed or
 interrupted cancellation preserves that canonical intent and may be retried
 only with the same reason. Monitoring commits `stopped` only after the same
@@ -299,6 +308,18 @@ job, cluster, scheduler reason, and any stop intent, and never authorizes
 rebinding or relaunch. A stale observation that was
 created before the stop request may update diagnostic evidence but cannot erase
 or bypass the canonical stop intent.
+
+For a valid registered ordinary inference plan, an execute-time guard failure
+may commit `launch_failed` with its diagnostic only when a fresh canonical read
+under the launch lock is still `planned`/`pending` and has no launch evidence.
+Invalid or unregistered plan artifacts cannot authorize this update. Exceptions
+after `submitting` or a trusted execution binding retain the shared scheduler
+state and reconciliation rules; they never become an unsubmitted failure or authorize retry.
+If the outer worker survives, it records the workload or guard's nonzero exit
+without needing an inner EXIT trap. Bootstrap, log-open, outer SIGKILL, or
+terminal-publication failures can leave no usable terminal sidecar: an
+authenticated raw `COMPLETED`, `FAILED`, or `TIMEOUT` then remains
+`unknown_scheduler` with diagnostic state, not guessed success or failure.
 
 When monitoring proves corrupt, partial, mismatched, or reused managed process
 identity, it records `process_identity_error` with the canonical status update.

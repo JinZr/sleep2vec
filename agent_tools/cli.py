@@ -26,10 +26,12 @@ from .experiments import (
     finalize_experiment,
     index_checkpoints,
     init_experiment,
+    launch_infer_run,
     monitor_experiment,
     rank_experiment_candidates,
     register_experiment_step,
     run_experiment_pipeline,
+    stop_infer_run,
     sync_wandb_runs,
 )
 from .hparam import (
@@ -141,6 +143,16 @@ def _build_parser() -> argparse.ArgumentParser:
     launch_mode.add_argument("--dry-run", action="store_true", default=True)
     launch_mode.add_argument("--execute", action="store_true")
     launch.set_defaults(func=_cmd_hparam_launch)
+
+    infer_launch = sub.add_parser("infer-launch")
+    infer_launch.add_argument("--plan-dir", required=True)
+    infer_launch.add_argument("--execute", action="store_true")
+    infer_launch.set_defaults(func=_cmd_infer_launch)
+
+    infer_stop = sub.add_parser("infer-stop")
+    infer_stop.add_argument("--plan-dir", required=True)
+    infer_stop.add_argument("--reason", required=True)
+    infer_stop.set_defaults(func=_cmd_infer_stop)
 
     run_queue = sub.add_parser("hparam-run-queue")
     run_queue.add_argument("--plan-dir", required=True)
@@ -460,6 +472,23 @@ def _cmd_hparam_launch(args: argparse.Namespace) -> int:
     states = ", ".join(f"{status}={count}" for status, count in sorted(counts.items())) or "none"
     print(f"Mode: {mode}")
     print(f"Lifecycle states: {states}")
+    print(f"Wrote {manifest}")
+    return 0
+
+
+def _cmd_infer_launch(args: argparse.Namespace) -> int:
+    result = launch_infer_run(args.plan_dir, dry_run=not args.execute)
+    row = result.launch_rows[0]
+    mode = "execute (state changes enabled)" if args.execute else "dry-run (no launch attempted)"
+    print(f"Mode: {mode}")
+    print(f"Lifecycle state: {row['status']}")
+    if row.get("command"):
+        print(f"Submission command: {row['command']}")
+    return 0
+
+
+def _cmd_infer_stop(args: argparse.Namespace) -> int:
+    manifest = stop_infer_run(args.plan_dir, reason=args.reason)
     print(f"Wrote {manifest}")
     return 0
 

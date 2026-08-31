@@ -262,6 +262,9 @@ Runnable plans use the exact config bytes accepted by consultation and freeze
 their recipe, commands, hashes, paths, and run identities before execution.
 Preset runtime identity belongs to the preset adapter and the shared generic
 script compiler; see the [non-hparam runtime contract](../agent_contracts/task_recipe.md#non-hparam-runtime-identity).
+Ordinary infer/evaluate Slurm plans use the same compiler and scheduler owner,
+with `infer-launch` / `infer-stop` through the experiments facade; see
+[Managed ordinary inference](../agent_contracts/task_recipe.md#managed-ordinary-inference).
 Selection policy and test access are likewise frozen; test-selected hparam
 plans retain complete checkpoint evidence while workspace lifecycle remains one
 row per run. Filename guesses and caller-local fallbacks are never semantic

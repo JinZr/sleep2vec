@@ -13,13 +13,11 @@ from . import (
     plan_hparam,
     run_artifacts as artifacts,
     run_evidence as evidence,
-    slurm,
 )
 from .experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     LAUNCHABLE_STATUSES,
     PROCESS_IDENTITY_FIELDS,
-    SUBMISSION_CLUSTER_MISMATCH,
     TERMINAL_STATUSES,
     append_event,
     experiment_root,
@@ -439,28 +437,34 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         key = managed_run_key(matched[0])
         previous = workspace_by_key[key]
         backend = scheduler_type(previous)
-        if backend == "slurm" and previous.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
-            raise ValueError(f"Slurm stop is blocked by {SUBMISSION_CLUSTER_MISMATCH}: {run_id}")
-        if previous.get("status") in TERMINAL_STATUSES:
-            raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
-        metadata_stop = previous.get("status") in LAUNCHABLE_STATUSES and not has_managed_launch_evidence(previous)
-        if metadata_stop:
-            final = merge_run_row(
-                previous,
-                {
-                    "step_id": key[0],
-                    "run_id": key[1],
-                    "status": "stopped",
-                    "stopped_at": utc_now(),
-                    "stop_reason": reason,
-                },
+        if backend == "slurm":
+            committed, metadata_stop = scheduler.stop_slurm_run_locked(
+                workspace,
+                workspace_rows,
+                key,
+                reason=reason,
+                hooks=scheduler.SchedulerHooks(
+                    merge_manifest=merge_run_manifest,
+                    append_event=append_event,
+                ),
+                now=utc_now,
             )
-            committed = merge_run_manifest(workspace, [final], lock_held=True)
         else:
-            if backend == "slurm":
-                pending_stop = previous.get("stop_requested_at") not in (None, "")
-                if pending_stop and previous.get("stop_reason") != reason:
-                    raise ValueError(f"Run already has a pending stop request with a different reason: {run_id}")
+            if previous.get("status") in TERMINAL_STATUSES:
+                raise ValueError(f"Run is already terminal and cannot be stopped: {run_id} ({previous['status']})")
+            metadata_stop = previous.get("status") in LAUNCHABLE_STATUSES and not has_managed_launch_evidence(previous)
+            if metadata_stop:
+                final = merge_run_row(
+                    previous,
+                    {
+                        "step_id": key[0],
+                        "run_id": key[1],
+                        "status": "stopped",
+                        "stopped_at": utc_now(),
+                        "stop_reason": reason,
+                    },
+                )
+                committed = merge_run_manifest(workspace, [final], lock_held=True)
             else:
                 missing_execution_identity = {
                     field for field in EXECUTION_IDENTITY_FIELDS - PROCESS_IDENTITY_FIELDS if field not in previous
@@ -473,55 +477,12 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                         f"{', '.join(sorted(missing_execution_identity))}"
                     )
 
-            target = previous.get("target")
-            host = previous.get("host")
-            if target not in {"local", "ssh"}:
-                raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
-            if target == "ssh" and (not isinstance(host, str) or not host.strip()):
-                raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
-            execution = {"target": target, "host": host}
-            if scheduler_direct_controller(previous):
-                execution["scheduler"] = {"direct_controller": True}
-
-            if backend == "slurm":
-                job_id = str(previous.get("scheduler_job_id") or "")
-                cluster = str(previous.get("scheduler_cluster") or "")
-                if pending_stop and not job_id:
-                    raise ValueError(f"Pending Slurm stop request is missing scheduler job identity: {run_id}")
-                if not job_id:
-                    matches = slurm.active_jobs(
-                        execution,
-                        submit_token=str(previous["scheduler_submit_token"]),
-                        cluster=cluster or None,
-                    )
-                    if len(matches) != 1:
-                        raise ValueError(
-                            f"Cannot resolve one Slurm job for run_id {run_id}; found {len(matches)} matching jobs."
-                        )
-                    job_id = matches[0].job_id
-                if pending_stop:
-                    committed = workspace_rows
-                else:
-                    final = merge_run_row(
-                        previous,
-                        {
-                            "step_id": key[0],
-                            "run_id": key[1],
-                            "scheduler_job_id": job_id,
-                            "scheduler_cluster": cluster,
-                            "status": "stopping",
-                            "stop_requested_at": utc_now(),
-                            "stop_reason": reason,
-                        },
-                    )
-                    committed = merge_run_manifest(workspace, [final], lock_held=True)
-                    append_event(
-                        workspace,
-                        "run_stop_requested",
-                        {"step_id": key[0], "run_id": run_id, "reason": reason},
-                    )
-                slurm.cancel(execution, job_id, cluster=cluster or None)
-            else:
+                target = previous.get("target")
+                host = previous.get("host")
+                if target not in {"local", "ssh"}:
+                    raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
+                if target == "ssh" and (not isinstance(host, str) or not host.strip()):
+                    raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
                 populated_process_fields = {
                     field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")
                 }

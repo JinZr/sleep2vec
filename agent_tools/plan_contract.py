@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 import re
 import sys
 from typing import Any
 
-from . import plan_rendering as rendering
+from . import plan_rendering as rendering, python_programs, slurm
 from .decision_models import USER_DECISIONS_FILENAME
 from .experiment_workspace import run_identity, safe_artifact_name
 from .models import REPO_ROOT, recipe_name
@@ -150,7 +151,7 @@ def generic_run_contract(
     runtime_recipe.setdefault("execution", {}).setdefault("workdir", context["repo_root"])
     runtime_dir = adapter.managed_runtime_dir(runtime_recipe, identity["version"])
     checkpoint_dir = runtime_dir / "checkpoints" if runtime_dir is not None else None
-    return {
+    run = {
         "experiment_id": (recipe.get("experiment") or {}).get("id"),
         "step_id": (recipe.get("step") or {}).get("id"),
         **identity,
@@ -161,6 +162,19 @@ def generic_run_contract(
         "runtime_dir": str(runtime_dir) if runtime_dir is not None else "",
         "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir is not None else "",
     }
+    execution = recipe.get("execution") or {}
+    if adapter.slurm_launch_subcommand and (execution.get("scheduler") or {}).get("type") == "slurm":
+        resources = slurm.normalize_resources(execution["scheduler"], execution.get("gpus_per_run", 1))
+        run.update(
+            scheduler_type="slurm",
+            scheduler_direct_controller=str(resources["direct_controller"]).lower(),
+            scheduler_script=str(run_dir / "job.sbatch"),
+            scheduler_result_path=str(run_dir / "slurm_terminal.json"),
+            allocation_identity_path=str(run_dir / "allocation_identity.json"),
+            log_path=str(run_dir / "slurm.log"),
+            terminal_status_owner="scheduler_sidecar",
+        )
+    return run
 
 
 def generic_commands(
@@ -172,6 +186,10 @@ def generic_commands(
     runtime_recipe = copy.deepcopy(recipe)
     runtime_recipe.setdefault("inputs", {})["config"] = run["config"]
     runtime_recipe.setdefault("artifacts", {})["version_name"] = run["version"]
+    if run.get("scheduler_type") == "slurm":
+        execution = recipe["execution"]
+        resources = slurm.normalize_resources(execution["scheduler"], execution.get("gpus_per_run", 1))
+        runtime_recipe.setdefault("runtime", {})["devices"] = list(range(resources["gpus_per_run"]))
     return adapter.frozen_commands(runtime_recipe, config_bytes)
 
 
@@ -191,6 +209,33 @@ def generic_script_text(
         else {}
     )
     experiment = recipe.get("experiment") if isinstance(recipe.get("experiment"), dict) else {}
+    allocation_guard = None
+    if run.get("scheduler_type") == "slurm":
+        expected_run = {
+            field: run[field]
+            for field in (
+                "experiment_id",
+                "step_id",
+                "run_id",
+                "run_dir",
+                "script",
+                "config",
+                "config_sha256",
+                "allocation_identity_path",
+            )
+        }
+        resources = slurm.normalize_resources(execution["scheduler"], execution.get("gpus_per_run", 1))
+        allocation_guard = rendering.render_command(
+            [
+                execution["python"],
+                "-c",
+                python_programs.source("plan_rendering.slurm_allocation_guard"),
+                experiment["root"],
+                json.dumps(expected_run, sort_keys=True, separators=(",", ":")),
+                json.dumps(resources, sort_keys=True, separators=(",", ":")),
+                execution["runtime_commit"],
+            ]
+        )
     return (
         "\n".join(
             rendering.script_lines(
@@ -202,6 +247,7 @@ def generic_script_text(
                 lifecycle_python=runtime_identity.get("python") or context["python"],
                 expected_runtime_commit=runtime_identity.get("runtime_commit"),
                 input_snapshots=input_snapshots,
+                slurm_allocation_guard=allocation_guard,
             )
         )
         + "\n"

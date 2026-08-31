@@ -78,6 +78,7 @@ class InferEvaluateAdapter(TaskAdapter):
     validates_dataset_paths = True
     uses_finetune_config = True
     supports_runtime_identity = True
+    slurm_launch_subcommand = "infer-launch"
 
     def __init__(self, task: str, extra_decision_fields: frozenset[str]) -> None:
         self.task = task
@@ -85,6 +86,20 @@ class InferEvaluateAdapter(TaskAdapter):
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         return INFER_RUNTIME_FIELDS
+
+    def bind_effective_recipe(
+        self,
+        recipe: dict[str, Any],
+        config_summary: dict[str, Any] | None,
+        *,
+        source_recipe: dict[str, Any] | None = None,
+    ) -> list[DecisionIssue]:
+        execution = recipe.get("execution") or {}
+        if isinstance(execution.get("scheduler"), dict) and execution["scheduler"].get("type") == "slurm":
+            gpus = execution.get("gpus_per_run", 1)
+            if type(gpus) is int and gpus > 0:
+                recipe.setdefault("runtime", {}).setdefault("devices", list(range(gpus)))
+        return []
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}

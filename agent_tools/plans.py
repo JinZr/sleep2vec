@@ -1045,10 +1045,12 @@ def _materialize_single_run_plan(
     commands = contract["commands"]
     run.update({"status": "planned", "config_sha256": file_sha256(write_config_path)})
     write_text(write_out / "plan.md", context.plan_markdown(report, commands))
-    write_text(write_out / "run.sh", contract["script_text"], executable=True)
+    write_text(write_out / "run.sh", contract.get("launch_script_text", contract["script_text"]), executable=True)
     write_launch_path = write_run_dir / "launch.sh"
-    write_text(write_launch_path, (write_out / "run.sh").read_text(), executable=True)
+    write_text(write_launch_path, contract["script_text"], executable=True)
     run["script_sha256"] = file_sha256(write_launch_path)
+    if "scheduler_script_text" in contract:
+        write_text(write_run_dir / "job.sbatch", contract["scheduler_script_text"], executable=True)
     artifact_payload = {
         "declared": recipe.get("artifacts") or {},
         "runtime_dir": run["runtime_dir"],
@@ -1061,18 +1063,13 @@ def _materialize_single_run_plan(
     )
     planned_run = {**run, "command": commands[0]} if len(commands) == 1 else dict(run)
     write_json(write_run_dir / "run.json", {**planned_run, "commands": commands})
-    write_json(
-        write_out / "plan.json",
-        {"status": report.status.value, "commands": commands, "runs": [planned_run], "recipe": recipe},
-    )
+    plan = {"status": report.status.value, "commands": commands, "runs": [planned_run], "recipe": recipe}
+    write_json(write_out / "plan.json", plan)
     resolved_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
     (write_out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
     if defer_commit:
         return report
-    manifest_row = {
-        **run,
-        "parameter_summary": "single resolved recipe",
-    }
+    manifest_rows = run_adapter.registration_rows(plan)
     staged_tree_sha256 = artifacts.plan_tree_sha256(write_out)
     plan_tree_entries = frozenset(path.name for path in write_out.iterdir()) if out == root else None
     # Generic plans stay staged until the same locked publication gate as materialized hparam plans.
@@ -1098,7 +1095,7 @@ def _materialize_single_run_plan(
             registration_state = _plan_registration_state(
                 recipe,
                 out,
-                [manifest_row],
+                manifest_rows,
                 expected_tree_sha256=staged_tree_sha256,
                 expected_tree_entries=plan_tree_entries,
                 plan_controller=plan_controller,
@@ -1134,7 +1131,7 @@ def _materialize_single_run_plan(
         )
         merge_run_manifest(
             root,
-            [manifest_row],
+            manifest_rows,
         )
         append_event(
             root,
@@ -2080,7 +2077,7 @@ def _planned_plan_paths(
     assert adapter is not None
     run = plan_contract.generic_run_contract(recipe, out, next_run_index(recipe), adapter)
     run_dir = Path(run["run_dir"])
-    return [
+    paths = [
         out / "plan.json",
         out / "plan.md",
         out / "run.sh",
@@ -2090,3 +2087,6 @@ def _planned_plan_paths(
         run_dir / "launch.sh",
         run_dir / "artifacts.json",
     ]
+    if run.get("scheduler_script"):
+        paths.append(Path(run["scheduler_script"]))
+    return paths

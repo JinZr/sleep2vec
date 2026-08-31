@@ -370,6 +370,8 @@ def read_registered_plan(
             if path not in (None, ""):
                 bundle_paths.append(Path(str(path)))
         bundle_paths.append(Path(str(expected_run["artifacts"])))
+        if not adapter.materializes_plan and expected_run.get("scheduler_type") == "slurm":
+            bundle_paths.append(Path(expected_run["run_dir"]) / "run.json")
     source_config = plan_dir / "config.source.yaml"
     if adapter.materializes_plan:
         bundle_paths.append(source_config)
@@ -439,10 +441,17 @@ def read_registered_plan(
             raise ValueError(f"Generic registered plan must contain exactly one run: {plan_path}")
         if commands != contract["commands"]:
             raise ValueError(f"Registered plan commands differ from its frozen recipe: {plan_path}")
-        if bundle[str(launch_script)]["text"] != contract["script_text"]:
+        if bundle[str(launch_script)]["text"] != contract.get("launch_script_text", contract["script_text"]):
             raise ValueError(f"Registered plan run.sh differs from its frozen recipe: {launch_script}")
         if bundle[runs[0]["script"]]["text"] != contract["script_text"]:
             raise ValueError(f"Registered plan launch script differs from its frozen recipe: {runs[0]['script']}")
+        if "scheduler_script_text" in contract:
+            if bundle[runs[0]["scheduler_script"]]["text"] != contract["scheduler_script_text"]:
+                raise ValueError(f"Registered Slurm script differs from its frozen recipe: {runs[0]['run_id']}")
+            run_path = str(Path(expected_runs[0]["run_dir"]) / "run.json")
+            run_payload = json.loads(bundle[run_path]["text"], object_pairs_hook=_json_object_without_duplicate_keys)
+            if run_payload != {**runs[0], "commands": commands}:
+                raise ValueError(f"Registered run payload differs from its frozen plan: {run_path}")
 
     for run, expected_run in zip(runs, expected_runs):
         for path_field, hash_field in (
@@ -473,6 +482,8 @@ def read_registered_plan(
         "run_keys": plan_keys,
         "launch_script": str(launch_script),
         "selection": selection,
+        "recipe": recipe,
+        "runs": runs,
     }
 
 
