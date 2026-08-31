@@ -24,13 +24,20 @@ skip_gitignore = true
 [tool.mypy]
 python_version = "3.10"
 files = ["agent_tools"]
-# The kernel is checked without torch/lightning/wandb installed, matching the
-# domain-free CI environment the kernel test job already enforces.
-ignore_missing_imports = true
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+# The only third-party packages agent_tools imports at module scope, and
+# neither ships type stubs. Suppression is scoped to exactly these so that an
+# unresolvable agent_tools-local import -- a typo, or a module renamed without
+# updating its call sites -- stays a hard error instead of being silently
+# ignored. Everything domain-facing (torch, lightning, wandb) is absent from
+# the type-check environment and imported lazily, so it needs no entry here.
+module = ["yaml.*", "pandas.*"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 # Grandfathered debt ledger -- shrink, never grow. To remove an entry, fix the
