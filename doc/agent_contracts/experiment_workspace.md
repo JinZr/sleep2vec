@@ -222,6 +222,33 @@ validated runtime and continue current monitoring; do not launch an old
 fallback while claiming latest-main compliance or repeat unchanged failed
 attempts without new evidence.
 
+### Fixed-commit runtime staging
+
+For an authorized replacement, use
+[`utils/stage_git_runtime.py`](../../utils/stage_git_runtime.py) rather than a
+chain of independent bundle, transfer and checkout commands. It prepares Git
+content only: it does not select upstream commits, install dependencies, run
+regressions or doctor, activate a runtime, or modify an experiment.
+
+- `stage --source-repo PATH --commit FULL_SHA --destination PATH --evidence-dir PATH`
+  requires fresh destination and evidence directories. For SSH, also provide
+  `--host HOST --remote-python PATH --remote-attempt-dir PATH` explicitly.
+  Bundle production and verification must succeed before transfer; the fixed
+  checkout runs with detached standard streams and persistent evidence.
+- A positive start is **not completion**: `stage` reports `started` with exit 2.
+  Use `check --evidence-dir PATH` to inspect that same attempt without writing or
+  restarting it. Only a matching successful terminal receipt together with the
+  exact, clean checkout permits `check` exit 0. Pending/unknown is exit 2;
+  a verified failure or invalid evidence is nonzero. A pending `recorded_pid`
+  locates the original worker; verify its current command and attempt before
+  calling it live, and never treat that PID alone as cancellation authority.
+- Keep the attempt and stage logs after failure or disconnection. Never rerun
+  `stage` to obtain a missing receipt, reuse a destination, or turn a partial HEAD
+  into success. A later successful check is independent completion evidence; it
+  does not establish the return code of a previously disconnected SSH command.
+
+Staging success does not waive the activation and consultation gates above.
+
 ### Short heartbeat maintenance
 
 When maintenance is authorized, update the existing automation's short entry,
