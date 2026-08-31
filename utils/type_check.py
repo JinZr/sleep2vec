@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Type-check agent_tools and hold its mypy debt ledger to a shrink-only contract.
+
+Scope and settings live in ``[tool.mypy]`` in ``pyproject.toml``. The ledger is
+the ``ignore_errors`` block under ``[[tool.mypy.overrides]]``: modules
+grandfathered out of checking while their pre-existing errors are worked off.
+Running mypy alone would not keep that list honest, so this runs three checks:
+
+1. **mypy** over the configured scope.
+2. **No ledger additions.** A contributor could introduce a type error and
+   silence it by appending its module to the ledger -- mypy then passes, and a
+   staleness check alone sees a perfectly live entry. Caught by diffing the
+   ledger against a base revision's.
+3. **No stale ledger entries.** A module whose errors have been fixed must
+   leave the ledger, or the list decays into a permanent, meaningless block.
+   Caught by re-running mypy with the ledger neutralized.
+
+Both ``utils/style_check.sh`` and the ``style_check`` workflow call this, so a
+clean local run means a clean CI run. Check 2 needs a revision to diff against:
+CI passes the pull request's base sha via ``LEDGER_BASE_SHA``, and locally it is
+skipped unless you pass ``--base <rev>``.
+
+This mirrors ``test_agent_layering.test_every_exemption_is_live``, which keeps
+the domain-import exemption set honest the same way.
+
+Check 3 needs the project's pinned Python 3.10, the version CI uses. It reads
+the ledger through stdlib ``tomllib`` on 3.11+ and mypy's ``tomli`` on 3.10, so
+it starts anywhere, but on 3.11+ pip resolves a numpy whose PEP 695 stubs
+``python_version = "3.10"`` rejects, and mypy stops before checking everything.
+That undercount would read as "these entries are stale", so the check refuses to
+judge rather than tell you to delete valid entries.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    # mypy depends on tomli only below 3.11, where tomllib does not exist yet,
+    # so this is the one version that has it. Importing it unconditionally
+    # crashes the script on a 3.11+ developer machine before any check runs.
+    import tomli as tomllib
+
+PYPROJECT = Path("pyproject.toml")
+ERROR_LINE = re.compile(r"^(agent_tools/[\w/]+)\.py:\d+: error:")
+IGNORE_ERRORS_TOGGLE = re.compile(r"^ignore_errors = true$", re.M)
+#: How mypy says it got to the end: "(checked N source files)" when it found
+#: errors, "Success: no issues found in N source files" when it did not. An
+#: early abort says "(errors prevented further checking)" instead and exits 2.
+COMPLETED_SUMMARY = re.compile(r"\(checked \d+ source files?\)|Success: no issues found in \d+ source files?")
+
+
+def run_mypy(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([sys.executable, "-m", "mypy", *arguments], capture_output=True, text=True)
+
+
+def ledger_of(document: str) -> set[str] | None:
+    """Grandfathered modules, or None if the revision has no mypy config."""
+    mypy = tomllib.loads(document).get("tool", {}).get("mypy")
+    if mypy is None:
+        return None
+    return {
+        module
+        for override in mypy.get("overrides", [])
+        if override.get("ignore_errors")
+        for module in override["module"]
+    }
+
+
+def base_document(revision: str) -> str | None:
+    """``pyproject.toml`` as of ``revision``, or None if it cannot be read."""
+    if not revision or set(revision) == {"0"}:
+        print("No base revision given; skipping the additions check.")
+        return None
+    show = subprocess.run(["git", "show", f"{revision}:{PYPROJECT}"], capture_output=True, text=True)
+    if show.returncode != 0:
+        print(f"Could not read {PYPROJECT} at {revision}; skipping the additions check.")
+        return None
+    return show.stdout
+
+
+def added_entries(ledger: set[str], revision: str) -> list[str]:
+    document = base_document(revision)
+    if document is None:
+        return []
+    previous = ledger_of(document)
+    if previous is None:
+        print("Base revision has no [tool.mypy]; this change introduces the ledger.")
+        return []
+    added = sorted(ledger - previous)
+    if not added:
+        print(f"mypy ledger: no additions against {revision[:12]}.")
+    return added
+
+
+def modules_with_errors(document: str) -> set[str]:
+    """Modules mypy still reports errors for once the ledger is neutralized."""
+    neutralized, count = IGNORE_ERRORS_TOGGLE.subn("ignore_errors = false", document)
+    if count != 1:
+        sys.exit(f"Expected exactly one ignore_errors toggle in {PYPROJECT}, found {count}.")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "pyproject.toml"
+        config.write_text(neutralized, encoding="utf-8")
+        result = run_mypy("--config-file", str(config), "--no-incremental", "agent_tools")
+
+    def unusable(reason: str) -> None:
+        print(result.stdout or result.stderr, file=sys.stderr)
+        sys.exit(
+            f"Neutralized mypy run is unusable, so ledger staleness cannot be judged: {reason}.\n"
+            "This is an environment problem, not a ledger problem -- do not delete ledger entries.\n"
+            f"Run this on the project's pinned Python 3.10 (this is {sys.version.split()[0]})."
+        )
+
+    # An incomplete run undercounts, and an undercount reads as "these entries
+    # are stale" -- the check would tell you to delete valid ledger entries. So
+    # establish that mypy got to the end before trusting any of its errors.
+    # Without this, Python 3.11+ silently reported 39 of 41 entries stale: the
+    # newer numpy that pip resolves there ships PEP 695 stubs that
+    # [tool.mypy]'s python_version = "3.10" rejects, and mypy stops early.
+    #
+    # A clean exit is itself proof of completion, and it is the state this
+    # ratchet is aiming at: the last grandfathered module gets fixed, mypy
+    # reports no errors, and every remaining entry is stale and due for
+    # deletion. Treating that as an environment failure would stall the
+    # cleanup at the finish line.
+    if result.returncode != 0 and not COMPLETED_SUMMARY.search(result.stdout):
+        unusable("mypy did not run to completion")
+
+    failing = set()
+    for line in result.stdout.splitlines():
+        match = ERROR_LINE.match(line)
+        if match:
+            parts = match[1].split("/")
+            failing.add(".".join(parts[:-1] if parts[-1] == "__init__" else parts))
+    return failing
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--base",
+        default=os.environ.get("LEDGER_BASE_SHA", ""),
+        help="Revision to diff the ledger against; without it the additions check is skipped.",
+    )
+    args = parser.parse_args(argv)
+
+    print("== mypy ==")
+    result = run_mypy()
+    print(result.stdout or result.stderr, end="")
+    if result.returncode != 0:
+        return result.returncode
+
+    document = PYPROJECT.read_text(encoding="utf-8")
+    ledger = ledger_of(document)
+    if ledger is None:
+        sys.exit(f"{PYPROJECT} has no [tool.mypy] section.")
+    if not ledger:
+        print("\n== ledger ==\nmypy ledger is empty; delete this check along with the last entry.")
+        return 0
+
+    print("\n== ledger ==")
+    added = added_entries(ledger, args.base.strip())
+    if added:
+        print("The mypy ledger may only shrink, and these entries are new:")
+        for module in added:
+            print(f'    "{module}",')
+        print()
+        print("Fix the module's type errors instead of grandfathering it.")
+        return 1
+
+    # Bind the result: inlining the call into the comprehension's condition
+    # would re-run mypy once per ledger entry.
+    failing = modules_with_errors(document)
+    stale = sorted(module for module in ledger if module not in failing)
+    if stale:
+        print("Stale mypy ledger entries -- these modules type-check cleanly now.")
+        print("Delete their lines from the [[tool.mypy.overrides]] block in pyproject.toml:")
+        for module in stale:
+            print(f'    "{module}",')
+        return 1
+
+    print(f"mypy ledger: {len(ledger)} grandfathered modules, none stale.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

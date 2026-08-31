@@ -23,13 +23,13 @@ python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml ...
 python -m sleep2vec.finetune --config configs/sleep2vec_dense_finetune_cls.yaml ...
 python -m sleep2vec.infer --config configs/sleep2vec_dense_finetune_cls.yaml ...
 ```
-Formatting/linting:
+Formatting, linting, and type-checking:
 ```bash
 bash utils/style_check.sh
 ```
 
 ## Coding Style & Naming Conventions
-- Python formatting is enforced by Black (line length 120), isort (Black profile), and Flake8.
+- Python formatting is enforced by Black (line length 120), isort (Black profile), and Flake8. `agent_tools` is additionally type-checked by mypy; its scope, settings, and grandfathered debt ledger live in `[tool.mypy]` in `pyproject.toml`, and the ledger may only shrink.
 - Use 4-space indentation; follow snake_case for functions/variables/modules and PascalCase for classes.
 - For small special-case handling changes, patch the canonical code path in place instead of adding a helper or wrapper; when the exception is not obvious, leave a brief comment noting the intention.
 - Keep architecture and loss choices in YAML under `configs/`; training hyperparameters stay on the CLI.
@@ -216,8 +216,9 @@ python3.10 -m pytest -q tests/runtime/test_checkpoints.py tests/config/test_conf
 - Verification gate:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall agent_tools tests
-python3 -m pytest -q tests/agent_tools/test_agent_tools_*.py tests/agent_tools/test_agent_consultation_policy.py tests/agent_tools/test_agent_user_decisions.py tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py
+python3 -m pytest -q tests/agent_tools/test_agent_tools_*.py tests/agent_tools/test_agent_consultation_policy.py tests/agent_tools/test_agent_user_decisions.py tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py tests/agent_tools/test_type_check.py
 python -m agent_tools skills --validate
+python utils/type_check.py
 ```
 
 #### `regression-guard`
