@@ -1001,11 +1001,9 @@ def render_hparam_preflight_card(
 ) -> str:
     variant = str(recipe["variant"])
     config_module = rendering.variant_module(recipe, "config")
-    loader = (
-        f"{config_module}.load_config(validate_sidecars=True)"
-        if variant == "sex_age_baseline"
-        else f"{config_module}.load_finetune_config"
-    )
+    loader = f"{config_module}.load_finetune_config"
+    if variant == "sex_age_baseline":
+        loader += " (load_config with default validate_sidecars=False)"
     routes: dict[tuple[str, str, str, str, tuple[str, ...]], list[str]] = {}
     models: dict[bytes, dict[str, Any]] = {}
     for run, config_bytes in run_configs:
@@ -1074,16 +1072,22 @@ def render_hparam_preflight_card(
         "",
         *topology_lines,
         f"- Control transport: `{target}`",
-        f"- Validated preflight host: `{snapshot['runtime_hostname']}`",
-        f"- Runtime Python: `{snapshot['python']}` (version `{snapshot['python_version']}`; "
+        f"- Target CLI preflight host: `{snapshot['runtime_hostname']}`",
+        f"- Target CLI Python: `{snapshot['python']}` (version `{snapshot['python_version']}`; "
         f"frozen command: `{snapshot['python_command']}`)",
-        f"- Runtime commit: `{snapshot['runtime_commit']}`",
-        f"- Module origin: `{snapshot['module_origin']}`",
-        f"- Validated run count: {len(run_configs)}",
-        f"- Validated argv count: {len(run_configs)}",
-        f"- Validated argv SHA-256: `{snapshot['validated_argv_sha256']}`",
+        f"- Target CLI runtime commit: `{snapshot['runtime_commit']}`",
+        f"- Target CLI module origin: `{snapshot['module_origin']}`",
+        f"- Total planned runs: {len(run_configs)}",
+        f"- Target CLI argv checks: {len(run_configs)}",
+        f"- Target CLI argv SHA-256: `{snapshot['validated_argv_sha256']}`",
+        f"- Planner-local final-config checks: {len(run_configs)} runs; {len(models)} unique exact YAML byte sequences",
+        f"- Planner-local validators: `{config_module}.load_finetune_config` + `{config_module}.validate_model_config`",
+        "- Final-config checks run in the planner's current Python/code environment; "
+        "target CLI preflight proves argument parsing only.",
+        "- Model construction, forward/backward, checkpoint compatibility, and GPU execution: not performed.",
+        "- Final-config checks do not perform full-sidecar reads or complete candidate-specific dataset validation.",
         "",
-        "| Variant | Python module | Canonical config loader | Architecture | Channels | Run IDs |",
+        "| Variant | Target CLI module | Canonical config loader | Architecture | Channels | Run IDs |",
         "|---|---|---|---|---|---|",
     ]
     for route, run_ids in routes.items():

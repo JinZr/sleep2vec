@@ -317,7 +317,19 @@ wrapped inference plans.
 New ordinary hparam plans and adaptive rounds are fully materialized in a
 temporary directory on the final destination filesystem. The staged frozen
 bundle is recompiled and validated with the same reader used after publication;
-the tool then validates managed output topology on the frozen execution host
+each final candidate config is then checked with the recipe variant's canonical
+`load_finetune_config` and `validate_model_config` in the planner's current Python
+and code environment. This applies equally to profile expansions, explicit
+configurations, parameter grids, and accepted agent proposals after all YAML
+overrides. Consultation checks captured input bytes; registration independently
+checks the exact frozen candidate bytes. Launch, including dry-run, repeats the
+frozen config check for prospective `planned`/`pending` runs before submission;
+active/terminal-only calls and monitoring do not load candidate configs.
+Identical config bytes share one canonical load only within each validation
+boundary, never across calls or rounds. These checks do not reread full sidecar
+tables for each candidate.
+
+The tool also validates managed output topology on the frozen execution host
 and inspects the target Python, repository commit, module origin, supported CLI
 options, and every final argv. Only a complete pass permits atomic publication,
 step/controller registration, canonical run-row merge, and the `plan_created`
@@ -332,9 +344,13 @@ step, or canonical run row. Other tasks are rejected because this first
 validate-only contract is hparam-specific.
 
 Every new hparam `plan.md` includes a human-readable registration-preflight
-card. Target Python, runtime commit, module origin, run/argv counts, and the
-argv digest come from the frozen execution snapshot. The card distinguishes
-the control transport from the validated preflight host and shows the actual
+card. Target Python, runtime commit, module origin, and the argv digest come
+from the frozen execution snapshot. The card separately reports target CLI
+argv checks and planner-local final-config checks, including total runs and
+unique config bytes. Neither proves model construction, checkpoint compatibility,
+forward/backward, or GPU execution; those operations are not performed. The
+sex-age canonical finetune wrapper uses `load_config(validate_sidecars=False)`.
+The card distinguishes the control transport from the validated preflight host and shows the actual
 Python executable/version reported by that target. Variant, runtime module,
 actual config loader, architecture, and channels come from each final generated
 config and are grouped with their run IDs. The card is a projection for audit;
