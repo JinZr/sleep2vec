@@ -356,7 +356,7 @@ def evaluate_consultation_gates(
     )
     if task_adapter is not None:
         issues.extend(task_adapter.configured_input_issues(recipe, config_summary))
-    if _output_paths_missing(recipe):
+    if (task_adapter is None or "artifacts" in task_adapter.recipe_extra_fields) and _output_paths_missing(recipe):
         issues.append(
             DecisionIssue(
                 DecisionStatus.WARN,

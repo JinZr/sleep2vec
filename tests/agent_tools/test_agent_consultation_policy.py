@@ -42,6 +42,18 @@ def _remote_runtime_recipe() -> dict:
     }
 
 
+@pytest.mark.parametrize(("task", "warns"), [("finetune", True), ("preset_prepare", False)])
+def test_missing_artifacts_warning_respects_task_output_ownership(task, warns):
+    report = evaluate_consultation_gates(
+        task, {"task": task, "variant": "sleep2vec"}, None, {}, load_consultation_policy()
+    )
+    issues = [issue for issue in report.issues if issue.field == "output_dir"]
+    assert bool(issues) is warns
+    if warns:
+        assert issues[0].status == DecisionStatus.WARN
+        assert "artifacts/" in issues[0].message
+
+
 def test_doctor_returns_exit_2_when_label_name_missing_for_finetune(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
 
