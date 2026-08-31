@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import types
@@ -2026,32 +2027,34 @@ def test_experiment_wandb_sync_remote_writes_outputs_over_ssh(monkeypatch):
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
         shell = command[-1]
-        if "seen_inodes" in shell:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                _managed_file_payload(
-                    {
-                        "/wujidata/run/experiment.yaml": experiment_text,
-                        "/wujidata/run/run_manifest.tsv": run_manifest,
-                    }
-                ),
-                "",
-            )
-        if "experiment.yaml" in shell and "os.lstat" in shell and "sys.stdout.write" not in shell:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if "experiment.yaml" in shell and "sys.stdout.write" in shell:
-            return subprocess.CompletedProcess(command, 0, experiment_text, "")
-        if "run_manifest.tsv" in shell and "sys.stdout.write" in shell:
-            return subprocess.CompletedProcess(command, 0, run_manifest, "")
-        if "run_manifest.tsv" in shell and "os.lstat" in shell:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        # Match the embedded publication programs while keeping the manifest assertion tied to managed CAS below.
-        if "expect_missing = not expected and not append_mode" in shell or "os.replace(temporary, path)" in shell:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if "cat >" in shell or "mkdir -p" in shell:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
+        files = {
+            "/wujidata/run/experiment.yaml": experiment_text,
+            "/wujidata/run/run_manifest.tsv": run_manifest,
+        }
+        returncode = 0
+        if _is_remote_python_program(shell, "experiment_io.read_managed_files"):
+            stdout = _managed_file_payload(files)
+        elif _is_remote_python_program(shell, "experiment_io.read_text"):
+            path = shlex.split(shell)[-1]
+            stdout = json.dumps(files.get(path)) + "\n"
+            returncode = 0 if path in files else experiment_io.REMOTE_MISSING_RETURN_CODE
+        elif _is_remote_python_program(shell, "experiment_io.path_exists"):
+            exists = shlex.split(shell)[-1] in files
+            stdout = "true\n" if exists else "false\n"
+            returncode = 0 if exists else experiment_io.REMOTE_MISSING_RETURN_CODE
+        elif (
+            _is_remote_python_program(shell, "experiment_io.validate_managed_output_paths")
+            or _is_remote_python_program(shell, "experiment_io.conditional_atomic_replace_text")
+            or _is_remote_python_program(shell, "experiment_workspace.write_run_matrix_if_current")
+            or "cat >" in shell
+            or "mkdir -p" in shell
+        ):
+            stdout = "true\n"
+        else:
+            pytest.fail(f"Unexpected remote sync command: {shell}")
+        if not kwargs.get("text"):
+            return subprocess.CompletedProcess(command, returncode, stdout.encode(), b"")
+        return subprocess.CompletedProcess(command, returncode, stdout, "")
 
     monkeypatch.setitem(sys.modules, "wandb", types.SimpleNamespace(Api=lambda: FakeApi()))
     monkeypatch.setattr("agent_tools.experiment_io.subprocess.run", fake_run)
@@ -2304,8 +2307,8 @@ def test_experiment_remote_checkpoint_scan_fails_closed_without_writing(tmp_path
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        if "seen_inodes" in command[-1]:
-            return subprocess.CompletedProcess(command, 0, "", "")
+        if _is_remote_python_program(command[-1], "experiment_io.validate_managed_output_paths"):
+            return subprocess.CompletedProcess(command, 0, "true\n", "")
         if failure == "timeout":
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         if failure == "malformed":
@@ -2438,35 +2441,33 @@ def test_experiment_rank_remote_reads_and_writes_over_ssh(monkeypatch):
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
         shell = command[-1]
-        if "seen_inodes" in shell:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                _managed_file_payload(
-                    {
-                        "/wujidata/run/experiment.yaml": experiment_text,
-                        "/wujidata/run/run_manifest.tsv": run_manifest,
-                    }
-                ),
-                "",
+        files = {
+            "/wujidata/run/experiment.yaml": experiment_text,
+            "/wujidata/run/run_manifest.tsv": run_manifest,
+            "/wujidata/run/metrics_manifest.tsv": metrics,
+            "/wujidata/run/checkpoint_manifest.tsv": checkpoints,
+        }
+        returncode = 0
+        if _is_remote_python_program(shell, "experiment_io.read_managed_files"):
+            stdout = _managed_file_payload(
+                {path: files[path] for path in files if path.endswith(("experiment.yaml", "run_manifest.tsv"))}
             )
-        if "experiment.yaml" in shell and "os.lstat" in shell and "sys.stdout.write" not in shell:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if "experiment.yaml" in shell and "sys.stdout.write" in shell:
-            return subprocess.CompletedProcess(command, 0, experiment_text, "")
-        if "metrics_manifest.tsv" in shell and "sys.stdout.write" in shell:
-            return subprocess.CompletedProcess(command, 0, metrics, "")
-        if "checkpoint_manifest.tsv" in shell and "sys.stdout.write" in shell:
-            return subprocess.CompletedProcess(command, 0, checkpoints, "")
-        if "run_manifest.tsv" in shell and "sys.stdout.write" in shell:
-            return subprocess.CompletedProcess(command, 0, run_manifest, "")
-        if "run_manifest.tsv" in shell and "os.lstat" in shell:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if "/remote/run/run_a/checkpoints/epoch=2.ckpt" in shell and "os.lstat" in shell:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if "os.lstat" in shell:
-            return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
-        return subprocess.CompletedProcess(command, 0, "", "")
+        elif _is_remote_python_program(shell, "experiment_io.read_text"):
+            path = shlex.split(shell)[-1]
+            stdout = json.dumps(files.get(path)) + "\n"
+            returncode = 0 if path in files else experiment_io.REMOTE_MISSING_RETURN_CODE
+        elif _is_remote_python_program(shell, "experiment_io.path_exists"):
+            path = shlex.split(shell)[-1]
+            exists = path in files or path == "/remote/run/run_a/checkpoints/epoch=2.ckpt"
+            stdout = "true\n" if exists else "false\n"
+            returncode = 0 if exists else experiment_io.REMOTE_MISSING_RETURN_CODE
+        elif _is_remote_python_program(shell, "experiment_io.validate_managed_output_paths") or "cat >" in shell:
+            stdout = "true\n"
+        else:
+            pytest.fail(f"Unexpected remote ranking command: {shell}")
+        if not kwargs.get("text"):
+            return subprocess.CompletedProcess(command, returncode, stdout.encode(), b"")
+        return subprocess.CompletedProcess(command, returncode, stdout, "")
 
     monkeypatch.setattr("agent_tools.experiment_io.subprocess.run", fake_run)
 
@@ -2523,35 +2524,32 @@ def test_experiment_rank_remote_rejects_deleted_checkpoint_on_run_host_before_wr
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
         shell = command[-1]
-        if "seen_inodes" in shell:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                _managed_file_payload(
-                    {
-                        f"{root}/experiment.yaml": experiment_text,
-                        f"{root}/run_manifest.tsv": run_manifest,
-                    }
-                ),
-                "",
+        files = {
+            f"{root}/experiment.yaml": experiment_text,
+            f"{root}/run_manifest.tsv": run_manifest,
+            f"{root}/metrics_manifest.tsv": metrics,
+            f"{root}/checkpoint_manifest.tsv": checkpoints,
+        }
+        returncode = 0
+        if _is_remote_python_program(shell, "experiment_io.read_managed_files"):
+            stdout = _managed_file_payload(
+                {path: files[path] for path in files if path.endswith(("experiment.yaml", "run_manifest.tsv"))}
             )
-        if "experiment.yaml" in shell and "os.lstat" in shell and "sys.stdout.write" not in shell:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if "experiment.yaml" in shell and "sys.stdout.write" in shell:
-            return subprocess.CompletedProcess(command, 0, experiment_text, "")
-        if "metrics_manifest.tsv" in shell and "sys.stdout.write" in shell:
-            return subprocess.CompletedProcess(command, 0, metrics, "")
-        if "checkpoint_manifest.tsv" in shell and "sys.stdout.write" in shell:
-            return subprocess.CompletedProcess(command, 0, checkpoints, "")
-        if "run_manifest.tsv" in shell and "sys.stdout.write" in shell:
-            return subprocess.CompletedProcess(command, 0, run_manifest, "")
-        if command[:2] == ["ssh", "manager-host"] and "run_manifest.tsv" in shell and "os.lstat" in shell:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if command[:2] == ["ssh", "worker"] and checkpoint in shell and "os.lstat" in shell:
-            return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
-        if "os.lstat" in shell:
-            return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
-        return subprocess.CompletedProcess(command, 0, "", "")
+        elif _is_remote_python_program(shell, "experiment_io.read_text"):
+            path = shlex.split(shell)[-1]
+            stdout = json.dumps(files.get(path)) + "\n"
+            returncode = 0 if path in files else experiment_io.REMOTE_MISSING_RETURN_CODE
+        elif _is_remote_python_program(shell, "experiment_io.path_exists"):
+            exists = command[:2] == ["ssh", "manager-host"] and shlex.split(shell)[-1] in files
+            stdout = "true\n" if exists else "false\n"
+            returncode = 0 if exists else experiment_io.REMOTE_MISSING_RETURN_CODE
+        elif _is_remote_python_program(shell, "experiment_io.validate_managed_output_paths"):
+            stdout = "true\n"
+        else:
+            pytest.fail(f"Unexpected remote ranking command: {shell}")
+        if not kwargs.get("text"):
+            return subprocess.CompletedProcess(command, returncode, stdout.encode(), b"")
+        return subprocess.CompletedProcess(command, returncode, stdout, "")
 
     monkeypatch.setattr("agent_tools.experiment_io.subprocess.run", fake_run)
 
