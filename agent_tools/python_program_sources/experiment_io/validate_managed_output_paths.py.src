@@ -1,13 +1,17 @@
 
+from contextlib import ExitStack
+import errno
 import json
 import os
+from pathlib import Path
 import stat
 import sys
 
 root, *targets = json.loads(sys.argv[1])
 root = os.path.abspath(root)
+managed_root = Path(root)
 seen_paths = set()
-seen_inodes = set()
+seen_inodes = {}
 
 def reject(path):
     print(f"Managed output paths must be independent regular files: {path}", file=sys.stderr)
@@ -80,7 +84,40 @@ for raw_target in targets:
         reject(target)
     inode = (info.st_dev, info.st_ino)
     if inode in seen_inodes:
-        reject(target)
-    seen_inodes.add(inode)
+        # Atomic replacement can recycle a previously observed inode. Pin the current group before rejecting.
+        with ExitStack() as stack:
+            try:
+                root_descriptor = open_managed_root()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                    raise
+                reject(root)
+            stack.callback(close_descriptor, root_descriptor)
+            descriptors = []
+            for candidate in [*seen_inodes[inode], target]:
+                try:
+                    parent_descriptor, name = open_managed_parent(
+                        root_descriptor, Path(candidate).relative_to(managed_root), False
+                    )
+                    stack.callback(close_descriptor, parent_descriptor)
+                    descriptor = os.open(name, FILE_OPEN_FLAGS, dir_fd=parent_descriptor)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                        raise
+                    reject(candidate)
+                stack.callback(close_descriptor, descriptor)
+                descriptors.append(descriptor)
+            current_infos = [os.fstat(descriptor) for descriptor in descriptors]
+            if any(current.st_nlink == 0 for current in current_infos):
+                raise RuntimeError(f"Managed output paths changed during independence validation: {target}")
+            if any(not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 for current in current_infos):
+                reject(target)
+            if len({(current.st_dev, current.st_ino) for current in current_infos}) != len(current_infos):
+                reject(target)
+    seen_inodes.setdefault(inode, []).append(target)
 
 print("true")
