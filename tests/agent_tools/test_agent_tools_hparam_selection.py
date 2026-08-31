@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import prepare_hparam_plan_fixture, write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
@@ -246,7 +246,7 @@ def _prepare_test_selected_plan_with_two_checkpoints(tmp_path: Path) -> Path:
 def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    prepare_hparam_plan_fixture(recipe, plan_dir)
     run = _first_run(plan_dir)
     version = run["version"]
     run_dir = Path(run["runtime_dir"])
@@ -312,7 +312,7 @@ def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path
 def test_hparam_select_rejects_completed_experiment_without_mutation(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    prepare_hparam_plan_fixture(recipe, plan_dir)
     run = _first_run(plan_dir)
     checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
     checkpoint.parent.mkdir(parents=True)
@@ -350,7 +350,7 @@ def test_hparam_select_rejects_completed_experiment_without_mutation(tmp_path: P
 def test_hparam_select_clears_stale_result_evidence_from_unscored_candidates(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, max_runs=2)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    prepare_hparam_plan_fixture(recipe, plan_dir)
     first_run = _first_run(plan_dir)
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
     checkpoint = Path(first_run["checkpoint_dir"]) / "epoch=1.ckpt"
@@ -529,8 +529,7 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
         max_runs=2,
     )
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-    assert result.returncode == 0, result.stderr or result.stdout
+    prepare_hparam_plan_fixture(recipe, plan_dir)
     plan = json.loads((plan_dir / "plan.json").read_text())
 
     checkpoint_scores = ((0.91, 0.75), (0.79, 0.75))
@@ -706,7 +705,7 @@ def test_experiment_status_rejects_val_ranking_optional_provenance_drift(tmp_pat
 def test_experiment_status_rejects_val_ranking_with_unowned_optional_column(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    prepare_hparam_plan_fixture(recipe, plan_dir)
     run = _first_run(plan_dir)
     checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
     checkpoint.parent.mkdir(parents=True)
