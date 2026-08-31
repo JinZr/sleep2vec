@@ -158,156 +158,152 @@ def rename_noreplace_at(parent_descriptor, source_name, target_name):
     raise OSError(error, os.strerror(error), target_name)
 
 
-with ExitStack() as lock_stack:
-    root_descriptor = open_managed_root()
-    lock_stack.callback(close_descriptor, root_descriptor)
-    root_info = os.fstat(root_descriptor)
-    locked_files = set()
-    target_parent, target_name = open_managed_parent(root_descriptor, target_relative, True)
-    lock_stack.callback(close_descriptor, target_parent)
-    target_parent_info = os.fstat(target_parent)
-    if dependency_relative is not None:
-        try:
-            dependency_parent, dependency_name = open_managed_parent(root_descriptor, dependency_relative, False)
-        except FileNotFoundError:
-            print("false")
-            raise SystemExit(45)
-        lock_stack.callback(close_descriptor, dependency_parent)
-        dependency_lock_name = dependency_name + ".lock"
-        dependency_parent_info = os.fstat(dependency_parent)
-        dependency_lock_key = (
-            dependency_parent_info.st_dev,
-            dependency_parent_info.st_ino,
-            dependency_lock_name,
-        )
-        if dependency_lock_key not in locked_files:
-            lock_stack.enter_context(blocking_file_lock_at(dependency_parent, dependency_lock_name))
-            locked_files.add(dependency_lock_key)
-        try:
-            dependency_current, _dependency_mode = read_regular_file_at(dependency_parent, dependency_name)
-        except FileNotFoundError:
-            print("false")
-            raise SystemExit(45)
-        if hashlib.sha256(dependency_current).hexdigest() != dependency_expected:
-            print("false")
-            raise SystemExit(45)
-    target_lock_names = [f".{target_name}.cas.lock"]
-    if not append_mode:
-        # Keep lifecycle readers and mixed local/SSH CAS writers on shared locks, in that order.
-        target_lock_names.insert(0, target_name + ".lock")
-    for target_lock_name in target_lock_names:
-        target_lock_key = (target_parent_info.st_dev, target_parent_info.st_ino, target_lock_name)
-        if target_lock_key not in locked_files:
-            lock_stack.enter_context(blocking_file_lock_at(target_parent, target_lock_name))
-            locked_files.add(target_lock_key)
-    if guard_relative is not None:
-        try:
-            guard_parent, guard_name = open_managed_parent(root_descriptor, guard_relative, False)
-        except FileNotFoundError:
-            print("false")
-            raise SystemExit(45)
-        lock_stack.callback(close_descriptor, guard_parent)
-        try:
-            guard_current, _guard_mode = read_regular_file_at(guard_parent, guard_name)
-        except FileNotFoundError:
-            print("false")
-            raise SystemExit(45)
-        if hashlib.sha256(guard_current).hexdigest() != guard_expected:
-            print("false")
-            raise SystemExit(45)
-    if append_mode:
-        try:
-            current, target_mode = read_regular_file_at(target_parent, target_name)
-            target_exists = True
-        except FileNotFoundError:
+try:
+    with ExitStack() as lock_stack:
+        root_descriptor = open_managed_root()
+        lock_stack.callback(close_descriptor, root_descriptor)
+        root_info = os.fstat(root_descriptor)
+        locked_files = set()
+        target_parent, target_name = open_managed_parent(root_descriptor, target_relative, True)
+        lock_stack.callback(close_descriptor, target_parent)
+        target_parent_info = os.fstat(target_parent)
+        if dependency_relative is not None:
+            try:
+                dependency_parent, dependency_name = open_managed_parent(root_descriptor, dependency_relative, False)
+            except FileNotFoundError:
+                raise SystemExit(45)
+            lock_stack.callback(close_descriptor, dependency_parent)
+            dependency_lock_name = dependency_name + ".lock"
+            dependency_parent_info = os.fstat(dependency_parent)
+            dependency_lock_key = (
+                dependency_parent_info.st_dev,
+                dependency_parent_info.st_ino,
+                dependency_lock_name,
+            )
+            if dependency_lock_key not in locked_files:
+                lock_stack.enter_context(blocking_file_lock_at(dependency_parent, dependency_lock_name))
+                locked_files.add(dependency_lock_key)
+            try:
+                dependency_current, _dependency_mode = read_regular_file_at(dependency_parent, dependency_name)
+            except FileNotFoundError:
+                raise SystemExit(45)
+            if hashlib.sha256(dependency_current).hexdigest() != dependency_expected:
+                raise SystemExit(45)
+        target_lock_names = [f".{target_name}.cas.lock"]
+        if not append_mode:
+            # Keep lifecycle readers and mixed local/SSH CAS writers on shared locks, in that order.
+            target_lock_names.insert(0, target_name + ".lock")
+        for target_lock_name in target_lock_names:
+            target_lock_key = (target_parent_info.st_dev, target_parent_info.st_ino, target_lock_name)
+            if target_lock_key not in locked_files:
+                lock_stack.enter_context(blocking_file_lock_at(target_parent, target_lock_name))
+                locked_files.add(target_lock_key)
+        if guard_relative is not None:
+            try:
+                guard_parent, guard_name = open_managed_parent(root_descriptor, guard_relative, False)
+            except FileNotFoundError:
+                raise SystemExit(45)
+            lock_stack.callback(close_descriptor, guard_parent)
+            try:
+                guard_current, _guard_mode = read_regular_file_at(guard_parent, guard_name)
+            except FileNotFoundError:
+                raise SystemExit(45)
+            if hashlib.sha256(guard_current).hexdigest() != guard_expected:
+                raise SystemExit(45)
+        if append_mode:
+            try:
+                current, target_mode = read_regular_file_at(target_parent, target_name)
+                target_exists = True
+            except FileNotFoundError:
+                current = b""
+                target_mode = 0o644
+                target_exists = False
+        elif expect_missing:
+            try:
+                os.stat(target_name, dir_fd=target_parent, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise SystemExit(45)
             current = b""
             target_mode = 0o644
             target_exists = False
-    elif expect_missing:
-        try:
-            os.stat(target_name, dir_fd=target_parent, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
         else:
-            print("false")
-            raise SystemExit(45)
-        current = b""
-        target_mode = 0o644
-        target_exists = False
-    else:
+            try:
+                current, target_mode = read_regular_file_at(target_parent, target_name)
+            except FileNotFoundError:
+                raise SystemExit(45)
+            if hashlib.sha256(current).hexdigest() != expected:
+                raise SystemExit(45)
+            target_exists = True
+        incoming = sys.stdin.buffer.read()
+        payload = current + incoming if append_mode else incoming
+        descriptor, temporary = open_temporary_at(target_parent, target_name)
         try:
-            current, target_mode = read_regular_file_at(target_parent, target_name)
-        except FileNotFoundError:
-            print("false")
-            raise SystemExit(45)
-        if hashlib.sha256(current).hexdigest() != expected:
-            print("false")
-            raise SystemExit(45)
-        target_exists = True
-    incoming = sys.stdin.buffer.read()
-    payload = current + incoming if append_mode else incoming
-    descriptor, temporary = open_temporary_at(target_parent, target_name)
-    try:
-        temporary_info = os.fstat(descriptor)
-        if not stat.S_ISREG(temporary_info.st_mode) or temporary_info.st_nlink != 1:
-            raise ValueError(f"Managed CAS temporary is aliased: {path}")
-        with os.fdopen(descriptor, "wb") as file_obj:
-            descriptor = -1
-            file_obj.write(payload)
-            os.fchmod(file_obj.fileno(), target_mode)
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
-            temporary_info = os.fstat(file_obj.fileno())
+            temporary_info = os.fstat(descriptor)
             if not stat.S_ISREG(temporary_info.st_mode) or temporary_info.st_nlink != 1:
                 raise ValueError(f"Managed CAS temporary is aliased: {path}")
-        public_root = open_managed_root()
-        try:
-            public_parent, public_name = open_managed_parent(public_root, target_relative, False)
+            with os.fdopen(descriptor, "wb") as file_obj:
+                descriptor = -1
+                file_obj.write(payload)
+                os.fchmod(file_obj.fileno(), target_mode)
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+                temporary_info = os.fstat(file_obj.fileno())
+                if not stat.S_ISREG(temporary_info.st_mode) or temporary_info.st_nlink != 1:
+                    raise ValueError(f"Managed CAS temporary is aliased: {path}")
+            public_root = open_managed_root()
             try:
-                public_root_info = os.fstat(public_root)
-                public_parent_info = os.fstat(public_parent)
-                if (public_root_info.st_dev, public_root_info.st_ino) != (
-                    root_info.st_dev,
-                    root_info.st_ino,
-                ) or (public_parent_info.st_dev, public_parent_info.st_ino) != (
-                    target_parent_info.st_dev,
-                    target_parent_info.st_ino,
-                ):
-                    raise ValueError(f"Managed CAS path changed during publication: {path}")
+                public_parent, public_name = open_managed_parent(public_root, target_relative, False)
                 try:
-                    public_current, _public_mode = read_regular_file_at(public_parent, public_name)
-                except FileNotFoundError:
+                    public_root_info = os.fstat(public_root)
+                    public_parent_info = os.fstat(public_parent)
+                    if (public_root_info.st_dev, public_root_info.st_ino) != (
+                        root_info.st_dev,
+                        root_info.st_ino,
+                    ) or (public_parent_info.st_dev, public_parent_info.st_ino) != (
+                        target_parent_info.st_dev,
+                        target_parent_info.st_ino,
+                    ):
+                        raise ValueError(f"Managed CAS path changed during publication: {path}")
+                    try:
+                        public_current, _public_mode = read_regular_file_at(public_parent, public_name)
+                    except FileNotFoundError:
+                        if target_exists:
+                            raise ValueError(f"Managed CAS path changed during publication: {path}")
+                    else:
+                        if not target_exists or public_current != current:
+                            raise ValueError(f"Managed CAS path changed during publication: {path}")
+                    # Supported writers share this lock; this binds the namespace for the immediately following rename.
                     if target_exists:
-                        raise ValueError(f"Managed CAS path changed during publication: {path}")
-                else:
-                    if not target_exists or public_current != current:
-                        raise ValueError(f"Managed CAS path changed during publication: {path}")
-                # Supported writers share this lock; this binds the namespace for the immediately following rename.
-                if target_exists:
-                    os.replace(
-                        temporary,
-                        public_name,
-                        src_dir_fd=public_parent,
-                        dst_dir_fd=public_parent,
-                    )
-                elif not rename_noreplace_at(public_parent, temporary, public_name):
-                    print("false")
-                    raise SystemExit(45)
-                if not publication_matches(root_info, target_parent_info, temporary_info, payload):
-                    raise RuntimeError(
-                        f"Managed publication outcome is unknown because its public path changed: {path}"
-                    )
+                        os.replace(
+                            temporary,
+                            public_name,
+                            src_dir_fd=public_parent,
+                            dst_dir_fd=public_parent,
+                        )
+                    elif not rename_noreplace_at(public_parent, temporary, public_name):
+                        raise SystemExit(45)
+                    if not publication_matches(root_info, target_parent_info, temporary_info, payload):
+                        raise RuntimeError(
+                            f"Managed publication outcome is unknown because its public path changed: {path}"
+                        )
+                finally:
+                    close_descriptor(public_parent)
             finally:
-                close_descriptor(public_parent)
-        finally:
-            close_descriptor(public_root)
-    except BaseException:
-        if descriptor >= 0:
-            close_descriptor(descriptor)
-        try:
-            os.unlink(temporary, dir_fd=target_parent)
-        except FileNotFoundError:
-            pass
-        raise
+                close_descriptor(public_root)
+        except BaseException:
+            if descriptor >= 0:
+                close_descriptor(descriptor)
+            try:
+                os.unlink(temporary, dir_fd=target_parent)
+            except FileNotFoundError:
+                pass
+            raise
+except SystemExit as exc:
+    # Conflict is trustworthy only after temporary-file and scope cleanup succeeds.
+    if exc.code == 45:
+        print("false")
+    raise
 
 print("true")

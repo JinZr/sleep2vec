@@ -8,7 +8,7 @@ import pytest
 from agent_tools import python_programs, transport
 
 SOURCE_HASHES = {
-    "experiment_io.conditional_atomic_replace_text": "2a3b61a3bdba9002ec2a82b840b19a9eb5dcb8eb7e2c03acf9be5377f0ad04f4",
+    "experiment_io.conditional_atomic_replace_text": "ea9b1e1e387c79db52623a607c130ddfbf946aacfcc0703a7d4f5a9166b866c2",
     "experiment_io.list_managed_subdirectories": "e8b83f0cef4f3cf46b84542276f7ffaf7045acaf4f409c9ad2d0333178b39c8b",
     "experiment_io.path_exists": "ae3b150f5e8e90493d30a016323529509d00519ba9505185f293d4481564fe17",
     "experiment_io.read_managed_files": "acf0d66282bd5bb74c506d165ee1bd0e88f219c78e9678e75951c6e385538002",
@@ -17,7 +17,7 @@ SOURCE_HASHES = {
     "experiment_io.remote_dir_nonempty": "d9604eaedee251e2b5a8ef5f055344f0e51c976c4c9c2420df7ffb4c0343bc77",
     "experiment_io.validate_managed_output_paths": "a2b93a225baf39d092a96620af81947e73d33ecefcb4d0850d6d364fa71e7a29",
     "experiment_workspace.write_run_matrix_if_current": (
-        "53c24290cd4b38a99941d04f26adf2cd39ff8938b49097dae1e47e8a1e5ed8ea"
+        "82220ec43daaa0e9244a6a30fddabfba5a6ee7e7a5406bcd1d42a74bca38c0b9"
     ),
     "hparam_postprocess.verify_checkpoint_sha256": "edff342d976933beabffc01bfc98080c49cdbe673d1a9ec8e8958989fef569ee",
     "managed_scheduler.cli_preflight": "5620962bcbd5db619b4f934773ad9e3d67e2c6ddc1edc212fac7cda872cb0cd1",
@@ -36,7 +36,7 @@ SOURCE_HASHES = {
 }
 
 COMMAND_HASHES = {
-    "experiment_io.conditional_atomic_replace_text": "f349fa7030a97e3e242b4acb8b6759cb7e41292313f6886d105b4918f911a1dd",
+    "experiment_io.conditional_atomic_replace_text": "093de07b7554e30ccffc4fca1cb82ed4b132b2a0f4c66395241b7ae4a0a2065b",
     "experiment_io.list_managed_subdirectories": "87f1c489bbff353f89d4418104abbb691fe6b2ba5ee9245815eb0ae1369e2921",
     "experiment_io.path_exists": "1d4f605c0e2155db58da12c08f298901dc23d636bc9dd87fd24f97939a4e33e6",
     "experiment_io.read_managed_files": "43836ec1178eee36b1b54788554a977047552565245e8d54413370e8d57d6da0",
@@ -45,7 +45,7 @@ COMMAND_HASHES = {
     "experiment_io.remote_dir_nonempty": "bea5ad87ff7a0921736c954d84dec11f66a8d3079db464bb00a3b6328a0c60fc",
     "experiment_io.validate_managed_output_paths": "c02bf72e892c720c8eb6ee97890d1f4e1716b9f2669f13a7b2aec4e5bfe4c200",
     "experiment_workspace.write_run_matrix_if_current": (
-        "079d134d11b75e36e3bb2510b0147d977825092bed975426f14e9cb64da5927c"
+        "89160398c17ccd32df9d2949fe4e6273de5f0ccc62dbc1da514c4aa9fbe9f7eb"
     ),
     "hparam_postprocess.verify_checkpoint_sha256": "0423ef2081129f2e665a1128ccacb092120596d35dd57f8093782ebc3a737869",
     "managed_scheduler.cli_preflight": "f29964331539fb594e8736b27be9aa4005980f493df994833f00a5364c837418",

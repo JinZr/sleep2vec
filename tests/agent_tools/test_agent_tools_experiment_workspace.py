@@ -1807,6 +1807,63 @@ def test_remote_projection_requires_actual_completed_result(tmp_path, monkeypatc
             assert "run-000" in report.read_text()
 
 
+@pytest.mark.parametrize("manifest_state", ["missing", "stale", "current"])
+def test_remote_projection_result_requires_successful_lock_cleanup(tmp_path, monkeypatch, manifest_state):
+    manifest = tmp_path / "run_manifest.tsv"
+    if manifest_state != "missing":
+        manifest.write_text("current\n")
+    children = []
+
+    def rewritten_exit(_host, command, **kwargs):
+        argv = [sys.executable, *shlex.split(command)[1:]]
+        marker = "payload = json.load(sys.stdin)\n"
+        assert argv[2].count(marker) == 1
+        injection = """
+original_open = open
+
+class FailedLockClose:
+    def __init__(self, file_obj):
+        self.file_obj = file_obj
+
+    def __enter__(self):
+        return self.file_obj
+
+    def __exit__(self, *args):
+        self.file_obj.close()
+        raise OSError(5, "injected lock cleanup failure")
+
+def open_with_failed_lock_close(path, *args, **kwargs):
+    file_obj = original_open(path, *args, **kwargs)
+    return FailedLockClose(file_obj) if path == manifest_path + ".lock" else file_obj
+
+open = open_with_failed_lock_close
+"""
+        argv[2] = argv[2].replace(marker, marker + injection)
+        child = subprocess.run(argv, capture_output=True, timeout=5, **kwargs)
+        children.append(child)
+        return subprocess.CompletedProcess(command, 0, child.stdout, child.stderr)
+
+    monkeypatch.setattr(experiment_workspace.transport, "run_ssh", rewritten_exit)
+    rows = [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}]
+    expected = "current\n" if manifest_state == "current" else "stale\n"
+
+    with pytest.raises(RuntimeError, match="(?s)outcome may be unknown.*injected lock cleanup failure"):
+        experiment_workspace._write_remote_run_matrix_if_current(tmp_path, rows, expected, "host")
+
+    assert len(children) == 1
+    assert children[0].returncode == 1
+    assert children[0].stdout == ""
+    assert manifest.exists() is (manifest_state != "missing")
+    if manifest_state != "missing":
+        assert manifest.read_text() == "current\n"
+    if manifest_state == "current":
+        assert "run-000" in (tmp_path / "run_matrix.csv").read_text()
+        assert "run-000" in (tmp_path / "reports" / "run_matrix.md").read_text()
+    else:
+        assert not (tmp_path / "run_matrix.csv").exists()
+        assert not (tmp_path / "reports").exists()
+
+
 def test_remote_projection_conflicts_never_publish_a_stale_matrix(monkeypatch):
     state = {"text": "step_id\trun_id\n", "attempts": 0, "projection": ["preexisting"]}
 

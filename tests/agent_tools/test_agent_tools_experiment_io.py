@@ -174,6 +174,93 @@ def test_remote_cas_and_append_use_actual_publication_results(tmp_path, masked_s
     assert masked_ssh[0].returncode == (45 if mode == "conflict" else 1 if mode == "missing_root" else 0)
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_remote_create_conflict_requires_successful_temporary_cleanup(tmp_path, monkeypatch, masked_ssh, cleanup_fails):
+    target = tmp_path / "state.tsv"
+    original_source = python_programs.source
+    source = original_source("experiment_io.conditional_atomic_replace_text")
+    marker = "def rename_noreplace_at(parent_descriptor, source_name, target_name):\n"
+    assert source.count(marker) == 1
+    injection = f"""    competitor = os.open(
+        target_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=parent_descriptor
+    )
+    with os.fdopen(competitor, "wb") as file_obj:
+        file_obj.write(b"competitor\\n")
+    if {cleanup_fails!r}:
+        def fail_cleanup(*args, **kwargs):
+            raise OSError(errno.EIO, "injected temporary cleanup failure")
+        os.unlink = fail_cleanup
+"""
+    source = source.replace(marker, marker + injection)
+    monkeypatch.setattr(
+        python_programs,
+        "source",
+        lambda name: source if name == "experiment_io.conditional_atomic_replace_text" else original_source(name),
+    )
+
+    if cleanup_fails:
+        with pytest.raises(RuntimeError, match="(?s)outcome may be unknown.*injected temporary cleanup failure"):
+            experiment_io.conditional_atomic_replace_text_at(
+                target, "new\n", None, managed_root=tmp_path, remote="host"
+            )
+    else:
+        assert not experiment_io.conditional_atomic_replace_text_at(
+            target, "new\n", None, managed_root=tmp_path, remote="host"
+        )
+
+    assert len(masked_ssh) == 1
+    child = masked_ssh[0]
+    assert child.returncode == (1 if cleanup_fails else 45)
+    assert child.stdout == (b"" if cleanup_fails else b"false\n")
+    assert target.read_bytes() == b"competitor\n"
+    staged = [path for path in tmp_path.glob(".state.tsv.*") if not path.name.endswith(".lock")]
+    assert len(staged) == int(cleanup_fails)
+    if staged:
+        assert staged[0].read_bytes() == b"new\n"
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        "dependency_parent",
+        "dependency_missing",
+        "dependency_hash",
+        "guard_parent",
+        "guard_missing",
+        "guard_hash",
+        "target_missing",
+        "target_hash",
+    ],
+)
+def test_remote_cas_conflict_receipts_survive_successful_scope_cleanup(tmp_path, masked_ssh, conflict):
+    target = tmp_path / "state.tsv"
+    if conflict != "target_missing":
+        target.write_bytes(b"old\n")
+    expected = hashlib.sha256(b"old\n").hexdigest()
+    kwargs = {}
+    if conflict.startswith(("dependency_", "guard_")):
+        kind, fault = conflict.split("_")
+        other = tmp_path / kind
+        if fault == "parent":
+            other /= "missing.tsv"
+        elif fault == "hash":
+            other.write_bytes(b"changed\n")
+        kwargs = {f"{kind}_path": other, f"expected_{kind}_sha256": expected}
+    elif conflict == "target_hash":
+        expected = hashlib.sha256(b"stale\n").hexdigest()
+
+    assert not experiment_io.conditional_atomic_replace_text_at(
+        target, "new\n", expected, managed_root=tmp_path, remote="host", **kwargs
+    )
+
+    assert len(masked_ssh) == 1
+    assert masked_ssh[0].returncode == 45
+    assert masked_ssh[0].stdout == b"false\n"
+    assert target.exists() is (conflict != "target_missing")
+    if target.exists():
+        assert target.read_bytes() == b"old\n"
+
+
 @pytest.mark.parametrize("operation", ["cas", "append", "write", "mkdir"])
 @pytest.mark.parametrize("failure", ["lost", "truncated", "ssh255", "timeout"])
 def test_remote_writes_do_not_retry_after_losing_actual_success(tmp_path, monkeypatch, masked_ssh, operation, failure):
@@ -1290,19 +1377,19 @@ def test_embedded_conditional_write_reports_unknown_when_public_parent_moves_dur
         extra_args = ["append"]
 
     marker = (
-        "                # Supported writers share this lock; this binds the namespace "
+        "                    # Supported writers share this lock; this binds the namespace "
         "for the immediately following rename."
     )
     source = python_programs.source("experiment_io.conditional_atomic_replace_text")
     assert source.count(marker) == 1
-    injection = f"""                original_rename = {rename_name}
+    injection = f"""                    original_rename = {rename_name}
 
-                def drift_during_rename(*args, **kwargs):
-                    path.parent.rename(path.parent.with_name(path.parent.name + "-moved"))
-                    path.parent.symlink_to(managed_root.parent / "outside", target_is_directory=True)
-                    return original_rename(*args, **kwargs)
+                    def drift_during_rename(*args, **kwargs):
+                        path.parent.rename(path.parent.with_name(path.parent.name + "-moved"))
+                        path.parent.symlink_to(managed_root.parent / "outside", target_is_directory=True)
+                        return original_rename(*args, **kwargs)
 
-                {rename_name} = drift_during_rename
+                    {rename_name} = drift_during_rename
 """
     source = source.replace(marker, injection + marker)
 
