@@ -96,15 +96,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: |
-            requirements-typecheck.txt
+            requirements-agent-tools.txt
             pyproject.toml
 
-      # Deliberately no torch/lightning/wandb: agent_tools must type-check in
-      # the same domain-free environment the kernel test job already enforces.
+      # Shares the agent_tools tooling pins with the kernel and recipe test
+      # jobs. Deliberately no torch/lightning/wandb: agent_tools must
+      # type-check in the same domain-free environment those jobs enforce.
       - name: Install mypy
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-typecheck.txt
+          python -m pip install -r requirements-agent-tools.txt
 
       # Scope, settings, and the grandfathered debt ledger all live in
       # [tool.mypy] in pyproject.toml.
