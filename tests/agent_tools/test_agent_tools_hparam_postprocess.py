@@ -8,7 +8,7 @@ import shlex
 import subprocess
 import sys
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import prepare_hparam_plan_fixture, write_finetune_recipe, write_yaml
 import pandas as pd
 import pytest
 import yaml
@@ -223,7 +223,7 @@ def test_hparam_external_eval_uses_frozen_plan_fields_and_workdir(tmp_path: Path
     payload["search"]["parameters"] = {"runtime.batch_size": [48]}
     write_yaml(recipe, payload)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    prepare_hparam_plan_fixture(recipe, plan_dir)
     run = _first_run(plan_dir)
     _set_run_status(plan_dir, run)
     selected = plan_dir / "selected.csv"
@@ -312,7 +312,7 @@ def test_hparam_external_eval_rejects_unsuccessful_canonical_run_before_writing(
 def test_hparam_external_eval_checks_status_after_top_k_filtering(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, run_count=2)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    prepare_hparam_plan_fixture(recipe, plan_dir)
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
     _set_run_status(plan_dir, runs[0])
     _set_run_status(plan_dir, runs[1], "failed")
@@ -378,7 +378,7 @@ def test_hparam_external_eval_rejects_changed_snapshot_before_writing(tmp_path: 
 def test_hparam_external_eval_rejects_base_recipe_drift_before_writing(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path)})
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    prepare_hparam_plan_fixture(recipe, plan_dir)
     run = _first_run(plan_dir)
     checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
     checkpoint.parent.mkdir(parents=True)
@@ -446,7 +446,7 @@ def test_hparam_external_eval_rejects_candidate_parameter_sources_before_writing
 def test_hparam_external_eval_filters_workspace_ranking_to_current_step(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    prepare_hparam_plan_fixture(recipe, plan_dir)
     run = _first_run(plan_dir)
     _set_run_status(plan_dir, run)
     other_checkpoint_dir = tmp_path / "other-checkpoints"
@@ -640,7 +640,7 @@ def test_hparam_postprocess_preflights_outputs_before_side_effects(tmp_path: Pat
 def test_hparam_external_eval_rejects_checkpoint_outside_frozen_directory_before_writing(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    prepare_hparam_plan_fixture(recipe, plan_dir)
     run = _first_run(plan_dir)
     foreign_checkpoint = tmp_path / "foreign" / "epoch=1.ckpt"
     foreign_checkpoint.parent.mkdir()
@@ -660,7 +660,7 @@ def test_hparam_external_eval_rejects_checkpoint_outside_frozen_directory_before
 def test_hparam_external_eval_rejects_checkpoint_symlink_inside_frozen_directory_before_writing(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path)})
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    prepare_hparam_plan_fixture(recipe, plan_dir)
     run = _first_run(plan_dir)
     foreign = tmp_path / "foreign.ckpt"
     foreign.write_text("foreign")

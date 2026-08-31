@@ -47,6 +47,32 @@ def run_execution_preflight_fixture(execution: dict, command: list[str]) -> subp
     )
 
 
+def prepare_hparam_plan_fixture(recipe: Path, plan_dir: Path) -> None:
+    from contextlib import redirect_stderr, redirect_stdout
+    from io import StringIO
+
+    import pytest
+
+    from agent_tools import cli, experiment_io, managed_scheduler
+
+    original_validate_paths = experiment_io.validate_managed_output_paths
+
+    def validate_managed_output_paths(root, paths, *, remote=None):
+        if remote is None:
+            return original_validate_paths(root, paths)
+
+    stdout, stderr = StringIO(), StringIO()
+    # Match the CLI stub's two substitutions only while preparing this fixture.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
+        patch.setattr(experiment_io, "validate_managed_output_paths", validate_managed_output_paths)
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            returncode = cli.main(["plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)])
+    assert returncode == 0, (
+        f"Plan fixture failed (exit={returncode})\n" f"stdout:\n{stdout.getvalue()}\nstderr:\n{stderr.getvalue()}"
+    )
+
+
 def config_payload(index_path: Path) -> dict:
     return {
         "model": {

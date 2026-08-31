@@ -703,6 +703,8 @@ def test_hparam_launch_binds_ssh_conda_gpu_and_pid_identity_only_after_a_launch_
 
     started = []
     monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_without_remote)
+    # The fake launcher creates no remote PID file; keep its follow-up lookup local too.
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args: None)
     monkeypatch.setattr(
         hparam_runtime,
         "_start_process",
