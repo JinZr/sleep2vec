@@ -19,7 +19,10 @@ _PROGRAMS = {
         _FRAGMENTS["managed_descriptors"],
         "experiment_io/read_managed_output_texts.py.src",
     ),
-    "experiment_io.validate_managed_output_paths": ("experiment_io/validate_managed_output_paths.py.src",),
+    "experiment_io.validate_managed_output_paths": (
+        _FRAGMENTS["managed_descriptors"],
+        "experiment_io/validate_managed_output_paths.py.src",
+    ),
     "experiment_io.read_text": ("experiment_io/read_text.py.src",),
     "experiment_io.conditional_atomic_replace_text": (
         _FRAGMENTS["managed_descriptors"],

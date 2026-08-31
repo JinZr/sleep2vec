@@ -25,7 +25,7 @@ def ssh_calls(monkeypatch):
 
     def fake_run_ssh(host: str, command: str, **kwargs):
         calls.append((host, command, kwargs))
-        return subprocess.CompletedProcess([], 0, "", "")
+        return subprocess.CompletedProcess([], 0, "path-present\n", "")
 
     monkeypatch.setattr("agent_tools.transport.run_ssh", fake_run_ssh)
     return calls
@@ -231,21 +231,23 @@ def test_remote_ssh_path_validation_uses_short_test_command(tmp_path: Path, monk
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, "path-present\n", "")
 
     monkeypatch.setattr("agent_tools.decision_paths.subprocess.run", fake_run)
 
     report = evaluate_consultation_gates("finetune", payload, None, {}, policy)
 
     assert report.exit_code == 0
-    assert calls == [["ssh", "baichuan3", "test -f /wujidata/example/config.yaml"]]
+    assert calls == [["ssh", "baichuan3", "test -f /wujidata/example/config.yaml && printf 'path-present\\n'"]]
 
 
 def test_remote_relative_runtime_path_is_validated_from_execution_workdir(ssh_calls):
     issue = validate_input_path(_remote_runtime_recipe(), "ckpt_path", "model.ckpt", configured=False)
 
     assert issue is None
-    assert ssh_calls == [("baichuan3", "test -e /remote/runtime/model.ckpt", {"text": True, "timeout": None})]
+    assert ssh_calls == [
+        ("baichuan3", "test -e /remote/runtime/model.ckpt && printf 'path-present\\n'", {"text": True, "timeout": None})
+    ]
 
 
 def test_remote_relative_survival_sidecars_are_validated_from_execution_workdir(ssh_calls):
@@ -261,8 +263,45 @@ def test_remote_relative_survival_sidecars_are_validated_from_execution_workdir(
 
     assert issues == []
     assert [command for _host, command, _kwargs in ssh_calls] == [
-        f"test -f /remote/runtime/{field}.csv" for field in fields
+        f"test -f /remote/runtime/{field}.csv && printf 'path-present\\n'" for field in fields
     ]
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    [(0, ""), (0, "path-pre"), (0, "path-present\nextra"), (255, "path-present\n"), (1, "path-present\n")],
+)
+def test_remote_path_validation_requires_complete_success(monkeypatch, returncode: int, stdout: str):
+    monkeypatch.setattr(
+        "agent_tools.transport.run_ssh",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], returncode, stdout, "transport error"),
+    )
+
+    issue = validate_input_path(_remote_runtime_recipe(), "ckpt_path", "model.ckpt", configured=False)
+
+    assert issue is not None
+    assert issue.status is DecisionStatus.FAIL
+    assert "could not be verified" in issue.message
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_remote_path_validation_rejects_hidden_child_failure(tmp_path: Path, monkeypatch, exists: bool):
+    path = tmp_path / "checkpoint with spaces;literal.ckpt"
+    if exists:
+        path.write_text("checkpoint")
+    child_statuses = []
+
+    def masked_ssh(_host, command, **_kwargs):
+        result = subprocess.run(["bash", "-c", command], text=True, capture_output=True, check=False)
+        child_statuses.append(result.returncode)
+        return subprocess.CompletedProcess(result.args, 0, result.stdout, result.stderr)
+
+    monkeypatch.setattr("agent_tools.transport.run_ssh", masked_ssh)
+
+    issue = validate_input_path(_remote_runtime_recipe(), "ckpt_path", str(path), configured=False, require_file=True)
+
+    assert child_statuses == [0 if exists else 1]
+    assert (issue is None) is exists
 
 
 def test_explicit_local_path_context_overrides_ssh_runtime_default(tmp_path: Path, monkeypatch):
@@ -365,7 +404,7 @@ def test_remote_ssh_survival_checks_do_not_read_local_sidecars_or_index(tmp_path
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, "path-present\n", "")
 
     monkeypatch.setattr("agent_tools.decision_paths.subprocess.run", fake_run)
 
@@ -425,7 +464,8 @@ def test_remote_ssh_survival_checks_do_not_read_local_sidecars_or_index(tmp_path
 
     def fail_event_time(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, int("event_time.csv" in command[2]), "", "")
+        missing = "event_time.csv" in command[2]
+        return subprocess.CompletedProcess(command, int(missing), "" if missing else "path-present\n", "")
 
     monkeypatch.setattr("agent_tools.decision_paths.subprocess.run", fail_event_time)
     missing_recipe = write_yaml(

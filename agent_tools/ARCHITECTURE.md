@@ -108,11 +108,13 @@ canonical variant loader defaults frozen by config and runtime identity.
 The guard freezes this set: adding a module here requires updating `layering.py`
 and this table, so a module can't silently slide into "mixed".
 
-## CLI command triage (35 subcommands)
+## CLI command triage (37 subcommands)
 
-`cli_contract` freezes the 35 names; this is the ownership read.
+`test_agent_tools_cli_contract.py` freezes the command names and checks this
+three-way ownership partition against the parser, including counts and duplicates.
 
-- **Kernel (24)**: repo-summary, collect-runs, hparam-launch, hparam-run-queue,
+- **Kernel (26)**: repo-summary, collect-runs, hparam-launch, infer-launch, infer-stop,
+  hparam-run-queue,
   hparam-monitor, hparam-stop, hparam-select, hparam-checkpoint-scan,
   hparam-digest, hparam-suggest, hparam-adaptive-init, hparam-adaptive-step,
   hparam-adaptive-loop, progress, experiment-init, experiment-note,
@@ -149,7 +151,7 @@ Legal edges outside the reverse-edge table:
 
 ## Frozen surfaces
 
-- `cli_contract`: 35 subcommand names + argument contracts + task/variant
+- `cli_contract`: subcommand names and ownership groups + argument contracts + task/variant
   routing matrix + the `cli.export_hparam_logits` attribute name (a monkeypatch
   anchor).
 - The adapter-boundary guard's `KERNEL_MODULES` file list (7 modules, resolved

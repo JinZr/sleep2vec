@@ -679,7 +679,7 @@ def test_sex_age_baseline_remote_ssh_multilabel_checks_sidecar_paths(tmp_path: P
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, "path-present\n", "")
 
     monkeypatch.setattr("agent_tools.decision_paths.subprocess.run", fake_run)
 
@@ -717,7 +717,8 @@ def test_sex_age_baseline_remote_ssh_multilabel_checks_sidecar_paths(tmp_path: P
 
     def fail_label(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, int("label.csv" in command[2]), "", "")
+        missing = "label.csv" in command[2]
+        return subprocess.CompletedProcess(command, int(missing), "" if missing else "path-present\n", "")
 
     monkeypatch.setattr("agent_tools.decision_paths.subprocess.run", fail_label)
     missing_recipe = _finetune_recipe(tmp_path, config)

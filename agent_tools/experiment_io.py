@@ -56,8 +56,11 @@ def blocking_file_lock(path: str | Path) -> Iterator[None]:
 def mkdir_experiment_dirs(root: Path, *, remote: str | None = None) -> None:
     dirs = [root / "reports", root / "wandb" / "history"]
     if remote:
-        command = "mkdir -p " + " ".join(transport.sh(path) for path in dirs)
-        transport.run_ssh(remote, command, text=True, check=True)
+        command = "mkdir -p " + " ".join(transport.sh(path) for path in dirs) + " && printf 'true\\n'"
+        result = transport.run_ssh(remote, command, text=True, check=True)
+        if result.returncode != 0 or result.stdout != "true\n":
+            detail = result.stderr.strip() or "no valid result"
+            raise RuntimeError(f"SSH directory creation outcome may be unknown for {root} on {remote}: {detail}")
         return
     for path in dirs:
         path.mkdir(parents=True, exist_ok=True)
@@ -65,12 +68,14 @@ def mkdir_experiment_dirs(root: Path, *, remote: str | None = None) -> None:
 
 def remote_dir_nonempty(root: Path, remote: str) -> bool:
     result = _run_remote_text_program(remote, "experiment_io.remote_dir_nonempty", str(root))
-    if result.returncode == REMOTE_MISSING_RETURN_CODE:
-        return False
-    if result.returncode != 0:
+    if result.returncode not in {0, REMOTE_MISSING_RETURN_CODE}:
         detail = result.stderr.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"SSH directory probe failed for {root} on {remote}: {detail}")
-    return bool(result.stdout.strip())
+    if result.stdout == "false\n":
+        return False
+    if result.returncode == 0 and result.stdout == "true\n":
+        return True
+    raise RuntimeError(f"SSH directory probe returned no valid result for {root} on {remote}: {result.stderr.strip()}")
 
 
 def path_exists_at(path: str | Path, *, remote: str | None = None) -> bool:
@@ -78,12 +83,14 @@ def path_exists_at(path: str | Path, *, remote: str | None = None) -> bool:
         target = Path(path)
         return target.exists() or target.is_symlink()
     result = _run_remote_text_program(remote, "experiment_io.path_exists", str(path))
-    if result.returncode == REMOTE_MISSING_RETURN_CODE:
-        return False
-    if result.returncode != 0:
+    if result.returncode not in {0, REMOTE_MISSING_RETURN_CODE}:
         detail = result.stderr.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"SSH path probe failed for {path} on {remote}: {detail}")
-    return True
+    if result.stdout == "false\n":
+        return False
+    if result.returncode == 0 and result.stdout == "true\n":
+        return True
+    raise RuntimeError(f"SSH path probe returned no valid result for {path} on {remote}: {result.stderr.strip()}")
 
 
 def list_managed_subdirectories_at(
@@ -366,6 +373,10 @@ def validate_managed_output_paths(
         if result.returncode != 0:
             detail = result.stderr.strip() or f"exit code {result.returncode}"
             raise RuntimeError(f"SSH output path validation failed on {remote}: {detail}")
+        if result.stdout != "true\n":
+            raise RuntimeError(
+                f"SSH output path validation returned no valid result on {remote}: {result.stderr.strip()}"
+            )
         return
 
     root_path = Path(os.path.abspath(root))
@@ -385,7 +396,7 @@ def validate_managed_output_paths(
     else:
         if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
             raise ValueError(f"Managed output paths must be independent regular files: {root_path}")
-    seen_paths = set()
+    seen_paths = {}
     seen_inodes = set()
     for raw_target in paths:
         target = Path(os.path.abspath(raw_target))
@@ -395,7 +406,7 @@ def validate_managed_output_paths(
             raise ValueError(f"Managed output path is outside its workspace: {target}") from exc
         if target in seen_paths:
             raise ValueError(f"Managed output paths must be independent regular files: {target}")
-        seen_paths.add(target)
+        seen_paths[target] = None
 
         ancestors = []
         current = root_path
@@ -422,23 +433,73 @@ def validate_managed_output_paths(
             raise ValueError(f"Managed output paths must be independent regular files: {target}")
         inode = (info.st_dev, info.st_ino)
         if inode in seen_inodes:
-            raise ValueError(f"Managed output paths must be independent regular files: {target}")
-        seen_inodes.add(inode)
+            # Any earlier path may have changed identity. Pin all seen paths before judging a stale collision.
+            with ExitStack() as stack:
+                # O_PATH preserves write-only access; platforms without it fail closed on read-access denial.
+                metadata_flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+                try:
+                    root_descriptor = _open_managed_root(root_path, directory_flags=metadata_flags | os.O_DIRECTORY)
+                except FileNotFoundError:
+                    seen_inodes.clear()
+                    continue
+                except OSError as exc:
+                    if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                        raise
+                    raise ValueError(f"Managed output paths must be independent regular files: {root_path}") from exc
+                stack.callback(_close_descriptor, root_descriptor)
+                descriptors = []
+                for candidate in seen_paths:
+                    try:
+                        parent_descriptor, name = _open_managed_parent(
+                            root_descriptor,
+                            candidate.relative_to(root_path),
+                            create=False,
+                            directory_flags=metadata_flags | os.O_DIRECTORY,
+                        )
+                        stack.callback(_close_descriptor, parent_descriptor)
+                        descriptor = os.open(name, metadata_flags, dir_fd=parent_descriptor)
+                    except FileNotFoundError:
+                        continue
+                    except OSError as exc:
+                        if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                            raise
+                        raise ValueError(
+                            f"Managed output paths must be independent regular files: {candidate}"
+                        ) from exc
+                    stack.callback(_close_descriptor, descriptor)
+                    descriptors.append(descriptor)
+                current_infos = [os.fstat(descriptor) for descriptor in descriptors]
+                if any(current.st_nlink == 0 for current in current_infos):
+                    raise RuntimeError(f"Managed output paths changed during independence validation: {target}")
+                if any(not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 for current in current_infos):
+                    raise ValueError(f"Managed output paths must be independent regular files: {target}")
+                seen_inodes = {(current.st_dev, current.st_ino) for current in current_infos}
+                if len(seen_inodes) != len(current_infos):
+                    raise ValueError(f"Managed output paths must be independent regular files: {target}")
+        else:
+            seen_inodes.add(inode)
 
 
 def read_text_at(path: str | Path, *, remote: str | None = None) -> str:
     if not remote:
         target = Path(path)
         return target.read_bytes().decode() if target.exists() else ""
-    # Keep SSH output binary so explicit decoding preserves remote line endings.
+    # A complete JSON string distinguishes empty text from a failed child with a rewritten SSH exit status.
     result = transport.run_ssh(remote, transport.remote_python_program_command("experiment_io.read_text", str(path)))
-    if result.returncode == REMOTE_MISSING_RETURN_CODE:
-        return ""
-    if result.returncode != 0:
+    if result.returncode not in {0, REMOTE_MISSING_RETURN_CODE}:
         stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
         detail = stderr.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"SSH read failed for {path} on {remote}: {detail}")
-    return result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
+    try:
+        text = json.loads(result.stdout)
+    except ValueError as exc:
+        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
+        raise RuntimeError(f"SSH read returned no valid result for {path} on {remote}: {stderr.strip()}") from exc
+    if text is None:
+        return ""
+    if result.returncode == 0 and isinstance(text, str):
+        return text
+    raise RuntimeError(f"SSH read returned no valid result for {path} on {remote}.")
 
 
 def write_rows_at(path: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> None:
@@ -460,13 +521,16 @@ def write_text_at(path: str | Path, text: str, *, remote: str | None = None) -> 
         write_text(path, text)
         return
     target = Path(str(path))
-    transport.run_ssh(
+    result = transport.run_ssh(
         remote,
-        transport.remote_write_command(target),
+        transport.remote_write_command(target) + " && printf 'true\\n'",
         input=text,
         text=True,
         check=True,
     )
+    if result.returncode != 0 or result.stdout != "true\n":
+        detail = result.stderr.strip() or "no valid result"
+        raise RuntimeError(f"SSH write outcome may be unknown for {target} on {remote}: {detail}")
 
 
 _DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -480,11 +544,11 @@ def _close_descriptor(descriptor: int) -> None:
         pass
 
 
-def _open_managed_root(managed_root: Path) -> int:
-    current = os.open(managed_root.anchor, _DIRECTORY_OPEN_FLAGS)
+def _open_managed_root(managed_root: Path, *, directory_flags: int = _DIRECTORY_OPEN_FLAGS) -> int:
+    current = os.open(managed_root.anchor, directory_flags)
     try:
         for part in managed_root.relative_to(managed_root.anchor).parts:
-            opened = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current)
+            opened = os.open(part, directory_flags, dir_fd=current)
             _close_descriptor(current)
             current = opened
     except BaseException:
@@ -493,14 +557,16 @@ def _open_managed_root(managed_root: Path) -> int:
     return current
 
 
-def _open_managed_parent(root_descriptor: int, relative: Path, *, create: bool) -> tuple[int, str]:
+def _open_managed_parent(
+    root_descriptor: int, relative: Path, *, create: bool, directory_flags: int = _DIRECTORY_OPEN_FLAGS
+) -> tuple[int, str]:
     if not relative.parts:
         raise ValueError("Managed CAS target must name a file below its workspace root.")
     current = os.dup(root_descriptor)
     try:
         for part in relative.parts[:-1]:
             try:
-                opened = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current)
+                opened = os.open(part, directory_flags, dir_fd=current)
             except FileNotFoundError:
                 if not create:
                     raise
@@ -508,7 +574,7 @@ def _open_managed_parent(root_descriptor: int, relative: Path, *, create: bool) 
                     os.mkdir(part, 0o755, dir_fd=current)
                 except FileExistsError:
                     pass
-                opened = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current)
+                opened = os.open(part, directory_flags, dir_fd=current)
             _close_descriptor(current)
             current = opened
     except BaseException:
@@ -972,13 +1038,17 @@ def conditional_atomic_replace_text_at(
         ),
         input=payload,
     )
-    if result.returncode == REMOTE_CONFLICT_RETURN_CODE:
-        return False
-    if result.returncode != 0:
+    if result.returncode not in {0, REMOTE_CONFLICT_RETURN_CODE}:
         stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
         detail = stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"SSH atomic replace failed for {target} on {remote}: {detail}")
-    return True
+        raise RuntimeError(f"SSH atomic replace failed for {target} on {remote}; outcome may be unknown: {detail}")
+    if result.stdout == b"false\n":
+        return False
+    if result.returncode == 0 and result.stdout == b"true\n":
+        return True
+    stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
+    detail = stderr.strip() or "no valid result"
+    raise RuntimeError(f"SSH atomic replace outcome may be unknown for {target} on {remote}: {detail}")
 
 
 def append_event_at(
@@ -1013,3 +1083,7 @@ def append_event_at(
         stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
         detail = stderr.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"SSH managed event append failed on {remote}; outcome may be unknown: {detail}")
+    if result.stdout != b"true\n":
+        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
+        detail = stderr.strip() or "no valid result"
+        raise RuntimeError(f"SSH managed event append outcome may be unknown on {remote}: {detail}")

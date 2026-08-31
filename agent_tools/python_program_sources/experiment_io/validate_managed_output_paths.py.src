@@ -1,12 +1,16 @@
 
+from contextlib import ExitStack
+import errno
 import json
 import os
+from pathlib import Path
 import stat
 import sys
 
 root, *targets = json.loads(sys.argv[1])
 root = os.path.abspath(root)
-seen_paths = set()
+managed_root = Path(root)
+seen_paths = {}
 seen_inodes = set()
 
 def reject(path):
@@ -46,7 +50,7 @@ for raw_target in targets:
         reject(target)
     if target in seen_paths:
         reject(target)
-    seen_paths.add(target)
+    seen_paths[target] = None
 
     relative = os.path.relpath(target, root)
     ancestors = []
@@ -80,5 +84,48 @@ for raw_target in targets:
         reject(target)
     inode = (info.st_dev, info.st_ino)
     if inode in seen_inodes:
-        reject(target)
-    seen_inodes.add(inode)
+        # Any earlier path may have changed identity. Pin all seen paths before judging a stale collision.
+        with ExitStack() as stack:
+            # O_PATH preserves write-only access; platforms without it fail closed on read-access denial.
+            metadata_flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+            try:
+                root_descriptor = open_managed_root(directory_flags=metadata_flags | os.O_DIRECTORY)
+            except FileNotFoundError:
+                seen_inodes.clear()
+                continue
+            except OSError as exc:
+                if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                    raise
+                reject(root)
+            stack.callback(close_descriptor, root_descriptor)
+            descriptors = []
+            for candidate in seen_paths:
+                try:
+                    parent_descriptor, name = open_managed_parent(
+                        root_descriptor,
+                        Path(candidate).relative_to(managed_root),
+                        False,
+                        directory_flags=metadata_flags | os.O_DIRECTORY,
+                    )
+                    stack.callback(close_descriptor, parent_descriptor)
+                    descriptor = os.open(name, metadata_flags, dir_fd=parent_descriptor)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                        raise
+                    reject(candidate)
+                stack.callback(close_descriptor, descriptor)
+                descriptors.append(descriptor)
+            current_infos = [os.fstat(descriptor) for descriptor in descriptors]
+            if any(current.st_nlink == 0 for current in current_infos):
+                raise RuntimeError(f"Managed output paths changed during independence validation: {target}")
+            if any(not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 for current in current_infos):
+                reject(target)
+            seen_inodes = {(current.st_dev, current.st_ino) for current in current_infos}
+            if len(seen_inodes) != len(current_infos):
+                reject(target)
+    else:
+        seen_inodes.add(inode)
+
+print("true")

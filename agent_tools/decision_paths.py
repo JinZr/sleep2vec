@@ -729,13 +729,15 @@ def validate_input_path(
             if Path(str(workdir)).is_absolute():
                 validation_path = Path(str(workdir)) / str(raw_path)
         test_flag = "-d" if require_directory else "-f" if require_file else "-e"
-        result = transport.run_ssh(str(host), f"test {test_flag} {_sh(validation_path)}", text=True, timeout=None)
-        if result.returncode != 0:
+        command = f"test {test_flag} {_sh(validation_path)} && printf 'path-present\\n'"
+        result = transport.run_ssh(str(host), command, text=True, timeout=None)
+        # Some SSH endpoints hide the child exit status; an empty result cannot prove existence.
+        if result.returncode != 0 or result.stdout != "path-present\n":
             expected = "directory" if require_directory else "file" if require_file else "path"
             return DecisionIssue(
                 DecisionStatus.FAIL,
                 field,
-                f"{_path_label(configured)} remote {expected} does not exist: {raw_path}",
+                f"{_path_label(configured)} remote {expected} could not be verified: {raw_path}",
                 None,
                 {"path": str(raw_path), "host": str(host), "stderr": result.stderr.strip()},
             )

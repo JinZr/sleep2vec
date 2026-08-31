@@ -17,6 +17,303 @@ import pytest
 from agent_tools import experiment_io, manifests, python_programs
 
 
+@pytest.fixture
+def masked_ssh(monkeypatch):
+    children = []
+
+    def rewritten_exit(_host, command, **kwargs):
+        kwargs.pop("check", None)
+        argv = (
+            [sys.executable, *shlex.split(command)[1:]] if command.startswith("python3 ") else ["bash", "-c", command]
+        )
+        child = subprocess.run(argv, capture_output=True, timeout=5, **kwargs)
+        children.append(child)
+        return subprocess.CompletedProcess(command, 0, child.stdout, child.stderr)
+
+    monkeypatch.setattr(experiment_io.transport, "run_ssh", rewritten_exit)
+    return children
+
+
+@pytest.mark.parametrize(
+    ("operation", "case", "child_returncode", "expected"),
+    [
+        ("path", "file", 0, True),
+        ("path", "alias", 0, True),
+        ("path", "missing", 44, False),
+        ("path", "bad_parent", 1, None),
+        ("directory", "empty_directory", 0, False),
+        ("directory", "directory", 0, True),
+        ("directory", "missing", 44, False),
+        ("directory", "file", 1, None),
+        ("read", "file", 0, "first\r\n第二行\r\n"),
+        ("read", "empty_file", 0, ""),
+        ("read", "missing", 44, ""),
+        ("read", "empty_directory", 1, None),
+        ("read", "invalid_utf8", 1, None),
+        ("validate", "missing", 0, None),
+        ("validate", "file", 0, None),
+        ("validate", "alias", 2, None),
+    ],
+)
+def test_remote_reads_require_actual_program_results_when_exit_is_masked(
+    tmp_path, masked_ssh, operation, case, child_returncode, expected
+):
+    target = tmp_path / "target"
+    if case in {"file", "bad_parent"}:
+        target.write_bytes("first\r\n第二行\r\n".encode())
+        if case == "bad_parent":
+            target /= "child"
+    elif case == "empty_file":
+        target.write_bytes(b"")
+    elif case == "invalid_utf8":
+        target.write_bytes(b"\xff")
+    elif case in {"empty_directory", "directory"}:
+        target.mkdir()
+        if case == "directory":
+            (target / "entry").write_text("present")
+    elif case == "alias":
+        target.symlink_to(tmp_path / "absent")
+
+    operations = {
+        "path": lambda: experiment_io.path_exists_at(target, remote="host"),
+        "directory": lambda: experiment_io.remote_dir_nonempty(target, "host"),
+        "read": lambda: experiment_io.read_text_at(target, remote="host"),
+        "validate": lambda: experiment_io.validate_managed_output_paths(tmp_path, [target], remote="host"),
+    }
+    if child_returncode in {1, 2}:
+        with pytest.raises(RuntimeError, match="no valid result"):
+            operations[operation]()
+    else:
+        assert operations[operation]() == expected
+    assert len(masked_ssh) == 1
+    assert masked_ssh[0].returncode == child_returncode
+
+
+@pytest.mark.parametrize(
+    ("operation", "returncode"),
+    [
+        ("path", 0),
+        ("path", 44),
+        ("directory", 0),
+        ("directory", 44),
+        ("read", 0),
+        ("read", 44),
+        ("validate", 0),
+        ("cas", 0),
+        ("cas", 45),
+    ],
+)
+@pytest.mark.parametrize("stdout", ["", "tru", "[]", "true\ntrailing"])
+def test_remote_operations_reject_missing_or_malformed_results(monkeypatch, operation, returncode, stdout):
+    calls = []
+
+    def incomplete_result(_host, command, **_kwargs):
+        calls.append(command)
+        if operation == "cas":
+            return subprocess.CompletedProcess(command, returncode, stdout.encode(), b"")
+        return subprocess.CompletedProcess(command, returncode, stdout, "")
+
+    monkeypatch.setattr(experiment_io.transport, "run_ssh", incomplete_result)
+    operations = {
+        "path": lambda: experiment_io.path_exists_at("/remote/target", remote="host"),
+        "directory": lambda: experiment_io.remote_dir_nonempty(Path("/remote/target"), "host"),
+        "read": lambda: experiment_io.read_text_at("/remote/target", remote="host"),
+        "validate": lambda: experiment_io.validate_managed_output_paths("/remote", ["/remote/target"], remote="host"),
+        "cas": lambda: experiment_io.conditional_atomic_replace_text_at(
+            "/remote/target", "new", None, managed_root="/remote", remote="host"
+        ),
+    }
+    with pytest.raises(RuntimeError, match="no valid result"):
+        operations[operation]()
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("operation", ["path", "directory", "read", "validate"])
+def test_remote_reads_never_accept_success_output_after_ssh_failure(monkeypatch, operation):
+    stdout = '"contents"\n' if operation == "read" else "true\n"
+    monkeypatch.setattr(
+        experiment_io.transport,
+        "run_ssh",
+        lambda _host, command, **_kwargs: subprocess.CompletedProcess(command, 255, stdout, "connection lost"),
+    )
+    operations = {
+        "path": lambda: experiment_io.path_exists_at("/remote/target", remote="host"),
+        "directory": lambda: experiment_io.remote_dir_nonempty(Path("/remote/target"), "host"),
+        "read": lambda: experiment_io.read_text_at("/remote/target", remote="host"),
+        "validate": lambda: experiment_io.validate_managed_output_paths("/remote", ["/remote/target"], remote="host"),
+    }
+    with pytest.raises(RuntimeError, match="connection lost"):
+        operations[operation]()
+
+
+@pytest.mark.parametrize("mode", ["create", "replace", "conflict", "missing_root", "append"])
+def test_remote_cas_and_append_use_actual_publication_results(tmp_path, masked_ssh, mode):
+    root = tmp_path / "workspace"
+    if mode != "missing_root":
+        root.mkdir()
+    target = root / "state.tsv"
+    if mode in {"replace", "conflict"}:
+        target.write_bytes(b"old\r\n")
+    expected = hashlib.sha256(b"old\r\n").hexdigest() if mode == "replace" else None
+    if mode == "append":
+        experiment_io.append_event_at(root, "first", {}, remote="host")
+        assert json.loads((root / "events.jsonl").read_text())["event_type"] == "first"
+    elif mode == "missing_root":
+        with pytest.raises(RuntimeError, match="outcome may be unknown"):
+            experiment_io.conditional_atomic_replace_text_at(
+                target, "new\r\n", expected, managed_root=root, remote="host"
+            )
+        assert not root.exists()
+    else:
+        committed = experiment_io.conditional_atomic_replace_text_at(
+            target, "new\r\n", expected, managed_root=root, remote="host"
+        )
+        assert committed is (mode != "conflict")
+        assert target.read_bytes() == (b"old\r\n" if mode == "conflict" else b"new\r\n")
+    assert len(masked_ssh) == 1
+    assert masked_ssh[0].returncode == (45 if mode == "conflict" else 1 if mode == "missing_root" else 0)
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_remote_create_conflict_requires_successful_temporary_cleanup(tmp_path, monkeypatch, masked_ssh, cleanup_fails):
+    target = tmp_path / "state.tsv"
+    original_source = python_programs.source
+    source = original_source("experiment_io.conditional_atomic_replace_text")
+    marker = "def rename_noreplace_at(parent_descriptor, source_name, target_name):\n"
+    assert source.count(marker) == 1
+    injection = f"""    competitor = os.open(
+        target_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=parent_descriptor
+    )
+    with os.fdopen(competitor, "wb") as file_obj:
+        file_obj.write(b"competitor\\n")
+    if {cleanup_fails!r}:
+        def fail_cleanup(*args, **kwargs):
+            raise OSError(errno.EIO, "injected temporary cleanup failure")
+        os.unlink = fail_cleanup
+"""
+    source = source.replace(marker, marker + injection)
+    monkeypatch.setattr(
+        python_programs,
+        "source",
+        lambda name: source if name == "experiment_io.conditional_atomic_replace_text" else original_source(name),
+    )
+
+    if cleanup_fails:
+        with pytest.raises(RuntimeError, match="(?s)outcome may be unknown.*injected temporary cleanup failure"):
+            experiment_io.conditional_atomic_replace_text_at(
+                target, "new\n", None, managed_root=tmp_path, remote="host"
+            )
+    else:
+        assert not experiment_io.conditional_atomic_replace_text_at(
+            target, "new\n", None, managed_root=tmp_path, remote="host"
+        )
+
+    assert len(masked_ssh) == 1
+    child = masked_ssh[0]
+    assert child.returncode == (1 if cleanup_fails else 45)
+    assert child.stdout == (b"" if cleanup_fails else b"false\n")
+    assert target.read_bytes() == b"competitor\n"
+    staged = [path for path in tmp_path.glob(".state.tsv.*") if not path.name.endswith(".lock")]
+    assert len(staged) == int(cleanup_fails)
+    if staged:
+        assert staged[0].read_bytes() == b"new\n"
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        "dependency_parent",
+        "dependency_missing",
+        "dependency_hash",
+        "guard_parent",
+        "guard_missing",
+        "guard_hash",
+        "target_missing",
+        "target_hash",
+    ],
+)
+def test_remote_cas_conflict_receipts_survive_successful_scope_cleanup(tmp_path, masked_ssh, conflict):
+    target = tmp_path / "state.tsv"
+    if conflict != "target_missing":
+        target.write_bytes(b"old\n")
+    expected = hashlib.sha256(b"old\n").hexdigest()
+    kwargs = {}
+    if conflict.startswith(("dependency_", "guard_")):
+        kind, fault = conflict.split("_")
+        other = tmp_path / kind
+        if fault == "parent":
+            other /= "missing.tsv"
+        elif fault == "hash":
+            other.write_bytes(b"changed\n")
+        kwargs = {f"{kind}_path": other, f"expected_{kind}_sha256": expected}
+    elif conflict == "target_hash":
+        expected = hashlib.sha256(b"stale\n").hexdigest()
+
+    assert not experiment_io.conditional_atomic_replace_text_at(
+        target, "new\n", expected, managed_root=tmp_path, remote="host", **kwargs
+    )
+
+    assert len(masked_ssh) == 1
+    assert masked_ssh[0].returncode == 45
+    assert masked_ssh[0].stdout == b"false\n"
+    assert target.exists() is (conflict != "target_missing")
+    if target.exists():
+        assert target.read_bytes() == b"old\n"
+
+
+@pytest.mark.parametrize("operation", ["cas", "append", "write", "mkdir"])
+@pytest.mark.parametrize("failure", ["lost", "truncated", "ssh255", "timeout"])
+def test_remote_writes_do_not_retry_after_losing_actual_success(tmp_path, monkeypatch, masked_ssh, operation, failure):
+    run_once = experiment_io.transport.run_ssh
+
+    def lose_result(host, command, **kwargs):
+        result = run_once(host, command, **kwargs)
+        assert masked_ssh[-1].returncode == 0
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, 5)
+        if failure == "ssh255":
+            return subprocess.CompletedProcess(command, 255, result.stdout, result.stderr)
+        result.stdout = result.stdout[:0] if failure == "lost" else result.stdout[:-2]
+        return result
+
+    monkeypatch.setattr(experiment_io.transport, "run_ssh", lose_result)
+    target = tmp_path / "state.tsv"
+    operations = {
+        "cas": lambda: experiment_io.conditional_atomic_replace_text_at(
+            target, "new\r\n", None, managed_root=tmp_path, remote="host"
+        ),
+        "append": lambda: experiment_io.append_event_at(tmp_path, "first", {}, remote="host"),
+        "write": lambda: experiment_io.write_text_at(target, "new\r\n", remote="host"),
+        "mkdir": lambda: experiment_io.mkdir_experiment_dirs(tmp_path, remote="host"),
+    }
+    with pytest.raises(subprocess.TimeoutExpired if failure == "timeout" else RuntimeError):
+        operations[operation]()
+    assert len(masked_ssh) == 1
+    if operation == "append":
+        assert len((tmp_path / "events.jsonl").read_text().splitlines()) == 1
+    elif operation == "mkdir":
+        assert (tmp_path / "reports").is_dir()
+        assert (tmp_path / "wandb" / "history").is_dir()
+    else:
+        assert target.read_bytes() == b"new\r\n"
+
+
+@pytest.mark.parametrize("operation", ["append", "write", "mkdir"])
+def test_remote_writes_reject_actual_child_failure_hidden_by_zero(tmp_path, masked_ssh, operation):
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("keep")
+    operations = {
+        "append": lambda: experiment_io.append_event_at(blocker, "first", {}, remote="host"),
+        "write": lambda: experiment_io.write_text_at(blocker / "state.tsv", "new", remote="host"),
+        "mkdir": lambda: experiment_io.mkdir_experiment_dirs(blocker, remote="host"),
+    }
+    with pytest.raises(RuntimeError, match="outcome may be unknown"):
+        operations[operation]()
+    assert len(masked_ssh) == 1
+    assert masked_ssh[0].returncode != 0
+    assert blocker.read_text() == "keep"
+
+
 def test_local_event_append_uses_managed_writer(tmp_path: Path, monkeypatch):
     calls = []
 
@@ -44,7 +341,7 @@ def test_remote_event_append_uses_managed_cas_program(monkeypatch):
 
     def fake_run(host, command, **kwargs):
         calls.append((host, command, kwargs))
-        return subprocess.CompletedProcess(command, 0, b"", b"")
+        return subprocess.CompletedProcess(command, 0, b"true\n", b"")
 
     monkeypatch.setattr(experiment_io.transport, "run_ssh", fake_run)
 
@@ -112,7 +409,7 @@ def test_remote_path_probe_distinguishes_existing_from_missing(monkeypatch, retu
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, returncode, "", "")
+        return subprocess.CompletedProcess(command, returncode, "true\n" if expected else "false\n", "")
 
     monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
 
@@ -140,7 +437,7 @@ def test_remote_path_probe_fails_closed_on_nonmissing_error(monkeypatch, returnc
 
 @pytest.mark.parametrize(
     ("returncode", "stdout", "expected"),
-    [(0, "contents", "contents"), (experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")],
+    [(0, '"contents"\n', "contents"), (experiment_io.REMOTE_MISSING_RETURN_CODE, "null\n", "")],
 )
 def test_remote_read_distinguishes_contents_from_missing(monkeypatch, returncode, stdout, expected):
     calls = []
@@ -164,7 +461,7 @@ def test_remote_read_preserves_exact_line_endings(monkeypatch):
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, b"a\r\nb\r\n", b"")
+        return subprocess.CompletedProcess(command, 0, json.dumps("a\r\nb\r\n").encode(), b"")
 
     monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
 
@@ -1080,19 +1377,19 @@ def test_embedded_conditional_write_reports_unknown_when_public_parent_moves_dur
         extra_args = ["append"]
 
     marker = (
-        "                # Supported writers share this lock; this binds the namespace "
+        "                    # Supported writers share this lock; this binds the namespace "
         "for the immediately following rename."
     )
     source = python_programs.source("experiment_io.conditional_atomic_replace_text")
     assert source.count(marker) == 1
-    injection = f"""                original_rename = {rename_name}
+    injection = f"""                    original_rename = {rename_name}
 
-                def drift_during_rename(*args, **kwargs):
-                    path.parent.rename(path.parent.with_name(path.parent.name + "-moved"))
-                    path.parent.symlink_to(managed_root.parent / "outside", target_is_directory=True)
-                    return original_rename(*args, **kwargs)
+                    def drift_during_rename(*args, **kwargs):
+                        path.parent.rename(path.parent.with_name(path.parent.name + "-moved"))
+                        path.parent.symlink_to(managed_root.parent / "outside", target_is_directory=True)
+                        return original_rename(*args, **kwargs)
 
-                {rename_name} = drift_during_rename
+                    {rename_name} = drift_during_rename
 """
     source = source.replace(marker, injection + marker)
 
@@ -1126,7 +1423,7 @@ def test_remote_conditional_replace_reports_conflict_and_writes_exact_bytes(monk
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, experiment_io.REMOTE_CONFLICT_RETURN_CODE, b"", b"")
+        return subprocess.CompletedProcess(command, experiment_io.REMOTE_CONFLICT_RETURN_CODE, b"false\n", b"")
 
     monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
 
@@ -1149,7 +1446,7 @@ def test_remote_conditional_create_uses_atomic_no_replace_without_hardlink(monke
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, b"", b"")
+        return subprocess.CompletedProcess(command, 0, b"true\n", b"")
 
     monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
 
@@ -1177,7 +1474,7 @@ def test_remote_conditional_replace_locks_and_checks_dependency(monkeypatch):
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, b"", b"")
+        return subprocess.CompletedProcess(command, 0, b"true\n", b"")
 
     monkeypatch.setattr(experiment_io.subprocess, "run", fake_run)
 
@@ -1346,9 +1643,9 @@ def test_remote_read_fails_closed_on_nonmissing_error(monkeypatch, returncode):
 @pytest.mark.parametrize(
     ("returncode", "stdout", "expected"),
     [
-        (0, "", False),
-        (0, "nonempty\n", True),
-        (experiment_io.REMOTE_MISSING_RETURN_CODE, "", False),
+        (0, "false\n", False),
+        (0, "true\n", True),
+        (experiment_io.REMOTE_MISSING_RETURN_CODE, "false\n", False),
     ],
 )
 def test_remote_directory_probe_distinguishes_empty_from_missing(monkeypatch, returncode, stdout, expected):

@@ -69,6 +69,12 @@ immediately following atomic rename. Raw shell appends and concurrent lockless
 workspace renames or alias changes are unsupported. An SSH transport failure
 has an unknown commit outcome and must not be blindly retried.
 
+Managed SSH I/O also requires a complete operation result, not just a zero
+transport exit code: some endpoints hide failed child exit codes. Missing or
+malformed write results leave the commit outcome uncertain and do not authorize
+another write. A positively reported compare-and-swap conflict retains the
+existing bounded fresh-read retry; it is not a transport-failure retry.
+
 `experiment_manifest.tsv` is optional for plan-created workspaces. When present, it contains exactly one row whose experiment id and root match `experiment.yaml`.
 
 Local recipe roots are based at the repository root; local experiment CLI roots
@@ -402,6 +408,15 @@ Every mutation other than fresh initialization requires a parseable,
 root-matching workspace owner. Managed output targets are preflighted before
 mutation: existing targets must be independent regular files under valid
 directory ancestry. Local and SSH uncertainty fails closed.
+
+Ordinary output-path validation uses metadata without opening files. When
+observed inode identities collide, validation holds descriptors for all paths
+seen so far and checks their current identities together; this is not a
+cross-file transaction snapshot. Linux uses `O_PATH` for the leaves and directory
+walk, so unreadable files and search-only directories remain valid. Platforms
+without `O_PATH`, including macOS, require read access for this collision check
+and explicitly fail closed if it is denied. Validation never reads file contents,
+changes permissions, or falls back to unpinned path observations.
 
 Runtime identity and defaults belong to the
 [non-hparam identity](task_recipe.md#non-hparam-runtime-identity) and
