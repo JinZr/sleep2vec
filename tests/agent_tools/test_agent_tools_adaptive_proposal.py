@@ -8,7 +8,7 @@ import threading
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, hparam_runtime, manifests, run_evidence
+from agent_tools import adaptive_hparam, adaptive_proposals, hparam_runtime, manifests, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -1229,6 +1229,49 @@ def test_agent_proposal_configuration_points_execute_as_exact_runs(tmp_path: Pat
     assert "## Configurations" in rationale
     assert "point 0" in rationale and "point 1" in rationale
     assert "agent_proposal_accepted" in events_path.read_text()
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_agent_proposal_rejects_envelope_valid_joint_config_before_acceptance(
+    tmp_path: Path, monkeypatch, execute: bool
+):
+    recipe = _agent_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"]["parameters"].update(
+        {
+            "yaml:/model/cls/downstream": ["tokens", "cls"],
+            "yaml:/model/cls/embedding_type": ["bert", "none"],
+        }
+    )
+    assert payload["search"]["max_runs"] == 1
+    recipe.write_text(yaml.safe_dump(payload))
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    proposal = json.loads(proposal_path.read_text())
+    proposal["parameters"].update({"yaml:/model/cls/downstream": ["cls"], "yaml:/model/cls/embedding_type": ["none"]})
+    proposal_path.write_text(json.dumps(proposal))
+    normalized = adaptive_proposals.validate_proposal(proposal, json.loads(input_path.read_text()))
+    assert normalized["max_runs"] == 1
+    events_before = (tmp_path / "events.jsonl").read_bytes()
+    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "launch_hparam_runs",
+        lambda *_args, **_kwargs: pytest.fail("Invalid agent candidate reached launch"),
+    )
+
+    with pytest.raises(RuntimeError, match="Agent proposal failed preflight.*model.cls.embedding_type must be set"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=execute)
+
+    assert (tmp_path / "events.jsonl").read_bytes() == events_before
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
+    assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
+    assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").exists()
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
 
 
 def test_explicit_best_neighborhood_uses_existing_numeric_neighbors(tmp_path: Path):

@@ -11,7 +11,7 @@ from agent_tools.models import REPO_ROOT, SUPPORTED_VARIANTS
 from agent_tools.plan_hparam import (
     final_test_checkpoint_issues,
     render_hparam_preflight_card,
-    validate_final_eval_config_bytes,
+    validate_finetune_config_bytes,
 )
 from agent_tools.recipes import load_consultation_policy
 
@@ -52,10 +52,10 @@ def _snapshot(module: str) -> dict:
     ],
 )
 def test_final_eval_config_bytes_use_variant_loader(variant: str, config_path: str):
-    validate_final_eval_config_bytes({"variant": variant}, (REPO_ROOT / config_path).read_bytes())
+    validate_finetune_config_bytes({"variant": variant}, (REPO_ROOT / config_path).read_bytes())
 
     with pytest.raises(ValueError):
-        validate_final_eval_config_bytes({"variant": variant}, b"{}\n")
+        validate_finetune_config_bytes({"variant": variant}, b"{}\n")
 
 
 _PREFLIGHT_VARIANT_CASES = [

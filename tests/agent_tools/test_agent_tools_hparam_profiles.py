@@ -18,7 +18,7 @@ from agent_tools.domain.finetune_hparam_profile import (
     finetune_balanced_profile_audit,
 )
 from agent_tools.models import REPO_ROOT
-from agent_tools.plan_hparam import apply_search_overrides, validate_final_eval_config_bytes
+from agent_tools.plan_hparam import apply_search_overrides, validate_finetune_config_bytes
 
 
 @pytest.fixture(autouse=True)
@@ -557,7 +557,7 @@ def test_generated_points_pass_variant_config_validation(config_path: str, varia
     for point in compiled["configurations"]:
         candidate = copy.deepcopy(payload)
         apply_search_overrides(candidate, point)
-        validate_final_eval_config_bytes(
+        validate_finetune_config_bytes(
             {"variant": variant},
             yaml.safe_dump(candidate, sort_keys=False).encode(),
         )
@@ -599,7 +599,7 @@ def test_generated_config_validation_failure_precedes_workspace_mutation(tmp_pat
     def reject_generated_config(_recipe, _config_bytes):
         raise ValueError("generated profile config is invalid")
 
-    monkeypatch.setattr("agent_tools.plan_hparam.validate_final_eval_config_bytes", reject_generated_config)
+    monkeypatch.setattr("agent_tools.plan_hparam.validate_finetune_config_bytes", reject_generated_config)
 
     report = plans.build_plan(recipe_path=recipe_path, output_dir=workspace / "plans" / "auto")
 
@@ -614,3 +614,45 @@ def test_generated_config_validation_failure_precedes_workspace_mutation(tmp_pat
     assert not workspace.exists()
     issue = next(issue for issue in report.issues if issue.field == "hparam_search_space")
     assert issue.evidence["preflight_before_workspace"] is True
+
+
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2"])
+def test_real_profile_candidate_validation_precedes_target_probe(tmp_path: Path, monkeypatch, variant: str):
+    from agent_tools.domain import finetune_hparam_profile
+
+    recipe_path, workspace = _profile_recipe(tmp_path)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    recipe["variant"] = variant
+    base_path = Path(recipe["base_recipe"])
+    base = yaml.safe_load(base_path.read_text())
+    base["variant"] = variant
+    base_path.write_text(yaml.safe_dump(base))
+    recipe_path.write_text(yaml.safe_dump(recipe))
+    compile_profile = finetune_hparam_profile.compile_finetune_balanced_profile
+
+    def invalid_compilation(*args, **kwargs):
+        compiled, issues = compile_profile(*args, **kwargs)
+        assert issues == []
+        assert compiled is not None
+        # Corrupt one produced point without adding a new profile axis.
+        compiled["configurations"][-1]["yaml:/finetune/layer_mix"] = {
+            "enabled": True,
+            "layer_indices": [999],
+            "shared_across_modalities": False,
+        }
+        return compiled, issues
+
+    monkeypatch.setattr(finetune_hparam_profile, "compile_finetune_balanced_profile", invalid_compilation)
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda *_args, **_kwargs: pytest.fail("Invalid candidate reached target preflight"),
+    )
+
+    report = plans.build_plan(recipe_path=recipe_path, output_dir=workspace / "plans" / "auto")
+
+    assert report.exit_code == 1
+    issue = next(issue for issue in report.issues if issue.field == "hparam_search_space")
+    assert "layer_indices" in issue.message
+    assert issue.evidence["preflight_before_workspace"] is True
+    assert not workspace.exists()
