@@ -619,7 +619,10 @@ def test_preset_plan_includes_explicit_preset_args(tmp_path: Path):
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
-    script = (output_dir / "run.sh").read_text()
+    wrapper = (output_dir / "run.sh").read_text()
+    assert f'preset-launch --plan-dir {shlex_quote(str(output_dir))} "$@"' in wrapper
+    assert "--execute" not in wrapper
+    script = Path(_first_run(output_dir)["script"]).read_text()
     assert "--stride-tokens 64" in script
     assert "--channels ppg ahi" in script
     assert "--meta-data-names age" in script
@@ -671,7 +674,10 @@ def test_preset_plan_materializes_rendered_recipe_decisions(tmp_path: Path):
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr or result.stdout
-    script = (output_dir / "run.sh").read_text()
+    wrapper = (output_dir / "run.sh").read_text()
+    assert f'preset-launch --plan-dir {shlex_quote(str(output_dir))} "$@"' in wrapper
+    assert "--execute" not in wrapper
+    script = Path(_first_run(output_dir)["script"]).read_text()
     assert "--channels ppg ahi" in script
     assert "--channels stage5" not in script
     assert "--min-channels 2" in script
@@ -707,7 +713,10 @@ def test_preset_plan_routes_to_variant_local_script(tmp_path: Path, variant: str
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr or result.stdout
-    script = (output_dir / "run.sh").read_text()
+    wrapper = (output_dir / "run.sh").read_text()
+    assert f'preset-launch --plan-dir {shlex_quote(str(output_dir))} "$@"' in wrapper
+    assert "--execute" not in wrapper
+    script = Path(_first_run(output_dir)["script"]).read_text()
     assert expected_script in script
     assert "--channels" not in script
     assert "--min-channels" not in script
