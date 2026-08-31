@@ -409,6 +409,15 @@ root-matching workspace owner. Managed output targets are preflighted before
 mutation: existing targets must be independent regular files under valid
 directory ancestry. Local and SSH uncertainty fails closed.
 
+Ordinary output-path validation uses metadata without opening files. When
+observed inode identities collide, validation holds descriptors for all paths
+seen so far and checks their current identities together; this is not a
+cross-file transaction snapshot. Linux uses `O_PATH` for the leaves and directory
+walk, so unreadable files and search-only directories remain valid. Platforms
+without `O_PATH`, including macOS, require read access for this collision check
+and explicitly fail closed if it is denied. Validation never reads file contents,
+changes permissions, or falls back to unpinned path observations.
+
 Runtime identity and defaults belong to the
 [non-hparam identity](task_recipe.md#non-hparam-runtime-identity) and
 [hparam launch](task_recipe.md#launch-and-queue) contracts. The

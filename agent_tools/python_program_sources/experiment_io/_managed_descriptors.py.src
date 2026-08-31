@@ -12,11 +12,11 @@ def close_descriptor(descriptor):
         pass
 
 
-def open_managed_root():
-    current = os.open(managed_root.anchor, DIRECTORY_OPEN_FLAGS)
+def open_managed_root(*, directory_flags=DIRECTORY_OPEN_FLAGS):
+    current = os.open(managed_root.anchor, directory_flags)
     try:
         for part in managed_root.relative_to(managed_root.anchor).parts:
-            opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
+            opened = os.open(part, directory_flags, dir_fd=current)
             close_descriptor(current)
             current = opened
     except BaseException:
@@ -25,12 +25,12 @@ def open_managed_root():
     return current
 
 
-def open_managed_parent(root_descriptor, relative, create):
+def open_managed_parent(root_descriptor, relative, create, *, directory_flags=DIRECTORY_OPEN_FLAGS):
     current = os.dup(root_descriptor)
     try:
         for part in relative.parts[:-1]:
             try:
-                opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
+                opened = os.open(part, directory_flags, dir_fd=current)
             except FileNotFoundError:
                 if not create:
                     raise
@@ -38,7 +38,7 @@ def open_managed_parent(root_descriptor, relative, create):
                     os.mkdir(part, 0o755, dir_fd=current)
                 except FileExistsError:
                     pass
-                opened = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
+                opened = os.open(part, directory_flags, dir_fd=current)
             close_descriptor(current)
             current = opened
     except BaseException:

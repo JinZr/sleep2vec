@@ -2,6 +2,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 
 import pytest
@@ -92,6 +93,121 @@ def test_recycled_inode_uses_fresh_opened_objects(tmp_path, monkeypatch, validat
     assert all(flags & os.O_NOFOLLOW and flags & os.O_NONBLOCK for _name, flags, _descriptor in descriptors)
 
 
+def test_collision_uses_metadata_only_descriptors_when_supported(tmp_path, monkeypatch, validate_outputs, descriptors):
+    first, second = tmp_path / "first.tsv", tmp_path / "second.tsv"
+    first.write_text("first\n")
+    second.write_text("second\n")
+    _collide_once(monkeypatch, first, second)
+    real_open = os.open
+    native_metadata_flag = getattr(os, "O_PATH", None)
+    metadata_flag = native_metadata_flag or (1 << 29)
+    monkeypatch.setattr(os, "O_PATH", metadata_flag, raising=False)
+    requested = []
+
+    def require_metadata_access(path, flags, *args, **kwargs):
+        if not flags & metadata_flag:
+            raise PermissionError(errno.EACCES, "File data access is denied")
+        if Path(path).name in {first.name, second.name}:
+            requested.append(flags)
+        if native_metadata_flag is None:
+            # Exercise selection on hosts without O_PATH; real permission behavior is tested on Linux.
+            flags &= ~metadata_flag
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", require_metadata_access)
+    monkeypatch.setattr(os, "read", lambda *_args: pytest.fail("Metadata validation read file contents"))
+    monkeypatch.setattr(os, "fdopen", lambda *_args, **_kwargs: pytest.fail("Metadata validation opened file contents"))
+
+    validate_outputs(tmp_path, [first, second])
+
+    assert len(requested) == 2
+    assert all(flags & os.O_NOFOLLOW and flags & os.O_CLOEXEC for flags in requested)
+
+
+@pytest.mark.parametrize("mode", [0o200, 0])
+@pytest.mark.parametrize("directory_access", ["readable", "search_only_root", "search_only_parent"])
+@pytest.mark.parametrize("metadata_only", [True, False], ids=["metadata-descriptors", "no-metadata-descriptors"])
+def test_collision_handles_real_unreadable_outputs(
+    tmp_path, monkeypatch, validate_outputs, descriptors, mode, directory_access, metadata_only
+):
+    if metadata_only and not hasattr(os, "O_PATH"):
+        pytest.skip("This platform does not expose metadata-only O_PATH descriptors")
+    if os.geteuid() == 0:
+        pytest.skip("Read permission denial must be exercised without root bypass")
+    if not metadata_only:
+        monkeypatch.delattr(os, "O_PATH", raising=False)
+    root = tmp_path / "workspace"
+    parent = root / "outputs"
+    parent.mkdir(parents=True)
+    first, second = parent / "first.tsv", parent / "second.tsv"
+    first.write_text("first\n")
+    second.write_text("second\n")
+    _collide_once(monkeypatch, first, second)
+    first.chmod(mode)
+    second.chmod(mode)
+    restricted_directory = None
+    if directory_access != "readable":
+        restricted_directory = root if directory_access == "search_only_root" else parent
+        restricted_directory.chmod(0o111)
+    try:
+        with pytest.raises(PermissionError):
+            descriptor = os.open(first, os.O_RDONLY)
+            os.close(descriptor)
+
+        if restricted_directory:
+            with pytest.raises(PermissionError):
+                descriptor = os.open(restricted_directory, os.O_RDONLY | os.O_DIRECTORY)
+                os.close(descriptor)
+
+        if metadata_only:
+            validate_outputs(root, [first, second])
+        else:
+            with pytest.raises(PermissionError):
+                validate_outputs(root, [first, second])
+    finally:
+        root.chmod(0o700)
+        parent.chmod(0o700)
+        first.chmod(0o600)
+        second.chmod(0o600)
+
+    if metadata_only:
+        assert len(descriptors) == 2
+        assert all(flags & os.O_PATH for _name, flags, _descriptor in descriptors)
+    else:
+        assert not descriptors
+
+
+@pytest.mark.skipif(not hasattr(os, "O_PATH"), reason="This platform does not expose metadata-only O_PATH descriptors")
+def test_metadata_descriptor_for_symlink_is_rejected_by_fstat(tmp_path, monkeypatch, validate_outputs, descriptors):
+    first, second, target = (tmp_path / name for name in ("first.tsv", "second.tsv", "target.tsv"))
+    first.write_text("first\n")
+    second.write_text("second\n")
+    target.write_text("untouched\n")
+
+    def change():
+        first.unlink()
+        first.symlink_to(target)
+
+    _collide_once(monkeypatch, first, second, change)
+    real_open = os.open
+    symlink_opened = False
+
+    def record_symlink(path, flags, *args, **kwargs):
+        nonlocal symlink_opened
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if Path(path).name == first.name:
+            assert flags & os.O_PATH and flags & os.O_NOFOLLOW
+            symlink_opened = stat.S_ISLNK(os.fstat(descriptor).st_mode)
+        return descriptor
+
+    monkeypatch.setattr(os, "open", record_symlink)
+
+    with pytest.raises((ValueError, SystemExit), match="independent regular files|2"):
+        validate_outputs(tmp_path, [first, second])
+
+    assert symlink_opened, "O_PATH success must not be mistaken for a regular file"
+
+
 @pytest.mark.parametrize("replace_alias", [False, True])
 def test_current_alias_is_rejected_even_after_replacement(
     tmp_path, monkeypatch, validate_outputs, descriptors, replace_alias
@@ -178,7 +294,7 @@ def test_collision_refresh_retains_fresh_identities_for_later_aliases(
 
 
 @pytest.mark.parametrize("existing_candidate", ["alias", "replaced"])
-def test_collision_refresh_fails_closed_on_another_unpinned_bucket(
+def test_collision_rechecks_another_previously_seen_inode(
     tmp_path, monkeypatch, validate_outputs, descriptors, existing_candidate
 ):
     earlier, first, second, replacement = (
@@ -208,7 +324,46 @@ def test_collision_refresh_fails_closed_on_another_unpinned_bucket(
 
     _collide_once(monkeypatch, first, second, replace)
 
-    with pytest.raises(RuntimeError, match="changed|uncertain"):
+    if existing_candidate == "alias":
+        with pytest.raises((ValueError, SystemExit), match="independent regular files|2"):
+            validate_outputs(tmp_path, [earlier, first, second])
+    else:
+        validate_outputs(tmp_path, [earlier, first, second])
+
+
+@pytest.mark.parametrize("changed", ["leaf", "ancestor", "missing"])
+def test_collision_rechecks_earlier_paths_that_now_alias_a_colliding_candidate(
+    tmp_path, monkeypatch, validate_outputs, descriptors, changed
+):
+    parent = tmp_path / "earlier"
+    parent.mkdir()
+    earlier, first, second = parent / "output.tsv", tmp_path / "first.tsv", tmp_path / "second.tsv"
+    if changed != "missing":
+        earlier.write_text("earlier\n")
+    first.write_text("first\n")
+    second.write_text("independent\n")
+    real_lstat, real_fstat = os.lstat, os.fstat
+
+    def one_link(info):
+        values = list(info)
+        values[3] = 1
+        return os.stat_result(values)
+
+    # Model nlink-one aliases while replacing a path outside the stale collision bucket.
+    monkeypatch.setattr(os, "lstat", lambda *args, **kwargs: one_link(real_lstat(*args, **kwargs)))
+    monkeypatch.setattr(os, "fstat", lambda descriptor: one_link(real_fstat(descriptor)))
+
+    def change():
+        if changed == "ancestor":
+            parent.rename(tmp_path / "old-parent")
+            parent.mkdir()
+        elif changed == "leaf":
+            earlier.unlink()
+        earlier.hardlink_to(first)
+
+    _collide_once(monkeypatch, first, second, change)
+
+    with pytest.raises((ValueError, SystemExit), match="independent regular files|2"):
         validate_outputs(tmp_path, [earlier, first, second])
 
 

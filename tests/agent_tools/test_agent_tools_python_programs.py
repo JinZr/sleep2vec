@@ -8,14 +8,14 @@ import pytest
 from agent_tools import python_programs, transport
 
 SOURCE_HASHES = {
-    "experiment_io.conditional_atomic_replace_text": "ea9b1e1e387c79db52623a607c130ddfbf946aacfcc0703a7d4f5a9166b866c2",
+    "experiment_io.conditional_atomic_replace_text": "350a1adcc8b0b7ee44609886e2a9447f6ab48381a6365b85d9f5cb9ad70eee5a",
     "experiment_io.list_managed_subdirectories": "e8b83f0cef4f3cf46b84542276f7ffaf7045acaf4f409c9ad2d0333178b39c8b",
     "experiment_io.path_exists": "ae3b150f5e8e90493d30a016323529509d00519ba9505185f293d4481564fe17",
     "experiment_io.read_managed_files": "acf0d66282bd5bb74c506d165ee1bd0e88f219c78e9678e75951c6e385538002",
-    "experiment_io.read_managed_output_texts": "b29139caf7a2e1307e691b55876c844caba5a6cb681847331d3de9d3bf9c64a2",
+    "experiment_io.read_managed_output_texts": "5fd7bd1da8cf83fb26034f9cd6eaa55f6548f620294765adf36e1c4486360c2e",
     "experiment_io.read_text": "98a9a6036e73c9e43cc87ec31103a1185f0a51a62dcdf510c77c3cbe63d39f64",
     "experiment_io.remote_dir_nonempty": "d9604eaedee251e2b5a8ef5f055344f0e51c976c4c9c2420df7ffb4c0343bc77",
-    "experiment_io.validate_managed_output_paths": "a2b93a225baf39d092a96620af81947e73d33ecefcb4d0850d6d364fa71e7a29",
+    "experiment_io.validate_managed_output_paths": "59198ca38ad76b6ee88bf33d524c59f2a47cde862a56931bbcac170033581df9",
     "experiment_workspace.write_run_matrix_if_current": (
         "82220ec43daaa0e9244a6a30fddabfba5a6ee7e7a5406bcd1d42a74bca38c0b9"
     ),
@@ -36,14 +36,14 @@ SOURCE_HASHES = {
 }
 
 COMMAND_HASHES = {
-    "experiment_io.conditional_atomic_replace_text": "093de07b7554e30ccffc4fca1cb82ed4b132b2a0f4c66395241b7ae4a0a2065b",
+    "experiment_io.conditional_atomic_replace_text": "2448666cea677a03b2e2401758c3ac3ff72752fb108c4bcae83f4468e6aecbc1",
     "experiment_io.list_managed_subdirectories": "87f1c489bbff353f89d4418104abbb691fe6b2ba5ee9245815eb0ae1369e2921",
     "experiment_io.path_exists": "1d4f605c0e2155db58da12c08f298901dc23d636bc9dd87fd24f97939a4e33e6",
     "experiment_io.read_managed_files": "43836ec1178eee36b1b54788554a977047552565245e8d54413370e8d57d6da0",
-    "experiment_io.read_managed_output_texts": "15405aaa157a19d8d6de28363b7c09ede9ae2401a05c60fca813babbef5a2df7",
+    "experiment_io.read_managed_output_texts": "d1445b6b99b4c0441495c35e2f26dfbbe469ad3be83446882407c9c1fac8cfd0",
     "experiment_io.read_text": "6a0e31af6006881d55b1109f58f0dfea2c332e503c6315741261569eb9b4edc0",
     "experiment_io.remote_dir_nonempty": "bea5ad87ff7a0921736c954d84dec11f66a8d3079db464bb00a3b6328a0c60fc",
-    "experiment_io.validate_managed_output_paths": "c02bf72e892c720c8eb6ee97890d1f4e1716b9f2669f13a7b2aec4e5bfe4c200",
+    "experiment_io.validate_managed_output_paths": "565198db56507fa2b584cd6c8b055d685ca2db9e47bd3d47114055d6f81ee69e",
     "experiment_workspace.write_run_matrix_if_current": (
         "89160398c17ccd32df9d2949fe4e6273de5f0ccc62dbc1da514c4aa9fbe9f7eb"
     ),
