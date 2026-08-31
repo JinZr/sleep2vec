@@ -41,7 +41,9 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 # Grandfathered debt ledger -- shrink, never grow. To remove an entry, fix the
-# module's errors and delete its line.
+# module's errors and delete its line. The list reflects the type-check job's
+# environment (requirements-agent-tools.txt); a fuller local environment can
+# surface extra errors from third-party stubs that CI does not install.
 ignore_errors = true
 module = [
     "agent_tools.adapters.base",
@@ -53,7 +55,6 @@ module = [
     "agent_tools.adaptive_hparam",
     "agent_tools.adaptive_proposals",
     "agent_tools.checkpoint_test_results",
-    "agent_tools.configs",
     "agent_tools.decision_hparam",
     "agent_tools.decision_models",
     "agent_tools.decision_paths",
@@ -85,6 +86,5 @@ module = [
     "agent_tools.research_log",
     "agent_tools.run_artifacts",
     "agent_tools.run_evidence",
-    "agent_tools.skills",
     "agent_tools.slurm",
 ]
