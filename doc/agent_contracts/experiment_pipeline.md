@@ -24,6 +24,31 @@ hashes, checkpoint selection, job/attempt mapping, and runtime identity under
 that directory. Once state exists, execution requires `--resume --execute`; any
 spec, source plan, preset, config, checkpoint, or runtime drift fails closed.
 
+The workspace links to this pipeline-owned subtree:
+
+```text
+pipelines/<pipeline-id>/
+├── spec.source.yaml
+├── spec.resolved.yaml
+├── pipeline.json
+├── checkpoints.json
+├── preflight.json
+├── jobs.tsv
+├── execution_snapshot.json  # single-variant initial scheduler
+├── initial_schedulers/<variant>/execution_snapshot.json
+├── results.csv
+├── metrics.csv
+├── summary.md
+├── final.md
+├── recipes/<job-id>/attempt-NNN.yaml
+├── plans/<job-id>/attempt-NNN/
+├── preflight_retries/<job-id>/attempt-NNN.json
+├── retry_schedulers/<job-id>/execution_snapshot.json
+└── results/<job-id>/attempt-NNN/
+```
+
+Multi-variant initial schedulers use the variant-specific snapshot paths.
+
 The v1 spec is a closed contract for one canonical `evaluate` step. It declares
 the pipeline and experiment ids, runtime commit, GPU concurrency, at most two
 attempts per logical job, checkpoint sources and policy, external jobs, and
