@@ -154,7 +154,9 @@ Legal edges outside the reverse-edge table:
 
 - `cli_contract`: subcommand names and ownership groups + argument contracts + task/variant
   routing matrix + the `cli.export_hparam_logits` attribute name (a monkeypatch
-  anchor).
+  anchor) + self-documentation (every subcommand carries a `help=` summary and a
+  `description=`; every option carries `help=`). Register subcommands through
+  `cli._command()`, which sets the summary and description from one string.
 - The adapter-boundary guard's `KERNEL_MODULES` file list (7 modules, resolved
   as `Path(agent_tools.__file__).parent / name`).
 - Frozen re-exports: `index_csv.index_summary`,

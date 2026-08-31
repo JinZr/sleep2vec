@@ -76,287 +76,568 @@ def main(argv: list[str] | None = None) -> int:
     return args.func(args)
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="agent_tools")
-    sub = parser.add_subparsers(dest="command")
+def _command(sub: argparse._SubParsersAction, name: str, summary: str) -> argparse.ArgumentParser:
+    """Register a subcommand whose one-line summary serves as both its entry in
+    ``agent_tools --help`` and its description in ``agent_tools <name> --help``.
 
-    skills = sub.add_parser("skills")
+    Every subcommand goes through here so the help contract cannot regress: the
+    CLI contract test rejects a parser or an argument without help text.
+    """
+    return sub.add_parser(name, help=summary, description=summary)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="agent_tools",
+        description="Agent-facing experiment control for sleep2vec: inspect the repository, "
+        "gate high-impact decisions through consultation, publish frozen run plans, "
+        "and manage their launch, monitoring, selection, and finalization.",
+    )
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    skills = _command(sub, "skills", "List or validate the checked-in agent skill playbooks.")
     group = skills.add_mutually_exclusive_group(required=True)
-    group.add_argument("--list", action="store_true")
-    group.add_argument("--validate", action="store_true")
+    group.add_argument("--list", action="store_true", help="Print each skill's name, task types, and path.")
+    group.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate every skill manifest; exits non-zero and lists the issues on failure.",
+    )
     skills.set_defaults(func=_cmd_skills)
 
-    repo = sub.add_parser("repo-summary")
-    repo.add_argument("--json", action="store_true")
+    repo = _command(sub, "repo-summary", "Summarize repository entrypoints, variants, and tracked configs.")
+    repo.add_argument("--json", action="store_true", help="Emit JSON instead of the human-readable rendering.")
     repo.set_defaults(func=_cmd_repo_summary)
 
-    config = sub.add_parser("config-summary")
-    config.add_argument("--config", required=True)
-    config.add_argument("--json", action="store_true")
+    config = _command(sub, "config-summary", "Summarize a resolved training or inference YAML config.")
+    config.add_argument("--config", required=True, help="Path to the YAML config to summarize.")
+    config.add_argument("--json", action="store_true", help="Emit JSON instead of the human-readable rendering.")
     config.set_defaults(func=_cmd_config_summary)
 
-    index = sub.add_parser("index-summary")
-    index.add_argument("--index", nargs="+", required=True)
-    index.add_argument("--config")
-    index.add_argument("--label-name")
-    index.add_argument("--sample-path-check", type=int, default=0)
-    index.add_argument("--sample-npz-check", type=int, default=0)
-    index.add_argument("--json", action="store_true")
+    index = _command(
+        sub,
+        "index-summary",
+        "Summarize dataset index CSVs, optionally sampling rows for path and NPZ checks.",
+    )
+    index.add_argument("--index", nargs="+", required=True, help="One or more index CSV paths to summarize.")
+    index.add_argument("--config", help="Config whose data settings scope the summary.")
+    index.add_argument("--label-name", help="Label column to report the class distribution for.")
+    index.add_argument(
+        "--sample-path-check",
+        type=int,
+        default=0,
+        help="Number of sampled rows whose referenced files are checked for existence (0 disables).",
+    )
+    index.add_argument(
+        "--sample-npz-check",
+        type=int,
+        default=0,
+        help="Number of sampled rows whose NPZ payloads are opened and checked (0 disables).",
+    )
+    index.add_argument("--json", action="store_true", help="Emit JSON instead of the human-readable rendering.")
     index.set_defaults(func=_cmd_index_summary)
 
-    preset = sub.add_parser("preset-summary")
-    preset.add_argument("--preset", required=True)
-    preset.add_argument("--json", action="store_true")
+    preset = _command(sub, "preset-summary", "Summarize a dataset preset: channels, splits, and record counts.")
+    preset.add_argument("--preset", required=True, help="Path to the preset file to summarize.")
+    preset.add_argument("--json", action="store_true", help="Emit JSON instead of the human-readable rendering.")
     preset.set_defaults(func=_cmd_preset_summary)
 
-    doctor = sub.add_parser("doctor")
-    doctor.add_argument("--recipe", required=True)
-    doctor.add_argument("--user-decisions")
-    doctor.add_argument("--output-dir")
+    doctor = _command(
+        sub,
+        "doctor",
+        "Run consultation, runtime, and task diagnostics for a recipe. Reports blocking questions "
+        "instead of guessing them; does not publish runnable commands.",
+    )
+    doctor.add_argument("--recipe", required=True, help="Path to the task recipe YAML to diagnose.")
+    doctor.add_argument(
+        "--user-decisions",
+        help="User decisions YAML answering previously reported blocking questions.",
+    )
+    doctor.add_argument(
+        "--output-dir",
+        help="Directory to publish the doctor report and a decisions.yaml template into.",
+    )
     doctor.set_defaults(func=_cmd_doctor)
 
-    context = sub.add_parser("context")
-    context.add_argument("--task", required=True)
-    context.add_argument("--config")
-    context.add_argument("--label-name")
-    context.add_argument("--variant")
-    context.add_argument("--user-decisions")
-    context.add_argument("--output-dir", required=True)
+    context = _command(
+        sub,
+        "context",
+        "Build a diagnostic-only context bundle for a task. Does not authorize runnable commands.",
+    )
+    context.add_argument(
+        "--task",
+        required=True,
+        help="Task to build context for (sleep2stat, preset_prepare, finetune, hparam_tune, infer, evaluate).",
+    )
+    context.add_argument("--config", help="Config to summarize into the bundle.")
+    context.add_argument("--label-name", help="Label column the bundle reports on.")
+    context.add_argument("--variant", help="Model variant (sleep2vec, sleep2vec2, sleep2expert, sex_age_baseline).")
+    context.add_argument("--user-decisions", help="User decisions YAML to fold into the bundle.")
+    context.add_argument("--output-dir", required=True, help="Directory to write the context bundle into.")
     context.set_defaults(func=_cmd_context)
 
-    plan = sub.add_parser("plan")
-    plan.add_argument("--recipe", required=True)
-    plan.add_argument("--output-dir", required=True)
-    plan.add_argument("--user-decisions")
-    plan.add_argument("--allow-unresolved", action="store_true")
-    plan.add_argument("--unlock-final-test", action="store_true")
-    plan.add_argument("--validate-only", action="store_true")
+    plan = _command(
+        sub,
+        "plan",
+        "Validate a recipe through consultation and publish a frozen, runnable plan bundle.",
+    )
+    plan.add_argument("--recipe", required=True, help="Path to the task recipe YAML to plan.")
+    plan.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory to publish the plan bundle into; retrying a blocked plan requires a fresh one.",
+    )
+    plan.add_argument(
+        "--user-decisions",
+        help="User decisions YAML answering previously reported blocking questions.",
+    )
+    plan.add_argument(
+        "--allow-unresolved",
+        action="store_true",
+        help="Publish the plan while non-blocking consultation choices remain unresolved.",
+    )
+    plan.add_argument(
+        "--unlock-final-test",
+        action="store_true",
+        help="Authorize external/final test access for this plan.",
+    )
+    plan.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="Validate the recipe and report without publishing plan artifacts.",
+    )
     plan.set_defaults(func=_cmd_plan)
 
-    collect = sub.add_parser("collect-runs")
-    collect.add_argument("--root", required=True)
-    collect.add_argument("--metric")
-    collect.add_argument("--output", required=True)
+    collect = _command(sub, "collect-runs", "Collect finished run metrics under a root directory into one CSV.")
+    collect.add_argument("--root", required=True, help="Directory tree to scan for run manifests.")
+    collect.add_argument("--metric", help="Metric to collect; omit to collect every reported metric.")
+    collect.add_argument("--output", required=True, help="CSV path to write the collected runs to.")
     collect.set_defaults(func=_cmd_collect_runs)
 
-    launch = sub.add_parser("hparam-launch")
-    launch.add_argument("--plan-dir", required=True)
+    launch = _command(
+        sub,
+        "hparam-launch",
+        "Launch a registered hyper-parameter plan's runs. Dry run unless --execute is given.",
+    )
+    launch.add_argument("--plan-dir", required=True, help="Registered plan directory to launch from.")
     launch_mode = launch.add_mutually_exclusive_group()
-    launch_mode.add_argument("--dry-run", action="store_true", default=True)
-    launch_mode.add_argument("--execute", action="store_true")
+    launch_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=True,
+        help="Report the launch without changing state (default).",
+    )
+    launch_mode.add_argument("--execute", action="store_true", help="Actually launch the runs; enables state changes.")
     launch.set_defaults(func=_cmd_hparam_launch)
 
-    infer_launch = sub.add_parser("infer-launch")
-    infer_launch.add_argument("--plan-dir", required=True)
-    infer_launch.add_argument("--execute", action="store_true")
+    infer_launch = _command(
+        sub,
+        "infer-launch",
+        "Launch a registered inference plan's run. Dry run unless --execute is given.",
+    )
+    infer_launch.add_argument("--plan-dir", required=True, help="Registered plan directory to launch from.")
+    infer_launch.add_argument("--execute", action="store_true", help="Actually launch the run; enables state changes.")
     infer_launch.set_defaults(func=_cmd_infer_launch)
 
-    infer_stop = sub.add_parser("infer-stop")
-    infer_stop.add_argument("--plan-dir", required=True)
-    infer_stop.add_argument("--reason", required=True)
+    infer_stop = _command(sub, "infer-stop", "Stop a managed inference run and record why it was stopped.")
+    infer_stop.add_argument("--plan-dir", required=True, help="Registered plan directory owning the run.")
+    infer_stop.add_argument("--reason", required=True, help="Reason recorded in the run manifest; required.")
     infer_stop.set_defaults(func=_cmd_infer_stop)
 
-    preset_launch = sub.add_parser("preset-launch")
-    preset_launch.add_argument("--plan-dir", required=True)
-    preset_launch.add_argument("--execute", action="store_true")
+    preset_launch = _command(
+        sub,
+        "preset-launch",
+        "Launch a registered preset-preparation plan's run. Dry run unless --execute is given.",
+    )
+    preset_launch.add_argument("--plan-dir", required=True, help="Registered plan directory to launch from.")
+    preset_launch.add_argument("--execute", action="store_true", help="Actually launch the run; enables state changes.")
     preset_launch.set_defaults(func=_cmd_preset_launch)
 
-    preset_stop = sub.add_parser("preset-stop")
-    preset_stop.add_argument("--plan-dir", required=True)
-    preset_stop.add_argument("--reason", required=True)
+    preset_stop = _command(sub, "preset-stop", "Stop a managed preset-preparation run and record why.")
+    preset_stop.add_argument("--plan-dir", required=True, help="Registered plan directory owning the run.")
+    preset_stop.add_argument("--reason", required=True, help="Reason recorded in the run manifest; required.")
     preset_stop.set_defaults(func=_cmd_preset_stop)
 
-    run_queue = sub.add_parser("hparam-run-queue")
-    run_queue.add_argument("--plan-dir", required=True)
+    run_queue = _command(
+        sub,
+        "hparam-run-queue",
+        "Drain a hyper-parameter plan's run queue within its GPU capacity, polling until every run "
+        "reaches a terminal state. Dry run unless --execute is given.",
+    )
+    run_queue.add_argument("--plan-dir", required=True, help="Registered plan directory to drain.")
     run_queue_mode = run_queue.add_mutually_exclusive_group()
-    run_queue_mode.add_argument("--dry-run", action="store_true", default=True)
-    run_queue_mode.add_argument("--execute", action="store_true")
-    run_queue.add_argument("--poll-seconds", type=float, default=60)
+    run_queue_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=True,
+        help="Report the queue without changing state (default).",
+    )
+    run_queue_mode.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually launch queued runs; enables state changes.",
+    )
+    run_queue.add_argument("--poll-seconds", type=float, default=60, help="Seconds to wait between queue polls.")
     run_queue.set_defaults(func=_cmd_hparam_run_queue)
 
-    monitor = sub.add_parser("hparam-monitor")
-    monitor.add_argument("--run-dir", required=True)
-    monitor.add_argument("--once", action="store_true")
-    monitor.add_argument("--health", action="store_true")
+    monitor = _command(
+        sub,
+        "hparam-monitor",
+        "Poll a hyper-parameter run directory and report lifecycle states. Never launches runs.",
+    )
+    monitor.add_argument("--run-dir", required=True, help="Run directory holding run_manifest.tsv.")
+    monitor.add_argument("--once", action="store_true", help="Poll a single round and exit instead of looping.")
+    monitor.add_argument("--health", action="store_true", help="Include scheduler and process health probes.")
     monitor.add_argument(
         "--include-log-tail",
         action="store_true",
         help="Print recorded raw log tails; they may contain sensitive data.",
     )
-    monitor.add_argument("--poll-seconds", type=float, default=60)
+    monitor.add_argument("--poll-seconds", type=float, default=60, help="Seconds to wait between polls.")
     monitor.set_defaults(func=_cmd_hparam_monitor)
 
-    progress = sub.add_parser("progress")
-    progress.add_argument("--run-dir", required=True)
-    progress.add_argument("--remote")
-    progress.add_argument("--json", action="store_true")
+    progress = _command(sub, "progress", "Report training progress for a run directory.")
+    progress.add_argument("--run-dir", required=True, help="Run directory to read progress from.")
+    progress.add_argument("--remote", help="SSH host to read the run directory from instead of the local filesystem.")
+    progress.add_argument("--json", action="store_true", help="Emit JSON instead of the human-readable rendering.")
     progress.set_defaults(func=_cmd_progress)
 
-    experiment_init = sub.add_parser("experiment-init")
-    experiment_init.add_argument("--run-dir", required=True)
-    experiment_init.add_argument("--spec", required=True)
-    experiment_init.add_argument("--remote")
+    experiment_init = _command(sub, "experiment-init", "Initialize a managed experiment workspace from a spec.")
+    experiment_init.add_argument("--run-dir", required=True, help="Experiment workspace root to initialize.")
+    experiment_init.add_argument(
+        "--spec",
+        required=True,
+        help="YAML spec declaring the experiment id, title, objective, root, and baseline.",
+    )
+    experiment_init.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
     experiment_init.set_defaults(func=_cmd_experiment_init)
 
-    experiment_note = sub.add_parser("experiment-note")
-    experiment_note.add_argument("--run-dir", required=True)
+    experiment_note = _command(
+        sub,
+        "experiment-note",
+        "Append one evidence-backed entry to the experiment research log. Append-only; entries are never rewritten.",
+    )
+    experiment_note.add_argument("--run-dir", required=True, help="Experiment workspace root owning the log.")
     experiment_note.add_argument(
         "--entry",
         required=True,
         help="Existing local YAML file path; inline text is not accepted.",
     )
-    experiment_note.add_argument("--remote")
+    experiment_note.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
     experiment_note.set_defaults(func=_cmd_experiment_note)
 
-    experiment_step = sub.add_parser("experiment-register-step")
-    experiment_step.add_argument("--run-dir", required=True)
-    experiment_step.add_argument("--spec", required=True)
-    experiment_step.add_argument("--remote")
+    experiment_step = _command(
+        sub,
+        "experiment-register-step",
+        "Register a pipeline step and its plans in the experiment workspace.",
+    )
+    experiment_step.add_argument("--run-dir", required=True, help="Experiment workspace root to register into.")
+    experiment_step.add_argument(
+        "--spec",
+        required=True,
+        help="YAML spec declaring the step id, phase, purpose, and the plans it owns.",
+    )
+    experiment_step.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
     experiment_step.set_defaults(func=_cmd_experiment_register_step)
 
-    experiment_finalize = sub.add_parser("experiment-finalize")
-    experiment_finalize.add_argument("--run-dir", required=True)
-    experiment_finalize.add_argument("--report", required=True)
-    experiment_finalize.add_argument("--remote")
+    experiment_finalize = _command(
+        sub,
+        "experiment-finalize",
+        "Finalize an experiment by binding its final report. Requires no active runs and a non-empty report.",
+    )
+    experiment_finalize.add_argument("--run-dir", required=True, help="Experiment workspace root to finalize.")
+    experiment_finalize.add_argument(
+        "--report",
+        required=True,
+        help="Non-empty final report whose path and SHA-256 are bound to the completed experiment.",
+    )
+    experiment_finalize.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
     experiment_finalize.set_defaults(func=_cmd_experiment_finalize)
 
-    experiment_run = sub.add_parser("experiment-run")
-    experiment_run.add_argument("--run-dir", required=True)
-    experiment_run.add_argument("--spec", required=True)
-    experiment_run.add_argument("--unlock-final-test", action="store_true")
+    experiment_run = _command(
+        sub,
+        "experiment-run",
+        "Run the managed validation-to-external-test pipeline for an experiment step. "
+        "Dry run unless --execute is given; --execute is an explicit launching action.",
+    )
+    experiment_run.add_argument("--run-dir", required=True, help="Experiment workspace root to run.")
+    experiment_run.add_argument("--spec", required=True, help="YAML spec declaring the pipeline step to run.")
+    experiment_run.add_argument(
+        "--unlock-final-test",
+        action="store_true",
+        help="Authorize the pipeline's external/final test stage.",
+    )
     experiment_run_mode = experiment_run.add_mutually_exclusive_group()
-    experiment_run_mode.add_argument("--dry-run", action="store_true", default=True)
-    experiment_run_mode.add_argument("--execute", action="store_true")
-    experiment_run.add_argument("--resume", action="store_true")
-    experiment_run.add_argument("--poll-seconds", type=float, default=60)
+    experiment_run_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=True,
+        help="Report the pipeline without changing state (default).",
+    )
+    experiment_run_mode.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually run the pipeline; enables launching and state changes.",
+    )
+    experiment_run.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume an interrupted pipeline instead of starting a new attempt.",
+    )
+    experiment_run.add_argument("--poll-seconds", type=float, default=60, help="Seconds to wait between polls.")
     experiment_run.set_defaults(func=_cmd_experiment_run)
 
-    experiment_wandb = sub.add_parser("experiment-wandb-sync")
-    experiment_wandb.add_argument("--run-dir", required=True)
-    experiment_wandb.add_argument("--entity", required=True)
-    experiment_wandb.add_argument("--project", required=True)
-    experiment_wandb.add_argument("--group")
-    experiment_wandb.add_argument("--remote")
+    experiment_wandb = _command(sub, "experiment-wandb-sync", "Sync W&B run history into the experiment workspace.")
+    experiment_wandb.add_argument("--run-dir", required=True, help="Experiment workspace root to sync into.")
+    experiment_wandb.add_argument("--entity", required=True, help="W&B entity that owns the runs.")
+    experiment_wandb.add_argument("--project", required=True, help="W&B project to sync runs from.")
+    experiment_wandb.add_argument("--group", help="Restrict the sync to one W&B group.")
+    experiment_wandb.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
     experiment_wandb.set_defaults(func=_cmd_experiment_wandb_sync)
 
-    experiment_checkpoints = sub.add_parser("experiment-index-checkpoints")
-    experiment_checkpoints.add_argument("--run-dir", required=True)
-    experiment_checkpoints.add_argument("--remote")
+    experiment_checkpoints = _command(
+        sub,
+        "experiment-index-checkpoints",
+        "Index the checkpoints reachable from an experiment workspace.",
+    )
+    experiment_checkpoints.add_argument("--run-dir", required=True, help="Experiment workspace root to index.")
+    experiment_checkpoints.add_argument(
+        "--remote",
+        help="SSH host owning the workspace instead of the local filesystem.",
+    )
     experiment_checkpoints.set_defaults(func=_cmd_experiment_index_checkpoints)
 
-    experiment_monitor = sub.add_parser("experiment-monitor")
-    experiment_monitor.add_argument("--run-dir", required=True)
-    experiment_monitor.add_argument("--remote")
-    experiment_monitor.add_argument("--json", action="store_true")
+    experiment_monitor = _command(
+        sub,
+        "experiment-monitor",
+        "Refresh an experiment's status report from its manifests. Never launches runs.",
+    )
+    experiment_monitor.add_argument("--run-dir", required=True, help="Experiment workspace root to monitor.")
+    experiment_monitor.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
+    experiment_monitor.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the monitor result as JSON instead of the written report path.",
+    )
     experiment_monitor.set_defaults(func=_cmd_experiment_monitor)
 
-    experiment_status_parser = sub.add_parser("experiment-status")
-    experiment_status_parser.add_argument("--run-dir", required=True)
-    experiment_status_parser.add_argument("--remote")
-    experiment_status_parser.add_argument("--json", action="store_true")
+    experiment_status_parser = _command(
+        sub,
+        "experiment-status",
+        "Print a projected status snapshot for an experiment workspace.",
+    )
+    experiment_status_parser.add_argument("--run-dir", required=True, help="Experiment workspace root to report on.")
+    experiment_status_parser.add_argument(
+        "--remote",
+        help="SSH host owning the workspace instead of the local filesystem.",
+    )
+    experiment_status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON instead of the human-readable rendering.",
+    )
     experiment_status_parser.set_defaults(func=_cmd_experiment_status)
 
-    experiment_rank = sub.add_parser("experiment-rank")
-    experiment_rank.add_argument("--run-dir", required=True)
-    experiment_rank.add_argument("--metric", required=True)
-    experiment_rank.add_argument("--mode", choices=["max", "min"], required=True)
-    experiment_rank.add_argument("--remote")
+    experiment_rank = _command(
+        sub,
+        "experiment-rank",
+        "Rank an experiment's candidates by a metric and publish the ranking.",
+    )
+    experiment_rank.add_argument("--run-dir", required=True, help="Experiment workspace root to rank.")
+    experiment_rank.add_argument("--metric", required=True, help="Metric to rank candidates by.")
+    experiment_rank.add_argument(
+        "--mode",
+        choices=["max", "min"],
+        required=True,
+        help="Ranking direction: max ranks the highest metric first, min the lowest.",
+    )
+    experiment_rank.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
     experiment_rank.set_defaults(func=_cmd_experiment_rank)
 
-    stop = sub.add_parser("hparam-stop")
-    stop.add_argument("--run-dir", required=True)
-    stop.add_argument("--run-id", required=True)
-    stop.add_argument("--reason", required=True)
+    stop = _command(sub, "hparam-stop", "Stop one hyper-parameter run and record why it was stopped.")
+    stop.add_argument("--run-dir", required=True, help="Run directory holding run_manifest.tsv.")
+    stop.add_argument("--run-id", required=True, help="Managed run id to stop (e.g. run-000).")
+    stop.add_argument("--reason", required=True, help="Reason recorded in the run manifest; required.")
     stop.set_defaults(func=_cmd_hparam_stop)
 
-    select = sub.add_parser("hparam-select")
-    select.add_argument("--run-dir", required=True)
-    select.add_argument("--metric")
-    select.add_argument("--mode", choices=["max", "min"])
+    select = _command(
+        sub,
+        "hparam-select",
+        "Rank hyper-parameter candidates on the frozen selection split and publish the selection report.",
+    )
+    select.add_argument("--run-dir", required=True, help="Run directory holding the completed runs.")
+    select.add_argument("--metric", help="Selection metric; omit to use the plan's frozen metric.")
+    select.add_argument(
+        "--mode",
+        choices=["max", "min"],
+        help="Selection direction; omit to use the plan's frozen direction.",
+    )
     select.set_defaults(func=_cmd_hparam_select)
 
-    external = sub.add_parser("hparam-external-eval")
-    external.add_argument("--run-dir", required=True)
-    external.add_argument("--selected", required=True)
-    external.add_argument("--unlock-final-test", action="store_true")
-    external.add_argument("--kaldi-data-root")
-    external.add_argument("--kaldi-manifest")
-    external.add_argument("--finetune-data-index")
-    external.add_argument("--eval-split", default="test")
-    external.add_argument("--top-k", type=int, default=1)
-    external.add_argument("--all-candidates", action="store_true")
+    external = _command(
+        sub,
+        "hparam-external-eval",
+        "Generate the external-evaluation script for selected hyper-parameter candidates.",
+    )
+    external.add_argument("--run-dir", required=True, help="Run directory holding the completed runs.")
+    external.add_argument("--selected", required=True, help="Selection report identifying the ranked candidates.")
+    external.add_argument(
+        "--unlock-final-test",
+        action="store_true",
+        help="Authorize external/final test access for this evaluation.",
+    )
+    external.add_argument("--kaldi-data-root", help="Kaldi data root for the evaluation split.")
+    external.add_argument("--kaldi-manifest", help="Kaldi manifest for the evaluation split.")
+    external.add_argument("--finetune-data-index", help="Index CSV for the evaluation split.")
+    external.add_argument("--eval-split", default="test", help="Dataset split to evaluate on.")
+    external.add_argument("--top-k", type=int, default=1, help="Number of top-ranked candidates to evaluate.")
+    external.add_argument(
+        "--all-candidates",
+        action="store_true",
+        help="Evaluate every ranked candidate instead of the top-k.",
+    )
     external.set_defaults(func=_cmd_hparam_external_eval)
 
-    export_logits = sub.add_parser("hparam-export-logits")
-    export_logits.add_argument("--run-dir", required=True)
-    export_logits.add_argument("--selected", required=True)
-    export_logits.add_argument("--unlock-final-test", action="store_true")
-    export_logits.add_argument("--skip-test", action="store_true")
-    export_logits.add_argument("--label-name")
-    export_logits.add_argument("--val-split", default="val")
-    export_logits.add_argument("--test-split", default="test")
-    export_logits.add_argument("--val-kaldi-data-root")
-    export_logits.add_argument("--val-kaldi-manifest")
-    export_logits.add_argument("--val-finetune-data-index")
-    export_logits.add_argument("--test-kaldi-data-root")
-    export_logits.add_argument("--test-kaldi-manifest")
-    export_logits.add_argument("--test-finetune-data-index")
-    export_logits.add_argument("--batch-size", type=int, default=12)
-    export_logits.add_argument("--num-workers", type=int, default=8)
-    export_logits.add_argument("--devices", type=int, nargs="+")
-    export_logits.add_argument("--accelerator", default="gpu", choices=["cpu", "gpu", "auto"])
-    export_logits.add_argument("--device", default="cuda")
-    export_logits.add_argument("--precision", default="bf16-mixed")
-    export_logits.add_argument("--seed", type=int, default=4523)
-    export_logits.add_argument("--top-k", type=int, default=1)
-    export_logits.add_argument("--all-candidates", action="store_true")
-    export_logits.add_argument("--execute", action="store_true")
+    export_logits = _command(
+        sub,
+        "hparam-export-logits",
+        "Export validation and test logits for selected candidates, for thresholding and ensembling.",
+    )
+    export_logits.add_argument("--run-dir", required=True, help="Run directory holding the completed runs.")
+    export_logits.add_argument("--selected", required=True, help="Selection report identifying the ranked candidates.")
+    export_logits.add_argument(
+        "--unlock-final-test",
+        action="store_true",
+        help="Authorize external/final test access for the test-split export.",
+    )
+    export_logits.add_argument(
+        "--skip-test",
+        action="store_true",
+        help="Export validation logits only, leaving the test split untouched.",
+    )
+    export_logits.add_argument("--label-name", help="Label column the exported logits are scored against.")
+    export_logits.add_argument("--val-split", default="val", help="Validation split name to export.")
+    export_logits.add_argument("--test-split", default="test", help="Test split name to export.")
+    export_logits.add_argument("--val-kaldi-data-root", help="Kaldi data root for the validation split.")
+    export_logits.add_argument("--val-kaldi-manifest", help="Kaldi manifest for the validation split.")
+    export_logits.add_argument("--val-finetune-data-index", help="Index CSV for the validation split.")
+    export_logits.add_argument("--test-kaldi-data-root", help="Kaldi data root for the test split.")
+    export_logits.add_argument("--test-kaldi-manifest", help="Kaldi manifest for the test split.")
+    export_logits.add_argument("--test-finetune-data-index", help="Index CSV for the test split.")
+    export_logits.add_argument("--batch-size", type=int, default=12, help="Inference batch size.")
+    export_logits.add_argument("--num-workers", type=int, default=8, help="Dataloader worker processes.")
+    export_logits.add_argument("--devices", type=int, nargs="+", help="Device indices to run the export on.")
+    export_logits.add_argument(
+        "--accelerator",
+        default="gpu",
+        choices=["cpu", "gpu", "auto"],
+        help="Lightning accelerator to run the export on.",
+    )
+    export_logits.add_argument("--device", default="cuda", help="Torch device string for the export.")
+    export_logits.add_argument("--precision", default="bf16-mixed", help="Trainer precision for the export.")
+    export_logits.add_argument("--seed", type=int, default=4523, help="Random seed for the export.")
+    export_logits.add_argument("--top-k", type=int, default=1, help="Number of top-ranked candidates to export.")
+    export_logits.add_argument(
+        "--all-candidates",
+        action="store_true",
+        help="Export every ranked candidate instead of the top-k.",
+    )
+    export_logits.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run the export now instead of only writing logits_export.sh.",
+    )
     export_logits.set_defaults(func=_cmd_hparam_export_logits)
 
-    threshold = sub.add_parser("hparam-threshold")
-    threshold.add_argument("--run-dir", required=True)
-    threshold.add_argument("--selected", required=True)
+    threshold = _command(sub, "hparam-threshold", "Tune decision thresholds from exported validation logits.")
+    threshold.add_argument("--run-dir", required=True, help="Run directory holding the exported logits.")
+    threshold.add_argument("--selected", required=True, help="Selection report identifying the ranked candidates.")
     threshold.set_defaults(func=_cmd_hparam_threshold)
 
-    ensemble = sub.add_parser("hparam-ensemble")
-    ensemble.add_argument("--run-dir", required=True)
-    ensemble.add_argument("--candidates", required=True)
-    ensemble.add_argument("--search-combinations", action="store_true")
-    ensemble.add_argument("--max-size", type=int)
-    ensemble.add_argument("--metric", default="exploratory_test_auroc")
-    ensemble.add_argument("--mode", choices=["max", "min"], default="max")
-    ensemble.add_argument("--top-k", type=int)
+    ensemble = _command(sub, "hparam-ensemble", "Score ensembles of candidates from their exported logits.")
+    ensemble.add_argument("--run-dir", required=True, help="Run directory holding the exported logits.")
+    ensemble.add_argument("--candidates", required=True, help="Candidate list to build ensembles from.")
+    ensemble.add_argument(
+        "--search-combinations",
+        action="store_true",
+        help="Search candidate subsets instead of scoring the single given combination.",
+    )
+    ensemble.add_argument("--max-size", type=int, help="Largest ensemble size to search.")
+    ensemble.add_argument("--metric", default="exploratory_test_auroc", help="Metric to score ensembles by.")
+    ensemble.add_argument(
+        "--mode",
+        choices=["max", "min"],
+        default="max",
+        help="Scoring direction: max keeps the highest metric, min the lowest.",
+    )
+    ensemble.add_argument("--top-k", type=int, help="Number of top-scoring ensembles to report.")
     ensemble.set_defaults(func=_cmd_hparam_ensemble)
 
-    checkpoint_scan = sub.add_parser("hparam-checkpoint-scan")
-    checkpoint_scan.add_argument("--run-dir", required=True)
-    checkpoint_scan.add_argument("--metric", required=True)
-    checkpoint_scan.add_argument("--mode", choices=["max", "min"], required=True)
-    checkpoint_scan.add_argument("--top-k", type=int)
+    checkpoint_scan = _command(
+        sub,
+        "hparam-checkpoint-scan",
+        "Rank every saved checkpoint of a hyper-parameter run by a metric.",
+    )
+    checkpoint_scan.add_argument("--run-dir", required=True, help="Run directory holding the saved checkpoints.")
+    checkpoint_scan.add_argument("--metric", required=True, help="Metric to rank checkpoints by.")
+    checkpoint_scan.add_argument(
+        "--mode",
+        choices=["max", "min"],
+        required=True,
+        help="Ranking direction: max ranks the highest metric first, min the lowest.",
+    )
+    checkpoint_scan.add_argument("--top-k", type=int, help="Number of top-ranked checkpoints to report.")
     checkpoint_scan.set_defaults(func=_cmd_hparam_checkpoint_scan)
 
-    digest = sub.add_parser("hparam-digest")
-    digest.add_argument("--run-dir", required=True)
+    digest = _command(sub, "hparam-digest", "Publish a digest of a completed hyper-parameter round.")
+    digest.add_argument("--run-dir", required=True, help="Run directory holding the completed round.")
     digest.set_defaults(func=_cmd_hparam_digest)
 
-    suggest = sub.add_parser("hparam-suggest")
-    suggest.add_argument("--workflow-dir", required=True)
+    suggest = _command(
+        sub,
+        "hparam-suggest",
+        "Propose the next adaptive round from the workflow's published digests.",
+    )
+    suggest.add_argument("--workflow-dir", required=True, help="Adaptive workflow root holding the round digests.")
     suggest.set_defaults(func=_cmd_hparam_suggest)
 
-    adaptive_init = sub.add_parser("hparam-adaptive-init")
-    adaptive_init.add_argument("--recipe", required=True)
-    adaptive_init.add_argument("--output-dir", required=True)
+    adaptive_init = _command(
+        sub,
+        "hparam-adaptive-init",
+        "Initialize an adaptive hyper-parameter workflow from a recipe.",
+    )
+    adaptive_init.add_argument("--recipe", required=True, help="Path to the adaptive hparam recipe YAML.")
+    adaptive_init.add_argument("--output-dir", required=True, help="Directory to create the workflow root in.")
     adaptive_init.set_defaults(func=_cmd_hparam_adaptive_init)
 
-    adaptive_step_cmd = sub.add_parser("hparam-adaptive-step")
-    adaptive_step_cmd.add_argument("--workflow-dir", required=True)
-    adaptive_step_cmd.add_argument("--proposal")
-    adaptive_step_cmd.add_argument("--execute", action="store_true")
+    adaptive_step_cmd = _command(
+        sub,
+        "hparam-adaptive-step",
+        "Advance an adaptive workflow by one round. Validates a proposal unless --execute is given.",
+    )
+    adaptive_step_cmd.add_argument("--workflow-dir", required=True, help="Adaptive workflow root to advance.")
+    adaptive_step_cmd.add_argument(
+        "--proposal",
+        help="External proposal YAML to validate and register; omit to use the workflow's own suggestion.",
+    )
+    adaptive_step_cmd.add_argument(
+        "--execute",
+        action="store_true",
+        help="Register and launch the round; enables state changes.",
+    )
     adaptive_step_cmd.set_defaults(func=_cmd_hparam_adaptive_step)
 
-    adaptive_loop_cmd = sub.add_parser("hparam-adaptive-loop")
-    adaptive_loop_cmd.add_argument("--workflow-dir", required=True)
-    adaptive_loop_cmd.add_argument("--execute", action="store_true")
+    adaptive_loop_cmd = _command(
+        sub,
+        "hparam-adaptive-loop",
+        "Advance an adaptive workflow round after round until its budget is exhausted.",
+    )
+    adaptive_loop_cmd.add_argument("--workflow-dir", required=True, help="Adaptive workflow root to advance.")
+    adaptive_loop_cmd.add_argument(
+        "--execute",
+        action="store_true",
+        help="Register and launch each round; enables state changes.",
+    )
     adaptive_loop_cmd.set_defaults(func=_cmd_hparam_adaptive_loop)
     return parser
 

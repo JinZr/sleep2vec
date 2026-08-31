@@ -87,11 +87,72 @@ def _actions(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
     return {action.dest: action for action in parser._actions if action.option_strings}
 
 
+def _subcommand_help(parser: argparse.ArgumentParser, name: str) -> str | None:
+    """The one-line summary argparse lists for ``name`` in ``agent_tools --help``."""
+    subparsers = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
+    return next((choice.help for choice in subparsers._choices_actions if choice.dest == name), None)
+
+
 def test_cli_has_exactly_39_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == set.union(*SUBCOMMAND_GROUPS.values())
     assert len(subcommands) == 39
+
+
+def test_every_subcommand_documents_itself():
+    # agent_tools is driven by agents that discover the CLI through --help, so a
+    # command with no summary is a contract break, not a cosmetic gap. The
+    # listing entry (agent_tools --help) and the description (agent_tools <cmd>
+    # --help) must both be present -- cli._command sets them from one string.
+    parser, subcommands = _parser_contract()
+
+    missing_summary = sorted(name for name in subcommands if not (_subcommand_help(parser, name) or "").strip())
+    missing_description = sorted(name for name, sub in subcommands.items() if not (sub.description or "").strip())
+
+    assert missing_summary == [], f"subcommands missing a --help summary: {missing_summary}"
+    assert missing_description == [], f"subcommands missing a description: {missing_description}"
+    assert (parser.description or "").strip(), "agent_tools itself must describe what it is for"
+
+
+def test_every_subcommand_option_documents_itself():
+    # Same contract one level down: an agent reading `agent_tools <cmd> --help`
+    # must learn what each flag does without opening cli.py.
+    _parser, subcommands = _parser_contract()
+
+    missing = sorted(
+        f"{name} {'/'.join(action.option_strings)}"
+        for name, sub in subcommands.items()
+        for action in _actions(sub).values()
+        if not (action.help or "").strip()
+    )
+
+    assert missing == [], f"options missing help text: {missing}"
+
+
+def test_subcommand_help_guard_rejects_an_undocumented_command():
+    # The guard above only protects the CLI if it actually fails on a bare
+    # add_parser, which is the shape a new command regresses into.
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("documented", help="Does a thing.", description="Does a thing.")
+    sub.add_parser("undocumented")
+
+    subcommands = sub.choices
+    assert _subcommand_help(parser, "undocumented") is None
+    assert [name for name, choice in subcommands.items() if not (choice.description or "").strip()] == ["undocumented"]
+
+
+def test_subcommand_option_help_guard_rejects_an_undocumented_option():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--documented", help="Does a thing.")
+    parser.add_argument("--undocumented")
+
+    missing = [
+        "/".join(action.option_strings) for action in _actions(parser).values() if not (action.help or "").strip()
+    ]
+
+    assert missing == ["--undocumented"]
 
 
 def _assert_cli_architecture_contract(document: str):
