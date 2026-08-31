@@ -1185,16 +1185,17 @@ def merge_run_manifest(
     path = root / "run_manifest.tsv"
     lock_path = path.with_name(path.name + ".lock")
     experiment_path = root / "experiment.yaml"
+    output_paths = [
+        path,
+        lock_path,
+        experiment_path,
+        root / "run_matrix.csv",
+        root / "reports" / "run_matrix.md",
+        root / "events.jsonl",
+    ]
     exp_io.validate_managed_output_paths(
         root,
-        [
-            path,
-            lock_path,
-            experiment_path,
-            root / "run_matrix.csv",
-            root / "reports" / "run_matrix.md",
-            root / "events.jsonl",
-        ],
+        output_paths if remote else [lock_path],
         remote=remote,
     )
     validate_managed_run_rows(rows, source="incoming run manifest", cardinality="one_per_run")
@@ -1202,6 +1203,9 @@ def merge_run_manifest(
     if not remote and not lock_held:
         lock_stack.enter_context(exp_io.blocking_file_lock(lock_path))
     try:
+        if not remote:
+            # Serialize this inode snapshot with canonical replacement and projection-file creation.
+            exp_io.validate_managed_output_paths(root, output_paths)
         for _attempt in range(3 if remote else 1):
             experiment_text = exp_io.read_text_at(experiment_path, remote=remote)
             if not experiment_text:
