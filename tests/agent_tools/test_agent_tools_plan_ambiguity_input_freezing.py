@@ -427,7 +427,7 @@ def test_unlock_final_test_captures_remote_explicit_config_over_ssh(tmp_path: Pa
         calls.append((host, command, kwargs))
         if command.startswith("cat -- "):
             return subprocess.CompletedProcess([], 0, stdout=selected_bytes, stderr=b"")
-        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        return subprocess.CompletedProcess([], 0, stdout="path-present\n", stderr="")
 
     monkeypatch.setattr("agent_tools.transport.run_ssh", fake_run_ssh)
     output_dir = tmp_path / "unlocked"
