@@ -52,9 +52,10 @@ else:
 PYPROJECT = Path("pyproject.toml")
 ERROR_LINE = re.compile(r"^(agent_tools/[\w/]+)\.py:\d+: error:")
 IGNORE_ERRORS_TOGGLE = re.compile(r"^ignore_errors = true$", re.M)
-#: mypy prints this only when it finished; an early abort says
-#: "(errors prevented further checking)" instead.
-COMPLETED_SUMMARY = re.compile(r"\(checked \d+ source files?\)")
+#: How mypy says it got to the end: "(checked N source files)" when it found
+#: errors, "Success: no issues found in N source files" when it did not. An
+#: early abort says "(errors prevented further checking)" instead and exits 2.
+COMPLETED_SUMMARY = re.compile(r"\(checked \d+ source files?\)|Success: no issues found in \d+ source files?")
 
 
 def run_mypy(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -121,12 +122,17 @@ def modules_with_errors(document: str) -> set[str]:
 
     # An incomplete run undercounts, and an undercount reads as "these entries
     # are stale" -- the check would tell you to delete valid ledger entries. So
-    # require mypy's own "checked N source files" completion summary rather than
-    # trusting whatever errors came back. Without this, Python 3.11+ silently
-    # reported 39 of 41 entries stale: the newer numpy that pip resolves there
-    # ships PEP 695 stubs that [tool.mypy]'s python_version = "3.10" rejects,
-    # and mypy stops early with "errors prevented further checking".
-    if not COMPLETED_SUMMARY.search(result.stdout):
+    # establish that mypy got to the end before trusting any of its errors.
+    # Without this, Python 3.11+ silently reported 39 of 41 entries stale: the
+    # newer numpy that pip resolves there ships PEP 695 stubs that
+    # [tool.mypy]'s python_version = "3.10" rejects, and mypy stops early.
+    #
+    # A clean exit is itself proof of completion, and it is the state this
+    # ratchet is aiming at: the last grandfathered module gets fixed, mypy
+    # reports no errors, and every remaining entry is stale and due for
+    # deletion. Treating that as an environment failure would stall the
+    # cleanup at the finish line.
+    if result.returncode != 0 and not COMPLETED_SUMMARY.search(result.stdout):
         unusable("mypy did not run to completion")
 
     failing = set()
@@ -135,8 +141,6 @@ def modules_with_errors(document: str) -> set[str]:
         if match:
             parts = match[1].split("/")
             failing.add(".".join(parts[:-1] if parts[-1] == "__init__" else parts))
-    if not failing:
-        unusable("no agent_tools errors reported at all")
     return failing
 
 
