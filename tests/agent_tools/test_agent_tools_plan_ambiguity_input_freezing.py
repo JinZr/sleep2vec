@@ -427,14 +427,16 @@ def test_unlock_final_test_captures_remote_explicit_config_over_ssh(tmp_path: Pa
         calls.append((host, command, kwargs))
         if command.startswith("cat -- "):
             return subprocess.CompletedProcess([], 0, stdout=selected_bytes, stderr=b"")
-        return subprocess.CompletedProcess([], 0, stdout="path-present\n", stderr="")
+        if command.startswith("test "):
+            return subprocess.CompletedProcess([], 0, stdout="path-present\n", stderr="")
+        return subprocess.CompletedProcess([], 0, stdout="true\n", stderr="")
 
     monkeypatch.setattr("agent_tools.transport.run_ssh", fake_run_ssh)
     output_dir = tmp_path / "unlocked"
 
     report = plans.build_plan(recipe_path=recipe, output_dir=output_dir, unlock_final_test=True)
 
-    assert report.exit_code == 0
+    assert report.exit_code == 0, [issue.message for issue in report.issues]
     frozen_config = output_dir / "config.final_eval.yaml"
     assert frozen_config.read_bytes() == selected_bytes
     assert [command for _host, command, _kwargs in calls].count(f"cat -- {remote_config}") == 2

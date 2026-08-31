@@ -1261,8 +1261,13 @@ def test_experiment_init_remote_writes_remote_not_local(tmp_path: Path, monkeypa
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
         if "mkdir -p" in command[-1] or "seen_inodes" in command[-1] or "append_mode" in command[-1]:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        return subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", "")
+            returncode, stdout = 0, "true\n"
+        else:
+            returncode = experiment_io.REMOTE_MISSING_RETURN_CODE
+            stdout = "null\n" if "print(json.dumps(text))" in command[-1] else "false\n"
+        if not kwargs.get("text"):
+            return subprocess.CompletedProcess(command, returncode, stdout.encode(), b"")
+        return subprocess.CompletedProcess(command, returncode, stdout, "")
 
     monkeypatch.setattr("agent_tools.experiment_io.subprocess.run", fake_run)
 

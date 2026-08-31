@@ -89,14 +89,29 @@ def test_remote_reads_require_actual_program_results_when_exit_is_masked(
     assert masked_ssh[0].returncode == child_returncode
 
 
-@pytest.mark.parametrize("operation", ["path", "directory", "read", "validate"])
+@pytest.mark.parametrize(
+    ("operation", "returncode"),
+    [
+        ("path", 0),
+        ("path", 44),
+        ("directory", 0),
+        ("directory", 44),
+        ("read", 0),
+        ("read", 44),
+        ("validate", 0),
+        ("cas", 0),
+        ("cas", 45),
+    ],
+)
 @pytest.mark.parametrize("stdout", ["", "tru", "[]", "true\ntrailing"])
-def test_remote_reads_reject_missing_or_malformed_results(monkeypatch, operation, stdout):
+def test_remote_operations_reject_missing_or_malformed_results(monkeypatch, operation, returncode, stdout):
     calls = []
 
     def incomplete_result(_host, command, **_kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout, "")
+        if operation == "cas":
+            return subprocess.CompletedProcess(command, returncode, stdout.encode(), b"")
+        return subprocess.CompletedProcess(command, returncode, stdout, "")
 
     monkeypatch.setattr(experiment_io.transport, "run_ssh", incomplete_result)
     operations = {
@@ -104,6 +119,9 @@ def test_remote_reads_reject_missing_or_malformed_results(monkeypatch, operation
         "directory": lambda: experiment_io.remote_dir_nonempty(Path("/remote/target"), "host"),
         "read": lambda: experiment_io.read_text_at("/remote/target", remote="host"),
         "validate": lambda: experiment_io.validate_managed_output_paths("/remote", ["/remote/target"], remote="host"),
+        "cas": lambda: experiment_io.conditional_atomic_replace_text_at(
+            "/remote/target", "new", None, managed_root="/remote", remote="host"
+        ),
     }
     with pytest.raises(RuntimeError, match="no valid result"):
         operations[operation]()
