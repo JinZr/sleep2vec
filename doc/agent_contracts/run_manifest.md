@@ -2,6 +2,22 @@
 
 `run_manifest.tsv` is the only mutable owner of managed run lifecycle state and execution identity.
 
+This contract owns identity, state reduction, evidence, and atomic commits.
+Command choice, status advice, and finalization belong to
+[the workspace contract](experiment_workspace.md); hparam selection and adaptive
+protocols belong to [the recipe contract](task_recipe.md).
+
+## Contents
+
+- [Identity and frozen fields](#identity-and-frozen-fields)
+- [Canonical state and projections](#canonical-state-and-projections) and [runtime artifact evidence](#runtime-artifact-evidence)
+- [Status reducer](#status-reducer), [evidence ownership](#evidence-ownership), and [atomic commit](#atomic-commit)
+- [PID and runtime evidence](#pid-and-runtime-evidence)
+- [Slurm evidence](#slurm-scheduler-evidence): [submission/routing](#submission-and-routing),
+  [sidecar reads and monitor reuse](#sidecar-reads-and-monitor-round-reuse),
+  [terminal evidence](#terminal-evidence), and [stopping/uncertainty](#stopping-and-uncertain-states)
+- [Consumer requirements](#consumer-requirements)
+
 ## Identity and frozen fields
 
 The canonical managed key is `(step_id, run_id)`. Both fields are required and one canonical table contains at most one row per key. A run uses the next stable step-local `run-NNN` id. `run_name` is human-readable, and `version` is the bounded slug of experiment id, step id, run id, and run name. Version may resolve external evidence only when a complete managed key is absent and the match is unique.
@@ -25,8 +41,8 @@ When present, `terminal_status_owner` is exactly `script`, `monitor`, or
 `scheduler_sidecar`. It
 selects the existing process-exit rule explicitly: script-owned runs must commit
 their own terminal status, while monitor-owned runs leave confirmed-exit
-inference to the monitor. Scheduler-sidecar runs take terminal truth only from
-their verified atomic sidecar.
+inference to the monitor. Scheduler-sidecar runs require the verified atomic
+sidecar under the [scheduler terminal-evidence rules](#terminal-evidence).
 Lifecycle-owned inference with explicit runtime identity uses the same frozen
 runtime Python for its workload and every lifecycle commit, after its frozen
 runtime-commit guard succeeds.
@@ -55,6 +71,8 @@ remote operation, preserving their independent failures. An invalid paired
 response falls back once to the existing separate probes. Direct-process health
 keeps its probe order; no log evidence is cached across observations.
 
+## Runtime artifact evidence
+
 Runtime `run_manifest.json` supplies metrics and checkpoint evidence only. It does not own lifecycle status. A truly missing runtime manifest means evidence is not yet available; an existing alias, non-regular file, invalid encoding/JSON, or non-mapping payload is corrupt.
 
 For test-selected hparam runs, the terminal runtime manifest also contains
@@ -62,10 +80,10 @@ For test-selected hparam runs, the terminal runtime manifest also contains
 `{checkpoint_path, epoch, metrics}` mapping for every regular non-alias
 `epoch=*.ckpt` in the frozen checkpoint directory.
 Top-level `metrics` remains the test result for the validation-best checkpoint;
-checkpoint-level hparam selection uses only the complete nested evidence. The
-selector hashes each checkpoint, writes the plan-local all-checkpoint ranking,
-and keeps `run_manifest.tsv` at one lifecycle row per run by projecting only
-that run's best test-ranked checkpoint.
+checkpoint-level hparam selection uses only the complete nested evidence.
+The [selection owner](task_recipe.md#selection-and-selected-candidate-consumers)
+keeps a many-checkpoint audit separate from this table's one lifecycle row per
+run, which projects only that run's best test-ranked checkpoint.
 
 Finetune runtime directories are single-use: a single-process launch rejects a
 non-empty `log-finetune/<version>` before persisting configuration, loading
@@ -127,6 +145,11 @@ Mutation-facing evidence must first resolve to a canonical managed row. Any supp
 
 Foreign, unmatched, incomplete, or drifting evidence fails or remains in raw inventory; it does not update canonical rows.
 
+Experiment checkpoint indexing follows each row's frozen runtime/checkpoint
+pair. Both may be empty for a non-checkpoint-producing run; a partial pair is
+invalid. Existing checkpoint evidence must remain inside the eligible managed
+keys and frozen directories.
+
 ## Atomic commit
 
 The workspace owner reads, reduces, and commits the complete canonical table.
@@ -154,7 +177,7 @@ write one JSON identity file containing exactly `pid`, `process_group_id`, and
 - Monitoring compares the file with frozen canonical values and the live OS
   start token, so a reused PID is not accepted as the managed workload.
 - Historical integer-only PID files are insufficient for script-owned process
-  control and fail closed.
+control and fail closed.
 
 If those canonical process fields are still blank after an unresolved launch, monitoring or stop may fill them only after the live leader command matches the frozen absolute launch script. Monitoring and stop reject a partially populated canonical process identity.
 
@@ -181,6 +204,13 @@ terminal rows before identity access. On SSH it verifies and signals atomically.
 It sends `SIGTERM` to the complete process group and commits `stopped` only
 after the group has exited.
 
+When monitoring proves corrupt, partial, mismatched, or reused managed process
+identity, it records `process_identity_error` with the canonical status update.
+Any affected non-terminal run remains active `missing_pid`, so queues and
+pipeline runners cannot release its capacity or retry it automatically. A valid
+identity whose process group is confirmed dead may still become `failed` under
+the normal terminal-owner rule.
+
 ## Slurm scheduler evidence
 
 Both hparam and ordinary infer/evaluate use the same Slurm lifecycle owner.
@@ -189,6 +219,8 @@ initial canonical row contains no transport identity, submission command, job,
 or cluster. The planned log path and preflight snapshot are not launch evidence.
 The worker does not write canonical status or rely on an inner EXIT trap:
 `run-frozen-job` owns its allocation and terminal sidecars.
+
+### Submission and routing
 
 One Slurm-backed canonical run owns one frozen leaf `job.sbatch`. Before any
 submission, the launcher freezes the plan-level execution snapshot's raw
@@ -208,10 +240,20 @@ output, or loses SSH after possible submission, the launcher searches the exact
 frozen comment token on the prebound cluster and frozen controller route;
 zero or multiple matches remain unresolved and never
 authorize another submission.
+Bound-cluster routing uses `--clusters=<scheduler_cluster>` unless the canonical
+run freezes `scheduler_direct_controller: true`. Local control transport does
+not establish that topology; monitoring and stop preserve the frozen choice.
 All Slurm client subprocesses on either a local or SSH submission host remove
 inherited `SLURM_CLUSTERS`; `sbatch` additionally removes every `SBATCH_*`
 variable. The recorded submission command and transport share one renderer.
 `SLURM_CONF`, `PATH`, other environment, and the parent process remain unchanged.
+
+For a valid registered ordinary inference plan, an execute-time guard failure
+may commit `launch_failed` with its diagnostic only when a fresh canonical read
+under the launch lock is still `planned`/`pending` and has no launch evidence.
+Invalid or unregistered plan artifacts cannot authorize this update. Exceptions
+after `submitting` or a trusted execution binding retain the shared scheduler
+state and reconciliation rules; they never become an unsubmitted failure or authorize retry.
 
 If a receipt names a different cluster, the launcher first commits the returned
 job id with the original cluster, `unknown_scheduler`, and raw state
@@ -220,6 +262,8 @@ and its reason survive stale observations. Monitoring does not read Slurm
 sidecars or query the scheduler for it; stop rejects before recording intent
 or cancelling. Queue and direct launch both block further submissions in that
 plan. There is no automatic conflict-clearing or legacy-cluster recovery path.
+
+### Sidecar reads and monitor-round reuse
 
 Slurm sidecar reads validate the managed path and read the same opened regular
 file in one local/SSH operation. Raw `..` components, symlinks in any traversed
@@ -258,6 +302,8 @@ the fresh controller retry after accounting when the first controller query
 returned no record. This changes query timing, never frozen identity or the
 evidence required to commit lifecycle state.
 
+### Terminal evidence
+
 Live controller state comes from `squeue` and `scontrol`. If both no longer know
 a bound job, monitoring queries duplicate allocation records through `sacct`
 on the bound cluster when accounting is available. Accounting identity requires
@@ -268,10 +314,17 @@ accounting identity, so monitoring remains unchanged and fails closed. The
 compute wrapper verifies
 the exact execution-snapshot bytes before parsing them, then revalidates the
 runtime commit, module origin, CLI, and frozen launch/config hashes. It requires
-the allocation task count to match the frozen GPU count and starts one foreground
-`srun` step with one task per GPU. Only the wrapper writes the allocation and
-terminal JSON sidecars bound to the same token and job id; the terminal sidecar
-records the aggregate step exit code. Sidecar job ids are local query candidates
+`SLURM_NTASKS` to match the frozen GPU count and the observed Python executable
+and version to match the plan snapshot. It starts one foreground, labeled
+`srun --kill-on-bad-exit=1 --quit-on-interrupt` step with one task per GPU and no
+explicit task-level GPU binding, preserving the full allocation GPU visibility
+expected by the frozen Lightning devices in every rank. Each task emits one
+bounded startup-identity record before the runtime command; only global rank
+zero writes the diagnostic exit marker. The compute-node hostname is observed
+allocation evidence and may differ from the submission host. Only the wrapper
+writes allocation and terminal JSON sidecars bound to the same token and job
+id; the terminal sidecar records the aggregate step exit code. Labeled logs
+never own lifecycle. Sidecar job ids are local query candidates
 only; first binding requires a valid submission receipt or positive exact-token
 scheduler evidence on the frozen route. Sidecar clusters never select the query
 route or fill canonical identity. Query errors or missing records cannot save
@@ -293,13 +346,25 @@ Other unavailable controller or accounting evidence, a vanished job, or an
 incomplete terminal evidence pair becomes active `unknown_scheduler` rather
 than inferred success or failure. An accounting terminal record is scheduler
 evidence only; ordinary completion or failure still requires the matching
-sidecar. Before `scancel`, `hparam-stop` and `infer-stop` atomically record nonterminal
+sidecar.
+
+For ordinary inference, a surviving outer worker records the workload or
+guard's nonzero exit without needing an inner EXIT trap. Bootstrap, log-open,
+outer SIGKILL, or terminal-publication failures can leave no usable sidecar:
+authenticated raw `COMPLETED`, `FAILED`, or `TIMEOUT` then remains
+`unknown_scheduler` with diagnostic state, not guessed success or failure.
+
+### Stopping and uncertain states
+
+Before `scancel`, `hparam-stop` and `infer-stop` atomically record nonterminal
 `stopping` with its reason, request time, and frozen job binding. A failed or
 interrupted cancellation preserves that canonical intent and may be retried
 only with the same reason. Monitoring commits `stopped` only after the same
 scheduler job is observed as `CANCELLED`; this explicit stop
 intent is the narrow exception that does not require a terminal sidecar because
-a pending job may never start its wrapper. Slurm transition flags remain active;
+a pending job may never start its wrapper. A cancellation signal received while
+the wrapper is validating frozen identity terminates the job without starting
+the leaf process. Slurm transition flags remain active;
 in particular, raw `STOPPED` retains its allocation and maps to canonical
 `running` or `stopping`, never terminal `stopped`. When Slurm reports raw
 `REVOKED` federation sibling state, sibling-cluster rebinding is unsupported;
@@ -309,61 +374,21 @@ rebinding or relaunch. A stale observation that was
 created before the stop request may update diagnostic evidence but cannot erase
 or bypass the canonical stop intent.
 
-For a valid registered ordinary inference plan, an execute-time guard failure
-may commit `launch_failed` with its diagnostic only when a fresh canonical read
-under the launch lock is still `planned`/`pending` and has no launch evidence.
-Invalid or unregistered plan artifacts cannot authorize this update. Exceptions
-after `submitting` or a trusted execution binding retain the shared scheduler
-state and reconciliation rules; they never become an unsubmitted failure or authorize retry.
-If the outer worker survives, it records the workload or guard's nonzero exit
-without needing an inner EXIT trap. Bootstrap, log-open, outer SIGKILL, or
-terminal-publication failures can leave no usable terminal sidecar: an
-authenticated raw `COMPLETED`, `FAILED`, or `TIMEOUT` then remains
-`unknown_scheduler` with diagnostic state, not guessed success or failure.
-
-When monitoring proves corrupt, partial, mismatched, or reused managed process
-identity, it records `process_identity_error` with the canonical status update.
-Any affected non-terminal run remains active `missing_pid`, so queues and
-pipeline runners cannot release its capacity or retry it automatically. A valid
-identity whose process group is confirmed dead may still become `failed` under
-the normal terminal-owner rule.
-
-Experiment checkpoint indexing follows each row's frozen runtime/checkpoint pair. Both may be empty for a non-checkpoint-producing run; a partial pair is invalid. Existing checkpoint evidence must remain inside the eligible managed keys and frozen directories.
-
 ## Consumer requirements
 
-`experiment-status` consumes lifecycle state only from this canonical table.
-Step controller classification is separately owned by
-`steps/<step.id>/step.yaml.plan_controller`; it is not duplicated in this
-table. Pipeline identity columns must agree with that step owner.
-It may display scheduler, process, health, checkpoint, and runtime-manifest
-fields already recorded in a row, but it does not refresh them and never reads
-`run_status.tsv`, `launch_manifest.tsv`, reports, events, runtime manifests,
-logs, W&B, pipeline controller state, or adaptive controller state as alternate
-lifecycle evidence. It validates frozen recipe structure through
-`decision_rules` without consultation, config/path probing, or runtime
-preflight. It then recompiles each registered plan's expected run matrix,
-paths, derived configs, complete executable scripts, and final-evaluation requirement through the same pure
-`plan_contract`/adapter owner used by plan publication. Canonical rows and
-frozen scripts may agree with one another but still fail when they differ from
-that recipe-derived contract. Source configs and explicit hparam final-evaluation
-configs are recorded in the resolved recipe's input snapshots rather than
-trusted from a file descriptor that could be edited with the file. Active adaptive and pipeline plans remain legal plan-scoped blockers;
-their controller-owned advance and finalize actions are not inferred. If
-`experiment.yaml` is already completed, the status read-set accepts only ordinary
-plans with terminal canonical rows and rejects any adaptive or pipeline plan
-because controller completion cannot be proven. A registered step without a
-materialized plan or canonical rows is also an explicit finalize blocker and a
-completed-metadata contract error, rather than evidence that the declared work
-is absent.
+`experiment-status` consumes lifecycle only from this canonical table. Step
+controller classification belongs to `steps/<step.id>/step.yaml.plan_controller`,
+not a duplicate table field; pipeline identity columns must agree with it. The
+complete [read-only status and advisory contract](experiment_workspace.md#read-only-status-and-advisory-actions)
+owns frozen-plan validation, controller blockers, and the distinction from
+non-launching monitors that write fresh observations.
 
 Every hparam mutation first validates workspace ownership, step registration, frozen run hashes, the independent `recipe.resolved.yaml` byte digest recorded by `plan.json`, and equality between the two complete effective recipe copies. Missing or partial canonical state fails rather than being repaired by launch, selection, collection, or postprocess.
 
-Selected-candidate postprocessing refreshes lifecycle status from the current canonical manifest rather than trusting ranking or candidate-table status. For test selection, caller-provided rank, checkpoint path, and SHA-256 must match both the frozen workspace ranking and canonical run row before top-k filtering. Physical SHA-256 revalidation then covers only candidates retained by top-k, or every candidate under `all_candidates`. `hparam-external-eval` accepts only `completed` or `finished` runs; it and `hparam-export-logits` reject SSH-owned candidates before writing outputs because these direct helpers have no remote config-staging and result-collection protocol.
+Selected-candidate consumers obey the canonical ownership checks here and the
+[selection/postprocessing contract](task_recipe.md#selection-and-selected-candidate-consumers).
 
-An adaptive plan under `adaptive/rounds/round_NNN` is runnable only after the
-root-matching `adaptive/workflow.json` commit marker exists as an independent
-regular file. Planning and initialization may inspect an uncommitted plan with
-an explicit internal bypass, but lifecycle entrypoints never do.
+Adaptive lifecycle entrypoints also require the independent workflow readiness
+marker and ordered evidence in [initialization readiness](task_recipe.md#initialization-readiness).
 
 `collect-runs` requires a valid canonical table, distinguishes a header-only current table from missing/corrupt input, and cannot write to or alias the canonical manifest. Optional non-managed summaries may remain best-effort evidence.

@@ -4,6 +4,24 @@ Task recipes under `recipes/` bind one task to an experiment and step. The
 accepted fields and finite allowlists are defined in the
 [task recipe schema](../../recipes/schemas/task_recipe.schema.md).
 
+This contract owns authored and effective inputs, consultation, runtime routing,
+and ordinary/adaptive hparam protocols. Workspace publication, takeover, status,
+and finalization belong to [experiment_workspace.md](experiment_workspace.md);
+canonical lifecycle and scheduler evidence belong to [run_manifest.md](run_manifest.md).
+
+## Contents
+
+- [Authored-input closure](#authored-input-closure) and [effective recipe](#effective-recipe)
+- [Consultation and diagnostics](#consultation-and-diagnostics)
+- [Experiment binding](#experiment-binding) and [task/variant routing](#task-and-variant-routing)
+- [Non-hparam runtime identity](#non-hparam-runtime-identity) and [managed ordinary inference](#managed-ordinary-inference)
+- [Hparam search space](#search-space), [registration preflight](#registration-preflight), and [launch/queue](#launch-and-queue)
+- [Execution snapshot and launch revalidation](#execution-snapshot-and-launch-revalidation)
+- [Selection and selected-candidate consumers](#selection-and-selected-candidate-consumers)
+- [Adaptive workflow](#adaptive-workflow): [initialization readiness](#initialization-readiness),
+  [frozen round identity](#frozen-round-identity), [strategy/budget](#strategy-and-budget),
+  and [proposal handshake](#proposal-handshake)
+
 ## Authored-input closure
 
 Recipe shape is validated before config inspection and before any workspace,
@@ -90,6 +108,47 @@ are consumed through `run_artifacts.read_hparam_plan`; they are not re-entered
 through the authored-recipe loader.
 
 Decision-file behavior and precedence belong to [user_decisions.md](user_decisions.md).
+
+## Consultation and diagnostics
+
+Run `doctor` or `plan` consultation before generating runnable experiment
+commands. Missing, ambiguous, conflicting, or `ASK_USER` high-impact decisions
+require user input, not an inferred value recorded as explicit. For hparam
+selection this includes the split, metric, and mode. Resolve generated questions
+through [user decisions](user_decisions.md); a blocked-plan retry uses a fresh
+output directory. [Context bundles](context_bundle.md) are diagnostic-only and
+do not authorize runnable commands.
+
+`doctor` emits its PID and synchronous phase on stderr before potentially slow
+probes. For an unblocked hparam recipe it separately reports the target host,
+actual Python executable/version, and installed PyTorch Lightning distribution
+version without importing Lightning. Runtime-card probe failure does not change
+the consultation result or introduce a dependency-version gate. Manager, target,
+and allocation identities are distinct; see the
+[execution identity legend](experiment_workspace.md#execution-identity-legend).
+
+Slurm task diagnostics may inspect version, priority, backfill, accounting,
+partition, and reservation capabilities through read-only `scontrol` queries.
+This time-stamped advice does not change the frozen scheduler request or make
+unavailable accounting a registration blocker. `nice=0` is the highest
+unprivileged nice setting; no user-side option guarantees first priority.
+
+Within one `doctor` or `plan` consultation, index checks reuse the accepted
+config summary and subject keys from successful, complete local survival or
+multilabel sidecar validation. This is one validation view, not a cross-call
+cache: later invocations reread inputs, and registration and launch retain
+independent checks. Failed or deferred validation keeps its existing path, and
+config-byte drift checks remain in force. Full subject key sets stay in memory,
+not reports or frozen artifacts.
+
+Read the report and exit code to determine consultation success. PASS or a
+nonblocking WARN does not guarantee that `--output-dir` creates a directory:
+doctor writes questions/templates only when its output contract requires them.
+Doctor also does not establish workspace writability, plan registration,
+submission, or completed results. If a check is slow or SSH disconnects, first
+establish the fate of that operation; connection loss alone does not authorize
+a duplicate check or launch. Continue through the
+[takeover flow](experiment_workspace.md#takeover-and-continue-execution).
 
 ## Experiment binding
 
@@ -221,7 +280,7 @@ the interpreter path and Git commit, not package versions or dirty file bytes.
 
 Ordinary `infer` and `evaluate` plans may declare `execution.scheduler.type:
 slurm`. They reuse the existing single-node Slurm resource fields and protected
-environment rules in [Managed launcher](#managed-launcher), with explicit
+environment rules in [Launch and queue](#launch-and-queue), with explicit
 `execution.workdir`, `execution.python`, and lowercase 40-character
 `execution.runtime_commit`. Submission may use `target: local` or `target: ssh`;
 `scheduler.direct_controller` independently selects controller routing. Paths
@@ -252,6 +311,11 @@ does not extend external-evaluation pipelines or migrate historical manually
 wrapped inference plans.
 
 ## Hparam workflow
+
+Search-space generation does not choose or revoke scientific test policy; read
+[test-access policy](external_test_locking.md#selection-and-test-access-policy)
+before selecting a search. The selection split, metric, and mode must come from
+explicit user authorization, not an agent inference relabeled as `explicit_recipe`.
 
 ### Search space
 
@@ -304,13 +368,31 @@ wrapped inference plans.
   identity, budget, searched-family coverage, metric, and split. Reports may
   claim only the best observed candidate within that frozen search domain,
   metric, split, and budget. This is an inventory of registered profile axes,
-  not a claim that arbitrary or unknown config fields were searched.
+  not a claim that arbitrary or unknown config fields were searched; only axes
+  with more than one candidate are reported as searched.
 - The first profile version does not support adaptive tuning. Existing
   explicit searches and historical frozen plans are unchanged; profile
   expansion is not retroactively required by registered-plan readers.
 - Adaptive source recipes must declare `search.parameters`, which supplies the
   envelope and neighborhood source. `search.configurations` appears only in
   derived rounds and static plans.
+
+While creating a new hparam recipe, an explicit request to tune selects the
+unique supported `finetune_balanced` profile only when no authored parameters,
+configurations, or adaptive search exists. Existing explicit/adaptive search
+always wins. That request covers the profile's deterministic technical levels
+and default 12-run launch budget when experiment, step, config, label,
+selection split/metric/mode, test policy, host, and runtime identity are already
+unambiguous. An authored budget override or expansion needs separate authority.
+Without `inputs.pretrained_backbone_path`, LoRA adaptation stays fixed;
+`inputs.ckpt_path` is final-evaluation-only, not a tuning backbone.
+
+When those decisions and consultation are complete, carry the authorized scope
+through doctor, plan, launch dry-run, queue execute, terminal monitoring,
+selection, final report, and finalization without asking again about tool-owned
+technical levels or execution. This does not authorize test unlock, changed
+label/split/checkpoint/data, or an adaptive round. Report only the best observed
+candidate within the frozen domain, metric, split, and budget, never a global optimum.
 
 ### Registration preflight
 
@@ -327,7 +409,14 @@ frozen config check for prospective `planned`/`pending` runs before submission;
 active/terminal-only calls and monitoring do not load candidate configs.
 Identical config bytes share one canonical load only within each validation
 boundary, never across calls or rounds. These checks do not reread full sidecar
-tables for each candidate.
+tables for each candidate. Runtime overrides remain CLI arguments, not YAML
+model-config fields, and their per-combination checks are not deduplicated.
+
+Direct registration also checks frozen candidate bytes unless it follows the
+existing trusted staged-publication path. That internal path still strictly
+rereads frozen artifacts; it is not a persistent validation certificate or a
+general bypass for callers. The common publication/registration boundary is
+owned by [the workspace contract](experiment_workspace.md#publication-and-registration).
 
 The tool also validates managed output topology on the frozen execution host
 and inspects the target Python, repository commit, module origin, supported CLI
@@ -347,8 +436,10 @@ Every new hparam `plan.md` includes a human-readable registration-preflight
 card. Target Python, runtime commit, module origin, and the argv digest come
 from the frozen execution snapshot. The card separately reports target CLI
 argv checks and planner-local final-config checks, including total runs and
-unique config bytes. Neither proves model construction, checkpoint compatibility,
-forward/backward, or GPU execution; those operations are not performed. The
+unique config bytes. Target CLI preflight proves argument parsing, not config
+execution on that target. Neither check proves model construction, checkpoint
+compatibility, forward/backward, GPU execution, or complete candidate-specific
+dataset validation; those operations are not performed. The
 sex-age canonical finetune wrapper uses `load_config(validate_sidecars=False)`.
 The card distinguishes the control transport from the validated preflight host and shows the actual
 Python executable/version reported by that target. Variant, runtime module,
@@ -365,7 +456,7 @@ remains a time-stamped `doctor` diagnostic.
 Rendering this audit projection does not rescan data indexes or label sidecars;
 consultation and final-evaluation validation remain separate gates.
 
-### Managed launcher
+### Launch and queue
 
 The optional `execution` block configures the managed launcher.
 
@@ -397,22 +488,6 @@ The optional `execution` block configures the managed launcher.
   the scheduler. The allocation wrapper removes ambient generic distributed
   rank and rendezvous variables before starting `srun`, so Slurm task identity
   remains canonical.
-- Slurm plans warn that priority remains cluster-managed. `doctor` may inspect
-  version, priority, backfill, accounting, partition, and reservation
-  capabilities through read-only `scontrol` queries. Advice never changes the
-  frozen scheduler request: `nice=0` is the highest unprivileged nice setting,
-  and no user-side option guarantees first priority.
-- `doctor` emits its PID and synchronous phase on stderr before potentially
-  slow probes. For an unblocked hparam recipe it separately reports the target
-  host, actual Python executable/version, and installed PyTorch Lightning
-  distribution version without importing Lightning or changing PASS/FAIL.
-- Within one `doctor` or `plan` consultation, index checks reuse the accepted
-  config summary and subject keys from successful, complete local survival or
-  multilabel sidecar validation. This is a single validation view, not a cache
-  across calls: subsequent invocations reread inputs, and registration and
-  launch retain their independent checks. Failed or deferred validation keeps
-  its existing path, and config-byte drift checks remain in force. Full subject
-  key sets stay in memory only and are not added to reports or frozen artifacts.
 - Only the canonical manager runtime—a local target at `REPO_ROOT` without a
   conda wrapper—may omit Python and commit identity. Planning then freezes the
   current manager interpreter and repository HEAD. SSH targets, separate local
@@ -423,6 +498,22 @@ The optional `execution` block configures the managed launcher.
   GPU capacity to scheduler allocations.
 - Generated leaf scripts use only `execution.workdir` on `PYTHONPATH`;
   `execution.env.PYTHONPATH` is rejected rather than merged.
+
+Preview with `hparam-launch` before execute and inspect frozen identity,
+scheduler/resources, GPU assignment, W&B project/group, log and lifecycle
+identity paths, and test policy. Dry-run is the default; `--execute` is the
+launch action. It does not grant scientific or test-access decisions.
+
+Before calculating direct capacity, execute-mode launch refreshes observable
+active blockers from other plans sharing the relevant target, host, and GPU
+pool, then commits their status transitions. The full queue fails if a
+current-plan run or relevant cross-plan capacity blocker is `missing_pid`.
+A queue with no eligible slot does not probe the execution snapshot.
+`hparam-monitor` never starts pending work: by default it rereads and observes
+the current plan every 60 seconds until terminal; `--poll-seconds` changes the
+interval and `--once` performs one round. `--health` adds progress evidence.
+See [workspace command side effects](experiment_workspace.md#lifecycle-entrypoints)
+for observation writes and explicit raw-log display.
 
 `hparam-stop` with a non-empty reason can cancel a canonical `planned` or
 `pending` run before any execution identity is bound. It rereads the canonical
@@ -437,91 +528,98 @@ Post-commit publication failures propagate without rolling back the canonical
 stop; `hparam-stop` does not resume publication for terminal runs.
 Canceled runs retain their frozen artifacts and cannot be launched later.
 
+### Execution snapshot and launch revalidation
+
 Registration preflight records verified Python/version, host, repository and
 commit, module origin, explicit-environment digest, normalized supported-option
 digest, and exact validated argv digest in `execution_snapshot.json` before a
-new hparam plan is published. Every launch wave live-reprobes the same target
-and must match that frozen snapshot; it also rechecks the managed output
-topology before starting a process or submitting `sbatch`. Immediately before
+new hparam plan is published. The verified target must have the planned commit,
+no tracked worktree changes, and no untracked or ignored importable Python or
+extension-module code. Untracked experiment artifacts and data remain allowed.
+The runtime module must resolve inside that repository, and every frozen argv
+must pass its actual `argparse` implementation; rendered CLI text is not evidence.
+The snapshot stores the explicit execution environment, normalized supported
+options and digests, and every validated argv vector.
+
+Eligible execute waves live-reprobe the same target and must match the frozen
+snapshot, using the configured target/workdir/conda/explicit-environment wrapper.
+Direct execution needs a capacity-eligible candidate and no missing-PID blocker;
+Slurm needs launchable rows. Output topology is rechecked before process start
+or submission. Dry-run and monitor do not probe or create the execution snapshot;
+the separate dry-run candidate-config check remains planner-local.
+External datasets, drivers, and environment outside explicit `execution.env`
+remain operational dependencies rather than snapshot contents. Immediately before
 each managed process starts, the same target/env/conda/PYTHONPATH wrapper
 rechecks Python/version, commit, repository root, hostname, module origin,
 untracked or ignored importable code, and the run's frozen script/config hashes.
-For Slurm, the allocation wrapper also requires `SLURM_NTASKS` to match the
-frozen `gpus_per_run`, then compares its observed Python executable and version
-with the plan-level execution snapshot before starting the leaf script through
-one labeled `srun --kill-on-bad-exit=1 --quit-on-interrupt` child without
-explicit task-level GPU binding. This preserves the complete allocated GPU visibility
-expected by the frozen Lightning device list in every externally launched rank.
-The launcher freezes the snapshot's raw SHA-256 in every canonical run and
-passes it as a batch-script argument, so the allocation verifies the exact
-snapshot bytes before parsing them. Compute-node hostname is observed evidence
-and may differ from the submission host.
-Plans lacking frozen Python or commit identity must be recreated rather than
-upgraded in place.
+Target and leaf `PYTHONPATH` contain only `execution.workdir`; another manager
+checkout cannot satisfy missing imports.
 
-Each Slurm run additionally freezes `job.sbatch`, its hash, a deterministic
-submit token, log path, allocation-identity path, and terminal-sidecar path.
-Only the allocation wrapper writes the two scheduler sidecars; ranks share the
-Slurm log, where `srun` labels each task's output and every task emits one
-bounded startup-identity record before the runtime command. Only global rank
-zero writes the diagnostic exit marker. The terminal sidecar records the
-aggregate `srun` exit code; labeled log evidence never becomes a lifecycle
-owner.
-After launch preflight, submission queries the controller's unique valid
-`ClusterName` and commits it together with execution identity and `submitting`
-before `sbatch`. Query failure leaves that run unsubmitted and untransitioned;
-dry-run never binds a cluster. Bare job-id receipts retain the prebound cluster.
-A timeout or SSH disconnect is reconciled by the exact token on that frozen
-route and is never retried blindly. A receipt naming a different cluster saves
-the returned job id and original cluster as `unknown_scheduler` with sticky raw
-state `SUBMISSION_CLUSTER_MISMATCH`, then aborts the batch. Such plans cannot
-continue direct launch or queue execution; monitor performs no Slurm sidecar or
-scheduler lookup, and stop rejects before intent or cancellation. No automatic
-conflict clearing or historical cluster recovery is provided. Monitoring uses
-`squeue`/`scontrol` for controller state, then queries the exact bound-cluster
-`sacct` allocation when the job has aged out of the controller. It requires
-`--clusters=<scheduler_cluster>` for bound-cluster routing unless the canonical
-run freezes `scheduler_direct_controller: true`; local transport alone does not
-establish direct-controller topology. New Slurm plans freeze the recipe's
-`direct_controller` choice in each canonical run so all monitoring and stop
-paths preserve it without reinterpreting transport. Terminal truth normally
-requires both a terminal scheduler observation and the matching atomic terminal
-sidecar. The narrow accounting-disabled exception additionally requires the
-exact bound job to be absent from `squeue`, explicitly invalid in `scontrol`,
-and `sacct` to report disabled accounting, then uses a sidecar matching the
-frozen job, token, and non-empty canonical cluster, with frozen transport and
-controller topology matching the actual query route, to recover exit zero as
-`completed` or non-zero as `failed` while retaining raw state `MISSING`. Sidecars
-provide job lookup candidates only, never canonical cluster bindings or query
-routes. First job binding needs a submission receipt or positive exact-token
-scheduler evidence on the frozen route. Incomplete evidence remains
-`submitting` when canonical job identity is absent, otherwise
-`unknown_scheduler`. Legacy empty-cluster rows may finish using ordinary
-scheduler plus sidecar evidence but cannot acquire a cluster from the sidecar.
-For submitted Slurm runs, stop first records the
-frozen scheduler job id, nonterminal `stopping`, request time, and reason in the
-canonical manifest, then uses that job id with `scancel`, not PID evidence. An
-interrupted or failed cancellation keeps the request recoverable; the same
-reason may retry it, while a different reason cannot overwrite it. Only a
-matching scheduler `CANCELLED` observation commits canonical `stopped`, even
-when cancellation prevented the wrapper from writing a terminal sidecar. A
-cancellation signal received while the allocation wrapper is still validating
-frozen identity terminates the job without starting the leaf process. Live
-Slurm transition flags remain active; raw `STOPPED` retains its allocation and
-is not canonical `stopped`. When Slurm reports raw `REVOKED` federation sibling
-state, sibling-cluster rebinding is unsupported; the run fails closed as active
-`unknown_scheduler`, the frozen job, cluster, scheduler reason, and stop intent
-remain canonical, and the run is not relaunched.
-Every Slurm client subprocess strips ambient `SLURM_CLUSTERS` on the local or
-SSH submission host. The submission command additionally strips every
-`SBATCH_*` variable before invoking `sbatch`; recorded and executed submission
-commands share one renderer. `SLURM_CONF`, `PATH`, other environment, and the
-parent process remain unchanged.
+For Slurm execute, the launcher freezes the snapshot's raw SHA-256 in every
+canonical run before submission and passes it to the batch job. Allocation
+verification is detailed in [terminal evidence](run_manifest.md#terminal-evidence).
+The shared lifecycle owner also defines
+[submission/routing](run_manifest.md#submission-and-routing),
+[sidecar reads and monitor reuse](run_manifest.md#sidecar-reads-and-monitor-round-reuse),
+and [stopping/uncertain states](run_manifest.md#stopping-and-uncertain-states).
 
-Frozen per-run execution identity and its canonical owner are defined in
-[run_manifest.md](run_manifest.md).
+Supported historical boundary: a missing snapshot can be established only
+while every run is `planned` or `pending` with no committed execution target.
+Once execution identity or later state exists, recreate the plan rather than
+upgrading it. Plans lacking frozen Python/commit identity also require recreation;
+removed `trial_*` plans and status files remain unmanaged and read-only.
 
-### Adaptive rounds and strategy
+### Selection and selected-candidate consumers
+
+Run `hparam-select` only after every managed run is terminal; manifest,
+checkpoint inventory, and physical hash evidence come only from successful
+canonical runs on their frozen local or SSH execution target. Compatible plans
+in one step must agree on selection metric, mode, and split. Selection replaces
+current-plan keys in shared `reports/ranking.csv`, reranks the complete step,
+and writes deterministic `reports/hparam_selection.md`.
+Unavailable SSH evidence for a canonically successful run fails selection
+before ranking output. Once canonical selection rows bind checkpoint hashes,
+selector re-entry may only reproduce the same score and checkpoint evidence.
+Deleting `ranking.csv` does not authorize replacement from changed runtime
+evidence; the projection may be rebuilt only from unchanged canonical selection.
+Validation-selected tuning resolves a fixed epoch checkpoint rather than a
+moving best/last alias.
+
+For test-selected tuning, complete finite checkpoint-level evidence for the
+frozen `test_*` metric globally ranks every compatible regular non-alias saved
+checkpoint before choosing the best per run. The immutable plan-local
+`checkpoint_test_ranking.csv` has plan-local `rank`; the workspace ranking
+retains one row per run and records each winner's global position as
+`checkpoint_rank`. This audit does not add lifecycle rows. Selection binds the
+exact overall winner path/SHA-256, each contributing plan's checkpoint-ranking
+path/hash, and the selection report's path/hash in the canonical manifest.
+The report records metric/mode/split, evaluated count, winner
+run/checkpoint/score, parameters, search overrides, frozen config/script
+paths/hashes, and ranking path. Runtime evidence shape remains owned by
+[the run manifest contract](run_manifest.md#runtime-artifact-evidence).
+Later compatible plans may extend the workspace ranking without rewriting or
+invalidating an earlier plan's frozen audit.
+
+Selected-candidate consumers refresh lifecycle from the current canonical
+manifest, not a ranking or candidate-table status. For test selection,
+caller-provided rank, checkpoint path, and SHA-256 must match both frozen
+workspace ranking and canonical row before top-k filtering. Physical hash
+revalidation then covers retained candidates only, or every candidate under
+`all_candidates`; generated external-evaluation scripts recheck that hash when
+executed. `hparam-external-eval` accepts only `completed` or `finished` runs.
+It and `hparam-export-logits` reject SSH-owned candidates before writing because
+these direct helpers lack remote config-staging and result-collection protocols.
+
+Status validates bound audits and reconstructs the global checkpoint/run
+ranking; finalization rehashes every audited checkpoint on its frozen target.
+The detailed [status read-set](experiment_workspace.md#read-only-status-and-advisory-actions)
+and [final report acceptance](experiment_workspace.md#finalization) have one
+workspace owner, including mixed/all-failed cases and historical completed-read
+compatibility. Final test authorization belongs to
+[external_test_locking.md](external_test_locking.md); managed external matrices
+belong to [experiment_pipeline.md](experiment_pipeline.md).
+
+## Adaptive workflow
 
 The optional `adaptive` block defines append-only rounds bounded by
 `adaptive.max_runs_total`.
@@ -530,15 +628,32 @@ An authored recipe with `adaptive.enabled=true` must enter through
 `hparam-adaptive-init`. The generic `plan` command rejects it before workspace
 mutation; only the adaptive workflow owner may materialize round plans.
 
-- Control flags must be YAML booleans; run, round, and poll budgets must be
-  positive YAML integers; replacement grace and margin values must be finite
-  and non-negative.
-- Test or external objectives require explicit test-feedback authorization.
-- When `selection_split=test`, adaptive `test_*` objectives—including a `test_*` objective distinct from the frozen
-  selection metric—reduce the complete `checkpoint_test_results` by the frozen objective mode and bind the selected
-  checkpoint path and epoch. Only canonically `completed` or `finished` runs are eligible for checkpoint-objective
-  ranking and incumbency. Validation/run-level objectives such as `val_*` and `best_model_score` retain top-level
-  evidence. A running test-checkpoint objective cannot trigger metric-based retirement, while independent log failures can.
+### Initialization readiness
+
+Round 000 has a final readiness boundary after canonical plan registration.
+The owner validates the initial registry, reconciles `plan_created`, and writes
+the matching README. It then atomically creates root-matching
+`adaptive/workflow.json` as an independent regular file, binding the validated
+registry and README hashes to
+the no-clobber marker commit, and records `adaptive_init` afterward. Consumers
+require the exact ordered events as well as the marker; launch, queue, and
+monitor cannot treat partial initialization as runnable. Only internal
+planning/initialization inspection may explicitly bypass this readiness check.
+
+Existing recovery is narrow: a complete unregistered round is reusable only
+when deterministic regeneration yields an identical tree. Under the round
+publication lock, initialization rereads canonical state and may repair only a
+missing or malformed initial registry; a valid registry with different frozen
+rows, an incomplete round, partial canonical state, or a differing visible
+tree is rejected rather than repaired in place.
+
+After readiness, verify the initial plan and launch dry-run before the
+authorized initial execute. For takeover and predecessor obligations, use the
+single [workspace continuation flow](experiment_workspace.md#takeover-and-continue-execution);
+the exact next-round protocol is [below](#proposal-handshake).
+
+### Frozen round identity
+
 - Initialization resolves `execution.python`, `execution.runtime_commit`,
   `adaptive.objective_metric`, and `adaptive.objective_mode` once for round 000
   and stores them as workflow-wide frozen values.
@@ -551,12 +666,34 @@ mutation; only the adaptive workflow owner may materialize round plans.
   suggestion, or event artifacts are written. Earlier round plans, configs,
   logs, and checkpoints are not rewritten.
 
+The identity applies to every round of the initialized workflow, not just
+currently active jobs. A separately authorized runtime candidate cannot rebind
+that workflow or rewrite prior plans. Adaptive commands append experiment
+events and create registry, digest, suggestion, and round artifacts; they do
+not make those artifacts alternate lifecycle owners.
+
+### Strategy and budget
+
+Control flags must be YAML booleans; run, round, and poll budgets must be positive
+YAML integers; replacement grace and margin must be finite and non-negative.
+Test or external objectives require explicit
+`adaptive.test_feedback_for_selection=true`; a `test_*` objective also needs
+`test_after_fit=true`.
+
+When `selection_split=test`, adaptive `test_*` objectives, including one distinct
+from the selection metric, reduce complete `checkpoint_test_results` by the
+frozen objective mode and bind the selected checkpoint path/epoch. Only
+canonically `completed` or `finished` runs are eligible for checkpoint-objective
+ranking and incumbency. Validation/run-level objectives such as `val_*` and
+`best_model_score` retain top-level evidence. A running test-checkpoint objective
+cannot trigger metric-based retirement, while independent log failures can.
+
 `adaptive.suggest.strategy` defaults to `agent_proposal`; the only other value
 is explicit `best_neighborhood`. An enabled proposal workflow requires a
 non-blank string `adaptive.objective_metric` and non-empty
 `adaptive.objective_mode`, `adaptive.round_size`, `adaptive.max_rounds`, and
-`adaptive.max_runs_total`. Missing, null, or blank required values stop
-consultation before workspace mutation; a non-string objective metric fails the
+`adaptive.max_runs_total`. Missing, null, or blank required values return
+`NEEDS_USER_INPUT` (exit 2) before workspace mutation; a non-string objective metric fails the
 recipe contract.
 
 `agent_proposal` is terminal-only, so `adaptive.replacement` must be omitted or
@@ -577,7 +714,7 @@ Each confirmed replacement start grants one retirement credit. A durable Slurm
 capacity; only scheduler-confirmed `stopped` may precede a capacity-dependent
 replacement launch.
 
-### Agent proposal handshake
+### Proposal handshake
 
 Agent proposals use two phases.
 
@@ -624,39 +761,16 @@ A proposal changes only the search space and submits exactly one of:
   point covering exactly the snapshot keys, satisfying all envelopes, and
   remaining unique.
 
+The submission must cite evidence run IDs from the issued snapshot and fit both
+`round_size` and the remaining total-run budget. Use joint configurations for
+specific paired settings; per-key values instead authorize their Cartesian
+product. During phase two, do not regenerate a digest, choose a latest digest,
+or invoke `hparam-suggest`. Changed config bytes or canonical workflow evidence
+require a fresh issued snapshot, not editing the old input or reusing an
+uncommitted target round.
+
 Snapshots do not encode expansion mode, so either shape may answer any
 snapshot. Task, variant, data, objective, budget, execution identity,
 replacement policy, commands, and run state remain tool-owned. Direct
 `hparam-suggest` and `hparam-adaptive-loop` do not support `agent_proposal`; the
 external agent drives the handshake through `hparam-adaptive-step`.
-
-### Ranking and final evaluation
-
-`reports/ranking.csv` is shared across plans in the same step. Runnable hparam
-plans in that step must use the same selection metric and mode. Selection
-replaces current-plan keys, reranks the complete step, and writes deterministic
-`reports/hparam_selection.md`. The canonical manifest binds that report's path
-and hash to the selected rows; the report records metric/mode/split, evaluated
-count, winner run/checkpoint/score, parameter summary, search overrides, frozen
-config/script paths and hashes, and ranking path. For test-selected tuning,
-canonical rows additionally bind each registered plan's complete
-`checkpoint_test_ranking.csv` path and SHA-256. Status validates every bound
-audit and reconstructs the global checkpoint/run ranking; finalize rehashes
-every audited checkpoint on its frozen execution target. `experiment-status`
-therefore advances a terminal ordinary hparam step to `ready_to_select`; a
-successful selection normally writes the deterministic report and advances it
-to `ready_to_finalize`, while a missing or invalid derived report/ranking is
-`ready_to_report`. A verified selection report may serve directly as the final
-report only when every ordinary materialized plan in the experiment is a hparam
-plan and every hparam step has a selected winner. Mixed experiments and partly
-failed multi-step searches require a separate non-empty combined report.
-All-failed hparam steps skip selection and require a non-empty failure report;
-the canonical selection report cannot substitute for either report type.
-Historical completed experiments are not retroactively required to carry the
-new selection-report binding.
-
-Candidate ownership, frozen-field validation, checkpoint evidence, managed run
-identity, status, atomic commit, and projections belong to
-[run_manifest.md](run_manifest.md). Final external-test generation follows
-[external_test_locking.md](external_test_locking.md); managed multi-source
-external matrices also follow [experiment_pipeline.md](experiment_pipeline.md).
