@@ -63,4 +63,5 @@ Run `python preprocess/save_dataset_presets.py --help`, `python -m agent_tools p
 Missing `path`, `split`, or `duration` columns; missing mask columns; missing configured NPZ keys; accidental overwrite; missing `preset_build` policy.
 
 ## Relevant owners and index pages
-Owners: `preset-pipeline`, `data-contract-guardian`, `agent-tooling-maintainer`. Index: preprocessing workflow and preprocessing/data function catalogs.
+Owners: `preset-pipeline`, `data-contract-guardian`, `agent-tooling-maintainer`.
+Index: [preprocessing workflow](../../doc/codex_index/WORKFLOWS.md#preprocessing-and-presets).

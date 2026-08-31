@@ -141,8 +141,18 @@ independent checks. Failed or deferred validation keeps its existing path, and
 config-byte drift checks remain in force. Full subject key sets stay in memory,
 not reports or frozen artifacts.
 
-Read the report and exit code to determine consultation success. PASS or a
-nonblocking WARN does not guarantee that `--output-dir` creates a directory:
+Read the completed command's report and exit code together. For a normally
+completed `doctor` or `plan` consultation, PASS or nonblocking WARN returns 0,
+FAIL returns 1, and NEEDS_USER_INPUT returns 2; FAIL takes precedence when
+blocking issues are mixed. These are consultation-result codes, not a universal
+CLI error protocol. Argument, input, or runtime errors may instead return
+nonzero with a stderr diagnostic or traceback and no report. Normal doctor
+progress also uses stderr, so stderr output alone is not a failure signal.
+An absent or incomplete report, or an exit code inconsistent with its result,
+does not establish successful consultation. Inspect the original error; do not
+invent missing decisions or continue execution from that evidence.
+
+PASS or a nonblocking WARN does not guarantee that `--output-dir` creates a directory:
 doctor writes questions/templates only when its output contract requires them.
 Doctor also does not establish workspace writability, plan registration,
 submission, or completed results. If a check is slow or SSH disconnects, first
