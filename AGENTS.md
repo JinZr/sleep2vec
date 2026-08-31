@@ -209,7 +209,8 @@ python3.10 -m pytest -q tests/runtime/test_checkpoints.py tests/config/test_conf
 
 #### `agent-tooling-maintainer`
 - Owns: `skills/`, `agent_tools/`, `recipes/`, `agent_policies/`, `doc/agent_contracts/`, and agent-facing workflow examples.
-- Responsibilities: task playbooks, machine-readable recipe and pipeline schemas, context bundle generation, command-plan generation, managed scheduling, skill validation, run-manifest conventions, agent documentation consistency, stop-and-consult policy enforcement, and external-test unlock checks.
+- Responsibilities: task playbooks, machine-readable recipe and pipeline schemas, context bundle generation, command-plan generation, managed scheduling, skill validation, run-manifest conventions, agent documentation consistency, stop-and-consult policy enforcement, external-test unlock checks, and a self-documenting `agent_tools` CLI.
+- CLI help is a contract, not a nicety: agents discover `agent_tools` through `--help`, so a new subcommand needs a one-line summary and every new option needs `help=` text. Register subcommands with `cli._command(sub, name, summary)` so the `--help` listing entry and the subcommand's own description stay in sync. `test_agent_tools_cli_contract.py` fails on a bare `add_parser` or `add_argument`. State the dry-run/execute default and any non-launching guarantee in the summary, since the stop-and-consult policy depends on both.
 - Invoke when: adding or changing agent skills, recipe or pipeline schemas, context-gathering tools, run-plan generators, consultation policies, user-decision files, managed experiment pipelines, or agent-facing documentation.
 - Must not be split from: `runtime-orchestrator` when the change affects training/inference command semantics; `preset-pipeline` when the change affects preset preparation; `regression-guard` when adding new agent-tool contracts.
 - Verification gate:
