@@ -216,7 +216,7 @@ python3.10 -m pytest -q tests/runtime/test_checkpoints.py tests/config/test_conf
 - Verification gate:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall agent_tools tests
-python3 -m pytest -q tests/agent_tools/test_agent_tools_*.py tests/agent_tools/test_agent_consultation_policy.py tests/agent_tools/test_agent_user_decisions.py tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py
+python3 -m pytest -q tests/agent_tools/test_agent_tools_*.py tests/agent_tools/test_agent_consultation_policy.py tests/agent_tools/test_agent_user_decisions.py tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py tests/agent_tools/test_type_check.py
 python -m agent_tools skills --validate
 python utils/type_check.py
 ```
