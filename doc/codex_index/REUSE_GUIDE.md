@@ -127,23 +127,33 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 ### Agent tooling
 
 - Treat `decisions.py`, `plans.py`, `hparam.py`, and `experiments.py` as public facades.
-- Extend tasks through adapters and declarations; keep the reusable kernel free of new sleep-specific branches.
-- Put task-specific effective-input checks in the adapter and shared experiment/step consultation in `decisions.py`, after decision materialization and before config/data reads; reuse existing validators rather than duplicating rules.
-- Run consultation before runnable plans and stop on `NEEDS_USER_INPUT`; when doctor or a blocked plan emits `decisions.yaml`, fill it from explicit user choices and retry through the existing `--user-decisions` input.
-- Keep validated config/sidecar reuse within one `evaluate_recipe` consultation: index coverage consumes keys from successful full validation; later calls, registration, and launch check inputs independently. See the [recipe contract](../agent_contracts/task_recipe.md).
-- Reuse the finetune hparam profile compiler for supported bounded automatic tuning; the authored profile is the generation intent and the resolved complete configurations are its frozen executable expansion.
-- Keep `experiment-status` on the static frozen-recipe and canonical-manifest read-set; it must not rerun consultation or runtime/input probes.
-- Recompile registered plan semantics through `plan_contract` and the task adapter, including recipe-owned input snapshots; agreement among edited manifests and scripts does not replace agreement with the frozen recipe.
-- Reuse `experiment_workspace.merge_step_manifest` for the one-way `plan_controller` binding; `step.yaml` is the only ordinary/adaptive/pipeline classification owner.
-- Treat `run_manifest.tsv` as authoritative managed state; mirrors and reports are projections.
-- Reuse `hparam_selection.select_hparam_candidates` for recipe-frozen hparam ranking. Test-selected plans consume complete per-epoch evidence from terminal run manifests, keep the many-checkpoint audit plan-local, and project only each run's best checkpoint into workspace lifecycle reports.
-- Reuse `experiments.append_experiment_note` and the workspace research-log owner for semantic notes; do not append Markdown directly or infer lifecycle state from narrative.
-- Reuse `managed_scheduler` for backend selection and lifecycle; use `slurm` for scheduler resource, command, state, and sidecar primitives. Keep schema-v1 external-pipeline policy direct-only in `experiment_pipeline`.
-- Reuse `python_programs.source` and `transport.remote_python_program_command` for embedded Python kernels; keep their byte-preserving sources under `agent_tools/python_program_sources` instead of duplicating inline scripts.
-- Use `experiment-run` for external matrices over checkpoints frozen by the source plan's registered ranking. Monitor commands remain non-launching.
-- Keep external-agent suggestions inside the `adaptive_proposals` snapshot/envelope contract; let `adaptive_hparam` own preflight and lifecycle changes.
-- Generate calls to existing model, preprocess, baseline, and sleep2stat entrypoints rather than adding an agent runtime.
-- Follow [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) and its layering test for kernel/domain boundaries.
+- Extend tasks through adapters and declarations, not sleep-specific kernel branches or a new runtime;
+  use existing validators and package-local entrypoints. Follow
+  [`ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) and its layering test.
+- Keep task input checks in adapters and shared consultation in `decisions.py` / `plans.py`;
+  [consultation and diagnostics](../agent_contracts/task_recipe.md#consultation-and-diagnostics)
+  owns decision gates and per-call validation reuse.
+- Reuse the profile compiler, `plan_contract`, adapter compilation hooks, and `plan_hparam`
+  for [search expansion](../agent_contracts/task_recipe.md#search-space) and
+  [frozen candidate/registration checks](../agent_contracts/task_recipe.md#registration-preflight),
+  not caller-local schemas or frozen-plan validators.
+- Keep manifest/CAS and `plan_controller` binding in `experiment_workspace`, evidence acquisition
+  in `experiment_sources`, and projections/status in `experiment_tracking` behind `experiments`;
+  see [canonical state](../agent_contracts/run_manifest.md#canonical-state-and-projections)
+  and the [status read-set](../agent_contracts/experiment_workspace.md#read-only-status-and-advisory-actions).
+- Reuse `hparam_selection` and `checkpoint_test_results` for
+  [selection and selected-candidate consumers](../agent_contracts/task_recipe.md#selection-and-selected-candidate-consumers).
+  Append semantic notes through `experiments.append_experiment_note` and `research_log`,
+  not direct Markdown writes; see [research-log ownership](../agent_contracts/experiment_workspace.md#research-log).
+- Reuse `managed_scheduler` for backend lifecycle and `slurm` for resource, command, state,
+  and sidecar primitives; [run-manifest evidence](../agent_contracts/run_manifest.md#slurm-scheduler-evidence)
+  owns their interpretation. Keep external-matrix policy and orchestration in `experiment_pipeline`,
+  with reduction in `experiment_pipeline_results`; see [pipeline gates](../agent_contracts/experiment_pipeline.md#invocation-and-frozen-state).
+- Reuse `python_programs.source` and `transport.remote_python_program_command` for embedded kernels;
+  keep byte-preserving sources under `agent_tools/python_program_sources`, not inline copies.
+- Keep proposal snapshots/envelopes in `adaptive_proposals` and preflight/lifecycle orchestration
+  in `adaptive_hparam`; see the [adaptive workflow](../agent_contracts/task_recipe.md#adaptive-workflow)
+  and [proposal handshake](../agent_contracts/task_recipe.md#proposal-handshake).
 
 ### Standalone variants
 

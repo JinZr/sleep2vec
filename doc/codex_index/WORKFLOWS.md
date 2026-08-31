@@ -121,54 +121,20 @@ Survival and multilabel metrics aggregate by the configured subject key while
 prediction exports retain path/window provenance. Ordinary scalar metrics keep
 window and explicitly named episode denominators separate.
 
-External or final test data stays locked until the recorded decision allows it.
-Hyperparameter ranking uses the split and metric frozen in the recipe; test
-evidence is eligible only when tuning explicitly unlocks and evaluates test.
-Direct finetune cannot select checkpoints on test; a fixed test-selected
-configuration uses a one-configuration hparam plan so every epoch checkpoint
-is evaluated, ranked, and hash-bound.
+External or final test data stays locked until the recorded decision allows it;
+see [selection and test access](../agent_contracts/external_test_locking.md#selection-and-test-access-policy).
+Direct finetune cannot select checkpoints on test; the supported route is a
+[one-configuration hparam plan](../agent_contracts/external_test_locking.md#test-selected-runtime-requirements).
 
-For supported `sleep2vec` and `sleep2vec2` finetuning, an explicit
-`search.profile: finetune_balanced` is compiled before consultation by
-[`agent_tools/domain/finetune_hparam_profile.py`](../../agent_tools/domain/finetune_hparam_profile.py).
-The compiler derives a bounded, task-aware set of complete joint configurations
-from explicit LayerMix and LoRA source blocks plus registered config facts,
-places the exact source point first, expands multi-channel LayerMix shared modes
-atomically, rejects inert disabled or single-channel shared source states, and
-balances level then pair coverage. The resolved recipe and plan freeze the exact points and audit
-view; selection is only the best observed candidate within the frozen domain,
-metric, split, and budget. This profile does not enter the adaptive controller.
-It does not recursively inventory or claim coverage of unknown config fields.
-
-Ordinary hparam plans and adaptive rounds are staged on the destination
-filesystem and must pass frozen-bundle recompilation, execution-host topology,
-target identity, and complete argv validation before publication or canonical
-registration. `plan --validate-only` runs that same path for an ordinary
-`hparam_tune` recipe without leaving workspace or lifecycle state. The shared
-`plan.md`/stdout provenance card projects the authenticated execution snapshot
-and final generated configs; launch still live-reprobes snapshot equality and
-output topology. These deterministic checks do not estimate storage capacity,
-and unavailable Slurm accounting remains diagnostic rather than blocking.
-
-After all ordinary hparam runs are terminal, `experiment-status` recommends
-`hparam-select`. Selection writes canonical rank/winner fields plus a
-hash-bound deterministic `reports/hparam_selection.md`. Pure ordinary-hparam
-experiments can finalize from that fixed report only when every hparam step has
-a selected winner; mixed or partly failed multi-step experiments still need a
-combined report, and all-failed searches need a failure report. Historical
-completed experiments remain readable without retroactive report migration.
-Canonical hash-bound selection evidence is immutable across selector re-entry;
-`ranking.csv` may be recreated only when it agrees with that owner. New
-completed metadata binds the final report path/hash and, when present, the
-selection-report hash. Status validates those terminal bytes, while historical
-completed metadata without the bindings remains compatible. Mixed/failure
-reports cannot be selection-report aliases or byte-identical copies, and pure
-automatic hparam finalization still requires the canonical selection-report
-path. Test-selected canonical rows also bind every registered plan-local
-checkpoint audit path and complete SHA-256. Status reconstructs the global
-selection from those frozen bytes; finalization rehashes every audited
-checkpoint on its canonical execution host and commits completed metadata only
-while holding the canonical run-manifest lock.
+Managed tuning follows [search-space authorization](../agent_contracts/task_recipe.md#search-space),
+[registration preflight](../agent_contracts/task_recipe.md#registration-preflight),
+[launch and queue](../agent_contracts/task_recipe.md#launch-and-queue), then
+[selection](../agent_contracts/task_recipe.md#selection-and-selected-candidate-consumers).
+The hparam adapter delegates supported automatic profile expansion to
+[`finetune_hparam_profile.py`](../../agent_tools/domain/finetune_hparam_profile.py).
+The recipe contract owns candidate/config/argv validation and its evidence
+limits; [workspace finalization](../agent_contracts/experiment_workspace.md#finalization)
+owns report acceptance and final evidence checks.
 
 ## Inference And Evaluation
 
@@ -241,126 +207,52 @@ variant and must pass consultation first.
 
 ## Agent Planning And Managed Experiments
 
-The control flow is:
+For an existing experiment, start with
+[takeover and continue execution](../agent_contracts/experiment_workspace.md#takeover-and-continue-execution),
+including its [identity legend](../agent_contracts/experiment_workspace.md#execution-identity-legend)
+and [conditional initialization refresh](../agent_contracts/experiment_workspace.md#conditional-runtime-refresh-before-initialization).
+For command choice, use the [agent contract router](../agent_contracts/README.md).
 
-1. `doctor` evaluates recipe decisions and stop-and-consult gates, emitting its
-   PID, synchronous phase, and read-only target runtime diagnostics without
-   turning diagnostic availability into a gate;
-2. `context` records repository, config, index, preset, skill, and ownership
-   facts without authorizing execution;
-3. `plan` freezes the resolved recipe, commands, hashes, experiment, step, and
-   run identities;
-4. explicit launch commands execute the existing runtime entrypoints;
-5. `experiment-status` explains already-recorded canonical state without live
-   observation or writes; monitor commands explicitly refresh evidence but do
-   not launch pending work;
-6. `experiment-note` reads one local YAML entry file and appends the
-   evidence-backed research milestone without changing lifecycle state;
-7. finalization requires no active runs and a non-empty report.
+1. Resolve high-impact decisions with `doctor` through
+   [consultation and diagnostics](../agent_contracts/task_recipe.md#consultation-and-diagnostics);
+   stop on `NEEDS_USER_INPUT` and use the
+   [decision input](../agent_contracts/user_decisions.md#generated-decision-templates).
+   [`context`](../agent_contracts/context_bundle.md) is diagnostic, not execution authority.
+2. Freeze ordinary plans with `plan` through
+   [plan registration](../agent_contracts/experiment_workspace.md#publication-and-registration).
+   Hparam [registration preflight](../agent_contracts/task_recipe.md#registration-preflight)
+   owns final-config/argv checks and provenance limits.
+3. Execute through [launch and queue](../agent_contracts/task_recipe.md#launch-and-queue),
+   with [snapshot revalidation](../agent_contracts/task_recipe.md#execution-snapshot-and-launch-revalidation).
+   Preset and other ordinary routes use the
+   [non-hparam runtime contract](../agent_contracts/task_recipe.md#non-hparam-runtime-identity);
+   `infer-launch` / `infer-stop` use the shared
+   [managed ordinary Slurm inference](../agent_contracts/task_recipe.md#managed-ordinary-inference) owner.
+4. Inspect recorded state with
+   [read-only status](../agent_contracts/experiment_workspace.md#read-only-status-and-advisory-actions),
+   or explicitly refresh evidence with non-launching monitors; the
+   [entrypoint side-effect table](../agent_contracts/experiment_workspace.md#lifecycle-entrypoints)
+   distinguishes them. [Run-manifest evidence](../agent_contracts/run_manifest.md#evidence-ownership)
+   and [Slurm evidence](../agent_contracts/run_manifest.md#slurm-scheduler-evidence)
+   own lifecycle interpretation.
+5. Select and consume candidates through the
+   [selection and consumer workflow](../agent_contracts/task_recipe.md#selection-and-selected-candidate-consumers),
+   append meaningful [research notes](../agent_contracts/experiment_workspace.md#research-log),
+   then follow [finalization](../agent_contracts/experiment_workspace.md#finalization).
 
-Runnable plans use the exact config bytes accepted by consultation and freeze
-their recipe, commands, hashes, paths, and run identities before execution.
-Preset runtime identity belongs to the preset adapter and the shared generic
-script compiler; see the [non-hparam runtime contract](../agent_contracts/task_recipe.md#non-hparam-runtime-identity).
-Ordinary infer/evaluate Slurm plans use the same compiler and scheduler owner,
-with `infer-launch` / `infer-stop` through the experiments facade; see
-[Managed ordinary inference](../agent_contracts/task_recipe.md#managed-ordinary-inference).
-Selection policy and test access are likewise frozen; test-selected hparam
-plans retain complete checkpoint evidence while workspace lifecycle remains one
-row per run. Filename guesses and caller-local fallbacks are never semantic
-authority.
+Adaptive recipes enter through
+[`hparam-adaptive-init`](../agent_contracts/task_recipe.md#initialization-readiness)
+and follow the [proposal handshake](../agent_contracts/task_recipe.md#proposal-handshake).
+External matrices use [`experiment-run`](../agent_contracts/experiment_pipeline.md#invocation-and-frozen-state)
+over [registered-ranking-selected checkpoints](../agent_contracts/experiment_pipeline.md#source-and-checkpoint-gates),
+with [managed attempts](../agent_contracts/experiment_pipeline.md#managed-attempts-and-results)
+and [completion gates](../agent_contracts/experiment_pipeline.md#completion-and-finalization).
+Recurring follow-up starts from the workspace's
+[short heartbeat guidance](../agent_contracts/experiment_workspace.md#short-heartbeat-maintenance).
 
-| Concern | Canonical owner | Authoritative contract |
-| --- | --- | --- |
-| Recipe structure, frozen plan semantics, consultation, and publication | [`agent_tools/decision_rules.py`](../../agent_tools/decision_rules.py), [`agent_tools/plan_contract.py`](../../agent_tools/plan_contract.py), adapter `compile_plan_contract` hooks, [`agent_tools/decisions.py`](../../agent_tools/decisions.py), and [`agent_tools/plans.py`](../../agent_tools/plans.py) | [task recipe](../agent_contracts/task_recipe.md) |
-| Automatic finetune hparam profile expansion | [`agent_tools/domain/finetune_hparam_profile.py`](../../agent_tools/domain/finetune_hparam_profile.py) through the hparam adapter binding hook | [task recipe](../agent_contracts/task_recipe.md) |
-| Workspace state, launch, and monitoring | [`agent_tools/experiment_workspace.py`](../../agent_tools/experiment_workspace.py), [`agent_tools/hparam.py`](../../agent_tools/hparam.py) | [experiment workspace](../agent_contracts/experiment_workspace.md), [run manifest](../agent_contracts/run_manifest.md) |
-| Hparam ranking and test access | [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py) | [task recipe](../agent_contracts/task_recipe.md), [external test locking](../agent_contracts/external_test_locking.md) |
-| Direct and Slurm lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py), [`agent_tools/slurm.py`](../../agent_tools/slurm.py) | [run manifest](../agent_contracts/run_manifest.md) |
-| External evaluation matrix | [`agent_tools/experiment_pipeline.py`](../../agent_tools/experiment_pipeline.py) | [experiment pipeline](../agent_contracts/experiment_pipeline.md) |
-| Adaptive proposals | [`agent_tools/adaptive_proposals.py`](../../agent_tools/adaptive_proposals.py), [`agent_tools/adaptive_hparam.py`](../../agent_tools/adaptive_hparam.py) | [task recipe](../agent_contracts/task_recipe.md), [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) |
-
-### Managed state and launching
-
-`run_manifest.tsv` is the only lifecycle and execution-identity owner; status
-tables, events, reports, and `RESEARCH_LOG.md` are projections or narrative.
-`experiment-status` also validates registered step manifests and frozen plan
-control bundles. Hash-bound hparam selection reports, shared rankings, and
-plan-local checkpoint audits are consistency guards for canonical selection,
-not alternate lifecycle owners. Status never queries Slurm, processes, GPUs,
-checkpoint contents, runtime manifests, or W&B. Its argv suggestions remain
-advisory and require the same explicit authorization as invoking the underlying
-command. It
-uses the step manifest's one-way `plan_controller` binding as the sole
-ordinary/adaptive/pipeline classification owner; frozen recipes and pipeline
-row identity are consistency guards rather than alternate owners. It
-labels advisory command location as `control_host` and keeps the canonical
-execution transport/host plus recorded scheduler node in the run projection,
-so control location is not presented as runtime evidence. It
-reuses the pure `decision_rules` recipe structure owner without consultation or
-external input probes. Active adaptive and pipeline plans defer only their
-controller-owned advance/finalize actions, so an unrelated ordinary candidate
-may still be shown. Completed metadata fails closed when either kind of
-controller-deferred plan exists because the status read-set cannot prove controller
-completion. A registered step whose plan and canonical rows have not yet been
-materialized also blocks finalization instead of being treated as completed.
-The status blocker is advisory for controller-owned completion: verified
-adaptive and pipeline controllers retain their existing finalize callback,
-while the direct finalizer independently rejects unmaterialized steps.
-Registered plan rows, configs, complete executable scripts, and canonical rows
-must additionally match the same recipe-derived contract used by publication;
-recipe-owned input snapshots bind source config bytes, and mutual agreement
-among mutable plan artifacts alone is not semantic authority. Recompilation
-uses the frozen creator-host plan context rather than the reader's Python or
-repository root.
-Managed direct and Slurm follow-up always uses frozen canonical identity.
-Before launch, `hparam-stop` may cancel a canonical `planned` or `pending` run
-without execution bindings, recording the reason and terminal state under the
-shared launch lock. It does not probe or stop runtime processes; uncertain or
-bound launches still require the authenticated stop path.
-Slurm binds the controller cluster before submission; sidecars never establish
-canonical cluster identity. Conflicting receipt clusters durably quarantine the
-run and block submission and stop, without automatic recovery.
-Slurm terminal truth normally combines scheduler and sidecar evidence; a purged
-job with explicitly disabled accounting has one narrow authenticated recovery
-path. Other uncertain observations remain nonterminal and never authorize
-relaunch or retry.
-
-For direct execution, `hparam-launch` starts one capacity-limited wave; Slurm
-submits every launchable leaf job. `hparam-run-queue --execute` owns queue
-advancement. `hparam-monitor` continuously rereads canonical state by default,
-and `--once` performs one observation round; neither mode launches pending work.
-Schema-v1 external evaluation remains direct-only.
-
-Slurm priority warnings and `doctor` capability checks are diagnostic only;
-they do not mutate frozen resource requests or promise scheduler priority.
-
-At task handoff, read the experiment metadata, research log when present, and
-then current canonical manifests. Add a note only when there is a meaningful
-new action, observation, interpretation, decision, conclusion, or correction;
-unchanged polling does not produce a log entry.
-
-### External evaluation
-
-`experiment-run` owns the resumable source-ranking-to-external-evaluation flow.
-It accepts only checkpoint identities frozen by the registered ranking,
-preflights external recipes, and runs package-local inference in isolated
-attempt roots. Derived attempts are target- and topology-preflighted as a
-scheduler group before any member is registered. Resume and retry require exact
-canonical evidence, and
-finalization requires one verified success per declared job. See the
-[experiment pipeline contract](../agent_contracts/experiment_pipeline.md).
-
-### Adaptive proposals
-
-Adaptive tuning keeps external-agent suggestions inside authenticated proposal
-snapshots and parameter envelopes; planning, preflight, launch, and lifecycle
-mutation remain tool-owned. Recipes with `adaptive.enabled=true` enter through
-`hparam-adaptive-init`; the generic `plan` command does not publish incomplete
-adaptive workspaces. `agent_proposal` is terminal-only, while automatic
-neighborhood suggestions and active replacement require explicit
-`best_neighborhood`. See the [task recipe contract](../agent_contracts/task_recipe.md)
-and [`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md).
+For implementation changes, use the [canonical reuse table](./REUSE_GUIDE.md#canonical-implementations),
+[agent tooling boundaries](./REUSE_GUIDE.md#agent-tooling), and
+[`agent_tools/ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md).
 
 ## Variants And Routing
 

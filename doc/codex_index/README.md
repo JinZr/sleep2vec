@@ -22,6 +22,7 @@ The index describes stable ownership and intended reuse. Always verify behavior 
 | Which subsystem owns this behavior? | [`MODULE_MAP.md`](./MODULE_MAP.md) |
 | Which implementation should I reuse? | [`REUSE_GUIDE.md`](./REUSE_GUIDE.md) |
 | How does a command or artifact flow through the repo? | [`WORKFLOWS.md`](./WORKFLOWS.md) |
+| How do I operate or take over a managed experiment? | [Agent contract question router](../agent_contracts/README.md) |
 | What are the current coding and ownership rules? | [`AGENTS.md`](../../AGENTS.md) |
 
 Small, localized fixes may go directly to the relevant source and focused tests. Consult this index when a change crosses modules, adds reusable behavior, changes a public contract or workflow, or has unclear ownership.
@@ -71,3 +72,4 @@ Do not create feature-branch copies, `DELTA_FROM_MAIN.md`, manifests, changelogs
 - Remove stale entries instead of preserving historical descriptions.
 - Keep variant-specific behavior package-local and label shared behavior as parity, not inheritance.
 - If ownership is uncertain after source inspection, leave it undocumented until the contract is clear.
+- When scanning for stale index names, inspect actual links/files; policy text that prohibits those names is not a stale-link failure.
