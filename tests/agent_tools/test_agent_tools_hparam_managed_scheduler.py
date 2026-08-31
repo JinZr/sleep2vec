@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -726,8 +727,25 @@ def test_hparam_launch_scopes_active_gpu_load_by_target_and_ssh_host(
         if remote is None:
             return real_validate(root, paths)
 
+    def missing_remote_evidence(row, command):
+        assert row["target"] == "ssh"
+        assert row["host"] in {"host-a", "host-b"}
+        if command == run_evidence.transport.remote_python_program_command(
+            "run_evidence.read_pid_text", row["pid_path"]
+        ):
+            return subprocess.CompletedProcess(command, run_evidence.REMOTE_MISSING_RETURN_CODE, "", "")
+        if command == run_evidence.transport.remote_python_program_command(
+            "run_evidence.runtime_artifacts", row.get("runtime_dir", ""), row.get("checkpoint_dir", "")
+        ):
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps({"run_manifest": "", "manifest": {}, "checkpoints": []}), ""
+            )
+        assert command == f"tail -n 8 {run_evidence.transport.sh(row['log_path'])}"
+        return subprocess.CompletedProcess(command, 1, "", "No such fixture log")
+
     started = []
     monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_without_remote)
+    monkeypatch.setattr(run_evidence, "run_row_command", missing_remote_evidence)
     monkeypatch.setattr(
         hparam_runtime,
         "_start_process",

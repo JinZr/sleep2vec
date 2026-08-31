@@ -24,6 +24,8 @@ SUBCOMMANDS = {
     "plan",
     "collect-runs",
     "hparam-launch",
+    "infer-launch",
+    "infer-stop",
     "hparam-run-queue",
     "hparam-monitor",
     "progress",
@@ -81,11 +83,11 @@ def _actions(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
     return {action.dest: action for action in parser._actions if action.option_strings}
 
 
-def test_cli_has_exactly_35_subcommands():
+def test_cli_has_exactly_37_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == SUBCOMMANDS
-    assert len(subcommands) == 35
+    assert len(subcommands) == 37
 
 
 def test_experiment_status_cli_contract():
