@@ -22,6 +22,13 @@ skipped unless you pass ``--base <rev>``.
 
 This mirrors ``test_agent_layering.test_every_exemption_is_live``, which keeps
 the domain-import exemption set honest the same way.
+
+Check 3 needs the project's pinned Python 3.10, the version CI uses. It reads
+the ledger through stdlib ``tomllib`` on 3.11+ and mypy's ``tomli`` on 3.10, so
+it starts anywhere, but on 3.11+ pip resolves a numpy whose PEP 695 stubs
+``python_version = "3.10"`` rejects, and mypy stops before checking everything.
+That undercount would read as "these entries are stale", so the check refuses to
+judge rather than tell you to delete valid entries.
 """
 
 from __future__ import annotations
@@ -34,11 +41,20 @@ import subprocess
 import sys
 import tempfile
 
-import tomli  # a mypy dependency on Python < 3.11
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    # mypy depends on tomli only below 3.11, where tomllib does not exist yet,
+    # so this is the one version that has it. Importing it unconditionally
+    # crashes the script on a 3.11+ developer machine before any check runs.
+    import tomli as tomllib
 
 PYPROJECT = Path("pyproject.toml")
 ERROR_LINE = re.compile(r"^(agent_tools/[\w/]+)\.py:\d+: error:")
 IGNORE_ERRORS_TOGGLE = re.compile(r"^ignore_errors = true$", re.M)
+#: mypy prints this only when it finished; an early abort says
+#: "(errors prevented further checking)" instead.
+COMPLETED_SUMMARY = re.compile(r"\(checked \d+ source files?\)")
 
 
 def run_mypy(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -47,7 +63,7 @@ def run_mypy(*arguments: str) -> subprocess.CompletedProcess[str]:
 
 def ledger_of(document: str) -> set[str] | None:
     """Grandfathered modules, or None if the revision has no mypy config."""
-    mypy = tomli.loads(document).get("tool", {}).get("mypy")
+    mypy = tomllib.loads(document).get("tool", {}).get("mypy")
     if mypy is None:
         return None
     return {
@@ -95,6 +111,24 @@ def modules_with_errors(document: str) -> set[str]:
         config.write_text(neutralized, encoding="utf-8")
         result = run_mypy("--config-file", str(config), "--no-incremental", "agent_tools")
 
+    def unusable(reason: str) -> None:
+        print(result.stdout or result.stderr, file=sys.stderr)
+        sys.exit(
+            f"Neutralized mypy run is unusable, so ledger staleness cannot be judged: {reason}.\n"
+            "This is an environment problem, not a ledger problem -- do not delete ledger entries.\n"
+            f"Run this on the project's pinned Python 3.10 (this is {sys.version.split()[0]})."
+        )
+
+    # An incomplete run undercounts, and an undercount reads as "these entries
+    # are stale" -- the check would tell you to delete valid ledger entries. So
+    # require mypy's own "checked N source files" completion summary rather than
+    # trusting whatever errors came back. Without this, Python 3.11+ silently
+    # reported 39 of 41 entries stale: the newer numpy that pip resolves there
+    # ships PEP 695 stubs that [tool.mypy]'s python_version = "3.10" rejects,
+    # and mypy stops early with "errors prevented further checking".
+    if not COMPLETED_SUMMARY.search(result.stdout):
+        unusable("mypy did not run to completion")
+
     failing = set()
     for line in result.stdout.splitlines():
         match = ERROR_LINE.match(line)
@@ -102,10 +136,7 @@ def modules_with_errors(document: str) -> set[str]:
             parts = match[1].split("/")
             failing.add(".".join(parts[:-1] if parts[-1] == "__init__" else parts))
     if not failing:
-        # A neutralized run that reports nothing means the check broke, not that
-        # the debt is gone -- fail loudly rather than passing vacuously.
-        print(result.stdout or result.stderr, file=sys.stderr)
-        sys.exit("Neutralized mypy run reported no errors at all; the ledger check is not working.")
+        unusable("no agent_tools errors reported at all")
     return failing
 
 
