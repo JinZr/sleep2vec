@@ -54,7 +54,11 @@ def config_payload(index_path: Path) -> dict:
             "projection": {"name": "simclr", "enabled": True},
             "cls": {"embedding_type": "bert", "downstream": "tokens"},
             "channels": [{"name": "ppg", "input_dim": 8, "tokenizer": {"name": "linear", "out_dim": 8}}],
-            "head": {"name": "classification"},
+            "head": {
+                "name": "classification",
+                "temporal_agg": {"name": "mean"},
+                "channel_agg": {"name": "mean"},
+            },
         },
         "data": {
             "backend": "npz",
@@ -97,7 +101,7 @@ def write_survival_sidecars(tmp_path: Path, *, disease_count: int = 2) -> dict[s
 
 def survival_config_payload(index_path: Path, sidecars: dict[str, str], *, output_dim: int = 2) -> dict:
     payload = config_payload(index_path)
-    payload["model"]["head"] = {"name": "regression"}
+    payload["model"]["head"]["name"] = "regression"
     payload["finetune"]["task"] = {
         "type": "survival",
         "output_dim": output_dim,

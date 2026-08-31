@@ -9,14 +9,7 @@ import shlex
 import subprocess
 
 import pytest
-from test_agent_tools_hparam_runtime import (
-    _hparam_recipe,
-    _read_table,
-    _run,
-    _write_runtime_rows,
-    _write_slurm_plan,
-    write_yaml,
-)
+from test_agent_tools_hparam_runtime import _hparam_recipe, _read_table, _run, _write_slurm_plan, write_yaml
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
 
@@ -780,13 +773,15 @@ def test_hparam_launch_rejects_topology_drift_before_launch(
 
 
 def test_hparam_launch_ignores_existing_runtime_dir_for_nonlaunchable_run(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(
-        tmp_path,
-        [
-            {"run_id": "run-000", "status": "launched"},
-            {"run_id": "run-001", "status": "planned"},
-        ],
-    )
+    recipe_path = _hparam_recipe(tmp_path)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    recipe["search"] = {"method": "grid", "max_runs": 2, "parameters": {"runtime.lr": [1e-6, 2e-6]}}
+    recipe_path.write_text(yaml.safe_dump(recipe))
+    plan_dir = tmp_path / "plan"
+    report = plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
+    assert report.exit_code == 0
+    rows = run_artifacts.read_hparam_plan(plan_dir)["runs"]
+    merge_run_manifest(tmp_path, [{"step_id": rows[0]["step_id"], "run_id": rows[0]["run_id"], "status": "launched"}])
     Path(rows[0]["runtime_dir"]).mkdir(parents=True)
     calls = []
     monkeypatch.setattr(
@@ -795,7 +790,7 @@ def test_hparam_launch_ignores_existing_runtime_dir_for_nonlaunchable_run(tmp_pa
         lambda *_args, **_kwargs: calls.append(True),
     )
 
-    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
     assert calls == [True]
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib import import_module
 from pathlib import Path
 
 import pytest
@@ -10,8 +11,10 @@ from agent_tools.decisions import DecisionStatus, evaluate_consultation_gates
 from agent_tools.models import REPO_ROOT, SUPPORTED_VARIANTS
 from agent_tools.plan_hparam import (
     final_test_checkpoint_issues,
+    hparam_yaml_override_issues,
     render_hparam_preflight_card,
-    validate_final_eval_config_bytes,
+    validate_finetune_config_bytes,
+    validate_hparam_run_configs,
 )
 from agent_tools.recipes import load_consultation_policy
 
@@ -46,16 +49,66 @@ def _snapshot(module: str) -> dict:
 @pytest.mark.parametrize(
     ("variant", "config_path"),
     [
+        ("sleep2vec", "configs/sleep2vec_dense_finetune_cls.yaml"),
         ("sleep2vec2", "configs/sleep2vec2/sleep2vec_dense_finetune_cls.yaml"),
         ("sleep2expert", "configs/sleep2expert/moe/sleep2expert_phase_moe_finetune_cls.yaml"),
         ("sex_age_baseline", "configs/sex_age_baseline/cox.yaml"),
     ],
 )
-def test_final_eval_config_bytes_use_variant_loader(variant: str, config_path: str):
-    validate_final_eval_config_bytes({"variant": variant}, (REPO_ROOT / config_path).read_bytes())
+def test_finetune_config_bytes_use_variant_loader(monkeypatch, variant: str, config_path: str):
+    config_module = import_module(f"{variant}.config")
+    load = config_module.load_finetune_config
+    validate = config_module.validate_model_config
+    config_bytes = (REPO_ROOT / config_path).read_bytes()
+    calls = []
+
+    def tracked_load(path):
+        calls.append(("load", Path(path).read_bytes()))
+        return load(path)
+
+    def tracked_validate(model):
+        calls.append(("validate", model))
+        return validate(model)
+
+    monkeypatch.setattr(config_module, "load_finetune_config", tracked_load)
+    monkeypatch.setattr(config_module, "validate_model_config", tracked_validate)
+    validate_finetune_config_bytes({"variant": variant}, config_bytes)
+
+    assert [call[0] for call in calls] == ["load", "validate"]
+    assert calls[0][1] == config_bytes
 
     with pytest.raises(ValueError):
-        validate_final_eval_config_bytes({"variant": variant}, b"{}\n")
+        validate_finetune_config_bytes({"variant": variant}, b"{}\n")
+
+
+@pytest.mark.parametrize(
+    ("variant", "config_path"),
+    [
+        ("sleep2vec", "configs/sleep2vec_dense_finetune_cls.yaml"),
+        ("sleep2vec2", "configs/sleep2vec2/sleep2vec_dense_finetune_cls.yaml"),
+        ("sleep2expert", "configs/sleep2expert/moe/sleep2expert_phase_moe_finetune_cls.yaml"),
+    ],
+)
+def test_finetune_candidates_validate_joint_overrides_with_real_variant_loader(variant: str, config_path: str):
+    payload = yaml.safe_load((REPO_ROOT / config_path).read_bytes())
+    payload["model"]["cls"].update({"downstream": "tokens", "embedding_type": "bert"})
+    config_bytes = yaml.safe_dump(payload).encode()
+    recipe = {"variant": variant, "inputs": {"config": config_path}}
+    downstream = {"yaml:/model/cls/downstream": "cls"}
+    embedding = {"yaml:/model/cls/embedding_type": "none"}
+
+    for point in ({}, downstream, embedding):
+        recipe["search"] = {"configurations": [point]}
+        assert hparam_yaml_override_issues(recipe, config_bytes=config_bytes) == []
+
+    recipe["search"] = {"configurations": [{**downstream, **embedding}]}
+    issues = hparam_yaml_override_issues(recipe, config_bytes=config_bytes)
+
+    assert len(issues) == 1
+    assert issues[0].status == DecisionStatus.FAIL
+    assert issues[0].field == "hparam_search_space"
+    assert "model.cls.embedding_type must be set" in issues[0].message
+    assert issues[0].evidence["preflight_before_workspace"] is True
 
 
 _PREFLIGHT_VARIANT_CASES = [
@@ -87,7 +140,7 @@ _PREFLIGHT_VARIANT_CASES = [
         "sex_age_baseline",
         "configs/sex_age_baseline/cox.yaml",
         "sex_age_baseline.finetune",
-        "sex_age_baseline.config.load_config(validate_sidecars=True)",
+        "sex_age_baseline.config.load_finetune_config (load_config with default validate_sidecars=False)",
         "sex_age_mlp (features=age, sex)",
         None,
     ),
@@ -134,12 +187,20 @@ def test_hparam_preflight_card_uses_variant_config_provenance(
 
     assert "- Scheduler: `direct`" in card
     assert "- Control transport: `local`" in card
-    assert "- Validated preflight host: `runtime-host`" in card
-    assert "- Runtime Python: `/target/python` (version `3.10.0`; frozen command: `python`)" in card
+    assert "- Target CLI preflight host: `runtime-host`" in card
+    assert "- Target CLI Python: `/target/python` (version `3.10.0`; frozen command: `python`)" in card
     assert f"| {variant} | {module} | {loader} | {architecture} | {channels} | run-000 |" in card
     assert calls == [
         (config_path, {"variant": variant, "validate_survival_local_paths": False, "config_bytes": config_bytes})
     ]
+    assert "- Total planned runs: 1" in card
+    assert "- Target CLI argv checks: 1" in card
+    assert "- Planner-local final-config checks: 1 runs; 1 unique exact YAML byte sequences" in card
+    assert f"`{variant}.config.load_finetune_config` + `{variant}.config.validate_model_config`" in card
+    assert "target CLI preflight proves argument parsing only" in card
+    assert "Model construction, forward/backward, checkpoint compatibility, and GPU execution: not performed" in card
+    assert "do not perform full-sidecar reads or complete candidate-specific dataset validation" in card
+    assert "Validated run count" not in card
 
 
 def test_hparam_preflight_card_memoizes_exact_bytes_only_within_one_card(monkeypatch):
@@ -169,6 +230,8 @@ def test_hparam_preflight_card_memoizes_exact_bytes_only_within_one_card(monkeyp
     assert "roformer (hidden_size=768, layers=6)" in card
     assert "| run-000, run-001, run-002 |" in card
     assert "| run-003 |" in card
+    assert "- Target CLI argv checks: 4" in card
+    assert "- Planner-local final-config checks: 4 runs; 3 unique exact YAML byte sequences" in card
     assert render_hparam_preflight_card(recipe, _snapshot("sleep2vec.finetune"), run_configs) == card
     assert calls == [first, same_model, changed_model] * 2
 
@@ -208,6 +271,9 @@ def test_hparam_preflight_card_keeps_sex_age_structural_loader(monkeypatch):
         return load_config(path, validate_sidecars=validate_sidecars)
 
     monkeypatch.setattr(baseline_config, "load_config", tracked_load)
+    validate_finetune_config_bytes({"variant": "sex_age_baseline"}, config_bytes)
+    assert calls == [(config_bytes, False)]
+    calls.clear()
     card = render_hparam_preflight_card(
         {"variant": "sex_age_baseline", "inputs": {"config": config_path}},
         _snapshot("sex_age_baseline.finetune"),
@@ -270,9 +336,11 @@ def test_hparam_card_skips_sidecar_tables_without_weakening_validation(
     monkeypatch.setattr(survival, "load_survival_label_table", tracked_survival)
     monkeypatch.setattr(multilabel, "load_multilabel_label_table", tracked_multilabel)
 
-    card = render_hparam_preflight_card(recipe, _snapshot(module), [({"run_id": "run-000"}, config_bytes)])
+    run_configs = [({"run_id": "run-000"}, config_bytes), ({"run_id": "run-001"}, config_bytes)]
+    validate_hparam_run_configs(recipe, run_configs)
+    card = render_hparam_preflight_card(recipe, _snapshot(module), run_configs)
 
-    assert "| run-000 |" in card
+    assert "| run-000, run-001 |" in card
     assert calls == []
 
     summary = plan_context.load_config_summary_for_recipe(recipe, config_bytes=config_bytes)

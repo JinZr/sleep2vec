@@ -424,8 +424,9 @@ def test_hparam_validate_only_uses_same_provenance_card_without_writes(tmp_path:
     assert snapshot["module_origin"] in validate_only_card
     assert snapshot["runtime_commit"] in validate_only_card
     assert snapshot["validated_argv_sha256"] in validate_only_card
-    assert "Validated run count: 3" in validate_only_card
-    assert "Validated argv count: 3" in validate_only_card
+    assert "Total planned runs: 3" in validate_only_card
+    assert "Target CLI argv checks: 3" in validate_only_card
+    assert "Planner-local final-config checks: 3 runs; 2 unique exact YAML byte sequences" in validate_only_card
     raw_plan = json.loads((plan_dir / "plan.json").read_text())
     assert raw_plan["execution_snapshot"]["sha256"] == file_sha256(plan_dir / "execution_snapshot.json")
     assert "preflight" not in raw_plan

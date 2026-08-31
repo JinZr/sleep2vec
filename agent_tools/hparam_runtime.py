@@ -224,14 +224,19 @@ def _launch_hparam_runs(
     )
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    if not dry_run:
-        canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
-        launchable_runs = [
-            run
-            for run in plan["runs"]
-            if canonical_by_key[managed_run_key(run)].get("status") in scheduler.LAUNCHABLE_STATUSES
-        ]
-        if launchable_runs:
+    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    launchable_runs = [
+        run
+        for run in plan["runs"]
+        if canonical_by_key[managed_run_key(run)].get("status") in scheduler.LAUNCHABLE_STATUSES
+    ]
+    if launchable_runs:
+        # Observation and capacity can only narrow this set; dry-run must validate the same prospective candidates.
+        plan_hparam.validate_hparam_run_configs(
+            recipe,
+            [(run, Path(str(run["config"])).read_bytes()) for run in launchable_runs],
+        )
+        if not dry_run:
             plan_hparam.validate_hparam_output_paths(run_dir, plan, runs=launchable_runs)
 
     def write_projections(result: scheduler.LaunchResult) -> None:

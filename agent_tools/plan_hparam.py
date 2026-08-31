@@ -162,7 +162,7 @@ def final_test_checkpoint_issues(
             "sha256": hashlib.sha256(config_bytes).hexdigest(),
         }
         try:
-            validate_final_eval_config_bytes(recipe, config_bytes)
+            validate_finetune_config_bytes(recipe, config_bytes)
         except Exception as exc:
             issues.append(
                 DecisionIssue(
@@ -227,13 +227,27 @@ def final_eval_config_snapshot(recipe: dict) -> dict[str, Any] | None:
     return snapshot if isinstance(snapshot, dict) else None
 
 
-def validate_final_eval_config_bytes(recipe: dict, config_bytes: bytes) -> None:
+def validate_finetune_config_bytes(recipe: dict, config_bytes: bytes) -> None:
     config_module = import_module(rendering.variant_module(recipe, "config"))
     with NamedTemporaryFile(suffix=".yaml") as snapshot:
         snapshot.write(config_bytes)
         snapshot.flush()
         bundle = config_module.load_finetune_config(Path(snapshot.name))
         config_module.validate_model_config(bundle.model)
+
+
+def validate_hparam_run_configs(recipe: dict, run_configs: list[tuple[dict[str, Any], bytes]]) -> None:
+    validated_configs: set[bytes] = set()
+    for run, config_bytes in run_configs:
+        if config_bytes in validated_configs:
+            continue
+        try:
+            validate_finetune_config_bytes(recipe, config_bytes)
+        except Exception as exc:
+            raise ValueError(
+                f"Final hparam config is invalid for run {run['run_id']} (variant={recipe.get('variant')}): {exc}"
+            ) from exc
+        validated_configs.add(config_bytes)
 
 
 def read_final_eval_config_bytes(recipe: dict, config_path: Any) -> bytes:
@@ -299,7 +313,6 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
     evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
     selection_metric = evaluation.get("selection_metric")
     selection_split = evaluation.get("selection_split")
-    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
     if "selection_metric" in evaluation and selection_metric in (None, ""):
         return [
             DecisionIssue(
@@ -337,11 +350,14 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
                         {"decision": decision_value, "preflight_before_workspace": True},
                     )
                 ]
+        validated_configs: set[bytes] = set()
         for combo in hparam_combos(recipe):
             run_config = copy.deepcopy(base_config)
             apply_search_overrides(run_config, combo)
-            if search.get("profile") == "finetune_balanced":
-                validate_final_eval_config_bytes(recipe, yaml.safe_dump(run_config, sort_keys=False).encode())
+            run_config_bytes = yaml.safe_dump(run_config).encode()
+            if run_config_bytes not in validated_configs:
+                validate_finetune_config_bytes(recipe, run_config_bytes)
+                validated_configs.add(run_config_bytes)
             data = run_config.get("data") if isinstance(run_config.get("data"), dict) else {}
             finetune = run_config.get("finetune") if isinstance(run_config.get("finetune"), dict) else {}
             task = finetune.get("task") if isinstance(finetune.get("task"), dict) else {}
@@ -985,11 +1001,9 @@ def render_hparam_preflight_card(
 ) -> str:
     variant = str(recipe["variant"])
     config_module = rendering.variant_module(recipe, "config")
-    loader = (
-        f"{config_module}.load_config(validate_sidecars=True)"
-        if variant == "sex_age_baseline"
-        else f"{config_module}.load_finetune_config"
-    )
+    loader = f"{config_module}.load_finetune_config"
+    if variant == "sex_age_baseline":
+        loader += " (load_config with default validate_sidecars=False)"
     routes: dict[tuple[str, str, str, str, tuple[str, ...]], list[str]] = {}
     models: dict[bytes, dict[str, Any]] = {}
     for run, config_bytes in run_configs:
@@ -1058,16 +1072,22 @@ def render_hparam_preflight_card(
         "",
         *topology_lines,
         f"- Control transport: `{target}`",
-        f"- Validated preflight host: `{snapshot['runtime_hostname']}`",
-        f"- Runtime Python: `{snapshot['python']}` (version `{snapshot['python_version']}`; "
+        f"- Target CLI preflight host: `{snapshot['runtime_hostname']}`",
+        f"- Target CLI Python: `{snapshot['python']}` (version `{snapshot['python_version']}`; "
         f"frozen command: `{snapshot['python_command']}`)",
-        f"- Runtime commit: `{snapshot['runtime_commit']}`",
-        f"- Module origin: `{snapshot['module_origin']}`",
-        f"- Validated run count: {len(run_configs)}",
-        f"- Validated argv count: {len(run_configs)}",
-        f"- Validated argv SHA-256: `{snapshot['validated_argv_sha256']}`",
+        f"- Target CLI runtime commit: `{snapshot['runtime_commit']}`",
+        f"- Target CLI module origin: `{snapshot['module_origin']}`",
+        f"- Total planned runs: {len(run_configs)}",
+        f"- Target CLI argv checks: {len(run_configs)}",
+        f"- Target CLI argv SHA-256: `{snapshot['validated_argv_sha256']}`",
+        f"- Planner-local final-config checks: {len(run_configs)} runs; {len(models)} unique exact YAML byte sequences",
+        f"- Planner-local validators: `{config_module}.load_finetune_config` + `{config_module}.validate_model_config`",
+        "- Final-config checks run in the planner's current Python/code environment; "
+        "target CLI preflight proves argument parsing only.",
+        "- Model construction, forward/backward, checkpoint compatibility, and GPU execution: not performed.",
+        "- Final-config checks do not perform full-sidecar reads or complete candidate-specific dataset validation.",
         "",
-        "| Variant | Python module | Canonical config loader | Architecture | Channels | Run IDs |",
+        "| Variant | Target CLI module | Canonical config loader | Architecture | Channels | Run IDs |",
         "|---|---|---|---|---|---|",
     ]
     for route, run_ids in routes.items():
@@ -1091,6 +1111,14 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
         require_adaptive_commit=False,
     )
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    run_configs = [
+        (
+            run,
+            artifacts._physical_plan_path(Path(str(run["config"])), plan_dir, physical_dir).read_bytes(),
+        )
+        for run in plan["runs"]
+    ]
+    validate_hparam_run_configs(recipe, run_configs)
     _hparam_registration_state(plan)
     validate_hparam_output_paths(plan_dir, plan)
     execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
@@ -1102,17 +1130,7 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
     snapshot = _inspect_hparam_execution_target(execution, validation_runs)
     snapshot_path = physical_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
     managed_scheduler.write_execution_snapshot_file(snapshot_path, snapshot)
-    card = render_hparam_preflight_card(
-        recipe,
-        snapshot,
-        [
-            (
-                run,
-                artifacts._physical_plan_path(Path(str(run["config"])), plan_dir, physical_dir).read_bytes(),
-            )
-            for run in plan["runs"]
-        ],
-    )
+    card = render_hparam_preflight_card(recipe, snapshot, run_configs)
     plan_markdown = physical_dir / "plan.md"
     write_text(plan_markdown, f"{plan_markdown.read_text().rstrip()}\n\n{card}\n")
     plan_payload = read_json(physical_dir / "plan.json")
@@ -1172,7 +1190,12 @@ def commit_hparam_plan(
             allow_published_plan=True,
         )
         root, manifest_rows = _hparam_registration_state(plan)
+        # Trusted publication callers already checked these bytes; the strict read above still rejects artifact drift.
         if not preflight_validated:
+            validate_hparam_run_configs(
+                recipe,
+                [(run, Path(str(run["config"])).read_bytes()) for run in plan["runs"]],
+            )
             validate_hparam_output_paths(plan_dir, plan)
             execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
             managed_scheduler.validated_execution_snapshot(

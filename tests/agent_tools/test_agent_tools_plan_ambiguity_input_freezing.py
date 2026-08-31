@@ -362,12 +362,16 @@ def test_unlock_final_test_detects_explicit_config_drift_before_workspace_mutati
         ckpt_path=ckpt,
         final_config_path=selected_config,
     )
-    selected_config.write_bytes(_valid_final_config_bytes(tmp_path))
+    selected_bytes = _valid_final_config_bytes(tmp_path) + b"# Selected final-evaluation snapshot.\n"
+    selected_config.write_bytes(selected_bytes)
     real_load_finetune_config = runtime_config.load_finetune_config
+    mutated = []
 
     def mutate_source_after_validation(path: Path):
         bundle = real_load_finetune_config(path)
-        selected_config.write_text("{}\n")
+        if Path(path).read_bytes() == selected_bytes:
+            selected_config.write_text("{}\n")
+            mutated.append(selected_bytes)
         return bundle
 
     monkeypatch.setattr(runtime_config, "load_finetune_config", mutate_source_after_validation)
@@ -376,6 +380,7 @@ def test_unlock_final_test_detects_explicit_config_drift_before_workspace_mutati
     report = plans.build_plan(recipe_path=recipe, output_dir=output_dir, unlock_final_test=True)
 
     assert report.exit_code == 1
+    assert mutated == [selected_bytes]
     assert any("changed while plan preflight" in issue.message for issue in report.issues)
     assert not output_dir.exists()
     assert not (tmp_path / "steps" / "unit-hparam-tune").exists()
