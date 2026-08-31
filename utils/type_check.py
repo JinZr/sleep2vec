@@ -142,7 +142,10 @@ def main(argv: list[str] | None = None) -> int:
         print("Fix the module's type errors instead of grandfathering it.")
         return 1
 
-    stale = sorted(module for module in ledger if module not in modules_with_errors(document))
+    # Bind the result: inlining the call into the comprehension's condition
+    # would re-run mypy once per ledger entry.
+    failing = modules_with_errors(document)
+    stale = sorted(module for module in ledger if module not in failing)
     if stale:
         print("Stale mypy ledger entries -- these modules type-check cleanly now.")
         print("Delete their lines from the [[tool.mypy.overrides]] block in pyproject.toml:")
