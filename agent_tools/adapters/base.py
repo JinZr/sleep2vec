@@ -176,8 +176,8 @@ class TaskAdapter:
         """Project frozen plan runs into their canonical registration rows."""
         return [
             {
-                **{key: value for key, value in run.items() if key != "command"},
                 "parameter_summary": "single resolved recipe",
+                **{key: value for key, value in run.items() if key != "command"},
             }
             for run in plan["runs"]
         ]

@@ -217,6 +217,19 @@ def _stub_queued_slurm(monkeypatch, plan_dir: Path, plan: dict):
     return calls
 
 
+@pytest.mark.parametrize("summary", [None, "runtime.lr=0.001"])
+def test_generic_registration_preserves_existing_frozen_parameter_summary(summary):
+    run = {"run_id": "run-000", "command": "frozen model command"}
+    if summary is not None:
+        run["parameter_summary"] = summary
+    before = dict(run)
+
+    (row,) = get_adapter("finetune").registration_rows({"runs": [run]})
+
+    assert row == {"run_id": "run-000", "parameter_summary": summary or "single resolved recipe"}
+    assert run == before
+
+
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert", "sex_age_baseline"])
 @pytest.mark.parametrize("task", ["infer", "evaluate"])
 def test_infer_slurm_round_trip_preserves_unsubmitted_identity(
