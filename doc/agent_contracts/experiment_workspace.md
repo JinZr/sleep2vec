@@ -140,12 +140,28 @@ does not cancel monitoring duties for existing work. Estimate end-to-end time
 including queue delay, post-fit checkpoint tests, proposal/preflight and
 controller work, not just training fit time.
 
+An incidental question about status, GPU use or timing does not revoke unfinished
+authorized work. Answer it, then continue the remaining obligations in the active
+execution, or through the already authorized scheduled continuation when waiting
+is required. Pause for an explicit stop/replacement instruction, a genuine blocker
+or a decision outside the existing authority, not merely because the answer ended
+one phase of the conversation.
+
+Gate each dependent action on positive evidence that its producer succeeded.
+A failed bundle creation must not be followed by its transfer, and an incomplete
+runtime must not be used for initialization. Failure of one dependency does not
+block independent, already authorized work. An outer shell/SSH exit 0, a partial
+directory or a readable HEAD is not evidence of complete preparation.
+
 Read doctor report and exit status: nonblocking WARN/exit 0 can be successful,
 and `--output-dir` need not create a questions directory when no template is
 needed. See [consultation and diagnostics](task_recipe.md#consultation-and-diagnostics).
-If a check is slow or SSH disconnects, establish the original operation's fate
-from its phase and frozen evidence before considering another action. Uncertain
-submission is not definite failure; follow the [Slurm uncertainty rules](run_manifest.md#stopping-and-uncertain-states).
+If a check is slow or SSH disconnects, inspect the original operation handle,
+phase logs and durable completion receipt against its frozen identity. Follow a
+still-live operation rather than starting another attempt. Missing or lost
+completion evidence remains uncertain even if a process disappears; do not retry
+a side effect to obtain a cleaner receipt. Uncertain submission is not definite
+failure; follow the [Slurm uncertainty rules](run_manifest.md#stopping-and-uncertain-states).
 Managed ordinary infer/evaluate now uses the shared Slurm transaction; older
 manual wrappers remain historical and are not repaired or adopted by this flow.
 
@@ -174,13 +190,21 @@ new roots and extra budget need their own coverage in the current authority.
    Query the trusted upstream's committed main within a bounded check; cached
    `origin/main`, a dirty checkout or an unpushed commit is not fresh proof.
 2. If that SHA is unchanged and its checks already passed, do not restage,
-   repeat validation or append unchanged notes. If changed, inspect the diff
-   and candidate contracts, then stage committed bytes in a separate clean,
-   immutable runtime with origin, SHA, clean-state and transfer evidence.
-3. Staging is not activation. Validate affected owners with the candidate
-   runtime/interpreter, relevant synthetic checks and actual recipe
-   consultation. Required skipped or missing checks are not a pass; `context`
-   does not authorize execution. Do not install dependencies implicitly.
+   repeat validation or append unchanged notes. A changed SHA triggers impact
+   assessment, not unconditional checkout and regression work. Prepare a new
+   runtime when uninitialized work is ready to use it or the candidate addresses
+   a current blocker. Documentation, navigation, test-fixture and CI-only changes
+   do not by themselves require restaging; still honor any exact upstream-pin
+   requirement before actual initialization. Stage only committed bytes in a
+   separate clean runtime, retaining origin, SHA, clean-state and transfer
+   evidence, then preserve that checkout unchanged.
+3. Staging is not activation. Apply the currently authorized engineering-check
+   scope; an explicit instruction not to repeat CPU regressions must not be
+   undone by a new SHA or heartbeat. Reused evidence retains its original commit
+   and scope, not a claim that the candidate was retested. This does not waive
+   actual recipe consultation, doctor/plan, frozen identity/hash checks or launch
+   gates. Required skipped or missing checks are not a pass; `context` does not
+   authorize execution. Do not install dependencies implicitly.
 4. Before activation, freshly verify that the workflow remains uninitialized
    and the candidate still meets the authorized upstream rule. Update only
    mutable preparation bindings, preserving scientific/config bytes and
