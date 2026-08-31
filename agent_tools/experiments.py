@@ -104,7 +104,14 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
             "log_path": str(run_dir / "stdout.log"),
         }
         identity["command"] = managed_scheduler.build_launch_command(
-            execution, Path(run["script"]), identity["log_path"], identity["pid_path"], []
+            execution,
+            Path(run["script"]),
+            identity["log_path"],
+            identity["pid_path"],
+            [],
+            config_path=Path(run["config"]),
+            script_sha256=run["script_sha256"],
+            config_sha256=run["config_sha256"],
         )
         exp_io.validate_managed_output_paths(
             workspace,

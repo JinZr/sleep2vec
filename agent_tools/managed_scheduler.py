@@ -1795,32 +1795,38 @@ def build_launch_command(
         workdir,
     ]
     verification = None
-    if execution_snapshot is not None:
+    if execution_snapshot is not None or any(
+        value is not None for value in (config_path, script_sha256, config_sha256, checkpoint_path, checkpoint_sha256)
+    ):
         if config_path is None or not script_sha256 or not config_sha256:
             raise ValueError("Verified launch requires frozen script and config hashes.")
         artifacts = [
             {"path": str(script), "sha256": script_sha256},
             {"path": str(config_path), "sha256": config_sha256},
         ]
-        if (checkpoint_path is None) != (checkpoint_sha256 is None):
+        if (checkpoint_path is None) != (checkpoint_sha256 is None) or checkpoint_sha256 == "":
             raise ValueError("Verified launch requires both frozen checkpoint path and hash.")
         if checkpoint_path is not None:
             artifacts.append({"path": str(checkpoint_path), "sha256": checkpoint_sha256})
-        verification_inner = (
-            "export PYTHONPATH="
-            + _sh(workdir)
-            + " && "
-            + " ".join(
-                _sh(part)
-                for part in (
-                    execution["python"],
-                    "-c",
-                    python_programs.source("managed_scheduler.runtime_identity"),
-                    execution_snapshot["module"],
-                    json.dumps(execution_snapshot, sort_keys=True),
-                    json.dumps(artifacts, sort_keys=True),
-                )
+        if execution_snapshot is not None:
+            verification_args = (
+                execution["python"],
+                "-c",
+                python_programs.source("managed_scheduler.runtime_identity"),
+                execution_snapshot["module"],
+                json.dumps(execution_snapshot, sort_keys=True),
+                json.dumps(artifacts, sort_keys=True),
             )
+        else:
+            # Script-based plans retain artifact checks without claiming a module execution snapshot.
+            verification_args = (
+                run[0],
+                "-c",
+                python_programs.source("plan_rendering.verify_input_snapshots"),
+                json.dumps(artifacts, sort_keys=True),
+            )
+        verification_inner = (
+            "export PYTHONPATH=" + _sh(workdir) + " && " + " ".join(_sh(part) for part in verification_args)
         )
         verification = ["bash", "-c", verification_inner]
     if execution.get("conda_env"):

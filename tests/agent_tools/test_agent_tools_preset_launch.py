@@ -135,6 +135,79 @@ def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_run
     assert not preset_runtime["payload"].exists()
 
 
+@pytest.mark.parametrize("mutation_phase", ["runtime_guard", "claim"])
+@pytest.mark.parametrize("artifact", ["script", "config"])
+def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
+    tmp_path, preset_runtime, monkeypatch, mutation_phase, artifact
+):
+    plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
+    run = plan["runs"][0]
+    artifact_path = Path(run[artifact])
+    original_bytes = artifact_path.read_bytes()
+    for name, value in preset_runtime["env"].items():
+        monkeypatch.setenv(name, value)
+    original_guard = managed_scheduler.run_execution_command
+    original_merge = experiments.merge_run_manifest
+    original_start = managed_scheduler.start_process
+    start_commands = []
+
+    def guard(execution, command):
+        result = original_guard(execution, command)
+        if mutation_phase == "runtime_guard":
+            artifact_path.write_bytes(original_bytes + b"\n# changed after plan preflight\n")
+        return result
+
+    def merge(workspace, rows, **kwargs):
+        result = original_merge(workspace, rows, **kwargs)
+        if mutation_phase == "claim" and rows[0]["status"] == "launched":
+            artifact_path.write_bytes(original_bytes + b"\n# changed after launch claim\n")
+        return result
+
+    def start(execution, command):
+        assert read_run_manifest(preset_runtime["workspace"])[0]["command"] == command
+        start_commands.append(command)
+        return original_start(execution, command)
+
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", guard)
+    monkeypatch.setattr(experiments, "merge_run_manifest", merge)
+    monkeypatch.setattr(managed_scheduler, "start_process", start)
+    pid_path = Path(run["run_dir"]) / "pid"
+    try:
+        result = experiments.launch_preset_run(plan_dir, dry_run=False)
+
+        assert result.launch_rows[0]["status"] == "launch_failed"
+        assert not result.started_keys
+        assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "launch_failed"
+        assert not preset_runtime["payload"].exists()
+        assert not pid_path.exists()
+        assert not (Path(run["run_dir"]) / "stdout.log").exists()
+        artifact_path.write_bytes(original_bytes)
+        assert not experiments.launch_preset_run(plan_dir, dry_run=False).started_keys
+        assert len(start_commands) == 1
+    finally:
+        identity = run_evidence.read_process_identity(pid_path)
+        if identity and run_evidence.process_identity_running({}, identity):
+            run_evidence.stop_process_group({}, identity)
+
+
+@pytest.mark.parametrize("execution_snapshot", [None, {"module": "fixture_runtime"}])
+def test_verified_launch_rejects_empty_checkpoint_hash(tmp_path, execution_snapshot):
+    with pytest.raises(ValueError, match="frozen checkpoint path and hash"):
+        managed_scheduler.build_launch_command(
+            {"python": "python", "workdir": str(tmp_path)},
+            tmp_path / "launch.sh",
+            tmp_path / "stdout.log",
+            tmp_path / "pid",
+            [],
+            execution_snapshot=execution_snapshot,
+            config_path=tmp_path / "config.yaml",
+            script_sha256="a" * 64,
+            config_sha256="b" * 64,
+            checkpoint_path=tmp_path / "model.ckpt",
+            checkpoint_sha256="",
+        )
+
+
 @pytest.mark.parametrize("lost_receipt", [False, True])
 def test_preset_interrupted_attempt_is_not_relaunched(tmp_path, preset_runtime, monkeypatch, lost_receipt):
     plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)

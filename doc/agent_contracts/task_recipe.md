@@ -288,6 +288,8 @@ separately or add a background SSH shell wrapper.
 
 The launcher validates the registered plan and frozen inputs, then records the
 execution identity and launch attempt before starting a detached process.
+The launch command rechecks the frozen worker script and config hashes before
+spawning, including changes made after the manager's initial validation.
 Stdin is closed to input; stdout and stderr share the run's persistent
 `stdout.log`. The process has its own session and a recorded PID, process group,
 and start token. Loss of the launching connection or an incomplete receipt does
