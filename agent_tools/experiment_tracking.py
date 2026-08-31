@@ -1427,6 +1427,12 @@ def _plan_advice(
                 argv = ["python", "-m", "agent_tools", "infer-launch", "--plan-dir", plan["path"], "--execute"]
                 action_id = "infer-launch"
                 control_host = remote
+            elif plan["task"] == "preset_prepare" and (plan["recipe"].get("execution") or {}).get("scheduler") == {
+                "type": "direct"
+            }:
+                argv = ["python", "-m", "agent_tools", "preset-launch", "--plan-dir", plan["path"], "--execute"]
+                action_id = "preset-launch"
+                control_host = remote
             else:
                 argv = ["bash", plan["launch_script"]]
                 action_id = "run-plan"

@@ -13,7 +13,7 @@ from test_agent_plan_blocks_on_ambiguity import _write_preset_recipe
 from test_agent_tools_experiment_status import _workspace_files
 import yaml
 
-from agent_tools import cli, decisions, experiments, plans
+from agent_tools import cli, experiments, plans
 from agent_tools.adapters import preset_prepare as preset_adapter
 from agent_tools.experiment_workspace import file_sha256, read_run_manifest
 from agent_tools.manifests import write_rows
@@ -126,14 +126,15 @@ def test_preset_explicit_identity_runs_real_generated_command_despite_path_chang
 
     assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
     plan = json.loads((plan_dir / "plan.json").read_text())
-    assert plan["recipe"]["execution"] == preset_runtime["execution"]
-    assert yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())["execution"] == preset_runtime["execution"]
+    expected_execution = {**preset_runtime["execution"], "scheduler": {"type": "direct"}}
+    assert plan["recipe"]["execution"] == expected_execution
+    assert yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())["execution"] == expected_execution
     command = plan["commands"][0]
     assert shlex.split(command)[:2] == [preset_runtime["execution"]["python"], _PRESET_SCRIPTS[variant]]
     assert plan["runs"][0]["command"] == command
     assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "planned"
     result = subprocess.run(
-        ["bash", str(plan_dir / "run.sh")], cwd=tmp_path, env=preset_runtime["env"], text=True, capture_output=True
+        ["bash", plan["runs"][0]["script"]], cwd=tmp_path, env=preset_runtime["env"], text=True, capture_output=True
     )
 
     assert result.returncode == 0, result.stderr
@@ -157,10 +158,11 @@ def test_preset_runtime_identity_failure_precedes_lifecycle_and_payload(tmp_path
     plan_dir = preset_runtime["workspace"] / "plan"
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
     assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+    plan = json.loads((plan_dir / "plan.json").read_text())
     before = _workspace_files(preset_runtime["workspace"])
 
     result = subprocess.run(
-        ["bash", str(plan_dir / "run.sh")], cwd=tmp_path, env=preset_runtime["env"], text=True, capture_output=True
+        ["bash", plan["runs"][0]["script"]], cwd=tmp_path, env=preset_runtime["env"], text=True, capture_output=True
     )
 
     assert result.returncode != 0
@@ -229,8 +231,6 @@ def test_preset_invalid_identity_fails_before_workspace_creation(tmp_path: Path,
 
 
 def test_preset_coherent_command_and_script_hash_tamper_is_rejected(tmp_path: Path, preset_runtime, monkeypatch):
-    # Preset rejects artifacts, but the unrelated generic output warning requires them for PASS.
-    monkeypatch.setattr(decisions, "_output_paths_missing", lambda _recipe: False)
     recipe = _runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
@@ -267,6 +267,7 @@ def test_preset_manager_defaults_freeze_actual_python_commit_and_workdir(tmp_pat
         "python": sys.executable,
         "runtime_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip(),
         "workdir": str(REPO_ROOT),
+        "scheduler": {"type": "direct"},
     }
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
@@ -276,7 +277,7 @@ def test_preset_manager_defaults_freeze_actual_python_commit_and_workdir(tmp_pat
     assert plan["recipe"]["execution"] == expected
     assert yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())["execution"] == expected
     assert shlex.split(plan["commands"][0])[:2] == [sys.executable, _PRESET_SCRIPTS[variant]]
-    script = (plan_dir / "run.sh").read_text()
+    script = Path(plan["runs"][0]["script"]).read_text()
     assert f"cd {shlex.quote(str(REPO_ROOT))}\n" in script
     assert f"  {shlex.quote(sys.executable)} -c " in script
     assert expected["runtime_commit"] in script
@@ -301,12 +302,13 @@ def test_preset_default_generated_command_ignores_path_python_in_simulated_manag
         "python": sys.executable,
         "runtime_commit": manager_commit,
         "workdir": str(manager_root),
+        "scheduler": {"type": "direct"},
     }
     command = plan["commands"][0]
     assert shlex.split(command)[:2] == [sys.executable, _PRESET_SCRIPTS[variant]]
 
     result = subprocess.run(
-        ["bash", str(plan_dir / "run.sh")], cwd=tmp_path, env=preset_runtime["env"], text=True, capture_output=True
+        ["bash", plan["runs"][0]["script"]], cwd=tmp_path, env=preset_runtime["env"], text=True, capture_output=True
     )
 
     assert result.returncode == 0, result.stderr
@@ -376,7 +378,7 @@ def test_preset_explicit_identity_preserves_remote_path_context_and_host(tmp_pat
 
     assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
     plan = json.loads((plan_dir / "plan.json").read_text())
-    assert plan["recipe"]["execution"] == preset_runtime["execution"]
+    assert plan["recipe"]["execution"] == {**preset_runtime["execution"], "scheduler": {"type": "direct"}}
 
 
 @pytest.mark.parametrize("context", ["other_workdir", "remote_paths", "local_target_remote_paths", "ssh_target"])
@@ -476,12 +478,10 @@ def test_preset_invalid_auto_bound_identity_fails_before_workspace_creation(
         assert not preset_runtime["workspace"].exists()
 
 
-@pytest.mark.parametrize("historical", [False, True])
+@pytest.mark.parametrize("historical", [False, "runtime_identity", "legacy"])
 def test_preset_registered_reader_never_rebinds_default_or_historical_identity(
     tmp_path: Path, preset_runtime, monkeypatch, historical
 ):
-    # Isolate the pre-existing generic output warning; registered status requires PASS.
-    monkeypatch.setattr(decisions, "_output_paths_missing", lambda _recipe: False)
     preset_runtime["execution"] = {}
     recipe = _runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
@@ -491,12 +491,17 @@ def test_preset_registered_reader_never_rebinds_default_or_historical_identity(
     plan = json.loads(plan_path.read_text())
     if historical:
         original_command = plan["commands"][0]
-        plan["recipe"]["execution"] = {}
+        if historical == "legacy":
+            plan["recipe"]["execution"] = {}
+        else:
+            plan["recipe"]["execution"].pop("scheduler")
         run = plan["runs"][0]
+        for field in ("scheduler_type", "terminal_status_owner"):
+            run.pop(field)
         contract = preset_adapter.PRESET_PREPARE_ADAPTER.compile_plan_contract(
             plan["recipe"], plan_dir, run_index_offset=0, config_bytes=Path(run["config"]).read_bytes()
         )
-        assert shlex.split(contract["commands"][0])[0] == "python"
+        assert shlex.split(contract["commands"][0])[0] == ("python" if historical == "legacy" else sys.executable)
         plan["commands"] = contract["commands"]
         run["command"] = contract["commands"][0]
         plan_markdown = plan_dir / "plan.md"
@@ -510,6 +515,8 @@ def test_preset_registered_reader_never_rebinds_default_or_historical_identity(
         plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
         rows = read_run_manifest(preset_runtime["workspace"])
         rows[0]["script_sha256"] = run["script_sha256"]
+        for field in ("scheduler_type", "terminal_status_owner"):
+            rows[0].pop(field)
         write_rows(preset_runtime["workspace"] / "run_manifest.tsv", rows)
     before = _workspace_files(preset_runtime["workspace"])
 
@@ -524,4 +531,10 @@ def test_preset_registered_reader_never_rebinds_default_or_historical_identity(
     status = experiments.experiment_status(preset_runtime["workspace"])
 
     assert status["summary"]["state"] == "ready_to_launch"
+    if historical:
+        assert "preset-launch" not in (plan_dir / "run.sh").read_text()
+        for operation in (experiments.launch_preset_run, experiments.stop_preset_run):
+            kwargs = {"dry_run": False} if operation is experiments.launch_preset_run else {"reason": "old plan"}
+            with pytest.raises(ValueError, match="new local managed direct preset"):
+                operation(plan_dir, **kwargs)
     assert _workspace_files(preset_runtime["workspace"]) == before

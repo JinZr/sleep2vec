@@ -15,7 +15,12 @@ _RUNTIME_IDENTITY_REQUIRED_FIELDS = {*_RUNTIME_IDENTITY_FIELDS, "workdir"}
 
 
 def execution_contract_issues(
-    recipe: dict, *, source_layer: str, supports_runtime_identity: bool, supports_slurm: bool = False
+    recipe: dict,
+    *,
+    source_layer: str,
+    supports_runtime_identity: bool,
+    supports_slurm: bool = False,
+    supports_direct: bool = False,
 ) -> list[DecisionIssue]:
     if "execution" not in recipe:
         return []
@@ -25,9 +30,22 @@ def execution_contract_issues(
     allowed_fields = _EXECUTION_FIELDS | (_RUNTIME_IDENTITY_FIELDS if supports_runtime_identity else set())
     scheduler = execution.get("scheduler")
     is_slurm = supports_slurm and isinstance(scheduler, dict) and scheduler.get("type") == "slurm"
+    is_direct = supports_direct and isinstance(scheduler, dict) and scheduler.get("type") == "direct"
     if is_slurm:
         allowed_fields |= {"scheduler", "gpus_per_run", "env"}
+    if is_direct:
+        allowed_fields.add("scheduler")
     issues = []
+    if is_direct:
+        for field in sorted(set(scheduler) - {"type"}):
+            issues.append(
+                _execution_contract_issue(
+                    f"execution.scheduler.{field}",
+                    f"Unknown execution.scheduler field for direct execution: {field}.",
+                    scheduler[field],
+                    source_layer,
+                )
+            )
     for field in sorted(set(execution) - allowed_fields):
         issues.append(
             _execution_contract_issue(

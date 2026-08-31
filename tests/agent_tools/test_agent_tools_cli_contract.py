@@ -21,6 +21,8 @@ SUBCOMMAND_GROUPS = {
         "hparam-launch",
         "infer-launch",
         "infer-stop",
+        "preset-launch",
+        "preset-stop",
         "hparam-run-queue",
         "hparam-monitor",
         "progress",
@@ -85,11 +87,11 @@ def _actions(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
     return {action.dest: action for action in parser._actions if action.option_strings}
 
 
-def test_cli_has_exactly_37_subcommands():
+def test_cli_has_exactly_39_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == set.union(*SUBCOMMAND_GROUPS.values())
-    assert len(subcommands) == 37
+    assert len(subcommands) == 39
 
 
 def _assert_cli_architecture_contract(document: str):
@@ -118,8 +120,8 @@ def test_architecture_cli_triage_matches_parser_and_ownership():
 @pytest.mark.parametrize(
     ("original", "replacement"),
     [
-        ("37 subcommands", "35 subcommands"),
-        ("Kernel (26)", "Kernel (24)"),
+        ("39 subcommands", "37 subcommands"),
+        ("Kernel (28)", "Kernel (26)"),
         ("infer-launch, ", ""),
         ("infer-launch, ", "unknown-command, "),
         ("infer-launch, infer-stop", "infer-launch, infer-launch"),
@@ -138,7 +140,7 @@ def test_architecture_cli_triage_guard_rejects_drift(original: str, replacement:
 
 def test_architecture_cli_triage_guard_rejects_omission_with_matching_counts():
     document = (Path(cli.__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-    document = document.replace("37 subcommands", "36 subcommands").replace("Kernel (26)", "Kernel (25)")
+    document = document.replace("39 subcommands", "38 subcommands").replace("Kernel (28)", "Kernel (27)")
     document = document.replace("infer-launch, ", "", 1)
 
     with pytest.raises(AssertionError):

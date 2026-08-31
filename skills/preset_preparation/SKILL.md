@@ -26,13 +26,22 @@ Stop and consult the user if:
 - The recipe does not say whether to reuse or regenerate presets.
 
 ## Canonical commands
-Use the generated plan script so the workload and lifecycle commits share the
-planned interpreter. New local plans at the manager checkout freeze its current
+Use the generated top-level plan script, which delegates to `preset-launch`
+and defaults to dry-run; add `--execute` only when execution is authorized. New
+direct plans detach the worker with closed input, persistent stdout/stderr logs,
+and recorded process identity. Do not wrap the worker in an ad hoc background
+SSH shell or retry a launch after a lost receipt. Observe with
+`experiment-monitor` and stop with `preset-stop --reason` under the
+[managed preset contract](../../doc/agent_contracts/task_recipe.md#managed-preset-preparation).
+The workload and lifecycle commits share the planned interpreter.
+New local plans at the manager checkout freeze its current
 Python and Git HEAD by default. For a different workdir or remote path context,
 provide a complete local `execution.python`, `execution.runtime_commit`, and
 absolute `execution.workdir` identity in the recipe; use an absolute Python path
 to avoid launcher PATH drift. Plan on the execution host: preset plans do not
-provide an SSH launcher. Do not patch old plans to add identity. The script
+provide recipe-driven SSH execution. Historical plans without the direct
+scheduler declaration retain their original script behavior; do not patch them
+to add identity or route them through the new launcher. The script
 checks the workdir's Git HEAD before marking the run `running`. Entry points
 remain variant-local: `preprocess/save_dataset_presets.py`,
 `sleep2vec2/preprocess/save_dataset_presets.py`, or

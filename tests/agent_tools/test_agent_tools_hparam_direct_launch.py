@@ -916,6 +916,43 @@ def test_launch_creates_and_stops_a_dedicated_process_group(tmp_path: Path):
     assert run_evidence.process_identity_running({}, identity) is False
 
 
+def test_detached_process_stdio_survives_transport_pipe_closure(tmp_path: Path):
+    script = tmp_path / "launch.sh"
+    log_path, pid_path = tmp_path / "stdout.log", tmp_path / "pid"
+    worker = (
+        "import os, time; "
+        "assert os.read(0, 1) == b''; "
+        "assert os.fstat(1).st_ino == os.fstat(2).st_ino; "
+        "time.sleep(0.2); "
+        "os.write(1, b'delayed stdout\\n'); "
+        "os.write(2, b'delayed stderr\\n')"
+    )
+    script.write_text(f"#!/usr/bin/env bash\n{shlex.join([sys.executable, '-c', worker])}\n")
+    command = managed_scheduler.build_launch_command(
+        {"workdir": str(tmp_path), "python": sys.executable}, script, log_path, pid_path, []
+    )
+    launcher = subprocess.Popen(["bash", "-lc", command], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    launcher.stdout.close()
+    launcher.stderr.close()
+    identity = None
+    try:
+        assert launcher.wait(timeout=10) == 0
+        identity = run_evidence.read_process_identity(pid_path, {})
+        assert identity is not None
+        assert identity["pid"] == identity["process_group_id"]
+        deadline = time.monotonic() + 10
+        while run_evidence.process_identity_running({}, identity) is not False:
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        assert log_path.read_text() == "delayed stdout\ndelayed stderr\n"
+    finally:
+        if identity is not None and run_evidence.process_identity_running({}, identity) is True:
+            run_evidence.stop_process_group({}, identity)
+        if launcher.poll() is None:
+            launcher.kill()
+            launcher.wait(timeout=10)
+
+
 @pytest.mark.parametrize(
     ("exit_code", "expected_status"),
     [
