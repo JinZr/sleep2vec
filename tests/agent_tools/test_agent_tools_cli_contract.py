@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -13,44 +14,45 @@ from agent_tools.decisions import evaluate_consultation_gates
 from agent_tools.manifests import write_rows
 from agent_tools.recipes import load_consultation_policy
 
-SUBCOMMANDS = {
-    "skills",
-    "repo-summary",
-    "config-summary",
-    "index-summary",
-    "preset-summary",
-    "doctor",
-    "context",
-    "plan",
-    "collect-runs",
-    "hparam-launch",
-    "infer-launch",
-    "infer-stop",
-    "hparam-run-queue",
-    "hparam-monitor",
-    "progress",
-    "experiment-init",
-    "experiment-note",
-    "experiment-register-step",
-    "experiment-finalize",
-    "experiment-run",
-    "experiment-wandb-sync",
-    "experiment-index-checkpoints",
-    "experiment-monitor",
-    "experiment-status",
-    "experiment-rank",
-    "hparam-stop",
-    "hparam-select",
-    "hparam-external-eval",
-    "hparam-export-logits",
-    "hparam-threshold",
-    "hparam-ensemble",
-    "hparam-checkpoint-scan",
-    "hparam-digest",
-    "hparam-suggest",
-    "hparam-adaptive-init",
-    "hparam-adaptive-step",
-    "hparam-adaptive-loop",
+SUBCOMMAND_GROUPS = {
+    "Kernel": {
+        "repo-summary",
+        "collect-runs",
+        "hparam-launch",
+        "infer-launch",
+        "infer-stop",
+        "hparam-run-queue",
+        "hparam-monitor",
+        "progress",
+        "experiment-init",
+        "experiment-note",
+        "experiment-register-step",
+        "experiment-finalize",
+        "experiment-run",
+        "experiment-wandb-sync",
+        "experiment-index-checkpoints",
+        "experiment-monitor",
+        "experiment-status",
+        "experiment-rank",
+        "hparam-stop",
+        "hparam-select",
+        "hparam-checkpoint-scan",
+        "hparam-digest",
+        "hparam-suggest",
+        "hparam-adaptive-init",
+        "hparam-adaptive-step",
+        "hparam-adaptive-loop",
+    },
+    "Domain": {
+        "config-summary",
+        "index-summary",
+        "preset-summary",
+        "hparam-external-eval",
+        "hparam-export-logits",
+        "hparam-threshold",
+        "hparam-ensemble",
+    },
+    "Mixed": {"skills", "doctor", "context", "plan"},
 }
 
 RUNNABLE_TASK_VARIANT_MATRIX = [
@@ -86,8 +88,61 @@ def _actions(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
 def test_cli_has_exactly_37_subcommands():
     _parser, subcommands = _parser_contract()
 
-    assert set(subcommands) == SUBCOMMANDS
+    assert set(subcommands) == set.union(*SUBCOMMAND_GROUPS.values())
     assert len(subcommands) == 37
+
+
+def _assert_cli_architecture_contract(document: str):
+    section = re.search(r"^## CLI command triage \((\d+) subcommands\)\n(.*?)(?=^## |\Z)", document, re.M | re.S)
+    assert section is not None, "Missing CLI command triage section"
+    groups = re.findall(r"^- \*\*(\w+) \((\d+)\)\*\*: (.*?)(?=^- |\Z)", section[2], re.M | re.S)
+    assert len(groups) == len(SUBCOMMAND_GROUPS)
+    assert {name for name, _count, _body in groups} == set(SUBCOMMAND_GROUPS)
+    documented_commands = []
+    for name, count, body in groups:
+        commands = [command.strip() for command in body.partition(" — ")[0].strip().removesuffix(".").split(",")]
+        assert int(count) == len(commands) == len(set(commands)), name
+        assert set(commands) == SUBCOMMAND_GROUPS[name], name
+        documented_commands.extend(commands)
+    _parser, subcommands = _parser_contract()
+    assert int(section[1]) == len(documented_commands) == len(subcommands)
+    assert set(documented_commands) == set(subcommands)
+
+
+def test_architecture_cli_triage_matches_parser_and_ownership():
+    document = (Path(cli.__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
+
+    _assert_cli_architecture_contract(document)
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        ("37 subcommands", "35 subcommands"),
+        ("Kernel (26)", "Kernel (24)"),
+        ("infer-launch, ", ""),
+        ("infer-launch, ", "unknown-command, "),
+        ("infer-launch, infer-stop", "infer-launch, infer-launch"),
+        ("**Domain (7)**", "**Kernel (7)**"),
+        ("**Mixed (4)**", "**Other (4)**"),
+        ("skills, doctor, context, plan", "skills, doctor, context, infer-stop"),
+    ],
+)
+def test_architecture_cli_triage_guard_rejects_drift(original: str, replacement: str):
+    document = (Path(cli.__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    assert original in document
+
+    with pytest.raises(AssertionError):
+        _assert_cli_architecture_contract(document.replace(original, replacement, 1))
+
+
+def test_architecture_cli_triage_guard_rejects_omission_with_matching_counts():
+    document = (Path(cli.__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    document = document.replace("37 subcommands", "36 subcommands").replace("Kernel (26)", "Kernel (25)")
+    document = document.replace("infer-launch, ", "", 1)
+
+    with pytest.raises(AssertionError):
+        _assert_cli_architecture_contract(document)
 
 
 def test_experiment_status_cli_contract():
