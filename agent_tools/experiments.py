@@ -11,11 +11,13 @@ from . import (
     experiment_io as exp_io,
     experiment_tracking as tracking,
     managed_scheduler,
+    python_programs,
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
 from .experiment_workspace import (
     FROZEN_RUN_FIELDS,
+    PROCESS_IDENTITY_FIELDS,
     RESEARCH_LOG_NAME,
     SHA256_RE,
     TERMINAL_STATUSES,
@@ -38,10 +40,218 @@ from .experiment_workspace import (
     validate_existing_experiment_manifest,
     validate_frozen_run_update,
     validate_managed_run_rows,
+    verify_run_snapshot,
     write_initial_experiment_manifest,
     write_status_report,
 )
 from .manifests import read_json, utc_now
+
+
+def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:
+    # The locator is untrusted; all execution fields below come from the registered frozen plan.
+    initial = read_json(plan_dir / "plan.json")
+    recipe = initial.get("recipe") if isinstance(initial, dict) else None
+    if not isinstance(recipe, dict) or recipe.get("task") != "preset_prepare":
+        raise ValueError("preset-launch and preset-stop require a preset preparation plan.")
+    issues = experiment_metadata_issues(recipe)
+    if issues:
+        raise ValueError("Invalid preset workspace binding: " + "; ".join(issue["message"] for issue in issues))
+    workspace = experiment_root(recipe)
+    assert workspace is not None
+    experiment, rows = _managed_workspace(workspace, remote=None)
+    registered_steps = _registered_plan_steps(workspace, experiment, rows, remote=None, require_registered_rows=True)
+    for registered in registered_steps:
+        for plan in registered["plans"]:
+            if plan["path"] != str(plan_dir):
+                continue
+            execution = plan["recipe"].get("execution") or {}
+            if (
+                registered["manifest"]["plan_controller"] != "ordinary"
+                or plan["task"] != "preset_prepare"
+                or len(plan["runs"]) != 1
+                or execution.get("scheduler") != {"type": "direct"}
+                or (execution.get("target") or "local") != "local"
+                or any(not execution.get(field) for field in ("python", "runtime_commit", "workdir"))
+                or plan["runs"][0].get("terminal_status_owner") != "script"
+            ):
+                raise ValueError("preset-launch and preset-stop require one new local managed direct preset run.")
+            return workspace, plan, rows
+    raise ValueError(f"Preset plan is not registered in its experiment workspace: {plan_dir}")
+
+
+def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_scheduler.LaunchResult:
+    owner_dir = Path(plan_dir).absolute()
+    workspace, _plan, _rows = _read_preset_direct_plan(owner_dir)
+    with managed_scheduler.managed_run_lock(workspace):
+        locked_workspace, plan, rows = _read_preset_direct_plan(owner_dir)
+        if locked_workspace != workspace:
+            raise ValueError("Preset plan workspace changed before launch.")
+        run = plan["runs"][0]
+        key = managed_run_key(run)
+        previous = {managed_run_key(row): row for row in rows}[key]
+        if previous["status"] not in managed_scheduler.LAUNCHABLE_STATUSES:
+            return managed_scheduler.LaunchResult(rows, [previous], frozenset(), {}, {})
+        if has_managed_launch_evidence(previous):
+            raise ValueError("Preset run already has launch evidence; refusing another launch attempt.")
+        execution = plan["recipe"]["execution"]
+        run_dir = Path(run["run_dir"])
+        identity = {
+            "target": "local",
+            "host": "",
+            "workdir": execution["workdir"],
+            "gpus": "",
+            "pid_path": str(run_dir / "pid"),
+            "log_path": str(run_dir / "stdout.log"),
+        }
+        identity["command"] = managed_scheduler.build_launch_command(
+            execution, Path(run["script"]), identity["log_path"], identity["pid_path"], []
+        )
+        exp_io.validate_managed_output_paths(
+            workspace,
+            [
+                workspace / "run_manifest.tsv",
+                workspace / "run_matrix.csv",
+                workspace / "reports" / "run_matrix.md",
+                workspace / "events.jsonl",
+                workspace / "reports" / "status.md",
+                Path(identity["pid_path"]),
+                Path(identity["log_path"]),
+            ],
+        )
+        verify_run_snapshot(run)
+        preview = {**previous, **identity}
+        validate_frozen_run_update(previous, preview, allow_execution_identity_fill=True)
+        if dry_run:
+            return managed_scheduler.LaunchResult(rows, [preview], frozenset(), {}, {})
+        if Path(identity["pid_path"]).exists():
+            raise ValueError("Preset PID receipt already exists; refusing another launch attempt.")
+        guard = managed_scheduler.run_execution_command(
+            execution,
+            [
+                execution["python"],
+                "-c",
+                python_programs.source("plan_rendering.runtime_commit_guard"),
+                execution["runtime_commit"],
+            ],
+        )
+        if guard.returncode != 0:
+            detail = guard.stderr.strip() or guard.stdout.strip() or f"exit code {guard.returncode}"
+            raise RuntimeError(f"Preset runtime preflight failed: {detail}")
+        # Claim before fork: an interrupted manager must not turn an uncertain launch into a retry.
+        attempted = {**preview, "status": "launched", "launched_at": utc_now()}
+        merge_run_manifest(workspace, [attempted], lock_held=True)
+        status = managed_scheduler.start_process(execution, identity["command"])
+        attempted["status"] = status
+        process_identity = evidence.read_process_identity(identity["pid_path"], attempted)
+        if process_identity is not None:
+            attempted.update(process_identity)
+        committed = merge_run_manifest(workspace, [attempted], lock_held=True)
+        final = {managed_run_key(row): row for row in committed}[key]
+        append_event(
+            workspace,
+            "run_status_changed",
+            {"step_id": key[0], "run_id": key[1], "from": previous["status"], "to": final["status"]},
+        )
+        write_status_report(workspace)
+        return managed_scheduler.LaunchResult(
+            committed,
+            [final],
+            frozenset({key}) if status == "launched" else frozenset(),
+            {key: (previous["status"], final["status"])},
+            {},
+        )
+
+
+def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
+    if not reason.strip():
+        raise ValueError("Stopping a run requires a non-empty reason.")
+    owner_dir = Path(plan_dir).absolute()
+    workspace, _plan, _rows = _read_preset_direct_plan(owner_dir)
+    with managed_scheduler.managed_run_lock(workspace):
+        locked_workspace, plan, rows = _read_preset_direct_plan(owner_dir)
+        if locked_workspace != workspace:
+            raise ValueError("Preset plan workspace changed before stop.")
+        exp_io.validate_managed_output_paths(
+            workspace,
+            [
+                workspace / "run_manifest.tsv",
+                workspace / "run_matrix.csv",
+                workspace / "reports" / "run_matrix.md",
+                workspace / "events.jsonl",
+                workspace / "reports" / "status.md",
+            ],
+        )
+        run = plan["runs"][0]
+        key = managed_run_key(run)
+        previous = {managed_run_key(row): row for row in rows}[key]
+        if previous["status"] in TERMINAL_STATUSES:
+            raise ValueError(f"Run is already terminal and cannot be stopped: {key[1]} ({previous['status']})")
+        if previous["status"] in managed_scheduler.LAUNCHABLE_STATUSES and not has_managed_launch_evidence(previous):
+            merge_run_manifest(
+                workspace,
+                [
+                    {
+                        "step_id": key[0],
+                        "run_id": key[1],
+                        "status": "stopped",
+                        "stopped_at": utc_now(),
+                        "stop_reason": reason,
+                    }
+                ],
+                lock_held=True,
+            )
+            append_event(workspace, "run_stopped", {"step_id": key[0], "run_id": key[1], "reason": reason})
+            write_status_report(workspace)
+            return workspace / "run_manifest.tsv"
+        if previous.get("target") != "local" or previous.get("pid_path") != str(Path(run["run_dir"]) / "pid"):
+            raise ValueError("Preset run lacks its frozen local launch identity.")
+        populated = {field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")}
+        if populated and populated != PROCESS_IDENTITY_FIELDS:
+            raise ValueError("Preset run has partial canonical process identity.")
+        exp_io.validate_managed_output_paths(workspace, [Path(previous["pid_path"])])
+        identity = evidence.read_process_identity(
+            previous["pid_path"], previous, expected_script=run["script"] if not populated else None
+        )
+        if identity is None:
+            raise ValueError("Preset run has no recorded process identity; refusing to signal.")
+        if evidence.process_identity_running(previous, identity) is None:
+            raise RuntimeError("Cannot verify preset process group before stop.")
+        stopping = {
+            **previous,
+            **identity,
+            "status": "stopping",
+            "stop_requested_at": previous.get("stop_requested_at") or utc_now(),
+            "stop_reason": previous.get("stop_reason") or reason,
+        }
+        merge_run_manifest(workspace, [stopping], lock_held=True)
+    # The worker's EXIT trap takes this same manifest lock; never hold it while waiting for exit.
+    running = evidence.process_identity_running(stopping, identity)
+    if running is None:
+        raise RuntimeError("Cannot verify preset process group after stop intent.")
+    if running:
+        try:
+            evidence.stop_process_group(stopping, identity)
+        except (RuntimeError, ProcessLookupError) as exc:
+            # A short task can exit between the authenticated probe and signal. Uncertainty or reuse is not exit.
+            if (
+                isinstance(exc, evidence.ProcessIdentityError)
+                or evidence.process_identity_running(stopping, identity) is not False
+            ):
+                raise
+    with managed_scheduler.managed_run_lock(workspace):
+        locked_workspace, _plan, rows = _read_preset_direct_plan(owner_dir)
+        if locked_workspace != workspace:
+            raise ValueError("Preset plan workspace changed before stop completion.")
+        latest = {managed_run_key(row): row for row in rows}[key]
+        validate_frozen_run_update(latest, stopping)
+        merge_run_manifest(
+            workspace,
+            [{**latest, "status": "stopped", "stopped_at": utc_now()}],
+            lock_held=True,
+        )
+        append_event(workspace, "run_stopped", {"step_id": key[0], "run_id": key[1], "reason": stopping["stop_reason"]})
+        write_status_report(workspace)
+    return workspace / "run_manifest.tsv"
 
 
 def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:

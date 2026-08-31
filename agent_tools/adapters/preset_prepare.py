@@ -14,6 +14,7 @@ from .base import TaskAdapter
 class PresetPrepareAdapter(TaskAdapter):
     task = "preset_prepare"
     supports_runtime_identity = True
+    direct_launch_subcommand = "preset-launch"
 
     recipe_extra_fields = frozenset({"execution", "inputs", "preset"})
     contract_sections = {
@@ -89,9 +90,14 @@ class PresetPrepareAdapter(TaskAdapter):
                     # Binding follows source validation; generated identity must pass the same contract.
                     issues.extend(
                         execution_contract_issues(
-                            recipe, source_layer="effective", supports_runtime_identity=self.supports_runtime_identity
+                            recipe,
+                            source_layer="effective",
+                            supports_runtime_identity=self.supports_runtime_identity,
+                            supports_direct=True,
                         )
                     )
+        # Only new effective recipes acquire managed launch semantics; registered readers never bind defaults.
+        recipe.setdefault("execution", {}).setdefault("scheduler", {"type": "direct"})
         preset_build = (config_summary or {}).get("preset_build") or {}
         if not preset_build:
             return issues

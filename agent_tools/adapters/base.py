@@ -94,6 +94,8 @@ class TaskAdapter:
     supports_runtime_identity: bool = False
     #: Public manager entrypoint for a generic task's single Slurm run.
     slurm_launch_subcommand: str | None = None
+    #: Public manager entrypoint for a generic task's local detached run.
+    direct_launch_subcommand: str | None = None
     #: Task accepts either a pretrain or finetune model config.
     accepts_pretrain_config: bool = False
     #: Run preflight_issues while consultation choices remain unresolved.
@@ -319,12 +321,19 @@ class TaskAdapter:
                 scheduler_submit_token=token,
                 scheduler_script_sha256=hashlib.sha256(scheduler_text.encode()).hexdigest(),
             )
+            contract["scheduler_script_text"] = scheduler_text
+        launch_subcommand = None
+        if run.get("scheduler_type") == "slurm":
+            launch_subcommand = self.slurm_launch_subcommand
+        elif run.get("scheduler_type") == "direct":
+            launch_subcommand = self.direct_launch_subcommand
+        if launch_subcommand:
             manager_command = plan_rendering.render_command(
                 [
                     plan_contract.frozen_plan_context(recipe)["python"],
                     "-m",
                     "agent_tools",
-                    self.slurm_launch_subcommand,
+                    launch_subcommand,
                     "--plan-dir",
                     out,
                 ]
@@ -337,7 +346,6 @@ class TaskAdapter:
                 )
                 + "\n"
             )
-            contract["scheduler_script_text"] = scheduler_text
         return contract
 
     def validation_commands(self, recipe: dict[str, Any]) -> list[str] | None:

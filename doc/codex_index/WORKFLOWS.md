@@ -224,8 +224,10 @@ For command choice, use the [agent contract router](../agent_contracts/README.md
    owns final-config/argv checks and provenance limits.
 3. Execute through [launch and queue](../agent_contracts/task_recipe.md#launch-and-queue),
    with [snapshot revalidation](../agent_contracts/task_recipe.md#execution-snapshot-and-launch-revalidation).
-   Preset and other ordinary routes use the
+   Other ordinary routes use the
    [non-hparam runtime contract](../agent_contracts/task_recipe.md#non-hparam-runtime-identity);
+   `preset-launch` / `preset-stop` use
+   [managed preset preparation](../agent_contracts/task_recipe.md#managed-preset-preparation);
    `infer-launch` / `infer-stop` use the shared
    [managed ordinary Slurm inference](../agent_contracts/task_recipe.md#managed-ordinary-inference) owner.
 4. Inspect recorded state with

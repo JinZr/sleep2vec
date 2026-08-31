@@ -328,6 +328,7 @@ fact should not create an entry.
 | `plan` | Freeze and register recipe, config, commands, hashes and planned runs; [publication](#publication-and-registration). |
 | `hparam-launch`, `hparam-run-queue` | Explicit launch/queue advancement; dry-run default; [launch and queue](task_recipe.md#launch-and-queue). CLI names preview/execute and projects recorded state counts. |
 | `infer-launch`, `infer-stop` | Managed ordinary Slurm inference launch/stop; [ordinary inference](task_recipe.md#managed-ordinary-inference). |
+| `preset-launch`, `preset-stop` | Execution-host local detached preset launch/stop; launch defaults to dry-run, stop requires a reason; [managed preset preparation](task_recipe.md#managed-preset-preparation). |
 | `hparam-monitor`, `experiment-monitor` | Observe and write canonical evidence/projections, never launch pending work. |
 | `hparam-stop` | Reasoned stop under authenticated identity rules; [prelaunch stop](task_recipe.md#launch-and-queue), [direct process evidence](run_manifest.md#pid-and-runtime-evidence), [Slurm stopping](run_manifest.md#stopping-and-uncertain-states). |
 | `hparam-select` | Commit step-scoped ranking/selection; [selection and consumers](task_recipe.md#selection-and-selected-candidate-consumers). |

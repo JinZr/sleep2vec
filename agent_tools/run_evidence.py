@@ -185,6 +185,9 @@ def status_row(
                 observed_status = "unknown_remote"
             else:
                 observed_status = "failed" if log_failed else "finished"
+    if script_commits_terminal_status and previous.get("status") == "stopping" and previous.get("stop_requested_at"):
+        # The stop manager owns final stopped evidence; a live probe cannot release its recorded intent.
+        observed_status = "stopping"
     # Remote artifacts must be observed on the execution host; transport uncertainty preserves prior evidence.
     manifest = str(previous.get("run_manifest") or row.get("run_manifest") or "")
     checkpoints = [name for name in str(previous.get("checkpoints") or row.get("checkpoints") or "").split(";") if name]

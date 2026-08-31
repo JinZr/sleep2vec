@@ -276,6 +276,35 @@ Historical registered preset plans without identity retain their original
 commands and are never rebound or migrated by readers. This identity binds
 the interpreter path and Git commit, not package versions or dirty file bytes.
 
+### Managed preset preparation
+
+New effective `preset_prepare` recipes freeze `execution.scheduler.type: direct`
+and an explicit script terminal-status owner. Plan and launch on the execution
+host; this does not add recipe-driven SSH execution. The registered plan keeps
+its variant-local preset command and frozen runtime identity. Its top-level
+`run.sh` delegates to `preset-launch --plan-dir <plan>`: both default to dry-run,
+and execution requires `--execute`. Do not launch the worker `launch.sh`
+separately or add a background SSH shell wrapper.
+
+The launcher validates the registered plan and frozen inputs, then records the
+execution identity and launch attempt before starting a detached process.
+Stdin is closed to input; stdout and stderr share the run's persistent
+`stdout.log`. The process has its own session and a recorded PID, process group,
+and start token. Loss of the launching connection or an incomplete receipt does
+not authorize another launch. These controls preserve the preset runtime
+contract above; they do not create the hparam module/host execution snapshot.
+
+The worker remains responsible for `running`, `completed`, and `failed` commits.
+Use `experiment-monitor` to observe the existing run; it neither launches work
+nor infers successful completion from a log or a vanished process. Use
+`preset-stop --plan-dir <plan> --reason <reason>` for a reasoned, identity-checked
+stop. An uncertain stop remains `stopping` with its original reason; monitoring
+does not clear that intent. A later explicit stop may confirm the recorded
+process group has exited, but cannot replace its identity or launch again.
+Historical registered plans without the direct scheduler declaration keep
+their original bytes and interpretation; the new launcher does not migrate or
+restart them.
+
 ### Managed ordinary inference
 
 Ordinary `infer` and `evaluate` plans may declare `execution.scheduler.type:

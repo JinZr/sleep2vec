@@ -27,11 +27,13 @@ from .experiments import (
     index_checkpoints,
     init_experiment,
     launch_infer_run,
+    launch_preset_run,
     monitor_experiment,
     rank_experiment_candidates,
     register_experiment_step,
     run_experiment_pipeline,
     stop_infer_run,
+    stop_preset_run,
     sync_wandb_runs,
 )
 from .hparam import (
@@ -153,6 +155,16 @@ def _build_parser() -> argparse.ArgumentParser:
     infer_stop.add_argument("--plan-dir", required=True)
     infer_stop.add_argument("--reason", required=True)
     infer_stop.set_defaults(func=_cmd_infer_stop)
+
+    preset_launch = sub.add_parser("preset-launch")
+    preset_launch.add_argument("--plan-dir", required=True)
+    preset_launch.add_argument("--execute", action="store_true")
+    preset_launch.set_defaults(func=_cmd_preset_launch)
+
+    preset_stop = sub.add_parser("preset-stop")
+    preset_stop.add_argument("--plan-dir", required=True)
+    preset_stop.add_argument("--reason", required=True)
+    preset_stop.set_defaults(func=_cmd_preset_stop)
 
     run_queue = sub.add_parser("hparam-run-queue")
     run_queue.add_argument("--plan-dir", required=True)
@@ -489,6 +501,23 @@ def _cmd_infer_launch(args: argparse.Namespace) -> int:
 
 def _cmd_infer_stop(args: argparse.Namespace) -> int:
     manifest = stop_infer_run(args.plan_dir, reason=args.reason)
+    print(f"Wrote {manifest}")
+    return 0
+
+
+def _cmd_preset_launch(args: argparse.Namespace) -> int:
+    result = launch_preset_run(args.plan_dir, dry_run=not args.execute)
+    row = result.launch_rows[0]
+    mode = "execute (state changes enabled)" if args.execute else "dry-run (no launch attempted)"
+    print(f"Mode: {mode}")
+    print(f"Lifecycle state: {row['status']}")
+    if row.get("command"):
+        print(f"Launch command: {row['command']}")
+    return 0
+
+
+def _cmd_preset_stop(args: argparse.Namespace) -> int:
+    manifest = stop_preset_run(args.plan_dir, reason=args.reason)
     print(f"Wrote {manifest}")
     return 0
 

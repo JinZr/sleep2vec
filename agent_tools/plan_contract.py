@@ -163,6 +163,8 @@ def generic_run_contract(
         "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir is not None else "",
     }
     execution = recipe.get("execution") or {}
+    if adapter.direct_launch_subcommand and (execution.get("scheduler") or {}).get("type") == "direct":
+        run.update(scheduler_type="direct", terminal_status_owner="script")
     if adapter.slurm_launch_subcommand and (execution.get("scheduler") or {}).get("type") == "slurm":
         resources = slurm.normalize_resources(execution["scheduler"], execution.get("gpus_per_run", 1))
         run.update(
