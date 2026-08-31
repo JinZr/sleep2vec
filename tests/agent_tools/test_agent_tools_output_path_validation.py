@@ -147,6 +147,97 @@ def test_stale_collision_does_not_discard_an_earlier_alias_candidate(
         validate_outputs(tmp_path, [first, second, third])
 
 
+@pytest.mark.parametrize("alias_of", ["first.tsv", "second.tsv"])
+def test_collision_refresh_retains_fresh_identities_for_later_aliases(
+    tmp_path, monkeypatch, validate_outputs, descriptors, alias_of
+):
+    first, second, third, replacement = (
+        tmp_path / name for name in ("first.tsv", "second.tsv", "third.tsv", "replacement")
+    )
+    first.write_text("old\n")
+    second.write_text("independent\n")
+    replacement.write_text("new\n")
+    real_lstat, real_fstat = os.lstat, os.fstat
+
+    def one_link(info):
+        values = list(info)
+        values[3] = 1
+        return os.stat_result(values)
+
+    monkeypatch.setattr(os, "lstat", lambda *args, **kwargs: one_link(real_lstat(*args, **kwargs)))
+    monkeypatch.setattr(os, "fstat", lambda descriptor: one_link(real_fstat(descriptor)))
+
+    def replace():
+        os.replace(replacement, first)
+        third.hardlink_to(tmp_path / alias_of)
+
+    _collide_once(monkeypatch, first, second, replace)
+
+    with pytest.raises((ValueError, SystemExit), match="independent regular files|2"):
+        validate_outputs(tmp_path, [first, second, third])
+
+
+@pytest.mark.parametrize("existing_candidate", ["alias", "replaced"])
+def test_collision_refresh_fails_closed_on_another_unpinned_bucket(
+    tmp_path, monkeypatch, validate_outputs, descriptors, existing_candidate
+):
+    earlier, first, second, replacement = (
+        tmp_path / name for name in ("earlier.tsv", "first.tsv", "second.tsv", "replacement")
+    )
+    earlier.write_text("earlier\n")
+    first.write_text("old\n")
+    second.write_text("independent\n")
+    replacement.write_text("new\n")
+    real_lstat, real_fstat = os.lstat, os.fstat
+
+    def one_link(info):
+        values = list(info)
+        values[3] = 1
+        return os.stat_result(values)
+
+    monkeypatch.setattr(os, "lstat", lambda *args, **kwargs: one_link(real_lstat(*args, **kwargs)))
+    monkeypatch.setattr(os, "fstat", lambda descriptor: one_link(real_fstat(descriptor)))
+
+    def replace():
+        if existing_candidate == "alias":
+            first.unlink()
+            first.hardlink_to(earlier)
+        else:
+            os.replace(earlier, first)
+            os.replace(replacement, earlier)
+
+    _collide_once(monkeypatch, first, second, replace)
+
+    with pytest.raises(RuntimeError, match="changed|uncertain"):
+        validate_outputs(tmp_path, [earlier, first, second])
+
+
+def test_collision_refresh_keeps_missing_group_members_and_deduplicates_candidates(
+    tmp_path, monkeypatch, validate_outputs, descriptors
+):
+    first, second, third = (tmp_path / name for name in ("first.tsv", "second.tsv", "third.tsv"))
+    first.write_text("moved\n")
+    second.write_text("replaced\n")
+    third.write_text("independent\n")
+    original = first.stat()
+    _collide_once(monkeypatch, first, second, lambda: os.replace(first, second))
+    real_lstat = os.lstat
+
+    def collide_third(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if Path(path) == third:
+            values = list(info)
+            values[1:3] = [original.st_ino, original.st_dev]
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(os, "lstat", collide_third)
+
+    validate_outputs(tmp_path, [first, second, third])
+
+    assert [name for name, _flags, _descriptor in descriptors] == [second.name, second.name]
+
+
 @pytest.mark.parametrize("missing", ["first", "second", "root"])
 def test_collision_recheck_allows_confirmed_missing(tmp_path, monkeypatch, validate_outputs, descriptors, missing):
     root = tmp_path / "workspace"

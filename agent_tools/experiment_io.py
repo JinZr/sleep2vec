@@ -444,8 +444,9 @@ def validate_managed_output_paths(
                         raise
                     raise ValueError(f"Managed output paths must be independent regular files: {root_path}") from exc
                 stack.callback(_close_descriptor, root_descriptor)
-                descriptors = []
-                for candidate in [*seen_inodes[inode], target]:
+                candidates = [*seen_inodes[inode], target]
+                descriptors = {}
+                for candidate in candidates:
                     try:
                         parent_descriptor, name = _open_managed_parent(
                             root_descriptor, candidate.relative_to(root_path), create=False
@@ -461,15 +462,26 @@ def validate_managed_output_paths(
                             f"Managed output paths must be independent regular files: {candidate}"
                         ) from exc
                     stack.callback(_close_descriptor, descriptor)
-                    descriptors.append(descriptor)
-                current_infos = [os.fstat(descriptor) for descriptor in descriptors]
-                if any(current.st_nlink == 0 for current in current_infos):
+                    descriptors[candidate] = descriptor
+                current_infos = {candidate: os.fstat(descriptor) for candidate, descriptor in descriptors.items()}
+                if any(current.st_nlink == 0 for current in current_infos.values()):
                     raise RuntimeError(f"Managed output paths changed during independence validation: {target}")
-                if any(not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 for current in current_infos):
+                if any(
+                    not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 for current in current_infos.values()
+                ):
                     raise ValueError(f"Managed output paths must be independent regular files: {target}")
-                if len({(current.st_dev, current.st_ino) for current in current_infos}) != len(current_infos):
+                if len({(current.st_dev, current.st_ino) for current in current_infos.values()}) != len(current_infos):
                     raise ValueError(f"Managed output paths must be independent regular files: {target}")
-        seen_inodes.setdefault(inode, []).append(target)
+                for candidate, current in current_infos.items():
+                    previous = seen_inodes.setdefault((current.st_dev, current.st_ino), [])
+                    # An unpinned group's stale identities cannot prove independence from this fresh object.
+                    if any(path not in candidates for path in previous):
+                        raise RuntimeError(f"Managed output paths changed during independence validation: {target}")
+                    if candidate not in previous:
+                        previous.append(candidate)
+        previous = seen_inodes.setdefault(inode, [])
+        if target not in previous:
+            previous.append(target)
 
 
 def read_text_at(path: str | Path, *, remote: str | None = None) -> str:
