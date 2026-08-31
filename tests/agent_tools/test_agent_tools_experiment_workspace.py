@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import threading
@@ -1739,7 +1740,7 @@ def test_remote_projection_holds_the_canonical_manifest_lock(monkeypatch):
 
     def fake_run(host, command, **kwargs):
         calls.append((host, command, kwargs))
-        return subprocess.CompletedProcess([], 0, "", "")
+        return subprocess.CompletedProcess([], 0, "true\n", "")
 
     monkeypatch.setattr(experiment_workspace.transport, "run_ssh", fake_run)
     rows = [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}]
@@ -1755,6 +1756,55 @@ def test_remote_projection_holds_the_canonical_manifest_lock(monkeypatch):
     payload = json.loads(kwargs["input"])
     assert "run-000" in payload["matrix"]
     assert "| planned |" in payload["report"]
+
+
+@pytest.mark.parametrize(
+    "outcome", ["success", "conflict", "partial_failure", "lost", "truncated", "ssh255", "timeout"]
+)
+def test_remote_projection_requires_actual_completed_result(tmp_path, monkeypatch, outcome):
+    manifest = tmp_path / "run_manifest.tsv"
+    manifest.write_text("current\n")
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    report = reports / "run_matrix.md"
+    if outcome == "partial_failure":
+        report.mkdir()
+    children = []
+
+    def rewritten_exit(_host, command, **kwargs):
+        child = subprocess.run([sys.executable, *shlex.split(command)[1:]], capture_output=True, timeout=5, **kwargs)
+        children.append(child)
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(command, 5)
+        stdout = child.stdout
+        if outcome == "lost":
+            stdout = ""
+        elif outcome == "truncated":
+            stdout = stdout[:-2]
+        return subprocess.CompletedProcess(command, 255 if outcome == "ssh255" else 0, stdout, child.stderr)
+
+    monkeypatch.setattr(experiment_workspace.transport, "run_ssh", rewritten_exit)
+    rows = [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}]
+    expected = "stale\n" if outcome == "conflict" else "current\n"
+    if outcome in {"success", "conflict"}:
+        assert experiment_workspace._write_remote_run_matrix_if_current(tmp_path, rows, expected, "host") is (
+            outcome == "success"
+        )
+    else:
+        with pytest.raises(subprocess.TimeoutExpired if outcome == "timeout" else RuntimeError):
+            experiment_workspace._write_remote_run_matrix_if_current(tmp_path, rows, expected, "host")
+    assert len(children) == 1
+    assert children[0].returncode == (45 if outcome == "conflict" else 1 if outcome == "partial_failure" else 0)
+    assert manifest.read_text() == "current\n"
+    if outcome == "conflict":
+        assert not (tmp_path / "run_matrix.csv").exists()
+        assert not report.exists()
+    else:
+        assert "run-000" in (tmp_path / "run_matrix.csv").read_text()
+        if outcome == "partial_failure":
+            assert report.is_dir()
+        else:
+            assert "run-000" in report.read_text()
 
 
 def test_remote_projection_conflicts_never_publish_a_stale_matrix(monkeypatch):

@@ -82,3 +82,5 @@ for raw_target in targets:
     if inode in seen_inodes:
         reject(target)
     seen_inodes.add(inode)
+
+print("true")

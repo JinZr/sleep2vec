@@ -170,6 +170,7 @@ with ExitStack() as lock_stack:
         try:
             dependency_parent, dependency_name = open_managed_parent(root_descriptor, dependency_relative, False)
         except FileNotFoundError:
+            print("false")
             raise SystemExit(45)
         lock_stack.callback(close_descriptor, dependency_parent)
         dependency_lock_name = dependency_name + ".lock"
@@ -185,8 +186,10 @@ with ExitStack() as lock_stack:
         try:
             dependency_current, _dependency_mode = read_regular_file_at(dependency_parent, dependency_name)
         except FileNotFoundError:
+            print("false")
             raise SystemExit(45)
         if hashlib.sha256(dependency_current).hexdigest() != dependency_expected:
+            print("false")
             raise SystemExit(45)
     target_lock_names = [f".{target_name}.cas.lock"]
     if not append_mode:
@@ -201,13 +204,16 @@ with ExitStack() as lock_stack:
         try:
             guard_parent, guard_name = open_managed_parent(root_descriptor, guard_relative, False)
         except FileNotFoundError:
+            print("false")
             raise SystemExit(45)
         lock_stack.callback(close_descriptor, guard_parent)
         try:
             guard_current, _guard_mode = read_regular_file_at(guard_parent, guard_name)
         except FileNotFoundError:
+            print("false")
             raise SystemExit(45)
         if hashlib.sha256(guard_current).hexdigest() != guard_expected:
+            print("false")
             raise SystemExit(45)
     if append_mode:
         try:
@@ -223,6 +229,7 @@ with ExitStack() as lock_stack:
         except FileNotFoundError:
             pass
         else:
+            print("false")
             raise SystemExit(45)
         current = b""
         target_mode = 0o644
@@ -231,8 +238,10 @@ with ExitStack() as lock_stack:
         try:
             current, target_mode = read_regular_file_at(target_parent, target_name)
         except FileNotFoundError:
+            print("false")
             raise SystemExit(45)
         if hashlib.sha256(current).hexdigest() != expected:
+            print("false")
             raise SystemExit(45)
         target_exists = True
     incoming = sys.stdin.buffer.read()
@@ -282,6 +291,7 @@ with ExitStack() as lock_stack:
                         dst_dir_fd=public_parent,
                     )
                 elif not rename_noreplace_at(public_parent, temporary, public_name):
+                    print("false")
                     raise SystemExit(45)
                 if not publication_matches(root_info, target_parent_info, temporary_info, payload):
                     raise RuntimeError(
@@ -299,3 +309,5 @@ with ExitStack() as lock_stack:
         except FileNotFoundError:
             pass
         raise
+
+print("true")

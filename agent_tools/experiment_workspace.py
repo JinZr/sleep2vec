@@ -1343,12 +1343,15 @@ def _write_remote_run_matrix_if_current(
         input=json.dumps({"matrix": matrix_text, "report": report_text}),
         text=True,
     )
-    if result.returncode == exp_io.REMOTE_CONFLICT_RETURN_CODE:
-        return False
-    if result.returncode != 0:
+    if result.returncode not in {0, exp_io.REMOTE_CONFLICT_RETURN_CODE}:
         detail = result.stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"Remote run-matrix projection failed on {remote}: {detail}")
-    return True
+        raise RuntimeError(f"Remote run-matrix projection failed on {remote}; outcome may be unknown: {detail}")
+    if result.stdout == "false\n":
+        return False
+    if result.returncode == 0 and result.stdout == "true\n":
+        return True
+    detail = result.stderr.strip() or "no valid result"
+    raise RuntimeError(f"Remote run-matrix projection outcome may be unknown on {remote}: {detail}")
 
 
 def write_run_matrix(root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> Path:

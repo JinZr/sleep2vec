@@ -5,7 +5,10 @@ import sys
 try:
     os.lstat(sys.argv[1])
 except FileNotFoundError:
+    print("false")
     raise SystemExit(44)
 except OSError as exc:
     print(exc, file=sys.stderr)
     raise SystemExit(1)
+
+print("true")

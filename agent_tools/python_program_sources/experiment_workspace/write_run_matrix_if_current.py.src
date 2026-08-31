@@ -14,8 +14,10 @@ with open(manifest_path + ".lock", "a+") as lock_file:
         with open(manifest_path, "rb") as file_obj:
             current = file_obj.read()
     except FileNotFoundError:
+        print("false")
         raise SystemExit(45)
     if hashlib.sha256(current).hexdigest() != expected:
+        print("false")
         raise SystemExit(45)
     staged = []
     try:
@@ -37,3 +39,5 @@ with open(manifest_path + ".lock", "a+") as lock_file:
                 os.unlink(temporary)
             except FileNotFoundError:
                 pass
+
+print("true")

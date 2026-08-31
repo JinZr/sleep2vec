@@ -8,16 +8,16 @@ import pytest
 from agent_tools import python_programs, transport
 
 SOURCE_HASHES = {
-    "experiment_io.conditional_atomic_replace_text": "906bd5c43f5df3c185764d0e1fe26f6958fab037f2d27b7ce9b0e29c11a80988",
+    "experiment_io.conditional_atomic_replace_text": "2a3b61a3bdba9002ec2a82b840b19a9eb5dcb8eb7e2c03acf9be5377f0ad04f4",
     "experiment_io.list_managed_subdirectories": "e8b83f0cef4f3cf46b84542276f7ffaf7045acaf4f409c9ad2d0333178b39c8b",
-    "experiment_io.path_exists": "e6d06dceb086b4e29e3079cfe15fa4aa9a39931ecb614ac63073f338617d8fe9",
+    "experiment_io.path_exists": "ae3b150f5e8e90493d30a016323529509d00519ba9505185f293d4481564fe17",
     "experiment_io.read_managed_files": "acf0d66282bd5bb74c506d165ee1bd0e88f219c78e9678e75951c6e385538002",
     "experiment_io.read_managed_output_texts": "b29139caf7a2e1307e691b55876c844caba5a6cb681847331d3de9d3bf9c64a2",
-    "experiment_io.read_text": "19cd7e4efbe93f6f5bb05f6ade6d57f729316d9dd32f9927db16fdd46b5b2798",
-    "experiment_io.remote_dir_nonempty": "ac9c6bf27c949fd7b9df50c33f6c80494efa8029365ebd914c029440acc9787d",
-    "experiment_io.validate_managed_output_paths": "ddbcd4b1491649aec534a778230e424ed2680cd46d8ea037d7a0a4cfe9a08a77",
+    "experiment_io.read_text": "98a9a6036e73c9e43cc87ec31103a1185f0a51a62dcdf510c77c3cbe63d39f64",
+    "experiment_io.remote_dir_nonempty": "d9604eaedee251e2b5a8ef5f055344f0e51c976c4c9c2420df7ffb4c0343bc77",
+    "experiment_io.validate_managed_output_paths": "ab3f19a8727a29a2f8a3a38f168e927dda9300cd000e74da51b451188258208c",
     "experiment_workspace.write_run_matrix_if_current": (
-        "810ccc376ae337fb0317edbb356e8582f2cccbf4a78ec2730b4b301e445db2bf"
+        "53c24290cd4b38a99941d04f26adf2cd39ff8938b49097dae1e47e8a1e5ed8ea"
     ),
     "hparam_postprocess.verify_checkpoint_sha256": "edff342d976933beabffc01bfc98080c49cdbe673d1a9ec8e8958989fef569ee",
     "managed_scheduler.cli_preflight": "5620962bcbd5db619b4f934773ad9e3d67e2c6ddc1edc212fac7cda872cb0cd1",
@@ -36,16 +36,16 @@ SOURCE_HASHES = {
 }
 
 COMMAND_HASHES = {
-    "experiment_io.conditional_atomic_replace_text": "e086840a3c88b163f6aea6a03560762ffdd304006542c62372c54f2e9d286b0b",
+    "experiment_io.conditional_atomic_replace_text": "f349fa7030a97e3e242b4acb8b6759cb7e41292313f6886d105b4918f911a1dd",
     "experiment_io.list_managed_subdirectories": "87f1c489bbff353f89d4418104abbb691fe6b2ba5ee9245815eb0ae1369e2921",
-    "experiment_io.path_exists": "b6266a2d3eb073b90ea6ca0ed6a038448f0f79f0b3063b13a3ce7bf36c2595d7",
+    "experiment_io.path_exists": "1d4f605c0e2155db58da12c08f298901dc23d636bc9dd87fd24f97939a4e33e6",
     "experiment_io.read_managed_files": "43836ec1178eee36b1b54788554a977047552565245e8d54413370e8d57d6da0",
     "experiment_io.read_managed_output_texts": "15405aaa157a19d8d6de28363b7c09ede9ae2401a05c60fca813babbef5a2df7",
-    "experiment_io.read_text": "e29a1ae2879cbfdc6af06f04306e6bc385479ac39b40b98efc65f913fe686b2e",
-    "experiment_io.remote_dir_nonempty": "79cde1f9f61e4be321b9d387045babbfcd9d370c06da5722bdd15579ba8f8a38",
-    "experiment_io.validate_managed_output_paths": "23881e1035651ec1a36c8137f328a0f6c57b933e0e0f00263411e981a5230f11",
+    "experiment_io.read_text": "6a0e31af6006881d55b1109f58f0dfea2c332e503c6315741261569eb9b4edc0",
+    "experiment_io.remote_dir_nonempty": "bea5ad87ff7a0921736c954d84dec11f66a8d3079db464bb00a3b6328a0c60fc",
+    "experiment_io.validate_managed_output_paths": "a5add1e24f85dfc8c0a94d404e88b7ac62cfe31a53326dc0283099b9c8b9dbf5",
     "experiment_workspace.write_run_matrix_if_current": (
-        "a02b3de90da2d438fef4f2d37dd2424b2e31def4b26ca143647a28b782a08f4f"
+        "079d134d11b75e36e3bb2510b0147d977825092bed975426f14e9cb64da5927c"
     ),
     "hparam_postprocess.verify_checkpoint_sha256": "0423ef2081129f2e665a1128ccacb092120596d35dd57f8093782ebc3a737869",
     "managed_scheduler.cli_preflight": "f29964331539fb594e8736b27be9aa4005980f493df994833f00a5364c837418",

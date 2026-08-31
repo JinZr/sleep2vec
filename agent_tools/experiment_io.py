@@ -56,8 +56,11 @@ def blocking_file_lock(path: str | Path) -> Iterator[None]:
 def mkdir_experiment_dirs(root: Path, *, remote: str | None = None) -> None:
     dirs = [root / "reports", root / "wandb" / "history"]
     if remote:
-        command = "mkdir -p " + " ".join(transport.sh(path) for path in dirs)
-        transport.run_ssh(remote, command, text=True, check=True)
+        command = "mkdir -p " + " ".join(transport.sh(path) for path in dirs) + " && printf 'true\\n'"
+        result = transport.run_ssh(remote, command, text=True, check=True)
+        if result.returncode != 0 or result.stdout != "true\n":
+            detail = result.stderr.strip() or "no valid result"
+            raise RuntimeError(f"SSH directory creation outcome may be unknown for {root} on {remote}: {detail}")
         return
     for path in dirs:
         path.mkdir(parents=True, exist_ok=True)
@@ -65,12 +68,14 @@ def mkdir_experiment_dirs(root: Path, *, remote: str | None = None) -> None:
 
 def remote_dir_nonempty(root: Path, remote: str) -> bool:
     result = _run_remote_text_program(remote, "experiment_io.remote_dir_nonempty", str(root))
-    if result.returncode == REMOTE_MISSING_RETURN_CODE:
-        return False
-    if result.returncode != 0:
+    if result.returncode not in {0, REMOTE_MISSING_RETURN_CODE}:
         detail = result.stderr.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"SSH directory probe failed for {root} on {remote}: {detail}")
-    return bool(result.stdout.strip())
+    if result.stdout == "false\n":
+        return False
+    if result.returncode == 0 and result.stdout == "true\n":
+        return True
+    raise RuntimeError(f"SSH directory probe returned no valid result for {root} on {remote}: {result.stderr.strip()}")
 
 
 def path_exists_at(path: str | Path, *, remote: str | None = None) -> bool:
@@ -78,12 +83,14 @@ def path_exists_at(path: str | Path, *, remote: str | None = None) -> bool:
         target = Path(path)
         return target.exists() or target.is_symlink()
     result = _run_remote_text_program(remote, "experiment_io.path_exists", str(path))
-    if result.returncode == REMOTE_MISSING_RETURN_CODE:
-        return False
-    if result.returncode != 0:
+    if result.returncode not in {0, REMOTE_MISSING_RETURN_CODE}:
         detail = result.stderr.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"SSH path probe failed for {path} on {remote}: {detail}")
-    return True
+    if result.stdout == "false\n":
+        return False
+    if result.returncode == 0 and result.stdout == "true\n":
+        return True
+    raise RuntimeError(f"SSH path probe returned no valid result for {path} on {remote}: {result.stderr.strip()}")
 
 
 def list_managed_subdirectories_at(
@@ -366,6 +373,10 @@ def validate_managed_output_paths(
         if result.returncode != 0:
             detail = result.stderr.strip() or f"exit code {result.returncode}"
             raise RuntimeError(f"SSH output path validation failed on {remote}: {detail}")
+        if result.stdout != "true\n":
+            raise RuntimeError(
+                f"SSH output path validation returned no valid result on {remote}: {result.stderr.strip()}"
+            )
         return
 
     root_path = Path(os.path.abspath(root))
@@ -430,15 +441,22 @@ def read_text_at(path: str | Path, *, remote: str | None = None) -> str:
     if not remote:
         target = Path(path)
         return target.read_bytes().decode() if target.exists() else ""
-    # Keep SSH output binary so explicit decoding preserves remote line endings.
+    # A complete JSON string distinguishes empty text from a failed child with a rewritten SSH exit status.
     result = transport.run_ssh(remote, transport.remote_python_program_command("experiment_io.read_text", str(path)))
-    if result.returncode == REMOTE_MISSING_RETURN_CODE:
-        return ""
-    if result.returncode != 0:
+    if result.returncode not in {0, REMOTE_MISSING_RETURN_CODE}:
         stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
         detail = stderr.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"SSH read failed for {path} on {remote}: {detail}")
-    return result.stdout.decode() if isinstance(result.stdout, bytes) else result.stdout
+    try:
+        text = json.loads(result.stdout)
+    except ValueError as exc:
+        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
+        raise RuntimeError(f"SSH read returned no valid result for {path} on {remote}: {stderr.strip()}") from exc
+    if text is None:
+        return ""
+    if result.returncode == 0 and isinstance(text, str):
+        return text
+    raise RuntimeError(f"SSH read returned no valid result for {path} on {remote}.")
 
 
 def write_rows_at(path: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> None:
@@ -460,13 +478,16 @@ def write_text_at(path: str | Path, text: str, *, remote: str | None = None) -> 
         write_text(path, text)
         return
     target = Path(str(path))
-    transport.run_ssh(
+    result = transport.run_ssh(
         remote,
-        transport.remote_write_command(target),
+        transport.remote_write_command(target) + " && printf 'true\\n'",
         input=text,
         text=True,
         check=True,
     )
+    if result.returncode != 0 or result.stdout != "true\n":
+        detail = result.stderr.strip() or "no valid result"
+        raise RuntimeError(f"SSH write outcome may be unknown for {target} on {remote}: {detail}")
 
 
 _DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -972,13 +993,17 @@ def conditional_atomic_replace_text_at(
         ),
         input=payload,
     )
-    if result.returncode == REMOTE_CONFLICT_RETURN_CODE:
-        return False
-    if result.returncode != 0:
+    if result.returncode not in {0, REMOTE_CONFLICT_RETURN_CODE}:
         stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
         detail = stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"SSH atomic replace failed for {target} on {remote}: {detail}")
-    return True
+        raise RuntimeError(f"SSH atomic replace failed for {target} on {remote}; outcome may be unknown: {detail}")
+    if result.stdout == b"false\n":
+        return False
+    if result.returncode == 0 and result.stdout == b"true\n":
+        return True
+    stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
+    detail = stderr.strip() or "no valid result"
+    raise RuntimeError(f"SSH atomic replace outcome may be unknown for {target} on {remote}: {detail}")
 
 
 def append_event_at(
@@ -1013,3 +1038,7 @@ def append_event_at(
         stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
         detail = stderr.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"SSH managed event append failed on {remote}; outcome may be unknown: {detail}")
+    if result.stdout != b"true\n":
+        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
+        detail = stderr.strip() or "no valid result"
+        raise RuntimeError(f"SSH managed event append outcome may be unknown on {remote}: {detail}")

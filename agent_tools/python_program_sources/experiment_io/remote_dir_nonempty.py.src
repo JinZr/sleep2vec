@@ -6,6 +6,7 @@ path = sys.argv[1]
 try:
     os.lstat(path)
 except FileNotFoundError:
+    print("false")
     raise SystemExit(44)
 except OSError as exc:
     print(exc, file=sys.stderr)
@@ -17,5 +18,4 @@ except OSError as exc:
     print(exc, file=sys.stderr)
     raise SystemExit(1)
 
-if entries:
-    print("nonempty")
+print("true" if entries else "false")

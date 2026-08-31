@@ -69,6 +69,12 @@ immediately following atomic rename. Raw shell appends and concurrent lockless
 workspace renames or alias changes are unsupported. An SSH transport failure
 has an unknown commit outcome and must not be blindly retried.
 
+Managed SSH I/O also requires a complete operation result, not just a zero
+transport exit code: some endpoints hide failed child exit codes. Missing or
+malformed write results leave the commit outcome uncertain and do not authorize
+another write. A positively reported compare-and-swap conflict retains the
+existing bounded fresh-read retry; it is not a transport-failure retry.
+
 `experiment_manifest.tsv` is optional for plan-created workspaces. When present, it contains exactly one row whose experiment id and root match `experiment.yaml`.
 
 Local recipe roots are based at the repository root; local experiment CLI roots
