@@ -10,7 +10,7 @@ import shlex
 import subprocess
 import sys
 
-from agent_tool_test_helpers import run_execution_preflight_fixture, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import config_payload, run_execution_preflight_fixture, write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
@@ -267,7 +267,7 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
         config = managed_dir / "config.yaml"
         script = managed_dir / "launch.sh"
         artifacts_path = managed_dir / "artifacts.json"
-        config.write_text("model: unit\n")
+        config.write_text(yaml.safe_dump(config_payload(root / "index.csv")))
         script.write_text("#!/usr/bin/env bash\ntrue\n")
         artifacts_path.write_text("{}\n")
         version = str(spec.get("version") or f"version-{index}")
@@ -309,6 +309,7 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
         }
         rows.append(row)
     resolved_recipe = {
+        "variant": "sleep2vec",
         "experiment": experiment,
         "step": step,
         "execution": {"workdir": str(root)},
