@@ -7,7 +7,7 @@ import shutil
 import stat
 import subprocess
 import sys
-from threading import Barrier
+from threading import Barrier, Event
 import time
 from types import SimpleNamespace
 
@@ -125,11 +125,14 @@ def observed_git(tmp_path, monkeypatch):
     program = f"#!{sys.executable}\n" + """import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import time
 
 argv = sys.argv[1:]
 record = {"argv": argv, "cwd": os.getcwd(), "pid": os.getpid(), "sid": os.getsid(0)}
+record["git_environment"] = {key: os.environ.get(key) for key in (
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_ATTR_NOSYSTEM")}
 record["stdio"] = [{"mode": os.fstat(fd).st_mode, "device": os.fstat(fd).st_rdev,
                     "inode": os.fstat(fd).st_ino} for fd in (0, 1, 2)]
 with open(os.environ["STAGE_TEST_GIT_CALLS"], "a") as stream:
@@ -141,7 +144,11 @@ affected = "producer.git" in (" ".join(argv) + os.getcwd()) if producer else (
     destination in " ".join(argv) or os.getcwd() == destination)
 if failure and all(word in argv for word in failure.split()) and affected:
     print("injected git phase failure: " + failure, file=sys.stderr)
-    sys.exit(19)
+    sys.exit(int(os.environ.get("STAGE_TEST_GIT_RETURN_CODE", "19")))
+if argv[0] == "checkout" and os.environ.get("STAGE_TEST_ATTACH_HEAD"):
+    subprocess.run([os.environ["STAGE_TEST_REAL_GIT"], *argv], check=True)
+    os.execv(os.environ["STAGE_TEST_REAL_GIT"], [os.environ["STAGE_TEST_REAL_GIT"],
+        "checkout", "-b", "unexpected-attached-head"])
 if argv[0] == "clone" and os.environ.get("STAGE_TEST_GIT_GATE"):
     gate = Path(os.environ["STAGE_TEST_GIT_GATE"])
     gate.with_suffix(".waiting").write_text(str(os.getpid()))
@@ -204,7 +211,43 @@ def test_stage_exact_commit_excludes_dirty_source(staging, source_repo, tmp_path
     assert _git(source_repo.root, "rev-parse", "HEAD") == source_repo.head
     assert (source_repo.root / "tracked.txt").read_text() == "uncommitted edit\n"
     assert (source_repo.root / "untracked.txt").read_text() == "private local work\n"
-    assert all(step["returncode"] == 0 for step in result["steps"])
+    assert [(step["argv"][1], step["returncode"]) for step in result["steps"]] == [
+        ("clone", 0),
+        ("checkout", 0),
+        ("symbolic-ref", 1),
+        ("rev-parse", 0),
+        ("status", 0),
+    ]
+
+
+@pytest.mark.parametrize("remote", [False, True])
+@pytest.mark.parametrize("ambient", ["autocrlf", "attributes"])
+def test_ambient_git_configuration_does_not_transform_runtime_bytes(
+    staging, source_repo, tmp_path, fake_transport, observed_git, monkeypatch, ambient, remote
+):
+    ambient_home = tmp_path / "ambient home"
+    ambient_home.mkdir()
+    if ambient == "autocrlf":
+        (ambient_home / ".gitconfig").write_text("[core]\n\tautocrlf = true\n")
+    else:
+        attributes = ambient_home / ".config" / "git" / "attributes"
+        attributes.parent.mkdir(parents=True)
+        attributes.write_text("* text eol=crlf\n")
+    monkeypatch.setenv("HOME", str(ambient_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(ambient_home / ".config"))
+
+    evidence, destination, _started = _stage(staging, source_repo, tmp_path, remote=remote)
+
+    assert _finish(staging, evidence)["kind"] == "completed"
+    assert (destination / "tracked.txt").read_bytes() == b"requested commit\n"
+    assert (source_repo.root / "tracked.txt").read_bytes() == b"uncommitted edit\n"
+    records = _transport_calls(observed_git)
+    assert records
+    assert all(
+        record["git_environment"]
+        == {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1"}
+        for record in records
+    )
 
 
 def test_producer_failure_does_not_transfer(staging, source_repo, tmp_path, fake_transport, monkeypatch):
@@ -366,6 +409,133 @@ def test_pending_worker_handle_rejects_wrong_identity_or_pid(staging, source_rep
         staging.check_runtime(evidence)
 
 
+def test_pending_worker_handle_is_atomically_visible(staging, source_repo, tmp_path, fake_transport, monkeypatch):
+    monkeypatch.setenv("STAGE_TEST_SSH_MODE", "eof")
+    monkeypatch.setenv("STAGE_TEST_SSH_FAILURE_CALL", "2")
+    with pytest.raises(RuntimeError, match="no complete operation reply"):
+        _stage(staging, source_repo, tmp_path, remote=True)
+    monkeypatch.delenv("STAGE_TEST_SSH_MODE")
+    attempt = tmp_path / "remote attempt"
+    evidence = tmp_path / "evidence"
+    partial = Event()
+    release = Event()
+    dump = staging.json.dump
+
+    def pause_handle_write(value, stream, **kwargs):
+        if isinstance(value, dict) and "pid" in value:
+            serialized = json.dumps(value, **kwargs)
+            stream.write(serialized[:1])
+            stream.flush()
+            partial.set()
+            assert release.wait(timeout=5), "Worker handle publication was not released"
+            stream.write(serialized[1:])
+        else:
+            dump(value, stream, **kwargs)
+
+    monkeypatch.setattr(staging.json, "dump", pause_handle_write)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker = executor.submit(staging._worker, attempt)
+        try:
+            assert partial.wait(timeout=5), "Worker did not begin writing its handle"
+            assert not (attempt / "worker.json").exists()
+            pending = staging.check_runtime(evidence)
+            assert pending["kind"] == "pending"
+            assert "recorded_pid" not in pending
+        finally:
+            release.set()
+        assert worker.result(timeout=10)["kind"] == "completed"
+    handle = json.loads((attempt / "worker.json").read_text())
+    assert handle["pid"] == os.getpid()
+    assert _finish(staging, evidence)["kind"] == "completed"
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_changed_worker_cannot_forward_receipt_for_dirty_runtime(
+    staging, source_repo, tmp_path, fake_transport, remote
+):
+    evidence, destination, _started = _stage(staging, source_repo, tmp_path, remote=remote)
+    assert _finish(staging, evidence)["kind"] == "completed"
+    attempt = tmp_path / "remote attempt" if remote else evidence / "target"
+    marker = tmp_path / "changed-worker-executed"
+    (attempt / "stage_git_runtime.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).touch()\n"
+        f"print(Path({str(attempt / 'receipt.json')!r}).read_text())\n"
+    )
+    (destination / "tracked.txt").write_text("dirty runtime\n")
+    before = _transport_calls(fake_transport)
+
+    with pytest.raises(RuntimeError, match="Transport failed"):
+        staging.check_runtime(evidence)
+
+    assert not marker.exists()
+    assert (destination / "tracked.txt").read_text() == "dirty runtime\n"
+    extra = _transport_calls(fake_transport)[len(before) :]
+    assert len(extra) == int(remote)
+    assert all(call["kind"] == "ssh" and "_check" in call["argv"][-1] for call in extra)
+
+
+def test_staging_evidence_and_parent_entries_are_fsynced(staging, source_repo, tmp_path, fake_transport, monkeypatch):
+    observer = tmp_path / "fsync observer"
+    observer.mkdir()
+    trace = tmp_path / "fsync-calls.jsonl"
+    (observer / "sitecustomize.py").write_text(
+        "import json, os\n"
+        "original_fsync = os.fsync\n"
+        "def observed_fsync(descriptor):\n"
+        "    original_fsync(descriptor)\n"
+        "    info = os.fstat(descriptor)\n"
+        "    with open(os.environ['STAGE_TEST_FSYNC_LOG'], 'a') as stream:\n"
+        "        stream.write(json.dumps([info.st_dev, info.st_ino]) + '\\n')\n"
+        "os.fsync = observed_fsync\n"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(observer))
+    monkeypatch.setenv("STAGE_TEST_FSYNC_LOG", str(trace))
+    original_fsync = staging.os.fsync
+
+    def observed_fsync(descriptor):
+        original_fsync(descriptor)
+        info = os.fstat(descriptor)
+        with trace.open("a") as stream:
+            stream.write(json.dumps([info.st_dev, info.st_ino]) + "\n")
+
+    monkeypatch.setattr(staging.os, "fsync", observed_fsync)
+    evidence = tmp_path / "evidence parent" / "evidence"
+    attempt = tmp_path / "attempt parent" / "attempt"
+    destination = tmp_path / "destination parent" / "runtime"
+    for path in (evidence, attempt, destination):
+        path.parent.mkdir()
+    staging.stage_runtime(
+        source_repo.root,
+        source_repo.commit,
+        destination,
+        evidence,
+        host="fake-host",
+        remote_python=sys.executable,
+        remote_attempt_dir=attempt,
+    )
+    before_completion = [json.loads(line) for line in trace.read_text().splitlines()]
+    for directory in (evidence, attempt, destination, evidence.parent, attempt.parent, destination.parent):
+        info = directory.stat()
+        assert [info.st_dev, info.st_ino] in before_completion
+
+    assert _finish(staging, evidence)["kind"] == "completed"
+    synced = [json.loads(line) for line in trace.read_text().splitlines()]
+    for path in (
+        evidence / "intent.json",
+        evidence / "request.json",
+        evidence / "producer-results.json",
+        attempt / "request.json",
+        attempt / "launch-attempt.json",
+        attempt / "worker.json",
+        attempt / "receipt.json",
+    ):
+        info = path.stat()
+        file_sync = synced.index([info.st_dev, info.st_ino])
+        parent = path.parent.stat()
+        assert [parent.st_dev, parent.st_ino] in synced[file_sync + 1 :], path.name
+
+
 @pytest.mark.parametrize("remote", [False, True])
 def test_worker_has_detached_session_and_persistent_stdio(
     staging, source_repo, tmp_path, fake_transport, observed_git, remote
@@ -435,6 +605,53 @@ def test_check_rejects_changed_runtime_without_repair(staging, source_repo, tmp_
         staging.check_runtime(evidence)
     assert _git(destination, "rev-parse", "HEAD") == head
     assert _git(destination, "status", "--porcelain") == status
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_check_rejects_attached_head_even_at_exact_clean_commit(staging, source_repo, tmp_path, fake_transport, remote):
+    evidence, destination, _started = _stage(staging, source_repo, tmp_path, remote=remote)
+    assert _finish(staging, evidence)["kind"] == "completed"
+    _git(destination, "checkout", "-b", "reattached-head")
+    assert _git(destination, "rev-parse", "HEAD") == source_repo.commit
+    assert _git(destination, "status", "--porcelain") == ""
+
+    with pytest.raises(RuntimeError, match="Transport failed"):
+        staging.check_runtime(evidence)
+
+    assert _git(destination, "symbolic-ref", "HEAD") == "refs/heads/reattached-head"
+    assert _git(destination, "rev-parse", "HEAD") == source_repo.commit
+
+
+@pytest.mark.parametrize("mode", ["attached", "symbolic_error"])
+def test_worker_requires_explicit_detached_head_evidence(
+    staging, source_repo, tmp_path, observed_git, monkeypatch, mode
+):
+    if mode == "attached":
+        monkeypatch.setenv("STAGE_TEST_ATTACH_HEAD", "1")
+    else:
+        monkeypatch.setenv("STAGE_TEST_GIT_FAILURE", "symbolic-ref")
+        monkeypatch.setenv("STAGE_TEST_GIT_RETURN_CODE", "128")
+    evidence, destination, _started = _stage(staging, source_repo, tmp_path)
+
+    result = _finish(staging, evidence)
+
+    assert result["kind"] == "failed"
+    assert result["returncode"] != 0
+    assert result["steps"][-1] == {
+        "argv": ["git", "symbolic-ref", "--quiet", "HEAD"],
+        "returncode": 0 if mode == "attached" else 128,
+    }
+    assert _git(destination, "rev-parse", "HEAD") == source_repo.commit
+    assert _git(destination, "status", "--porcelain") == ""
+
+
+def test_check_does_not_treat_symbolic_ref_error_as_detached(staging, source_repo, tmp_path, observed_git, monkeypatch):
+    evidence, _destination, _started = _stage(staging, source_repo, tmp_path)
+    assert _finish(staging, evidence)["kind"] == "completed"
+    monkeypatch.setenv("STAGE_TEST_GIT_FAILURE", "symbolic-ref")
+    monkeypatch.setenv("STAGE_TEST_GIT_RETURN_CODE", "128")
+    with pytest.raises(RuntimeError, match="Transport failed"):
+        staging.check_runtime(evidence)
 
 
 def test_missing_receipt_stays_pending_even_when_head_exists(staging, source_repo, tmp_path, fake_transport):

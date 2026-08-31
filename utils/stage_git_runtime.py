@@ -29,13 +29,28 @@ _CLAIM_PROGRAM = """import json, os, pathlib, sys
 request = json.loads(sys.argv[1])
 attempt = pathlib.Path(request['attempt_dir'])
 attempt.mkdir()
-pathlib.Path(request['destination']).mkdir()
+destination = pathlib.Path(request['destination'])
+destination.mkdir()
 with (attempt / 'request.json').open('x') as stream:
     json.dump(request, stream)
     stream.flush()
     os.fsync(stream.fileno())
+for path in (attempt, destination, attempt.parent, destination.parent):
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 identity = {key: request[key] for key in json.loads(sys.argv[2])}
 print(json.dumps(dict(identity, kind='claimed')), flush=True)
+"""
+_VERIFIED_WORKER_PROGRAM = """import hashlib, pathlib, sys
+worker, expected = sys.argv[1:3]
+source = pathlib.Path(worker).read_bytes()
+if hashlib.sha256(source).hexdigest() != expected:
+    raise ValueError('Target worker does not match its frozen hash.')
+sys.argv = [worker, *sys.argv[3:]]
+exec(compile(source, worker, 'exec'), {'__name__': '__main__', '__file__': worker})
 """
 
 
@@ -51,23 +66,51 @@ def _request_identity(request):
     return {key: request[key] for key in IDENTITY_KEYS}
 
 
+def _fsync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _write_json(path, value):
-    with Path(path).open("x") as stream:
-        json.dump(value, stream, indent=2)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+    path = Path(path)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump(value, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Pending checks must never see partial handles; publication cannot replace prior evidence.
+        os.link(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        os.unlink(temporary)
 
 
 def _git_env():
-    # Caller Git overrides must not redirect fixed source/destination operations.
+    # Ambient Git config/attributes can transform checkout bytes while status still reports clean.
     return dict(
         ((key, value) for key, value in os.environ.items() if not key.startswith("GIT_")),
         GIT_OPTIONAL_LOCKS="0",
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_CONFIG_GLOBAL=os.devnull,
+        GIT_ATTR_NOSYSTEM="1",
+        GIT_CONFIG_COUNT="4",
+        GIT_CONFIG_KEY_0="core.autocrlf",
+        GIT_CONFIG_VALUE_0="false",
+        GIT_CONFIG_KEY_1="core.eol",
+        GIT_CONFIG_VALUE_1="lf",
+        GIT_CONFIG_KEY_2="core.attributesFile",
+        GIT_CONFIG_VALUE_2=os.devnull,
+        GIT_CONFIG_KEY_3="core.hooksPath",
+        GIT_CONFIG_VALUE_3=os.devnull,
     )
 
 
-def _git(argv, *, cwd, steps, log, capture=False):
+def _git(argv, *, cwd, steps, log, capture=False, expected_returncode=0):
     log.write("Running: " + shlex.join(["git", *argv]) + "\n")
     log.flush()
     result = subprocess.run(
@@ -82,7 +125,9 @@ def _git(argv, *, cwd, steps, log, capture=False):
     if capture:
         log.write(result.stdout)
     log.flush()
-    result.check_returncode()
+    if result.returncode != expected_returncode:
+        result.check_returncode()
+        raise ValueError(f"Git operation returned {result.returncode}; expected {expected_returncode}.")
     return result.stdout.strip() if capture else ""
 
 
@@ -162,6 +207,7 @@ def stage_runtime(
         raise FileExistsError(f"Destination already exists: {destination}")
     evidence = Path(evidence_dir)
     evidence.mkdir()
+    _fsync_directory(evidence.parent)
     request = {
         "attempt_id": uuid.uuid4().hex,
         "attempt_dir": str(remote_attempt_dir if host else evidence / "target"),
@@ -208,7 +254,18 @@ def stage_runtime(
     else:
         shutil.copyfile(bundle, attempt / "runtime.bundle")
         shutil.copyfile(__file__, worker)
-    result = _on_target(request, [request["python"], str(worker), "_launch", str(attempt)])
+    result = _on_target(
+        request,
+        [
+            request["python"],
+            "-c",
+            _VERIFIED_WORKER_PROGRAM,
+            str(worker),
+            request["worker_sha256"],
+            "_launch",
+            str(attempt),
+        ],
+    )
     return _positive_reply(result, request, {"started"})
 
 
@@ -224,33 +281,24 @@ def _launch(attempt):
         raise ValueError("Transferred worker or bundle does not match its frozen hash.")
     _write_json(attempt / "launch-attempt.json", identity)
     with (attempt / "worker.log").open("xb", buffering=0) as log:
+        os.fsync(log.fileno())
+        _fsync_directory(attempt)
         child = subprocess.Popen(
-            [sys.executable, str(Path(__file__).absolute()), "_worker", str(attempt)],
+            [
+                sys.executable,
+                "-c",
+                _VERIFIED_WORKER_PROGRAM,
+                str(Path(__file__).absolute()),
+                request["worker_sha256"],
+                "_worker",
+                str(attempt),
+            ],
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
     return dict(identity, kind="started", pid=child.pid)
-
-
-def _publish_receipt(attempt, receipt):
-    descriptor, temporary = tempfile.mkstemp(prefix=".receipt-", dir=attempt)
-    try:
-        with os.fdopen(descriptor, "w") as stream:
-            json.dump(receipt, stream, indent=2)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        # Link publishes atomically but never replaces an existing terminal receipt.
-        os.link(temporary, Path(attempt) / "receipt.json")
-        parent = os.open(attempt, os.O_RDONLY)
-        try:
-            os.fsync(parent)
-        finally:
-            os.close(parent)
-    finally:
-        os.unlink(temporary)
 
 
 def _worker(attempt):
@@ -270,6 +318,14 @@ def _worker(attempt):
             log=sys.stdout,
         )
         _git(["checkout", "--detach", request["commit"]], cwd=destination, steps=receipt["steps"], log=sys.stdout)
+        _git(
+            ["symbolic-ref", "--quiet", "HEAD"],
+            cwd=destination,
+            steps=receipt["steps"],
+            log=sys.stdout,
+            capture=True,
+            expected_returncode=1,
+        )
         head = _git(["rev-parse", "HEAD"], cwd=destination, steps=receipt["steps"], log=sys.stdout, capture=True)
         dirty = _git(
             ["status", "--porcelain", "--untracked-files=all", "--ignored"],
@@ -285,7 +341,7 @@ def _worker(attempt):
         receipt["error"] = str(exc)
         if isinstance(exc, subprocess.CalledProcessError):
             receipt["returncode"] = exc.returncode
-    _publish_receipt(attempt, receipt)
+    _write_json(attempt / "receipt.json", receipt)
     return receipt
 
 
@@ -303,6 +359,7 @@ def _validate_receipt(request, receipt):
                 request["destination"],
             ],
             ["git", "checkout", "--detach", request["commit"]],
+            ["git", "symbolic-ref", "--quiet", "HEAD"],
             ["git", "rev-parse", "HEAD"],
             ["git", "status", "--porcelain", "--untracked-files=all", "--ignored"],
         ]
@@ -311,7 +368,8 @@ def _validate_receipt(request, receipt):
             or receipt["returncode"] != 0
             or receipt.get("head") != request["commit"]
             or receipt.get("clean") is not True
-            or receipt.get("steps") != [{"argv": argv, "returncode": 0} for argv in expected]
+            or receipt.get("steps")
+            != [{"argv": argv, "returncode": 1 if argv[1] == "symbolic-ref" else 0} for argv in expected]
             or any(type(step["returncode"]) is not int for step in receipt["steps"])
         ):
             raise ValueError("Terminal receipt lacks successful fixed Git operation evidence.")
@@ -338,6 +396,14 @@ def _check(attempt):
     receipt = json.loads(path.read_text())
     _validate_receipt(request, receipt)
     if receipt["kind"] == "completed":
+        symbolic_head = subprocess.run(
+            ["git", "-C", request["destination"], "symbolic-ref", "--quiet", "HEAD"],
+            env=_git_env(),
+            capture_output=True,
+            text=True,
+        )
+        if symbolic_head.returncode != 1:
+            raise ValueError("Runtime HEAD is not the detached checkout established by its receipt.")
         head = subprocess.check_output(
             ["git", "-C", request["destination"], "rev-parse", "HEAD"], env=_git_env(), text=True
         ).strip()
@@ -354,7 +420,18 @@ def _check(attempt):
 def check_runtime(evidence_dir):
     request = json.loads((Path(evidence_dir) / "request.json").read_text())
     worker = str(Path(request["attempt_dir"]) / "stage_git_runtime.py")
-    result = _on_target(request, [request["python"], worker, "_check", request["attempt_dir"]])
+    result = _on_target(
+        request,
+        [
+            request["python"],
+            "-c",
+            _VERIFIED_WORKER_PROGRAM,
+            worker,
+            request["worker_sha256"],
+            "_check",
+            request["attempt_dir"],
+        ],
+    )
     receipt = _positive_reply(result, request, {"completed", "failed", "pending"})
     if receipt["kind"] != "pending":
         _validate_receipt(request, receipt)

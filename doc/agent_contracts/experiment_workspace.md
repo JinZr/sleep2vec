@@ -235,10 +235,14 @@ regressions or doctor, activate a runtime, or modify an experiment.
   `--host HOST --remote-python PATH --remote-attempt-dir PATH` explicitly.
   Bundle production and verification must succeed before transfer; the fixed
   checkout runs with detached standard streams and persistent evidence.
+  Git subprocesses isolate user/system configuration, global attributes and
+  hooks without changing the caller's environment. Worker handles and terminal
+  receipts are published atomically without replacement, with directory fsync.
 - A positive start is **not completion**: `stage` reports `started` with exit 2.
   Use `check --evidence-dir PATH` to inspect that same attempt without writing or
   restarting it. Only a matching successful terminal receipt together with the
-  exact, clean checkout permits `check` exit 0. Pending/unknown is exit 2;
+  exact, clean, detached checkout permits `check` exit 0. The frozen worker hash
+  is verified before executing the status check. Pending/unknown is exit 2;
   a verified failure or invalid evidence is nonzero. A pending `recorded_pid`
   locates the original worker; verify its current command and attempt before
   calling it live, and never treat that PID alone as cancellation authority.
