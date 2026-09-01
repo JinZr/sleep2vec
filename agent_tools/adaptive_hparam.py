@@ -50,12 +50,13 @@ from .experiment_workspace import (
 )
 from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, stop_hparam_run
 from .manifests import read_json, read_rows, utc_now, validate_managed_header, write_rows, write_text
-from .models import resolve_repo_path
+from .models import REPO_ROOT, resolve_repo_path
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 from .recipes import load_recipe_with_base, recipe_name
 
 _EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
 _FROZEN_EXECUTION_IDENTITY_FIELDS = ("python",)
+_EXECUTION_ROUTE_FIELDS = ("target", "host", "workdir", "conda_env")
 _SLURM_ACCEPTED_STATUSES = {"queued", "running", "stopping", "completed", "finished", "failed", "stopped"}
 
 
@@ -1561,6 +1562,11 @@ def _validate_workflow_payload(
     initial_execution = initial_recipe.get("execution") if isinstance(initial_recipe.get("execution"), dict) else {}
     if any(initial_execution.get(field) != execution_identity[field] for field in _EXECUTION_IDENTITY_FIELDS):
         raise ValueError(f"Adaptive workflow baseline execution identity differs from round 000: {path}")
+    frozen_route = _execution_route(initial_execution)
+    current_route = _execution_route(plan_execution)
+    changed_route = [field for field in _EXECUTION_ROUTE_FIELDS if current_route[field] != frozen_route[field]]
+    if changed_route:
+        raise ValueError(f"Adaptive workflow execution route differs from round 000: {', '.join(changed_route)}")
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
@@ -1993,6 +1999,25 @@ def _proposal_recipe_sha256(recipe: dict[str, Any], workflow: dict[str, Any]) ->
     return adaptive_proposals.canonical_sha256(payload)
 
 
+def _execution_route(execution: dict[str, Any]) -> dict[str, str]:
+    return {
+        "target": str(execution.get("target", "local") or "local"),
+        "host": str(execution.get("host") or ""),
+        "workdir": str(execution.get("workdir") or REPO_ROOT),
+        "conda_env": str(execution.get("conda_env") or ""),
+    }
+
+
+def _workflow_execution_route(workflow: dict[str, Any]) -> dict[str, str]:
+    root = Path(str(workflow.get("root") or ""))
+    if not root.is_absolute():
+        raise ValueError("Adaptive workflow lacks a frozen execution route.")
+    initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
+    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    initial_execution = initial_recipe.get("execution") if isinstance(initial_recipe.get("execution"), dict) else {}
+    return _execution_route(initial_execution)
+
+
 def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any]:
     frozen = workflow.get("execution_identity")
     if (
@@ -2006,6 +2031,11 @@ def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -
         if str(adaptive.get(field) or default) != str(workflow.get(field) or default):
             raise ValueError(f"Adaptive source adaptive.{field} differs from the frozen workflow.")
     current = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    frozen_route = _workflow_execution_route(workflow)
+    current_route = _execution_route(current)
+    for field in _EXECUTION_ROUTE_FIELDS:
+        if current_route[field] != frozen_route[field]:
+            raise ValueError(f"Adaptive source execution.{field} differs from the frozen workflow route.")
     for field in _FROZEN_EXECUTION_IDENTITY_FIELDS:
         value = current.get(field)
         expected = frozen[field]

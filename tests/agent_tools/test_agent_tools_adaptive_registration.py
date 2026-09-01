@@ -1203,7 +1203,9 @@ def test_adaptive_init_rejects_visible_incomplete_round_without_repair(tmp_path:
     assert not workflow_path.exists()
 
 
-def test_adaptive_rounds_keep_frozen_python_and_allow_commit_and_capacity_updates(tmp_path: Path, monkeypatch):
+def test_adaptive_rounds_keep_frozen_route_and_python_and_allow_commit_and_capacity_updates(
+    tmp_path: Path, monkeypatch
+):
     recipe = _adaptive_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"] = {}
@@ -1214,6 +1216,7 @@ def test_adaptive_rounds_keep_frozen_python_and_allow_commit_and_capacity_update
     round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
     first_plan = json.loads((round_zero / "plan.json").read_text())
     frozen_identity = {field: first_plan["recipe"]["execution"][field] for field in ("python", "runtime_commit")}
+    frozen_route = adaptive_hparam._execution_route(first_plan["recipe"]["execution"])
     next_commit = "b" * 40
     assert next_commit != frozen_identity["runtime_commit"]
     run = first_plan["runs"][0]
@@ -1222,6 +1225,7 @@ def test_adaptive_rounds_keep_frozen_python_and_allow_commit_and_capacity_update
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"].update(
         {
+            **frozen_route,
             "python": frozen_identity["python"],
             "runtime_commit": next_commit,
             "max_concurrent": 2,
@@ -1249,6 +1253,7 @@ def test_adaptive_rounds_keep_frozen_python_and_allow_commit_and_capacity_update
     second_plan = json.loads((next_dir / "plan.json").read_text())
     assert second_plan["recipe"]["execution"]["python"] == frozen_identity["python"]
     assert second_plan["recipe"]["execution"]["runtime_commit"] == next_commit
+    assert adaptive_hparam._execution_route(second_plan["recipe"]["execution"]) == frozen_route
     assert workflow_path.read_bytes() == workflow_bytes
 
 
@@ -1455,6 +1460,41 @@ def test_adaptive_source_rejects_frozen_python_drift_before_suggestion_write(tmp
     events_before = events_path.read_bytes()
 
     with pytest.raises(ValueError, match=r"execution\.python differs"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+    assert events_path.read_bytes() == events_before
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "additional"),
+    [
+        ("target", "ssh", {"host": "new-host"}),
+        ("host", "new-host", {}),
+        ("workdir", "/different/runtime", {}),
+        ("conda_env", "different-env", {}),
+    ],
+)
+def test_adaptive_source_rejects_frozen_route_drift_before_suggestion_write(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    additional: dict[str, str],
+):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_zero / "plan.json").read_text())["runs"][0]
+    digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
+    manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update(additional)
+    payload["execution"][field] = value
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    events_path = tmp_path / "events.jsonl"
+    events_before = events_path.read_bytes()
+
+    with pytest.raises(ValueError, match=rf"execution\.{field} differs from the frozen workflow route"):
         adaptive_hparam.suggest_next_round(workflow_dir)
 
     assert not (workflow_dir / "adaptive" / "suggestions").exists()
