@@ -251,6 +251,9 @@ For command choice, use the [agent contract router](../agent_contracts/README.md
 Adaptive recipes enter through
 [`hparam-adaptive-init`](../agent_contracts/task_recipe.md#initialization-readiness)
 and follow the [proposal handshake](../agent_contracts/task_recipe.md#proposal-handshake).
+An exact committed agent-proposal execute is safe to retry after a lost client
+receipt; conflicting or uncommitted launch evidence remains fail closed, and
+monitors never gain launch authority.
 External matrices use [`experiment-run`](../agent_contracts/experiment_pipeline.md#invocation-and-frozen-state)
 over [registered-ranking-selected checkpoints](../agent_contracts/experiment_pipeline.md#source-and-checkpoint-gates),
 with [managed attempts](../agent_contracts/experiment_pipeline.md#managed-attempts-and-results)
