@@ -24,6 +24,8 @@ GIT_COMMANDS = [
     ["git", "status", "--porcelain", "--untracked-files=no"],
     ["git", "ls-files", "--others", "--exclude-standard", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
     ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
+    ["git", "ls-files", "--others", "--exclude-standard", "--directory", "--no-empty-directory"],
+    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory"],
 ]
 
 
@@ -41,7 +43,7 @@ def identity_probe(tmp_path, monkeypatch):
     }
     results = [
         subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
-        for command, stdout in zip(GIT_COMMANDS, ("a" * 40 + "\n", str(tmp_path) + "\n", "", "", ""))
+        for command, stdout in zip(GIT_COMMANDS, ("a" * 40 + "\n", str(tmp_path) + "\n", "", "", "", "", ""))
     ]
     monkeypatch.setattr(subprocess, "run", lambda command, **_kwargs: results[GIT_COMMANDS.index(command)])
     monkeypatch.setattr(importlib.util, "find_spec", lambda _module: SimpleNamespace(origin=payload["module_origin"]))
@@ -53,7 +55,7 @@ def identity_probe(tmp_path, monkeypatch):
     return program, results, payload
 
 
-def test_runtime_identity_uses_five_exact_queries_with_three_ordered_workers(
+def test_runtime_identity_uses_seven_exact_queries_with_three_ordered_workers(
     tmp_path, monkeypatch, capsys, identity_probe
 ):
     program, results, payload = identity_probe
@@ -96,6 +98,8 @@ def test_runtime_identity_uses_five_exact_queries_with_three_ordered_workers(
                 assert finished[1].wait(5)
             elif index == 1:
                 assert finished[4].wait(5)
+            elif index >= 5:
+                assert finished[0].wait(5)
             with lock:
                 completion_order.append(index)
         finally:
@@ -112,7 +116,8 @@ def test_runtime_identity_uses_five_exact_queries_with_three_ordered_workers(
     assert executor_sizes == [3]
     assert peak_active == 3
     assert active == 0
-    assert completion_order == [2, 3, 4, 1, 0]
+    assert completion_order[:5] == [2, 3, 4, 1, 0]
+    assert set(completion_order[5:]) == {5, 6}
     ordered_calls = sorted(calls, key=lambda call: GIT_COMMANDS.index(call[0]))
     assert [command for command, _kwargs in ordered_calls] == GIT_COMMANDS
     for _command, kwargs in ordered_calls:
@@ -124,7 +129,7 @@ def test_runtime_identity_uses_five_exact_queries_with_three_ordered_workers(
     assert json.loads(output.out) == payload
 
 
-@pytest.mark.parametrize("failed_query", range(5))
+@pytest.mark.parametrize("failed_query", range(len(GIT_COMMANDS)))
 def test_runtime_identity_git_failure_precedes_runtime_reads(monkeypatch, capsys, identity_probe, failed_query):
     program, results, _payload = identity_probe
     results[failed_query].returncode = 1
@@ -143,13 +148,13 @@ def test_runtime_identity_git_failure_precedes_runtime_reads(monkeypatch, capsys
     assert output.err == f"git failure {failed_query}\n"
 
 
-@pytest.mark.parametrize("first_diagnostic", range(5))
+@pytest.mark.parametrize("first_diagnostic", range(len(GIT_COMMANDS)))
 def test_runtime_identity_git_stderr_priority_follows_query_order(
     monkeypatch, capsys, identity_probe, first_diagnostic
 ):
     program, results, _payload = identity_probe
     results[-1].returncode = 1
-    for index in range(first_diagnostic, 5):
+    for index in range(first_diagnostic, len(GIT_COMMANDS)):
         results[index].stderr = f"git diagnostic {index}"
     monkeypatch.setattr(importlib.util, "find_spec", lambda _module: pytest.fail("must not resolve module"))
     monkeypatch.setattr(Path, "read_bytes", lambda _path: pytest.fail("must not read frozen artifact"))
@@ -163,7 +168,7 @@ def test_runtime_identity_git_stderr_priority_follows_query_order(
     assert output.err == f"git diagnostic {first_diagnostic}\n"
 
 
-@pytest.mark.parametrize("failed_query", range(5))
+@pytest.mark.parametrize("failed_query", range(len(GIT_COMMANDS)))
 def test_runtime_identity_git_oserror_precedes_runtime_reads(monkeypatch, capsys, identity_probe, failed_query):
     program, results, _payload = identity_probe
 
@@ -285,6 +290,28 @@ def test_runtime_identity_rejects_ignored_nested_repository_code(runtime_repo):
     nested.mkdir()
     (nested / "nested_module.py").write_text("pass\n")
     subprocess.run(["git", "init", "-q", str(nested)], check=True)
+
+    result = subprocess.run(
+        [sys.executable, "-c", python_programs.source("managed_scheduler.runtime_identity"), "runtime_cli"],
+        cwd=runtime_repo,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "Target runtime has untracked or ignored Python code" in result.stderr
+
+
+@pytest.mark.parametrize("ignored", [False, True], ids=["untracked", "ignored"])
+def test_runtime_identity_rejects_symlinked_package_directories(runtime_repo, tmp_path, ignored):
+    package = tmp_path / "outside-package"
+    package.mkdir()
+    (package / "module.py").write_text("VALUE = 1\n")
+    (runtime_repo / "plugin").symlink_to(package, target_is_directory=True)
+    if ignored:
+        (runtime_repo / ".git" / "info" / "exclude").write_text("plugin\n")
 
     result = subprocess.run(
         [sys.executable, "-c", python_programs.source("managed_scheduler.runtime_identity"), "runtime_cli"],
