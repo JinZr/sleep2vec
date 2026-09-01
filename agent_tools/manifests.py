@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import csv
 import json
 from pathlib import Path
@@ -21,7 +22,7 @@ def write_json(path: str | Path, payload: Any) -> None:
     target.write_text(json.dumps(json_ready(payload), indent=2, sort_keys=True) + "\n")
 
 
-def validate_managed_header(fieldnames: list[str], path: str | Path) -> None:
+def validate_managed_header(fieldnames: Sequence[str], path: str | Path) -> None:
     if "trial_id" in fieldnames:
         raise ValueError(
             f"Historical managed table fields are read-only; Historical trial_id fields are unsupported: {path}"

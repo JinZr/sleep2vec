@@ -413,7 +413,7 @@ def test_agent_proposal_preview_is_read_only_and_execute_uses_bound_snapshot(tmp
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path)
 
 
-def test_agent_proposal_recovers_exact_published_unregistered_round(tmp_path: Path, monkeypatch):
+def test_agent_proposal_recovers_exact_published_unregistered_round_after_runtime_advance(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     _write_fake_manifest(workflow_dir)
@@ -421,6 +421,9 @@ def test_agent_proposal_recovers_exact_published_unregistered_round(tmp_path: Pa
     input_path = adaptive_hparam.adaptive_step(workflow_dir)
     assert input_path is not None
     proposal_path = _write_agent_submission(input_path)
+    recipe_payload = yaml.safe_load(recipe.read_text())
+    recipe_payload["execution"]["runtime_commit"] = "b" * 40
+    recipe.write_text(yaml.safe_dump(recipe_payload, sort_keys=False))
     commit_plan = adaptive_hparam.plan_hparam.commit_hparam_plan
     commit_calls = 0
 
@@ -453,6 +456,10 @@ def test_agent_proposal_recovers_exact_published_unregistered_round(tmp_path: Pa
         "accepted": accepted_path.read_bytes(),
         "suggestion": suggestion_path.read_bytes(),
     }
+    assert yaml.safe_load(frozen_bytes["suggestion"])["execution"]["runtime_commit"] == "b" * 40
+    recipe_payload = yaml.safe_load(recipe.read_text())
+    recipe_payload["execution"]["runtime_commit"] = "c" * 40
+    recipe.write_text(yaml.safe_dump(recipe_payload, sort_keys=False))
     assert [row["round"] for row in _read_table(workflow_dir / "adaptive" / "run_registry.tsv")] == ["0"]
 
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
@@ -460,6 +467,7 @@ def test_agent_proposal_recovers_exact_published_unregistered_round(tmp_path: Pa
     assert (next_dir / "plan.json").read_bytes() == frozen_bytes["plan"]
     assert accepted_path.read_bytes() == frozen_bytes["accepted"]
     assert suggestion_path.read_bytes() == frozen_bytes["suggestion"]
+    assert json.loads((next_dir / "plan.json").read_text())["recipe"]["execution"]["runtime_commit"] == "b" * 40
     assert not (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
     assert [row["round"] for row in _read_table(workflow_dir / "adaptive" / "run_registry.tsv")] == ["0", "1"]
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
@@ -953,6 +961,30 @@ def test_agent_proposal_rejects_source_recipe_drift_after_snapshot(tmp_path: Pat
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path)
 
     assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
+
+
+def test_agent_proposal_accepts_source_runtime_commit_drift_after_snapshot(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    workflow_bytes = workflow_path.read_bytes()
+    baseline = json.loads(workflow_bytes)["execution_identity"]
+    next_commit = "b" * 40
+    assert next_commit != baseline["runtime_commit"]
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["runtime_commit"] = next_commit
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    assert adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path) == proposal_path
+    assert json.loads(input_path.read_text())["input"]["execution_identity"] == baseline
+    assert workflow_path.read_bytes() == workflow_bytes
 
 
 def test_agent_proposal_rechecks_live_budget_after_snapshot(tmp_path: Path, monkeypatch):

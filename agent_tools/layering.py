@@ -34,6 +34,8 @@ KERNEL_MODULES: frozenset[str] = frozenset(
         "schema_map",
         "gpu_rules",
         "repo",
+        "runtime_lock",
+        "runtime_sync",
         "experiment_io",
         "research_log",
         "experiment_workspace",

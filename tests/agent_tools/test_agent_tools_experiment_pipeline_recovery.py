@@ -892,6 +892,7 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     recipe_path = write_finetune_recipe(source, variant="sleep2vec2")
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
+    runtime_commit = "a" * 40
     recipe["task"] = "infer"
     recipe["experiment"]["root"] = str(workspace)
     recipe["step"] = {
@@ -903,7 +904,7 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
         "target": "local",
         "workdir": "/runtime/snapshot",
         "python": "/runtime/python",
-        "runtime_commit": "a" * 40,
+        "runtime_commit": runtime_commit,
     }
     recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     config_bytes = Path(recipe["inputs"]["config"]).read_bytes()
@@ -938,8 +939,10 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     helper_index = script_lines.index("_agent_commit_status() {")
     running_index = script_lines.index("_agent_commit_status running")
     command_index = script_lines.index(command)
-    assert script_lines[helper_index + 1].startswith("  /runtime/python -c ")
-    assert any(line.startswith("/runtime/python -c ") and "a" * 40 in line for line in script_lines)
+    helper_text = "\n".join(script_lines[helper_index:running_index])
+    assert "/runtime/python -c " in helper_text
+    assert "record-runtime-commit" in helper_text
+    assert runtime_commit in helper_text
     assert helper_index < running_index < command_index
     assert plan["recipe"]["execution"] == recipe["execution"]
     canonical = read_run_manifest(workspace)[0]
@@ -959,7 +962,7 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
             payload = {
                 "python": "/runtime/python",
                 "python_version": "3.12",
-                "runtime_commit": "a" * 40,
+                "runtime_commit": runtime_commit,
                 "runtime_repo_root": "/runtime/snapshot",
                 "runtime_hostname": "unit-host",
                 "module": "sleep2vec2.infer",
@@ -978,13 +981,25 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
             "target": "local",
             "workdir": "/runtime/snapshot",
             "python": "/runtime/python",
-            "runtime_commit": "a" * 40,
+            "runtime_commit": runtime_commit,
         },
         [planned],
         command_runner=inspect_command,
     )
     assert snapshot["module"] == "sleep2vec2.infer"
     assert snapshot["required_options"] == ["--config"]
+    runtime_commit = "a" * 64
+    with pytest.raises(ValueError, match="invalid runtime commit"):
+        managed_scheduler.inspect_execution_target(
+            {
+                "target": "local",
+                "workdir": "/runtime/snapshot",
+                "python": "/runtime/python",
+                "runtime_commit": "a" * 40,
+            },
+            [planned],
+            command_runner=inspect_command,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1097,7 +1112,8 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
     launch_before = launch_path.read_bytes()
     launch_lines = launch_before.decode().splitlines()
     helper_index = launch_lines.index("_agent_commit_status() {")
-    assert launch_lines[helper_index + 1].startswith(f"  {spec['runtime']['python']} -c ")
+    running_index = launch_lines.index("_agent_commit_status running")
+    assert f"{spec['runtime']['python']} -c " in "\n".join(launch_lines[helper_index:running_index])
 
     if outcome == "tamper":
         (plan_dir / "plan.md").write_text("tampered\n")
@@ -1418,7 +1434,18 @@ def test_run_attempts_waits_when_capacity_blocks_before_execution_snapshot(tmp_p
     assert not (pipeline_dir / "execution_snapshot.json").exists()
 
 
-def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_result(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(
+    "canonical_runtime_commit",
+    [
+        pytest.param("", id="canonical-runtime-unknown"),
+        pytest.param("c" * 40, id="canonical-runtime-recorded"),
+    ],
+)
+def test_run_attempts_terminal_attempt_projects_only_canonical_runtime_commit(
+    tmp_path: Path,
+    monkeypatch,
+    canonical_runtime_commit: str,
+):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "external-v1"
     pipeline_dir.mkdir(parents=True)
@@ -1435,8 +1462,9 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
         "status": "completed",
         "verified": "false",
         "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
-        "runtime_commit": "",
+        "runtime_commit": "b" * 40,
     }
+    canonical_attempt = {**attempt, "runtime_commit": canonical_runtime_commit}
     write_rows(pipeline_dir / "jobs.tsv", [attempt])
     validations = []
     launches = []
@@ -1452,7 +1480,7 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
         "_planned_runs",
         lambda _rows: [{"step_id": "external-evaluate", "run_id": "run-001"}],
     )
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(attempt)])
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(canonical_attempt)])
     monkeypatch.setattr(
         experiment_pipeline.managed_scheduler,
         "validated_execution_snapshot",
@@ -1461,7 +1489,7 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
     monkeypatch.setattr(
         experiment_pipeline.managed_scheduler,
         "launch_managed_runs",
-        lambda *_args, **_kwargs: launches.append(True) or SimpleNamespace(committed_rows=[dict(attempt)]),
+        lambda *_args, **_kwargs: launches.append(True) or SimpleNamespace(committed_rows=[dict(canonical_attempt)]),
     )
     result_manifest = pipeline_dir / "result_manifest.json"
     monkeypatch.setattr(
@@ -1470,21 +1498,14 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
         lambda *_args: validations.append("result") or result_manifest,
     )
 
-    result = experiment_pipeline._run_attempts(
-        root,
-        pipeline_dir,
-        _spec(root),
-        {"age": {}},
-        [attempt],
-        poll_seconds=0,
-    )
+    result = experiment_pipeline._run_attempts(root, pipeline_dir, _spec(root), {"age": {}}, [attempt], poll_seconds=0)
 
     persisted = experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")[0]
     assert result["status"] == "completed"
     assert launches == [True]
     assert validations == ["attempts", "result"]
     assert persisted["verified"] == "true"
-    assert persisted["runtime_commit"] == "a" * 40
+    assert persisted["runtime_commit"] == canonical_runtime_commit
 
 
 def test_run_attempts_result_validation_failure_is_terminal_without_changing_canonical_status(

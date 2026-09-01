@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -13,6 +14,11 @@ VARIANTLESS_TASKS = {"sleep2stat"}
 # guard matches raw task-name constants, so kernel modules read the section
 # through this constant).
 CONFIG_FINETUNE_SECTION = "finetune"
+_FULL_GIT_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def is_full_git_object_id(value: Any) -> bool:
+    return isinstance(value, str) and _FULL_GIT_OBJECT_ID_RE.fullmatch(value) is not None
 
 
 def recipe_name(recipe: dict[str, Any]) -> str:
@@ -67,7 +73,7 @@ def json_ready(value: Any) -> Any:
 
 
 def repo_relative(path: str | Path | None) -> str | None:
-    if path in (None, ""):
+    if path is None or path == "":
         return None
     raw = Path(path)
     try:
@@ -77,7 +83,7 @@ def repo_relative(path: str | Path | None) -> str | None:
 
 
 def resolve_repo_path(path: str | Path | None, *, relative_to: str | Path | None = None) -> Path | None:
-    if path in (None, ""):
+    if path is None or path == "":
         return None
     candidate = Path(path)
     if relative_to is None:

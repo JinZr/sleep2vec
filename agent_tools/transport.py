@@ -52,7 +52,7 @@ def run_shell(
     host: str | None,
     command: str,
     *,
-    timeout: float = SSH_TIMEOUT_SECONDS,
+    timeout: float | None = SSH_TIMEOUT_SECONDS,
     swallow_timeout: bool = False,
 ) -> subprocess.CompletedProcess:
     """Dispatching primitive: host -> ssh, None -> local bash -lc.

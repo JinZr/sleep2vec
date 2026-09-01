@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 from shlex import quote as shlex_quote
 import subprocess
@@ -429,6 +430,20 @@ def test_hparam_plan_freezes_explicit_target_python_and_commit(tmp_path: Path):
     assert resolved["execution"]["runtime_commit"] == "a" * 40
 
 
+def test_hparam_plan_rejects_sha256_runtime_commit_before_plan_write(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload.setdefault("execution", {}).update({"python": "/runtime/bin/python3", "runtime_commit": "b" * 64})
+    recipe.write_text(yaml.safe_dump(payload))
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "execution.runtime_commit must be a full 40-character Git commit ID" in result.stdout
+    assert not (output_dir / "plan.json").exists()
+
+
 def test_hparam_plan_rejects_compound_target_python_before_plan_write(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -770,7 +785,7 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
     script = (plan_dir / "run.sh").read_text()
     assert f"cd {shlex_quote(str(REPO_ROOT))}" in script
     assert f"export PYTHONPATH={shlex_quote(str(REPO_ROOT))}${{PYTHONPATH:+:$PYTHONPATH}}" in script
-    assert f"  {shlex_quote(sys.executable)} -c " in script
+    assert f"{shlex_quote(sys.executable)} -c " in script
     final_report = tmp_path / "final.md"
     final_report.write_text("# Final\n\nManaged run completed.\n")
     assert experiments.finalize_experiment(workspace, final_report) == workspace / "reports" / "final.md"
@@ -807,19 +822,42 @@ def test_infer_plan_uses_frozen_runtime_python_for_workload_and_lifecycle(tmp_pa
     helper_index = lines.index("_agent_commit_status() {")
     running_index = lines.index("_agent_commit_status running")
     workload_index = lines.index(command)
-    assert lines[helper_index + 1].startswith(f"  {runtime_python} -c ")
-    assert any(line.startswith(f"{runtime_python} -c ") and _RUNTIME_COMMIT in line for line in lines)
+    helper = "\n".join(lines[helper_index:running_index])
+    assert f"{runtime_python} -c " in helper
+    assert "record-runtime-commit" in helper
+    assert _RUNTIME_COMMIT in helper
     assert helper_index < running_index < workload_index
     plan = json.loads((plan_dir / "plan.json").read_text())
     assert plan["recipe"]["execution"] == recipe["execution"]
     assert yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())["execution"] == recipe["execution"]
 
 
-def test_infer_runtime_commit_mismatch_fails_before_running_or_payload(tmp_path: Path, monkeypatch):
+def test_infer_runtime_commit_mismatch_runs_and_records_both_commits(tmp_path: Path, monkeypatch):
     source = tmp_path / "source"
     recipe_path = write_finetune_recipe(source)
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(runtime)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(runtime),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Initial",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    actual_commit = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
     marker = tmp_path / "payload-ran.txt"
     recipe.update({"task": "infer", "name": "unit_infer_runtime_commit_guard"})
     recipe["experiment"]["root"] = str(workspace)
@@ -827,7 +865,7 @@ def test_infer_runtime_commit_mismatch_fails_before_running_or_payload(tmp_path:
     recipe["decisions"]["task"] = {"value": "infer", "source": "explicit_recipe"}
     recipe["execution"] = {
         "target": "local",
-        "workdir": str(REPO_ROOT),
+        "workdir": str(runtime),
         "python": sys.executable,
         "runtime_commit": "0" * 40,
     }
@@ -842,12 +880,16 @@ def test_infer_runtime_commit_mismatch_fails_before_running_or_payload(tmp_path:
     plan_dir = workspace / "plan"
 
     assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
-    result = subprocess.run(["bash", str(plan_dir / "run.sh")], text=True, capture_output=True)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    result = subprocess.run(["bash", str(plan_dir / "run.sh")], env=env, text=True, capture_output=True)
 
-    assert result.returncode != 0
-    assert "Target runtime commit differs from the frozen plan" in result.stderr
-    assert not marker.exists()
-    assert read_run_manifest(workspace)[0]["status"] == "planned"
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text() == "ran"
+    row = read_run_manifest(workspace)[0]
+    assert row["status"] == "completed"
+    assert row["planned_runtime_commit"] == "0" * 40
+    assert row["runtime_commit"] == actual_commit
 
 
 def test_non_hparam_run_script_records_failure_and_preserves_runtime_exit_code(tmp_path: Path, monkeypatch):

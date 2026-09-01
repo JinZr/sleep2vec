@@ -259,17 +259,24 @@ it never substitutes the status reader's host environment.
 `execution.runtime_commit`. Declaring either turns the otherwise-common
 `execution.workdir` into an all-or-none local/default-local runtime identity.
 Python is one executable name or path without whitespace, arguments, or `~`
-shorthand; the commit is a lowercase 40-character Git commit SHA. Other
-non-hparam tasks reject Python and commit identity rather than silently
+shorthand; the commit is a full 40-character planned/baseline Git commit ID.
+Authored hexadecimal may use either case; the resolved recipe freezes it in
+lowercase.
+Other non-hparam tasks reject Python and commit identity rather than silently
 rendering commands that ignore them.
 
-When the identity is present, the resolved recipe and plan freeze it. The
-generated script enters that workdir, verifies its Git HEAD before the first
-lifecycle mutation, and uses the same frozen Python for the workload and all
-`running` / `completed` / `failed` commits. A missing interpreter or commit
-mismatch fails before `running` is committed and before the workload starts.
-Use an absolute Python path for independence from the launcher's PATH; an
-explicit executable name remains PATH-resolved.
+When the identity is present, the resolved recipe and plan freeze those planned
+bytes and use the same frozen Python for the workload and all `running` /
+`completed` / `failed` commits. A provenance-aware managed launcher observes
+HEAD under the short runtime lock immediately before spawning its child; a
+direct script without that outer launcher observes HEAD at its own `running`
+boundary. The canonical start commit records that point-in-time value. A
+planned/actual mismatch does not block execution or rewrite the plan, and the
+observation does not promise that checkout bytes stay unchanged for the whole
+job. Use an absolute Python path for independence from the launcher's PATH; an
+explicit executable name remains PATH-resolved. Route-specific launch gates are
+defined below: direct preset scripts do not acquire the hparam managed-scheduler
+module-origin or live-argv contract.
 `execution.target` and `execution.host` on other non-hparam tasks remain
 path-validation context; they do not provide a generic SSH launcher. Ordinary
 Slurm inference uses the managed exception below; the direct-script identity
@@ -277,21 +284,21 @@ and lifecycle rules above remain unchanged.
 
 New `preset_prepare` recipes without Python/commit identity freeze the planning
 interpreter (`sys.executable`), manager Git HEAD, and `REPO_ROOT` workdir before
-command generation. This default applies only to local/default-local execution
-at the exact manager checkout with no remote path context. A separate workdir
-or remote path context requires a complete explicit local identity; SSH is not
-a preset launcher. An unavailable manager commit fails before workspace
+command generation; that HEAD is planned/baseline provenance rather than a
+permanent checkout pin. This default applies only to local/default-local
+execution at the exact manager checkout with no remote path context. A separate
+workdir or remote path context requires a complete explicit local identity; SSH
+is not a preset launcher. An unavailable manager commit fails before workspace
 creation. Partial authored identities are rejected, not filled with defaults.
 Historical registered preset plans without identity retain their original
-commands and are never rebound or migrated by readers. This identity binds
-the interpreter path and Git commit, not package versions or dirty file bytes.
+commands and are never rebound or migrated by readers.
 
 ### Managed preset preparation
 
 New effective `preset_prepare` recipes freeze `execution.scheduler.type: direct`
 and an explicit script terminal-status owner. Plan and launch on the execution
 host; this does not add recipe-driven SSH execution. The registered plan keeps
-its variant-local preset command and frozen runtime identity. Its top-level
+its variant-local preset command and frozen planned runtime identity. Its top-level
 `run.sh` delegates to `preset-launch --plan-dir <plan>`: both default to dry-run,
 and execution requires `--execute`. Do not launch the worker `launch.sh`
 separately or add a background SSH shell wrapper.
@@ -299,7 +306,11 @@ separately or add a background SSH shell wrapper.
 The launcher validates the registered plan and frozen inputs, then records the
 execution identity and launch attempt before starting a detached process.
 The launch command rechecks the frozen worker script and config hashes before
-spawning, including changes made after the manager's initial validation.
+spawning, including changes made after the manager's initial validation, and
+requires a clean importable-code state and the lifecycle module in the current
+repository. Under the short runtime lock it observes HEAD immediately before
+spawning and adds that value to the new managed PID receipt. It does not perform
+the hparam workload module-origin or live-argv checks.
 Stdin is closed to input; stdout and stderr share the run's persistent
 `stdout.log`. The process has its own session and a recorded PID, process group,
 and start token. Loss of the launching connection or an incomplete receipt does
@@ -322,8 +333,9 @@ restart them.
 Ordinary `infer` and `evaluate` plans may declare `execution.scheduler.type:
 slurm`. They reuse the existing single-node Slurm resource fields and protected
 environment rules in [Launch and queue](#launch-and-queue), with explicit
-`execution.workdir`, `execution.python`, and lowercase 40-character
-`execution.runtime_commit`. Submission may use `target: local` or `target: ssh`;
+`execution.workdir`, `execution.python`, and a full 40-character planned/baseline
+`execution.runtime_commit`, frozen in lowercase. Submission may use `target: local`
+or `target: ssh`;
 `scheduler.direct_controller` independently selects controller routing. Paths
 must already be available on the execution host; planning does not upload a
 runtime or input bundle.
@@ -502,8 +514,9 @@ consultation and final-evaluation validation remain separate gates.
 The optional `execution` block configures the managed launcher.
 
 - `execution.python` names one target Python executable without whitespace,
-  arguments, or `~` shorthand. `execution.runtime_commit` names the full
-  expected Git commit.
+  arguments, or `~` shorthand. `execution.runtime_commit` names a full
+  40-character planned/baseline Git commit ID; launch records the actual commit
+  separately. Authored hexadecimal is case-insensitive and freezes lowercase.
 - Conda wrapping belongs in `execution.conda_env`, not `execution.python`.
 - Omitted `execution.scheduler` resolves to `{type: direct}`. Direct runs use
   the existing `gpu_pool` / `gpus_per_run` / `max_concurrent` process model.
@@ -531,8 +544,9 @@ The optional `execution` block configures the managed launcher.
   remains canonical.
 - Only the canonical manager runtime—a local target at `REPO_ROOT` without a
   conda wrapper—may omit Python and commit identity. Planning then freezes the
-  current manager interpreter and repository HEAD. SSH targets, separate local
-  workdirs, and conda-wrapped targets must author both values explicitly.
+  current manager interpreter and baseline repository HEAD. SSH targets,
+  separate local workdirs, and conda-wrapped targets must author both values
+  explicitly.
 - With direct scheduling, `hparam-launch` starts one capacity-limited wave and
   `hparam-run-queue --execute` keeps filling that capacity. With Slurm, the
   launch owner submits every launchable leaf job without applying host-global
@@ -574,25 +588,39 @@ Canceled runs retain their frozen artifacts and cannot be launched later.
 Registration preflight records verified Python/version, host, repository and
 commit, module origin, explicit-environment digest, normalized supported-option
 digest, and exact validated argv digest in `execution_snapshot.json` before a
-new hparam plan is published. The verified target must have the planned commit,
-no tracked worktree changes, and no untracked or ignored importable Python or
-extension-module code. Untracked experiment artifacts and data remain allowed.
+new hparam plan is published. The verified target records its current commit;
+a difference from the planned/baseline commit is warning provenance, not a
+publication blocker. The target must have no tracked worktree changes and no
+untracked or ignored importable Python or extension-module code. Untracked
+experiment artifacts and data remain allowed.
 The runtime module must resolve inside that repository, and every frozen argv
 must pass its actual `argparse` implementation; rendered CLI text is not evidence.
 The snapshot stores the explicit execution environment, normalized supported
 options and digests, and every validated argv vector.
 
-Eligible execute waves live-reprobe the same target and must match the frozen
-snapshot, using the configured target/workdir/conda/explicit-environment wrapper.
+Eligible execute waves live-reprobe the same target, using the configured
+target/workdir/conda/explicit-environment wrapper. Commit and derived CLI-option
+inventory may advance with a rolling checkout; launch records the actual commit
+and still validates every frozen argv against the live parser. Python, route,
+repository/module origin, explicit environment, clean importable code, and
+frozen artifact hashes remain fail-closed. The registered plan and
+`execution_snapshot.json` bytes are never rewritten to match a later checkout.
 Direct execution needs a capacity-eligible candidate and no missing-PID blocker;
 Slurm needs launchable rows. Output topology is rechecked before process start
 or submission. Dry-run and monitor do not probe or create the execution snapshot;
 the separate dry-run candidate-config check remains planner-local.
 External datasets, drivers, and environment outside explicit `execution.env`
-remain operational dependencies rather than snapshot contents. Immediately before
-each managed process starts, the same target/env/conda/PYTHONPATH wrapper
-rechecks Python/version, commit, repository root, hostname, module origin,
-untracked or ignored importable code, and the run's frozen script/config hashes.
+remain operational dependencies rather than snapshot contents. The eligible
+execute-wave probe above owns live frozen-argv compatibility. Before a direct
+managed child is spawned, one short lock covers the embedded launch verification
+of Python/version, repository root, hostname, module origin, tracked and
+untracked or ignored importable code, and frozen script/config hashes, followed
+by HEAD capture and `Popen`. A small Slurm bootstrap preserves terminal evidence
+when the checkout worker cannot import or start. The allocation worker takes the
+short lock for preflight, HEAD snapshot, allocation-sidecar publication, and
+`srun` `Popen`. The locks are released after spawn;
+these are point-in-time launch observations, not a promise that checkout code
+bytes remain unchanged throughout the job.
 Target and leaf `PYTHONPATH` contain only `execution.workdir`; another manager
 checkout cannot satisfy missing imports.
 
@@ -696,22 +724,27 @@ the exact next-round protocol is [below](#proposal-handshake).
 ### Frozen round identity
 
 - Initialization resolves `execution.python`, `execution.runtime_commit`,
-  `adaptive.objective_metric`, and `adaptive.objective_mode` once for round 000
-  and stores them as workflow-wide frozen values.
-- Later rounds re-read the mutable source recipe, reject conflicting execution
-  identity or objective values, and carry the frozen values forward. Other
-  operational execution fields, including concurrency, GPU allocation, and
-  `env`, remain source-controlled subject to normal preflight. Each round plan
-  remains immutable.
+  `adaptive.objective_metric`, and `adaptive.objective_mode` for round 000. The
+  Python, objective, route, and scientific contract are workflow-wide frozen;
+  round 000's commit is baseline provenance. The frozen route includes the
+  scheduler type and, for Slurm, `partition`, `nodelist`, and
+  `direct_controller`; scheduler resource limits such as CPU, memory, walltime,
+  and nice remain operational inputs.
+- Later rounds re-read the mutable source recipe, reject conflicting frozen
+  Python, route, objective, or scientific values, and may plan from a newer
+  runtime commit. Other operational execution fields, including concurrency,
+  GPU allocation, and `env`, remain source-controlled subject to normal
+  preflight. Each round plan remains immutable.
 - The source recipe and every suggestion pass read-only preflight before digest,
   suggestion, or event artifacts are written. Earlier round plans, configs,
   logs, and checkpoints are not rewritten.
 
-The identity applies to every round of the initialized workflow, not just
-currently active jobs. A separately authorized runtime candidate cannot rebind
-that workflow or rewrite prior plans. Adaptive commands append experiment
-events and create registry, digest, suggestion, and round artifacts; they do
-not make those artifacts alternate lifecycle owners.
+Each run records its planned/baseline and actual commit through the canonical
+manifest. Mixed commits across rounds are provenance only, not an A/B arm or
+scientific search variable. A later runtime does not rewrite prior plans or
+snapshots. Adaptive commands append experiment events and create registry,
+digest, suggestion, and round artifacts; they do not make those artifacts
+alternate lifecycle owners.
 
 ### Strategy and budget
 
@@ -787,12 +820,15 @@ offset one another without changing the effective snapshot, the candidate is
 rebuilt and preflighted from that refreshed pair.
 
 Execute copies validated source-config bytes to the next round's
-`source_config.yaml` and materializes from the validated in-memory proposal; it
-does not re-read the mutable config or suggestion. Validation resolves the
-specific issued snapshot rather than `_latest_digest`, so later digest refreshes
-do not invalidate otherwise unchanged evidence. Failed uncommitted launch
-attempts are never reused; a later request may bind the same terminal source
-round to a higher fresh target round.
+`source_config.yaml` and initially materializes from the validated in-memory
+proposal without re-reading the mutable config. Once an accepted suggestion is
+published, its exact candidate bytes remain authoritative while an unregistered
+round is recovered, even if the mutable source runtime commit advances. Recovery
+rebuilds and compares every other candidate field before reusing that commit.
+Validation resolves the specific issued snapshot rather than `_latest_digest`,
+so later digest refreshes do not invalidate otherwise unchanged evidence. Failed
+uncommitted launch attempts are never reused; a later request may bind the same
+terminal source round to a higher fresh target round.
 
 A proposal changes only the search space and submits exactly one of:
 

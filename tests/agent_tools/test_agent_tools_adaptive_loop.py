@@ -7,7 +7,7 @@ import shlex
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, hparam_runtime, manifests, run_evidence
+from agent_tools import adaptive_hparam, hparam_runtime, manifests, python_programs, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -106,7 +106,9 @@ def test_adaptive_step_refreshes_terminal_blocker_before_launching_replacement_o
     def start_with_pid(_execution, command):
         started.append(command)
         pid = 122 + len(started)
-        pid_path = Path(shlex.split(command)[-2])
+        command_parts = shlex.split(command)
+        launcher_index = command_parts.index(python_programs.source("managed_scheduler.process_launch"))
+        pid_path = Path(command_parts[launcher_index + 3])
         pid_path.write_text(
             json.dumps(
                 {
@@ -776,6 +778,40 @@ def test_adaptive_loop_stops_when_step_cannot_create_a_budgeted_round(tmp_path: 
 
     assert result == suggestion
     assert calls == [(workflow_dir, True)]
+
+
+def test_adaptive_loop_materializes_source_before_budget_check(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].pop("test_after_fit")
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    observed = []
+
+    def budget_exhausted(_root, effective_recipe):
+        observed.append(effective_recipe["evaluation_policy"]["test_after_fit"])
+        return True
+
+    monkeypatch.setattr(adaptive_hparam, "_budget_exhausted", budget_exhausted)
+
+    assert adaptive_hparam.adaptive_loop(workflow_dir) == workflow_dir
+    assert observed == [True]
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
+
+    payload["adaptive"]["max_runs_total"] += 1
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "_budget_exhausted",
+        lambda *_args, **_kwargs: pytest.fail("budget check must not run"),
+    )
+
+    with pytest.raises(ValueError, match="adaptive.max_runs_total"):
+        adaptive_hparam.adaptive_loop(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
 
 
 def test_running_stop_passes_remote_status_row_to_failure_log_check(tmp_path: Path, monkeypatch):

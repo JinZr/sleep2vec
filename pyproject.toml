@@ -34,9 +34,9 @@ no_implicit_optional = true
 # neither ships type stubs. Suppression is scoped to exactly these so that an
 # unresolvable agent_tools-local import -- a typo, or a module renamed without
 # updating its call sites -- stays a hard error instead of being silently
-# ignored. Everything domain-facing (torch, lightning, wandb) is absent from
-# the type-check environment and imported lazily, so it needs no entry here.
-module = ["yaml.*", "pandas.*"]
+# ignored. Domain-facing runtime packages stay out of the lightweight
+# type-check environment; wandb is lazy, but mypy still resolves that import.
+module = ["yaml.*", "pandas.*", "wandb.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -53,21 +53,15 @@ module = [
     "agent_tools.adapters.preset_prepare",
     "agent_tools.adapters.sleep2stat",
     "agent_tools.adaptive_hparam",
-    "agent_tools.adaptive_proposals",
-    "agent_tools.checkpoint_test_results",
     "agent_tools.decision_hparam",
-    "agent_tools.decision_models",
     "agent_tools.decision_paths",
     "agent_tools.decisions",
     "agent_tools.domain.finetune_hparam_profile",
     "agent_tools.domain.finetune_summary",
     "agent_tools.domain.index_csv",
-    "agent_tools.domain.presets",
     "agent_tools.domain.sex_age_summary",
     "agent_tools.domain.sidecar_summaries",
-    "agent_tools.experiment_io",
     "agent_tools.experiment_pipeline",
-    "agent_tools.experiment_sources",
     "agent_tools.experiment_tracking",
     "agent_tools.experiment_workspace",
     "agent_tools.experiments",
@@ -75,15 +69,10 @@ module = [
     "agent_tools.hparam_runtime",
     "agent_tools.hparam_selection",
     "agent_tools.managed_scheduler",
-    "agent_tools.manifests",
-    "agent_tools.models",
     "agent_tools.plan_context",
     "agent_tools.plan_contract",
     "agent_tools.plan_hparam",
-    "agent_tools.plan_rendering",
     "agent_tools.plans",
-    "agent_tools.recipes",
-    "agent_tools.research_log",
     "agent_tools.run_artifacts",
     "agent_tools.run_evidence",
     "agent_tools.slurm",

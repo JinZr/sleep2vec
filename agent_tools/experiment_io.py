@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
 import csv
 import ctypes
@@ -217,7 +218,7 @@ def read_managed_files_at(
 
 def read_managed_output_texts_at(
     root: str | Path,
-    paths: list[str | Path],
+    paths: Sequence[str | Path],
     *,
     remote: str | None = None,
 ) -> dict[str, str | None]:
@@ -249,18 +250,18 @@ def read_managed_output_texts_at(
                 payload[key] = value
             return payload
 
-        payload = json.loads(result.stdout, object_pairs_hook=unique_object)
+        remote_payload = json.loads(result.stdout, object_pairs_hook=unique_object)
         # A complete positive response is required even when SSH rewrites a failed child's exit status.
         if (
-            not isinstance(payload, dict)
-            or set(payload) != set(path_keys)
-            or any(value is not None and not isinstance(value, str) for value in payload.values())
+            not isinstance(remote_payload, dict)
+            or set(remote_payload) != set(path_keys)
+            or any(value is not None and not isinstance(value, str) for value in remote_payload.values())
         ):
             raise ValueError("SSH managed-output read returned an invalid or incomplete response.")
-        return payload
+        return remote_payload
 
     payload: dict[str, str | None] = {}
-    seen_inodes = set()
+    seen_inodes: set[tuple[int, int]] = set()
     with ExitStack() as stack:
         try:
             root_descriptor = _open_managed_root(root)
@@ -340,13 +341,15 @@ def read_rows_at(
         return []
     delimiter = "\t" if Path(str(path)).suffix == ".tsv" else ","
     reader = csv.DictReader(io.StringIO(text), delimiter=delimiter, strict=strict)
+    fieldnames = reader.fieldnames
     if strict:
-        fieldnames = reader.fieldnames
         if not fieldnames:
             raise ValueError(f"Strict table has no header: {path}")
         if len(fieldnames) != len(set(fieldnames)):
             raise ValueError(f"Strict table has duplicate header fields: {path}")
     if require_managed_identity:
+        if fieldnames is None:
+            raise ValueError(f"Managed table has no header: {path}")
         validate_managed_header(fieldnames, path)
     try:
         rows = list(reader)
@@ -359,7 +362,7 @@ def read_rows_at(
 
 def validate_managed_output_paths(
     root: str | Path,
-    paths: list[str | Path],
+    paths: Sequence[str | Path],
     *,
     remote: str | None = None,
 ) -> None:
@@ -396,8 +399,8 @@ def validate_managed_output_paths(
     else:
         if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
             raise ValueError(f"Managed output paths must be independent regular files: {root_path}")
-    seen_paths = {}
-    seen_inodes = set()
+    seen_paths: dict[Path, None] = {}
+    seen_inodes: set[tuple[int, int]] = set()
     for raw_target in paths:
         target = Path(os.path.abspath(raw_target))
         try:

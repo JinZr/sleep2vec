@@ -529,7 +529,7 @@ def test_execution_identity_is_all_or_none(tmp_path: Path, task: str, missing_fi
         ("python", []),
         ("python", "conda run -n exp python"),
         ("python", "~/miniconda/bin/python"),
-        ("runtime_commit", "A" * 40),
+        ("runtime_commit", "g" * 40),
         ("runtime_commit", []),
         ("target", "ssh"),
     ],

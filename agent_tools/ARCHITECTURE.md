@@ -22,8 +22,9 @@ L0-level domain leaf.
 
 Mirrors the three frozensets in `layering.py`.
 
-### Kernel — reusable (33, zero domain signal)
+### Kernel — reusable (35, zero domain signal)
 decision_models, transport, python_programs, manifests, schema_map, gpu_rules, repo,
+runtime_lock, runtime_sync,
 experiment_io, research_log, experiment_workspace, experiment_sources,
 experiment_tracking, experiments,
 run_artifacts, run_evidence, checkpoint_test_results, hparam, hparam_runtime, hparam_selection,
@@ -36,6 +37,10 @@ imports.
 
 `python_programs` owns the canonical loader for embedded kernel program source
 files used by transport and experiment-control modules.
+
+`runtime_sync` owns dry-run inspection and clean `origin/main` fast-forward of
+one existing checkout. It shares `runtime_lock` with launch paths so an update
+cannot cross the short HEAD-observation-to-process-start critical section.
 
 `adaptive_proposals` owns the pure snapshot, parameter-envelope, and external
 submission-validation contract. `adaptive_hparam` owns the surrounding digest,
@@ -108,12 +113,12 @@ canonical variant loader defaults frozen by config and runtime identity.
 The guard freezes this set: adding a module here requires updating `layering.py`
 and this table, so a module can't silently slide into "mixed".
 
-## CLI command triage (39 subcommands)
+## CLI command triage (40 subcommands)
 
 `test_agent_tools_cli_contract.py` freezes the command names and checks this
 three-way ownership partition against the parser, including counts and duplicates.
 
-- **Kernel (28)**: repo-summary, collect-runs, hparam-launch, infer-launch, infer-stop,
+- **Kernel (29)**: repo-summary, runtime-sync, collect-runs, hparam-launch, infer-launch, infer-stop,
   preset-launch, preset-stop,
   hparam-run-queue,
   hparam-monitor, hparam-stop, hparam-select, hparam-checkpoint-scan,

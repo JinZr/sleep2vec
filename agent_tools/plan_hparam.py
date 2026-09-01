@@ -752,7 +752,9 @@ def freeze_hparam_execution(recipe: dict) -> dict:
             )
         repository = repo_summary().get("git") or {}
         if not repository.get("available") or not repository.get("commit"):
-            raise ValueError("Cannot freeze the target runtime commit because the manager repository is unavailable.")
+            raise ValueError(
+                "Cannot freeze the target runtime baseline commit because the manager repository is unavailable."
+            )
         execution["runtime_commit"] = repository["commit"]
     execution["runtime_commit"] = str(execution["runtime_commit"]).lower()
     scheduler = execution.get("scheduler")
@@ -1075,7 +1077,8 @@ def render_hparam_preflight_card(
         f"- Target CLI preflight host: `{snapshot['runtime_hostname']}`",
         f"- Target CLI Python: `{snapshot['python']}` (version `{snapshot['python_version']}`; "
         f"frozen command: `{snapshot['python_command']}`)",
-        f"- Target CLI runtime commit: `{snapshot['runtime_commit']}`",
+        f"- Planned runtime baseline commit: `{snapshot['expected_runtime_commit']}`",
+        f"- Target runtime commit observed at preflight: `{snapshot['runtime_commit']}`",
         f"- Target CLI module origin: `{snapshot['module_origin']}`",
         f"- Total planned runs: {len(run_configs)}",
         f"- Target CLI argv checks: {len(run_configs)}",

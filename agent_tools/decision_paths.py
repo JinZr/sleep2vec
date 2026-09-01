@@ -7,7 +7,7 @@ from typing import Any
 
 from . import gpu_rules, slurm, transport
 from .decision_models import DecisionIssue, DecisionStatus
-from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT
+from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, is_full_git_object_id
 
 _EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target", "workdir"}
 _RUNTIME_IDENTITY_FIELDS = {"python", "runtime_commit"}
@@ -175,12 +175,12 @@ def execution_contract_issues(
         )
     runtime_commit = execution.get("runtime_commit")
     if "runtime_commit" in execution and (
-        not isinstance(runtime_commit, str) or re.fullmatch(r"[0-9a-f]{40}", runtime_commit) is None
+        not isinstance(runtime_commit, str) or not is_full_git_object_id(runtime_commit.lower())
     ):
         issues.append(
             _execution_contract_issue(
                 "execution.runtime_commit",
-                "execution.runtime_commit must be a lowercase 40-character Git commit SHA.",
+                "execution.runtime_commit must be a full 40-character Git commit ID.",
                 runtime_commit,
                 source_layer,
             )

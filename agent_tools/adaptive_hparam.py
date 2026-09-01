@@ -50,11 +50,22 @@ from .experiment_workspace import (
 )
 from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, stop_hparam_run
 from .manifests import read_json, read_rows, utc_now, validate_managed_header, write_rows, write_text
-from .models import resolve_repo_path
+from .models import REPO_ROOT, is_full_git_object_id, resolve_repo_path
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 from .recipes import load_recipe_with_base, recipe_name
 
 _EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
+_FROZEN_EXECUTION_IDENTITY_FIELDS = ("python",)
+_EXECUTION_ROUTE_FIELDS = (
+    "target",
+    "host",
+    "workdir",
+    "conda_env",
+    "scheduler.type",
+    "scheduler.direct_controller",
+    "scheduler.partition",
+    "scheduler.nodelist",
+)
 _SLURM_ACCEPTED_STATUSES = {"queued", "running", "stopping", "completed", "finished", "failed", "stopped"}
 
 
@@ -578,7 +589,7 @@ def _agent_proposal_input_payload(
         },
         "digest_rows": rows,
         "parameter_envelopes": adaptive_proposals.validate_parameter_envelopes(parameters, suggest.get("bounds")),
-        "resolved_recipe_sha256": adaptive_proposals.canonical_sha256(_strip_internal_recipe_keys(recipe)),
+        "resolved_recipe_sha256": _proposal_recipe_sha256(recipe, workflow),
         "source_config_sha256": _source_config_sha256(recipe),
         "execution_identity": copy.deepcopy(workflow["execution_identity"]),
     }
@@ -732,7 +743,7 @@ def _validated_agent_proposal_input(
         raise ValueError("Proposal input expected path does not match its request id and target round.")
     _validate_proposal_request_event(workspace, proposal_input, input_path, input_sha256, proposal_path)
     snapshot = proposal_input["input"]
-    recipe_hash = adaptive_proposals.canonical_sha256(_strip_internal_recipe_keys(recipe))
+    recipe_hash = _proposal_recipe_sha256(recipe, workflow)
     if snapshot["resolved_recipe_sha256"] != recipe_hash:
         raise ValueError("Adaptive source recipe changed after the proposal input was created.")
     if snapshot["source_config_sha256"] != _source_config_sha256(recipe):
@@ -1217,13 +1228,53 @@ def _adaptive_step(
         bound_config_bytes = _bound_source_config_bytes(recipe, bound_config_sha256)
         bound_config_path = next_dir / "source_config.yaml"
         candidate_payload.setdefault("inputs", {})["config"] = str(bound_config_path)
-        round_recipe_payload = candidate_payload
         if file_sha256(proposal_file) != proposal_sha256 or file_sha256(input_path) != input_sha256:
             raise ValueError("Agent proposal submission or input snapshot changed during validation.")
         accepted_path = root / "adaptive" / "proposals" / f"round_{next_round:03d}.json"
         suggestion_dir = root / "adaptive" / "suggestions"
         suggestion = suggestion_dir / f"round_{next_round:03d}.yaml"
         rationale_path = suggestion_dir / f"round_{next_round:03d}.md"
+        if os.path.lexists(suggestion):
+            try:
+                published = exp_io.read_managed_files_at(workspace, [suggestion], allow_invalid_utf8=True)[
+                    str(suggestion)
+                ]
+                published_payload = yaml.safe_load(published["text"])
+            except (ValueError, yaml.YAMLError) as exc:
+                raise ValueError(f"Existing adaptive suggestion is invalid: {suggestion}") from exc
+            published_execution = published_payload.get("execution") if isinstance(published_payload, dict) else None
+            published_runtime_commit = (
+                published_execution.get("runtime_commit") if isinstance(published_execution, dict) else None
+            )
+            if not is_full_git_object_id(published_runtime_commit):
+                raise ValueError(f"Existing adaptive suggestion has an invalid runtime commit: {suggestion}")
+            recovered_payload = copy.deepcopy(candidate_payload)
+            recovered_execution = recovered_payload.get("execution")
+            if not isinstance(recovered_execution, dict):
+                raise ValueError("Agent proposal candidate lacks execution identity.")
+            recovered_execution["runtime_commit"] = published_runtime_commit
+            recovered_bytes = yaml.safe_dump(recovered_payload, sort_keys=False).encode()
+            if (
+                published_payload != recovered_payload
+                or published["sha256"] != hashlib.sha256(recovered_bytes).hexdigest()
+            ):
+                raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {suggestion}")
+            candidate_payload = recovered_payload
+            with TemporaryDirectory(prefix="agent-tools-agent-proposal-") as temp_dir:
+                candidate_path = Path(temp_dir) / "suggested.yaml"
+                candidate_path.write_bytes(recovered_bytes)
+                next_recipe, _, candidate_preflight = preflight_plan(
+                    recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
+                )
+            if candidate_preflight.exit_code != 0:
+                details = "; ".join(
+                    f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues()
+                )
+                raise RuntimeError(
+                    "Published agent suggestion failed preflight with exit code "
+                    f"{candidate_preflight.exit_code}: {details}"
+                )
+        round_recipe_payload = candidate_payload
         exp_io.validate_managed_output_paths(
             workspace,
             [
@@ -1438,8 +1489,18 @@ def _adaptive_step(
 
 def adaptive_loop(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
-    recipe = load_recipe_with_base(_workflow(root)["recipe_path"])
+    workflow = _workflow(root)
+    next_dir = _round_dir(root, _next_round_index(root))
+    recipe, _, source_preflight = preflight_plan(
+        recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
+    )
+    if source_preflight.exit_code != 0:
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in source_preflight.blocking_issues())
+        raise RuntimeError(
+            f"Adaptive source recipe failed preflight with exit code {source_preflight.exit_code}: {details}"
+        )
     _validate_adaptive_recipe(recipe)
+    recipe = _with_workflow_execution(recipe, workflow)
     if _suggest_strategy(recipe) == "agent_proposal":
         raise ValueError("hparam-adaptive-loop does not support agent_proposal; use the two-phase adaptive step.")
     workspace = experiment_root(recipe)
@@ -1553,8 +1614,18 @@ def _validate_workflow_payload(
     plan = artifacts.read_hparam_plan(round_dir, require_adaptive_commit=require_adaptive_commit)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     plan_execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    if any(plan_execution.get(field) != execution_identity[field] for field in _EXECUTION_IDENTITY_FIELDS):
+    if any(plan_execution.get(field) != execution_identity[field] for field in _FROZEN_EXECUTION_IDENTITY_FIELDS):
         raise ValueError(f"Adaptive workflow execution identity differs from the current round plan: {round_dir}")
+    initial_plan = plan if round_index == 0 else artifacts.read_hparam_plan(_round_dir(root, 0))
+    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    initial_execution = initial_recipe.get("execution") if isinstance(initial_recipe.get("execution"), dict) else {}
+    if any(initial_execution.get(field) != execution_identity[field] for field in _EXECUTION_IDENTITY_FIELDS):
+        raise ValueError(f"Adaptive workflow baseline execution identity differs from round 000: {path}")
+    frozen_route = _execution_route(initial_execution)
+    current_route = _execution_route(plan_execution)
+    changed_route = [field for field in _EXECUTION_ROUTE_FIELDS if current_route[field] != frozen_route[field]]
+    if changed_route:
+        raise ValueError(f"Adaptive workflow execution route differs from round 000: {', '.join(changed_route)}")
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
@@ -1978,6 +2049,103 @@ def _strip_internal_recipe_keys(recipe: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in recipe.items() if not str(key).startswith("_")}
 
 
+def _proposal_recipe_sha256(recipe: dict[str, Any], workflow: dict[str, Any]) -> str:
+    payload = _strip_internal_recipe_keys(copy.deepcopy(recipe))
+    execution = payload.get("execution") if isinstance(payload.get("execution"), dict) else None
+    baseline = workflow.get("execution_identity") if isinstance(workflow.get("execution_identity"), dict) else {}
+    if execution is not None and baseline.get("runtime_commit") not in (None, ""):
+        execution["runtime_commit"] = baseline["runtime_commit"]
+    return adaptive_proposals.canonical_sha256(payload)
+
+
+def _execution_route(execution: dict[str, Any]) -> dict[str, str]:
+    scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+    scheduler_type = str(scheduler.get("type") or "direct")
+    slurm_scheduler = scheduler if scheduler_type == "slurm" else {}
+    return {
+        "target": str(execution.get("target", "local") or "local"),
+        "host": str(execution.get("host") or ""),
+        "workdir": str(execution.get("workdir") or REPO_ROOT),
+        "conda_env": str(execution.get("conda_env") or ""),
+        "scheduler.type": scheduler_type,
+        "scheduler.direct_controller": str(slurm_scheduler.get("direct_controller") is True).lower(),
+        "scheduler.partition": str(slurm_scheduler.get("partition") or ""),
+        "scheduler.nodelist": str(slurm_scheduler.get("nodelist") or ""),
+    }
+
+
+def _workflow_execution_route(workflow: dict[str, Any]) -> dict[str, str]:
+    root = Path(str(workflow.get("root") or ""))
+    if not root.is_absolute():
+        raise ValueError("Adaptive workflow lacks a frozen execution route.")
+    initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
+    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    initial_execution = initial_recipe.get("execution") if isinstance(initial_recipe.get("execution"), dict) else {}
+    return _execution_route(initial_execution)
+
+
+def _validate_workflow_scientific_contract(recipe: dict[str, Any], workflow: dict[str, Any]) -> None:
+    root = Path(str(workflow.get("root") or ""))
+    initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
+    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    fields = ("task", "variant", "step", "inputs", "evaluation_policy")
+    changed = [field for field in fields if recipe.get(field) != initial_recipe.get(field)]
+    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    initial_search = initial_recipe.get("search") if isinstance(initial_recipe.get("search"), dict) else {}
+    searched_runtime_fields = {
+        field.removeprefix("runtime.")
+        for field in initial_search.get("parameters", {})
+        if isinstance(field, str) and field.startswith("runtime.")
+    }
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    initial_runtime = initial_recipe.get("runtime") if isinstance(initial_recipe.get("runtime"), dict) else {}
+    adaptive = _adaptive(recipe)
+    initial_adaptive = _adaptive(initial_recipe)
+    suggest = adaptive.get("suggest") if isinstance(adaptive.get("suggest"), dict) else {}
+    initial_suggest = initial_adaptive.get("suggest") if isinstance(initial_adaptive.get("suggest"), dict) else {}
+    replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
+    initial_replacement = (
+        initial_adaptive.get("replacement") if isinstance(initial_adaptive.get("replacement"), dict) else {}
+    )
+    replacement_defaults = {
+        "enabled": True,
+        "allow_running_stop": False,
+        "grace_epochs": None,
+        "grace_minutes": None,
+        "kill_margin": 0.0,
+    }
+    frozen_values = {
+        "runtime.fixed": (
+            {field: value for field, value in runtime.items() if field not in searched_runtime_fields},
+            {field: value for field, value in initial_runtime.items() if field not in searched_runtime_fields},
+        ),
+        "search.parameters": (search.get("parameters"), initial_search.get("parameters")),
+        "adaptive.suggest.bounds": (suggest.get("bounds"), initial_suggest.get("bounds")),
+        "adaptive.suggest.strategy": (_suggest_strategy(recipe), _suggest_strategy(initial_recipe)),
+        "adaptive.round_size": (
+            int(adaptive.get("round_size") or _hparam_count(recipe)),
+            int(initial_adaptive.get("round_size") or _hparam_count(initial_recipe)),
+        ),
+        "adaptive.max_rounds": (adaptive.get("max_rounds"), initial_adaptive.get("max_rounds")),
+        "adaptive.max_runs_total": (
+            adaptive.get("max_runs_total"),
+            initial_adaptive.get("max_runs_total"),
+        ),
+        "adaptive.replacement": (
+            {**replacement_defaults, **replacement},
+            {**replacement_defaults, **initial_replacement},
+        ),
+    }
+    changed.extend(field for field, values in frozen_values.items() if values[0] != values[1])
+    if changed:
+        raise ValueError(
+            f"Adaptive source recipe changed its scientific contract from frozen round 000: {', '.join(changed)}"
+        )
+    frozen_config = _round_dir(root, 0) / "config.source.yaml"
+    if _source_config_sha256(recipe) != file_sha256(frozen_config):
+        raise ValueError("Adaptive source config changed from frozen round 000.")
+
+
 def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any]:
     frozen = workflow.get("execution_identity")
     if (
@@ -1990,24 +2158,29 @@ def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -
     for field, default in (("objective_metric", "test_auroc"), ("objective_mode", "max")):
         if str(adaptive.get(field) or default) != str(workflow.get(field) or default):
             raise ValueError(f"Adaptive source adaptive.{field} differs from the frozen workflow.")
+    _validate_workflow_scientific_contract(recipe, workflow)
     current = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    for field in _EXECUTION_IDENTITY_FIELDS:
+    frozen_route = _workflow_execution_route(workflow)
+    current_route = _execution_route(current)
+    for field in _EXECUTION_ROUTE_FIELDS:
+        if current_route[field] != frozen_route[field]:
+            raise ValueError(f"Adaptive source execution.{field} differs from the frozen workflow route.")
+    for field in _FROZEN_EXECUTION_IDENTITY_FIELDS:
         value = current.get(field)
         expected = frozen[field]
         if value in (None, "", "ASK_USER"):
             continue
-        if field == "runtime_commit" and isinstance(value, str) and isinstance(expected, str):
-            value = value.lower()
-            expected = expected.lower()
         if value != expected:
             raise ValueError(f"Adaptive source execution.{field} differs from the frozen workflow.")
     execution = dict(current)
-    execution.update(copy.deepcopy(frozen))
+    execution.update({field: copy.deepcopy(frozen[field]) for field in _FROZEN_EXECUTION_IDENTITY_FIELDS})
+    if execution.get("runtime_commit") in (None, "", "ASK_USER"):
+        execution["runtime_commit"] = copy.deepcopy(frozen["runtime_commit"])
     recipe["execution"] = execution
     if isinstance(recipe.get("_local_recipe"), dict):
         local = copy.deepcopy(recipe["_local_recipe"])
         local_execution = dict(local.get("execution")) if isinstance(local.get("execution"), dict) else {}
-        local_execution.update(copy.deepcopy(frozen))
+        local_execution.update({field: copy.deepcopy(execution[field]) for field in _EXECUTION_IDENTITY_FIELDS})
         local["execution"] = local_execution
         recipe["_local_recipe"] = local
     return recipe

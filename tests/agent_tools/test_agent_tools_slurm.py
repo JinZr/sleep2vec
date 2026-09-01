@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -7,13 +8,15 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import time
 
 import pytest
 
-from agent_tools import managed_scheduler, slurm
+from agent_tools import managed_scheduler, python_programs, slurm
 
 
 def _frozen_job_inputs(tmp_path: Path, *, script_text: str = "#!/usr/bin/env bash\ntrue\n"):
+    (tmp_path / ".git").mkdir()
     config = tmp_path / "config.yaml"
     config.write_text("task: unit\n")
     script = tmp_path / "launch.sh"
@@ -1013,17 +1016,120 @@ def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path, whitespace: 
     error_directive = next(line for line in script.splitlines() if line.startswith("#SBATCH --error="))
     assert shlex.split(output_directive) == ["#SBATCH", f"--output={escaped_log_path}"]
     assert shlex.split(error_directive) == ["#SBATCH", f"--error={escaped_log_path}"]
-    assert "agent_tools.slurm run-frozen-job" in script
+    assert "agent_tools.slurm" in script
     assert f"--execution-snapshot-path {tmp_path / 'execution_snapshot.json'}" in script
     assert f"--gpus-per-run {gpus_per_run}" in script
     assert '--execution-snapshot-sha256 "${1:-}"' in script
-    worker = shlex.split(next(line for line in script.splitlines() if line.startswith("exec ")))
-    assert worker[worker.index("--log-path") + 1] == str(log_path)
+    assert f"exec /opt/python -c {shlex.quote(python_programs.source('slurm.worker_bootstrap'))}" in script
+    assert f"--log-path {shlex.quote(str(log_path))}" in script
     assert "export PYTHONPATH=/shared/repo" in script
     assert "${PYTHONPATH" not in script
     assert "hparam-run-queue" not in script
     assert "CUDA_VISIBLE_DEVICES" not in script
     assert "start_new_session" not in script
+
+
+def test_slurm_bootstrap_writes_terminal_sidecar_when_checkout_import_fails(tmp_path: Path):
+    runtime = tmp_path / "runtime"
+    package = runtime / "agent_tools"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "slurm.py").write_text("raise ImportError('broken rolling checkout')\n")
+    result_path = tmp_path / "slurm_terminal.json"
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(runtime),
+        "SLURM_JOB_ID": "3880",
+        "SLURM_CLUSTER_NAME": "wuji-h20",
+    }
+
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("slurm.worker_bootstrap"),
+            "run-frozen-job",
+            "--result-path",
+            str(result_path),
+            "--submit-token",
+            "agent-tools-unit",
+        ],
+        env=env,
+        cwd=runtime,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert process.returncode != 0
+    terminal = json.loads(result_path.read_text())
+    assert slurm.sidecar_identity(terminal, "agent-tools-unit", expected_job_id="3880") == slurm.JobIdentity(
+        "3880", "wuji-h20"
+    )
+    assert slurm.terminal_exit_code(terminal) == process.returncode
+    assert terminal["runtime_commit"] == ""
+
+
+def test_slurm_bootstrap_forwards_signal_and_writes_terminal_sidecar(tmp_path: Path):
+    runtime = tmp_path / "runtime"
+    package = runtime / "agent_tools"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    marker = tmp_path / "worker-started"
+    (package / "slurm.py").write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "import time\n"
+        "Path(os.environ['WORKER_MARKER']).write_text('ready')\n"
+        "while True:\n"
+        "    time.sleep(1)\n"
+    )
+    result_path = tmp_path / "slurm_terminal.json"
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(runtime),
+        "SLURM_JOB_ID": "3880",
+        "SLURM_CLUSTER_NAME": "wuji-h20",
+        "WORKER_MARKER": str(marker),
+    }
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("slurm.worker_bootstrap"),
+            "run-frozen-job",
+            "--result-path",
+            str(result_path),
+            "--submit-token",
+            "agent-tools-unit",
+        ],
+        env=env,
+        cwd=runtime,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not marker.exists():
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                pytest.fail(f"Slurm bootstrap exited before signal: {stdout}{stderr}")
+            assert time.monotonic() < deadline, "timed out waiting for Slurm worker"
+            time.sleep(0.01)
+        process.send_signal(slurm.signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 128 + slurm.signal.SIGTERM, stdout + stderr
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+
+    terminal = json.loads(result_path.read_text())
+    assert slurm.sidecar_identity(terminal, "agent-tools-unit", expected_job_id="3880") == slurm.JobIdentity(
+        "3880", "wuji-h20"
+    )
+    assert slurm.terminal_exit_code(terminal) == 128 + slurm.signal.SIGTERM
 
 
 def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, monkeypatch):
@@ -1077,6 +1183,87 @@ def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, 
     ]
     for env_name in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
         assert env_name not in spawned[0][1]["env"]
+
+
+def test_run_frozen_job_records_allocation_runtime_commit_drift_without_blocking(tmp_path: Path, monkeypatch):
+    kwargs, frozen_snapshot = _frozen_job_inputs(tmp_path)
+    planned_commit = "a" * 40
+    actual_commit = "b" * 40
+    kwargs["runtime_commit"] = planned_commit
+    frozen_snapshot["runtime_commit"] = planned_commit
+    snapshot_path = Path(kwargs["execution_snapshot_path"])
+    snapshot_path.write_text(json.dumps(frozen_snapshot))
+    kwargs["execution_snapshot_sha256"] = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+    actual_snapshot = {**frozen_snapshot, "expected_runtime_commit": planned_commit, "runtime_commit": actual_commit}
+    monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    monkeypatch.setenv("SLURM_CLUSTER_NAME", "wuji-h20")
+    monkeypatch.setenv("SLURM_NTASKS", "1")
+
+    events = []
+
+    @contextmanager
+    def observed_lock(checkout):
+        assert checkout == kwargs["workdir"]
+        events.append("lock-enter")
+        yield
+        events.append("lock-exit")
+
+    def inspect_execution_target(execution, *_args, **_kwargs):
+        assert events == ["lock-enter"]
+        events.append("inspect")
+        assert execution["runtime_commit"] == planned_commit
+        return actual_snapshot
+
+    class CompletedChild:
+        def wait(self):
+            assert events[-1] == "lock-exit"
+            events.append("wait")
+            return 0
+
+    def popen(*_args, **_kwargs):
+        assert events[-1] == "inspect"
+        events.append("popen")
+        return CompletedChild()
+
+    monkeypatch.setattr(slurm, "runtime_lock", observed_lock)
+    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect_execution_target)
+    monkeypatch.setattr(slurm.subprocess, "Popen", popen)
+
+    assert slurm.run_frozen_job(**kwargs) == 0
+
+    assert events == ["lock-enter", "inspect", "popen", "lock-exit", "wait"]
+    allocation = json.loads(Path(kwargs["allocation_identity_path"]).read_text())
+    terminal = json.loads(Path(kwargs["result_path"]).read_text())
+    assert allocation["execution_snapshot"]["runtime_commit"] == actual_commit
+    assert terminal["runtime_commit"] == actual_commit
+
+
+@pytest.mark.parametrize("artifact_key", ["script", "config"])
+def test_run_frozen_job_rechecks_frozen_artifacts_inside_runtime_lock_before_spawn(
+    tmp_path: Path, monkeypatch, artifact_key: str
+):
+    kwargs, snapshot = _frozen_job_inputs(tmp_path)
+    monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    monkeypatch.setenv("SLURM_NTASKS", "1")
+    artifact = Path(kwargs[artifact_key])
+
+    @contextmanager
+    def drifting_lock(checkout):
+        assert checkout == kwargs["workdir"]
+        artifact.write_text("drifted\n")
+        yield
+
+    spawned = []
+    monkeypatch.setattr(slurm, "runtime_lock", drifting_lock)
+    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(slurm.subprocess, "Popen", lambda *args, **kwargs: spawned.append((args, kwargs)))
+
+    assert slurm.run_frozen_job(**kwargs) == 2
+
+    assert spawned == []
+    assert not Path(kwargs["allocation_identity_path"]).exists()
+    assert json.loads(Path(kwargs["result_path"]).read_text())["exit_code"] == 2
+    assert f"Frozen run artifact changed before process start: {artifact}" in Path(kwargs["log_path"]).read_text()
 
 
 @pytest.mark.parametrize(("field", "observed"), [("python", "/other/python"), ("python_version", "3.11.0")])

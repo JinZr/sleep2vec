@@ -17,6 +17,20 @@ from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _ag
 _stub_execution_snapshot_preflight = test_support._stub_execution_snapshot_preflight
 
 
+def _slurm_scheduler(**updates):
+    return {
+        "type": "slurm",
+        "partition": "gpu",
+        "cpus_per_task": 8,
+        "memory": "64G",
+        "walltime": "01:00:00",
+        "nice": 0,
+        "nodelist": "gpu[1]",
+        "direct_controller": False,
+        **updates,
+    }
+
+
 def test_adaptive_init_preflight_leaves_blocked_root_untouched_then_retries(tmp_path: Path):
     source = tmp_path / "source"
     recipe = _adaptive_recipe(source)
@@ -1203,20 +1217,34 @@ def test_adaptive_init_rejects_visible_incomplete_round_without_repair(tmp_path:
     assert not workflow_path.exists()
 
 
-def test_adaptive_rounds_keep_frozen_runtime_identity_and_allow_capacity_updates(tmp_path: Path, monkeypatch):
+def test_adaptive_rounds_keep_frozen_route_and_python_and_allow_commit_and_capacity_updates(
+    tmp_path: Path, monkeypatch
+):
     recipe = _adaptive_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"] = {}
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    workflow_bytes = workflow_path.read_bytes()
     round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
     first_plan = json.loads((round_zero / "plan.json").read_text())
     frozen_identity = {field: first_plan["recipe"]["execution"][field] for field in ("python", "runtime_commit")}
+    frozen_route = adaptive_hparam._execution_route(first_plan["recipe"]["execution"])
+    next_commit = "b" * 40
+    assert next_commit != frozen_identity["runtime_commit"]
     run = first_plan["runs"][0]
     digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
     manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
     payload = yaml.safe_load(recipe.read_text())
-    payload["execution"]["max_concurrent"] = 2
+    payload["execution"].update(
+        {
+            **first_plan["recipe"]["execution"],
+            "python": frozen_identity["python"],
+            "runtime_commit": next_commit,
+            "max_concurrent": 2,
+        }
+    )
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     monkeypatch.setattr(plan_hparam, "repo_summary", lambda: pytest.fail("later rounds must not resolve HEAD again"))
 
@@ -1234,11 +1262,13 @@ def test_adaptive_rounds_keep_frozen_runtime_identity_and_allow_capacity_updates
     plan_hparam.commit_hparam_plan(next_dir)
 
     assert suggested["execution"]["max_concurrent"] == 2
-    assert {field: suggested["execution"][field] for field in ("python", "runtime_commit")} == frozen_identity
+    assert suggested["execution"]["python"] == frozen_identity["python"]
+    assert suggested["execution"]["runtime_commit"] == next_commit
     second_plan = json.loads((next_dir / "plan.json").read_text())
-    assert {
-        field: second_plan["recipe"]["execution"][field] for field in ("python", "runtime_commit")
-    } == frozen_identity
+    assert second_plan["recipe"]["execution"]["python"] == frozen_identity["python"]
+    assert second_plan["recipe"]["execution"]["runtime_commit"] == next_commit
+    assert adaptive_hparam._execution_route(second_plan["recipe"]["execution"]) == frozen_route
+    assert workflow_path.read_bytes() == workflow_bytes
 
 
 def test_adaptive_publication_serializes_with_doctor_output(tmp_path: Path, monkeypatch):
@@ -1416,12 +1446,133 @@ def test_adaptive_workflow_rejects_invalid_execution_identity_before_suggestion_
     assert events_path.read_bytes() == events_before
 
 
+def test_adaptive_workflow_rejects_baseline_commit_drift_from_round_zero(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    workflow = json.loads(workflow_path.read_text())
+    workflow["execution_identity"]["runtime_commit"] = "b" * 40
+    workflow_path.write_text(json.dumps(workflow))
+
+    with pytest.raises(ValueError, match="baseline execution identity differs from round 000"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+
+
+def test_adaptive_source_rejects_frozen_python_drift_before_suggestion_write(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_zero / "plan.json").read_text())["runs"][0]
+    digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
+    manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["python"] = "/other/python"
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    events_path = tmp_path / "events.jsonl"
+    events_before = events_path.read_bytes()
+
+    with pytest.raises(ValueError, match=r"execution\.python differs"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+    assert events_path.read_bytes() == events_before
+
+
 @pytest.mark.parametrize(
-    ("field", "value"),
-    [("python", "/other/python"), ("runtime_commit", "b" * 40)],
+    "drift",
+    [
+        "label",
+        "step_id",
+        "selection_policy",
+        "test_policy",
+        "source_config",
+        "search_parameters",
+        "suggest_bounds",
+        "suggest_strategy",
+        "round_size",
+        "max_rounds",
+        "max_runs_total",
+        "runtime_epochs",
+        "runtime_batch_size",
+        "runtime_precision",
+        "runtime_ckpt_every_n_epochs",
+        "replacement_allow_running_stop",
+        "replacement_grace_epochs",
+        "replacement_kill_margin",
+    ],
 )
-def test_adaptive_source_rejects_frozen_execution_identity_drift_before_suggestion_write(
-    tmp_path: Path, field: str, value: str
+def test_adaptive_source_rejects_frozen_scientific_contract_before_suggestion_write(
+    tmp_path: Path, monkeypatch, drift: str
+):
+    recipe = _agent_recipe(tmp_path) if drift in {"suggest_bounds", "suggest_strategy"} else _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    payload = yaml.safe_load(recipe.read_text())
+    if drift == "label":
+        payload.setdefault("inputs", {})["label_name"] = "stage5"
+        payload["decisions"]["label_name"]["value"] = "stage5"
+    elif drift == "step_id":
+        payload["step"] = yaml.safe_load(Path(payload["base_recipe"]).read_text())["step"]
+        payload["step"]["id"] = "changed-step"
+    elif drift == "selection_policy":
+        payload["evaluation_policy"]["selection_split"] = "train"
+        payload["decisions"]["train_val_test_policy"]["value"] = "train"
+    elif drift == "test_policy":
+        payload["evaluation_policy"]["require_manual_unlock_for_final_test"] = False
+    elif drift == "source_config":
+        config_path = Path(yaml.safe_load(Path(payload["base_recipe"]).read_text())["inputs"]["config"])
+        config = yaml.safe_load(config_path.read_text())
+        changed_index = tmp_path / "changed-index.csv"
+        changed_index.write_text((tmp_path / "index.csv").read_text())
+        config["data"]["finetune_data_index"] = str(changed_index)
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    elif drift == "search_parameters":
+        payload["search"]["parameters"]["runtime.lr"] = [2e-6]
+    elif drift == "suggest_bounds":
+        payload["adaptive"]["suggest"]["bounds"]["runtime.lr"] = [6e-7, 2e-6]
+    elif drift == "suggest_strategy":
+        payload["adaptive"]["suggest"] = {"strategy": "best_neighborhood"}
+    elif drift.startswith("runtime_"):
+        field = drift.removeprefix("runtime_")
+        payload.setdefault("runtime", {})[field] = {
+            "epochs": 31,
+            "batch_size": 16,
+            "precision": "32",
+            "ckpt_every_n_epochs": 2,
+        }[field]
+    elif drift.startswith("replacement_"):
+        field = drift.removeprefix("replacement_")
+        payload["adaptive"]["replacement"][field] = {
+            "allow_running_stop": False,
+            "grace_epochs": 2,
+            "kill_margin": 0.1,
+        }[field]
+    else:
+        payload["adaptive"][drift] += 1
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda *_args: pytest.fail("digest must not run"))
+
+    with pytest.raises(ValueError, match="frozen round 000"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "additional"),
+    [
+        ("target", "ssh", {"host": "new-host"}),
+        ("host", "new-host", {}),
+        ("workdir", "/different/runtime", {}),
+        ("conda_env", "different-env", {}),
+    ],
+)
+def test_adaptive_source_rejects_frozen_route_drift_before_suggestion_write(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    additional: dict[str, str],
 ):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
@@ -1430,16 +1581,109 @@ def test_adaptive_source_rejects_frozen_execution_identity_drift_before_suggesti
     digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
     manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
     payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update(additional)
     payload["execution"][field] = value
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     events_path = tmp_path / "events.jsonl"
     events_before = events_path.read_bytes()
 
-    with pytest.raises(ValueError, match=f"execution.{field} differs"):
+    with pytest.raises(ValueError, match=rf"execution\.{field} differs from the frozen workflow route"):
         adaptive_hparam.suggest_next_round(workflow_dir)
 
     assert not (workflow_dir / "adaptive" / "suggestions").exists()
     assert events_path.read_bytes() == events_before
+
+
+def test_adaptive_source_rejects_direct_to_slurm_route_drift_before_suggestion_write(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_zero / "plan.json").read_text())["runs"][0]
+    manifests.write_rows(workflow_dir / "adaptive" / "digests" / "round_000.csv", [{**run, "test_auroc": 0.73}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["scheduler"] = _slurm_scheduler()
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    with pytest.raises(ValueError, match=r"execution\.scheduler\.type differs from the frozen workflow route"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+
+
+def test_adaptive_source_rejects_slurm_to_direct_route_drift_before_suggestion_write(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update({"scheduler": _slurm_scheduler(), "gpus_per_run": 1})
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_zero / "plan.json").read_text())["runs"][0]
+    manifests.write_rows(workflow_dir / "adaptive" / "digests" / "round_000.csv", [{**run, "test_auroc": 0.73}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["scheduler"] = {"type": "direct"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    with pytest.raises(ValueError, match=r"execution\.scheduler\.type differs from the frozen workflow route"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("direct_controller", True), ("partition", "other-gpu"), ("nodelist", "gpu[2]")],
+)
+def test_adaptive_source_rejects_slurm_routing_drift_before_suggestion_write(tmp_path: Path, field: str, value: object):
+    recipe = _adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update({"scheduler": _slurm_scheduler(), "gpus_per_run": 1})
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_zero / "plan.json").read_text())["runs"][0]
+    manifests.write_rows(workflow_dir / "adaptive" / "digests" / "round_000.csv", [{**run, "test_auroc": 0.73}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["scheduler"][field] = value
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    with pytest.raises(
+        ValueError,
+        match=rf"execution\.scheduler\.{field} differs from the frozen workflow route",
+    ):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+
+
+def test_adaptive_source_allows_operational_and_searched_runtime_updates(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update({"scheduler": _slurm_scheduler(), "gpus_per_run": 1})
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_zero / "plan.json").read_text())["runs"][0]
+    manifests.write_rows(workflow_dir / "adaptive" / "digests" / "round_000.csv", [{**run, "test_auroc": 0.73}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["scheduler"].update(
+        {"cpus_per_task": 12, "memory": "96G", "walltime": "02:00:00", "nice": 100}
+    )
+    payload["execution"]["gpus_per_run"] = 2
+    payload["execution"]["env"] = {"OMP_NUM_THREADS": "4"}
+    payload.setdefault("runtime", {})["lr"] = 2e-6
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    suggestion = adaptive_hparam.suggest_next_round(workflow_dir)
+    suggested = yaml.safe_load(suggestion.read_text())
+    suggested_execution = suggested["execution"]
+
+    assert suggested_execution["scheduler"]["cpus_per_task"] == 12
+    assert suggested_execution["scheduler"]["memory"] == "96G"
+    assert suggested_execution["scheduler"]["walltime"] == "02:00:00"
+    assert suggested_execution["scheduler"]["nice"] == 100
+    assert suggested_execution["gpus_per_run"] == 2
+    assert suggested_execution["env"] == {"OMP_NUM_THREADS": "4"}
+    assert suggested["runtime"]["lr"] == 2e-6
 
 
 @pytest.mark.parametrize(

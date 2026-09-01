@@ -14,7 +14,7 @@ from typing import Any
 import yaml
 
 from . import experiment_io as exp_io, research_log, transport
-from .models import REPO_ROOT, json_ready
+from .models import REPO_ROOT, is_full_git_object_id, json_ready
 
 PHASES = {"prepare", "train", "evaluate", "analyze"}
 PLAN_CONTROLLERS = {"unassigned", "ordinary", "adaptive", "pipeline"}
@@ -35,6 +35,7 @@ SCHEDULER_PLAN_IDENTITY_FIELDS = {
 }
 SCHEDULER_BINDING_FIELDS = {"scheduler_job_id", "scheduler_cluster", "execution_snapshot_sha256"}
 SCHEDULER_IDENTITY_FIELDS = SCHEDULER_PLAN_IDENTITY_FIELDS | SCHEDULER_BINDING_FIELDS
+RUNTIME_PROVENANCE_FIELDS = {"planned_runtime_commit", "runtime_commit"}
 EXECUTION_IDENTITY_FIELDS = {
     "target",
     "host",
@@ -68,6 +69,7 @@ FROZEN_RUN_FIELDS = (
         "terminal_status_owner",
     }
     | EXECUTION_IDENTITY_FIELDS
+    | RUNTIME_PROVENANCE_FIELDS
     | SCHEDULER_IDENTITY_FIELDS
 )
 MANAGED_RUN_PATH_FIELDS = {
@@ -836,6 +838,10 @@ def validate_managed_run_rows(rows: list[dict[str, Any]], *, source: str, cardin
         ]
         if relative_paths:
             raise ValueError(f"{source} row {index} has non-absolute paths: {', '.join(sorted(relative_paths))}")
+        for field in RUNTIME_PROVENANCE_FIELDS:
+            commit = row.get(field)
+            if commit not in (None, "") and not is_full_git_object_id(commit):
+                raise ValueError(f"{source} row {index} has an invalid {field}.")
         seen.add(key)
 
 
@@ -1019,7 +1025,7 @@ def validate_frozen_run_update(
             if existing_value in (None, "") and allow_execution_identity_fill:
                 continue
             changed = str(json_ready(incoming_value)) != str(json_ready(existing_value))
-        elif field in PROCESS_IDENTITY_FIELDS:
+        elif field in PROCESS_IDENTITY_FIELDS | RUNTIME_PROVENANCE_FIELDS:
             if existing_value in (None, "") and allow_execution_identity_fill:
                 continue
             changed = str(json_ready(incoming_value)) != str(json_ready(existing_value))
@@ -1067,7 +1073,9 @@ def plan_registration_rows_state(
         raise ValueError(f"{source} registration is partial; missing {missing}")
     if not present_keys:
         return "missing"
-    allowed_canonical_only = EXECUTION_IDENTITY_FIELDS | SCHEDULER_BINDING_FIELDS | {"parameter_summary"}
+    allowed_canonical_only = (
+        EXECUTION_IDENTITY_FIELDS | RUNTIME_PROVENANCE_FIELDS | SCHEDULER_BINDING_FIELDS | {"parameter_summary"}
+    )
     for key, expected in expected_by_key.items():
         canonical = canonical_by_key[key]
         canonical_fields = set(FROZEN_RUN_FIELDS & canonical.keys()) | set(managed_run_parameters(canonical))
@@ -1286,6 +1294,51 @@ def merge_run_manifest(
     return committed
 
 
+def commit_run_start(
+    root: str | Path,
+    step_id: str,
+    run_id: str,
+    *,
+    planned_runtime_commit: str,
+    runtime_commit: str,
+) -> list[dict[str, Any]]:
+    root = Path(root)
+    lock_path = root / "run_manifest.tsv.lock"
+    exp_io.validate_managed_output_paths(root, [lock_path])
+    with exp_io.blocking_file_lock(lock_path):
+        rows = read_run_manifest(root)
+        current = next((row for row in rows if managed_run_key(row) == (step_id, run_id)), None)
+        if current is None:
+            raise ValueError(f"Managed run is not registered: {step_id} / {run_id}")
+        if current.get("status") == "running":
+            # A monitor may commit the same PID receipt first; only an exact provenance match is idempotent.
+            if (
+                current.get("planned_runtime_commit") != planned_runtime_commit
+                or current.get("runtime_commit") != runtime_commit
+            ):
+                raise ValueError(f"Managed running provenance differs for {step_id} / {run_id}")
+            return rows
+        # A stale script must not backfill provenance into a terminal or otherwise non-launchable row.
+        startable_statuses = LAUNCHABLE_STATUSES | {"launched"}
+        if current.get("target") == "ssh":
+            startable_statuses |= {"unknown_remote"}
+        if current.get("status") not in startable_statuses:
+            raise ValueError(f"Managed run cannot start from status {current.get('status')}: {step_id} / {run_id}")
+        return merge_run_manifest(
+            root,
+            [
+                {
+                    "step_id": step_id,
+                    "run_id": run_id,
+                    "planned_runtime_commit": planned_runtime_commit,
+                    "runtime_commit": runtime_commit,
+                    "status": "running",
+                }
+            ],
+            lock_held=True,
+        )
+
+
 def _run_matrix_text(rows: list[dict[str, Any]]) -> tuple[str, str]:
     if rows:
         buffer = io.StringIO()
@@ -1302,17 +1355,30 @@ def _run_matrix_text(rows: list[dict[str, Any]]) -> tuple[str, str]:
     else:
         lines.extend(
             [
-                "| run | setting | status | metric | score | checkpoint | W&B |",
-                "|---|---|---|---|---:|---|---|",
+                "| run | setting | status | planned commit | actual commit | commit note | "
+                "metric | score | checkpoint | W&B |",
+                "|---|---|---|---|---|---|---|---:|---|---|",
             ]
         )
         for row in rows:
             label = f"{row.get('step_id', '')} / {row.get('run_id', '')} — {row.get('run_name', '')}"
+            planned_commit = str(row.get("planned_runtime_commit") or "")
+            runtime_commit = str(row.get("runtime_commit") or "")
+            if not planned_commit or not runtime_commit:
+                commit_note = "pending"
+            elif planned_commit == runtime_commit:
+                commit_note = "same"
+            else:
+                commit_note = "different (rolling update)"
             lines.append(
-                "| {label} | {setting} | {status} | {metric} | {score} | `{checkpoint}` | {wandb} |".format(
+                "| {label} | {setting} | {status} | `{planned_commit}` | `{runtime_commit}` | {commit_note} | "
+                "{metric} | {score} | `{checkpoint}` | {wandb} |".format(
                     label=label.replace("|", "/"),
                     setting=str(row.get("parameter_summary", "")).replace("|", "/"),
                     status=row.get("status", ""),
+                    planned_commit=planned_commit,
+                    runtime_commit=runtime_commit,
+                    commit_note=commit_note,
                     metric=row.get("metric", ""),
                     score=row.get("score", ""),
                     checkpoint=row.get("checkpoint_path", ""),

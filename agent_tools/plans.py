@@ -266,6 +266,15 @@ def _materialize_task_defaults(recipe: dict, policy: dict, user_decisions: dict)
         recipe["decisions"] = decisions
 
 
+def _normalize_runtime_commit(recipe: dict[str, Any]) -> None:
+    execution = recipe.get("execution")
+    if not isinstance(execution, dict):
+        return
+    runtime_commit = execution.get("runtime_commit")
+    if isinstance(runtime_commit, str) and runtime_commit not in ("", "ASK_USER"):
+        execution["runtime_commit"] = runtime_commit.lower()
+
+
 def evaluate_recipe(
     recipe_path: str | Path,
     user_decisions_path: str | Path | None = None,
@@ -417,6 +426,7 @@ def evaluate_recipe(
         if recipe_adapter is not None
         else []
     )
+    _normalize_runtime_commit(recipe)
     report = evaluate_consultation_gates(
         recipe.get("task"),
         recipe,
@@ -742,6 +752,7 @@ def build_context(
         if recipe_adapter is not None
         else []
     )
+    _normalize_runtime_commit(recipe)
     report = evaluate_consultation_gates(
         task,
         recipe,

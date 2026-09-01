@@ -38,6 +38,7 @@ def _snapshot(module: str) -> dict:
         "python": "/target/python",
         "python_version": "3.10.0",
         "python_command": "python",
+        "expected_runtime_commit": "a" * 40,
         "runtime_commit": "a" * 40,
         "runtime_hostname": "runtime-host",
         "module": module,

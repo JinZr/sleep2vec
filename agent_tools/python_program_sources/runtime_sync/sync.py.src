@@ -1,0 +1,187 @@
+import json
+import os
+import re
+import subprocess
+import sys
+
+
+checkout = str(Path(sys.argv[1]).resolve())
+execute = sys.argv[2] == "1"
+git_repository_env = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+)
+git_env = os.environ.copy()
+for name in git_repository_env:
+    git_env.pop(name, None)
+
+
+def git_result(*args, timeout=30):
+    return subprocess.run(
+        ["git", "-c", "core.hooksPath=/dev/null", "-C", checkout, *args],
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        env=git_env,
+    )
+
+
+def git(*args, timeout=30):
+    result = git_result(*args, timeout=timeout)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"Runtime Git command failed: {detail}")
+    return result
+
+
+def commit(value, label):
+    value = value.strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", value) is None:
+        raise RuntimeError(f"{label} is not a full 40-character Git commit ID: {value!r}")
+    return value
+
+
+def importable_code(raw_path, workdir):
+    path = Path(raw_path)
+    candidate = Path(workdir) / path
+    if path.suffix == ".pyc":
+        return (
+            "__pycache__" not in path.parts
+            and path.stem.isidentifier()
+            and all(part.isidentifier() for part in path.parts[:-1])
+            and not candidate.with_suffix(".py").exists()
+        )
+    module_name = path.name.split(".", 1)[0]
+    return (
+        path.suffix in {".py", ".pyi", ".so"}
+        and module_name.isidentifier()
+        and all(part.isidentifier() for part in path.parts[:-1])
+    )
+
+
+def importable_package_symlink(raw_path, workdir):
+    path = Path(raw_path)
+    candidate = Path(workdir) / path
+    return (
+        candidate.is_symlink()
+        and candidate.is_dir()
+        and path.name.isidentifier()
+        and all(part.isidentifier() for part in path.parts[:-1])
+    )
+
+
+def require_clean_runtime(workdir):
+    require_no_hidden_tracked_changes(workdir)
+    dirty = git("status", "--porcelain", "--untracked-files=no").stdout.strip()
+    if dirty:
+        raise RuntimeError("Runtime checkout has tracked worktree changes; refusing to update it.")
+    for flags in (("--others", "--exclude-standard"), ("--others", "--ignored", "--exclude-standard")):
+        paths = git("ls-files", *flags, "--", "*.py", "*.pyi", "*.pyc", "*.so").stdout.splitlines()
+        if any(importable_code(path, workdir) for path in paths):
+            raise RuntimeError("Runtime checkout has untracked or ignored importable code; refusing to update it.")
+        directories = git("ls-files", *flags, "--directory", "--no-empty-directory").stdout.splitlines()
+        if any(importable_package_symlink(path, workdir) for path in directories):
+            raise RuntimeError("Runtime checkout has untracked or ignored importable code; refusing to update it.")
+
+
+def require_no_hidden_tracked_changes(workdir):
+    entries = git("ls-files", "-v", "-z").stdout.split("\0")
+    hidden_paths = [entry[2:] for entry in entries if len(entry) > 2 and entry[0] in {"h", "s", "S"}]
+    for path in hidden_paths:
+        index_entry = git("ls-files", "--stage", "--", path).stdout.split()
+        candidate = Path(workdir) / path
+        if len(index_entry) < 3 or index_entry[2] != "0" or candidate.is_symlink() or not candidate.is_file():
+            raise RuntimeError("Runtime checkout has index-hidden tracked worktree changes; refusing to update it.")
+        worktree_hash = git("hash-object", "--filters", f"--path={path}", path).stdout.strip()
+        if worktree_hash != index_entry[1]:
+            raise RuntimeError("Runtime checkout has index-hidden tracked worktree changes; refusing to update it.")
+
+
+def require_update_keeps_bytecode_sources(workdir, upstream):
+    source_paths = set()
+    for flags in (("--others", "--exclude-standard"), ("--others", "--ignored", "--exclude-standard")):
+        paths = git("ls-files", *flags, "--", "*.pyc").stdout.splitlines()
+        for raw_path in paths:
+            path = Path(raw_path)
+            if (
+                "__pycache__" not in path.parts
+                and path.stem.isidentifier()
+                and all(part.isidentifier() for part in path.parts[:-1])
+                and (Path(workdir) / path).with_suffix(".py").exists()
+            ):
+                source_paths.add(path.with_suffix(".py").as_posix())
+    if not source_paths:
+        return
+    upstream_sources = set(
+        git("ls-tree", "-r", "--name-only", upstream, "--", *sorted(source_paths)).stdout.splitlines()
+    )
+    if source_paths - upstream_sources:
+        raise RuntimeError("Runtime update would leave untracked or ignored sourceless bytecode; refusing to update it.")
+
+
+root = str(Path(git("rev-parse", "--show-toplevel").stdout.strip()).resolve())
+checkout = root
+with runtime_guard(root):
+    before = commit(git("rev-parse", "HEAD").stdout, "runtime HEAD")
+    require_clean_runtime(root)
+
+    if execute:
+        git("fetch", "--no-tags", "origin", "main", timeout=60)
+        upstream = commit(git("rev-parse", "FETCH_HEAD").stdout, "fetched origin/main")
+    else:
+        result = git("ls-remote", "--exit-code", "origin", "refs/heads/main", timeout=60)
+        fields = result.stdout.split()
+        if len(fields) != 2 or fields[1] != "refs/heads/main":
+            raise RuntimeError("origin/main lookup returned malformed output.")
+        upstream = commit(fields[0], "origin/main")
+
+    if before == upstream:
+        status = "unchanged"
+        after = before
+    elif not execute:
+        status = "update_available"
+        after = before
+    else:
+        ancestor = git_result("merge-base", "--is-ancestor", before, upstream)
+        if ancestor.returncode == 1:
+            raise RuntimeError(
+                f"Runtime HEAD {before} has diverged from origin/main {upstream}; refusing a non-fast-forward update."
+            )
+        if ancestor.returncode != 0:
+            detail = ancestor.stderr.strip() or ancestor.stdout.strip() or f"exit code {ancestor.returncode}"
+            raise RuntimeError(f"Runtime Git command failed: {detail}")
+        require_update_keeps_bytecode_sources(root, upstream)
+        git("merge", "--ff-only", "--no-edit", upstream, timeout=60)
+        after = commit(git("rev-parse", "HEAD").stdout, "updated runtime HEAD")
+        if after != upstream:
+            raise RuntimeError(f"Runtime update ended at {after}, expected {upstream}.")
+        require_clean_runtime(root)
+        status = "fast_forwarded"
+
+print(
+    json.dumps(
+        {
+            "status": status,
+            "executed": execute,
+            "host": "",
+            "workdir": root,
+            "before_commit": before,
+            "upstream_commit": upstream,
+            "after_commit": after,
+        },
+        sort_keys=True,
+    )
+)

@@ -37,6 +37,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Preset generation | [`preprocess/save_dataset_presets.py`](../../preprocess/save_dataset_presets.py) | notebooks or runtime datasets |
 | NPZ-to-Kaldi conversion | [`preprocess/convert_npz_to_kaldi.py`](../../preprocess/convert_npz_to_kaldi.py) | backend runtime code |
 | Repository config policy | [`utils/check_configs.py`](../../utils/check_configs.py) | YAML loaders unless it is runtime semantics |
+| Rolling checkout refresh | `runtime-sync` in [`agent_tools/runtime_sync.py`](../../agent_tools/runtime_sync.py), coordinated by [`agent_tools/runtime_lock.py`](../../agent_tools/runtime_lock.py) | clone-per-commit heartbeat logic, reset-based updaters, or launcher-local Git mutations |
 | Authorized fixed-commit runtime preparation | [`utils/stage_git_runtime.py`](../../utils/stage_git_runtime.py), under the [runtime staging contract](../agent_contracts/experiment_workspace.md#fixed-commit-runtime-staging) | ad hoc clone/transfer chains or experiment lifecycle controllers |
 | sleep2stat config | `load_config` in [`sleep2stat/config.py`](../../sleep2stat/config.py) | agent summaries or CLI-local validators |
 | sleep2stat record discovery | `load_records` in [`sleep2stat/io/records.py`](../../sleep2stat/io/records.py) | analyzers |
@@ -150,6 +151,12 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   and sidecar primitives; [run-manifest evidence](../agent_contracts/run_manifest.md#slurm-scheduler-evidence)
   owns their interpretation. Keep external-matrix policy and orchestration in `experiment_pipeline`,
   with reduction in `experiment_pipeline_results`; see [pipeline gates](../agent_contracts/experiment_pipeline.md#invocation-and-frozen-state).
+- Reuse `runtime-sync` for a clean in-place `origin/main` fast-forward and the shared runtime lock for
+  launch/update coordination. Keep the planned commit in frozen artifacts and record the actual start commit
+  in the canonical run manifest; do not clone or rewrite a published plan to follow HEAD. Its remote path sends
+  the manager's self-contained sync kernel, so it also bootstraps checkouts that predate the command. The
+  embedded `slurm.worker_bootstrap` forwards termination and records import/start failures; checkout-local
+  `run_frozen_job` uses the short runtime lock for final identity, artifact, and `srun` spawn checks.
 - Reuse `python_programs.source` and `transport.remote_python_program_command` for embedded kernels;
   keep byte-preserving sources under `agent_tools/python_program_sources`, not inline copies.
 - Keep proposal snapshots/envelopes in `adaptive_proposals` and preflight/lifecycle orchestration

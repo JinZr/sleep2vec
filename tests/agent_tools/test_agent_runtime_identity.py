@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -15,13 +16,17 @@ from types import SimpleNamespace
 import pytest
 
 from agent_tools import python_programs
+from agent_tools.runtime_sync import GIT_REPOSITORY_ENV
 
 GIT_COMMANDS = [
     ["git", "rev-parse", "HEAD"],
     ["git", "rev-parse", "--show-toplevel"],
     ["git", "status", "--porcelain", "--untracked-files=no"],
-    ["git", "ls-files", "--others", "--exclude-standard", "--", "*.py", "*.pyi", "*.so"],
-    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyi", "*.so"],
+    ["git", "ls-files", "-v", "-z", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
+    ["git", "ls-files", "--others", "--exclude-standard", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
+    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
+    ["git", "ls-files", "--others", "--exclude-standard", "--directory", "--no-empty-directory"],
+    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory"],
 ]
 
 
@@ -39,7 +44,10 @@ def identity_probe(tmp_path, monkeypatch):
     }
     results = [
         subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
-        for command, stdout in zip(GIT_COMMANDS, ("a" * 40 + "\n", str(tmp_path) + "\n", "", "", ""))
+        for command, stdout in zip(
+            GIT_COMMANDS,
+            ("a" * 40 + "\n", str(tmp_path) + "\n", "", "", "", "", "", ""),
+        )
     ]
     monkeypatch.setattr(subprocess, "run", lambda command, **_kwargs: results[GIT_COMMANDS.index(command)])
     monkeypatch.setattr(importlib.util, "find_spec", lambda _module: SimpleNamespace(origin=payload["module_origin"]))
@@ -51,7 +59,7 @@ def identity_probe(tmp_path, monkeypatch):
     return program, results, payload
 
 
-def test_runtime_identity_uses_five_exact_queries_with_three_ordered_workers(
+def test_runtime_identity_uses_eight_exact_queries_with_three_ordered_workers(
     tmp_path, monkeypatch, capsys, identity_probe
 ):
     program, results, payload = identity_probe
@@ -94,6 +102,8 @@ def test_runtime_identity_uses_five_exact_queries_with_three_ordered_workers(
                 assert finished[1].wait(5)
             elif index == 1:
                 assert finished[4].wait(5)
+            elif index >= 5:
+                assert finished[0].wait(5)
             with lock:
                 completion_order.append(index)
         finally:
@@ -110,16 +120,20 @@ def test_runtime_identity_uses_five_exact_queries_with_three_ordered_workers(
     assert executor_sizes == [3]
     assert peak_active == 3
     assert active == 0
-    assert completion_order == [2, 3, 4, 1, 0]
-    assert sorted(calls, key=lambda call: GIT_COMMANDS.index(call[0])) == [
-        (command, {"text": True, "capture_output": True}) for command in GIT_COMMANDS
-    ]
+    assert completion_order[:5] == [2, 3, 4, 1, 0]
+    assert set(completion_order[5:]) == {5, 6, 7}
+    ordered_calls = sorted(calls, key=lambda call: GIT_COMMANDS.index(call[0]))
+    assert [command for command, _kwargs in ordered_calls] == GIT_COMMANDS
+    for _command, kwargs in ordered_calls:
+        assert kwargs["text"] is True
+        assert kwargs["capture_output"] is True
+        assert set(GIT_REPOSITORY_ENV).isdisjoint(kwargs["env"])
     output = capsys.readouterr()
     assert output.err == ""
     assert json.loads(output.out) == payload
 
 
-@pytest.mark.parametrize("failed_query", range(5))
+@pytest.mark.parametrize("failed_query", range(len(GIT_COMMANDS)))
 def test_runtime_identity_git_failure_precedes_runtime_reads(monkeypatch, capsys, identity_probe, failed_query):
     program, results, _payload = identity_probe
     results[failed_query].returncode = 1
@@ -138,13 +152,13 @@ def test_runtime_identity_git_failure_precedes_runtime_reads(monkeypatch, capsys
     assert output.err == f"git failure {failed_query}\n"
 
 
-@pytest.mark.parametrize("first_diagnostic", range(5))
+@pytest.mark.parametrize("first_diagnostic", range(len(GIT_COMMANDS)))
 def test_runtime_identity_git_stderr_priority_follows_query_order(
     monkeypatch, capsys, identity_probe, first_diagnostic
 ):
     program, results, _payload = identity_probe
     results[-1].returncode = 1
-    for index in range(first_diagnostic, 5):
+    for index in range(first_diagnostic, len(GIT_COMMANDS)):
         results[index].stderr = f"git diagnostic {index}"
     monkeypatch.setattr(importlib.util, "find_spec", lambda _module: pytest.fail("must not resolve module"))
     monkeypatch.setattr(Path, "read_bytes", lambda _path: pytest.fail("must not read frozen artifact"))
@@ -158,7 +172,7 @@ def test_runtime_identity_git_stderr_priority_follows_query_order(
     assert output.err == f"git diagnostic {first_diagnostic}\n"
 
 
-@pytest.mark.parametrize("failed_query", range(5))
+@pytest.mark.parametrize("failed_query", range(len(GIT_COMMANDS)))
 def test_runtime_identity_git_oserror_precedes_runtime_reads(monkeypatch, capsys, identity_probe, failed_query):
     program, results, _payload = identity_probe
 
@@ -196,7 +210,7 @@ def test_runtime_identity_worktree_checks_precede_runtime_reads(
     monkeypatch, capsys, identity_probe, tracked, untracked, ignored, diagnostic
 ):
     program, results, _payload = identity_probe
-    results[2].stdout, results[3].stdout, results[4].stdout = tracked, untracked, ignored
+    results[2].stdout, results[4].stdout, results[5].stdout = tracked, untracked, ignored
     monkeypatch.setattr(importlib.util, "find_spec", lambda _module: pytest.fail("must not resolve module"))
     monkeypatch.setattr(Path, "read_bytes", lambda _path: pytest.fail("must not read frozen artifact"))
 
@@ -221,7 +235,31 @@ def test_runtime_identity_drift_precedes_artifact_reads(monkeypatch, capsys, ide
     assert error.value.code == 2
     output = capsys.readouterr()
     assert output.out == ""
-    assert output.err == "Target runtime identity changed before process start: python, runtime_commit\n"
+    assert output.err == "Target runtime identity changed before process start: python\n"
+
+
+def test_runtime_identity_records_commit_drift_and_still_checks_artifacts(
+    tmp_path, monkeypatch, capsys, identity_probe
+):
+    program, _results, payload = identity_probe
+    artifact = tmp_path / "artifact"
+    artifact.write_bytes(b"frozen artifact")
+    expected = {**payload, "runtime_commit": "b" * 40}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            *sys.argv[:2],
+            json.dumps(expected),
+            json.dumps([{"path": str(artifact), "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest()}]),
+        ],
+    )
+
+    exec(program, {})
+
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert json.loads(output.out)["runtime_commit"] == payload["runtime_commit"]
 
 
 @pytest.fixture
@@ -268,6 +306,179 @@ def test_runtime_identity_rejects_ignored_nested_repository_code(runtime_repo):
     assert result.returncode == 2
     assert result.stdout == ""
     assert "Target runtime has untracked or ignored Python code" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "index_flag",
+    ["--assume-unchanged", "--skip-worktree"],
+    ids=["assume-unchanged", "skip-worktree"],
+)
+def test_runtime_identity_rejects_index_hidden_tracked_python_changes(runtime_repo, index_flag):
+    subprocess.run(["git", "update-index", index_flag, "runtime_cli.py"], cwd=runtime_repo, check=True)
+    (runtime_repo / "runtime_cli.py").write_text("MUTATED = True\n")
+    assert (
+        subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=runtime_repo, text=True)
+        == ""
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", python_programs.source("managed_scheduler.runtime_identity"), "runtime_cli"],
+        cwd=runtime_repo,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "index-hidden tracked Python code changes" in result.stderr
+
+
+@pytest.mark.parametrize("ignored", [False, True], ids=["untracked", "ignored"])
+def test_runtime_identity_rejects_symlinked_package_directories(runtime_repo, tmp_path, ignored):
+    package = tmp_path / "outside-package"
+    package.mkdir()
+    (package / "module.py").write_text("VALUE = 1\n")
+    (runtime_repo / "plugin").symlink_to(package, target_is_directory=True)
+    if ignored:
+        (runtime_repo / ".git" / "info" / "exclude").write_text("plugin\n")
+
+    result = subprocess.run(
+        [sys.executable, "-c", python_programs.source("managed_scheduler.runtime_identity"), "runtime_cli"],
+        cwd=runtime_repo,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "Target runtime has untracked or ignored Python code" in result.stderr
+
+
+def test_runtime_identity_rejects_sourceless_bytecode(runtime_repo):
+    (runtime_repo / ".git" / "info" / "exclude").write_text("orphan.pyc\n")
+    (runtime_repo / "orphan.pyc").write_bytes(b"sourceless bytecode")
+
+    result = subprocess.run(
+        [sys.executable, "-c", python_programs.source("managed_scheduler.runtime_identity"), "runtime_cli"],
+        cwd=runtime_repo,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "Target runtime has untracked or ignored Python code" in result.stderr
+
+
+def test_runtime_identity_allows_non_sourceless_bytecode(runtime_repo):
+    (runtime_repo / "runtime_cli.pyc").write_bytes(b"legacy cache with source")
+    cache_dir = runtime_repo / "__pycache__"
+    cache_dir.mkdir()
+    (cache_dir / "orphan.cpython-310.pyc").write_bytes(b"normal cache layout")
+
+    result = subprocess.run(
+        [sys.executable, "-c", python_programs.source("managed_scheduler.runtime_identity"), "runtime_cli"],
+        cwd=runtime_repo,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_runtime_identity_rejects_nonexistent_planned_commit(runtime_repo):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("managed_scheduler.runtime_identity"),
+            "runtime_cli",
+            "{}",
+            "[]",
+            "f" * 40,
+        ],
+        cwd=runtime_repo,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "Planned runtime commit does not resolve to a commit" in result.stderr
+
+
+def test_runtime_identity_rejects_non_sha1_planned_commit(runtime_repo):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("managed_scheduler.runtime_identity"),
+            "runtime_cli",
+            "{}",
+            "[]",
+            "a" * 64,
+        ],
+        cwd=runtime_repo,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "full lowercase 40-character Git commit ID" in result.stderr
+
+
+def test_runtime_identity_ignores_ambient_repository_selection_env(runtime_repo):
+    decoy = runtime_repo.parent / "decoy"
+    subprocess.run(["git", "init", "-q", str(decoy)], check=True)
+    runtime_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=runtime_repo, text=True).strip()
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_DIR": str(decoy / ".git"),
+            "GIT_WORK_TREE": str(decoy),
+            "GIT_INDEX_FILE": str(decoy / ".git" / "index"),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("managed_scheduler.runtime_identity"),
+            "runtime_cli",
+            "{}",
+            "[]",
+            runtime_commit,
+        ],
+        cwd=runtime_repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["runtime_commit"] == runtime_commit
+    assert payload["runtime_repo_root"] == str(runtime_repo)
+
+
+def test_runtime_identity_rejects_non_sha1_runtime_commit(monkeypatch, capsys, identity_probe):
+    program, results, _payload = identity_probe
+    results[0].stdout = "a" * 64 + "\n"
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _module: pytest.fail("must not resolve module"))
+
+    with pytest.raises(SystemExit, match="2"):
+        exec(program, {})
+
+    assert "Runtime HEAD is not a full 40-character Git commit ID" in capsys.readouterr().err
 
 
 def test_runtime_identity_allows_only_untracked_code_inside_tracked_submodule(runtime_repo):

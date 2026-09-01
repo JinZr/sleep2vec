@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import time
 
@@ -15,8 +16,42 @@ from test_agent_preset_runtime_identity import (
 
 from agent_tools import cli, experiments, managed_scheduler, plans, run_evidence
 from agent_tools.experiment_workspace import PROCESS_IDENTITY_FIELDS, merge_run_manifest, read_run_manifest
+from agent_tools.models import REPO_ROOT
 
-preset_runtime = preset_runtime_fixture
+
+def _commit_runtime_python(preset_runtime):
+    workdir = Path(preset_runtime["execution"]["workdir"])
+    subprocess.run(["git", "add", "--force", "--", "agent_tools", *_PRESET_SCRIPTS.values()], cwd=workdir, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Preset runtime test",
+            "-c",
+            "user.email=preset-test@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "Commit test runtime Python",
+        ],
+        cwd=workdir,
+        check=True,
+    )
+    preset_runtime["execution"]["runtime_commit"] = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=workdir, text=True
+    ).strip()
+
+
+@pytest.fixture
+def preset_runtime(tmp_path):
+    runtime = preset_runtime_fixture.__wrapped__(tmp_path)
+    package = Path(runtime["execution"]["workdir"]) / "agent_tools"
+    package.unlink()
+    shutil.copytree(REPO_ROOT / "agent_tools", package, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    _commit_runtime_python(runtime)
+    return runtime
 
 
 def _plan(tmp_path, preset_runtime, monkeypatch, variant="sleep2vec"):
@@ -90,6 +125,7 @@ def test_preset_detached_worker_commits_terminal_after_launcher_exits(
         "os.write(2, b'delayed stderr\\n')\n"
         f"raise SystemExit({exit_code})\n"
     )
+    _commit_runtime_python(preset_runtime)
     plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch, variant)
     before = read_run_manifest(preset_runtime["workspace"])
     preview = subprocess.run(
@@ -119,13 +155,17 @@ def test_preset_detached_worker_commits_terminal_after_launcher_exits(
     assert status["runs"][0]["status"] == row["status"]
 
 
-@pytest.mark.parametrize("failure", ["wrong_commit", "missing_python", "script_hash", "config_hash"])
+@pytest.mark.parametrize("failure", ["missing_python", "runtime_preflight", "script_hash", "config_hash"])
 def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_runtime, monkeypatch, failure):
-    if failure == "wrong_commit":
-        preset_runtime["execution"]["runtime_commit"] = "0" * 40
-    elif failure == "missing_python":
+    if failure == "missing_python":
         preset_runtime["execution"]["python"] = str(tmp_path / "missing-python")
     plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
+    if failure == "runtime_preflight":
+        monkeypatch.setattr(
+            managed_scheduler,
+            "run_execution_command",
+            lambda _execution, command: subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed"),
+        )
     if failure.endswith("_hash"):
         Path(plan["runs"][0][failure.removesuffix("_hash")]).write_text("changed bytes\n")
     before = read_run_manifest(preset_runtime["workspace"])
@@ -135,7 +175,62 @@ def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_run
     assert not preset_runtime["payload"].exists()
 
 
-@pytest.mark.parametrize("mutation_phase", ["runtime_guard", "claim"])
+def test_preset_runtime_preflight_claim_and_start_run_in_order(tmp_path, preset_runtime, monkeypatch):
+    plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
+    events = []
+
+    def probe(_execution, command):
+        events.append("probe")
+        return subprocess.CompletedProcess(command, 0, "{}\n", "")
+
+    original_merge = experiments.merge_run_manifest
+
+    def merge(workspace, rows, **kwargs):
+        if rows[0]["status"] == "launched" and "claim" not in events:
+            events.append("claim")
+        return original_merge(workspace, rows, **kwargs)
+
+    def start(_execution, _command, *, retry_pre_spawn_failure):
+        assert retry_pre_spawn_failure is False
+        events.append("start")
+        return "launched"
+
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", probe)
+    monkeypatch.setattr(experiments, "merge_run_manifest", merge)
+    monkeypatch.setattr(managed_scheduler, "start_process", start)
+
+    result = experiments.launch_preset_run(plan_dir, dry_run=False)
+
+    assert result.started_keys
+    assert events == ["probe", "claim", "start"]
+
+
+def test_preset_reverifies_artifacts_before_claim(tmp_path, preset_runtime, monkeypatch):
+    plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
+    run = plan["runs"][0]
+    artifact = Path(run["script"])
+    before = read_run_manifest(preset_runtime["workspace"])
+    original_verify = experiments.verify_run_snapshot
+    calls = 0
+
+    def verify(candidate):
+        nonlocal calls
+        calls += 1
+        original_verify(candidate)
+        if calls == 1:
+            artifact.write_bytes(artifact.read_bytes() + b"\n# changed before claim\n")
+
+    monkeypatch.setattr(experiments, "verify_run_snapshot", verify)
+
+    with pytest.raises(ValueError, match="Run snapshot hash changed after planning"):
+        experiments.launch_preset_run(plan_dir, dry_run=False)
+
+    assert calls == 2
+    assert read_run_manifest(preset_runtime["workspace"]) == before
+    assert not preset_runtime["payload"].exists()
+
+
+@pytest.mark.parametrize("mutation_phase", ["claim", "start"])
 @pytest.mark.parametrize("artifact", ["script", "config"])
 def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
     tmp_path, preset_runtime, monkeypatch, mutation_phase, artifact
@@ -146,16 +241,9 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
     original_bytes = artifact_path.read_bytes()
     for name, value in preset_runtime["env"].items():
         monkeypatch.setenv(name, value)
-    original_guard = managed_scheduler.run_execution_command
     original_merge = experiments.merge_run_manifest
     original_start = managed_scheduler.start_process
     start_commands = []
-
-    def guard(execution, command):
-        result = original_guard(execution, command)
-        if mutation_phase == "runtime_guard":
-            artifact_path.write_bytes(original_bytes + b"\n# changed after plan preflight\n")
-        return result
 
     def merge(workspace, rows, **kwargs):
         result = original_merge(workspace, rows, **kwargs)
@@ -163,12 +251,13 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
             artifact_path.write_bytes(original_bytes + b"\n# changed after launch claim\n")
         return result
 
-    def start(execution, command):
+    def start(execution, command, **kwargs):
         assert read_run_manifest(preset_runtime["workspace"])[0]["command"] == command
         start_commands.append(command)
-        return original_start(execution, command)
+        if mutation_phase == "start":
+            artifact_path.write_bytes(original_bytes + b"\n# changed immediately before start\n")
+        return original_start(execution, command, **kwargs)
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", guard)
     monkeypatch.setattr(experiments, "merge_run_manifest", merge)
     monkeypatch.setattr(managed_scheduler, "start_process", start)
     pid_path = Path(run["run_dir"]) / "pid"
@@ -188,6 +277,30 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
         identity = run_evidence.read_process_identity(pid_path)
         if identity and run_evidence.process_identity_running({}, identity):
             run_evidence.stop_process_group({}, identity)
+
+
+def test_preset_launch_rechecks_clean_runtime_in_the_actual_start_command(tmp_path, preset_runtime, monkeypatch):
+    plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
+    for name, value in preset_runtime["env"].items():
+        monkeypatch.setenv(name, value)
+    shadow = Path(preset_runtime["execution"]["workdir"]) / "shadow_module.py"
+    original_merge = experiments.merge_run_manifest
+
+    def merge(workspace, rows, **kwargs):
+        committed = original_merge(workspace, rows, **kwargs)
+        if rows[0]["status"] == "launched" and not shadow.exists():
+            shadow.write_text("VALUE = 1\n")
+        return committed
+
+    monkeypatch.setattr(experiments, "merge_run_manifest", merge)
+
+    result = experiments.launch_preset_run(plan_dir, dry_run=False)
+
+    assert result.launch_rows[0]["status"] == "launch_failed"
+    assert not result.started_keys
+    assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "launch_failed"
+    assert not preset_runtime["payload"].exists()
+    assert not (Path(plan["runs"][0]["run_dir"]) / "pid").exists()
 
 
 @pytest.mark.parametrize("execution_snapshot", [None, {"module": "fixture_runtime"}])
@@ -216,14 +329,14 @@ def test_preset_interrupted_attempt_is_not_relaunched(tmp_path, preset_runtime, 
     original_start = managed_scheduler.start_process
     attempts = []
 
-    def interrupt(execution, command):
+    def interrupt(execution, command, **kwargs):
         row = read_run_manifest(preset_runtime["workspace"])[0]
         assert row["status"] == "launched"
         assert row["command"] == command
         assert row["target"] == "local"
         attempts.append(command)
         if lost_receipt:
-            original_start(execution, command)
+            original_start(execution, command, **kwargs)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(managed_scheduler, "start_process", interrupt)
@@ -258,7 +371,9 @@ def test_preset_claim_write_failure_never_spawns(tmp_path, preset_runtime, monke
         raise OSError("claim persistence failed")
 
     monkeypatch.setattr(experiments, "merge_run_manifest", fail_claim)
-    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: pytest.fail("claim must finish first"))
+    monkeypatch.setattr(
+        managed_scheduler, "start_process", lambda *_args, **_kwargs: pytest.fail("claim must finish first")
+    )
     with pytest.raises(OSError, match="claim persistence failed"):
         experiments.launch_preset_run(plan_dir, dry_run=False)
     row = read_run_manifest(preset_runtime["workspace"])[0]
@@ -270,6 +385,7 @@ def test_preset_claim_write_failure_never_spawns(tmp_path, preset_runtime, monke
 def _launch_waiting_worker(tmp_path, preset_runtime, monkeypatch):
     worker = Path(preset_runtime["execution"]["workdir"]) / _PRESET_SCRIPTS["sleep2vec"]
     worker.write_text("import time\nprint('worker ready', flush=True)\ntime.sleep(30)\n")
+    _commit_runtime_python(preset_runtime)
     plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
     experiments.launch_preset_run(plan_dir, dry_run=False)
     row = _wait_status(preset_runtime["workspace"], {"running"})
@@ -307,7 +423,7 @@ def test_preset_stop_planned_run_requires_reason_and_does_not_launch(tmp_path, p
 
 def _recorded_attempt(tmp_path, preset_runtime, monkeypatch):
     plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
-    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: "launched")
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args, **_kwargs: "launched")
     experiments.launch_preset_run(plan_dir, dry_run=False)
     row = read_run_manifest(preset_runtime["workspace"])[0]
     identity = {"pid": 12345, "process_group_id": 12345, "process_start_token": "test-start-token"}

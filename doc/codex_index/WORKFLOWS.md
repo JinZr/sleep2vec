@@ -222,22 +222,28 @@ For command choice, use the [agent contract router](../agent_contracts/README.md
    [plan registration](../agent_contracts/experiment_workspace.md#publication-and-registration).
    Hparam [registration preflight](../agent_contracts/task_recipe.md#registration-preflight)
    owns final-config/argv checks and provenance limits.
-3. Execute through [launch and queue](../agent_contracts/task_recipe.md#launch-and-queue),
+3. Before a new launch wave, inspect or explicitly fast-forward the one runtime checkout with
+   `runtime-sync`; this never clones, resets, or changes an already running process. Frozen plan commits remain
+   baseline provenance while each new run records the checkout commit seen at start.
+4. Execute through [launch and queue](../agent_contracts/task_recipe.md#launch-and-queue),
    with [snapshot revalidation](../agent_contracts/task_recipe.md#execution-snapshot-and-launch-revalidation).
+   A rolling checkout may use a newer commit, but it must expose the current managed launch protocol before a direct
+   claim or Slurm submission. Direct and Slurm starts use point-in-time identity and artifact checks under the short
+   runtime lock; the self-contained Slurm bootstrap forwards signals and records checkout-local import/start failures.
    Other ordinary routes use the
    [non-hparam runtime contract](../agent_contracts/task_recipe.md#non-hparam-runtime-identity);
    `preset-launch` / `preset-stop` use
    [managed preset preparation](../agent_contracts/task_recipe.md#managed-preset-preparation);
    `infer-launch` / `infer-stop` use the shared
    [managed ordinary Slurm inference](../agent_contracts/task_recipe.md#managed-ordinary-inference) owner.
-4. Inspect recorded state with
+5. Inspect recorded state with
    [read-only status](../agent_contracts/experiment_workspace.md#read-only-status-and-advisory-actions),
    or explicitly refresh evidence with non-launching monitors; the
    [entrypoint side-effect table](../agent_contracts/experiment_workspace.md#lifecycle-entrypoints)
    distinguishes them. [Run-manifest evidence](../agent_contracts/run_manifest.md#evidence-ownership)
    and [Slurm evidence](../agent_contracts/run_manifest.md#slurm-scheduler-evidence)
    own lifecycle interpretation.
-5. Select and consume candidates through the
+6. Select and consume candidates through the
    [selection and consumer workflow](../agent_contracts/task_recipe.md#selection-and-selected-candidate-consumers),
    append meaningful [research notes](../agent_contracts/experiment_workspace.md#research-log),
    then follow [finalization](../agent_contracts/experiment_workspace.md#finalization).

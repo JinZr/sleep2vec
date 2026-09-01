@@ -24,6 +24,11 @@ from agent_tools import decision_hparam, hparam_runtime, managed_scheduler, run_
 from agent_tools.experiment_workspace import merge_run_manifest
 
 
+def test_slurm_sidecar_runtime_commit_rejects_sha256_object_id():
+    with pytest.raises(ValueError, match="full lowercase 40-character"):
+        managed_scheduler._slurm_sidecar_runtime_commit({"runtime_commit": "c" * 64})
+
+
 def test_hparam_plan_rejects_gpus_per_run_without_a_physical_pool_before_workspace_creation(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "gpus_per_run": 2})
     payload = yaml.safe_load(recipe.read_text())

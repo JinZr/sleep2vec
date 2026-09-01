@@ -47,8 +47,8 @@ def preset_summary(preset_path: str | Path, *, local_path_base: str | Path | Non
         if source not in (None, ""):
             source_counts[str(source)] = source_counts.get(str(source), 0) + 1
 
-    starts = [getattr(item, "start", None) for item in items if getattr(item, "start", None) is not None]
-    ends = [getattr(item, "end", None) for item in items if getattr(item, "end", None) is not None]
+    starts = [start for item in items if (start := getattr(item, "start", None)) is not None]
+    ends = [end for item in items if (end := getattr(item, "end", None)) is not None]
     manifest_path = resolved.with_name(f"{resolved.name}.manifest.json")
     manifest = None
     if manifest_path.exists():

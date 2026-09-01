@@ -232,6 +232,10 @@ egs/data_hub/
 index/
 npz_lists/
 
+# Kaldi feature archives and indexes
+*.ark
+*.scp
+
 # Serialized Python objects
 *.pkl
 *.joblib
@@ -247,6 +251,7 @@ npz_lists/
 *.bak
 .DS_Store
 __MACOSX/
+/.agent-tools-runtime.lock
 log-*/
 wandb_logs/
 recipes/generated/

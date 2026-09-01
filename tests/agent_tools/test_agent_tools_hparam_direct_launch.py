@@ -26,7 +26,7 @@ from test_agent_tools_hparam_runtime import (
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
 
-from agent_tools import hparam_runtime, managed_scheduler, manifests, plan_rendering, run_evidence
+from agent_tools import hparam_runtime, managed_scheduler, manifests, plan_rendering, python_programs, run_evidence
 from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256, merge_run_manifest, merge_run_row
 
 
@@ -881,15 +881,82 @@ def test_verified_launch_rechecks_snapshot_and_artifacts_immediately_before_proc
         config_path=config,
         script_sha256=file_sha256(script),
         config_sha256=file_sha256(config),
+        planned_command="/runtime/bin/python -m sleep2vec.finetune --config config.yaml",
+        run_id="run-000",
     )
 
     assert "Target runtime identity changed before process start" in command
     assert "Frozen run artifact changed before process start" in command
     assert str(script) in command
     assert str(config) in command
-    assert command.index("Target runtime identity changed before process start") < command.index(
-        "start_new_session=True"
+    launcher = python_programs.source("managed_scheduler.process_launch")
+    assert launcher.index("subprocess.run(\n                    verification") < launcher.index(
+        "process = subprocess.Popen"
     )
+
+
+def test_verified_launch_rejects_frozen_argv_inside_runtime_lock_before_popen(tmp_path: Path, monkeypatch):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("runtime\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", tracked.name], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "runtime",
+        ],
+        check=True,
+    )
+    commit = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    marker = tmp_path / "child-started"
+    script = tmp_path / "launch.sh"
+    config = tmp_path / "config.yaml"
+    pid_path = tmp_path / "pid"
+    script.write_text(f"#!/usr/bin/env bash\ntouch {shlex.quote(str(marker))}\n")
+    config.write_text("value: 1\n")
+    real_source = python_programs.source
+
+    def embedded_source(name: str) -> str:
+        if name == "managed_scheduler.runtime_identity":
+            return "pass\n"
+        if name == "managed_scheduler.cli_preflight":
+            return "import sys; print('Frozen argv rejected in launch lock', file=sys.stderr); raise SystemExit(2)\n"
+        return real_source(name)
+
+    monkeypatch.setattr(python_programs, "source", embedded_source)
+    command = managed_scheduler.build_launch_command(
+        {"workdir": str(tmp_path), "python": sys.executable, "runtime_commit": commit},
+        script,
+        tmp_path / "stdout.log",
+        pid_path,
+        [],
+        execution_snapshot={"module": "runtime_cli", "module_origin": str(tmp_path / "runtime_cli.py")},
+        config_path=config,
+        script_sha256=file_sha256(script),
+        config_sha256=file_sha256(config),
+        planned_command=f"{shlex.quote(sys.executable)} -m runtime_cli --value old",
+        run_id="run-000",
+    )
+
+    result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True)
+
+    assert result.returncode == managed_scheduler.RETRYABLE_PRE_SPAWN_EXIT_CODE
+    assert "Frozen argv rejected in launch lock" in result.stderr
+    assert not pid_path.exists()
+    assert not marker.exists()
 
 
 def test_launch_creates_and_stops_a_dedicated_process_group(tmp_path: Path):
@@ -1005,14 +1072,28 @@ def test_monitor_owned_launch_uses_shell_exit_code(tmp_path: Path, exit_code: in
     assert observed["status"] == expected_status
 
 
-def test_launch_timeout_remains_nonterminal_until_process_evidence_reconciles(monkeypatch):
+@pytest.mark.parametrize("target", ["local", "ssh"])
+def test_launch_timeout_is_uncertain_only_over_ssh(monkeypatch, target: str):
+    calls = []
+
+    def timeout(*_args, **kwargs):
+        calls.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired("launch", kwargs["timeout"])
+
     monkeypatch.setattr(
         hparam_runtime.subprocess,
         "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("launch", 60)),
+        timeout,
     )
 
-    assert hparam_runtime._start_process({}, "managed launch") == "launched"
+    execution = {"target": target, **({"host": "unit-host"} if target == "ssh" else {})}
+    if target == "ssh":
+        assert hparam_runtime._start_process(execution, "managed launch") == "launched"
+        assert calls == [hparam_runtime.LAUNCH_TIMEOUT_SECONDS]
+    else:
+        with pytest.raises(subprocess.TimeoutExpired):
+            hparam_runtime._start_process(execution, "managed launch")
+        assert calls == [None]
 
 
 @pytest.mark.parametrize(
@@ -1032,7 +1113,39 @@ def test_launch_returncode_255_is_uncertain_only_over_ssh(monkeypatch, execution
     assert hparam_runtime._start_process(execution, "managed launch") == expected_status
 
 
-def test_unresolved_launch_timeout_is_not_relaunched(tmp_path: Path, monkeypatch):
+def test_pre_spawn_verification_failure_is_retryable(monkeypatch):
+    monkeypatch.setattr(
+        hparam_runtime.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], managed_scheduler.RETRYABLE_PRE_SPAWN_EXIT_CODE, "", "runtime compatibility changed"
+        ),
+    )
+
+    assert hparam_runtime._start_process({"target": "local"}, "managed launch") == "pending"
+    assert hparam_runtime._start_process({"target": "ssh", "host": "unit-host"}, "managed launch") == "pending"
+
+
+def test_retryable_pre_spawn_failure_does_not_consume_managed_run(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
+    statuses = iter(["pending", "launched"])
+    starts = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda *_args: starts.append("attempt") or next(statuses),
+    )
+
+    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "pending"
+
+    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+
+    assert starts == ["attempt", "attempt"]
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
+
+
+def test_uncertain_remote_launch_is_not_relaunched(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     starts = []
     monkeypatch.setattr(
@@ -1059,8 +1172,13 @@ def test_execution_probe_allows_untracked_experiment_artifacts(tmp_path: Path):
         "    parser.add_argument('--value', choices=['ok'], required=True)\n"
         "    parser.parse_args()\n"
     )
+    agent_tools = repo / "agent_tools"
+    agent_tools.mkdir()
+    (agent_tools / "__init__.py").write_text("")
+    (agent_tools / "experiment_workspace.py").write_text("def commit_run_start(*args, **kwargs):\n    pass\n")
+    (agent_tools / "runtime_lock.py").write_text("def runtime_lock(*args, **kwargs):\n    pass\n")
     (repo / ".gitignore").write_text("*.log\n.codex-tmp/\n")
-    subprocess.run(["git", "add", "runtime_cli.py", ".gitignore"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "runtime_cli.py", "agent_tools", ".gitignore"], cwd=repo, check=True)
     subprocess.run(
         ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"],
         cwd=repo,
@@ -1105,6 +1223,8 @@ def test_execution_probe_allows_untracked_experiment_artifacts(tmp_path: Path):
         config_sha256=file_sha256(config),
         checkpoint_path=checkpoint,
         checkpoint_sha256=file_sha256(checkpoint),
+        planned_command=command,
+        run_id="run-000",
     )
     config.write_text("value: changed\n")
 
@@ -1154,6 +1274,28 @@ def test_execution_probe_rejects_runtime_module_outside_verified_repository(tmp_
             {"workdir": str(repo), "python": sys.executable, "runtime_commit": commit},
             [{"run_id": "run-000", "script": str(script), "command": command}],
         )
+
+
+def test_hparam_launch_rejects_runtime_preflight_failure_before_managed_writes(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: pytest.fail("must not start"))
+
+    def reject_protocol(_execution, command):
+        assert command[2] == python_programs.source("managed_scheduler.runtime_identity")
+        assert command[-1]
+        return subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed")
+
+    monkeypatch.setattr(hparam_runtime, "_run_execution_command", reject_protocol)
+
+    with pytest.raises(RuntimeError, match="Target runtime preflight failed"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
+    assert not (plan_dir / "launch_manifest.tsv").exists()
+    assert not (plan_dir / "run_status.tsv").exists()
 
 
 def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(tmp_path: Path, monkeypatch):
@@ -1207,22 +1349,44 @@ def test_hparam_launch_rejects_frozen_cli_values_before_managed_writes(tmp_path:
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
 
 
-def test_hparam_launch_rejects_unintended_first_runtime_commit(tmp_path: Path, monkeypatch):
+def test_hparam_launch_accepts_runtime_commit_drift_and_records_both_commits(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "runtime_commit": "a" * 40})
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    snapshot_path = plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME
+    snapshot_before = snapshot_path.read_bytes()
     calls = _set_execution_probe(monkeypatch, plan_dir, commit="b" * 40)
     monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: pytest.fail("must not start"))
+    started = []
 
-    with pytest.raises(ValueError, match="expected a{40}, observed b{40}"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    def start(_execution, command):
+        started.append(command)
+        Path(run["run_dir"], "pid").write_text(
+            json.dumps(
+                {
+                    "pid": 123,
+                    "process_group_id": 123,
+                    "process_start_token": "proc:unit-start",
+                    "runtime_commit": "b" * 40,
+                }
+            )
+            + "\n"
+        )
+        return "launched"
 
-    assert calls == ["identity"]
-    assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    monkeypatch.setattr(hparam_runtime, "_start_process", start)
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert calls == ["identity", "parse"]
+    assert len(started) == 1
+    assert snapshot_path.read_bytes() == snapshot_before
+    row = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert row["planned_runtime_commit"] == "a" * 40
+    assert row["runtime_commit"] == "b" * 40
 
 
-def test_hparam_launch_rejects_execution_snapshot_drift_before_next_wave(tmp_path: Path, monkeypatch):
+def test_hparam_launch_accepts_runtime_commit_drift_before_next_wave(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "max_concurrent": 1})
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["max_runs"] = 2
@@ -1245,13 +1409,33 @@ def test_hparam_launch_rejects_execution_snapshot_drift_before_next_wave(tmp_pat
         [{"step_id": first["step_id"], "run_id": first["run_id"], "status": "finished"}],
     )
     _set_execution_probe(monkeypatch, plan_dir, commit="b" * 40)
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    snapshot_path = plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME
+    snapshot_before = snapshot_path.read_bytes()
 
-    with pytest.raises(ValueError, match="Target runtime commit differs"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
+    assert len(started) == 2
+    assert snapshot_path.read_bytes() == snapshot_before
+
+
+def test_hparam_launch_accepts_additional_cli_options_on_a_rolling_runtime(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    calls = _set_execution_probe(monkeypatch, plan_dir, extra_options={"--new-unrelated-option"})
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
+    started = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda _execution, command: started.append(command) or "launch_failed",
+    )
+
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert calls == ["identity", "parse"]
     assert len(started) == 1
-    assert all(path.read_bytes() == content for path, content in before.items())
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launch_failed"
 
 
 def test_repeated_ssh_dry_run_does_not_observe_runtime_before_execute(tmp_path: Path, monkeypatch):

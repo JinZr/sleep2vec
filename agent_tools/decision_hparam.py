@@ -8,7 +8,7 @@ from typing import Any
 from .adaptive_proposals import validate_parameter_envelopes
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import managed_runtime_env_issues, managed_runtime_resource_issues, multilabel_sidecar_issue
-from .models import REPO_ROOT
+from .models import REPO_ROOT, is_full_git_object_id
 
 DEFAULT_ADAPTIVE_SUGGEST_STRATEGY = "agent_proposal"
 
@@ -773,13 +773,13 @@ def _hparam_runtime_identity_issues(execution: dict[str, Any]) -> list[DecisionI
         )
     runtime_commit = execution.get("runtime_commit")
     if runtime_commit not in (None, "ASK_USER") and (
-        not isinstance(runtime_commit, str) or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", runtime_commit) is None
+        not isinstance(runtime_commit, str) or not is_full_git_object_id(runtime_commit.lower())
     ):
         issues.append(
             DecisionIssue(
                 DecisionStatus.FAIL,
                 "execution.runtime_commit",
-                "execution.runtime_commit must be a full Git commit hash when set.",
+                "execution.runtime_commit must be a full 40-character Git commit ID when set.",
                 None,
                 {"runtime_commit": runtime_commit},
             )
@@ -790,7 +790,7 @@ def _hparam_runtime_identity_issues(execution: dict[str, Any]) -> list[DecisionI
     if not manager_runtime:
         for field, question in (
             ("python", "What Python executable name or absolute path should the target runtime use?"),
-            ("runtime_commit", "What full Git commit hash should the target runtime use?"),
+            ("runtime_commit", "What full Git commit hash should be recorded as the target runtime baseline?"),
         ):
             if field not in execution or execution.get(field) in (None, "ASK_USER"):
                 issues.append(

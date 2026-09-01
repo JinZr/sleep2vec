@@ -122,8 +122,10 @@ def loads_train_val(epochs: Any) -> bool:
 
 
 def finetune_loaded_split_values(recipe: dict, *, load_test: bool | None = None) -> list[str]:
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    raw_runtime = recipe.get("runtime")
+    runtime = raw_runtime if isinstance(raw_runtime, dict) else {}
+    raw_evaluation = recipe.get("evaluation_policy")
+    evaluation = raw_evaluation if isinstance(raw_evaluation, dict) else {}
 
     splits: list[str] = []
     if loads_train_val(runtime.get("epochs", 30)):
@@ -235,32 +237,22 @@ def script_lines(
     if experiment_root is not None:
         if lifecycle_python is None:
             raise ValueError("Lifecycle scripts require an explicit Python interpreter.")
-        commit_command = (
-            render_command(
-                [
-                    lifecycle_python,
-                    "-c",
-                    python_programs.source("plan_rendering.commit_status"),
-                    experiment_root,
-                    step_id,
-                    run_id,
-                ]
-            )
-            + ' "$1"'
+        commit_command = render_command(
+            [
+                lifecycle_python,
+                "-c",
+                python_programs.source("plan_rendering.commit_status"),
+                experiment_root,
+                step_id,
+                run_id,
+                "__STATUS__",
+            ]
+        ) + (
+            f" record-runtime-commit {shlex.quote(expected_runtime_commit)}"
+            if expected_runtime_commit is not None
+            else ""
         )
         prelaunch_verification_lines = []
-        if expected_runtime_commit is not None:
-            prelaunch_verification_lines = [
-                render_command(
-                    [
-                        lifecycle_python,
-                        "-c",
-                        python_programs.source("plan_rendering.runtime_commit_guard"),
-                        expected_runtime_commit,
-                    ]
-                ),
-                "",
-            ]
         if input_snapshots:
             prelaunch_verification_lines.extend(
                 [
@@ -277,7 +269,7 @@ def script_lines(
             )
         lifecycle_lines = [
             "_agent_commit_status() {",
-            f"  {commit_command}",
+            f'  {commit_command.replace("__STATUS__", "$1")}',
             "}",
             "_agent_finish_run() {",
             "  _agent_runtime_status=$?",

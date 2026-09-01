@@ -35,17 +35,34 @@ SSH shell or retry a launch after a lost receipt. Observe with
 [managed preset contract](../../doc/agent_contracts/task_recipe.md#managed-preset-preparation).
 The workload and lifecycle commits share the planned interpreter.
 New local plans at the manager checkout freeze its current
-Python and Git HEAD by default. For a different workdir or remote path context,
-provide a complete local `execution.python`, `execution.runtime_commit`, and
-absolute `execution.workdir` identity in the recipe; use an absolute Python path
-to avoid launcher PATH drift. Plan on the execution host: preset plans do not
-provide recipe-driven SSH execution. Historical plans without the direct
+Python and baseline Git HEAD by default. For a different workdir or remote path
+context, provide a complete local `execution.python`,
+`execution.runtime_commit`, and absolute `execution.workdir` identity in the
+recipe; use an absolute Python path to avoid launcher PATH drift. Plan on the
+execution host: preset plans do not provide recipe-driven SSH execution.
+Historical plans without the direct
 scheduler declaration retain their original script behavior; do not patch them
-to add identity or route them through the new launcher. The script
-checks the workdir's Git HEAD before marking the run `running`. Entry points
+to add identity or route them through the new launcher. The provenance-aware
+launcher orders frozen script/config verification, HEAD capture, and child
+`Popen` inside the same short runtime lock; the script uses that value when it
+records planned and actual commits in the canonical manifest. The lock is
+released for the child lifetime. A mismatch warns without blocking or rewriting
+plan bytes, and the observation does not freeze checkout bytes for the whole preset job.
+Entry points
 remain variant-local: `preprocess/save_dataset_presets.py`,
 `sleep2vec2/preprocess/save_dataset_presets.py`, or
 `sleep2expert/preprocess/save_dataset_presets.py`.
+
+For rolling latest-main maintenance, keep one existing checkout and run
+`python -m agent_tools runtime-sync --workdir <checkout>` as a dry-run before an
+authorized `--execute` fast-forward of `origin/main`. Do not clone or reset.
+Sync and launch lock only their short critical sections, so an older preset
+process may continue after its spawn boundary records A while a later process
+records B. `runtime-sync` rejects tracked or importable-code dirt. Preset launch
+itself requires the frozen Python to start and rechecks the frozen plan/run,
+script/config, and emitted input hashes; it does not claim the hparam
+managed-scheduler module-origin or live-argv gates. Mixed commits are provenance
+rather than a scientific variable.
 
 When the config defines `preset_build`, that block is the sole runtime owner of
 `required_channels` and `min_channels`. Keep matching decisions for provenance,

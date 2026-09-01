@@ -132,22 +132,35 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
             return managed_scheduler.LaunchResult(rows, [preview], frozenset(), {}, {})
         if Path(identity["pid_path"]).exists():
             raise ValueError("Preset PID receipt already exists; refusing another launch attempt.")
-        guard = managed_scheduler.run_execution_command(
+        probe = managed_scheduler.run_execution_command(
             execution,
             [
                 execution["python"],
                 "-c",
-                python_programs.source("plan_rendering.runtime_commit_guard"),
-                execution["runtime_commit"],
+                python_programs.source("managed_scheduler.runtime_identity"),
+                "agent_tools.experiment_workspace",
+                "{}",
+                "[]",
+                str(execution["runtime_commit"]),
             ],
         )
-        if guard.returncode != 0:
-            detail = guard.stderr.strip() or guard.stdout.strip() or f"exit code {guard.returncode}"
+        if probe.returncode != 0:
+            detail = probe.stderr.strip() or probe.stdout.strip() or f"exit code {probe.returncode}"
             raise RuntimeError(f"Preset runtime preflight failed: {detail}")
+        verify_run_snapshot(run)
         # Claim before fork: an interrupted manager must not turn an uncertain launch into a retry.
-        attempted = {**preview, "status": "launched", "launched_at": utc_now()}
+        attempted = {
+            **preview,
+            "planned_runtime_commit": str(execution["runtime_commit"]),
+            "status": "launched",
+            "launched_at": utc_now(),
+        }
         merge_run_manifest(workspace, [attempted], lock_held=True)
-        status = managed_scheduler.start_process(execution, identity["command"])
+        status = managed_scheduler.start_process(
+            execution,
+            identity["command"],
+            retry_pre_spawn_failure=False,
+        )
         attempted["status"] = status
         process_identity = evidence.read_process_identity(identity["pid_path"], attempted)
         if process_identity is not None:

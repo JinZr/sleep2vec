@@ -9,7 +9,14 @@ import shlex
 import subprocess
 
 import pytest
-from test_agent_tools_hparam_runtime import _hparam_recipe, _read_table, _run, _write_slurm_plan, write_yaml
+from test_agent_tools_hparam_runtime import (
+    _REAL_VALIDATED_EXECUTION_SNAPSHOT,
+    _hparam_recipe,
+    _read_table,
+    _run,
+    _write_slurm_plan,
+    write_yaml,
+)
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
 
@@ -21,6 +28,7 @@ from agent_tools import (
     plan_hparam,
     plan_rendering,
     plans,
+    python_programs,
     run_artifacts,
     slurm,
 )
@@ -77,6 +85,18 @@ def test_slurm_bare_receipt_survives_first_monitor_after_controller_purge(
     submitted = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert submitted["scheduler_job_id"] == "3880"
     assert submitted["scheduler_cluster"] == "wuji-h20"
+    observed_runtime_commit = "b" * 40
+    Path(run["allocation_identity_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": run["scheduler_submit_token"],
+                "execution_snapshot": {"runtime_commit": observed_runtime_commit},
+            }
+        )
+    )
     Path(run["scheduler_result_path"]).write_text(
         json.dumps(
             {
@@ -96,6 +116,7 @@ def test_slurm_bare_receipt_survives_first_monitor_after_controller_purge(
     assert canonical["scheduler_raw_state"] == "MISSING"
     assert canonical["scheduler_job_id"] == "3880"
     assert canonical["scheduler_cluster"] == "wuji-h20"
+    assert canonical["runtime_commit"] == observed_runtime_commit
     assert [argv[0] for argv in calls] == ["scontrol", "bash", "squeue", "scontrol", "sacct"]
 
 
@@ -128,6 +149,37 @@ def test_slurm_controller_binding_failure_never_submits_or_transitions_run(
 
     after = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert calls == [["scontrol", "show", "config"]]
+    for field in ("status", "target", "host", "scheduler_cluster", "scheduler_job_id"):
+        assert after.get(field, "") == before.get(field, "")
+
+
+def test_slurm_runtime_preflight_failure_fails_before_controller_or_submit(tmp_path: Path, monkeypatch):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    run = plan["runs"][0]
+    before = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "controller_cluster",
+        lambda *_args, **_kwargs: pytest.fail("must fail before controller lookup"),
+    )
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "submit",
+        lambda *_args, **_kwargs: pytest.fail("must fail before submission"),
+    )
+
+    def reject_protocol(_execution, command):
+        assert command[2] == python_programs.source("managed_scheduler.runtime_identity")
+        assert command[-1]
+        return subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed")
+
+    monkeypatch.setattr(hparam_runtime, "_run_execution_command", reject_protocol)
+
+    with pytest.raises(RuntimeError, match="Target runtime preflight failed"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    after = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     for field in ("status", "target", "host", "scheduler_cluster", "scheduler_job_id"):
         assert after.get(field, "") == before.get(field, "")
 

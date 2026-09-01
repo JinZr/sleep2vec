@@ -41,6 +41,7 @@ from .experiment_workspace import (
 from .hparam_runtime import monitor_hparam_runs
 from .hparam_selection import select_hparam_candidates
 from .manifests import read_json, read_rows, utc_now
+from .models import is_full_git_object_id
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 
 SCHEMA_VERSION = 1
@@ -135,6 +136,9 @@ def run_experiment_pipeline(
         raise ValueError(f"External pipeline spec must be a regular file: {spec_file}")
     source_text = spec_file.read_text()
     spec = read_managed_yaml_mapping(source_text, source=f"External pipeline spec {spec_file}")
+    runtime = spec.get("runtime")
+    if isinstance(runtime, dict) and isinstance(runtime.get("runtime_commit"), str):
+        runtime["runtime_commit"] = runtime["runtime_commit"].lower()
     _validate_spec(spec, root, unlock_final_test=unlock_final_test if execute else None)
     pipeline_id = str(spec["pipeline"]["id"])
     pipeline_dir = root / "pipelines" / pipeline_id
@@ -251,8 +255,8 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
             raise ValueError(f"runtime.{field} is required.")
     if not Path(runtime["workdir"]).is_absolute():
         raise ValueError("runtime.workdir must be absolute.")
-    if not re.fullmatch(r"[0-9a-f]{40}", runtime["runtime_commit"]):
-        raise ValueError("runtime.runtime_commit must be a lowercase 40-character Git commit SHA.")
+    if not is_full_git_object_id(runtime["runtime_commit"]):
+        raise ValueError("runtime.runtime_commit must be a full lowercase 40-character Git commit ID.")
     if runtime.get("accelerator") != "gpu" or runtime.get("device") != "cuda":
         raise ValueError("Schema v1 external evaluation requires GPU/CUDA runtime.")
     if str(runtime.get("precision")) not in {"32", "32-true"}:
@@ -1653,15 +1657,7 @@ def _run_attempts(
             if row.get("status") != status:
                 row["status"] = status
                 changed = True
-            if int(row["attempt"]) == 1:
-                owner_dir = (
-                    pipeline_dir if len(initial_variants) == 1 else pipeline_dir / "initial_schedulers" / row["variant"]
-                )
-            else:
-                owner_dir = pipeline_dir / "retry_schedulers" / row["job_id"]
-            snapshot_path = owner_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
-            snapshot = read_json(snapshot_path) if snapshot_path.exists() else {}
-            runtime_commit = str(snapshot.get("runtime_commit") or "")
+            runtime_commit = str(run.get("runtime_commit") or "")
             if row.get("runtime_commit") != runtime_commit:
                 row["runtime_commit"] = runtime_commit
                 changed = True

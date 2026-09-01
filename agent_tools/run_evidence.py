@@ -23,6 +23,7 @@ from .experiment_workspace import (
     merge_run_row,
 )
 from .manifests import read_json, utc_now
+from .models import is_full_git_object_id
 from .progress import read_progress
 from .transport import SSH_TIMEOUT_SECONDS
 
@@ -35,6 +36,7 @@ RUN_EVIDENCE_FIELDS = {
     "pid",
     "process_group_id",
     "process_start_token",
+    "runtime_commit",
     "process_identity_error",
     "log_path",
     "log_tail",
@@ -382,7 +384,8 @@ def _parse_process_identity(text: str, path: Any) -> dict[str, Any]:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ProcessIdentityError(f"PID file is empty or invalid: {path}") from exc
-    if not isinstance(payload, dict) or set(payload) != PROCESS_IDENTITY_FIELDS:
+    allowed_fields = PROCESS_IDENTITY_FIELDS | {"runtime_commit"}
+    if not isinstance(payload, dict) or not PROCESS_IDENTITY_FIELDS <= set(payload) or set(payload) - allowed_fields:
         raise ProcessIdentityError(f"PID file has incomplete process group identity: {path}")
     pid = payload.get("pid")
     pgid = payload.get("process_group_id")
@@ -396,7 +399,13 @@ def _parse_process_identity(text: str, path: Any) -> dict[str, Any]:
         or not token
     ):
         raise ProcessIdentityError(f"PID file has invalid process group identity: {path}")
-    return {"pid": pid, "process_group_id": pgid, "process_start_token": token}
+    identity = {"pid": pid, "process_group_id": pgid, "process_start_token": token}
+    if "runtime_commit" in payload:
+        runtime_commit = payload["runtime_commit"]
+        if not is_full_git_object_id(runtime_commit):
+            raise ProcessIdentityError(f"PID file has invalid runtime commit: {path}")
+        identity["runtime_commit"] = runtime_commit
+    return identity
 
 
 def process_identity_running(row: dict[str, Any], identity: dict[str, Any]) -> bool | None:

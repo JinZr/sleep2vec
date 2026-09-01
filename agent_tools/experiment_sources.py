@@ -193,11 +193,14 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
         if not math.isfinite(parsed_mtime):
             raise RuntimeError(f"SSH checkpoint scan returned malformed output on {remote}: {line}")
         name = path_text.rsplit("/", 1)[-1]
-        run = runs_by_checkpoint_dir.get(path_text.rsplit("/", 1)[0])
-        if run is None:
+        owner_run = runs_by_checkpoint_dir.get(path_text.rsplit("/", 1)[0])
+        if owner_run is None:
             raise RuntimeError(f"SSH checkpoint scan returned an undeclared checkpoint path on {remote}: {path_text}")
         rows[path_text] = {
-            **{field: run.get(field, "") for field in ("experiment_id", "step_id", "run_id", "run_name", "version")},
+            **{
+                field: owner_run.get(field, "")
+                for field in ("experiment_id", "step_id", "run_id", "run_name", "version")
+            },
             "checkpoint_path": path_text,
             "epoch": _checkpoint_epoch(name),
             "global_step": _checkpoint_step(name),

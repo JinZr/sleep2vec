@@ -1,9 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import hashlib
+import importlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
@@ -11,27 +14,60 @@ import sys
 module = sys.argv[1]
 expected = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
 artifacts = json.loads(sys.argv[3]) if len(sys.argv) > 3 else []
+planned_commit = sys.argv[4] if len(sys.argv) > 4 else ""
+git_env = os.environ.copy()
+for name in (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+):
+    git_env.pop(name, None)
 git_commands = [
     ["git", "rev-parse", "HEAD"],
     ["git", "rev-parse", "--show-toplevel"],
     ["git", "status", "--porcelain", "--untracked-files=no"],
-    ["git", "ls-files", "--others", "--exclude-standard", "--", "*.py", "*.pyi", "*.so"],
-    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyi", "*.so"],
+    ["git", "ls-files", "-v", "-z", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
+    ["git", "ls-files", "--others", "--exclude-standard", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
+    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
+    ["git", "ls-files", "--others", "--exclude-standard", "--directory", "--no-empty-directory"],
+    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory"],
 ]
 # Ordered results preserve diagnostic priority while independent repository scans overlap.
 with ThreadPoolExecutor(max_workers=3) as executor:
-    commit, repo_root, dirty, untracked_code, ignored_code = executor.map(
-        partial(subprocess.run, text=True, capture_output=True), git_commands
+    commit, repo_root, dirty, tracked_code, untracked_code, ignored_code, untracked_directories, ignored_directories = (
+        executor.map(partial(subprocess.run, text=True, capture_output=True, env=git_env), git_commands)
     )
 if (
     commit.returncode != 0
     or repo_root.returncode != 0
     or dirty.returncode != 0
+    or tracked_code.returncode != 0
     or untracked_code.returncode != 0
     or ignored_code.returncode != 0
+    or untracked_directories.returncode != 0
+    or ignored_directories.returncode != 0
 ):
     print(
-        commit.stderr or repo_root.stderr or dirty.stderr or untracked_code.stderr or ignored_code.stderr,
+        commit.stderr
+        or repo_root.stderr
+        or dirty.stderr
+        or tracked_code.stderr
+        or untracked_code.stderr
+        or ignored_code.stderr
+        or untracked_directories.stderr
+        or ignored_directories.stderr,
         file=sys.stderr,
     )
     raise SystemExit(2)
@@ -39,22 +75,105 @@ if dirty.stdout.strip():
     print("Target runtime has tracked worktree changes; launch requires a clean commit.", file=sys.stderr)
     raise SystemExit(2)
 
+runtime_repo_root = Path(repo_root.stdout.strip()).resolve()
+runtime_commit = commit.stdout.strip().lower()
+if re.fullmatch(r"[0-9a-f]{40}", runtime_commit) is None:
+    print("Runtime HEAD is not a full 40-character Git commit ID.", file=sys.stderr)
+    raise SystemExit(2)
+if planned_commit:
+    if re.fullmatch(r"[0-9a-f]{40}", planned_commit) is None:
+        print("Planned runtime commit must be a full lowercase 40-character Git commit ID.", file=sys.stderr)
+        raise SystemExit(2)
+    planned = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{planned_commit}^{{commit}}"],
+        cwd=runtime_repo_root,
+        text=True,
+        capture_output=True,
+        env=git_env,
+    )
+    if planned.returncode != 0:
+        print("Planned runtime commit does not resolve to a commit in the target repository.", file=sys.stderr)
+        raise SystemExit(2)
+    if planned.stdout.strip().lower() != planned_commit:
+        print("Planned runtime commit is not the repository's canonical commit ID.", file=sys.stderr)
+        raise SystemExit(2)
+
+
 def importable_code(output):
     paths = []
     for raw in output.splitlines():
         path = Path(raw)
+        if path.suffix == ".pyc":
+            if (
+                "__pycache__" not in path.parts
+                and path.stem.isidentifier()
+                and all(part.isidentifier() for part in path.parts[:-1])
+                and not (runtime_repo_root / path).with_suffix(".py").exists()
+            ):
+                paths.append(raw)
+            continue
         module_name = path.name.split(".", 1)[0]
         if module_name.isidentifier() and all(part.isidentifier() for part in path.parts[:-1]):
             paths.append(raw)
     return paths
 
-if importable_code(untracked_code.stdout) or importable_code(ignored_code.stdout):
+
+hidden_code = importable_code(
+    "\n".join(
+        entry[2:]
+        for entry in tracked_code.stdout.split("\0")
+        if len(entry) > 2 and entry[0] in {"h", "s", "S"}
+    )
+)
+hidden_code_error = (
+    "Target runtime has index-hidden tracked Python code changes; launch requires commit-defined import roots."
+)
+for raw in hidden_code:
+    path = Path(raw)
+    candidate = runtime_repo_root / path
+    index_fields = subprocess.check_output(
+        ["git", "ls-files", "--stage", "--", str(path)],
+        cwd=runtime_repo_root,
+        text=True,
+        env=git_env,
+    ).split()
+    if len(index_fields) < 3 or index_fields[2] != "0" or candidate.is_symlink() or not candidate.is_file():
+        print(hidden_code_error, file=sys.stderr)
+        raise SystemExit(2)
+    worktree_hash = subprocess.check_output(
+        ["git", "hash-object", "--filters", f"--path={path}", str(path)],
+        cwd=runtime_repo_root,
+        text=True,
+        env=git_env,
+    ).strip()
+    if worktree_hash != index_fields[1]:
+        print(hidden_code_error, file=sys.stderr)
+        raise SystemExit(2)
+
+
+def importable_package_symlink(raw_path):
+    path = Path(raw_path)
+    candidate = runtime_repo_root / path
+    return (
+        candidate.is_symlink()
+        and candidate.is_dir()
+        and path.name.isidentifier()
+        and all(part.isidentifier() for part in path.parts[:-1])
+    )
+
+
+if (
+    importable_code(untracked_code.stdout)
+    or importable_code(ignored_code.stdout)
+    or any(importable_package_symlink(path) for path in untracked_directories.stdout.splitlines())
+    or any(importable_package_symlink(path) for path in ignored_directories.stdout.splitlines())
+):
     print(
         "Target runtime has untracked or ignored Python code; launch requires commit-defined import roots.",
         file=sys.stderr,
     )
     raise SystemExit(2)
-runtime_repo_root = Path(repo_root.stdout.strip()).resolve()
+
 spec = importlib.util.find_spec(module)
 origin = Path(spec.origin).resolve() if spec is not None and spec.origin else None
 if origin is None:
@@ -68,22 +187,22 @@ except ValueError:
 payload = {
     "python": sys.executable,
     "python_version": sys.version.split()[0],
-    "runtime_commit": commit.stdout.strip(),
+    "runtime_commit": runtime_commit,
     "runtime_repo_root": str(runtime_repo_root),
     "runtime_hostname": socket.gethostname(),
     "module": module,
     "module_origin": str(origin),
 }
-identity_fields = (
+stable_identity_fields = (
     "python",
     "python_version",
-    "runtime_commit",
     "runtime_repo_root",
     "runtime_hostname",
     "module",
     "module_origin",
 )
-changed = [field for field in identity_fields if expected and payload[field] != expected.get(field)]
+# Commit drift is expected for a rolling checkout; payload still records the commit seen at this process start.
+changed = [field for field in stable_identity_fields if expected and payload[field] != expected.get(field)]
 if changed:
     print("Target runtime identity changed before process start: " + ", ".join(changed), file=sys.stderr)
     raise SystemExit(2)

@@ -287,6 +287,15 @@ def test_schema_rejects_non_executable_runtime_python(tmp_path: Path, python_com
         experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
 
 
+def test_schema_rejects_sha256_runtime_commit(tmp_path: Path):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    spec["runtime"]["runtime_commit"] = "b" * 64
+
+    with pytest.raises(ValueError, match="full lowercase 40-character"):
+        experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+
+
 def test_external_pipeline_explicitly_rejects_slurm_before_state_creation(tmp_path: Path):
     root = tmp_path / "workspace"
     root.mkdir()
