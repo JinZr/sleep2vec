@@ -1271,7 +1271,8 @@ def _adaptive_step(
                     f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues()
                 )
                 raise RuntimeError(
-                    f"Published agent suggestion failed preflight with exit code {candidate_preflight.exit_code}: {details}"
+                    "Published agent suggestion failed preflight with exit code "
+                    f"{candidate_preflight.exit_code}: {details}"
                 )
         round_recipe_payload = candidate_payload
         exp_io.validate_managed_output_paths(
