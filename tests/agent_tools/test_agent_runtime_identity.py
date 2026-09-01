@@ -456,6 +456,58 @@ def test_runtime_identity_rejects_nonexistent_planned_commit(runtime_repo):
     assert "Planned runtime commit does not resolve to a commit" in result.stderr
 
 
+def test_runtime_identity_rejects_sha256_commit_abbreviated_to_sha1_length(tmp_path):
+    repo = tmp_path / "sha256-runtime"
+    initialized = subprocess.run(
+        ["git", "init", "-q", "--object-format=sha256", str(repo)],
+        text=True,
+        capture_output=True,
+    )
+    if initialized.returncode != 0:
+        pytest.skip("Git does not support SHA-256 repositories")
+    (repo / "runtime_cli.py").write_text("pass\n")
+    subprocess.run(["git", "add", "runtime_cli.py"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-qm",
+            "Initialize SHA-256 runtime fixture",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    assert len(commit) == 64
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("managed_scheduler.runtime_identity"),
+            "runtime_cli",
+            "{}",
+            "[]",
+            "[]",
+            commit[:40],
+        ],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "canonical full object ID" in result.stderr
+
+
 def test_runtime_identity_allows_only_untracked_code_inside_tracked_submodule(runtime_repo):
     nested = runtime_repo / "submodule"
     nested.mkdir()

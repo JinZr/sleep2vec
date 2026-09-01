@@ -227,6 +227,31 @@ def test_preset_capability_probe_claim_and_start_share_runtime_lock(tmp_path, pr
         os.close(descriptor)
 
 
+def test_preset_reverifies_artifacts_inside_lock_before_claim(tmp_path, preset_runtime, monkeypatch):
+    plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
+    run = plan["runs"][0]
+    artifact = Path(run["script"])
+    before = read_run_manifest(preset_runtime["workspace"])
+    original_verify = experiments.verify_run_snapshot
+    calls = 0
+
+    def verify(candidate):
+        nonlocal calls
+        calls += 1
+        original_verify(candidate)
+        if calls == 1:
+            artifact.write_bytes(artifact.read_bytes() + b"\n# changed before locked verification\n")
+
+    monkeypatch.setattr(experiments, "verify_run_snapshot", verify)
+
+    with pytest.raises(ValueError, match="Run snapshot hash changed after planning"):
+        experiments.launch_preset_run(plan_dir, dry_run=False)
+
+    assert calls == 2
+    assert read_run_manifest(preset_runtime["workspace"]) == before
+    assert not preset_runtime["payload"].exists()
+
+
 @pytest.mark.parametrize("mutation_phase", ["claim", "start"])
 @pytest.mark.parametrize("artifact", ["script", "config"])
 def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(

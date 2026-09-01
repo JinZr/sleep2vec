@@ -152,6 +152,7 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
             if probe.returncode != 0:
                 detail = probe.stderr.strip() or probe.stdout.strip() or f"exit code {probe.returncode}"
                 raise RuntimeError(f"Preset runtime preflight failed: {detail}")
+            verify_run_snapshot(run)
             # Claim before fork: an interrupted manager must not turn an uncertain launch into a retry.
             attempted = {
                 **preview,

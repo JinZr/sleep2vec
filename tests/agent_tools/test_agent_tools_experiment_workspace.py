@@ -2225,6 +2225,36 @@ def test_commit_run_start_accepts_monitor_winning_with_identical_provenance(tmp_
     assert (tmp_path / "run_manifest.tsv").read_bytes() == before
 
 
+def test_commit_run_start_accepts_late_authenticated_ssh_launch_from_unknown_remote(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "experiment_id": "unit",
+                "step_id": "train",
+                "run_id": "run-000",
+                "target": "ssh",
+                "host": "unit-host",
+                "planned_runtime_commit": "a" * 40,
+                "status": "unknown_remote",
+            }
+        ],
+    )
+
+    committed = experiment_workspace.commit_run_start(
+        tmp_path,
+        "train",
+        "run-000",
+        planned_runtime_commit="a" * 40,
+        runtime_commit="b" * 40,
+    )
+
+    assert committed[0]["status"] == "running"
+    assert committed[0]["runtime_commit"] == "b" * 40
+
+
 @pytest.mark.parametrize(
     ("planned_commit", "runtime_commit"),
     [

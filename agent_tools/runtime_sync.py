@@ -57,6 +57,7 @@ def _sync_local(checkout: str, *, execute: bool) -> dict[str, Any]:
             )
         if ancestor.returncode != 0:
             _raise_git_error(ancestor)
+        _require_update_keeps_bytecode_sources(root, upstream)
         # Rolling runtimes move only through a normal fast-forward; never rewrite local history.
         _git(checkout, "merge", "--ff-only", "--no-edit", upstream, timeout=60)
         after = _commit(_git(checkout, "rev-parse", "HEAD").stdout, "updated runtime HEAD")
@@ -138,6 +139,30 @@ def _require_clean_runtime(workdir: str) -> None:
         directories = _git(workdir, "ls-files", *flags, "--directory", "--no-empty-directory").stdout.splitlines()
         if any(_is_importable_package_symlink(path, workdir) for path in directories):
             raise RuntimeError("Runtime checkout has untracked or ignored importable code; refusing to update it.")
+
+
+def _require_update_keeps_bytecode_sources(workdir: str, upstream: str) -> None:
+    source_paths = set()
+    for flags in (("--others", "--exclude-standard"), ("--others", "--ignored", "--exclude-standard")):
+        paths = _git(workdir, "ls-files", *flags, "--", "*.pyc").stdout.splitlines()
+        for raw_path in paths:
+            path = Path(raw_path)
+            if (
+                "__pycache__" not in path.parts
+                and path.stem.isidentifier()
+                and all(part.isidentifier() for part in path.parts[:-1])
+                and (Path(workdir) / path).with_suffix(".py").exists()
+            ):
+                source_paths.add(path.with_suffix(".py").as_posix())
+    if not source_paths:
+        return
+    upstream_sources = set(
+        _git(workdir, "ls-tree", "-r", "--name-only", upstream, "--", *sorted(source_paths)).stdout.splitlines()
+    )
+    if source_paths - upstream_sources:
+        raise RuntimeError(
+            "Runtime update would leave untracked or ignored sourceless bytecode; refusing to update it."
+        )
 
 
 def _is_importable_code(raw_path: str, workdir: str) -> bool:

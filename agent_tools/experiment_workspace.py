@@ -1318,7 +1318,10 @@ def commit_run_start(
                 raise ValueError(f"Managed running provenance differs for {step_id} / {run_id}")
             return rows
         # A stale script must not backfill provenance into a terminal or otherwise non-launchable row.
-        if current.get("status") not in LAUNCHABLE_STATUSES | {"launched"}:
+        startable_statuses = LAUNCHABLE_STATUSES | {"launched"}
+        if current.get("target") == "ssh":
+            startable_statuses |= {"unknown_remote"}
+        if current.get("status") not in startable_statuses:
             raise ValueError(f"Managed run cannot start from status {current.get('status')}: {step_id} / {run_id}")
         return merge_run_manifest(
             root,

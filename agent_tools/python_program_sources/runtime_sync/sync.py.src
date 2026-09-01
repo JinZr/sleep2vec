@@ -74,6 +74,28 @@ def require_clean_runtime(workdir):
             raise RuntimeError("Runtime checkout has untracked or ignored importable code; refusing to update it.")
 
 
+def require_update_keeps_bytecode_sources(workdir, upstream):
+    source_paths = set()
+    for flags in (("--others", "--exclude-standard"), ("--others", "--ignored", "--exclude-standard")):
+        paths = git("ls-files", *flags, "--", "*.pyc").stdout.splitlines()
+        for raw_path in paths:
+            path = Path(raw_path)
+            if (
+                "__pycache__" not in path.parts
+                and path.stem.isidentifier()
+                and all(part.isidentifier() for part in path.parts[:-1])
+                and (Path(workdir) / path).with_suffix(".py").exists()
+            ):
+                source_paths.add(path.with_suffix(".py").as_posix())
+    if not source_paths:
+        return
+    upstream_sources = set(
+        git("ls-tree", "-r", "--name-only", upstream, "--", *sorted(source_paths)).stdout.splitlines()
+    )
+    if source_paths - upstream_sources:
+        raise RuntimeError("Runtime update would leave untracked or ignored sourceless bytecode; refusing to update it.")
+
+
 with runtime_guard(checkout):
     root = git("rev-parse", "--show-toplevel").stdout.strip()
     checkout = root
@@ -105,6 +127,7 @@ with runtime_guard(checkout):
         if ancestor.returncode != 0:
             detail = ancestor.stderr.strip() or ancestor.stdout.strip() or f"exit code {ancestor.returncode}"
             raise RuntimeError(f"Runtime Git command failed: {detail}")
+        require_update_keeps_bytecode_sources(root, upstream)
         git("merge", "--ff-only", "--no-edit", upstream, timeout=60)
         after = commit(git("rev-parse", "HEAD").stdout, "updated runtime HEAD")
         if after != upstream:

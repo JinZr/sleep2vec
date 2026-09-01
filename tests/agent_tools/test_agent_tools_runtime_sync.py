@@ -229,6 +229,60 @@ def test_runtime_sync_allows_non_sourceless_bytecode(
     assert sync_runtime(runtime)["status"] == "update_available"
 
 
+@pytest.mark.parametrize("host", [None, "unit-host"], ids=["local", "remote-bootstrap"])
+def test_runtime_sync_rejects_update_that_deletes_legacy_bytecode_source(
+    rolling_runtime: tuple[Path, Path, str], monkeypatch, host: str | None
+) -> None:
+    source, runtime, _first = rolling_runtime
+    (source / "legacy_module.py").write_text("VALUE = 1\n")
+    _git(source, "add", "legacy_module.py")
+    _git(
+        source,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-m",
+        "Add runtime module",
+    )
+    _git(source, "push", "origin", "main")
+    sync_runtime(runtime, execute=True)
+    before = _git(runtime, "rev-parse", "HEAD")
+    (runtime / ".git" / "info" / "exclude").write_text("legacy_module.pyc\n")
+    (runtime / "legacy_module.pyc").write_bytes(b"legacy cache with source")
+    _git(source, "rm", "legacy_module.py")
+    _git(
+        source,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-m",
+        "Remove runtime module",
+    )
+    _git(source, "push", "origin", "main")
+    if host:
+        monkeypatch.setattr(
+            runtime_sync.transport,
+            "run_shell",
+            lambda _host, command, *, timeout: subprocess.run(
+                ["bash", "-lc", command], text=True, capture_output=True, timeout=timeout
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="sourceless bytecode"):
+        sync_runtime(runtime, host=host, remote_python=sys.executable, execute=True)
+
+    assert _git(runtime, "rev-parse", "HEAD") == before
+    assert (runtime / "legacy_module.py").is_file()
+
+
 def test_runtime_sync_fast_forwards_detached_head_without_moving_main(
     rolling_runtime: tuple[Path, Path, str],
 ) -> None:
