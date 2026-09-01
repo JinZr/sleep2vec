@@ -24,8 +24,7 @@ def test_selection_split_and_test_access_questions_are_distinct():
         "train, val, or explicitly authorized test for hparam tuning?"
     )
     assert fields["external_test_locked"]["question"] == (
-        "Should test data remain locked during hyper-parameter tuning, or is tuning-time test access "
-        "explicitly authorized?"
+        "Should test data remain locked during this task, or is test access explicitly authorized?"
     )
 
 
@@ -911,6 +910,20 @@ def test_missing_high_impact_label_requires_user_input():
 
     assert report.status == DecisionStatus.NEEDS_USER_INPUT
     assert any(issue.field == "label_name" for issue in report.issues)
+
+
+def test_direct_finetune_uses_task_neutral_test_access_question():
+    policy = load_consultation_policy()
+    report = evaluate_consultation_gates(
+        "finetune",
+        {"task": "finetune", "evaluation_policy": {"test_after_fit": False}},
+        None,
+        {},
+        policy,
+    )
+
+    issue = next(issue for issue in report.issues if issue.field == "external_test_locked")
+    assert issue.question == "Should test data remain locked during this task, or is test access explicitly authorized?"
 
 
 def test_consultation_policy_rejects_tasks_without_registered_adapters():
