@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 
-checkout = sys.argv[1]
+checkout = str(Path(sys.argv[1]).resolve())
 execute = sys.argv[2] == "1"
 git_repository_env = (
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -132,9 +132,9 @@ def require_update_keeps_bytecode_sources(workdir, upstream):
         raise RuntimeError("Runtime update would leave untracked or ignored sourceless bytecode; refusing to update it.")
 
 
-with runtime_guard(checkout):
-    root = git("rev-parse", "--show-toplevel").stdout.strip()
-    checkout = root
+root = str(Path(git("rev-parse", "--show-toplevel").stdout.strip()).resolve())
+checkout = root
+with runtime_guard(root):
     before = commit(git("rev-parse", "HEAD").stdout, "runtime HEAD")
     require_clean_runtime(root)
 

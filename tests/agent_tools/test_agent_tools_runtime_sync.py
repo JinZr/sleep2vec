@@ -94,6 +94,35 @@ def test_runtime_sync_fast_forwards_the_existing_checkout_without_copying(
     assert sorted(path.name for path in runtime.parent.iterdir()) == siblings
 
 
+def test_runtime_sync_keeps_using_the_checkout_selected_before_lock(
+    rolling_runtime: tuple[Path, Path, str], tmp_path: Path, monkeypatch
+) -> None:
+    _source, runtime, _first = rolling_runtime
+    other = tmp_path / "other-runtime"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(other)], check=True)
+    _commit(other, "Other runtime", "other\n")
+    alias = tmp_path / "runtime-alias"
+    alias.symlink_to(runtime, target_is_directory=True)
+    expected = {"workdir": str(runtime)}
+
+    @contextmanager
+    def retargeting_lock(checkout):
+        assert checkout == str(runtime)
+        alias.unlink()
+        alias.symlink_to(other, target_is_directory=True)
+        yield
+
+    def observed_sync(checkout: str, *, execute: bool):
+        assert checkout == str(runtime)
+        assert execute is True
+        return expected
+
+    monkeypatch.setattr(runtime_sync, "runtime_lock", retargeting_lock)
+    monkeypatch.setattr(runtime_sync, "_sync_local", observed_sync)
+
+    assert sync_runtime(alias, execute=True) is expected
+
+
 @pytest.mark.parametrize("execute", [False, True], ids=["dry-run", "execute"])
 def test_runtime_sync_reports_unchanged_checkout(rolling_runtime: tuple[Path, Path, str], execute: bool) -> None:
     _source, runtime, first = rolling_runtime

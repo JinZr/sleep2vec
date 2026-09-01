@@ -39,14 +39,14 @@ def sync_runtime(
 ) -> dict[str, Any]:
     if host:
         return _sync_remote(str(workdir), host, remote_python=remote_python, execute=execute)
-    checkout = str(workdir)
-    with runtime_lock(checkout):
-        return _sync_local(checkout, execute=execute)
+    checkout = str(Path(workdir).resolve())
+    root = str(Path(_git(checkout, "rev-parse", "--show-toplevel").stdout.strip()).resolve())
+    with runtime_lock(root):
+        return _sync_local(root, execute=execute)
 
 
 def _sync_local(checkout: str, *, execute: bool) -> dict[str, Any]:
-    root = _git(checkout, "rev-parse", "--show-toplevel").stdout.strip()
-    checkout = root
+    root = checkout
     before = _commit(_git(checkout, "rev-parse", "HEAD").stdout, "runtime HEAD")
     _require_clean_runtime(root)
 
