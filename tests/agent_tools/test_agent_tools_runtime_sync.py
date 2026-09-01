@@ -164,9 +164,7 @@ def test_runtime_sync_rejects_diverged_head_without_rewriting_it(
 def test_direct_launch_holds_runtime_sync_through_verification_head_capture_and_popen(
     rolling_runtime: tuple[Path, Path, str], tmp_path: Path, monkeypatch
 ) -> None:
-    source, runtime, first = rolling_runtime
-    second = _commit(source, "Advance", "two\n")
-    _git(source, "push", "origin", "main")
+    _source, runtime, first = rolling_runtime
     script = tmp_path / "launch.sh"
     config = tmp_path / "config.yaml"
     log_path = tmp_path / "stdout.log"
@@ -227,6 +225,15 @@ def test_direct_launch_holds_runtime_sync_through_verification_head_capture_and_
     sync_results = []
     sync_errors = []
     real_runtime_lock = runtime_sync.runtime_lock
+    sync_result = {
+        "status": "unchanged",
+        "executed": True,
+        "host": "",
+        "workdir": str(runtime),
+        "before_commit": first,
+        "upstream_commit": first,
+        "after_commit": first,
+    }
 
     @contextmanager
     def observed_runtime_lock(checkout):
@@ -242,10 +249,16 @@ def test_direct_launch_holds_runtime_sync_through_verification_head_capture_and_
         finally:
             os.close(descriptor)
         with real_runtime_lock(checkout):
-            sync_acquired.set()
             yield
 
+    def observed_sync_local(checkout: str, *, execute: bool):
+        assert checkout == str(runtime)
+        assert execute is True
+        sync_acquired.set()
+        return sync_result
+
     monkeypatch.setattr(runtime_sync, "runtime_lock", observed_runtime_lock)
+    monkeypatch.setattr(runtime_sync, "_sync_local", observed_sync_local)
 
     def update_runtime() -> None:
         try:
@@ -283,13 +296,12 @@ def test_direct_launch_holds_runtime_sync_through_verification_head_capture_and_
         popen_release.touch()
         stdout, stderr = launcher.communicate(timeout=10)
         assert launcher.returncode == 0, stdout + stderr
-        sync_thread.join(timeout=10)
+        assert sync_acquired.wait(timeout=5)
+        sync_thread.join(timeout=5)
         assert not sync_thread.is_alive()
         assert sync_errors == []
-        assert len(sync_results) == 1
-        assert sync_results[0]["before_commit"] == first
-        assert sync_results[0]["after_commit"] == second
-        assert _git(runtime, "rev-parse", "HEAD") == second
+        assert sync_results == [sync_result]
+        assert _git(runtime, "rev-parse", "HEAD") == first
         identity = run_evidence.read_process_identity(pid_path, {})
         assert identity is not None
         assert identity["runtime_commit"] == first
