@@ -701,6 +701,128 @@ def test_agent_proposal_execute_replay_blocks_later_uncommitted_launch(tmp_path:
     assert (tmp_path / "run_manifest.tsv").read_bytes() == evidence_before["manifest"]
 
 
+@pytest.mark.parametrize(
+    ("write_completion", "error"),
+    [
+        (False, "lacks its successful completion event"),
+        (True, "Later committed agent proposal has canonical launch failures"),
+    ],
+)
+def test_agent_proposal_execute_replay_blocks_later_committed_failure(
+    tmp_path: Path,
+    monkeypatch,
+    write_completion: bool,
+    error: str,
+):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    launch_calls = 0
+
+    def fake_launch(run_dir, *, dry_run=True):
+        nonlocal launch_calls
+        launch_calls += 1
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "launched"} for run in runs],
+        )
+        return Path(run_dir) / "launch_manifest.tsv"
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+    registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
+    registry_rows = adaptive_hparam.read_rows(registry_path, require_managed_identity=True)
+    round_one_registry = next(row for row in registry_rows if row["round"] == "1")
+    later_dir = workflow_dir / "adaptive" / "rounds" / "round_002"
+    later_registry = {**round_one_registry, "round": "2", "run_id": "run-002", "round_dir": str(later_dir)}
+    later_registry["version"] = f"{later_registry['version']}-later"
+    manifests.write_rows(registry_path, [*registry_rows, later_registry])
+
+    canonical_rows = adaptive_hparam.read_run_manifest(tmp_path)
+    round_one_row = next(row for row in canonical_rows if row["run_id"] == round_one_registry["run_id"])
+    later_row = {**round_one_row, "run_id": "run-002", "version": later_registry["version"], "status": "launch_failed"}
+    manifests.write_rows(tmp_path / "run_manifest.tsv", [*canonical_rows, later_row])
+
+    round_one_plan = json.loads((workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").read_text())
+    later_plan = json.loads(json.dumps(round_one_plan))
+    later_plan["runs"][0]["run_id"] = "run-002"
+    later_plan["runs"][0]["version"] = later_registry["version"]
+    read_plan = adaptive_hparam.artifacts.read_hparam_plan
+
+    def read_plan_with_later_round(path, *args, **kwargs):
+        if Path(path) == later_dir:
+            return later_plan
+        return read_plan(path, *args, **kwargs)
+
+    monkeypatch.setattr(adaptive_hparam.artifacts, "read_hparam_plan", read_plan_with_later_round)
+    later_event = {
+        "round": 2,
+        "request_id": f"sha256:{'2' * 64}",
+        "proposal_path": str(workflow_dir / "adaptive" / "proposal_submissions" / "later.json"),
+        "proposal_sha256": "3" * 64,
+        "suggestion": str(workflow_dir / "adaptive" / "suggestions" / "round_002.yaml"),
+        "suggestion_sha256": "4" * 64,
+    }
+    adaptive_hparam._write_experiment_event(tmp_path, "agent_proposal_accepted", later_event)
+    adaptive_hparam._write_experiment_event(
+        tmp_path,
+        "launch_round",
+        {"round": 2, "round_dir": str(later_dir)},
+    )
+    if write_completion:
+        adaptive_hparam._write_experiment_event(tmp_path, "agent_proposal_execute_completed", later_event)
+
+    with pytest.raises(ValueError, match=error):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+    assert launch_calls == 1
+
+
+def test_agent_proposal_execute_replay_requires_terminal_event_order(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    launch_calls = 0
+
+    def fake_launch(run_dir, *, dry_run=True):
+        nonlocal launch_calls
+        launch_calls += 1
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "launched"} for run in runs],
+        )
+        return Path(run_dir) / "launch_manifest.tsv"
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+    events_path = tmp_path / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    launch_index = next(
+        index for index, event in enumerate(events) if event.get("event_type") == "launch_round" and event["round"] == 1
+    )
+    completion_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.get("event_type") == "agent_proposal_execute_completed" and event["round"] == 1
+    )
+    events[launch_index], events[completion_index] = events[completion_index], events[launch_index]
+    events_path.write_text("".join(json.dumps(event, sort_keys=True) + "\n" for event in events))
+
+    with pytest.raises(ValueError, match="Agent proposal execute event order conflicts"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+    assert launch_calls == 1
+
+
 def test_agent_proposal_execute_replay_requires_complete_target_registry(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())

@@ -841,7 +841,8 @@ def _applied_agent_proposal(root: Path, workspace: Path, proposal_path: str | Pa
         raise ValueError("Proposal path does not match the bound input snapshot.")
     validated = adaptive_proposals.validate_proposal(proposal, proposal_input)
     target_round = validated["target_round"]
-    if target_round not in _committed_round_indexes(root):
+    committed_rounds = _committed_round_indexes(root)
+    if target_round not in committed_rounds:
         return None
 
     # A successful replay is proven from frozen artifacts because its live round binding is stale by design.
@@ -890,27 +891,18 @@ def _applied_agent_proposal(root: Path, workspace: Path, proposal_path: str | Pa
         "suggestion": str(suggestion_path),
         "suggestion_sha256": suggestion_sha256,
     }
-    if not _validate_event_history(
-        workspace,
-        "agent_proposal_accepted",
-        accepted_event,
-        identity_field="request_id",
-    ):
-        raise ValueError("Committed agent proposal lacks its acceptance event.")
-    if not _validate_event_history(
-        workspace,
-        "launch_round",
-        {"round": target_round, "round_dir": str(round_dir)},
-        identity_field="round",
-    ):
-        raise ValueError("Committed agent proposal lacks its launch event.")
-    if not _validate_event_history(
-        workspace,
-        "agent_proposal_execute_completed",
-        accepted_event,
-        identity_field="request_id",
-    ):
-        raise ValueError("Committed agent proposal lacks its successful completion event.")
+    events = read_experiment_events(workspace)
+    _validate_agent_proposal_execute_events(events, accepted_event, round_dir)
+    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    for later_round in sorted(round_index for round_index in committed_rounds if round_index > target_round):
+        later_dir = _round_dir(root, later_round)
+        later_plan = artifacts.read_hparam_plan(later_dir)
+        _validate_round_registry(root, later_round, later_plan, registry_rows)
+        later_event = _agent_proposal_accepted_event(events, later_round)
+        _validate_agent_proposal_execute_events(events, later_event, later_dir)
+        later_keys = {managed_run_key(row) for row in registry_rows if str(row.get("round") or "") == str(later_round)}
+        if any(canonical_by_key[key].get("status") == "launch_failed" for key in later_keys):
+            raise ValueError(f"Later committed agent proposal has canonical launch failures: round {later_round:03d}")
     return suggestion_path
 
 
@@ -1602,6 +1594,11 @@ def _adaptive_step(
                 agent_proposal_event,
                 identity_field="request_id",
             )
+            _validate_agent_proposal_execute_events(
+                read_experiment_events(workspace),
+                agent_proposal_event,
+                next_dir,
+            )
     elif budget_exhausted:
         _append_event(
             root,
@@ -2044,6 +2041,60 @@ def _validate_event_history(
     if len(related) != len(exact) or len(exact) > 1:
         raise ValueError(f"Experiment event history conflicts: {event_type}")
     return bool(exact)
+
+
+def _agent_proposal_accepted_event(events: list[dict[str, Any]], round_index: int) -> dict[str, Any]:
+    related = [
+        event
+        for event in events
+        if event.get("event_type") == "agent_proposal_accepted"
+        and type(event.get("round")) is int
+        and event["round"] == round_index
+    ]
+    fields = ("round", "request_id", "proposal_path", "proposal_sha256", "suggestion", "suggestion_sha256")
+    if len(related) != 1 or any(field not in related[0] for field in fields):
+        raise ValueError(f"Committed agent proposal round {round_index:03d} lacks one exact acceptance event.")
+    return {field: related[0][field] for field in fields}
+
+
+def _round_event_index(
+    events: list[dict[str, Any]],
+    event_type: str,
+    payload: dict[str, Any],
+) -> int | None:
+    related = [
+        (index, event)
+        for index, event in enumerate(events)
+        if event.get("event_type") == event_type
+        and type(event.get("round")) is int
+        and event["round"] == payload["round"]
+    ]
+    exact = [(index, event) for index, event in related if event_matches(event, event_type, payload)]
+    if len(related) != len(exact) or len(exact) > 1:
+        raise ValueError(f"Experiment event history conflicts: {event_type}")
+    return exact[0][0] if exact else None
+
+
+def _validate_agent_proposal_execute_events(
+    events: list[dict[str, Any]],
+    accepted_event: dict[str, Any],
+    round_dir: Path,
+) -> None:
+    accepted_index = _round_event_index(events, "agent_proposal_accepted", accepted_event)
+    if accepted_index is None:
+        raise ValueError("Committed agent proposal lacks its acceptance event.")
+    launch_index = _round_event_index(
+        events,
+        "launch_round",
+        {"round": accepted_event["round"], "round_dir": str(round_dir)},
+    )
+    if launch_index is None:
+        raise ValueError("Committed agent proposal lacks its launch event.")
+    completion_index = _round_event_index(events, "agent_proposal_execute_completed", accepted_event)
+    if completion_index is None:
+        raise ValueError("Committed agent proposal lacks its successful completion event.")
+    if not accepted_index < launch_index < completion_index:
+        raise ValueError("Agent proposal execute event order conflicts.")
 
 
 def _is_related_event(
