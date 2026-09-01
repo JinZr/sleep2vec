@@ -1614,10 +1614,18 @@ def _run_attempts(
             groups.append((pipeline_dir / "retry_schedulers" / row["job_id"], _planned_runs([row])))
 
         missing_pid_blocker = None
+        snapshot_runtime_commits: dict[tuple[str, str], str] = {}
         for owner_dir, runs in groups:
             owner_dir.mkdir(parents=True, exist_ok=True)
             snapshot_path = owner_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
             if snapshot_path.exists():
+                snapshot = read_json(snapshot_path)
+                if not isinstance(snapshot, dict):
+                    raise ValueError(f"Pipeline execution snapshot must be a mapping: {snapshot_path}")
+                snapshot_runtime_commit = str(snapshot.get("runtime_commit") or "")
+                if snapshot_runtime_commit and not is_full_git_object_id(snapshot_runtime_commit):
+                    raise ValueError(f"Pipeline execution snapshot has an invalid runtime commit: {snapshot_path}")
+                snapshot_runtime_commits.update({managed_run_key(run): snapshot_runtime_commit for run in runs})
                 canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
                 if any(
                     (canonical[managed_run_key(run)].get("status") or "planned")
@@ -1658,6 +1666,16 @@ def _run_attempts(
                 row["status"] = status
                 changed = True
             runtime_commit = str(run.get("runtime_commit") or "")
+            legacy_runtime_commit = str(row.get("runtime_commit") or "")
+            if not runtime_commit and legacy_runtime_commit:
+                if not is_full_git_object_id(legacy_runtime_commit):
+                    raise ValueError(f"Pipeline attempt has an invalid runtime commit: {row['job_id']}")
+                snapshot_runtime_commit = snapshot_runtime_commits.get(key, "")
+                if snapshot_runtime_commit and snapshot_runtime_commit != legacy_runtime_commit:
+                    raise ValueError(
+                        f"Pipeline attempt runtime commit differs from its execution snapshot: {row['job_id']}"
+                    )
+                runtime_commit = legacy_runtime_commit
             if row.get("runtime_commit") != runtime_commit:
                 row["runtime_commit"] = runtime_commit
                 changed = True

@@ -1435,13 +1435,29 @@ def test_run_attempts_waits_when_capacity_blocks_before_execution_snapshot(tmp_p
     assert not (pipeline_dir / "execution_snapshot.json").exists()
 
 
-def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_result(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(
+    ("snapshot_runtime_commit", "legacy_runtime_commit", "canonical_runtime_commit", "expected_runtime_commit"),
+    [
+        pytest.param("a" * 40, "", "", "", id="unknown-legacy-runtime"),
+        pytest.param("b" * 40, "b" * 40, "", "b" * 40, id="preserve-legacy-runtime"),
+        pytest.param("b" * 40, "b" * 40, "c" * 40, "c" * 40, id="canonical-runtime-wins"),
+        pytest.param("a" * 40, "b" * 40, "", None, id="reject-legacy-snapshot-mismatch"),
+    ],
+)
+def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_result(
+    tmp_path: Path,
+    monkeypatch,
+    snapshot_runtime_commit: str,
+    legacy_runtime_commit: str,
+    canonical_runtime_commit: str,
+    expected_runtime_commit: str | None,
+):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "external-v1"
     pipeline_dir.mkdir(parents=True)
     (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
     snapshot_path = pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
-    snapshot_path.write_text(json.dumps({"runtime_commit": "a" * 40}) + "\n")
+    snapshot_path.write_text(json.dumps({"runtime_commit": snapshot_runtime_commit}) + "\n")
     attempt = {
         "step_id": "external-evaluate",
         "run_id": "run-001",
@@ -1452,8 +1468,9 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
         "status": "completed",
         "verified": "false",
         "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
-        "runtime_commit": "",
+        "runtime_commit": legacy_runtime_commit,
     }
+    canonical_attempt = {**attempt, "runtime_commit": canonical_runtime_commit}
     write_rows(pipeline_dir / "jobs.tsv", [attempt])
     validations = []
     launches = []
@@ -1469,7 +1486,7 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
         "_planned_runs",
         lambda _rows: [{"step_id": "external-evaluate", "run_id": "run-001"}],
     )
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(attempt)])
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(canonical_attempt)])
     monkeypatch.setattr(
         experiment_pipeline.managed_scheduler,
         "validated_execution_snapshot",
@@ -1478,7 +1495,7 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
     monkeypatch.setattr(
         experiment_pipeline.managed_scheduler,
         "launch_managed_runs",
-        lambda *_args, **_kwargs: launches.append(True) or SimpleNamespace(committed_rows=[dict(attempt)]),
+        lambda *_args, **_kwargs: launches.append(True) or SimpleNamespace(committed_rows=[dict(canonical_attempt)]),
     )
     result_manifest = pipeline_dir / "result_manifest.json"
     monkeypatch.setattr(
@@ -1487,21 +1504,26 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
         lambda *_args: validations.append("result") or result_manifest,
     )
 
-    result = experiment_pipeline._run_attempts(
-        root,
-        pipeline_dir,
-        _spec(root),
-        {"age": {}},
-        [attempt],
-        poll_seconds=0,
-    )
+    if expected_runtime_commit is None:
+        with pytest.raises(ValueError, match="differs from its execution snapshot"):
+            experiment_pipeline._run_attempts(
+                root,
+                pipeline_dir,
+                _spec(root),
+                {"age": {}},
+                [attempt],
+                poll_seconds=0,
+            )
+        return
+
+    result = experiment_pipeline._run_attempts(root, pipeline_dir, _spec(root), {"age": {}}, [attempt], poll_seconds=0)
 
     persisted = experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")[0]
     assert result["status"] == "completed"
     assert launches == [True]
     assert validations == ["attempts", "result"]
     assert persisted["verified"] == "true"
-    assert persisted["runtime_commit"] == ""
+    assert persisted["runtime_commit"] == expected_runtime_commit
 
 
 def test_run_attempts_result_validation_failure_is_terminal_without_changing_canonical_status(
