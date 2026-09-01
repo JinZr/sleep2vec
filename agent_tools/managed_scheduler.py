@@ -1914,14 +1914,24 @@ def build_launch_command(
     return f"cd {_sh(workdir)} && {run_command}"
 
 
-def start_process(execution: dict[str, Any], command: str) -> str:
+def start_process(execution: dict[str, Any], command: str, *, runtime_lock_fd: int | None = None) -> str:
     remote = execution.get("target", "local") == "ssh"
+    if remote and runtime_lock_fd is not None:
+        raise ValueError("A local runtime lock descriptor cannot be passed to an SSH launch.")
+    env = os.environ.copy()
+    env.pop("AGENT_TOOLS_RUNTIME_LOCK_FD", None)
+    pass_fds: tuple[int, ...] = ()
+    if runtime_lock_fd is not None:
+        env["AGENT_TOOLS_RUNTIME_LOCK_FD"] = str(runtime_lock_fd)
+        pass_fds = (runtime_lock_fd,)
     try:
         result = subprocess.run(
             ["bash", "-lc", command],
             text=True,
             capture_output=True,
             timeout=LAUNCH_TIMEOUT_SECONDS if remote else None,
+            env=env,
+            pass_fds=pass_fds,
         )
     except subprocess.TimeoutExpired:
         if not remote:

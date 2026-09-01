@@ -9,7 +9,7 @@ from typing import Iterator
 
 
 @contextmanager
-def runtime_lock(workdir: str | Path) -> Iterator[None]:
+def runtime_lock(workdir: str | Path) -> Iterator[int]:
     checkout = Path(workdir).resolve()
     path = _checkout_root(checkout) / ".agent-tools-runtime.lock"
     flags = os.O_RDWR | os.O_CREAT
@@ -20,7 +20,7 @@ def runtime_lock(workdir: str | Path) -> Iterator[None]:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise RuntimeError(f"Runtime lock is not a regular file: {path}")
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        yield
+        yield descriptor
     finally:
         os.close(descriptor)
 

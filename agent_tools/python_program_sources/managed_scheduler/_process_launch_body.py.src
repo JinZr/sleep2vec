@@ -3,7 +3,15 @@ capture_runtime_commit = len(sys.argv) > 5 and bool(sys.argv[5])
 verifications = json.loads(sys.argv[6]) if len(sys.argv) > 6 else []
 if capture_runtime_commit:
     # Legacy internal launch callers omit the planned commit and keep their three-field PID receipt.
-    guard = runtime_guard(workdir)
+    inherited_lock = os.environ.pop("AGENT_TOOLS_RUNTIME_LOCK_FD", "")
+    if inherited_lock:
+        runtime_lock_descriptor = int(inherited_lock)
+        if runtime_lock_descriptor < 0:
+            raise ValueError("Inherited runtime lock descriptor must be non-negative")
+        os.fstat(runtime_lock_descriptor)
+        guard = nullcontext()
+    else:
+        guard = runtime_guard(workdir)
 else:
     guard = nullcontext()
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -177,6 +179,53 @@ def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_run
     assert not preset_runtime["payload"].exists()
 
 
+def test_preset_capability_probe_claim_and_start_share_runtime_lock(tmp_path, preset_runtime, monkeypatch):
+    plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
+    lock_path = Path(preset_runtime["execution"]["workdir"]) / ".agent-tools-runtime.lock"
+    events = []
+
+    def assert_runtime_locked():
+        descriptor = os.open(lock_path, os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(descriptor)
+
+    def probe(_execution, command):
+        assert_runtime_locked()
+        events.append("probe")
+        return subprocess.CompletedProcess(command, 0, "{}\n", "")
+
+    original_merge = experiments.merge_run_manifest
+
+    def merge(workspace, rows, **kwargs):
+        if rows[0]["status"] == "launched" and "claim" not in events:
+            assert_runtime_locked()
+            events.append("claim")
+        return original_merge(workspace, rows, **kwargs)
+
+    def start(_execution, _command, *, runtime_lock_fd):
+        assert os.fstat(runtime_lock_fd)
+        assert_runtime_locked()
+        events.append("start")
+        return "launched"
+
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", probe)
+    monkeypatch.setattr(experiments, "merge_run_manifest", merge)
+    monkeypatch.setattr(managed_scheduler, "start_process", start)
+
+    result = experiments.launch_preset_run(plan_dir, dry_run=False)
+
+    assert result.started_keys
+    assert events == ["probe", "claim", "start"]
+    descriptor = os.open(lock_path, os.O_RDWR)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(descriptor)
+
+
 @pytest.mark.parametrize("mutation_phase", ["claim", "start"])
 @pytest.mark.parametrize("artifact", ["script", "config"])
 def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
@@ -198,12 +247,12 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
             artifact_path.write_bytes(original_bytes + b"\n# changed after launch claim\n")
         return result
 
-    def start(execution, command):
+    def start(execution, command, **kwargs):
         assert read_run_manifest(preset_runtime["workspace"])[0]["command"] == command
         start_commands.append(command)
         if mutation_phase == "start":
             artifact_path.write_bytes(original_bytes + b"\n# changed immediately before start\n")
-        return original_start(execution, command)
+        return original_start(execution, command, **kwargs)
 
     monkeypatch.setattr(experiments, "merge_run_manifest", merge)
     monkeypatch.setattr(managed_scheduler, "start_process", start)
@@ -252,14 +301,14 @@ def test_preset_interrupted_attempt_is_not_relaunched(tmp_path, preset_runtime, 
     original_start = managed_scheduler.start_process
     attempts = []
 
-    def interrupt(execution, command):
+    def interrupt(execution, command, **kwargs):
         row = read_run_manifest(preset_runtime["workspace"])[0]
         assert row["status"] == "launched"
         assert row["command"] == command
         assert row["target"] == "local"
         attempts.append(command)
         if lost_receipt:
-            original_start(execution, command)
+            original_start(execution, command, **kwargs)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(managed_scheduler, "start_process", interrupt)
@@ -294,7 +343,9 @@ def test_preset_claim_write_failure_never_spawns(tmp_path, preset_runtime, monke
         raise OSError("claim persistence failed")
 
     monkeypatch.setattr(experiments, "merge_run_manifest", fail_claim)
-    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: pytest.fail("claim must finish first"))
+    monkeypatch.setattr(
+        managed_scheduler, "start_process", lambda *_args, **_kwargs: pytest.fail("claim must finish first")
+    )
     with pytest.raises(OSError, match="claim persistence failed"):
         experiments.launch_preset_run(plan_dir, dry_run=False)
     row = read_run_manifest(preset_runtime["workspace"])[0]
@@ -344,7 +395,7 @@ def test_preset_stop_planned_run_requires_reason_and_does_not_launch(tmp_path, p
 
 def _recorded_attempt(tmp_path, preset_runtime, monkeypatch):
     plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
-    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: "launched")
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args, **_kwargs: "launched")
     experiments.launch_preset_run(plan_dir, dry_run=False)
     row = read_run_manifest(preset_runtime["workspace"])[0]
     identity = {"pid": 12345, "process_group_id": 12345, "process_start_token": "test-start-token"}

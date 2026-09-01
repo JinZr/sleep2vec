@@ -129,6 +129,61 @@ def test_runtime_sync_rejects_ignored_importable_code(
         sync_runtime(runtime, execute=True)
 
 
+@pytest.mark.parametrize("host", [None, "unit-host"], ids=["local", "remote-bootstrap"])
+def test_runtime_sync_scans_importable_code_from_repository_root(
+    rolling_runtime: tuple[Path, Path, str], monkeypatch, host: str | None
+) -> None:
+    _source, runtime, _first = rolling_runtime
+    subdirectory = runtime / "nested"
+    subdirectory.mkdir()
+    (runtime / "root_module.py").write_text("VALUE = 1\n")
+    if host:
+        monkeypatch.setattr(
+            runtime_sync.transport,
+            "run_shell",
+            lambda _host, command, *, timeout: subprocess.run(
+                ["bash", "-lc", command], text=True, capture_output=True, timeout=timeout
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="untracked or ignored importable code"):
+        sync_runtime(subdirectory, host=host, remote_python=sys.executable, execute=True)
+
+
+@pytest.mark.parametrize("host", [None, "unit-host"], ids=["local", "remote-bootstrap"])
+@pytest.mark.parametrize("ignored", [False, True], ids=["untracked", "ignored"])
+def test_runtime_sync_rejects_symlinked_package_directories(
+    rolling_runtime: tuple[Path, Path, str], tmp_path: Path, monkeypatch, host: str | None, ignored: bool
+) -> None:
+    _source, runtime, _first = rolling_runtime
+    package = tmp_path / "outside-package"
+    package.mkdir()
+    (package / "__init__.py").write_text("VALUE = 1\n")
+    (runtime / "plugin").symlink_to(package, target_is_directory=True)
+    if ignored:
+        (runtime / ".git" / "info" / "exclude").write_text("plugin\n")
+    if host:
+        monkeypatch.setattr(
+            runtime_sync.transport,
+            "run_shell",
+            lambda _host, command, *, timeout: subprocess.run(
+                ["bash", "-lc", command], text=True, capture_output=True, timeout=timeout
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="untracked or ignored importable code"):
+        sync_runtime(runtime, host=host, remote_python=sys.executable, execute=True)
+
+
+def test_runtime_sync_allows_untracked_non_code_files(rolling_runtime: tuple[Path, Path, str]) -> None:
+    _source, runtime, first = rolling_runtime
+    (runtime / "notes.txt").write_text("research notes\n")
+
+    result = sync_runtime(runtime, execute=True)
+
+    assert result["after_commit"] == first
+
+
 @pytest.mark.parametrize("ignored", [False, True], ids=["untracked", "ignored"])
 def test_runtime_sync_rejects_sourceless_bytecode(rolling_runtime: tuple[Path, Path, str], ignored: bool) -> None:
     _source, runtime, _first = rolling_runtime

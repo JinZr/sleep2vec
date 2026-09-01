@@ -32,33 +32,54 @@ def commit(value, label):
     return value
 
 
-def importable_code(raw_path):
+def importable_code(raw_path, workdir):
     path = Path(raw_path)
+    candidate = Path(workdir) / path
     if path.suffix == ".pyc":
         return (
             "__pycache__" not in path.parts
             and path.stem.isidentifier()
             and all(part.isidentifier() for part in path.parts[:-1])
-            and not (Path(checkout) / path).with_suffix(".py").exists()
+            and not candidate.with_suffix(".py").exists()
         )
     module_name = path.name.split(".", 1)[0]
-    return module_name.isidentifier() and all(part.isidentifier() for part in path.parts[:-1])
+    return (
+        path.suffix in {".py", ".pyi", ".so"}
+        and module_name.isidentifier()
+        and all(part.isidentifier() for part in path.parts[:-1])
+    )
 
 
-def require_clean_runtime():
+def importable_package_symlink(raw_path, workdir):
+    path = Path(raw_path)
+    candidate = Path(workdir) / path
+    return (
+        candidate.is_symlink()
+        and candidate.is_dir()
+        and path.name.isidentifier()
+        and all(part.isidentifier() for part in path.parts[:-1])
+        and (candidate / "__init__.py").is_file()
+    )
+
+
+def require_clean_runtime(workdir):
     dirty = git("status", "--porcelain", "--untracked-files=no").stdout.strip()
     if dirty:
         raise RuntimeError("Runtime checkout has tracked worktree changes; refusing to update it.")
     for flags in (("--others", "--exclude-standard"), ("--others", "--ignored", "--exclude-standard")):
         paths = git("ls-files", *flags, "--", "*.py", "*.pyi", "*.pyc", "*.so").stdout.splitlines()
-        if any(importable_code(path) for path in paths):
+        if any(importable_code(path, workdir) for path in paths):
+            raise RuntimeError("Runtime checkout has untracked or ignored importable code; refusing to update it.")
+        directories = git("ls-files", *flags, "--directory", "--no-empty-directory").stdout.splitlines()
+        if any(importable_package_symlink(path, workdir) for path in directories):
             raise RuntimeError("Runtime checkout has untracked or ignored importable code; refusing to update it.")
 
 
 with runtime_guard(checkout):
     root = git("rev-parse", "--show-toplevel").stdout.strip()
+    checkout = root
     before = commit(git("rev-parse", "HEAD").stdout, "runtime HEAD")
-    require_clean_runtime()
+    require_clean_runtime(root)
 
     if execute:
         git("fetch", "--no-tags", "origin", "main", timeout=60)
@@ -89,7 +110,7 @@ with runtime_guard(checkout):
         after = commit(git("rev-parse", "HEAD").stdout, "updated runtime HEAD")
         if after != upstream:
             raise RuntimeError(f"Runtime update ended at {after}, expected {upstream}.")
-        require_clean_runtime()
+        require_clean_runtime(root)
         status = "fast_forwarded"
 
 print(

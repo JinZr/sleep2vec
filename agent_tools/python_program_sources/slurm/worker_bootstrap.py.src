@@ -2,8 +2,10 @@ from datetime import datetime, timezone
 import json
 import signal
 import socket
+import subprocess
 import sys
 import time
+import traceback
 
 
 workdir = sys.argv[1]
@@ -24,6 +26,7 @@ result_path = option("--result-path")
 submit_token = option("--submit-token")
 started_at = utc_now()
 received_signal = 0
+child = None
 
 
 class BootstrapSignal(BaseException):
@@ -34,8 +37,12 @@ def stop_before_checkout_import(signum, _frame):
     global received_signal
     if received_signal:
         return
-    received_signal = signum
-    raise BootstrapSignal
+    if child is None:
+        received_signal = signum
+        raise BootstrapSignal
+    if child.poll() is None:
+        received_signal = signum
+        child.send_signal(signum)
 
 
 def write_terminal(exit_code):
@@ -64,7 +71,10 @@ def write_terminal(exit_code):
             file_obj.write("\n")
             file_obj.flush()
             os.fsync(file_obj.fileno())
-        os.link(temporary, target)
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            pass
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -74,12 +84,11 @@ old_handlers = {signum: signal.signal(signum, stop_before_checkout_import) for s
 bootstrap_exit_code = None
 try:
     with runtime_guard(workdir) as runtime_lock_descriptor:
-        os.set_inheritable(runtime_lock_descriptor, True)
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, forwarded_signals)
-        os.environ["AGENT_TOOLS_BOOTSTRAP_SIGNALS_BLOCKED"] = "1"
         try:
-            os.execv(
-                sys.executable,
+            child_env = os.environ.copy()
+            child_env["AGENT_TOOLS_BOOTSTRAP_SIGNALS_BLOCKED"] = "1"
+            child = subprocess.Popen(
                 [
                     sys.executable,
                     "-m",
@@ -88,15 +97,25 @@ try:
                     "--runtime-lock-fd",
                     str(runtime_lock_descriptor),
                 ],
+                env=child_env,
+                pass_fds=(runtime_lock_descriptor,),
             )
         finally:
-            os.environ.pop("AGENT_TOOLS_BOOTSTRAP_SIGNALS_BLOCKED", None)
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    bootstrap_exit_code = child.wait()
+    if bootstrap_exit_code < 0:
+        bootstrap_exit_code = 128 + abs(bootstrap_exit_code)
+    if received_signal and bootstrap_exit_code == 0:
+        bootstrap_exit_code = 128 + received_signal
 except BootstrapSignal:
     bootstrap_exit_code = 128 + received_signal
-    write_terminal(bootstrap_exit_code)
+except BaseException:
+    traceback.print_exc()
+    bootstrap_exit_code = 128 + received_signal if received_signal else 2
 finally:
     for signum, handler in old_handlers.items():
         signal.signal(signum, handler)
 if bootstrap_exit_code is not None:
+    if bootstrap_exit_code != 0 and not Path(result_path).exists():
+        write_terminal(bootstrap_exit_code)
     raise SystemExit(bootstrap_exit_code)

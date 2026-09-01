@@ -30,7 +30,7 @@ def sync_runtime(
 def _sync_local(checkout: str, *, execute: bool) -> dict[str, Any]:
     root = _git(checkout, "rev-parse", "--show-toplevel").stdout.strip()
     before = _commit(_git(checkout, "rev-parse", "HEAD").stdout, "runtime HEAD")
-    _require_clean_runtime(checkout)
+    _require_clean_runtime(root)
 
     if execute:
         _git(checkout, "fetch", "--no-tags", "origin", "main", timeout=60)
@@ -62,7 +62,7 @@ def _sync_local(checkout: str, *, execute: bool) -> dict[str, Any]:
         after = _commit(_git(checkout, "rev-parse", "HEAD").stdout, "updated runtime HEAD")
         if after != upstream:
             raise RuntimeError(f"Runtime update ended at {after}, expected {upstream}.")
-        _require_clean_runtime(checkout)
+        _require_clean_runtime(root)
         status = "fast_forwarded"
 
     return {
@@ -135,19 +135,39 @@ def _require_clean_runtime(workdir: str) -> None:
         paths = _git(workdir, *args).stdout.splitlines()
         if any(_is_importable_code(path, workdir) for path in paths):
             raise RuntimeError("Runtime checkout has untracked or ignored importable code; refusing to update it.")
+        directories = _git(workdir, "ls-files", *flags, "--directory", "--no-empty-directory").stdout.splitlines()
+        if any(_is_importable_package_symlink(path, workdir) for path in directories):
+            raise RuntimeError("Runtime checkout has untracked or ignored importable code; refusing to update it.")
 
 
 def _is_importable_code(raw_path: str, workdir: str) -> bool:
     path = Path(raw_path)
+    candidate = Path(workdir) / path
     if path.suffix == ".pyc":
         return (
             "__pycache__" not in path.parts
             and path.stem.isidentifier()
             and all(part.isidentifier() for part in path.parts[:-1])
-            and not (Path(workdir) / path).with_suffix(".py").exists()
+            and not candidate.with_suffix(".py").exists()
         )
     module_name = path.name.split(".", 1)[0]
-    return module_name.isidentifier() and all(part.isidentifier() for part in path.parts[:-1])
+    return (
+        path.suffix in {".py", ".pyi", ".so"}
+        and module_name.isidentifier()
+        and all(part.isidentifier() for part in path.parts[:-1])
+    )
+
+
+def _is_importable_package_symlink(raw_path: str, workdir: str) -> bool:
+    path = Path(raw_path)
+    candidate = Path(workdir) / path
+    return (
+        candidate.is_symlink()
+        and candidate.is_dir()
+        and path.name.isidentifier()
+        and all(part.isidentifier() for part in path.parts[:-1])
+        and (candidate / "__init__.py").is_file()
+    )
 
 
 def _commit(value: str, label: str) -> str:

@@ -1100,6 +1100,51 @@ def test_slurm_worker_bootstrap_holds_runtime_lock_before_checkout_import(tmp_pa
             os.close(contender)
 
 
+def test_slurm_worker_bootstrap_writes_terminal_sidecar_when_checkout_import_fails(tmp_path: Path):
+    runtime = tmp_path / "runtime"
+    package = runtime / "agent_tools"
+    (runtime / ".git").mkdir(parents=True)
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "slurm.py").write_text("raise ImportError('broken rolling checkout')\n")
+    result_path = tmp_path / "slurm_terminal.json"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONPATH": str(runtime),
+            "SLURM_JOB_ID": "3880",
+            "SLURM_CLUSTER_NAME": "wuji-h20",
+        }
+    )
+
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("slurm.worker_bootstrap"),
+            str(runtime),
+            "run-frozen-job",
+            "--result-path",
+            str(result_path),
+            "--submit-token",
+            "agent-tools-unit",
+        ],
+        env=env,
+        cwd=runtime,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert process.returncode != 0
+    terminal = json.loads(result_path.read_text())
+    assert slurm.sidecar_identity(terminal, "agent-tools-unit", expected_job_id="3880") == slurm.JobIdentity(
+        "3880", "wuji-h20"
+    )
+    assert slurm.terminal_exit_code(terminal) == process.returncode
+    assert terminal["runtime_commit"] == ""
+
+
 @pytest.mark.parametrize("signum", [slurm.signal.SIGTERM, slurm.signal.SIGINT])
 def test_slurm_worker_bootstrap_writes_terminal_sidecar_when_signaled_waiting_for_lock(tmp_path: Path, signum: int):
     runtime = tmp_path / "runtime"
