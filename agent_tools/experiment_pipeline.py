@@ -1667,15 +1667,22 @@ def _run_attempts(
                 changed = True
             runtime_commit = str(run.get("runtime_commit") or "")
             legacy_runtime_commit = str(row.get("runtime_commit") or "")
-            if not runtime_commit and legacy_runtime_commit:
-                if not is_full_git_object_id(legacy_runtime_commit):
-                    raise ValueError(f"Pipeline attempt has an invalid runtime commit: {row['job_id']}")
+            if not runtime_commit:
                 snapshot_runtime_commit = snapshot_runtime_commits.get(key, "")
-                if snapshot_runtime_commit and snapshot_runtime_commit != legacy_runtime_commit:
-                    raise ValueError(
-                        f"Pipeline attempt runtime commit differs from its execution snapshot: {row['job_id']}"
-                    )
-                runtime_commit = legacy_runtime_commit
+                if legacy_runtime_commit:
+                    if not is_full_git_object_id(legacy_runtime_commit):
+                        raise ValueError(f"Pipeline attempt has an invalid runtime commit: {row['job_id']}")
+                    if snapshot_runtime_commit and snapshot_runtime_commit != legacy_runtime_commit:
+                        raise ValueError(
+                            f"Pipeline attempt runtime commit differs from its execution snapshot: {row['job_id']}"
+                        )
+                    runtime_commit = legacy_runtime_commit
+                elif (
+                    snapshot_runtime_commit
+                    and status not in managed_scheduler.LAUNCHABLE_STATUSES
+                    and run.get("planned_runtime_commit") in (None, "")
+                ):
+                    runtime_commit = snapshot_runtime_commit
             if row.get("runtime_commit") != runtime_commit:
                 row["runtime_commit"] = runtime_commit
                 changed = True

@@ -1438,7 +1438,7 @@ def test_run_attempts_waits_when_capacity_blocks_before_execution_snapshot(tmp_p
 @pytest.mark.parametrize(
     ("snapshot_runtime_commit", "legacy_runtime_commit", "canonical_runtime_commit", "expected_runtime_commit"),
     [
-        pytest.param("a" * 40, "", "", "", id="unknown-legacy-runtime"),
+        pytest.param("a" * 40, "", "", "a" * 40, id="recover-legacy-snapshot-runtime"),
         pytest.param("b" * 40, "b" * 40, "", "b" * 40, id="preserve-legacy-runtime"),
         pytest.param("b" * 40, "b" * 40, "c" * 40, "c" * 40, id="canonical-runtime-wins"),
         pytest.param("a" * 40, "b" * 40, "", None, id="reject-legacy-snapshot-mismatch"),
@@ -1523,6 +1523,85 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
     assert launches == [True]
     assert validations == ["attempts", "result"]
     assert persisted["verified"] == "true"
+    assert persisted["runtime_commit"] == expected_runtime_commit
+
+
+@pytest.mark.parametrize(
+    ("planned_runtime_commit", "expected_runtime_commit"),
+    [
+        pytest.param("", "b" * 40, id="legacy-fixed-runtime"),
+        pytest.param("a" * 40, "", id="rolling-runtime"),
+    ],
+)
+def test_run_attempts_restores_snapshot_only_for_legacy_launch_before_jobs_projection(
+    tmp_path: Path,
+    monkeypatch,
+    planned_runtime_commit: str,
+    expected_runtime_commit: str,
+):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
+    runtime_commit = "b" * 40
+    (pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME).write_text(
+        json.dumps({"runtime_commit": runtime_commit}) + "\n"
+    )
+    attempt = {
+        "step_id": "external-evaluate",
+        "run_id": "run-001",
+        "pipeline_id": "external-v1",
+        "job_id": "age-hsp-i2-psg",
+        "variant": "sleep2vec2",
+        "attempt": 1,
+        "status": "pending",
+        "verified": "false",
+        "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
+        "runtime_commit": "",
+    }
+    canonical_attempt = {
+        **attempt,
+        "status": "launched",
+        "planned_runtime_commit": planned_runtime_commit,
+    }
+    write_rows(pipeline_dir / "jobs.tsv", [attempt])
+
+    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
+    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_planned_runs",
+        lambda _rows: [{"step_id": "external-evaluate", "run_id": "run-001"}],
+    )
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(canonical_attempt)])
+    monkeypatch.setattr(
+        experiment_pipeline.managed_scheduler,
+        "validated_execution_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("launched legacy attempts must not probe the live runtime"),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline.managed_scheduler,
+        "launch_managed_runs",
+        lambda *_args, **_kwargs: SimpleNamespace(committed_rows=[dict(canonical_attempt)]),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline.managed_scheduler,
+        "capacity_state",
+        lambda *_args, **_kwargs: SimpleNamespace(external_missing_pid=[("external-evaluate", "run-001")]),
+    )
+
+    result = experiment_pipeline._run_attempts(
+        root,
+        pipeline_dir,
+        _spec(root),
+        {"age": {}},
+        [attempt],
+        poll_seconds=0,
+    )
+
+    persisted = experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")[0]
+    assert result["status"] == "blocked"
+    assert persisted["status"] == "launched"
     assert persisted["runtime_commit"] == expected_runtime_commit
 
 
