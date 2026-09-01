@@ -45,6 +45,8 @@ ACTIVE_STATUSES = frozenset(
 )
 LAUNCH_TIMEOUT_SECONDS = 60
 EXECUTION_SNAPSHOT_NAME = "execution_snapshot.json"
+DIRECT_LAUNCH_CAPABILITIES = ("commit_run_start", "runtime_lock")
+SLURM_LAUNCH_CAPABILITIES = (*DIRECT_LAUNCH_CAPABILITIES, "slurm_runtime_lock_fd")
 
 
 class MissingPidCapacityError(RuntimeError):
@@ -1694,6 +1696,7 @@ def inspect_execution_target(
         raise ValueError(f"A {plan_label} plan must use exactly one target Python executable.")
     module = next(iter(modules))
     python_command = next(iter(python_commands))
+    backend = _managed_scheduler_type(execution, runs)
     expected_python = execution.get("python")
     planned_commit = execution.get("runtime_commit")
     if expected_python in (None, "") or planned_commit in (None, ""):
@@ -1705,7 +1708,15 @@ def inspect_execution_target(
     run_command = command_runner or run_execution_command
     identity_result = run_command(
         execution,
-        [python_command, "-c", python_programs.source("managed_scheduler.runtime_identity"), module],
+        [
+            python_command,
+            "-c",
+            python_programs.source("managed_scheduler.runtime_identity"),
+            module,
+            "{}",
+            "[]",
+            json.dumps(SLURM_LAUNCH_CAPABILITIES if backend == "slurm" else DIRECT_LAUNCH_CAPABILITIES),
+        ],
     )
     if identity_result.returncode != 0:
         detail = (
@@ -1862,6 +1873,7 @@ def build_launch_command(
                         execution_snapshot["module"],
                         json.dumps(execution_snapshot, sort_keys=True),
                         json.dumps(artifacts, sort_keys=True),
+                        json.dumps(DIRECT_LAUNCH_CAPABILITIES),
                     ),
                     (
                         execution["python"],

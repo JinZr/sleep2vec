@@ -217,10 +217,13 @@ warned rather than blocked. `runtime-sync` itself still requires a clean tree
 without untracked or ignored importable code. Hparam, ordinary Slurm, and
 pipeline managed-attempt launches retain their owner-specific managed-scheduler
 gates. Managed direct launch checks stable Python/route/module origin, live argv,
-clean code, and artifact hashes. Slurm manager preflight uses that contract, but
-the allocation recheck requires the current module to remain inside the current
-repository with the same module name rather than matching the frozen origin
-path. Direct preset launch retains its frozen Python and
+clean code, artifact hashes, and the current managed launch protocol before a
+run is claimed. Slurm requires the same lifecycle/runtime-lock capabilities plus
+runtime-lock descriptor handoff before submission. Commit drift remains allowed,
+but a checkout predating those capabilities fails preflight. The allocation
+recheck requires the current module to remain inside the current repository with
+the same module name rather than matching the frozen origin path. Direct preset
+launch retains its frozen Python and
 script/config/input-hash gates, but does not claim the managed-scheduler
 module-origin or live-argv checks. Preserve current monitoring obligations and
 do not infer a retry from a lost receipt or uncertain submission.

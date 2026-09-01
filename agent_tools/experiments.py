@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from . import (
     experiment_io as exp_io,
     experiment_tracking as tracking,
     managed_scheduler,
+    python_programs,
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
@@ -131,8 +133,19 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
             return managed_scheduler.LaunchResult(rows, [preview], frozenset(), {}, {})
         if Path(identity["pid_path"]).exists():
             raise ValueError("Preset PID receipt already exists; refusing another launch attempt.")
-        # Commit drift is allowed, but a missing frozen interpreter is still a deterministic pre-claim failure.
-        probe = managed_scheduler.run_execution_command(execution, [execution["python"], "-c", "import sys"])
+        # Commit drift is allowed, but the current launch protocol must be present before this run is claimed.
+        probe = managed_scheduler.run_execution_command(
+            execution,
+            [
+                execution["python"],
+                "-c",
+                python_programs.source("managed_scheduler.runtime_identity"),
+                "agent_tools.experiment_workspace",
+                "{}",
+                "[]",
+                json.dumps(managed_scheduler.DIRECT_LAUNCH_CAPABILITIES),
+            ],
+        )
         if probe.returncode != 0:
             detail = probe.stderr.strip() or probe.stdout.strip() or f"exit code {probe.returncode}"
             raise RuntimeError(f"Preset runtime preflight failed: {detail}")

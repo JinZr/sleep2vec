@@ -119,11 +119,19 @@ def test_preset_detached_worker_commits_terminal_after_launcher_exits(
     assert status["runs"][0]["status"] == row["status"]
 
 
-@pytest.mark.parametrize("failure", ["missing_python", "script_hash", "config_hash"])
+@pytest.mark.parametrize("failure", ["missing_python", "missing_protocol", "script_hash", "config_hash"])
 def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_runtime, monkeypatch, failure):
     if failure == "missing_python":
         preset_runtime["execution"]["python"] = str(tmp_path / "missing-python")
     plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
+    if failure == "missing_protocol":
+        monkeypatch.setattr(
+            managed_scheduler,
+            "run_execution_command",
+            lambda _execution, command: subprocess.CompletedProcess(
+                command, 2, "", "Target runtime lacks managed launch capabilities"
+            ),
+        )
     if failure.endswith("_hash"):
         Path(plan["runs"][0][failure.removesuffix("_hash")]).write_text("changed bytes\n")
     before = read_run_manifest(preset_runtime["workspace"])

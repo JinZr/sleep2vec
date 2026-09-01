@@ -227,6 +227,8 @@ For command choice, use the [agent contract router](../agent_contracts/README.md
    baseline provenance while each new run records the checkout commit seen at start.
 4. Execute through [launch and queue](../agent_contracts/task_recipe.md#launch-and-queue),
    with [snapshot revalidation](../agent_contracts/task_recipe.md#execution-snapshot-and-launch-revalidation).
+   A rolling checkout may use a newer commit, but it must expose the current managed launch protocol before a direct
+   claim or Slurm submission.
    Other ordinary routes use the
    [non-hparam runtime contract](../agent_contracts/task_recipe.md#non-hparam-runtime-identity);
    `preset-launch` / `preset-stop` use

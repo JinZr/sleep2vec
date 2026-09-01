@@ -1126,8 +1126,13 @@ def test_execution_probe_allows_untracked_experiment_artifacts(tmp_path: Path):
         "    parser.add_argument('--value', choices=['ok'], required=True)\n"
         "    parser.parse_args()\n"
     )
+    agent_tools = repo / "agent_tools"
+    agent_tools.mkdir()
+    (agent_tools / "__init__.py").write_text("")
+    (agent_tools / "experiment_workspace.py").write_text("def commit_run_start(*args, **kwargs):\n    pass\n")
+    (agent_tools / "runtime_lock.py").write_text("def runtime_lock(*args, **kwargs):\n    pass\n")
     (repo / ".gitignore").write_text("*.log\n.codex-tmp/\n")
-    subprocess.run(["git", "add", "runtime_cli.py", ".gitignore"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "runtime_cli.py", "agent_tools", ".gitignore"], cwd=repo, check=True)
     subprocess.run(
         ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"],
         cwd=repo,
@@ -1223,6 +1228,28 @@ def test_execution_probe_rejects_runtime_module_outside_verified_repository(tmp_
             {"workdir": str(repo), "python": sys.executable, "runtime_commit": commit},
             [{"run_id": "run-000", "script": str(script), "command": command}],
         )
+
+
+def test_hparam_launch_rejects_missing_runtime_protocol_before_managed_writes(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
+    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: pytest.fail("must not start"))
+
+    def reject_protocol(_execution, command):
+        assert command[2] == python_programs.source("managed_scheduler.runtime_identity")
+        assert json.loads(command[-1]) == list(managed_scheduler.DIRECT_LAUNCH_CAPABILITIES)
+        return subprocess.CompletedProcess(command, 2, "", "Target runtime lacks managed launch capabilities")
+
+    monkeypatch.setattr(hparam_runtime, "_run_execution_command", reject_protocol)
+
+    with pytest.raises(RuntimeError, match="lacks managed launch capabilities"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
+    assert not (plan_dir / "launch_manifest.tsv").exists()
+    assert not (plan_dir / "run_status.tsv").exists()
 
 
 def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(tmp_path: Path, monkeypatch):

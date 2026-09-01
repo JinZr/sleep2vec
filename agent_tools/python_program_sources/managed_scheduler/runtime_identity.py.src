@@ -1,7 +1,9 @@
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import hashlib
+import importlib
 import importlib.util
+import inspect
 import json
 from pathlib import Path
 import socket
@@ -11,6 +13,7 @@ import sys
 module = sys.argv[1]
 expected = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
 artifacts = json.loads(sys.argv[3]) if len(sys.argv) > 3 else []
+required_capabilities = json.loads(sys.argv[4]) if len(sys.argv) > 4 else []
 git_commands = [
     ["git", "rev-parse", "HEAD"],
     ["git", "rev-parse", "--show-toplevel"],
@@ -66,6 +69,42 @@ if importable_code(untracked_code.stdout) or importable_code(ignored_code.stdout
         file=sys.stderr,
     )
     raise SystemExit(2)
+if (
+    not isinstance(required_capabilities, list)
+    or len(required_capabilities) != len(set(required_capabilities))
+    or any(not isinstance(capability, str) for capability in required_capabilities)
+):
+    print("Target runtime capability request is invalid.", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def runtime_module(name):
+    try:
+        owner = importlib.import_module(name)
+        origin = Path(owner.__file__).resolve()
+        origin.relative_to(runtime_repo_root)
+        return owner
+    except (AttributeError, ImportError, TypeError, ValueError):
+        return None
+
+
+def has_capability(capability):
+    try:
+        if capability == "commit_run_start":
+            owner = runtime_module("agent_tools.experiment_workspace")
+            return callable(getattr(owner, "commit_run_start", None))
+        if capability == "runtime_lock":
+            owner = runtime_module("agent_tools.runtime_lock")
+            return callable(getattr(owner, "runtime_lock", None))
+        if capability == "slurm_runtime_lock_fd":
+            owner = runtime_module("agent_tools.slurm")
+            worker = getattr(owner, "run_frozen_job", None)
+            return callable(worker) and "runtime_lock_fd" in inspect.signature(worker).parameters
+    except (TypeError, ValueError):
+        return False
+    return False
+
+
 spec = importlib.util.find_spec(module)
 origin = Path(spec.origin).resolve() if spec is not None and spec.origin else None
 if origin is None:
@@ -75,6 +114,13 @@ try:
     origin.relative_to(runtime_repo_root)
 except ValueError:
     print(f"Target runtime module is outside the verified repository: {origin}", file=sys.stderr)
+    raise SystemExit(2)
+missing_capabilities = [capability for capability in required_capabilities if not has_capability(capability)]
+if missing_capabilities:
+    print(
+        "Target runtime lacks managed launch capabilities: " + ", ".join(missing_capabilities),
+        file=sys.stderr,
+    )
     raise SystemExit(2)
 payload = {
     "python": sys.executable,

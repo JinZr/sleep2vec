@@ -16,7 +16,17 @@ def run_execution_preflight_fixture(execution: dict, command: list[str]) -> subp
     if flag != "-c":
         raise AssertionError(f"Unexpected execution preflight command: {command}")
     if script == python_programs.source("managed_scheduler.runtime_identity"):
-        (module,) = arguments
+        module = arguments[0]
+        if len(arguments) > 1:
+            if len(arguments) != 4:
+                raise AssertionError(f"Unexpected runtime identity arguments: {arguments}")
+            expected, artifacts, capabilities = map(json.loads, arguments[1:])
+            assert expected == {}
+            assert artifacts == []
+            assert capabilities in [
+                ["commit_run_start", "runtime_lock"],
+                ["commit_run_start", "runtime_lock", "slurm_runtime_lock_fd"],
+            ]
         repo_root = str(execution.get("workdir") or Path(__file__).resolve().parents[1])
         payload = {
             "python": python_command,
