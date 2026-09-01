@@ -9,6 +9,9 @@ from . import python_programs, transport
 from .models import is_full_git_object_id
 from .runtime_lock import runtime_lock
 
+# The embedded execute path can spend up to 450 seconds in its bounded Git steps.
+REMOTE_SYNC_TIMEOUT_SECONDS = 600
+
 
 def sync_runtime(
     workdir: str | Path,
@@ -77,7 +80,7 @@ def _sync_remote(workdir: str, host: str, *, remote_python: str, execute: bool) 
     # The target checkout may predate runtime-sync, so bootstrap it with the manager's self-contained program.
     argv = [remote_python, "-c", python_programs.source("runtime_sync.sync"), workdir, "1" if execute else "0"]
     command = " ".join(transport.sh(part) for part in argv)
-    result = transport.run_shell(host, command, timeout=120)
+    result = transport.run_shell(host, command, timeout=REMOTE_SYNC_TIMEOUT_SECONDS)
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"Remote runtime sync failed on {host}: {detail}")

@@ -453,7 +453,7 @@ def test_remote_runtime_sync_quotes_the_checkout_and_selected_python(monkeypatch
         "1" if execute else "0",
     ]
     expected = " ".join(transport.sh(part) for part in argv)
-    assert calls == [("baichuan3", expected, 120)]
+    assert calls == [("baichuan3", expected, runtime_sync.REMOTE_SYNC_TIMEOUT_SECONDS)]
     assert result == {**payload, "host": "baichuan3"}
 
 
@@ -611,7 +611,7 @@ def test_remote_runtime_sync_bootstraps_checkout_without_agent_tools(
 
     assert len(calls) == 1
     assert calls[0][0] == "unit-host"
-    assert calls[0][2] == 120
+    assert calls[0][2] == runtime_sync.REMOTE_SYNC_TIMEOUT_SECONDS
     assert result["status"] == "fast_forwarded"
     assert result["host"] == "unit-host"
     assert result["before_commit"] == first
