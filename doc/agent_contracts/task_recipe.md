@@ -820,12 +820,15 @@ offset one another without changing the effective snapshot, the candidate is
 rebuilt and preflighted from that refreshed pair.
 
 Execute copies validated source-config bytes to the next round's
-`source_config.yaml` and materializes from the validated in-memory proposal; it
-does not re-read the mutable config or suggestion. Validation resolves the
-specific issued snapshot rather than `_latest_digest`, so later digest refreshes
-do not invalidate otherwise unchanged evidence. Failed uncommitted launch
-attempts are never reused; a later request may bind the same terminal source
-round to a higher fresh target round.
+`source_config.yaml` and initially materializes from the validated in-memory
+proposal without re-reading the mutable config. Once an accepted suggestion is
+published, its exact candidate bytes remain authoritative while an unregistered
+round is recovered, even if the mutable source runtime commit advances. Recovery
+rebuilds and compares every other candidate field before reusing that commit.
+Validation resolves the specific issued snapshot rather than `_latest_digest`,
+so later digest refreshes do not invalidate otherwise unchanged evidence. Failed
+uncommitted launch attempts are never reused; a later request may bind the same
+terminal source round to a higher fresh target round.
 
 A proposal changes only the search space and submits exactly one of:
 

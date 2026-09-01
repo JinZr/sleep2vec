@@ -50,7 +50,7 @@ from .experiment_workspace import (
 )
 from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, stop_hparam_run
 from .manifests import read_json, read_rows, utc_now, validate_managed_header, write_rows, write_text
-from .models import REPO_ROOT, resolve_repo_path
+from .models import REPO_ROOT, is_full_git_object_id, resolve_repo_path
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 from .recipes import load_recipe_with_base, recipe_name
 
@@ -1228,13 +1228,52 @@ def _adaptive_step(
         bound_config_bytes = _bound_source_config_bytes(recipe, bound_config_sha256)
         bound_config_path = next_dir / "source_config.yaml"
         candidate_payload.setdefault("inputs", {})["config"] = str(bound_config_path)
-        round_recipe_payload = candidate_payload
         if file_sha256(proposal_file) != proposal_sha256 or file_sha256(input_path) != input_sha256:
             raise ValueError("Agent proposal submission or input snapshot changed during validation.")
         accepted_path = root / "adaptive" / "proposals" / f"round_{next_round:03d}.json"
         suggestion_dir = root / "adaptive" / "suggestions"
         suggestion = suggestion_dir / f"round_{next_round:03d}.yaml"
         rationale_path = suggestion_dir / f"round_{next_round:03d}.md"
+        if os.path.lexists(suggestion):
+            try:
+                published = exp_io.read_managed_files_at(workspace, [suggestion], allow_invalid_utf8=True)[
+                    str(suggestion)
+                ]
+                published_payload = yaml.safe_load(published["text"])
+            except (ValueError, yaml.YAMLError) as exc:
+                raise ValueError(f"Existing adaptive suggestion is invalid: {suggestion}") from exc
+            published_execution = published_payload.get("execution") if isinstance(published_payload, dict) else None
+            published_runtime_commit = (
+                published_execution.get("runtime_commit") if isinstance(published_execution, dict) else None
+            )
+            if not is_full_git_object_id(published_runtime_commit):
+                raise ValueError(f"Existing adaptive suggestion has an invalid runtime commit: {suggestion}")
+            recovered_payload = copy.deepcopy(candidate_payload)
+            recovered_execution = recovered_payload.get("execution")
+            if not isinstance(recovered_execution, dict):
+                raise ValueError("Agent proposal candidate lacks execution identity.")
+            recovered_execution["runtime_commit"] = published_runtime_commit
+            recovered_bytes = yaml.safe_dump(recovered_payload, sort_keys=False).encode()
+            if (
+                published_payload != recovered_payload
+                or published["sha256"] != hashlib.sha256(recovered_bytes).hexdigest()
+            ):
+                raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {suggestion}")
+            candidate_payload = recovered_payload
+            with TemporaryDirectory(prefix="agent-tools-agent-proposal-") as temp_dir:
+                candidate_path = Path(temp_dir) / "suggested.yaml"
+                candidate_path.write_bytes(recovered_bytes)
+                next_recipe, _, candidate_preflight = preflight_plan(
+                    recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
+                )
+            if candidate_preflight.exit_code != 0:
+                details = "; ".join(
+                    f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues()
+                )
+                raise RuntimeError(
+                    f"Published agent suggestion failed preflight with exit code {candidate_preflight.exit_code}: {details}"
+                )
+        round_recipe_payload = candidate_payload
         exp_io.validate_managed_output_paths(
             workspace,
             [
