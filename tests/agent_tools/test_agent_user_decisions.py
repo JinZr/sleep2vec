@@ -42,6 +42,37 @@ def test_user_decision_yaml_resolves_missing_label_name(tmp_path: Path):
     assert "Status: PASS" in result.stdout
 
 
+def test_user_decision_file_is_reused_unchanged_by_doctor_and_fresh_plan(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path, include_label=False)
+    decisions = _write_decisions(tmp_path, {"label_name": {"value": "ahi", "source": "explicit_user"}})
+    decision_bytes = decisions.read_bytes()
+
+    doctor = _run(
+        "doctor",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(tmp_path / "doctor"),
+    )
+    plan_dir = tmp_path / "plans" / "first"
+    plan = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(plan_dir),
+    )
+
+    assert doctor.returncode == 0, doctor.stdout
+    assert plan.returncode == 0, plan.stdout
+    assert (plan_dir / "run.sh").is_file()
+    assert decisions.read_bytes() == decision_bytes
+
+
 def test_user_decision_yaml_resolves_external_test_locked(tmp_path: Path):
     base = write_finetune_recipe(tmp_path)
     recipe = write_yaml(

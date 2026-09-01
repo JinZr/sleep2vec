@@ -27,6 +27,21 @@ outputs, or registration preflight failures. `context` remains diagnostic-only
 and never emits the file. `questions.json`, `questions.md`, and
 `plan.blocked.md` remain explanatory views rather than decision inputs.
 
+## Cross-stage reuse
+
+One authorized decision file may be passed unchanged to later `doctor` calls
+and to a fresh `plan` output directory. Each consumer revalidates the entries
+against the current task, recipe and consultation policy; reuse never bypasses
+validation or permits an occupied plan directory. The resolved plan artifacts
+then carry those decisions into launch, monitoring and recovery without a
+second approval format.
+
+If later validation exposes another decision, preserve the concrete
+`explicit_user` entries and ask only for the new `ASK_USER` delta. A changed
+value, incompatible task or expanded scientific scope requires renewed user
+intent. A decision file records that intent, but does not by itself authorize
+publication, launch or final-test access.
+
 Concrete values with a task-owned canonical field are materialized into the
 effective recipe's existing `inputs`, `evaluation_policy`, `preset`, `search`,
 or artifact fields before config inspection and consultation are rerun.
