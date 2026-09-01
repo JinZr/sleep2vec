@@ -895,13 +895,14 @@ def test_verified_launch_rechecks_snapshot_and_artifacts_immediately_before_proc
     )
 
 
-def test_direct_launch_rejects_authored_runtime_lock_descriptor(tmp_path: Path):
-    with pytest.raises(ValueError, match="AGENT_TOOLS_RUNTIME_LOCK_FD is reserved"):
+@pytest.mark.parametrize("name", ["AGENT_TOOLS_RUNTIME_LOCK_FD", "AGENT_TOOLS_LIFECYCLE_READY_FD"])
+def test_direct_launch_rejects_authored_runtime_lock_descriptor(tmp_path: Path, name: str):
+    with pytest.raises(ValueError, match=rf"{name} is reserved"):
         managed_scheduler.build_launch_command(
             {
                 "workdir": str(tmp_path),
                 "python": sys.executable,
-                "env": {"AGENT_TOOLS_RUNTIME_LOCK_FD": "1"},
+                "env": {name: "1"},
             },
             tmp_path / "launch.sh",
             tmp_path / "stdout.log",

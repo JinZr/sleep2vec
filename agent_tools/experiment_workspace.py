@@ -1304,6 +1304,7 @@ def commit_run_start(
 ) -> list[dict[str, Any]]:
     root = Path(root)
     lock_path = root / "run_manifest.tsv.lock"
+    exp_io.validate_managed_output_paths(root, [lock_path])
     with exp_io.blocking_file_lock(lock_path):
         rows = read_run_manifest(root)
         current = next((row for row in rows if managed_run_key(row) == (step_id, run_id)), None)

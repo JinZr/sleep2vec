@@ -162,6 +162,31 @@ def test_future_bad_terminal_does_not_block_current_allocation(tmp_path, monkeyp
     ]
 
 
+def test_future_malformed_runtime_commit_does_not_block_current_allocation(tmp_path, monkeypatch, reads):
+    rows = _bound_rows(tmp_path)
+    _write_sidecar(rows[0], "allocation_identity_path")
+    _write_sidecar(rows[1])
+    payload = json.loads(Path(rows[1]["scheduler_result_path"]).read_text())
+    payload["runtime_commit"] = "short"
+    Path(rows[1]["scheduler_result_path"]).write_text(json.dumps(payload))
+    Path(rows[1]["allocation_identity_path"]).symlink_to(tmp_path / "forbidden")
+    calls = _stub_queue(monkeypatch, rows)
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
+
+    assert (
+        managed_scheduler.observe_slurm_run(tmp_path, _execution(rows[0]), rows[0], monitor_context=context)["status"]
+        == "running"
+    )
+    with pytest.raises(ValueError, match="runtime_commit"):
+        managed_scheduler.observe_slurm_run(tmp_path, _execution(rows[1]), rows[1], monitor_context=context)
+
+    assert len(calls) == 1
+    assert reads == [
+        (None, tuple(row["scheduler_result_path"] for row in rows)),
+        (None, (rows[0]["allocation_identity_path"],)),
+    ]
+
+
 @pytest.mark.parametrize("terminal_text", [None, "", "{}"])
 def test_allocation_batch_contains_only_rows_with_absent_terminal(tmp_path, monkeypatch, reads, terminal_text):
     rows = _bound_rows(tmp_path, 3)

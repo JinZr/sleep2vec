@@ -2199,6 +2199,31 @@ def test_commit_run_start_first_fills_different_planned_and_actual_runtime_commi
     assert read_run_manifest(tmp_path)[0] == row
 
 
+def test_commit_run_start_rejects_dangling_lock_symlink_before_open(tmp_path: Path, monkeypatch):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    merge_run_manifest(
+        tmp_path,
+        [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
+    )
+    lock_path = tmp_path / "run_manifest.tsv.lock"
+    lock_path.unlink()
+    outside = tmp_path.parent / "outside.lock"
+    lock_path.symlink_to(outside)
+    monkeypatch.setattr(experiment_io, "blocking_file_lock", lambda *_args: pytest.fail("Aliased lock reached open"))
+
+    with pytest.raises(ValueError, match="Managed output"):
+        experiment_workspace.commit_run_start(
+            tmp_path,
+            "train",
+            "run-000",
+            planned_runtime_commit="a" * 40,
+            runtime_commit="b" * 40,
+        )
+
+    assert not outside.exists()
+
+
 def test_commit_run_start_accepts_monitor_winning_with_identical_provenance(tmp_path: Path):
     (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
     initialize_run_manifest(tmp_path)

@@ -1,31 +1,81 @@
+from contextlib import nullcontext
 import os
 import subprocess
 import sys
 
-from agent_tools.experiment_workspace import commit_run_start, merge_run_manifest
-from agent_tools.runtime_lock import runtime_lock
-
-update = {"step_id": sys.argv[2], "run_id": sys.argv[3], "status": sys.argv[4]}
-if len(sys.argv) > 6 and sys.argv[5] == "record-runtime-commit" and sys.argv[4] == "running":
-    # Record once at process start; a later checkout update must not rewrite this run's provenance.
-    runtime_commit = os.environ.get("AGENT_TOOLS_PROCESS_RUNTIME_COMMIT")
-    if not runtime_commit:
-        # Read HEAD under the runtime lock, then release it before taking the manifest lock below.
-        with runtime_lock("."):
-            runtime_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip().lower()
-    rows = commit_run_start(
-        sys.argv[1],
-        sys.argv[2],
-        sys.argv[3],
-        planned_runtime_commit=sys.argv[6],
-        runtime_commit=runtime_commit,
-    )
+ready_descriptor_text = os.environ.pop("AGENT_TOOLS_LIFECYCLE_READY_FD", "")
+if ready_descriptor_text:
+    ready_descriptor = int(ready_descriptor_text)
+    if ready_descriptor < 0:
+        raise ValueError("Lifecycle ready descriptor must be non-negative")
+    os.fstat(ready_descriptor)
+    guard = nullcontext()
 else:
-    rows = merge_run_manifest(sys.argv[1], [update])
-row = next(
-    (row for row in rows if row.get("step_id") == sys.argv[2] and row.get("run_id") == sys.argv[3]),
-    None,
-)
-(row is not None and row.get("status") == sys.argv[4]) or sys.exit(
-    "Canonical run status did not commit as " + sys.argv[4]
-)
+    ready_descriptor = None
+    guard = runtime_guard(".")
+
+fifo_mode = len(sys.argv) > 6 and sys.argv[4] == "fifo"
+option_index = 7 if fifo_mode else 4
+record_runtime_commit = len(sys.argv) > option_index + 1 and sys.argv[option_index] == "record-runtime-commit"
+runtime_commit = os.environ.get("AGENT_TOOLS_PROCESS_RUNTIME_COMMIT", "")
+with guard:
+    from agent_tools.experiment_workspace import commit_run_start, merge_run_manifest
+
+    if record_runtime_commit and not runtime_commit:
+        git_env = os.environ.copy()
+        for name in (
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_CONFIG",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_DIR",
+            "GIT_GRAFT_FILE",
+            "GIT_IMPLICIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_NO_REPLACE_OBJECTS",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_PREFIX",
+            "GIT_REPLACE_REF_BASE",
+            "GIT_SHALLOW_FILE",
+            "GIT_WORK_TREE",
+        ):
+            git_env.pop(name, None)
+        runtime_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], env=git_env, text=True
+        ).strip().lower()
+
+if fifo_mode:
+    status_input = os.fdopen(os.open(sys.argv[5], os.O_RDWR), "r", encoding="utf-8")
+    status_output = os.fdopen(os.open(sys.argv[6], os.O_RDWR), "w", encoding="utf-8")
+else:
+    status_input = sys.stdin
+    status_output = sys.stdout
+
+if ready_descriptor is not None:
+    os.write(ready_descriptor, b"1")
+    os.close(ready_descriptor)
+
+for raw_status in status_input:
+    status = raw_status.strip()
+    update = {"step_id": sys.argv[2], "run_id": sys.argv[3], "status": status}
+    if record_runtime_commit and status == "running":
+        rows = commit_run_start(
+            sys.argv[1],
+            sys.argv[2],
+            sys.argv[3],
+            planned_runtime_commit=sys.argv[option_index + 1],
+            runtime_commit=runtime_commit,
+        )
+    else:
+        rows = merge_run_manifest(sys.argv[1], [update])
+    row = next(
+        (row for row in rows if row.get("step_id") == sys.argv[2] and row.get("run_id") == sys.argv[3]),
+        None,
+    )
+    (row is not None and row.get("status") == status) or sys.exit(
+        "Canonical run status did not commit as " + status
+    )
+    print("ok", file=status_output, flush=True)
+    if status in {"completed", "failed"}:
+        break

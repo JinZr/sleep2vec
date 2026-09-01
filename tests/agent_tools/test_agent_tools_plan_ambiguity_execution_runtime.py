@@ -809,7 +809,7 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
     script = (plan_dir / "run.sh").read_text()
     assert f"cd {shlex_quote(str(REPO_ROOT))}" in script
     assert f"export PYTHONPATH={shlex_quote(str(REPO_ROOT))}${{PYTHONPATH:+:$PYTHONPATH}}" in script
-    assert f"  {shlex_quote(sys.executable)} -c " in script
+    assert f"{shlex_quote(sys.executable)} -c " in script
     final_report = tmp_path / "final.md"
     final_report.write_text("# Final\n\nManaged run completed.\n")
     assert experiments.finalize_experiment(workspace, final_report) == workspace / "reports" / "final.md"
@@ -843,15 +843,15 @@ def test_infer_plan_uses_frozen_runtime_python_for_workload_and_lifecycle(tmp_pa
     assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
 
     lines = (plan_dir / "run.sh").read_text().splitlines()
+    lifecycle_index = lines.index("# Agent lifecycle helper: persistent")
     helper_index = lines.index("_agent_commit_status() {")
-    helper_end = lines.index("}", helper_index)
     running_index = lines.index("_agent_commit_status running")
     workload_index = lines.index(command)
-    assert lines[helper_index + 1].startswith(f"  {runtime_python} -c ")
-    helper = "\n".join(lines[helper_index:helper_end])
+    helper = "\n".join(lines[lifecycle_index:running_index])
+    assert f"{runtime_python} -c " in helper
     assert "record-runtime-commit" in helper
     assert _RUNTIME_COMMIT in helper
-    assert helper_index < running_index < workload_index
+    assert lifecycle_index < helper_index < running_index < workload_index
     plan = json.loads((plan_dir / "plan.json").read_text())
     assert plan["recipe"]["execution"] == recipe["execution"]
     assert yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())["execution"] == recipe["execution"]

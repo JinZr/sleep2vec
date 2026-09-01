@@ -937,14 +937,15 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     assert planned["command"] == command
     script_lines = Path(planned["script"]).read_text().splitlines()
     assert command in script_lines
+    lifecycle_index = script_lines.index("# Agent lifecycle helper: persistent")
     helper_index = script_lines.index("_agent_commit_status() {")
     running_index = script_lines.index("_agent_commit_status running")
     command_index = script_lines.index(command)
-    assert script_lines[helper_index + 1].startswith("  /runtime/python -c ")
-    helper_text = "\n".join(script_lines[helper_index:running_index])
+    helper_text = "\n".join(script_lines[lifecycle_index:running_index])
+    assert "/runtime/python -c " in helper_text
     assert "record-runtime-commit" in helper_text
     assert runtime_commit in helper_text
-    assert helper_index < running_index < command_index
+    assert lifecycle_index < helper_index < running_index < command_index
     assert plan["recipe"]["execution"] == recipe["execution"]
     canonical = read_run_manifest(workspace)[0]
     assert canonical.get("command") in (None, "")
@@ -1113,8 +1114,9 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
     launch_path = Path(frozen_plan["runs"][0]["script"])
     launch_before = launch_path.read_bytes()
     launch_lines = launch_before.decode().splitlines()
+    lifecycle_index = launch_lines.index("# Agent lifecycle helper: persistent")
     helper_index = launch_lines.index("_agent_commit_status() {")
-    assert launch_lines[helper_index + 1].startswith(f"  {spec['runtime']['python']} -c ")
+    assert f"{spec['runtime']['python']} -c " in "\n".join(launch_lines[lifecycle_index:helper_index])
 
     if outcome == "tamper":
         (plan_dir / "plan.md").write_text("tampered\n")

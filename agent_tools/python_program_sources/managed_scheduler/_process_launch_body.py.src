@@ -19,6 +19,7 @@ try:
     with guard:
         runtime_commit = ""
         child_env = os.environ.copy()
+        child_env.pop("AGENT_TOOLS_LIFECYCLE_READY_FD", None)
         if verifications:
             verification_env = child_env.copy()
             python_path = verification_env.get("PYTHONPATH")
@@ -59,6 +60,13 @@ try:
             # The child records the HEAD captured before Popen even if the checkout advances immediately after.
             child_env["AGENT_TOOLS_PROCESS_RUNTIME_COMMIT"] = runtime_commit
         with open(log_path, "ab", buffering=0) as log_file:
+            lifecycle_ready_reader = None
+            lifecycle_ready_writer = None
+            pass_fds = ()
+            if capture_runtime_commit and "# Agent lifecycle helper: persistent\n" in Path(script).read_text():
+                lifecycle_ready_reader, lifecycle_ready_writer = os.pipe()
+                child_env["AGENT_TOOLS_LIFECYCLE_READY_FD"] = str(lifecycle_ready_writer)
+                pass_fds = (lifecycle_ready_writer,)
             process = subprocess.Popen(
                 ["bash", script],
                 cwd=workdir,
@@ -67,7 +75,14 @@ try:
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
+                pass_fds=pass_fds,
             )
+            if lifecycle_ready_reader is not None and lifecycle_ready_writer is not None:
+                os.close(lifecycle_ready_writer)
+                ready = os.read(lifecycle_ready_reader, 1)
+                os.close(lifecycle_ready_reader)
+                if ready != b"1":
+                    raise RuntimeError("Lifecycle helper exited before freezing its runtime imports")
 except BaseException:
     traceback.print_exc()
     raise SystemExit(RETRYABLE_PRE_SPAWN_EXIT_CODE)

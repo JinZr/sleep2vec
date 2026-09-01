@@ -46,6 +46,7 @@ def sync_runtime(
 
 def _sync_local(checkout: str, *, execute: bool) -> dict[str, Any]:
     root = _git(checkout, "rev-parse", "--show-toplevel").stdout.strip()
+    checkout = root
     before = _commit(_git(checkout, "rev-parse", "HEAD").stdout, "runtime HEAD")
     _require_clean_runtime(root)
 

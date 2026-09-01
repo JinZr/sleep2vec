@@ -1266,10 +1266,11 @@ class SlurmMonitorContext:
                 for terminal, allocation in group:
                     try:
                         payload = _parse_slurm_json(terminals[terminal], terminal)
+                        has_runtime_commit = bool(payload and _slurm_sidecar_runtime_commit(payload))
                     except ValueError:
                         # A future row's bad terminal must neither fail this row nor prefetch its allocation.
                         continue
-                    if not payload or not _slurm_sidecar_runtime_commit(payload):
+                    if not has_runtime_commit:
                         paths.append(allocation)
             try:
                 self.file_snapshots[key] = exp_io.read_managed_output_texts_at(
@@ -1849,8 +1850,10 @@ def build_launch_command(
 ) -> str:
     workdir = str(execution.get("workdir") or REPO_ROOT)
     env = dict(execution.get("env") or {})
-    if "AGENT_TOOLS_RUNTIME_LOCK_FD" in env:
-        raise ValueError("execution.env.AGENT_TOOLS_RUNTIME_LOCK_FD is reserved for managed runtime locking.")
+    reserved = {"AGENT_TOOLS_RUNTIME_LOCK_FD", "AGENT_TOOLS_LIFECYCLE_READY_FD"}.intersection(env)
+    if reserved:
+        name = sorted(reserved)[0]
+        raise ValueError(f"execution.env.{name} is reserved for managed runtime locking.")
     if gpus:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(item) for item in gpus)
     run = [
@@ -1947,6 +1950,7 @@ def start_process(
         raise ValueError("A local runtime lock descriptor cannot be passed to an SSH launch.")
     env = os.environ.copy()
     env.pop("AGENT_TOOLS_RUNTIME_LOCK_FD", None)
+    env.pop("AGENT_TOOLS_LIFECYCLE_READY_FD", None)
     pass_fds: tuple[int, ...] = ()
     if runtime_lock_fd is not None:
         env["AGENT_TOOLS_RUNTIME_LOCK_FD"] = str(runtime_lock_fd)

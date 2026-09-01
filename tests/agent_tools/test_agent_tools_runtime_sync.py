@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import fcntl
-import importlib
+import io
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import threading
@@ -13,7 +14,15 @@ import time
 
 import pytest
 
-from agent_tools import experiment_workspace, managed_scheduler, python_programs, run_evidence, runtime_sync, transport
+from agent_tools import (
+    experiment_workspace,
+    managed_scheduler,
+    plan_rendering,
+    python_programs,
+    run_evidence,
+    runtime_sync,
+    transport,
+)
 from agent_tools.experiment_workspace import file_sha256
 from agent_tools.runtime_sync import sync_runtime
 
@@ -175,6 +184,29 @@ def test_runtime_sync_scans_importable_code_from_repository_root(
 
     with pytest.raises(RuntimeError, match="untracked or ignored importable code"):
         sync_runtime(subdirectory, host=host, remote_python=sys.executable, execute=True)
+
+
+def test_local_runtime_sync_reports_updated_head_when_upstream_deletes_supplied_subdirectory(
+    rolling_runtime: tuple[Path, Path, str],
+) -> None:
+    source, runtime, _first = rolling_runtime
+    (source / "nested").mkdir()
+    (source / "nested" / "module.py").write_text("VALUE = 1\n")
+    _git(source, "add", "nested/module.py")
+    _commit(source, "Add nested runtime", "one\n")
+    _git(source, "push", "origin", "main")
+    sync_runtime(runtime, execute=True)
+    subdirectory = runtime / "nested"
+    _git(source, "rm", "nested/module.py")
+    final_commit = _commit(source, "Delete nested runtime", "two\n")
+    _git(source, "push", "origin", "main")
+
+    result = sync_runtime(subdirectory, execute=True)
+
+    assert result["status"] == "fast_forwarded"
+    assert result["after_commit"] == final_commit
+    assert _git(runtime, "rev-parse", "HEAD") == final_commit
+    assert not subdirectory.exists()
 
 
 @pytest.mark.parametrize("host", [None, "unit-host"], ids=["local", "remote-bootstrap"])
@@ -540,23 +572,14 @@ def test_commit_status_releases_runtime_lock_before_manifest_commit(monkeypatch,
     actual_commit = "b" * 40
     events = []
     committed = []
-    lock_held = False
+    lock_held = True
+    ready_descriptor = 97
+    events.append("lock-enter")
 
-    @contextmanager
-    def runtime_lock(_workdir):
-        nonlocal lock_held
-        assert not lock_held
-        lock_held = True
-        events.append("lock-enter")
-        try:
-            yield
-        finally:
-            lock_held = False
-            events.append("lock-exit")
-
-    def check_output(command, *, text):
+    def check_output(command, *, env, text):
         assert lock_held
         assert command == ["git", "rev-parse", "HEAD"]
+        assert "GIT_DIR" not in env
         assert text is True
         events.append("head")
         return actual_commit + "\n"
@@ -567,8 +590,6 @@ def test_commit_status_releases_runtime_lock_before_manifest_commit(monkeypatch,
         committed.append((root, step_id, run_id, planned_runtime_commit, runtime_commit))
         return [{"step_id": step_id, "run_id": run_id, "status": "running"}]
 
-    runtime_lock_module = importlib.import_module("agent_tools.runtime_lock")
-    monkeypatch.setattr(runtime_lock_module, "runtime_lock", runtime_lock)
     monkeypatch.setattr(experiment_workspace, "commit_run_start", commit_run_start)
     monkeypatch.setattr(
         experiment_workspace,
@@ -576,11 +597,26 @@ def test_commit_status_releases_runtime_lock_before_manifest_commit(monkeypatch,
         lambda *_args, **_kwargs: pytest.fail("running provenance must use commit_run_start"),
     )
     monkeypatch.setattr(subprocess, "check_output", check_output)
+    monkeypatch.setattr(os, "fstat", lambda descriptor: descriptor == ready_descriptor or pytest.fail("wrong fd"))
+
+    def signal_ready(descriptor, value):
+        nonlocal lock_held
+        assert descriptor == ready_descriptor
+        assert value == b"1"
+        assert lock_held
+        lock_held = False
+        events.append("lock-exit")
+        return 1
+
+    monkeypatch.setattr(os, "write", signal_ready)
+    monkeypatch.setattr(os, "close", lambda descriptor: descriptor == ready_descriptor or pytest.fail("wrong fd"))
     monkeypatch.setattr(
         sys,
         "argv",
-        ["commit-status", "/experiment", "train", "run-000", "running", "record-runtime-commit", planned_commit],
+        ["commit-status", "/experiment", "train", "run-000", "record-runtime-commit", planned_commit],
     )
+    monkeypatch.setattr(sys, "stdin", io.StringIO("running\n"))
+    monkeypatch.setenv("AGENT_TOOLS_LIFECYCLE_READY_FD", str(ready_descriptor))
     if inherited:
         monkeypatch.setenv("AGENT_TOOLS_PROCESS_RUNTIME_COMMIT", actual_commit)
     else:
@@ -589,7 +625,90 @@ def test_commit_status_releases_runtime_lock_before_manifest_commit(monkeypatch,
     exec(compile(python_programs.source("plan_rendering.commit_status"), "commit_status", "exec"), {})
 
     assert committed == [("/experiment", "train", "run-000", planned_commit, actual_commit)]
-    assert events == (["commit"] if inherited else ["lock-enter", "head", "lock-exit", "commit"])
+    assert events == (
+        ["lock-enter", "lock-exit", "commit"] if inherited else ["lock-enter", "head", "lock-exit", "commit"]
+    )
+
+
+def test_direct_lifecycle_helper_survives_runtime_api_removal_after_spawn(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    package = runtime / "agent_tools"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "experiment_workspace.py").write_text(
+        "from pathlib import Path\n"
+        "def _commit(root, step_id, run_id, status):\n"
+        "    Path(root, 'status').write_text(status)\n"
+        "    return [{'step_id': step_id, 'run_id': run_id, 'status': status}]\n"
+        "def commit_run_start(root, step_id, run_id, *, planned_runtime_commit, runtime_commit):\n"
+        "    return _commit(root, step_id, run_id, 'running')\n"
+        "def merge_run_manifest(root, rows):\n"
+        "    row = rows[0]\n"
+        "    return _commit(root, row['step_id'], row['run_id'], row['status'])\n"
+    )
+    subprocess.run(["git", "init", "-q", "-b", "main", str(runtime)], check=True)
+    _git(runtime, "add", "agent_tools")
+    runtime_commit = _commit(runtime, "Initialize runtime lifecycle API", "one\n")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    workload_started = tmp_path / "workload-started"
+    workload_release = tmp_path / "workload-release"
+    worker = (
+        "from pathlib import Path\n"
+        "import time\n"
+        f"Path({str(workload_started)!r}).write_text('ready')\n"
+        f"release = Path({str(workload_release)!r})\n"
+        "while not release.exists():\n"
+        "    time.sleep(0.01)\n"
+    )
+    script = tmp_path / "launch.sh"
+    script.write_text(
+        "\n".join(
+            plan_rendering.script_lines(
+                [shlex.join([sys.executable, "-c", worker])],
+                run_cwd=runtime,
+                experiment_root=workspace,
+                step_id="train",
+                run_id="run-000",
+                lifecycle_python=sys.executable,
+                expected_runtime_commit=runtime_commit,
+            )
+        )
+        + "\n"
+    )
+    pid_path = tmp_path / "pid.json"
+    command = managed_scheduler.build_launch_command(
+        {"workdir": str(runtime), "python": sys.executable, "runtime_commit": runtime_commit},
+        script,
+        tmp_path / "stdout.log",
+        pid_path,
+        [],
+    )
+    identity = None
+    try:
+        result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        identity = run_evidence.read_process_identity(pid_path, {})
+        assert identity is not None
+        deadline = time.monotonic() + 10
+        while not workload_started.exists() or not (workspace / "status").exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert (workspace / "status").read_text() == "running"
+
+        _git(runtime, "rm", "-r", "agent_tools")
+        _commit(runtime, "Remove runtime lifecycle API", "two\n")
+        workload_release.touch()
+        deadline = time.monotonic() + 10
+        while run_evidence.process_identity_running({}, identity) is not False:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+        assert (workspace / "status").read_text() == "completed"
+    finally:
+        workload_release.touch(exist_ok=True)
+        if identity is not None and run_evidence.process_identity_running({}, identity) is True:
+            run_evidence.stop_process_group({}, identity)
 
 
 @pytest.mark.parametrize("execute", [False, True], ids=["dry-run", "execute"])
