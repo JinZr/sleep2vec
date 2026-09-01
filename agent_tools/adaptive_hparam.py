@@ -723,10 +723,7 @@ def _validate_proposal_request_event(
         raise ValueError("Agent proposal input differs from its phase-one issuance record.")
 
 
-def _validated_agent_proposal_input(
-    root: Path,
-    workflow: dict[str, Any],
-    recipe: dict[str, Any],
+def _load_agent_proposal_input(
     workspace: Path,
     input_path: Path,
     proposal_path: Path,
@@ -742,6 +739,25 @@ def _validated_agent_proposal_input(
     if Path(proposal_input["expected_proposal_path"]) != proposal_path:
         raise ValueError("Proposal input expected path does not match its request id and target round.")
     _validate_proposal_request_event(workspace, proposal_input, input_path, input_sha256, proposal_path)
+    return proposal_input, input_sha256
+
+
+def _validated_agent_proposal_input(
+    root: Path,
+    workflow: dict[str, Any],
+    recipe: dict[str, Any],
+    workspace: Path,
+    input_path: Path,
+    proposal_path: Path,
+    *,
+    expected_sha256: str | None = None,
+) -> tuple[dict[str, Any], str]:
+    proposal_input, input_sha256 = _load_agent_proposal_input(
+        workspace,
+        input_path,
+        proposal_path,
+        expected_sha256=expected_sha256,
+    )
     snapshot = proposal_input["input"]
     recipe_hash = _proposal_recipe_sha256(recipe, workflow)
     if snapshot["resolved_recipe_sha256"] != recipe_hash:
@@ -760,13 +776,11 @@ def _validated_agent_proposal_input(
     return proposal_input, input_sha256
 
 
-def _load_agent_proposal(
+def _load_agent_proposal_binding(
     root: Path,
-    workflow: dict[str, Any],
-    recipe: dict[str, Any],
     workspace: Path,
     proposal_path: str | Path,
-) -> tuple[Path, Path, dict[str, Any], str, str]:
+) -> tuple[Path, Path, Path, dict[str, Any], str]:
     raw_path = Path(proposal_path).expanduser()
     proposal_file = raw_path if raw_path.is_absolute() else (Path.cwd() / raw_path).absolute()
     exp_io.validate_managed_output_paths(workspace, [proposal_file])
@@ -788,6 +802,19 @@ def _load_agent_proposal(
     input_path = root / "adaptive" / "proposal_inputs" / f"round_{target_round:03d}--{id12}.json"
     expected_proposal_path = root / "adaptive" / "proposal_submissions" / f"round_{target_round:03d}--{id12}.json"
     exp_io.validate_managed_output_paths(workspace, [proposal_file, input_path])
+    return proposal_file, input_path, expected_proposal_path, proposal, proposal_sha256
+
+
+def _load_agent_proposal(
+    root: Path,
+    workflow: dict[str, Any],
+    recipe: dict[str, Any],
+    workspace: Path,
+    proposal_path: str | Path,
+) -> tuple[Path, Path, dict[str, Any], str, str]:
+    proposal_file, input_path, expected_proposal_path, proposal, proposal_sha256 = _load_agent_proposal_binding(
+        root, workspace, proposal_path
+    )
     proposal_input, input_sha256 = _validated_agent_proposal_input(
         root, workflow, recipe, workspace, input_path, expected_proposal_path
     )
@@ -797,6 +824,67 @@ def _load_agent_proposal(
     if _budget_exhausted(root, recipe, prospective_runs=validated["max_runs"]):
         raise ValueError("Agent proposal no longer fits the remaining adaptive budget.")
     return proposal_file, input_path, validated, proposal_sha256, input_sha256
+
+
+def _applied_agent_proposal(root: Path, workspace: Path, proposal_path: str | Path) -> Path | None:
+    initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
+    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    if _suggest_strategy(initial_recipe) != "agent_proposal":
+        return None
+
+    _workflow(root)
+    proposal_file, input_path, expected_proposal_path, proposal, proposal_sha256 = _load_agent_proposal_binding(
+        root, workspace, proposal_path
+    )
+    proposal_input, input_sha256 = _load_agent_proposal_input(workspace, input_path, expected_proposal_path)
+    if proposal_file != expected_proposal_path:
+        raise ValueError("Proposal path does not match the bound input snapshot.")
+    validated = adaptive_proposals.validate_proposal(proposal, proposal_input)
+    target_round = validated["target_round"]
+    if target_round not in _committed_round_indexes(root):
+        return None
+
+    # A successful replay is proven from frozen artifacts because its live round binding is stale by design.
+    round_dir = _round_dir(root, target_round)
+    artifacts.read_hparam_plan(round_dir)
+    accepted_path = root / "adaptive" / "proposals" / f"round_{target_round:03d}.json"
+    suggestion_path = root / "adaptive" / "suggestions" / f"round_{target_round:03d}.yaml"
+    accepted_payload = {
+        "schema_version": 1,
+        **validated,
+        "input_path": str(input_path),
+        "input_sha256": input_sha256,
+        "proposal_path": str(proposal_file),
+        "proposal_sha256": proposal_sha256,
+    }
+    accepted_text = json.dumps(accepted_payload, indent=2, sort_keys=True) + "\n"
+    snapshots = exp_io.read_managed_files_at(workspace, [accepted_path, suggestion_path])
+    if snapshots[str(accepted_path)]["text"] != accepted_text:
+        raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {accepted_path}")
+    suggestion_sha256 = snapshots[str(suggestion_path)]["sha256"]
+    accepted_event = {
+        "round": target_round,
+        "request_id": validated["request_id"],
+        "proposal_path": str(proposal_file),
+        "proposal_sha256": proposal_sha256,
+        "suggestion": str(suggestion_path),
+        "suggestion_sha256": suggestion_sha256,
+    }
+    if not _validate_event_history(
+        workspace,
+        "agent_proposal_accepted",
+        accepted_event,
+        identity_field="request_id",
+    ):
+        raise ValueError("Committed agent proposal lacks its acceptance event.")
+    if not _validate_event_history(
+        workspace,
+        "launch_round",
+        {"round": target_round, "round_dir": str(round_dir)},
+        identity_field="round",
+    ):
+        raise ValueError("Committed agent proposal lacks its launch event.")
+    return suggestion_path
 
 
 def _agent_suggestion_payload(
@@ -1110,7 +1198,12 @@ def adaptive_step(
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     if not execute:
         return _adaptive_step(root, proposal_path=proposal_path, execute=False)
-    with plan_registration_lock(_workflow_workspace(root)):
+    workspace = _workflow_workspace(root)
+    with plan_registration_lock(workspace):
+        if proposal_path is not None:
+            applied = _applied_agent_proposal(root, workspace, proposal_path)
+            if applied is not None:
+                return applied
         return _adaptive_step(root, proposal_path=proposal_path, execute=True)
 
 

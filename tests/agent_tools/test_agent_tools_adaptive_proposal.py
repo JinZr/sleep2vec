@@ -388,7 +388,11 @@ def test_agent_proposal_preview_is_read_only_and_execute_uses_bound_snapshot(tmp
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("phase 2 must not read latest digest")),
     )
 
+    launch_calls = 0
+
     def fake_launch(run_dir, *, dry_run=True):
+        nonlocal launch_calls
+        launch_calls += 1
         launch_manifest = Path(run_dir) / "launch_manifest.tsv"
         runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
         manifests.write_rows(launch_manifest, [{**row, "status": "launched"} for row in runs])
@@ -409,6 +413,21 @@ def test_agent_proposal_preview_is_read_only_and_execute_uses_bound_snapshot(tmp
     assert accepted["request_id"] == json.loads(input_path.read_text())["request_id"]
     assert adaptive_hparam._latest_round_index(workflow_dir) == 1
     assert "agent_proposal_accepted" in events_path.read_text()
+    replay_evidence = {
+        "accepted": (workflow_dir / "adaptive" / "proposals" / "round_001.json").read_bytes(),
+        "suggestion": suggestion.read_bytes(),
+        "events": events_path.read_bytes(),
+        "registry": (workflow_dir / "adaptive" / "run_registry.tsv").read_bytes(),
+        "manifest": (tmp_path / "run_manifest.tsv").read_bytes(),
+    }
+
+    assert adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True) == suggestion
+    assert launch_calls == 1
+    assert (workflow_dir / "adaptive" / "proposals" / "round_001.json").read_bytes() == replay_evidence["accepted"]
+    assert suggestion.read_bytes() == replay_evidence["suggestion"]
+    assert events_path.read_bytes() == replay_evidence["events"]
+    assert (workflow_dir / "adaptive" / "run_registry.tsv").read_bytes() == replay_evidence["registry"]
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == replay_evidence["manifest"]
     with pytest.raises(ValueError, match="round binding is stale"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path)
 
@@ -488,6 +507,7 @@ def test_concurrent_agent_proposal_execute_serializes_round_projections(tmp_path
     release_first = threading.Event()
     state_lock = threading.Lock()
     stage_calls = 0
+    launch_calls = 0
 
     def pause_first_stage(*args, **kwargs):
         nonlocal stage_calls
@@ -502,6 +522,8 @@ def test_concurrent_agent_proposal_execute_serializes_round_projections(tmp_path
         return stage_round(*args, **kwargs)
 
     def fake_launch(run_dir, *, dry_run=True):
+        nonlocal launch_calls
+        launch_calls += 1
         runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
         merge_run_manifest(
             tmp_path,
@@ -534,12 +556,144 @@ def test_concurrent_agent_proposal_execute_serializes_round_projections(tmp_path
 
     assert not first.is_alive()
     assert not second.is_alive()
-    assert len(results) == 1
-    assert len(errors) == 1
-    assert "round binding is stale" in str(errors[0])
+    assert len(results) == 2
+    assert len(set(results)) == 1
+    assert not errors
     assert stage_calls == 1
+    assert launch_calls == 1
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("agent_proposal_accepted") == 1
+    assert [event["event_type"] for event in events].count("launch_round") == 1
+
+
+def test_agent_proposal_execute_replays_after_committed_receipt_is_lost(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    launch_calls = 0
+
+    def fake_launch(run_dir, *, dry_run=True):
+        nonlocal launch_calls
+        launch_calls += 1
+        launch_manifest = Path(run_dir) / "launch_manifest.tsv"
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        manifests.write_rows(launch_manifest, [{**row, "status": "launched"} for row in runs])
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": row["step_id"], "run_id": row["run_id"], "status": "launched"} for row in runs],
+        )
+        return launch_manifest
+
+    commit_round = adaptive_hparam._commit_round
+    commit_calls = 0
+
+    def lose_receipt_after_commit(*args, **kwargs):
+        nonlocal commit_calls
+        commit_calls += 1
+        commit_round(*args, **kwargs)
+        raise RuntimeError("client receipt lost")
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_hparam, "_commit_round", lose_receipt_after_commit)
+
+    with pytest.raises(RuntimeError, match="client receipt lost"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+    suggestion = workflow_dir / "adaptive" / "suggestions" / "round_001.yaml"
+    evidence_before = {
+        "accepted": (workflow_dir / "adaptive" / "proposals" / "round_001.json").read_bytes(),
+        "suggestion": suggestion.read_bytes(),
+        "events": (tmp_path / "events.jsonl").read_bytes(),
+        "registry": (workflow_dir / "adaptive" / "run_registry.tsv").read_bytes(),
+        "manifest": (tmp_path / "run_manifest.tsv").read_bytes(),
+    }
+
+    assert adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True) == suggestion
+    assert launch_calls == 1
+    assert commit_calls == 1
+    assert (workflow_dir / "adaptive" / "proposals" / "round_001.json").read_bytes() == evidence_before["accepted"]
+    assert suggestion.read_bytes() == evidence_before["suggestion"]
+    assert (tmp_path / "events.jsonl").read_bytes() == evidence_before["events"]
+    assert (workflow_dir / "adaptive" / "run_registry.tsv").read_bytes() == evidence_before["registry"]
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == evidence_before["manifest"]
+
+
+@pytest.mark.parametrize("projection", ["accepted", "suggestion"])
+def test_agent_proposal_execute_replay_rejects_changed_projection(tmp_path: Path, monkeypatch, projection: str):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+
+    def fake_launch(run_dir, *, dry_run=True):
+        launch_manifest = Path(run_dir) / "launch_manifest.tsv"
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        manifests.write_rows(launch_manifest, [{**row, "status": "launched"} for row in runs])
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": row["step_id"], "run_id": row["run_id"], "status": "launched"} for row in runs],
+        )
+        return launch_manifest
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+    if projection == "accepted":
+        path = workflow_dir / "adaptive" / "proposals" / "round_001.json"
+        payload = json.loads(path.read_text())
+        payload["rationale"] = "changed"
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        error = "differs from the accepted proposal"
+    else:
+        path = workflow_dir / "adaptive" / "suggestions" / "round_001.yaml"
+        path.write_text(path.read_text() + "# changed\n")
+        error = "event history conflicts"
+
+    with pytest.raises(ValueError, match=error):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+
+def test_agent_proposal_execute_replay_requires_committed_launch_event(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    launch_calls = 0
+
+    def fake_launch(run_dir, *, dry_run=True):
+        nonlocal launch_calls
+        launch_calls += 1
+        launch_manifest = Path(run_dir) / "launch_manifest.tsv"
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        manifests.write_rows(launch_manifest, [{**row, "status": "launched"} for row in runs])
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": row["step_id"], "run_id": row["run_id"], "status": "launched"} for row in runs],
+        )
+        return launch_manifest
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text().splitlines()
+        if json.loads(line)["event_type"] != "launch_round"
+    ]
+    (tmp_path / "events.jsonl").write_text("".join(json.dumps(event, sort_keys=True) + "\n" for event in events))
+
+    with pytest.raises(ValueError, match="round binding is stale"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+    assert launch_calls == 1
 
 
 def test_agent_proposal_rejects_tampered_snapshot_before_acceptance(tmp_path: Path):
