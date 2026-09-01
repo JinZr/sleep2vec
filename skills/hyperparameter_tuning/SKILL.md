@@ -7,9 +7,8 @@ append-only adaptive tuning. Test-selected tuning is supported with explicit
 test access; this skill does not select a scientific split for the user.
 
 On takeover, first read [Takeover and continue execution](../../doc/agent_contracts/experiment_workspace.md#takeover-and-continue-execution).
-It owns evidence-to-action decisions, conditional runtime refresh and short
-heartbeat maintenance. Do not infer lifecycle from history or turn an
-experiment-specific update policy into a default.
+It owns evidence-to-action decisions, rolling runtime sync and short heartbeat
+maintenance. Do not infer lifecycle from history.
 
 ## Required inputs
 
@@ -20,7 +19,7 @@ execution identity. Read the relevant detailed owners before preparing work:
 - [Search space](../../doc/agent_contracts/task_recipe.md#search-space) for explicit grids/joint configurations and bounded `finetune_balanced` defaults.
 - [Test-access policy](../../doc/agent_contracts/external_test_locking.md#selection-and-test-access-policy) for selection split, test-after-fit and unlock requirements.
 - [Launch and queue](../../doc/agent_contracts/task_recipe.md#launch-and-queue) for local/SSH identity, direct/Slurm resources and capacity.
-- [Adaptive workflow](../../doc/agent_contracts/task_recipe.md#adaptive-workflow) when enabled; it owns initialization, workflow-wide frozen Python/commit, strategy and budget.
+- [Adaptive workflow](../../doc/agent_contracts/task_recipe.md#adaptive-workflow) when enabled; it owns initialization, frozen Python/route/scientific identity, per-round commit provenance, strategy and budget.
 
 ## First information-gathering commands
 
@@ -59,6 +58,15 @@ resubmission, manual manifest repair or unauthenticated cancellation.
 
 ## Canonical commands
 
+For rolling latest-main maintenance, keep one existing checkout. Run
+`python -m agent_tools runtime-sync --workdir <checkout> [--host <host>]` as the
+non-mutating check; add `--execute` only when authorized to fast-forward
+`origin/main`. Never clone or reset for a heartbeat. Sync and launch share a
+short critical-section lock, not a whole-job lock: an older process can continue
+after its spawn boundary records A while the checkout advances to B, and a later
+process records B. That SHA is point-in-time provenance, not a guarantee that
+checkout code bytes remain fixed for the whole job.
+
 For ordinary tuning, follow doctor → `plan` → `hparam-launch` dry-run →
 authorized `hparam-run-queue --execute` → terminal monitoring → `hparam-select`
 → report/finalization. The supported automatic-profile authorization covers
@@ -72,6 +80,9 @@ Follow the exact [proposal handshake](../../doc/agent_contracts/task_recipe.md#p
 the tool issues the input, the external agent writes only its named submission,
 and the tool preflights/registers/launches. `hparam-adaptive-loop` is only for
 explicit `best_neighborhood`, not an LLM driver for `agent_proposal`.
+Later rounds may use a newer commit while Python, route, objective, and the
+scientific contract remain frozen. Treat mixed commits as recorded provenance,
+not an experimental arm, and never rewrite earlier plan or snapshot bytes.
 
 ## Expected artifacts
 
@@ -89,7 +100,16 @@ and [launch revalidation](../../doc/agent_contracts/task_recipe.md#execution-sna
 All candidate sources validate final config bytes through the canonical variant
 owner; planner-local config and target CLI checks are distinct evidence, not
 proof of model construction, checkpoint compatibility, forward/backward or GPU
-execution. Dry-run does not replace the live eligible-execute checks.
+execution. `execution.runtime_commit` is planned/baseline provenance; launch
+first-fills the canonical actual `runtime_commit` from the HEAD observed between
+embedded verification and direct child `Popen` in the same short lock, or from
+the Slurm allocation's locked preflight/HEAD → sidecar → `srun` sequence. The
+lock does not cover child lifetime. A mismatch warns without blocking. The
+hparam managed-scheduler clean/importable-code, module-origin, Python/route,
+frozen-argv, and artifact-hash checks remain fail-closed. In a Slurm allocation, the module-origin recheck
+means the current module remains inside the current repository with the same
+module name; it does not require the exact frozen origin path. Dry-run does not
+replace the live eligible-execute checks.
 
 After terminal runs, follow [selection and selected-candidate consumers](../../doc/agent_contracts/task_recipe.md#selection-and-selected-candidate-consumers)
 and [finalization](../../doc/agent_contracts/experiment_workspace.md#finalization).

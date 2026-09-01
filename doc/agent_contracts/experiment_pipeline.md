@@ -22,7 +22,13 @@ runner lock beside `pipelines/<pipeline-id>/` and atomically freezes the source
 and parsed spec, their SHA-256 identity, source-plan identities, external-preset
 hashes, checkpoint selection, job/attempt mapping, and runtime identity under
 that directory. Once state exists, execution requires `--resume --execute`; any
-spec, source plan, preset, config, checkpoint, or runtime drift fails closed.
+frozen spec, source-plan, preset, config, checkpoint, or artifact drift fails
+closed. When an eligible attempt reaches the shared managed scheduler, its
+separate Python, route, clean/importable-code, module-origin, live-argv, and
+artifact-hash launch gates also fail closed. Those are launch gates, not a claim
+that every pipeline read or controller transition re-probes the runtime. A
+rolling checkout's commit advance is recorded per attempt and does not rewrite
+frozen pipeline or snapshot bytes.
 
 The workspace links to this pipeline-owned subtree:
 
@@ -50,18 +56,18 @@ pipelines/<pipeline-id>/
 Multi-variant initial schedulers use the variant-specific snapshot paths.
 
 The v1 spec is a closed contract for one canonical `evaluate` step. It declares
-the pipeline and experiment ids, runtime commit, GPU concurrency, at most two
-attempts per logical job, checkpoint sources and policy, external jobs, and
-whether finalization is enabled. Task, variant, label, config, and inference
-module are derived from each frozen source plan. The spec may assert those
-values but cannot define a second semantic source.
+the pipeline and experiment ids, planned/baseline runtime commit, GPU
+concurrency, at most two attempts per logical job, checkpoint sources and
+policy, external jobs, and whether finalization is enabled. Task, variant,
+label, config, and inference module are derived from each frozen source plan.
+The spec may assert those values but cannot define a second semantic source.
 
 The closed v1 sections are:
 
 - `pipeline`: `kind: external_matrix`, matching experiment id, one `evaluate`
   step, and `finalize: true`;
-- `runtime`: absolute workdir, target Python and full runtime commit, accelerator,
-  device, FP32 precision, batch size 128, and seed;
+- `runtime`: absolute workdir, target Python and full planned/baseline runtime
+  commit, accelerator, device, FP32 precision, batch size 128, and seed;
 - `execution`: GPU pool, one GPU per run, bounded concurrency, and exactly two
   maximum attempts;
 - `evaluation_policy`: `external_test_locked: false` and
@@ -109,13 +115,20 @@ assigned through `CUDA_VISIBLE_DEVICES`; the child inference command receives
 package-local logical device 0. Every attempt has a new, empty `result_root`,
 which is passed to the package-local inference entrypoint through
 `--results-root`.
-Every attempt also freezes the spec's runtime workdir, Python, and commit. The
-runtime Python field is one executable name or path without whitespace,
-arguments, or `~` shorthand. The generated script verifies that commit before its first `running`
-mutation and uses the same frozen Python for inference and all lifecycle
-commits. A missing interpreter or commit mismatch prevents `running` and inference; any `launched`
-process evidence already committed by the scheduler remains canonical evidence
-for monitor reconciliation under the lifecycle-owner rules.
+Every attempt freezes the spec's runtime workdir, Python, and planned/baseline
+commit. The runtime Python field is one executable name or path without
+whitespace, arguments, or `~` shorthand. At start, the generated script records
+the actual commit in the canonical run row and uses the same frozen Python for
+inference and all lifecycle commits. For this managed direct attempt, the actual
+commit is observed between embedded verification and child `Popen` in the same
+short runtime lock. The lock does not cover inference lifetime or guarantee
+stable checkout bytes throughout inference. A
+planned/actual commit mismatch is warning provenance, not a launch blocker.
+Missing Python, dirty or shadowing importable code, module-origin drift,
+incompatible frozen argv, or frozen artifact-hash drift still prevents the
+managed attempt launch. Any `launched` process evidence already committed by
+the scheduler remains canonical evidence for monitor reconciliation under the
+lifecycle-owner rules.
 Exactly one valid `run_manifest.json` must be discoverable below that root and
 must agree with the frozen checkpoint, config, preset, split, and runtime
 inputs. Its `metrics_csv_path` and `prediction_csv_path` must identify existing,
@@ -153,7 +166,9 @@ defines the job set; schema v1 does not impose a fixed matrix size. Every job
 frozen from that spec must complete (N/N). The pipeline then writes
 `results.csv`, `metrics.csv`, `summary.md`, and `final.md` from all scalar
 manifest metrics, preserving non-finite values explicitly, including the
-frozen checkpoint, preset, runtime, and result path for each job.
+frozen checkpoint, preset, actual runtime commit, and result path for each job;
+the planned/baseline commit remains in the frozen spec and canonical manifest.
+Mixed commits are provenance only, not a pipeline factor.
 
 The report is committed before `experiment-finalize`; the terminal experiment
 commit is the final mutation. A partial matrix, invalid manifest, exhausted

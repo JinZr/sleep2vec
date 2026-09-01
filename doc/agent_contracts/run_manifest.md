@@ -28,7 +28,28 @@ before shortened field names are assigned. Nested mapping values are likewise
 order-independent, while list values retain their authored order. Frozen names,
 versions, paths, and hashes are not rewritten to migrate historical plans.
 
-Plan-owned identity, semantic parameters, config/script hashes, artifact paths, runtime/checkpoint directories, and execution identity are frozen after registration. Shared execution identity consists of target, host, workdir, GPUs, log path, and command. Direct execution additionally owns the PID path, launched PID, process-group id, and OS process-start token. Slurm execution instead freezes scheduler type, optional `scheduler_direct_controller` topology, submit token, sbatch path/hash, allocation-identity path, and terminal-sidecar path; the execution-snapshot SHA-256, numeric scheduler job id, and optional cluster are trusted one-time bindings. New Slurm plans materialize the topology as `true` or `false`; older rows may omit it and retain the default bound-cluster routing. PID and scheduler bindings are mutually exclusive. Only the canonical owner may perform each trusted first fill.
+Plan-owned identity, semantic parameters, config/script hashes, artifact paths,
+runtime/checkpoint directories, and execution identity are frozen after
+registration. `planned_runtime_commit` is the plan's full baseline commit;
+`runtime_commit` is the full commit observed under the short runtime lock
+immediately before a provenance-aware direct child is spawned or before the
+Slurm allocation wrapper spawns `srun`. A script-owned direct route without the
+new outer receipt observes it at its own `running` boundary. Each is a trusted
+first fill and immutable once non-empty. The observed SHA is point-in-time
+provenance, not a guarantee that checkout code bytes remain unchanged for the
+whole job.
+They may differ: that difference is recorded rolling provenance, not a lifecycle
+error or scientific variable. Shared execution identity otherwise consists of
+target, host, workdir, GPUs, log path, and command. Direct execution additionally
+owns the PID path, launched PID, process-group id, and OS process-start token.
+Slurm execution instead freezes scheduler type, optional
+`scheduler_direct_controller` topology, submit token, sbatch path/hash,
+allocation-identity path, and terminal-sidecar path; the execution-snapshot
+SHA-256, numeric scheduler job id, and optional cluster are trusted one-time
+bindings. New Slurm plans materialize the topology as `true` or `false`; older
+rows may omit it and retain the default bound-cluster routing. PID and scheduler
+bindings are mutually exclusive. Only the canonical owner may perform each
+trusted first fill.
 
 Pipeline-managed inference rows may additionally freeze `pipeline_id`,
 `job_id`, `attempt`, and `result_root`. Managed rows may freeze
@@ -44,14 +65,19 @@ their own terminal status, while monitor-owned runs leave confirmed-exit
 inference to the monitor. Scheduler-sidecar runs require the verified atomic
 sidecar under the [scheduler terminal-evidence rules](#terminal-evidence).
 Lifecycle-owned inference with explicit runtime identity uses the same frozen
-runtime Python for its workload and every lifecycle commit, after its frozen
-runtime-commit guard succeeds.
+runtime Python for its workload and every lifecycle commit. Its start commit
+records the planned and actual commits; a difference does not bypass any other
+launch gate.
 
 Managed tables declare either one row per run or many rows per run. Both forms require complete managed identity and reject removed `trial_id` or `param.*` formats. Historical formats remain read-only and are never translated into current state.
 
 ## Canonical state and projections
 
 `launch_manifest.tsv` and `run_status.tsv` retain their plan-local paths and fields but are written only from rows returned by a successful canonical commit. They are projections and are never read to restore lifecycle status or execution identity. Matrices, status reports, rankings, and events are also derived artifacts. `RESEARCH_LOG.md` is an append-only narrative record rather than a projection, but it likewise never owns or restores lifecycle state.
+
+`run_matrix.csv` and `reports/run_matrix.md` project both commit fields. The
+Markdown projection labels a mismatch as `different (rolling update)`; that is
+the provenance warning and has no lifecycle effect.
 
 Health labels are observational and never own lifecycle state. Managed GPU
 activity is attributed to the frozen process group so DDP child processes count
@@ -169,9 +195,19 @@ No caller reads or writes `run_manifest.tsv` directly.
 
 ## PID and runtime evidence
 
-New managed launches create a dedicated OS session and process group. They
-write one JSON identity file containing exactly `pid`, `process_group_id`, and
-`process_start_token`.
+New managed launches create a dedicated OS session and process group. The
+low-level process launcher remains compatible with legacy/internal callers that
+omit planned-commit capture: their JSON receipt has exactly `pid`,
+`process_group_id`, and `process_start_token`. Provenance-aware managed callers
+supply the planned commit and receive the same three fields plus the fourth
+`runtime_commit`, observed under the short runtime lock immediately before
+process creation. Readers require all three base fields, allow only the optional
+`runtime_commit` field, and require a non-empty value to be a full lowercase
+SHA; missing base fields or additional fields are corrupt.
+
+For a provenance-aware managed direct launch, embedded verification, HEAD
+capture, and child `Popen` are ordered inside the same short lock. The receipt is
+written afterward; the lock does not cover the child lifetime.
 
 - The PID must be the process-group leader.
 - Monitoring compares the file with frozen canonical values and the live OS
@@ -311,9 +347,15 @@ exactly one JobID row whose comment matches the frozen submit token; blank,
 mismatched, absent, or ambiguous comments fail without changing canonical
 lifecycle. A cluster that does not retain job comments cannot provide terminal
 accounting identity, so monitoring remains unchanged and fails closed. The
-compute wrapper verifies
-the exact execution-snapshot bytes before parsing them, then revalidates the
-runtime commit, module origin, CLI, and frozen launch/config hashes. It requires
+compute wrapper first verifies the frozen launch/config hashes. Under the short
+runtime lock it requires a clean importable-code state, verifies that the named
+module still resolves inside the current repository, validates the live CLI,
+and observes the allocation-side actual commit. It then verifies the exact
+execution-snapshot bytes and requires current Python/version and module name to
+match; it does not require the current module-origin path to equal the frozen
+snapshot field. The wrapper writes allocation evidence and spawns `srun` before
+releasing the lock. The observed SHA does not promise that checkout bytes stay
+unchanged afterward. It requires
 `SLURM_NTASKS` to match the frozen GPU count and the observed Python executable
 and version to match the plan snapshot. It starts one foreground, labeled
 `srun --kill-on-bad-exit=1 --quit-on-interrupt` step with one task per GPU and no

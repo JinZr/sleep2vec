@@ -170,7 +170,7 @@ manual wrappers remain historical and are not repaired or adopted by this flow.
 | Identity | Meaning |
 | --- | --- |
 | Manager/controller host and Python | Where planning or a control command executes; status advice names its `control_host`. Planner-local final-config validation describes this runtime. |
-| Frozen execution host/workdir/Python/commit | Target route whose identity and CLI arguments are verified for launch. Diagnostic package metadata is not model-execution proof or a new environment policy. |
+| Frozen execution host/workdir/Python and planned commit | Target route whose owner-specific identity and CLI gates are verified for launch; the actual launch-boundary HEAD observation is recorded separately and is not a checkout pin. Diagnostic package metadata is not model-execution proof or a new environment policy. |
 | Slurm allocation node | Where the scheduler actually runs the workload; compute hostname may differ from the submission host. |
 
 See the [preflight evidence limits](task_recipe.md#registration-preflight) before
@@ -179,52 +179,57 @@ forward/backward validation.
 
 ### Conditional runtime refresh before initialization
 
-This is operational guidance **only when the experiment explicitly authorizes
-following upstream main and staging/activating a replacement runtime**. It is
-not an `agent_tools` update command or default. Without that policy, preserve
-the authorized pin. Dependency installation, scientific changes, migration,
-new roots and extra budget need their own coverage in the current authority.
+The default rolling-latest model uses one existing checkout. A heartbeat or
+agent first inspects the trusted upstream without mutation:
 
-1. Preserve current monitoring obligations. Verify initialization and frozen
-   artifacts from successful reads, not absence of output after a failed check.
-   Query the trusted upstream's committed main within a bounded check; cached
-   `origin/main`, a dirty checkout or an unpushed commit is not fresh proof.
-2. If that SHA is unchanged and its checks already passed, do not restage,
-   repeat validation or append unchanged notes. A changed SHA triggers impact
-   assessment, not unconditional checkout and regression work. Prepare a new
-   runtime when uninitialized work is ready to use it or the candidate addresses
-   a current blocker. Documentation, navigation, test-fixture and CI-only changes
-   do not by themselves require restaging; still honor any exact upstream-pin
-   requirement before actual initialization. Stage only committed bytes in a
-   separate clean runtime, retaining origin, SHA, clean-state and transfer
-   evidence, then preserve that checkout unchanged.
-3. Staging is not activation. Apply the currently authorized engineering-check
-   scope; an explicit instruction not to repeat CPU regressions must not be
-   undone by a new SHA or heartbeat. Reused evidence retains its original commit
-   and scope, not a claim that the candidate was retested. This does not waive
-   actual recipe consultation, doctor/plan, frozen identity/hash checks or launch
-   gates. Required skipped or missing checks are not a pass; `context` does not
-   authorize execution. Do not install dependencies implicitly.
-4. Before activation, freshly verify that the workflow remains uninitialized
-   and the candidate still meets the authorized upstream rule. Update only
-   mutable preparation bindings, preserving scientific/config bytes and
-   recording old/new hashes, exact pin, validation and authorization evidence.
-   Coupled activation applies only when the authorization requires it. Bound
-   work to one candidate attempt per cycle rather than chasing a moving main.
-5. Once initialized or a round is frozen, preserve workflow Python/commit for
-   **all rounds** under the [frozen identity contract](task_recipe.md#frozen-round-identity).
-   Do not rewrite plans/snapshots, rebind initialized work, reset budget or
-   silently create a replacement workflow.
+```bash
+python -m agent_tools runtime-sync --workdir <checkout> [--host <host>] [--python <target-python>]
+```
 
-Unknown upstream state, partial initialization, failed validation or an
-uncovered dependency/scientific choice blocks new activation. Retain the last
-validated runtime and continue current monitoring; do not launch an old
-fallback while claiming latest-main compliance or repeat unchanged failed
-attempts without new evidence.
+With `--host`, the manager sends a self-contained sync program through the
+selected target Python. The target checkout may therefore predate the
+`runtime-sync` subcommand; it does not need to import its own `agent_tools`
+before the fast-forward.
+
+Add `--execute` only within the current update authority. Execute fetches
+`origin/main` and updates the same clean checkout by fast-forward only. It never
+clones another repository, resets local history, installs dependencies, rewrites
+plans, or changes scientific configuration. A dirty tracked tree, untracked or
+ignored importable code, malformed upstream identity, or non-fast-forward
+history fails closed. An unchanged result needs no new runtime or research note.
+
+Runtime sync and process launch share a short checkout lock. The lock covers
+only the sync operation or the launch critical section that observes HEAD and
+starts the child. For provenance-aware managed direct launch, embedded
+verification, HEAD capture, and child `Popen` occur in that same critical
+section; Slurm similarly keeps allocation preflight/HEAD, sidecar publication,
+and `srun` `Popen` together. The lock is released for the child lifetime. Thus
+a process whose spawn boundary observed commit A may continue while the
+checkout fast-forwards to B, and a later process observes B. The canonical manifest
+records both values. They are point-in-time provenance: code imported or read
+after the lock is released is not guaranteed to remain entirely at A or B.
+Mixed commits are not a scientific variable.
+
+Commit drift does not authorize mutation of registered recipes, plans, configs,
+scripts, or `execution_snapshot.json`. `execution.runtime_commit` remains the
+planned/baseline commit, and a different launch-time HEAD is recorded and
+warned rather than blocked. `runtime-sync` itself still requires a clean tree
+without untracked or ignored importable code. Hparam, ordinary Slurm, and
+pipeline managed-attempt launches retain their owner-specific managed-scheduler
+gates. Managed direct launch checks stable Python/route/module origin, live argv,
+clean code, and artifact hashes. Slurm manager preflight uses that contract, but
+the allocation recheck requires the current module to remain inside the current
+repository with the same module name rather than matching the frozen origin
+path. Direct preset launch retains its frozen Python and
+script/config/input-hash gates, but does not claim the managed-scheduler
+module-origin or live-argv checks. Preserve current monitoring obligations and
+do not infer a retry from a lost receipt or uncertain submission.
 
 ### Fixed-commit runtime staging
 
-For an authorized replacement, use
+Explicit fixed-commit staging remains available when a workflow specifically
+requires a separate immutable checkout; it is not the rolling default. For such
+an authorized replacement, use
 [`utils/stage_git_runtime.py`](../../utils/stage_git_runtime.py) rather than a
 chain of independent bundle, transfer and checkout commands. It prepares Git
 content only: it does not select upstream commits, install dependencies, run
@@ -262,7 +267,7 @@ not a duplicate. This contract does not itself authorize an automation change.
 | --- | --- |
 | Stable scope, exact root/workflow entry paths, authorization locator and this takeover contract | Job lists, per-run state, metrics, checkpoint inventories and historical hashes |
 | Current monitoring/continuation duties, predecessor gates, authorized update policy and valid scoped exceptions/expiry | Completed phases, resolved blocker transcripts, superseded pins and exhausted one-time repair/network permissions |
-| Effective scientific, test-access, budget and frozen-identity limits; meaningful-change reporting and whole-assignment stop conditions | Full schemas, the takeover table, adaptive handshake and unchanged polling history |
+| Effective scientific, test-access, budget and runtime-provenance limits; meaningful-change reporting and whole-assignment stop conditions | Full schemas, the takeover table, adaptive handshake and unchanged polling history |
 
 Before an authorized revision, verify entry paths, current phase, authority and
 remaining obligations. Remove obsolete active blocker wording only after fresh
@@ -380,6 +385,7 @@ fact should not create an entry.
 | Entrypoint | Effect and detailed owner |
 | --- | --- |
 | `doctor`, `context` | Consultation/diagnostics and diagnostic bundles, not execution authority; [diagnostic contract](task_recipe.md#consultation-and-diagnostics). |
+| `runtime-sync` | Inspect `origin/main` by default; with `--execute`, fast-forward one clean existing checkout in place under the short runtime lock. It does not clone, reset, or launch work. |
 | `plan` | Freeze and register recipe, config, commands, hashes and planned runs; [publication](#publication-and-registration). |
 | `hparam-launch`, `hparam-run-queue` | Explicit launch/queue advancement; dry-run default; [launch and queue](task_recipe.md#launch-and-queue). CLI names preview/execute and projects recorded state counts. |
 | `infer-launch`, `infer-stop` | Managed ordinary Slurm inference launch/stop; [ordinary inference](task_recipe.md#managed-ordinary-inference). |
