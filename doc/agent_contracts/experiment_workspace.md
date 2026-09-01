@@ -224,7 +224,7 @@ pipeline managed-attempt launches retain their owner-specific managed-scheduler
 gates. Managed direct launch checks stable Python/route/module origin, live argv,
 clean code, artifact hashes, and the current managed launch protocol before a
 run is claimed. Slurm requires the same lifecycle/runtime-lock capabilities plus
-runtime-lock descriptor handoff before submission. Commit drift remains allowed,
+runtime-lock descriptor and bootstrap signal handoff before submission. Commit drift remains allowed,
 but a checkout predating those capabilities fails preflight. The allocation
 recheck requires the current module to remain inside the current repository with
 the same module name rather than matching the frozen origin path. Direct preset

@@ -57,6 +57,7 @@ RESOURCE_FIELDS = {
     "direct_controller",
 }
 _DISTRIBUTED_ENV_FIELDS = {"RANK", "LOCAL_RANK", "WORLD_SIZE"}
+BOOTSTRAP_SIGNAL_HANDOFF = True
 
 
 def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> dict[str, Any]:

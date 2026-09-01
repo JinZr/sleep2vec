@@ -63,6 +63,7 @@ def importable_code(output):
             paths.append(raw)
     return paths
 
+
 if importable_code(untracked_code.stdout) or importable_code(ignored_code.stdout):
     print(
         "Target runtime has untracked or ignored Python code; launch requires commit-defined import roots.",
@@ -100,6 +101,9 @@ def has_capability(capability):
             owner = runtime_module("agent_tools.slurm")
             worker = getattr(owner, "run_frozen_job", None)
             return callable(worker) and "runtime_lock_fd" in inspect.signature(worker).parameters
+        if capability == "slurm_bootstrap_signal_handoff":
+            owner = runtime_module("agent_tools.slurm")
+            return getattr(owner, "BOOTSTRAP_SIGNAL_HANDOFF", None) is True
     except (TypeError, ValueError):
         return False
     return False

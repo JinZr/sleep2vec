@@ -25,7 +25,12 @@ def run_execution_preflight_fixture(execution: dict, command: list[str]) -> subp
             assert artifacts == []
             assert capabilities in [
                 ["commit_run_start", "runtime_lock"],
-                ["commit_run_start", "runtime_lock", "slurm_runtime_lock_fd"],
+                [
+                    "commit_run_start",
+                    "runtime_lock",
+                    "slurm_runtime_lock_fd",
+                    "slurm_bootstrap_signal_handoff",
+                ],
             ]
         repo_root = str(execution.get("workdir") or Path(__file__).resolve().parents[1])
         payload = {

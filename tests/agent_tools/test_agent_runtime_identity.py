@@ -133,7 +133,9 @@ def test_runtime_identity_accepts_current_managed_launch_capabilities(tmp_path, 
             __file__=tmp_path / "agent_tools" / "runtime_lock.py", runtime_lock=lambda: None
         ),
         "agent_tools.slurm": SimpleNamespace(
-            __file__=tmp_path / "agent_tools" / "slurm.py", run_frozen_job=run_frozen_job
+            __file__=tmp_path / "agent_tools" / "slurm.py",
+            run_frozen_job=run_frozen_job,
+            BOOTSTRAP_SIGNAL_HANDOFF=True,
         ),
     }
     monkeypatch.setattr(importlib, "import_module", owners.__getitem__)
@@ -144,7 +146,14 @@ def test_runtime_identity_accepts_current_managed_launch_capabilities(tmp_path, 
             *sys.argv[:2],
             "{}",
             "[]",
-            json.dumps(["commit_run_start", "runtime_lock", "slurm_runtime_lock_fd"]),
+            json.dumps(
+                [
+                    "commit_run_start",
+                    "runtime_lock",
+                    "slurm_runtime_lock_fd",
+                    "slurm_bootstrap_signal_handoff",
+                ]
+            ),
         ],
     )
 
@@ -155,7 +164,10 @@ def test_runtime_identity_accepts_current_managed_launch_capabilities(tmp_path, 
     assert json.loads(output.out) == payload
 
 
-@pytest.mark.parametrize("capability", ["commit_run_start", "runtime_lock", "slurm_runtime_lock_fd"])
+@pytest.mark.parametrize(
+    "capability",
+    ["commit_run_start", "runtime_lock", "slurm_runtime_lock_fd", "slurm_bootstrap_signal_handoff"],
+)
 def test_runtime_identity_rejects_missing_managed_launch_capability(
     tmp_path, monkeypatch, capsys, identity_probe, capability: str
 ):
@@ -174,6 +186,42 @@ def test_runtime_identity_rejects_missing_managed_launch_capability(
     output = capsys.readouterr()
     assert output.out == ""
     assert output.err == f"Target runtime lacks managed launch capabilities: {capability}\n"
+
+
+def test_runtime_identity_rejects_slurm_worker_without_bootstrap_signal_handoff(
+    tmp_path, monkeypatch, capsys, identity_probe
+):
+    program, _results, _payload = identity_probe
+
+    def run_frozen_job(*, runtime_lock_fd=None):
+        return runtime_lock_fd
+
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(
+            __file__=tmp_path / "agent_tools" / "slurm.py",
+            run_frozen_job=run_frozen_job,
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            *sys.argv[:2],
+            "{}",
+            "[]",
+            json.dumps(["slurm_runtime_lock_fd", "slurm_bootstrap_signal_handoff"]),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        exec(program, {})
+
+    assert error.value.code == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == "Target runtime lacks managed launch capabilities: slurm_bootstrap_signal_handoff\n"
 
 
 @pytest.mark.parametrize("failed_query", range(5))

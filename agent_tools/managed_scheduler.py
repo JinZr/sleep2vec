@@ -46,7 +46,11 @@ ACTIVE_STATUSES = frozenset(
 LAUNCH_TIMEOUT_SECONDS = 60
 EXECUTION_SNAPSHOT_NAME = "execution_snapshot.json"
 DIRECT_LAUNCH_CAPABILITIES = ("commit_run_start", "runtime_lock")
-SLURM_LAUNCH_CAPABILITIES = (*DIRECT_LAUNCH_CAPABILITIES, "slurm_runtime_lock_fd")
+SLURM_LAUNCH_CAPABILITIES = (
+    *DIRECT_LAUNCH_CAPABILITIES,
+    "slurm_runtime_lock_fd",
+    "slurm_bootstrap_signal_handoff",
+)
 
 
 class MissingPidCapacityError(RuntimeError):
