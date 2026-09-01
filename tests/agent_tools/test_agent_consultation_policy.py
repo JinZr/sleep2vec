@@ -20,11 +20,12 @@ def test_selection_split_and_test_access_questions_are_distinct():
     fields = {field["id"]: field for field in policy["high_impact_fields"]}
 
     assert fields["train_val_test_policy"]["question"] == (
-        "Which split should be used for model selection: train, val, or test?"
+        "Which supported split should be used for model selection: train or val for direct finetune; "
+        "train, val, or explicitly authorized test for hparam tuning?"
     )
     assert fields["external_test_locked"]["question"] == (
-        "Should test and external evaluation data remain inaccessible during tuning, "
-        "or is access explicitly authorized?"
+        "Should test data remain locked during hyper-parameter tuning, or is tuning-time test access "
+        "explicitly authorized?"
     )
 
 
