@@ -1238,6 +1238,34 @@ def test_run_frozen_job_records_allocation_runtime_commit_drift_without_blocking
     assert terminal["runtime_commit"] == actual_commit
 
 
+@pytest.mark.parametrize("artifact_key", ["script", "config"])
+def test_run_frozen_job_rechecks_frozen_artifacts_inside_runtime_lock_before_spawn(
+    tmp_path: Path, monkeypatch, artifact_key: str
+):
+    kwargs, snapshot = _frozen_job_inputs(tmp_path)
+    monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    monkeypatch.setenv("SLURM_NTASKS", "1")
+    artifact = Path(kwargs[artifact_key])
+
+    @contextmanager
+    def drifting_lock(checkout):
+        assert checkout == kwargs["workdir"]
+        artifact.write_text("drifted\n")
+        yield
+
+    spawned = []
+    monkeypatch.setattr(slurm, "runtime_lock", drifting_lock)
+    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(slurm.subprocess, "Popen", lambda *args, **kwargs: spawned.append((args, kwargs)))
+
+    assert slurm.run_frozen_job(**kwargs) == 2
+
+    assert spawned == []
+    assert not Path(kwargs["allocation_identity_path"]).exists()
+    assert json.loads(Path(kwargs["result_path"]).read_text())["exit_code"] == 2
+    assert f"Frozen run artifact changed before process start: {artifact}" in Path(kwargs["log_path"]).read_text()
+
+
 @pytest.mark.parametrize(("field", "observed"), [("python", "/other/python"), ("python_version", "3.11.0")])
 def test_run_frozen_job_rejects_allocation_interpreter_drift_before_spawn(
     tmp_path: Path, monkeypatch, field: str, observed: str

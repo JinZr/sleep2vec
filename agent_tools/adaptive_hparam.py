@@ -2092,11 +2092,33 @@ def _validate_workflow_scientific_contract(recipe: dict[str, Any], workflow: dic
     changed = [field for field in fields if recipe.get(field) != initial_recipe.get(field)]
     search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
     initial_search = initial_recipe.get("search") if isinstance(initial_recipe.get("search"), dict) else {}
+    searched_runtime_fields = {
+        field.removeprefix("runtime.")
+        for field in initial_search.get("parameters", {})
+        if isinstance(field, str) and field.startswith("runtime.")
+    }
+    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    initial_runtime = initial_recipe.get("runtime") if isinstance(initial_recipe.get("runtime"), dict) else {}
     adaptive = _adaptive(recipe)
     initial_adaptive = _adaptive(initial_recipe)
     suggest = adaptive.get("suggest") if isinstance(adaptive.get("suggest"), dict) else {}
     initial_suggest = initial_adaptive.get("suggest") if isinstance(initial_adaptive.get("suggest"), dict) else {}
+    replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
+    initial_replacement = (
+        initial_adaptive.get("replacement") if isinstance(initial_adaptive.get("replacement"), dict) else {}
+    )
+    replacement_defaults = {
+        "enabled": True,
+        "allow_running_stop": False,
+        "grace_epochs": None,
+        "grace_minutes": None,
+        "kill_margin": 0.0,
+    }
     frozen_values = {
+        "runtime.fixed": (
+            {field: value for field, value in runtime.items() if field not in searched_runtime_fields},
+            {field: value for field, value in initial_runtime.items() if field not in searched_runtime_fields},
+        ),
         "search.parameters": (search.get("parameters"), initial_search.get("parameters")),
         "adaptive.suggest.bounds": (suggest.get("bounds"), initial_suggest.get("bounds")),
         "adaptive.suggest.strategy": (_suggest_strategy(recipe), _suggest_strategy(initial_recipe)),
@@ -2108,6 +2130,10 @@ def _validate_workflow_scientific_contract(recipe: dict[str, Any], workflow: dic
         "adaptive.max_runs_total": (
             adaptive.get("max_runs_total"),
             initial_adaptive.get("max_runs_total"),
+        ),
+        "adaptive.replacement": (
+            {**replacement_defaults, **replacement},
+            {**replacement_defaults, **initial_replacement},
         ),
     }
     changed.extend(field for field, values in frozen_values.items() if values[0] != values[1])

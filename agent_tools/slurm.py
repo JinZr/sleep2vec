@@ -314,6 +314,12 @@ def run_frozen_job(
                     if received_signal:
                         exit_code = 128 + received_signal
                     else:
+                        for path, expected in ((script, script_sha256), (config, config_sha256)):
+                            artifact = Path(path)
+                            if artifact.is_symlink() or not artifact.is_file() or artifact.stat().st_nlink != 1:
+                                raise ValueError(f"Frozen run artifact is not an independent file: {artifact}")
+                            if hashlib.sha256(artifact.read_bytes()).hexdigest() != expected:
+                                raise ValueError(f"Frozen run artifact changed before process start: {artifact}")
                         _atomic_create_json(
                             allocation_identity_path,
                             {

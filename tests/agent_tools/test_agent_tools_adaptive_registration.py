@@ -1493,6 +1493,13 @@ def test_adaptive_source_rejects_frozen_python_drift_before_suggestion_write(tmp
         "round_size",
         "max_rounds",
         "max_runs_total",
+        "runtime_epochs",
+        "runtime_batch_size",
+        "runtime_precision",
+        "runtime_ckpt_every_n_epochs",
+        "replacement_allow_running_stop",
+        "replacement_grace_epochs",
+        "replacement_kill_margin",
     ],
 )
 def test_adaptive_source_rejects_frozen_scientific_contract_before_suggestion_write(
@@ -1522,6 +1529,21 @@ def test_adaptive_source_rejects_frozen_scientific_contract_before_suggestion_wr
         payload["adaptive"]["suggest"]["bounds"]["runtime.lr"] = [6e-7, 2e-6]
     elif drift == "suggest_strategy":
         payload["adaptive"]["suggest"] = {"strategy": "best_neighborhood"}
+    elif drift.startswith("runtime_"):
+        field = drift.removeprefix("runtime_")
+        payload.setdefault("runtime", {})[field] = {
+            "epochs": 31,
+            "batch_size": 16,
+            "precision": "32",
+            "ckpt_every_n_epochs": 2,
+        }[field]
+    elif drift.startswith("replacement_"):
+        field = drift.removeprefix("replacement_")
+        payload["adaptive"]["replacement"][field] = {
+            "allow_running_stop": False,
+            "grace_epochs": 2,
+            "kill_margin": 0.1,
+        }[field]
     else:
         payload["adaptive"][drift] += 1
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
@@ -1629,7 +1651,7 @@ def test_adaptive_source_rejects_slurm_routing_drift_before_suggestion_write(tmp
     assert not (workflow_dir / "adaptive" / "suggestions").exists()
 
 
-def test_adaptive_source_allows_slurm_resource_and_capacity_updates(tmp_path: Path):
+def test_adaptive_source_allows_operational_and_searched_runtime_updates(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"].update({"scheduler": _slurm_scheduler(), "gpus_per_run": 1})
@@ -1643,16 +1665,21 @@ def test_adaptive_source_allows_slurm_resource_and_capacity_updates(tmp_path: Pa
         {"cpus_per_task": 12, "memory": "96G", "walltime": "02:00:00", "nice": 100}
     )
     payload["execution"]["gpus_per_run"] = 2
+    payload["execution"]["env"] = {"OMP_NUM_THREADS": "4"}
+    payload.setdefault("runtime", {})["lr"] = 2e-6
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
     suggestion = adaptive_hparam.suggest_next_round(workflow_dir)
-    suggested_execution = yaml.safe_load(suggestion.read_text())["execution"]
+    suggested = yaml.safe_load(suggestion.read_text())
+    suggested_execution = suggested["execution"]
 
     assert suggested_execution["scheduler"]["cpus_per_task"] == 12
     assert suggested_execution["scheduler"]["memory"] == "96G"
     assert suggested_execution["scheduler"]["walltime"] == "02:00:00"
     assert suggested_execution["scheduler"]["nice"] == 100
     assert suggested_execution["gpus_per_run"] == 2
+    assert suggested_execution["env"] == {"OMP_NUM_THREADS": "4"}
+    assert suggested["runtime"]["lr"] == 2e-6
 
 
 @pytest.mark.parametrize(
