@@ -46,7 +46,7 @@ def load_recipe_with_base(path: str | Path) -> dict[str, Any]:
 
 
 def load_user_decisions(path: str | Path | None) -> dict[str, Any]:
-    if path in (None, ""):
+    if path is None or path == "":
         return {}
     data = load_yaml_file(path)
     decisions = data.get("decisions")

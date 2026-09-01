@@ -232,6 +232,10 @@ egs/data_hub/
 index/
 npz_lists/
 
+# Kaldi feature archives and indexes
+*.ark
+*.scp
+
 # Serialized Python objects
 *.pkl
 *.joblib

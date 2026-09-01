@@ -63,7 +63,8 @@ def validate_checkpoint_test_results(
         if epoch in seen_epochs:
             raise ValueError(f"checkpoint_test_results contains a duplicate epoch: {step_id} / {run_id} / {epoch}")
         seen_epochs.add(epoch)
-        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        raw_metrics = result.get("metrics")
+        metrics = raw_metrics if isinstance(raw_metrics, dict) else {}
         raw_score = metrics.get(metric)
         score = None if isinstance(raw_score, bool) else artifacts.float_or_none(raw_score)
         if score is None:

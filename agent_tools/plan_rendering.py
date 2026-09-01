@@ -122,8 +122,10 @@ def loads_train_val(epochs: Any) -> bool:
 
 
 def finetune_loaded_split_values(recipe: dict, *, load_test: bool | None = None) -> list[str]:
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    raw_runtime = recipe.get("runtime")
+    runtime = raw_runtime if isinstance(raw_runtime, dict) else {}
+    raw_evaluation = recipe.get("evaluation_policy")
+    evaluation = raw_evaluation if isinstance(raw_evaluation, dict) else {}
 
     splits: list[str] = []
     if loads_train_val(runtime.get("epochs", 30)):

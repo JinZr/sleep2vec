@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import hashlib
 import json
 import math
@@ -158,7 +158,9 @@ def validate_proposal(proposal: Mapping[str, Any], proposal_input: Mapping[str, 
 
     envelopes = input_payload["parameter_envelopes"]
     if "parameters" in proposal:
-        normalized_search = {"parameters": _validate_proposal_parameters(proposal["parameters"], envelopes)}
+        normalized_search: dict[str, Any] = {
+            "parameters": _validate_proposal_parameters(proposal["parameters"], envelopes)
+        }
         max_runs = 1
         for values in normalized_search["parameters"].values():
             max_runs *= len(values)
@@ -391,7 +393,7 @@ def _has_duplicates(values: list[Any], kind: str) -> bool:
     return False
 
 
-def _has_duplicate_points(points: list[Mapping[str, Any]], envelopes: Mapping[str, Any]) -> bool:
+def _has_duplicate_points(points: Sequence[Mapping[str, Any]], envelopes: Mapping[str, Any]) -> bool:
     def values_equal(a: Any, b: Any, kind: str) -> bool:
         if kind == "categorical":
             return type(a) is type(b) and a == b

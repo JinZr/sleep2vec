@@ -179,7 +179,7 @@ def _normalized_research_log_entry(
         if entry_id in normalized_supersedes:
             raise ValueError("Research log entry cannot supersede itself.")
 
-    normalized = {
+    normalized: dict[str, Any] = {
         "id": entry_id,
         "recorded_at": _research_log_timestamp(entry["recorded_at"], "recorded_at"),
         "kind": kind,

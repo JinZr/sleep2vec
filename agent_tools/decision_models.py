@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dataclass_field
 from enum import Enum
 from typing import Any
 
@@ -20,14 +20,14 @@ class DecisionIssue:
     field: str
     message: str
     question: str | None = None
-    evidence: dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, Any] = dataclass_field(default_factory=dict)
 
 
 @dataclass
 class DecisionReport:
     status: DecisionStatus
-    issues: list[DecisionIssue] = field(default_factory=list)
-    decisions: dict[str, "ResolvedDecision"] = field(default_factory=dict)
+    issues: list[DecisionIssue] = dataclass_field(default_factory=list)
+    decisions: dict[str, "ResolvedDecision"] = dataclass_field(default_factory=dict)
     published_user_decisions_path: str | None = None
 
     @property
@@ -50,7 +50,7 @@ class ResolvedDecision:
     value: Any
     source: str
     confidence: str
-    evidence: dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, Any] = dataclass_field(default_factory=dict)
 
 
 def merge_status(issues: list[DecisionIssue]) -> DecisionStatus:
