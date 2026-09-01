@@ -15,6 +15,19 @@ from agent_tools.plans import evaluate_recipe
 from agent_tools.recipes import load_consultation_policy
 
 
+def test_selection_split_and_test_access_questions_are_distinct():
+    policy = load_consultation_policy()
+    fields = {field["id"]: field for field in policy["high_impact_fields"]}
+
+    assert fields["train_val_test_policy"]["question"] == (
+        "Which split should be used for model selection: train, val, or test?"
+    )
+    assert fields["external_test_locked"]["question"] == (
+        "Should test and external evaluation data remain inaccessible during tuning, "
+        "or is access explicitly authorized?"
+    )
+
+
 def _run(*args: str, cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-m", "agent_tools", *args], cwd=cwd, text=True, capture_output=True)
 

@@ -213,6 +213,13 @@ including its [identity legend](../agent_contracts/experiment_workspace.md#execu
 and [conditional initialization refresh](../agent_contracts/experiment_workspace.md#conditional-runtime-refresh-before-initialization).
 For command choice, use the [agent contract router](../agent_contracts/README.md).
 
+Concept planning discusses scientific choices and budget without invoking this
+stateful workflow. Publication covers consultation and plan freezing in steps
+1-2; launch begins at step 3 only when execution is explicitly authorized. A
+single authorized [decision input](../agent_contracts/user_decisions.md#cross-stage-reuse)
+may be revalidated across publication attempts, while resolved plan artifacts
+carry those choices into launch and recovery.
+
 1. Resolve high-impact decisions with `doctor` through
    [consultation and diagnostics](../agent_contracts/task_recipe.md#consultation-and-diagnostics);
    stop on `NEEDS_USER_INPUT` and use the
