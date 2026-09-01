@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -15,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent_tools import python_programs
+from agent_tools.runtime_sync import GIT_REPOSITORY_ENV
 
 GIT_COMMANDS = [
     ["git", "rev-parse", "HEAD"],
@@ -111,9 +113,12 @@ def test_runtime_identity_uses_five_exact_queries_with_three_ordered_workers(
     assert peak_active == 3
     assert active == 0
     assert completion_order == [2, 3, 4, 1, 0]
-    assert sorted(calls, key=lambda call: GIT_COMMANDS.index(call[0])) == [
-        (command, {"text": True, "capture_output": True}) for command in GIT_COMMANDS
-    ]
+    ordered_calls = sorted(calls, key=lambda call: GIT_COMMANDS.index(call[0]))
+    assert [command for command, _kwargs in ordered_calls] == GIT_COMMANDS
+    for _command, kwargs in ordered_calls:
+        assert kwargs["text"] is True
+        assert kwargs["capture_output"] is True
+        assert set(GIT_REPOSITORY_ENV).isdisjoint(kwargs["env"])
     output = capsys.readouterr()
     assert output.err == ""
     assert json.loads(output.out) == payload
@@ -348,6 +353,42 @@ def test_runtime_identity_rejects_nonexistent_planned_commit(runtime_repo):
     assert result.returncode == 2
     assert result.stdout == ""
     assert "Planned runtime commit does not resolve to a commit" in result.stderr
+
+
+def test_runtime_identity_ignores_ambient_repository_selection_env(runtime_repo):
+    decoy = runtime_repo.parent / "decoy"
+    subprocess.run(["git", "init", "-q", str(decoy)], check=True)
+    runtime_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=runtime_repo, text=True).strip()
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_DIR": str(decoy / ".git"),
+            "GIT_WORK_TREE": str(decoy),
+            "GIT_INDEX_FILE": str(decoy / ".git" / "index"),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("managed_scheduler.runtime_identity"),
+            "runtime_cli",
+            "{}",
+            "[]",
+            runtime_commit,
+        ],
+        cwd=runtime_repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["runtime_commit"] == runtime_commit
+    assert payload["runtime_repo_root"] == str(runtime_repo)
 
 
 def test_runtime_identity_rejects_sha256_commit_abbreviated_to_sha1_length(tmp_path):
