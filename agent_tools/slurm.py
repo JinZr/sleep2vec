@@ -243,6 +243,27 @@ def run_frozen_job(
 
     forwarded_signals = (signal.SIGTERM, signal.SIGINT)
     old_handlers = {signum: signal.signal(signum, forward_signal) for signum in forwarded_signals}
+    if os.environ.pop("AGENT_TOOLS_BOOTSTRAP_SIGNALS_BLOCKED", "") == "1":
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, forwarded_signals)
+        if received_signal:
+            exit_code = 128 + received_signal
+            for signum, handler in old_handlers.items():
+                signal.signal(signum, handler)
+            _atomic_create_json(
+                result_path,
+                {
+                    "schema_version": 1,
+                    "scheduler_job_id": job_id,
+                    "scheduler_cluster": cluster,
+                    "scheduler_submit_token": submit_token,
+                    "node": node,
+                    "started_at": started_at,
+                    "ended_at": _utc_now(),
+                    "exit_code": exit_code,
+                    "runtime_commit": observed_runtime_commit,
+                },
+            )
+            return exit_code
     exit_code = 2
     log_target = Path(log_path)
     log_target.parent.mkdir(parents=True, exist_ok=True)

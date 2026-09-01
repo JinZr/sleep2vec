@@ -1,17 +1,102 @@
+from datetime import datetime, timezone
+import json
+import signal
+import socket
 import sys
+import time
 
 
 workdir = sys.argv[1]
-with runtime_guard(workdir) as runtime_lock_descriptor:
-    os.set_inheritable(runtime_lock_descriptor, True)
-    os.execv(
-        sys.executable,
-        [
-            sys.executable,
-            "-m",
-            "agent_tools.slurm",
-            *sys.argv[2:],
-            "--runtime-lock-fd",
-            str(runtime_lock_descriptor),
-        ],
-    )
+
+
+def option(name):
+    positions = [index for index, value in enumerate(sys.argv) if value == name]
+    if len(positions) != 1 or positions[0] + 1 >= len(sys.argv):
+        raise ValueError(f"Slurm bootstrap requires one {name} value.")
+    return sys.argv[positions[0] + 1]
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+result_path = option("--result-path")
+submit_token = option("--submit-token")
+started_at = utc_now()
+received_signal = 0
+
+
+class BootstrapSignal(BaseException):
+    pass
+
+
+def stop_before_checkout_import(signum, _frame):
+    global received_signal
+    if received_signal:
+        return
+    received_signal = signum
+    raise BootstrapSignal
+
+
+def write_terminal(exit_code):
+    target = Path(result_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.parent / f".{target.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as file_obj:
+            json.dump(
+                {
+                    "schema_version": 1,
+                    "scheduler_job_id": str(os.environ.get("SLURM_JOB_ID") or ""),
+                    "scheduler_cluster": str(os.environ.get("SLURM_CLUSTER_NAME") or ""),
+                    "scheduler_submit_token": submit_token,
+                    "node": socket.gethostname(),
+                    "started_at": started_at,
+                    "ended_at": utc_now(),
+                    "exit_code": exit_code,
+                    "runtime_commit": "",
+                },
+                file_obj,
+                indent=2,
+                sort_keys=True,
+            )
+            file_obj.write("\n")
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.link(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+forwarded_signals = (signal.SIGTERM, signal.SIGINT)
+old_handlers = {signum: signal.signal(signum, stop_before_checkout_import) for signum in forwarded_signals}
+bootstrap_exit_code = None
+try:
+    with runtime_guard(workdir) as runtime_lock_descriptor:
+        os.set_inheritable(runtime_lock_descriptor, True)
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, forwarded_signals)
+        os.environ["AGENT_TOOLS_BOOTSTRAP_SIGNALS_BLOCKED"] = "1"
+        try:
+            os.execv(
+                sys.executable,
+                [
+                    sys.executable,
+                    "-m",
+                    "agent_tools.slurm",
+                    *sys.argv[2:],
+                    "--runtime-lock-fd",
+                    str(runtime_lock_descriptor),
+                ],
+            )
+        finally:
+            os.environ.pop("AGENT_TOOLS_BOOTSTRAP_SIGNALS_BLOCKED", None)
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+except BootstrapSignal:
+    bootstrap_exit_code = 128 + received_signal
+    write_terminal(bootstrap_exit_code)
+finally:
+    for signum, handler in old_handlers.items():
+        signal.signal(signum, handler)
+if bootstrap_exit_code is not None:
+    raise SystemExit(bootstrap_exit_code)

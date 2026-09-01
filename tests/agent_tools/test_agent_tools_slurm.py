@@ -1049,7 +1049,14 @@ def test_slurm_worker_bootstrap_holds_runtime_lock_before_checkout_import(tmp_pa
         "os.close(descriptor)\n"
     )
     env = os.environ.copy()
-    env.update({"PYTHONPATH": str(runtime), "IMPORT_MARKER": str(marker), "IMPORT_RELEASE": str(release)})
+    env.update(
+        {
+            "PYTHONPATH": str(runtime),
+            "IMPORT_MARKER": str(marker),
+            "IMPORT_RELEASE": str(release),
+            "SLURM_JOB_ID": "3880",
+        }
+    )
     process = subprocess.Popen(
         [
             sys.executable,
@@ -1057,6 +1064,10 @@ def test_slurm_worker_bootstrap_holds_runtime_lock_before_checkout_import(tmp_pa
             python_programs.source("slurm.worker_bootstrap"),
             str(runtime),
             "run-frozen-job",
+            "--result-path",
+            str(tmp_path / "slurm_terminal.json"),
+            "--submit-token",
+            "agent-tools-unit",
         ],
         env=env,
         cwd=runtime,
@@ -1087,6 +1098,84 @@ def test_slurm_worker_bootstrap_holds_runtime_lock_before_checkout_import(tmp_pa
             process.wait(timeout=10)
         if contender is not None:
             os.close(contender)
+
+
+@pytest.mark.parametrize("signum", [slurm.signal.SIGTERM, slurm.signal.SIGINT])
+def test_slurm_worker_bootstrap_writes_terminal_sidecar_when_signaled_waiting_for_lock(tmp_path: Path, signum: int):
+    runtime = tmp_path / "runtime"
+    package = runtime / "agent_tools"
+    (runtime / ".git").mkdir(parents=True)
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    import_marker = tmp_path / "checkout-imported"
+    (package / "slurm.py").write_text(
+        "from pathlib import Path\n" "import os\n" 'Path(os.environ["IMPORT_MARKER"]).write_text("imported")\n'
+    )
+    lock_path = runtime / ".agent-tools-runtime.lock"
+    lock_descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+    waiting_marker = tmp_path / "waiting-for-lock"
+    source = python_programs.source("slurm.worker_bootstrap")
+    flock_line = "        fcntl.flock(descriptor, fcntl.LOCK_EX)\n"
+    assert source.count(flock_line) == 1
+    source = source.replace(
+        flock_line,
+        f"        Path({str(waiting_marker)!r}).write_text('waiting')\n" + flock_line,
+    )
+    result_path = tmp_path / "slurm_terminal.json"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONPATH": str(runtime),
+            "IMPORT_MARKER": str(import_marker),
+            "SLURM_JOB_ID": "3880",
+            "SLURM_CLUSTER_NAME": "wuji-h20",
+        }
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            source,
+            str(runtime),
+            "run-frozen-job",
+            "--result-path",
+            str(result_path),
+            "--submit-token",
+            "agent-tools-unit",
+        ],
+        env=env,
+        cwd=runtime,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not waiting_marker.exists():
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                pytest.fail(f"Slurm bootstrap exited before lock wait: {stdout}{stderr}")
+            assert time.monotonic() < deadline, "timed out waiting for bootstrap lock contention"
+            time.sleep(0.01)
+
+        process.send_signal(signum)
+        stdout, stderr = process.communicate(timeout=10)
+
+        assert process.returncode == 128 + signum, stdout + stderr
+        assert not import_marker.exists()
+        terminal = json.loads(result_path.read_text())
+        assert slurm.sidecar_identity(terminal, "agent-tools-unit", expected_job_id="3880") == slurm.JobIdentity(
+            "3880", "wuji-h20"
+        )
+        assert slurm.terminal_exit_code(terminal) == 128 + signum
+        assert terminal["runtime_commit"] == ""
+    finally:
+        fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+        os.close(lock_descriptor)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
 
 
 def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, monkeypatch):
@@ -1140,6 +1229,44 @@ def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, 
     ]
     for env_name in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
         assert env_name not in spawned[0][1]["env"]
+
+
+def test_run_frozen_job_consumes_pending_bootstrap_signal_before_verification(tmp_path: Path, monkeypatch):
+    kwargs, _snapshot = _frozen_job_inputs(tmp_path)
+    monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    monkeypatch.setenv("SLURM_CLUSTER_NAME", "wuji-h20")
+    monkeypatch.setenv("AGENT_TOOLS_BOOTSTRAP_SIGNALS_BLOCKED", "1")
+    handlers = {}
+
+    def capture_signal(signum, handler):
+        previous = handlers.get(signum, slurm.signal.SIG_DFL)
+        handlers[signum] = handler
+        return previous
+
+    def unblock(how, signals):
+        assert how == slurm.signal.SIG_UNBLOCK
+        assert set(signals) == {slurm.signal.SIGTERM, slurm.signal.SIGINT}
+        handlers[slurm.signal.SIGTERM](slurm.signal.SIGTERM, None)
+        return set()
+
+    monkeypatch.setattr(slurm.signal, "signal", capture_signal)
+    monkeypatch.setattr(slurm.signal, "pthread_sigmask", unblock)
+    monkeypatch.setattr(
+        managed_scheduler,
+        "inspect_execution_target",
+        lambda *_args, **_kwargs: pytest.fail("pending signal must stop before verification"),
+    )
+    monkeypatch.setattr(slurm.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("must not spawn"))
+
+    exit_code = slurm.run_frozen_job(**kwargs)
+
+    assert exit_code == 128 + slurm.signal.SIGTERM
+    terminal = json.loads(Path(kwargs["result_path"]).read_text())
+    assert slurm.sidecar_identity(terminal, kwargs["submit_token"], expected_job_id="3880") == slurm.JobIdentity(
+        "3880", "wuji-h20"
+    )
+    assert slurm.terminal_exit_code(terminal) == exit_code
+    assert not Path(kwargs["allocation_identity_path"]).exists()
 
 
 def test_run_frozen_job_reuses_bootstrap_lock_and_releases_before_wait(tmp_path: Path, monkeypatch):
