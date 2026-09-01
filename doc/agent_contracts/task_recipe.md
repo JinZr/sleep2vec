@@ -834,9 +834,11 @@ After a target round is canonically committed, repeating the exact same
 `hparam-adaptive-step --proposal <path> --execute` is idempotent. The retry
 returns the already-published suggestion only when the immutable input and
 proposal, acceptance artifact and event, suggestion hash, registered plan, and
-`launch_round` evidence all agree. It does not stage, register, emit, or launch
-again. A preview remains subject to the live round binding, while an
-uncommitted, conflicting, or uncertain launch state continues to fail closed.
+`launch_round` evidence all agree, and the original command wrote its successful
+completion event after launch and replacement handling finished. It does not
+stage, register, emit, or launch again. A preview remains subject to the live
+round binding, while an incomplete target registry or any uncommitted,
+conflicting, or uncertain launch state continues to fail closed.
 
 A proposal changes only the search space and submits exactly one of:
 

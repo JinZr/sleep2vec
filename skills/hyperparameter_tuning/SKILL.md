@@ -82,8 +82,9 @@ and the tool preflights/registers/launches. `hparam-adaptive-loop` is only for
 explicit `best_neighborhood`, not an LLM driver for `agent_proposal`.
 If an execute receipt is lost, a heartbeat may repeat only the exact same
 proposal execute. The command returns the existing suggestion when canonical
-committed evidence agrees; unresolved or conflicting state does not authorize
-a new launch. Monitors remain non-launching.
+committed evidence includes successful execute completion; incomplete,
+unresolved, or conflicting state does not authorize a new launch. Monitors
+remain non-launching.
 Later rounds may use a newer commit while Python, route, objective, and the
 scientific contract remain frozen. Treat mixed commits as recorded provenance,
 not an experimental arm, and never rewrite earlier plan or snapshot bytes.
