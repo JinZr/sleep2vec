@@ -193,6 +193,7 @@ def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypat
                 "scheduler_submit_token": run["scheduler_submit_token"],
                 "node": "h20-bj-96",
                 "exit_code": 0,
+                "runtime_commit": "a" * 40,
             }
         )
     )
@@ -226,6 +227,7 @@ def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypat
     assert canonical["scheduler_raw_state"] == "COMPLETED"
     assert canonical["scheduler_exit_code"] == "0"
     assert canonical["scheduler_node"] == "h20-bj-96"
+    assert canonical["runtime_commit"] == "a" * 40
     assert read_calls == [[run["scheduler_result_path"]]]
 
 
@@ -697,6 +699,7 @@ def test_slurm_accounting_disabled_recovery_requires_matching_ssh_host(tmp_path:
         "scheduler_submit_token": row["scheduler_submit_token"],
         "node": "h20-bj-96",
         "exit_code": 0,
+        "runtime_commit": "a" * 40,
     }
 
     def read_output_texts(root, paths, *, remote=None):
@@ -853,6 +856,7 @@ def test_slurm_monitor_keeps_ssh_transport_failure_unknown_when_output_mentions_
         "scheduler_submit_token": row["scheduler_submit_token"],
         "node": "h20-bj-96",
         "exit_code": 0,
+        "runtime_commit": "a" * 40,
     }
 
     def read_output_texts(root, paths, *, remote=None):

@@ -58,7 +58,6 @@ def importable_package_symlink(raw_path, workdir):
         and candidate.is_dir()
         and path.name.isidentifier()
         and all(part.isidentifier() for part in path.parts[:-1])
-        and (candidate / "__init__.py").is_file()
     )
 
 

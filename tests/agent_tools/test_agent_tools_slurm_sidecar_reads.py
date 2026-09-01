@@ -40,6 +40,7 @@ def _write_sidecar(row, field="scheduler_result_path"):
     }
     if field == "scheduler_result_path":
         payload["exit_code"] = 0
+        payload["runtime_commit"] = "a" * 40
     Path(row[field]).write_text(json.dumps(payload))
 
 

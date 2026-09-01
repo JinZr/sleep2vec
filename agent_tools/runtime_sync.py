@@ -9,8 +9,8 @@ from . import python_programs, transport
 from .models import is_full_git_object_id
 from .runtime_lock import runtime_lock
 
-# The embedded execute path can spend up to 450 seconds in its bounded Git steps.
-REMOTE_SYNC_TIMEOUT_SECONDS = 600
+# The embedded Git steps are individually bounded, but lock contention is not. Wait for definitive remote evidence.
+REMOTE_SYNC_TIMEOUT_SECONDS: float | None = None
 
 
 def sync_runtime(
@@ -166,7 +166,6 @@ def _is_importable_package_symlink(raw_path: str, workdir: str) -> bool:
         and candidate.is_dir()
         and path.name.isidentifier()
         and all(part.isidentifier() for part in path.parts[:-1])
-        and (candidate / "__init__.py").is_file()
     )
 
 

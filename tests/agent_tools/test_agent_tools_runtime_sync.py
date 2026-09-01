@@ -152,13 +152,21 @@ def test_runtime_sync_scans_importable_code_from_repository_root(
 
 @pytest.mark.parametrize("host", [None, "unit-host"], ids=["local", "remote-bootstrap"])
 @pytest.mark.parametrize("ignored", [False, True], ids=["untracked", "ignored"])
+@pytest.mark.parametrize("initialized", [False, True], ids=["namespace-package", "regular-package"])
 def test_runtime_sync_rejects_symlinked_package_directories(
-    rolling_runtime: tuple[Path, Path, str], tmp_path: Path, monkeypatch, host: str | None, ignored: bool
+    rolling_runtime: tuple[Path, Path, str],
+    tmp_path: Path,
+    monkeypatch,
+    host: str | None,
+    ignored: bool,
+    initialized: bool,
 ) -> None:
     _source, runtime, _first = rolling_runtime
     package = tmp_path / "outside-package"
     package.mkdir()
-    (package / "__init__.py").write_text("VALUE = 1\n")
+    (package / "module.py").write_text("VALUE = 1\n")
+    if initialized:
+        (package / "__init__.py").write_text("VALUE = 1\n")
     (runtime / "plugin").symlink_to(package, target_is_directory=True)
     if ignored:
         (runtime / ".git" / "info" / "exclude").write_text("plugin\n")
@@ -270,14 +278,14 @@ def test_direct_launch_holds_runtime_sync_through_verification_head_capture_and_
 
     real_source = python_programs.source
     launcher_source = real_source("managed_scheduler.process_launch")
-    popen_line = "        process = subprocess.Popen(\n"
+    popen_line = "            process = subprocess.Popen(\n"
     assert launcher_source.count(popen_line) == 1
     launcher_source = launcher_source.replace(
         popen_line,
         (
-            f'        Path({str(before_popen)!r}).write_text("ready")\n'
-            f"        while not Path({str(popen_release)!r}).exists():\n"
-            '            __import__("time").sleep(0.01)\n' + popen_line
+            f'            Path({str(before_popen)!r}).write_text("ready")\n'
+            f"            while not Path({str(popen_release)!r}).exists():\n"
+            '                __import__("time").sleep(0.01)\n' + popen_line
         ),
     )
     verification_source = (

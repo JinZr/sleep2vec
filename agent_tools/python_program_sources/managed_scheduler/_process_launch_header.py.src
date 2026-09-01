@@ -5,3 +5,6 @@ import re
 import signal
 import subprocess
 import sys
+import traceback
+
+RETRYABLE_PRE_SPAWN_EXIT_CODE = 75

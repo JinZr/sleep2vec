@@ -205,8 +205,9 @@ def test_preset_capability_probe_claim_and_start_share_runtime_lock(tmp_path, pr
             events.append("claim")
         return original_merge(workspace, rows, **kwargs)
 
-    def start(_execution, _command, *, runtime_lock_fd):
+    def start(_execution, _command, *, runtime_lock_fd, retry_pre_spawn_failure):
         assert os.fstat(runtime_lock_fd)
+        assert retry_pre_spawn_failure is False
         assert_runtime_locked()
         events.append("start")
         return "launched"

@@ -44,6 +44,7 @@ ACTIVE_STATUSES = frozenset(
     {"submitting", "queued", "launched", "running", "stopping", "unknown_remote", "unknown_scheduler", "missing_pid"}
 )
 LAUNCH_TIMEOUT_SECONDS = 60
+RETRYABLE_PRE_SPAWN_EXIT_CODE = 75
 EXECUTION_SNAPSHOT_NAME = "execution_snapshot.json"
 DIRECT_LAUNCH_CAPABILITIES = ("commit_run_start", "runtime_lock")
 SLURM_LAUNCH_CAPABILITIES = (
@@ -66,6 +67,7 @@ __all__ = [
     "EXECUTION_SNAPSHOT_NAME",
     "LAUNCHABLE_STATUSES",
     "LAUNCH_TIMEOUT_SECONDS",
+    "RETRYABLE_PRE_SPAWN_EXIT_CODE",
     "LaunchResult",
     "MissingPidCapacityError",
     "SchedulerHooks",
@@ -1267,7 +1269,7 @@ class SlurmMonitorContext:
                     except ValueError:
                         # A future row's bad terminal must neither fail this row nor prefetch its allocation.
                         continue
-                    if not payload:
+                    if not payload or not _slurm_sidecar_runtime_commit(payload):
                         paths.append(allocation)
             try:
                 self.file_snapshots[key] = exp_io.read_managed_output_texts_at(
@@ -1370,6 +1372,21 @@ def observe_slurm_run(
         runtime_commit = _slurm_sidecar_runtime_commit(terminal)
         if runtime_commit:
             observation["runtime_commit"] = runtime_commit
+        else:
+            allocation = (
+                monitor_context.sidecar(owner, execution, row, "allocation_identity_path")
+                if monitor_context is not None
+                else _read_slurm_json(owner, execution, row["allocation_identity_path"])
+            )
+            if allocation:
+                allocation_identity = slurm.sidecar_identity(allocation, token, expected_job_id=job_id)
+                if cluster and allocation_identity.cluster and allocation_identity.cluster != cluster:
+                    raise ValueError("Slurm allocation sidecar cluster differs from the canonical run.")
+                if identity.cluster and allocation_identity.cluster and allocation_identity.cluster != identity.cluster:
+                    raise ValueError("Slurm allocation sidecar cluster differs from the terminal sidecar.")
+                runtime_commit = _slurm_sidecar_runtime_commit(allocation)
+                if runtime_commit:
+                    observation["runtime_commit"] = runtime_commit
     else:
         allocation = (
             monitor_context.sidecar(owner, execution, row, "allocation_identity_path")
@@ -1720,6 +1737,7 @@ def inspect_execution_target(
             "{}",
             "[]",
             json.dumps(SLURM_LAUNCH_CAPABILITIES if backend == "slurm" else DIRECT_LAUNCH_CAPABILITIES),
+            str(planned_commit),
         ],
     )
     if identity_result.returncode != 0:
@@ -1878,6 +1896,7 @@ def build_launch_command(
                         json.dumps(execution_snapshot, sort_keys=True),
                         json.dumps(artifacts, sort_keys=True),
                         json.dumps(DIRECT_LAUNCH_CAPABILITIES),
+                        str(execution_snapshot.get("expected_runtime_commit") or execution["runtime_commit"]),
                     ),
                     (
                         execution["python"],
@@ -1914,7 +1933,13 @@ def build_launch_command(
     return f"cd {_sh(workdir)} && {run_command}"
 
 
-def start_process(execution: dict[str, Any], command: str, *, runtime_lock_fd: int | None = None) -> str:
+def start_process(
+    execution: dict[str, Any],
+    command: str,
+    *,
+    runtime_lock_fd: int | None = None,
+    retry_pre_spawn_failure: bool = True,
+) -> str:
     remote = execution.get("target", "local") == "ssh"
     if remote and runtime_lock_fd is not None:
         raise ValueError("A local runtime lock descriptor cannot be passed to an SSH launch.")
@@ -1941,6 +1966,8 @@ def start_process(execution: dict[str, Any], command: str, *, runtime_lock_fd: i
     if remote and result.returncode == 255:
         # SSH may disconnect after starting the detached child; monitoring must reconcile its identity.
         return "launched"
+    if retry_pre_spawn_failure and result.returncode == RETRYABLE_PRE_SPAWN_EXIT_CODE:
+        return "pending"
     return "launched" if result.returncode == 0 else "launch_failed"
 
 

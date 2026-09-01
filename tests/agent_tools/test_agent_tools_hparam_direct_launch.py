@@ -890,7 +890,7 @@ def test_verified_launch_rechecks_snapshot_and_artifacts_immediately_before_proc
     assert str(script) in command
     assert str(config) in command
     launcher = python_programs.source("managed_scheduler.process_launch")
-    assert launcher.index("subprocess.run(\n                verification") < launcher.index(
+    assert launcher.index("subprocess.run(\n                    verification") < launcher.index(
         "process = subprocess.Popen"
     )
 
@@ -953,7 +953,7 @@ def test_verified_launch_rejects_frozen_argv_inside_runtime_lock_before_popen(tm
 
     result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True)
 
-    assert result.returncode != 0
+    assert result.returncode == managed_scheduler.RETRYABLE_PRE_SPAWN_EXIT_CODE
     assert "Frozen argv rejected in launch lock" in result.stderr
     assert not pid_path.exists()
     assert not marker.exists()
@@ -1113,6 +1113,38 @@ def test_launch_returncode_255_is_uncertain_only_over_ssh(monkeypatch, execution
     assert hparam_runtime._start_process(execution, "managed launch") == expected_status
 
 
+def test_pre_spawn_verification_failure_is_retryable(monkeypatch):
+    monkeypatch.setattr(
+        hparam_runtime.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], managed_scheduler.RETRYABLE_PRE_SPAWN_EXIT_CODE, "", "runtime compatibility changed"
+        ),
+    )
+
+    assert hparam_runtime._start_process({"target": "local"}, "managed launch") == "pending"
+    assert hparam_runtime._start_process({"target": "ssh", "host": "unit-host"}, "managed launch") == "pending"
+
+
+def test_retryable_pre_spawn_failure_does_not_consume_managed_run(tmp_path: Path, monkeypatch):
+    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
+    statuses = iter(["pending", "launched"])
+    starts = []
+    monkeypatch.setattr(
+        hparam_runtime,
+        "_start_process",
+        lambda *_args: starts.append("attempt") or next(statuses),
+    )
+
+    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "pending"
+
+    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+
+    assert starts == ["attempt", "attempt"]
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
+
+
 def test_uncertain_remote_launch_is_not_relaunched(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     starts = []
@@ -1253,7 +1285,8 @@ def test_hparam_launch_rejects_missing_runtime_protocol_before_managed_writes(tm
 
     def reject_protocol(_execution, command):
         assert command[2] == python_programs.source("managed_scheduler.runtime_identity")
-        assert json.loads(command[-1]) == list(managed_scheduler.DIRECT_LAUNCH_CAPABILITIES)
+        assert json.loads(command[-2]) == list(managed_scheduler.DIRECT_LAUNCH_CAPABILITIES)
+        assert command[-1]
         return subprocess.CompletedProcess(command, 2, "", "Target runtime lacks managed launch capabilities")
 
     monkeypatch.setattr(hparam_runtime, "_run_execution_command", reject_protocol)

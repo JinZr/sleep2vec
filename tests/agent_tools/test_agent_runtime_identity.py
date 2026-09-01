@@ -433,6 +433,29 @@ def test_runtime_identity_allows_non_sourceless_bytecode(runtime_repo):
     assert result.returncode == 0, result.stderr
 
 
+def test_runtime_identity_rejects_nonexistent_planned_commit(runtime_repo):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("managed_scheduler.runtime_identity"),
+            "runtime_cli",
+            "{}",
+            "[]",
+            "[]",
+            "f" * 40,
+        ],
+        cwd=runtime_repo,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "Planned runtime commit does not resolve to a commit" in result.stderr
+
+
 def test_runtime_identity_allows_only_untracked_code_inside_tracked_submodule(runtime_repo):
     nested = runtime_repo / "submodule"
     nested.mkdir()

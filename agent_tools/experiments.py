@@ -146,6 +146,7 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
                     "{}",
                     "[]",
                     json.dumps(managed_scheduler.DIRECT_LAUNCH_CAPABILITIES),
+                    str(execution["runtime_commit"]),
                 ],
             )
             if probe.returncode != 0:
@@ -160,7 +161,10 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
             }
             merge_run_manifest(workspace, [attempted], lock_held=True)
             status = managed_scheduler.start_process(
-                execution, identity["command"], runtime_lock_fd=runtime_lock_descriptor
+                execution,
+                identity["command"],
+                runtime_lock_fd=runtime_lock_descriptor,
+                retry_pre_spawn_failure=False,
             )
         attempted["status"] = status
         process_identity = evidence.read_process_identity(identity["pid_path"], attempted)

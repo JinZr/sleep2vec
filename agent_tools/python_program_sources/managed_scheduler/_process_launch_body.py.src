@@ -15,39 +15,43 @@ if capture_runtime_commit:
 else:
     guard = nullcontext()
 
-with guard:
-    runtime_commit = ""
-    child_env = os.environ.copy()
-    if verifications:
-        verification_env = child_env.copy()
-        python_path = verification_env.get("PYTHONPATH")
-        verification_env["PYTHONPATH"] = workdir + (os.pathsep + python_path if python_path else "")
-        for verification in verifications:
-            subprocess.run(
-                verification,
+try:
+    with guard:
+        runtime_commit = ""
+        child_env = os.environ.copy()
+        if verifications:
+            verification_env = child_env.copy()
+            python_path = verification_env.get("PYTHONPATH")
+            verification_env["PYTHONPATH"] = workdir + (os.pathsep + python_path if python_path else "")
+            for verification in verifications:
+                subprocess.run(
+                    verification,
+                    cwd=workdir,
+                    env=verification_env,
+                    stdout=subprocess.DEVNULL,
+                    check=True,
+                )
+        if capture_runtime_commit:
+            runtime_commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=workdir, text=True
+            ).strip().lower()
+            if re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", runtime_commit) is None:
+                raise RuntimeError("Runtime HEAD is not a full Git object ID")
+            # The child records the HEAD captured before Popen even if the checkout advances immediately after.
+            child_env["AGENT_TOOLS_PROCESS_RUNTIME_COMMIT"] = runtime_commit
+        with open(log_path, "ab", buffering=0) as log_file:
+            process = subprocess.Popen(
+                ["bash", script],
                 cwd=workdir,
-                env=verification_env,
-                stdout=subprocess.DEVNULL,
-                check=True,
+                env=child_env,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
             )
-    if capture_runtime_commit:
-        runtime_commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=workdir, text=True
-        ).strip().lower()
-        if re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", runtime_commit) is None:
-            raise RuntimeError("Runtime HEAD is not a full Git object ID")
-        # The child records the HEAD captured before Popen even if the checkout advances immediately after.
-        child_env["AGENT_TOOLS_PROCESS_RUNTIME_COMMIT"] = runtime_commit
-    with open(log_path, "ab", buffering=0) as log_file:
-        process = subprocess.Popen(
-            ["bash", script],
-            cwd=workdir,
-            env=child_env,
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+except BaseException:
+    traceback.print_exc()
+    raise SystemExit(RETRYABLE_PRE_SPAWN_EXIT_CODE)
 try:
     identity = {
         "pid": process.pid,

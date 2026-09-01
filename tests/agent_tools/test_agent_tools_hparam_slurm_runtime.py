@@ -85,6 +85,18 @@ def test_slurm_bare_receipt_survives_first_monitor_after_controller_purge(
     submitted = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert submitted["scheduler_job_id"] == "3880"
     assert submitted["scheduler_cluster"] == "wuji-h20"
+    observed_runtime_commit = "b" * 40
+    Path(run["allocation_identity_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": run["scheduler_submit_token"],
+                "execution_snapshot": {"runtime_commit": observed_runtime_commit},
+            }
+        )
+    )
     Path(run["scheduler_result_path"]).write_text(
         json.dumps(
             {
@@ -104,6 +116,7 @@ def test_slurm_bare_receipt_survives_first_monitor_after_controller_purge(
     assert canonical["scheduler_raw_state"] == "MISSING"
     assert canonical["scheduler_job_id"] == "3880"
     assert canonical["scheduler_cluster"] == "wuji-h20"
+    assert canonical["runtime_commit"] == observed_runtime_commit
     assert [argv[0] for argv in calls] == ["scontrol", "bash", "squeue", "scontrol", "sacct"]
 
 
@@ -158,7 +171,8 @@ def test_slurm_runtime_protocol_preflight_fails_before_controller_or_submit(tmp_
 
     def reject_protocol(_execution, command):
         assert command[2] == python_programs.source("managed_scheduler.runtime_identity")
-        assert json.loads(command[-1]) == list(managed_scheduler.SLURM_LAUNCH_CAPABILITIES)
+        assert json.loads(command[-2]) == list(managed_scheduler.SLURM_LAUNCH_CAPABILITIES)
+        assert command[-1]
         return subprocess.CompletedProcess(command, 2, "", "Target runtime lacks managed launch capabilities")
 
     monkeypatch.setattr(hparam_runtime, "_run_execution_command", reject_protocol)
