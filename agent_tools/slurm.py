@@ -236,6 +236,22 @@ def run_frozen_job(
     received_signal = 0
     observed_runtime_commit = ""
 
+    def write_terminal(exit_code: int) -> None:
+        _atomic_create_json(
+            result_path,
+            {
+                "schema_version": 1,
+                "scheduler_job_id": job_id,
+                "scheduler_cluster": cluster,
+                "scheduler_submit_token": submit_token,
+                "node": node,
+                "started_at": started_at,
+                "ended_at": _utc_now(),
+                "exit_code": exit_code,
+                "runtime_commit": observed_runtime_commit,
+            },
+        )
+
     def forward_signal(signum, _frame):
         nonlocal received_signal
         received_signal = signum
@@ -250,20 +266,7 @@ def run_frozen_job(
             exit_code = 128 + received_signal
             for signum, handler in old_handlers.items():
                 signal.signal(signum, handler)
-            _atomic_create_json(
-                result_path,
-                {
-                    "schema_version": 1,
-                    "scheduler_job_id": job_id,
-                    "scheduler_cluster": cluster,
-                    "scheduler_submit_token": submit_token,
-                    "node": node,
-                    "started_at": started_at,
-                    "ended_at": _utc_now(),
-                    "exit_code": exit_code,
-                    "runtime_commit": observed_runtime_commit,
-                },
-            )
+            write_terminal(exit_code)
             return exit_code
     exit_code = 2
     log_target = Path(log_path)
@@ -375,20 +378,7 @@ def run_frozen_job(
     finally:
         for signum, handler in old_handlers.items():
             signal.signal(signum, handler)
-    _atomic_create_json(
-        result_path,
-        {
-            "schema_version": 1,
-            "scheduler_job_id": job_id,
-            "scheduler_cluster": cluster,
-            "scheduler_submit_token": submit_token,
-            "node": node,
-            "started_at": started_at,
-            "ended_at": _utc_now(),
-            "exit_code": exit_code,
-            "runtime_commit": observed_runtime_commit,
-        },
-    )
+    write_terminal(exit_code)
     return exit_code
 
 
