@@ -68,6 +68,14 @@ def _runtime_sync_payload(**overrides: object) -> dict[str, object]:
     return payload
 
 
+@pytest.mark.parametrize("host", ["", " \t"], ids=["empty", "whitespace"])
+def test_runtime_sync_rejects_explicitly_blank_host_before_local_access(monkeypatch, host: str) -> None:
+    monkeypatch.setattr(runtime_sync, "_git", lambda *_args, **_kwargs: pytest.fail("must not inspect local Git"))
+
+    with pytest.raises(ValueError, match="host must be non-empty"):
+        sync_runtime("/remote/runtime", host=host, execute=True)
+
+
 @pytest.fixture
 def rolling_runtime(tmp_path: Path) -> tuple[Path, Path, str]:
     source = tmp_path / "source"

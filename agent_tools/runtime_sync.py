@@ -37,7 +37,9 @@ def sync_runtime(
     remote_python: str = "python3",
     execute: bool = False,
 ) -> dict[str, Any]:
-    if host:
+    if host is not None:
+        if not host.strip():
+            raise ValueError("runtime-sync host must be non-empty when provided.")
         return _sync_remote(str(workdir), host, remote_python=remote_python, execute=execute)
     checkout = str(Path(workdir).resolve())
     root = str(Path(_git(checkout, "rev-parse", "--show-toplevel").stdout.strip()).resolve())

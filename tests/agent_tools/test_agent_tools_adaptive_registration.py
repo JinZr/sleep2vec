@@ -1484,6 +1484,7 @@ def test_adaptive_source_rejects_frozen_python_drift_before_suggestion_write(tmp
     "drift",
     [
         "label",
+        "step_id",
         "selection_policy",
         "test_policy",
         "source_config",
@@ -1511,6 +1512,9 @@ def test_adaptive_source_rejects_frozen_scientific_contract_before_suggestion_wr
     if drift == "label":
         payload.setdefault("inputs", {})["label_name"] = "stage5"
         payload["decisions"]["label_name"]["value"] = "stage5"
+    elif drift == "step_id":
+        payload["step"] = yaml.safe_load(Path(payload["base_recipe"]).read_text())["step"]
+        payload["step"]["id"] = "changed-step"
     elif drift == "selection_policy":
         payload["evaluation_policy"]["selection_split"] = "train"
         payload["decisions"]["train_val_test_policy"]["value"] = "train"

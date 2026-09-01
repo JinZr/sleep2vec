@@ -2088,7 +2088,7 @@ def _validate_workflow_scientific_contract(recipe: dict[str, Any], workflow: dic
     root = Path(str(workflow.get("root") or ""))
     initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
     initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
-    fields = ("task", "variant", "inputs", "evaluation_policy")
+    fields = ("task", "variant", "step", "inputs", "evaluation_policy")
     changed = [field for field in fields if recipe.get(field) != initial_recipe.get(field)]
     search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
     initial_search = initial_recipe.get("search") if isinstance(initial_recipe.get("search"), dict) else {}
