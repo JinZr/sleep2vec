@@ -32,8 +32,27 @@ try:
                     check=True,
                 )
         if capture_runtime_commit:
+            git_env = child_env.copy()
+            for name in (
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                "GIT_COMMON_DIR",
+                "GIT_CONFIG",
+                "GIT_CONFIG_COUNT",
+                "GIT_CONFIG_PARAMETERS",
+                "GIT_DIR",
+                "GIT_GRAFT_FILE",
+                "GIT_IMPLICIT_WORK_TREE",
+                "GIT_INDEX_FILE",
+                "GIT_NO_REPLACE_OBJECTS",
+                "GIT_OBJECT_DIRECTORY",
+                "GIT_PREFIX",
+                "GIT_REPLACE_REF_BASE",
+                "GIT_SHALLOW_FILE",
+                "GIT_WORK_TREE",
+            ):
+                git_env.pop(name, None)
             runtime_commit = subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=workdir, text=True
+                ["git", "rev-parse", "HEAD"], cwd=workdir, env=git_env, text=True
             ).strip().lower()
             if re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", runtime_commit) is None:
                 raise RuntimeError("Runtime HEAD is not a full Git object ID")

@@ -862,3 +862,42 @@ def test_direct_process_launcher_records_sha256_runtime_commit(tmp_path: Path) -
     finally:
         if identity is not None and run_evidence.process_identity_running({}, identity) is True:
             run_evidence.stop_process_group({}, identity)
+
+
+def test_direct_process_launcher_ignores_authored_repository_selection_variables(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    decoy = tmp_path / "decoy"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(runtime)], check=True)
+    runtime_commit = _commit(runtime, "Initialize runtime", "runtime\n")
+    subprocess.run(["git", "init", "-q", "-b", "main", str(decoy)], check=True)
+    decoy_commit = _commit(decoy, "Initialize decoy", "decoy\n")
+    assert runtime_commit != decoy_commit
+    script = tmp_path / "launch.sh"
+    pid_path = tmp_path / "pid.json"
+    script.write_text("#!/usr/bin/env bash\nsleep 30\n")
+    command = managed_scheduler.build_launch_command(
+        {
+            "workdir": str(runtime),
+            "python": sys.executable,
+            "runtime_commit": runtime_commit,
+            "env": {
+                "GIT_DIR": str(decoy / ".git"),
+                "GIT_WORK_TREE": str(decoy),
+                "GIT_INDEX_FILE": str(decoy / ".git" / "index"),
+            },
+        },
+        script,
+        tmp_path / "stdout.log",
+        pid_path,
+        [],
+    )
+    identity = None
+    try:
+        result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        identity = run_evidence.read_process_identity(pid_path, {})
+        assert identity is not None
+        assert identity["runtime_commit"] == runtime_commit
+    finally:
+        if identity is not None and run_evidence.process_identity_running({}, identity) is True:
+            run_evidence.stop_process_group({}, identity)
