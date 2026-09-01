@@ -118,6 +118,33 @@ def test_runtime_sync_rejects_tracked_or_importable_untracked_code(
         sync_runtime(runtime, execute=True)
 
 
+@pytest.mark.parametrize("host", [None, "unit-host"], ids=["local", "remote-bootstrap"])
+@pytest.mark.parametrize(
+    "index_flag",
+    ["--assume-unchanged", "--skip-worktree"],
+    ids=["assume-unchanged", "skip-worktree"],
+)
+def test_runtime_sync_rejects_index_hidden_tracked_changes(
+    rolling_runtime: tuple[Path, Path, str], monkeypatch, host: str | None, index_flag: str
+) -> None:
+    _source, runtime, first = rolling_runtime
+    _git(runtime, "update-index", index_flag, "tracked.txt")
+    (runtime / "tracked.txt").write_text("hidden change\n")
+    if host:
+        monkeypatch.setattr(
+            runtime_sync.transport,
+            "run_shell",
+            lambda _host, command, *, timeout: subprocess.run(
+                ["bash", "-lc", command], text=True, capture_output=True, timeout=timeout
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="index-hidden tracked worktree changes"):
+        sync_runtime(runtime, host=host, remote_python=sys.executable, execute=True)
+
+    assert _git(runtime, "rev-parse", "HEAD") == first
+
+
 def test_runtime_sync_rejects_ignored_importable_code(
     rolling_runtime: tuple[Path, Path, str],
 ) -> None:
@@ -298,6 +325,36 @@ def test_runtime_sync_fast_forwards_detached_head_without_moving_main(
     assert updated["after_commit"] == updated["upstream_commit"] == second
     assert _git(runtime, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
     assert _git(runtime, "rev-parse", "refs/heads/main") == first
+
+
+@pytest.mark.parametrize("host", [None, "unit-host"], ids=["local", "remote-bootstrap"])
+def test_runtime_sync_ignores_ambient_repository_selection_variables(
+    rolling_runtime: tuple[Path, Path, str], tmp_path: Path, monkeypatch, host: str | None
+) -> None:
+    source, runtime, _first = rolling_runtime
+    second = _commit(source, "Advance runtime", "two\n")
+    _git(source, "push", "origin", "main")
+    decoy = tmp_path / "decoy"
+    subprocess.run(["git", "init", "-q", str(decoy)], check=True)
+    _commit(decoy, "Initialize decoy", "decoy\n")
+    monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(decoy))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(decoy / ".git" / "index"))
+    if host:
+        monkeypatch.setattr(
+            runtime_sync.transport,
+            "run_shell",
+            lambda _host, command, *, timeout: subprocess.run(
+                ["bash", "-lc", command], text=True, capture_output=True, timeout=timeout
+            ),
+        )
+
+    result = sync_runtime(runtime, host=host, remote_python=sys.executable, execute=True)
+
+    assert result["status"] == "fast_forwarded"
+    assert result["after_commit"] == second
+    assert (runtime / "tracked.txt").read_text() == "two\n"
+    assert (decoy / "tracked.txt").read_text() == "decoy\n"
 
 
 def test_runtime_sync_rejects_diverged_head_without_rewriting_it(

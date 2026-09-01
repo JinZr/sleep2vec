@@ -895,6 +895,21 @@ def test_verified_launch_rechecks_snapshot_and_artifacts_immediately_before_proc
     )
 
 
+def test_direct_launch_rejects_authored_runtime_lock_descriptor(tmp_path: Path):
+    with pytest.raises(ValueError, match="AGENT_TOOLS_RUNTIME_LOCK_FD is reserved"):
+        managed_scheduler.build_launch_command(
+            {
+                "workdir": str(tmp_path),
+                "python": sys.executable,
+                "env": {"AGENT_TOOLS_RUNTIME_LOCK_FD": "1"},
+            },
+            tmp_path / "launch.sh",
+            tmp_path / "stdout.log",
+            tmp_path / "pid.json",
+            [],
+        )
+
+
 def test_verified_launch_rejects_frozen_argv_inside_runtime_lock_before_popen(tmp_path: Path, monkeypatch):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     tracked = tmp_path / "tracked.txt"

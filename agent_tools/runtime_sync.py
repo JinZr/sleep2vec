@@ -11,6 +11,23 @@ from .runtime_lock import runtime_lock
 
 # The embedded Git steps are individually bounded, but lock contention is not. Wait for definitive remote evidence.
 REMOTE_SYNC_TIMEOUT_SECONDS: float | None = None
+GIT_REPOSITORY_ENV = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+)
 
 
 def sync_runtime(
@@ -128,6 +145,7 @@ def _sync_remote(workdir: str, host: str, *, remote_python: str, execute: bool) 
 
 
 def _require_clean_runtime(workdir: str) -> None:
+    _require_no_hidden_tracked_changes(workdir)
     dirty = _git(workdir, "status", "--porcelain", "--untracked-files=no").stdout.strip()
     if dirty:
         raise RuntimeError("Runtime checkout has tracked worktree changes; refusing to update it.")
@@ -139,6 +157,19 @@ def _require_clean_runtime(workdir: str) -> None:
         directories = _git(workdir, "ls-files", *flags, "--directory", "--no-empty-directory").stdout.splitlines()
         if any(_is_importable_package_symlink(path, workdir) for path in directories):
             raise RuntimeError("Runtime checkout has untracked or ignored importable code; refusing to update it.")
+
+
+def _require_no_hidden_tracked_changes(workdir: str) -> None:
+    entries = _git(workdir, "ls-files", "-v", "-z").stdout.split("\0")
+    hidden_paths = [entry[2:] for entry in entries if len(entry) > 2 and entry[0] in {"h", "s", "S"}]
+    for path in hidden_paths:
+        index_entry = _git(workdir, "ls-files", "--stage", "--", path).stdout.split()
+        candidate = Path(workdir) / path
+        if len(index_entry) < 3 or index_entry[2] != "0" or candidate.is_symlink() or not candidate.is_file():
+            raise RuntimeError("Runtime checkout has index-hidden tracked worktree changes; refusing to update it.")
+        worktree_hash = _git(workdir, "hash-object", "--filters", f"--path={path}", path).stdout.strip()
+        if worktree_hash != index_entry[1]:
+            raise RuntimeError("Runtime checkout has index-hidden tracked worktree changes; refusing to update it.")
 
 
 def _require_update_keeps_bytecode_sources(workdir: str, upstream: str) -> None:
@@ -217,7 +248,11 @@ def _git_result(
     *args: str,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess:
-    command = " ".join(transport.sh(part) for part in ("git", "-c", "core.hooksPath=/dev/null", "-C", workdir, *args))
+    sanitized = tuple(part for name in GIT_REPOSITORY_ENV for part in ("-u", name))
+    command = " ".join(
+        transport.sh(part)
+        for part in ("env", *sanitized, "git", "-c", "core.hooksPath=/dev/null", "-C", workdir, *args)
+    )
     return transport.run_shell(None, command, timeout=timeout)
 
 

@@ -1849,6 +1849,8 @@ def build_launch_command(
 ) -> str:
     workdir = str(execution.get("workdir") or REPO_ROOT)
     env = dict(execution.get("env") or {})
+    if "AGENT_TOOLS_RUNTIME_LOCK_FD" in env:
+        raise ValueError("execution.env.AGENT_TOOLS_RUNTIME_LOCK_FD is reserved for managed runtime locking.")
     if gpus:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(item) for item in gpus)
     run = [

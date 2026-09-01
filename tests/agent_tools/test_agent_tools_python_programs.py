@@ -32,7 +32,7 @@ SOURCE_HASHES = {
     "run_evidence.process_stop": "779fead9d94d0aca781168c74f3f639a33cd4f4aca17d2db4f9cc477996e6f79",
     "run_evidence.read_pid_text": "f206628bfc983a7d923624bb341c77156d9242804f8e24f179196ca3343e17cf",
     "run_evidence.runtime_artifacts": "3d03f0f32d450801d0179eb5280081765e414abca2d716b8ab80b1e42eabd36e",
-    "runtime_sync.sync": "55466b9d24a07068d0aca632c8487f79ecb5ec5a2e7f188d18239e19a22ba48b",
+    "runtime_sync.sync": "a933a8273495563d4e994a1c8b710383d4798f5e998774792aa963b5a154af87",
     "slurm.worker_bootstrap": "39c6ded8a5577cc9d2ddc30e160ca1f51c914b43b1d25e4859f5630e223b3eda",
 }
 
@@ -61,7 +61,7 @@ COMMAND_HASHES = {
     "run_evidence.process_stop": "14308dbf62b516eecec8cf28c777a20a72b7745d77841fb446663aa1bcb97310",
     "run_evidence.read_pid_text": "703861bd3a4230efb30fb4801465c2ec0b2902004519f7bf1428d35ec2405519",
     "run_evidence.runtime_artifacts": "855ce681a6a858d31dc68eb930cbef4e9d832ca1e75459f4e0c47ef41eb7e5ba",
-    "runtime_sync.sync": "131430f0a5c1cc9c33ea980de8720dded96e48f38e87a6eecc1d048c52513999",
+    "runtime_sync.sync": "b6334ed26b0d50f22a791883e27de0db85063f77514fee6b054a84c3f95b23a2",
     "slurm.worker_bootstrap": "cd586e02890c67a904827ef9252f9b44a10f50439e1cb37789a3c9eb85bcac26",
 }
 
