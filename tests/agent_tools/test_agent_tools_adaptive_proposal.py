@@ -413,6 +413,7 @@ def test_agent_proposal_preview_is_read_only_and_execute_uses_bound_snapshot(tmp
     assert accepted["request_id"] == json.loads(input_path.read_text())["request_id"]
     assert adaptive_hparam._latest_round_index(workflow_dir) == 1
     assert "agent_proposal_accepted" in events_path.read_text()
+    assert "agent_proposal_execute_completed" in events_path.read_text()
     replay_evidence = {
         "accepted": (workflow_dir / "adaptive" / "proposals" / "round_001.json").read_bytes(),
         "suggestion": suggestion.read_bytes(),
@@ -564,9 +565,10 @@ def test_concurrent_agent_proposal_execute_serializes_round_projections(tmp_path
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("agent_proposal_accepted") == 1
     assert [event["event_type"] for event in events].count("launch_round") == 1
+    assert [event["event_type"] for event in events].count("agent_proposal_execute_completed") == 1
 
 
-def test_agent_proposal_execute_replays_after_committed_receipt_is_lost(tmp_path: Path, monkeypatch):
+def test_agent_proposal_execute_does_not_replay_post_commit_failure(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     _write_fake_manifest(workflow_dir)
@@ -612,7 +614,8 @@ def test_agent_proposal_execute_replays_after_committed_receipt_is_lost(tmp_path
         "manifest": (tmp_path / "run_manifest.tsv").read_bytes(),
     }
 
-    assert adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True) == suggestion
+    with pytest.raises(ValueError, match="lacks its successful completion event"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
     assert launch_calls == 1
     assert commit_calls == 1
     assert (workflow_dir / "adaptive" / "proposals" / "round_001.json").read_bytes() == evidence_before["accepted"]
@@ -620,6 +623,115 @@ def test_agent_proposal_execute_replays_after_committed_receipt_is_lost(tmp_path
     assert (tmp_path / "events.jsonl").read_bytes() == evidence_before["events"]
     assert (workflow_dir / "adaptive" / "run_registry.tsv").read_bytes() == evidence_before["registry"]
     assert (tmp_path / "run_manifest.tsv").read_bytes() == evidence_before["manifest"]
+
+
+def test_agent_proposal_execute_does_not_replay_partial_launch_failure(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"]["round_size"] = 2
+    recipe.write_text(yaml.safe_dump(payload))
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_configuration_submission(input_path)
+    launch_calls = 0
+
+    def fake_launch(run_dir, *, dry_run=True):
+        nonlocal launch_calls
+        launch_calls += 1
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        updates = [
+            {"step_id": runs[0]["step_id"], "run_id": runs[0]["run_id"], "status": "launched"},
+            {"step_id": runs[1]["step_id"], "run_id": runs[1]["run_id"], "status": "launch_failed"},
+        ]
+        merge_run_manifest(tmp_path, updates)
+        return Path(run_dir) / "launch_manifest.tsv"
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+
+    with pytest.raises(RuntimeError, match="launch failed.*already committed"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+    evidence_before = {
+        "events": (tmp_path / "events.jsonl").read_bytes(),
+        "registry": (workflow_dir / "adaptive" / "run_registry.tsv").read_bytes(),
+        "manifest": (tmp_path / "run_manifest.tsv").read_bytes(),
+    }
+    with pytest.raises(ValueError, match="lacks its successful completion event"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+    assert launch_calls == 1
+    assert (tmp_path / "events.jsonl").read_bytes() == evidence_before["events"]
+    assert (workflow_dir / "adaptive" / "run_registry.tsv").read_bytes() == evidence_before["registry"]
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == evidence_before["manifest"]
+
+
+def test_agent_proposal_execute_replay_blocks_later_uncommitted_launch(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+
+    def fake_launch(run_dir, *, dry_run=True):
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "launched"} for run in runs],
+        )
+        return Path(run_dir) / "launch_manifest.tsv"
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+    evidence_before = {
+        "events": (tmp_path / "events.jsonl").read_bytes(),
+        "registry": (workflow_dir / "adaptive" / "run_registry.tsv").read_bytes(),
+        "manifest": (tmp_path / "run_manifest.tsv").read_bytes(),
+    }
+    monkeypatch.setattr(adaptive_hparam, "_uncommitted_launch_attempts", lambda *_args: ([(2, "run-999")], []))
+
+    with pytest.raises(RuntimeError, match="round 002 run-999.*exact committed replay is blocked"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+    assert (tmp_path / "events.jsonl").read_bytes() == evidence_before["events"]
+    assert (workflow_dir / "adaptive" / "run_registry.tsv").read_bytes() == evidence_before["registry"]
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == evidence_before["manifest"]
+
+
+def test_agent_proposal_execute_replay_requires_complete_target_registry(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["adaptive"]["round_size"] = 2
+    recipe.write_text(yaml.safe_dump(payload))
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_configuration_submission(input_path)
+
+    def fake_launch(run_dir, *, dry_run=True):
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "launched"} for run in runs],
+        )
+        return Path(run_dir) / "launch_manifest.tsv"
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+    registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
+    registry_rows = adaptive_hparam.read_rows(registry_path, require_managed_identity=True)
+    round_one_rows = [row for row in registry_rows if row["round"] == "1"]
+    assert len(round_one_rows) == 2
+    manifests.write_rows(registry_path, [row for row in registry_rows if row != round_one_rows[1]])
+    monkeypatch.setattr(adaptive_hparam, "_workflow", lambda *_args: {})
+
+    with pytest.raises(ValueError, match="Adaptive registry is missing the current plan run"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
 
 
 @pytest.mark.parametrize("projection", ["accepted", "suggestion"])

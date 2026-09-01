@@ -846,7 +846,19 @@ def _applied_agent_proposal(root: Path, workspace: Path, proposal_path: str | Pa
 
     # A successful replay is proven from frozen artifacts because its live round binding is stale by design.
     round_dir = _round_dir(root, target_round)
-    artifacts.read_hparam_plan(round_dir)
+    round_plan = artifacts.read_hparam_plan(round_dir)
+    registry_path = root / "adaptive" / "run_registry.tsv"
+    registry_rows = read_rows(registry_path, require_managed_identity=True)
+    validate_managed_run_rows(registry_rows, source=str(registry_path), cardinality="one_per_run")
+    _validate_round_registry(root, target_round, round_plan, registry_rows)
+    unresolved, abandoned = _uncommitted_launch_attempts(root, workspace)
+    if unresolved or abandoned:
+        attempts = list(unresolved)
+        attempts.extend((round_index, str(row["run_id"])) for round_index, row in abandoned)
+        detail = ", ".join(f"round {round_index:03d} {run_id}" for round_index, run_id in attempts)
+        raise RuntimeError(
+            f"Uncommitted adaptive launch evidence remains for {detail}; exact committed replay is blocked."
+        )
     accepted_path = root / "adaptive" / "proposals" / f"round_{target_round:03d}.json"
     suggestion_path = root / "adaptive" / "suggestions" / f"round_{target_round:03d}.yaml"
     accepted_payload = {
@@ -892,6 +904,13 @@ def _applied_agent_proposal(root: Path, workspace: Path, proposal_path: str | Pa
         identity_field="round",
     ):
         raise ValueError("Committed agent proposal lacks its launch event.")
+    if not _validate_event_history(
+        workspace,
+        "agent_proposal_execute_completed",
+        accepted_event,
+        identity_field="request_id",
+    ):
+        raise ValueError("Committed agent proposal lacks its successful completion event.")
     return suggestion_path
 
 
@@ -1249,6 +1268,7 @@ def _adaptive_step(
     bound_config_path: Path | None = None
     bound_config_sha256: str | None = None
     round_recipe_payload: dict[str, Any] | None = None
+    agent_proposal_event: dict[str, Any] | None = None
 
     if strategy == "agent_proposal" and proposal_path is None:
         digest = digest_hparam_run(round_dir)
@@ -1406,17 +1426,18 @@ def _adaptive_step(
         _write_exact_bytes(accepted_path, accepted_bytes, managed_root=workspace)
         _write_exact_bytes(suggestion, suggestion_bytes, managed_root=workspace)
         _write_exact_bytes(rationale_path, rationale_bytes, managed_root=workspace)
+        agent_proposal_event = {
+            "round": next_round,
+            "request_id": validated["request_id"],
+            "proposal_path": str(proposal_file),
+            "proposal_sha256": proposal_sha256,
+            "suggestion": str(suggestion),
+            "suggestion_sha256": hashlib.sha256(suggestion_bytes).hexdigest(),
+        }
         _reconcile_event(
             workspace,
             "agent_proposal_accepted",
-            {
-                "round": next_round,
-                "request_id": validated["request_id"],
-                "proposal_path": str(proposal_file),
-                "proposal_sha256": proposal_sha256,
-                "suggestion": str(suggestion),
-                "suggestion_sha256": hashlib.sha256(suggestion_bytes).hexdigest(),
-            },
+            agent_proposal_event,
             identity_field="request_id",
         )
         digest = input_path
@@ -1572,6 +1593,14 @@ def _adaptive_step(
             raise RuntimeError(
                 f"Round {next_round:03d} started no runs (statuses: {statuses}); the round was not committed and "
                 f"current runs were not retired. Prospective run states were preserved at {next_dir}."
+            )
+        if agent_proposal_event is not None:
+            # The replay receipt is terminal: any earlier launch or replacement failure must remain failed.
+            _reconcile_event(
+                workspace,
+                "agent_proposal_execute_completed",
+                agent_proposal_event,
+                identity_field="request_id",
             )
     elif budget_exhausted:
         _append_event(
@@ -1739,8 +1768,21 @@ def _validate_workflow_payload(
                 f"{registered.get('step_id', '')} / {registered.get('run_id', '')}"
             )
         validate_frozen_run_update(canonical, registered)
+    _validate_round_registry(root, round_index, plan, registry_rows)
+    return workflow
+
+
+def _validate_round_registry(
+    root: Path,
+    round_index: int,
+    plan: dict[str, Any],
+    registry_rows: list[dict[str, Any]],
+) -> None:
+    round_dir = _round_dir(root, round_index)
     registry_by_key = {managed_run_key(row): row for row in registry_rows}
-    for run in plan.get("runs", []):
+    plan_runs = plan.get("runs", [])
+    plan_keys = {managed_run_key(run) for run in plan_runs}
+    for run in plan_runs:
         key = managed_run_key(run)
         registered = registry_by_key.get(key)
         if registered is None:
@@ -1750,7 +1792,9 @@ def _validate_workflow_payload(
         ):
             raise ValueError(f"Adaptive registry round binding differs for run: {key[0]} / {key[1]}")
         validate_frozen_run_update(run, registered)
-    return workflow
+    registered_keys = {managed_run_key(row) for row in registry_rows if str(row.get("round") or "") == str(round_index)}
+    if registered_keys != plan_keys:
+        raise ValueError(f"Adaptive registry has runs outside the current plan: {round_dir}")
 
 
 def _validate_initial_round(
@@ -2414,7 +2458,10 @@ def _finish_interrupted_launch(
     return read_run_manifest(workspace)
 
 
-def _reject_unresolved_launch_attempts(root: Path, workspace: Path) -> None:
+def _uncommitted_launch_attempts(
+    root: Path,
+    workspace: Path,
+) -> tuple[list[tuple[int, str]], list[tuple[int, dict[str, Any]]]]:
     committed_rounds = _committed_round_indexes(root)
     registry = read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True)
     canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
@@ -2486,6 +2533,11 @@ def _reject_unresolved_launch_attempts(root: Path, workspace: Path) -> None:
                 continue
             if status in {"planned", "pending"}:
                 abandoned.append((round_index, row))
+    return unresolved, abandoned
+
+
+def _reject_unresolved_launch_attempts(root: Path, workspace: Path) -> None:
+    unresolved, abandoned = _uncommitted_launch_attempts(root, workspace)
     if unresolved:
         detail = ", ".join(f"round {round_index:03d} {run_id}" for round_index, run_id in unresolved)
         raise RuntimeError(
