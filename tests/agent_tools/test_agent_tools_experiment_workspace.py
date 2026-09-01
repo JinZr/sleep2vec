@@ -2323,7 +2323,7 @@ def test_stale_start_cannot_backfill_runtime_provenance_into_terminal_run(tmp_pa
 
 
 @pytest.mark.parametrize("field", ["planned_runtime_commit", "runtime_commit"])
-@pytest.mark.parametrize("commit", ["a" * 39, "A" * 40, "g" * 40, 123])
+@pytest.mark.parametrize("commit", ["a" * 39, "a" * 63, "a" * 65, "A" * 40, "A" * 64, "g" * 40, 123])
 def test_managed_rows_reject_malformed_runtime_provenance(field: str, commit: object):
     with pytest.raises(ValueError, match=rf"invalid {field}"):
         validate_managed_run_rows(
@@ -2331,6 +2331,21 @@ def test_managed_rows_reject_malformed_runtime_provenance(field: str, commit: ob
             source="unit manifest",
             cardinality="one_per_run",
         )
+
+
+def test_managed_rows_accept_sha256_runtime_provenance():
+    validate_managed_run_rows(
+        [
+            {
+                "step_id": "train",
+                "run_id": "run-000",
+                "planned_runtime_commit": "a" * 64,
+                "runtime_commit": "b" * 64,
+            }
+        ],
+        source="unit manifest",
+        cardinality="one_per_run",
+    )
 
 
 def test_plan_registration_accepts_canonical_execution_identity_fill(tmp_path: Path):

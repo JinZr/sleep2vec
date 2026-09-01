@@ -887,11 +887,13 @@ def test_unsafe_process_identity_is_blocked_and_never_retried(
     assert experiment_pipeline._logical_job_states(_spec(root), updated)[0]["status"] == "blocked"
 
 
-def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("object_id_length", [40, 64])
+def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monkeypatch, object_id_length: int):
     source = tmp_path / "source"
     recipe_path = write_finetune_recipe(source, variant="sleep2vec2")
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
+    runtime_commit = "a" * object_id_length
     recipe["task"] = "infer"
     recipe["experiment"]["root"] = str(workspace)
     recipe["step"] = {
@@ -903,7 +905,7 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
         "target": "local",
         "workdir": "/runtime/snapshot",
         "python": "/runtime/python",
-        "runtime_commit": "a" * 40,
+        "runtime_commit": runtime_commit,
     }
     recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     config_bytes = Path(recipe["inputs"]["config"]).read_bytes()
@@ -941,7 +943,7 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     assert script_lines[helper_index + 1].startswith("  /runtime/python -c ")
     helper_text = "\n".join(script_lines[helper_index:running_index])
     assert "record-runtime-commit" in helper_text
-    assert "a" * 40 in helper_text
+    assert runtime_commit in helper_text
     assert helper_index < running_index < command_index
     assert plan["recipe"]["execution"] == recipe["execution"]
     canonical = read_run_manifest(workspace)[0]
@@ -961,7 +963,7 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
             payload = {
                 "python": "/runtime/python",
                 "python_version": "3.12",
-                "runtime_commit": "a" * 40,
+                "runtime_commit": runtime_commit,
                 "runtime_repo_root": "/runtime/snapshot",
                 "runtime_hostname": "unit-host",
                 "module": "sleep2vec2.infer",
@@ -980,13 +982,26 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
             "target": "local",
             "workdir": "/runtime/snapshot",
             "python": "/runtime/python",
-            "runtime_commit": "a" * 40,
+            "runtime_commit": runtime_commit,
         },
         [planned],
         command_runner=inspect_command,
     )
     assert snapshot["module"] == "sleep2vec2.infer"
     assert snapshot["required_options"] == ["--config"]
+    for invalid_runtime_commit in ("a" * 63, "a" * 65, "A" * 64):
+        runtime_commit = invalid_runtime_commit
+        with pytest.raises(ValueError, match="invalid runtime commit"):
+            managed_scheduler.inspect_execution_target(
+                {
+                    "target": "local",
+                    "workdir": "/runtime/snapshot",
+                    "python": "/runtime/python",
+                    "runtime_commit": "a" * object_id_length,
+                },
+                [planned],
+                command_runner=inspect_command,
+            )
 
 
 @pytest.mark.parametrize(

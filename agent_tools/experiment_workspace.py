@@ -14,7 +14,7 @@ from typing import Any
 import yaml
 
 from . import experiment_io as exp_io, research_log, transport
-from .models import REPO_ROOT, json_ready
+from .models import REPO_ROOT, is_full_git_object_id, json_ready
 
 PHASES = {"prepare", "train", "evaluate", "analyze"}
 PLAN_CONTROLLERS = {"unassigned", "ordinary", "adaptive", "pipeline"}
@@ -840,9 +840,7 @@ def validate_managed_run_rows(rows: list[dict[str, Any]], *, source: str, cardin
             raise ValueError(f"{source} row {index} has non-absolute paths: {', '.join(sorted(relative_paths))}")
         for field in RUNTIME_PROVENANCE_FIELDS:
             commit = row.get(field)
-            if commit not in (None, "") and (
-                not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None
-            ):
+            if commit not in (None, "") and not is_full_git_object_id(commit):
                 raise ValueError(f"{source} row {index} has an invalid {field}.")
         seen.add(key)
 

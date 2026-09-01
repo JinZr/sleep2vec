@@ -998,20 +998,24 @@ def test_process_identity_accepts_legacy_receipt_without_runtime_commit(tmp_path
     assert run_evidence.read_process_identity(pid_path) == legacy_identity
 
 
-def test_process_identity_reads_receipt_with_runtime_commit(tmp_path: Path):
+@pytest.mark.parametrize("object_id_length", [40, 64])
+def test_process_identity_reads_receipt_with_runtime_commit(tmp_path: Path, object_id_length: int):
     pid_path = tmp_path / "current.pid"
     identity = {
         "pid": 123,
         "process_group_id": 123,
         "process_start_token": "proc:unit-start",
-        "runtime_commit": "b" * 40,
+        "runtime_commit": "b" * object_id_length,
     }
     pid_path.write_text(json.dumps(identity) + "\n")
 
     assert run_evidence.read_process_identity(pid_path) == identity
 
 
-@pytest.mark.parametrize("runtime_commit", ["", None, "a" * 39, "A" * 40, "g" * 40, 123])
+@pytest.mark.parametrize(
+    "runtime_commit",
+    ["", None, "a" * 39, "a" * 63, "a" * 65, "A" * 40, "A" * 64, "g" * 40, 123],
+)
 def test_process_identity_rejects_malformed_runtime_commit(tmp_path: Path, runtime_commit: object):
     pid_path = tmp_path / "malformed.pid"
     pid_path.write_text(

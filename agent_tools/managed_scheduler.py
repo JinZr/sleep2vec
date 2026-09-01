@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import shlex
 import subprocess
 import sys
@@ -38,7 +37,7 @@ from .experiment_workspace import (
     write_status_report,
 )
 from .manifests import read_json, utc_now
-from .models import REPO_ROOT
+from .models import REPO_ROOT, is_full_git_object_id
 
 RunKey = tuple[str, str]
 ACTIVE_STATUSES = frozenset(
@@ -1542,8 +1541,8 @@ def _slurm_sidecar_runtime_commit(payload: dict[str, Any]) -> str:
     value = snapshot.get("runtime_commit") if isinstance(snapshot, dict) else payload.get("runtime_commit")
     if value in (None, ""):
         return ""
-    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{40}", value) is None:
-        raise ValueError("Slurm sidecar runtime_commit must be a lowercase 40-character Git commit SHA.")
+    if not is_full_git_object_id(value):
+        raise ValueError("Slurm sidecar runtime_commit must be a full lowercase 40- or 64-character Git object ID.")
     return value
 
 
@@ -1730,6 +1729,8 @@ def inspect_execution_target(
     )
     if not isinstance(identity, dict) or any(identity.get(field) in (None, "") for field in identity_fields):
         raise ValueError("Target execution identity preflight returned incomplete evidence.")
+    if not is_full_git_object_id(identity["runtime_commit"]):
+        raise ValueError("Target execution identity preflight returned an invalid runtime commit.")
     parse_result = run_command(
         execution,
         [

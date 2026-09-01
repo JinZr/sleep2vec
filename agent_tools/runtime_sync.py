@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import re
 import subprocess
 from typing import Any
 
 from . import python_programs, transport
+from .models import is_full_git_object_id
 from .runtime_lock import runtime_lock
 
 
@@ -104,8 +104,7 @@ def _sync_remote(workdir: str, host: str, *, remote_python: str, execute: bool) 
         or not isinstance(payload["workdir"], str)
         or not Path(payload["workdir"]).is_absolute()
         or any(
-            not isinstance(payload[field], str) or re.fullmatch(r"[0-9a-f]{40}", payload[field]) is None
-            for field in ("before_commit", "upstream_commit", "after_commit")
+            not is_full_git_object_id(payload[field]) for field in ("before_commit", "upstream_commit", "after_commit")
         )
     ):
         raise RuntimeError(f"Remote runtime sync returned malformed evidence on {host}.")
@@ -143,8 +142,8 @@ def _is_importable_code(raw_path: str) -> bool:
 
 def _commit(value: str, label: str) -> str:
     commit = value.strip().lower()
-    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
-        raise RuntimeError(f"{label} is not a full Git commit SHA: {commit!r}")
+    if not is_full_git_object_id(commit):
+        raise RuntimeError(f"{label} is not a full Git object ID: {commit!r}")
     return commit
 
 

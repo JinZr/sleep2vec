@@ -27,8 +27,8 @@ def git(*args, timeout=30):
 
 def commit(value, label):
     value = value.strip().lower()
-    if re.fullmatch(r"[0-9a-f]{40}", value) is None:
-        raise RuntimeError(f"{label} is not a full Git commit SHA: {value!r}")
+    if re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", value) is None:
+        raise RuntimeError(f"{label} is not a full Git object ID: {value!r}")
     return value
 
 

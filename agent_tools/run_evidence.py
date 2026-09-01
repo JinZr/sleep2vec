@@ -7,7 +7,6 @@ import json
 import locale
 import os
 from pathlib import Path
-import re
 import signal
 import stat
 import subprocess
@@ -24,6 +23,7 @@ from .experiment_workspace import (
     merge_run_row,
 )
 from .manifests import read_json, utc_now
+from .models import is_full_git_object_id
 from .progress import read_progress
 from .transport import SSH_TIMEOUT_SECONDS
 
@@ -402,7 +402,7 @@ def _parse_process_identity(text: str, path: Any) -> dict[str, Any]:
     identity = {"pid": pid, "process_group_id": pgid, "process_start_token": token}
     if "runtime_commit" in payload:
         runtime_commit = payload["runtime_commit"]
-        if not isinstance(runtime_commit, str) or re.fullmatch(r"[0-9a-f]{40}", runtime_commit) is None:
+        if not is_full_git_object_id(runtime_commit):
             raise ProcessIdentityError(f"PID file has invalid runtime commit: {path}")
         identity["runtime_commit"] = runtime_commit
     return identity

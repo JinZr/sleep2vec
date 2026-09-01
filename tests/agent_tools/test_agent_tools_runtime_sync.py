@@ -569,3 +569,57 @@ def test_remote_runtime_sync_bootstraps_checkout_without_agent_tools(
     assert result["after_commit"] == result["upstream_commit"] == second
     assert _git(runtime, "rev-parse", "HEAD") == second
     assert not (runtime / "agent_tools").exists()
+
+
+def test_remote_runtime_sync_bootstrap_accepts_sha256_git_object_ids(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source"
+    origin = tmp_path / "origin.git"
+    runtime = tmp_path / "runtime"
+    subprocess.run(["git", "init", "-q", "--object-format=sha256", "-b", "main", str(source)], check=True)
+    first = _commit(source, "Initial", "one\n")
+    subprocess.run(["git", "init", "-q", "--bare", "--object-format=sha256", str(origin)], check=True)
+    _git(source, "remote", "add", "origin", str(origin))
+    _git(source, "push", "-u", "origin", "main")
+    subprocess.run(["git", "clone", "-q", "--branch", "main", str(origin), str(runtime)], check=True)
+    second = _commit(source, "Advance", "two\n")
+    _git(source, "push", "origin", "main")
+    monkeypatch.setattr(
+        runtime_sync.transport,
+        "run_shell",
+        lambda _host, command, *, timeout: subprocess.run(
+            ["bash", "-lc", command], text=True, capture_output=True, timeout=timeout
+        ),
+    )
+
+    result = sync_runtime(runtime, host="unit-host", remote_python=sys.executable, execute=True)
+
+    assert len(first) == len(second) == 64
+    assert result["before_commit"] == first
+    assert result["after_commit"] == result["upstream_commit"] == second
+
+
+def test_direct_process_launcher_records_sha256_runtime_commit(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    subprocess.run(["git", "init", "-q", "--object-format=sha256", "-b", "main", str(runtime)], check=True)
+    runtime_commit = _commit(runtime, "Initial", "one\n")
+    script = tmp_path / "launch.sh"
+    pid_path = tmp_path / "pid.json"
+    script.write_text("#!/usr/bin/env bash\nsleep 30\n")
+    command = managed_scheduler.build_launch_command(
+        {"workdir": str(runtime), "python": sys.executable, "runtime_commit": runtime_commit},
+        script,
+        tmp_path / "stdout.log",
+        pid_path,
+        [],
+    )
+    identity = None
+    try:
+        result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        identity = run_evidence.read_process_identity(pid_path, {})
+        assert identity is not None
+        assert identity["runtime_commit"] == runtime_commit
+        assert len(identity["runtime_commit"]) == 64
+    finally:
+        if identity is not None and run_evidence.process_identity_running({}, identity) is True:
+            run_evidence.stop_process_group({}, identity)
