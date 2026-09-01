@@ -30,9 +30,9 @@ versions, paths, and hashes are not rewritten to migrate historical plans.
 
 Plan-owned identity, semantic parameters, config/script hashes, artifact paths,
 runtime/checkpoint directories, and execution identity are frozen after
-registration. `planned_runtime_commit` is the plan's full lowercase 40- or
-64-character baseline Git object ID; `runtime_commit` is the corresponding
-full lowercase object ID observed under the short runtime lock
+registration. `planned_runtime_commit` is the plan's full lowercase
+40-character baseline Git commit ID; `runtime_commit` is the corresponding
+full lowercase commit ID observed under the short runtime lock
 immediately before a provenance-aware direct child is spawned or before the
 Slurm allocation wrapper spawns `srun`. A script-owned direct route without the
 new outer receipt observes it at its own `running` boundary. Each is a trusted
@@ -204,7 +204,7 @@ supply the planned commit and receive the same three fields plus the fourth
 `runtime_commit`, observed under the short runtime lock immediately before
 process creation. Readers require all three base fields, allow only the optional
 `runtime_commit` field, and require a non-empty value to be a full lowercase
-40- or 64-character Git object ID; missing base fields or additional fields are
+40-character Git commit ID; missing base fields or additional fields are
 corrupt.
 
 For a provenance-aware managed direct launch, embedded verification, HEAD

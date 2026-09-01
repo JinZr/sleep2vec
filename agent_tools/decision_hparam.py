@@ -779,7 +779,7 @@ def _hparam_runtime_identity_issues(execution: dict[str, Any]) -> list[DecisionI
             DecisionIssue(
                 DecisionStatus.FAIL,
                 "execution.runtime_commit",
-                "execution.runtime_commit must be a full 40- or 64-character Git object ID when set.",
+                "execution.runtime_commit must be a full 40-character Git commit ID when set.",
                 None,
                 {"runtime_commit": runtime_commit},
             )

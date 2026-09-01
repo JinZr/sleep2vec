@@ -259,8 +259,8 @@ it never substitutes the status reader's host environment.
 `execution.runtime_commit`. Declaring either turns the otherwise-common
 `execution.workdir` into an all-or-none local/default-local runtime identity.
 Python is one executable name or path without whitespace, arguments, or `~`
-shorthand; the commit is a full 40- or 64-character planned/baseline Git object
-ID. Authored hexadecimal may use either case; the resolved recipe freezes it in
+shorthand; the commit is a full 40-character planned/baseline Git commit ID.
+Authored hexadecimal may use either case; the resolved recipe freezes it in
 lowercase.
 Other non-hparam tasks reject Python and commit identity rather than silently
 rendering commands that ignore them.
@@ -333,8 +333,8 @@ restart them.
 Ordinary `infer` and `evaluate` plans may declare `execution.scheduler.type:
 slurm`. They reuse the existing single-node Slurm resource fields and protected
 environment rules in [Launch and queue](#launch-and-queue), with explicit
-`execution.workdir`, `execution.python`, and a full 40- or 64-character
-planned/baseline `execution.runtime_commit`, frozen in lowercase. Submission may use `target: local`
+`execution.workdir`, `execution.python`, and a full 40-character planned/baseline
+`execution.runtime_commit`, frozen in lowercase. Submission may use `target: local`
 or `target: ssh`;
 `scheduler.direct_controller` independently selects controller routing. Paths
 must already be available on the execution host; planning does not upload a
@@ -514,9 +514,9 @@ consultation and final-evaluation validation remain separate gates.
 The optional `execution` block configures the managed launcher.
 
 - `execution.python` names one target Python executable without whitespace,
-  arguments, or `~` shorthand. `execution.runtime_commit` names a full 40- or
-  64-character planned/baseline Git object ID; launch records the actual object
-  ID separately. Authored hexadecimal is case-insensitive and freezes lowercase.
+  arguments, or `~` shorthand. `execution.runtime_commit` names a full
+  40-character planned/baseline Git commit ID; launch records the actual commit
+  separately. Authored hexadecimal is case-insensitive and freezes lowercase.
 - Conda wrapping belongs in `execution.conda_env`, not `execution.python`.
 - Omitted `execution.scheduler` resolves to `{type: direct}`. Direct runs use
   the existing `gpu_pool` / `gpus_per_run` / `max_concurrent` process model.

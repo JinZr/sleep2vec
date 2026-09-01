@@ -412,13 +412,10 @@ def test_hparam_workdir_is_verbatim_run_cwd_for_all_generated_scripts(tmp_path: 
     assert "${PYTHONPATH:+:$PYTHONPATH}" not in run_all_text
 
 
-@pytest.mark.parametrize("object_id_length", [40, 64])
-def test_hparam_plan_freezes_explicit_target_python_and_commit(tmp_path: Path, object_id_length: int):
+def test_hparam_plan_freezes_explicit_target_python_and_commit(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
-    payload.setdefault("execution", {}).update(
-        {"python": "/runtime/bin/python3", "runtime_commit": "A" * object_id_length}
-    )
+    payload.setdefault("execution", {}).update({"python": "/runtime/bin/python3", "runtime_commit": "A" * 40})
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
 
@@ -427,45 +424,24 @@ def test_hparam_plan_freezes_explicit_target_python_and_commit(tmp_path: Path, o
     assert result.returncode == 0, result.stderr
     plan = json.loads((output_dir / "plan.json").read_text())
     assert plan["recipe"]["execution"]["python"] == "/runtime/bin/python3"
-    assert plan["recipe"]["execution"]["runtime_commit"] == "a" * object_id_length
+    assert plan["recipe"]["execution"]["runtime_commit"] == "a" * 40
     assert plan["runs"][0]["command"].startswith("/runtime/bin/python3 -m ")
     resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
-    assert resolved["execution"]["runtime_commit"] == "a" * object_id_length
+    assert resolved["execution"]["runtime_commit"] == "a" * 40
 
 
-def test_infer_plan_freezes_uppercase_sha256_runtime_commit(tmp_path: Path):
-    recipe = write_finetune_recipe(tmp_path)
+def test_hparam_plan_rejects_sha256_runtime_commit_before_plan_write(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
-    checkpoint = tmp_path / "model.ckpt"
-    checkpoint.write_text("checkpoint")
-    payload.update({"task": "infer", "name": "unit-infer-sha256-runtime"})
-    payload["step"] = {"id": "unit-infer", "phase": "evaluate", "purpose": "Exercise SHA-256 runtime identity."}
-    payload["inputs"].update({"ckpt_path": str(checkpoint), "eval_split": "val"})
-    payload["evaluation_policy"] = {"external_test_locked": True, "final_test_unlocked": False}
-    payload["artifacts"] = {"overwrite": False}
-    payload["decisions"] = {
-        "task": {"value": "infer", "source": "explicit_recipe"},
-        "label_name": {"value": "ahi", "source": "explicit_recipe"},
-        "ckpt_path": {"value": str(checkpoint), "source": "explicit_recipe"},
-        "external_test_locked": {"value": True, "source": "explicit_recipe"},
-        "overwrite_policy": {"value": False, "source": "explicit_recipe"},
-    }
-    payload["execution"] = {
-        "target": "local",
-        "workdir": str(REPO_ROOT),
-        "python": sys.executable,
-        "runtime_commit": "B" * 64,
-    }
-    write_yaml(recipe, payload)
+    payload.setdefault("execution", {}).update({"python": "/runtime/bin/python3", "runtime_commit": "b" * 64})
+    recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
 
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
-    assert result.returncode == 0, result.stderr or result.stdout
-    plan = json.loads((output_dir / "plan.json").read_text())
-    resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
-    assert plan["recipe"]["execution"]["runtime_commit"] == "b" * 64
-    assert resolved["execution"]["runtime_commit"] == "b" * 64
+    assert result.returncode == 1
+    assert "execution.runtime_commit must be a full 40-character Git commit ID" in result.stdout
+    assert not (output_dir / "plan.json").exists()
 
 
 def test_hparam_plan_rejects_compound_target_python_before_plan_write(tmp_path: Path):

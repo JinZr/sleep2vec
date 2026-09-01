@@ -1560,7 +1560,7 @@ def _slurm_sidecar_runtime_commit(payload: dict[str, Any]) -> str:
     if value in (None, ""):
         return ""
     if not is_full_git_object_id(value):
-        raise ValueError("Slurm sidecar runtime_commit must be a full lowercase 40- or 64-character Git object ID.")
+        raise ValueError("Slurm sidecar runtime_commit must be a full lowercase 40-character Git commit ID.")
     return value
 
 

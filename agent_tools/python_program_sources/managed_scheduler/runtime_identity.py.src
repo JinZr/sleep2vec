@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
@@ -37,6 +38,7 @@ git_commands = [
     ["git", "rev-parse", "HEAD"],
     ["git", "rev-parse", "--show-toplevel"],
     ["git", "status", "--porcelain", "--untracked-files=no"],
+    ["git", "ls-files", "-v", "-z", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
     ["git", "ls-files", "--others", "--exclude-standard", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
     ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
     ["git", "ls-files", "--others", "--exclude-standard", "--directory", "--no-empty-directory"],
@@ -44,13 +46,14 @@ git_commands = [
 ]
 # Ordered results preserve diagnostic priority while independent repository scans overlap.
 with ThreadPoolExecutor(max_workers=3) as executor:
-    commit, repo_root, dirty, untracked_code, ignored_code, untracked_directories, ignored_directories = executor.map(
-        partial(subprocess.run, text=True, capture_output=True, env=git_env), git_commands
+    commit, repo_root, dirty, tracked_code, untracked_code, ignored_code, untracked_directories, ignored_directories = (
+        executor.map(partial(subprocess.run, text=True, capture_output=True, env=git_env), git_commands)
     )
 if (
     commit.returncode != 0
     or repo_root.returncode != 0
     or dirty.returncode != 0
+    or tracked_code.returncode != 0
     or untracked_code.returncode != 0
     or ignored_code.returncode != 0
     or untracked_directories.returncode != 0
@@ -60,6 +63,7 @@ if (
         commit.stderr
         or repo_root.stderr
         or dirty.stderr
+        or tracked_code.stderr
         or untracked_code.stderr
         or ignored_code.stderr
         or untracked_directories.stderr
@@ -72,7 +76,14 @@ if dirty.stdout.strip():
     raise SystemExit(2)
 
 runtime_repo_root = Path(repo_root.stdout.strip()).resolve()
+runtime_commit = commit.stdout.strip().lower()
+if re.fullmatch(r"[0-9a-f]{40}", runtime_commit) is None:
+    print("Runtime HEAD is not a full 40-character Git commit ID.", file=sys.stderr)
+    raise SystemExit(2)
 if planned_commit:
+    if re.fullmatch(r"[0-9a-f]{40}", planned_commit) is None:
+        print("Planned runtime commit must be a full lowercase 40-character Git commit ID.", file=sys.stderr)
+        raise SystemExit(2)
     planned = subprocess.run(
         ["git", "rev-parse", "--verify", f"{planned_commit}^{{commit}}"],
         cwd=runtime_repo_root,
@@ -83,8 +94,8 @@ if planned_commit:
     if planned.returncode != 0:
         print("Planned runtime commit does not resolve to a commit in the target repository.", file=sys.stderr)
         raise SystemExit(2)
-    if planned.stdout.strip().lower() != planned_commit.lower():
-        print("Planned runtime commit is not the repository's canonical full object ID.", file=sys.stderr)
+    if planned.stdout.strip().lower() != planned_commit:
+        print("Planned runtime commit is not the repository's canonical commit ID.", file=sys.stderr)
         raise SystemExit(2)
 
 
@@ -105,6 +116,39 @@ def importable_code(output):
         if module_name.isidentifier() and all(part.isidentifier() for part in path.parts[:-1]):
             paths.append(raw)
     return paths
+
+
+hidden_code = importable_code(
+    "\n".join(
+        entry[2:]
+        for entry in tracked_code.stdout.split("\0")
+        if len(entry) > 2 and entry[0] in {"h", "s", "S"}
+    )
+)
+hidden_code_error = (
+    "Target runtime has index-hidden tracked Python code changes; launch requires commit-defined import roots."
+)
+for raw in hidden_code:
+    path = Path(raw)
+    candidate = runtime_repo_root / path
+    index_fields = subprocess.check_output(
+        ["git", "ls-files", "--stage", "--", str(path)],
+        cwd=runtime_repo_root,
+        text=True,
+        env=git_env,
+    ).split()
+    if len(index_fields) < 3 or index_fields[2] != "0" or candidate.is_symlink() or not candidate.is_file():
+        print(hidden_code_error, file=sys.stderr)
+        raise SystemExit(2)
+    worktree_hash = subprocess.check_output(
+        ["git", "hash-object", "--filters", f"--path={path}", str(path)],
+        cwd=runtime_repo_root,
+        text=True,
+        env=git_env,
+    ).strip()
+    if worktree_hash != index_fields[1]:
+        print(hidden_code_error, file=sys.stderr)
+        raise SystemExit(2)
 
 
 def importable_package_symlink(raw_path):
@@ -143,7 +187,7 @@ except ValueError:
 payload = {
     "python": sys.executable,
     "python_version": sys.version.split()[0],
-    "runtime_commit": commit.stdout.strip(),
+    "runtime_commit": runtime_commit,
     "runtime_repo_root": str(runtime_repo_root),
     "runtime_hostname": socket.gethostname(),
     "module": module,

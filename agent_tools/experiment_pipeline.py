@@ -256,7 +256,7 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
     if not Path(runtime["workdir"]).is_absolute():
         raise ValueError("runtime.workdir must be absolute.")
     if not is_full_git_object_id(runtime["runtime_commit"]):
-        raise ValueError("runtime.runtime_commit must be a full lowercase 40- or 64-character Git object ID.")
+        raise ValueError("runtime.runtime_commit must be a full lowercase 40-character Git commit ID.")
     if runtime.get("accelerator") != "gpu" or runtime.get("device") != "cuda":
         raise ValueError("Schema v1 external evaluation requires GPU/CUDA runtime.")
     if str(runtime.get("precision")) not in {"32", "32-true"}:
@@ -1614,18 +1614,10 @@ def _run_attempts(
             groups.append((pipeline_dir / "retry_schedulers" / row["job_id"], _planned_runs([row])))
 
         missing_pid_blocker = None
-        snapshot_runtime_commits: dict[tuple[str, str], str] = {}
         for owner_dir, runs in groups:
             owner_dir.mkdir(parents=True, exist_ok=True)
             snapshot_path = owner_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
             if snapshot_path.exists():
-                snapshot = read_json(snapshot_path)
-                if not isinstance(snapshot, dict):
-                    raise ValueError(f"Pipeline execution snapshot must be a mapping: {snapshot_path}")
-                snapshot_runtime_commit = str(snapshot.get("runtime_commit") or "")
-                if snapshot_runtime_commit and not is_full_git_object_id(snapshot_runtime_commit):
-                    raise ValueError(f"Pipeline execution snapshot has an invalid runtime commit: {snapshot_path}")
-                snapshot_runtime_commits.update({managed_run_key(run): snapshot_runtime_commit for run in runs})
                 canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
                 if any(
                     (canonical[managed_run_key(run)].get("status") or "planned")
@@ -1666,23 +1658,6 @@ def _run_attempts(
                 row["status"] = status
                 changed = True
             runtime_commit = str(run.get("runtime_commit") or "")
-            legacy_runtime_commit = str(row.get("runtime_commit") or "")
-            if not runtime_commit:
-                snapshot_runtime_commit = snapshot_runtime_commits.get(key, "")
-                if legacy_runtime_commit:
-                    if not is_full_git_object_id(legacy_runtime_commit):
-                        raise ValueError(f"Pipeline attempt has an invalid runtime commit: {row['job_id']}")
-                    if snapshot_runtime_commit and snapshot_runtime_commit != legacy_runtime_commit:
-                        raise ValueError(
-                            f"Pipeline attempt runtime commit differs from its execution snapshot: {row['job_id']}"
-                        )
-                    runtime_commit = legacy_runtime_commit
-                elif (
-                    snapshot_runtime_commit
-                    and status not in managed_scheduler.LAUNCHABLE_STATUSES
-                    and run.get("planned_runtime_commit") in (None, "")
-                ):
-                    runtime_commit = snapshot_runtime_commit
             if row.get("runtime_commit") != runtime_commit:
                 row["runtime_commit"] = runtime_commit
                 changed = True

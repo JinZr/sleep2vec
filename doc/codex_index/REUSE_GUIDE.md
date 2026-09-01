@@ -154,9 +154,9 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Reuse `runtime-sync` for a clean in-place `origin/main` fast-forward and the shared runtime lock for
   launch/update coordination. Keep the planned commit in frozen artifacts and record the actual start commit
   in the canonical run manifest; do not clone or rewrite a published plan to follow HEAD. Its remote path sends
-  the manager's self-contained sync kernel, so it also bootstraps checkouts that predate the command. Slurm
-  batch workers use the embedded `slurm.worker_bootstrap` to acquire that lock before checkout-local imports
-  and transfer the same descriptor through allocation verification and `srun` spawn.
+  the manager's self-contained sync kernel, so it also bootstraps checkouts that predate the command. The
+  embedded `slurm.worker_bootstrap` forwards termination and records import/start failures; checkout-local
+  `run_frozen_job` uses the short runtime lock for final identity, artifact, and `srun` spawn checks.
 - Reuse `python_programs.source` and `transport.remote_python_program_command` for embedded kernels;
   keep byte-preserving sources under `agent_tools/python_program_sources`, not inline copies.
 - Keep proposal snapshots/envelopes in `adaptive_proposals` and preflight/lifecycle orchestration

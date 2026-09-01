@@ -887,13 +887,12 @@ def test_unsafe_process_identity_is_blocked_and_never_retried(
     assert experiment_pipeline._logical_job_states(_spec(root), updated)[0]["status"] == "blocked"
 
 
-@pytest.mark.parametrize("object_id_length", [40, 64])
-def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monkeypatch, object_id_length: int):
+def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monkeypatch):
     source = tmp_path / "source"
     recipe_path = write_finetune_recipe(source, variant="sleep2vec2")
     recipe = yaml.safe_load(recipe_path.read_text())
     workspace = tmp_path / "workspace"
-    runtime_commit = "a" * object_id_length
+    runtime_commit = "a" * 40
     recipe["task"] = "infer"
     recipe["experiment"]["root"] = str(workspace)
     recipe["step"] = {
@@ -989,19 +988,18 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     )
     assert snapshot["module"] == "sleep2vec2.infer"
     assert snapshot["required_options"] == ["--config"]
-    for invalid_runtime_commit in ("a" * 63, "a" * 65, "A" * 64):
-        runtime_commit = invalid_runtime_commit
-        with pytest.raises(ValueError, match="invalid runtime commit"):
-            managed_scheduler.inspect_execution_target(
-                {
-                    "target": "local",
-                    "workdir": "/runtime/snapshot",
-                    "python": "/runtime/python",
-                    "runtime_commit": "a" * object_id_length,
-                },
-                [planned],
-                command_runner=inspect_command,
-            )
+    runtime_commit = "a" * 64
+    with pytest.raises(ValueError, match="invalid runtime commit"):
+        managed_scheduler.inspect_execution_target(
+            {
+                "target": "local",
+                "workdir": "/runtime/snapshot",
+                "python": "/runtime/python",
+                "runtime_commit": "a" * 40,
+            },
+            [planned],
+            command_runner=inspect_command,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1437,28 +1435,23 @@ def test_run_attempts_waits_when_capacity_blocks_before_execution_snapshot(tmp_p
 
 
 @pytest.mark.parametrize(
-    ("snapshot_runtime_commit", "legacy_runtime_commit", "canonical_runtime_commit", "expected_runtime_commit"),
+    "canonical_runtime_commit",
     [
-        pytest.param("a" * 40, "", "", "a" * 40, id="recover-legacy-snapshot-runtime"),
-        pytest.param("b" * 40, "b" * 40, "", "b" * 40, id="preserve-legacy-runtime"),
-        pytest.param("b" * 40, "b" * 40, "c" * 40, "c" * 40, id="canonical-runtime-wins"),
-        pytest.param("a" * 40, "b" * 40, "", None, id="reject-legacy-snapshot-mismatch"),
+        pytest.param("", id="canonical-runtime-unknown"),
+        pytest.param("c" * 40, id="canonical-runtime-recorded"),
     ],
 )
-def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_result(
+def test_run_attempts_terminal_attempt_projects_only_canonical_runtime_commit(
     tmp_path: Path,
     monkeypatch,
-    snapshot_runtime_commit: str,
-    legacy_runtime_commit: str,
     canonical_runtime_commit: str,
-    expected_runtime_commit: str | None,
 ):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "external-v1"
     pipeline_dir.mkdir(parents=True)
     (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
     snapshot_path = pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
-    snapshot_path.write_text(json.dumps({"runtime_commit": snapshot_runtime_commit}) + "\n")
+    snapshot_path.write_text(json.dumps({"runtime_commit": "a" * 40}) + "\n")
     attempt = {
         "step_id": "external-evaluate",
         "run_id": "run-001",
@@ -1469,7 +1462,7 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
         "status": "completed",
         "verified": "false",
         "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
-        "runtime_commit": legacy_runtime_commit,
+        "runtime_commit": "b" * 40,
     }
     canonical_attempt = {**attempt, "runtime_commit": canonical_runtime_commit}
     write_rows(pipeline_dir / "jobs.tsv", [attempt])
@@ -1505,18 +1498,6 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
         lambda *_args: validations.append("result") or result_manifest,
     )
 
-    if expected_runtime_commit is None:
-        with pytest.raises(ValueError, match="differs from its execution snapshot"):
-            experiment_pipeline._run_attempts(
-                root,
-                pipeline_dir,
-                _spec(root),
-                {"age": {}},
-                [attempt],
-                poll_seconds=0,
-            )
-        return
-
     result = experiment_pipeline._run_attempts(root, pipeline_dir, _spec(root), {"age": {}}, [attempt], poll_seconds=0)
 
     persisted = experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")[0]
@@ -1524,86 +1505,7 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
     assert launches == [True]
     assert validations == ["attempts", "result"]
     assert persisted["verified"] == "true"
-    assert persisted["runtime_commit"] == expected_runtime_commit
-
-
-@pytest.mark.parametrize(
-    ("planned_runtime_commit", "expected_runtime_commit"),
-    [
-        pytest.param("", "b" * 40, id="legacy-fixed-runtime"),
-        pytest.param("a" * 40, "", id="rolling-runtime"),
-    ],
-)
-def test_run_attempts_restores_snapshot_only_for_legacy_launch_before_jobs_projection(
-    tmp_path: Path,
-    monkeypatch,
-    planned_runtime_commit: str,
-    expected_runtime_commit: str,
-):
-    root = tmp_path / "workspace"
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
-    runtime_commit = "b" * 40
-    (pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME).write_text(
-        json.dumps({"runtime_commit": runtime_commit}) + "\n"
-    )
-    attempt = {
-        "step_id": "external-evaluate",
-        "run_id": "run-001",
-        "pipeline_id": "external-v1",
-        "job_id": "age-hsp-i2-psg",
-        "variant": "sleep2vec2",
-        "attempt": 1,
-        "status": "pending",
-        "verified": "false",
-        "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
-        "runtime_commit": "",
-    }
-    canonical_attempt = {
-        **attempt,
-        "status": "launched",
-        "planned_runtime_commit": planned_runtime_commit,
-    }
-    write_rows(pipeline_dir / "jobs.tsv", [attempt])
-
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_planned_runs",
-        lambda _rows: [{"step_id": "external-evaluate", "run_id": "run-001"}],
-    )
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(canonical_attempt)])
-    monkeypatch.setattr(
-        experiment_pipeline.managed_scheduler,
-        "validated_execution_snapshot",
-        lambda *_args, **_kwargs: pytest.fail("launched legacy attempts must not probe the live runtime"),
-    )
-    monkeypatch.setattr(
-        experiment_pipeline.managed_scheduler,
-        "launch_managed_runs",
-        lambda *_args, **_kwargs: SimpleNamespace(committed_rows=[dict(canonical_attempt)]),
-    )
-    monkeypatch.setattr(
-        experiment_pipeline.managed_scheduler,
-        "capacity_state",
-        lambda *_args, **_kwargs: SimpleNamespace(external_missing_pid=[("external-evaluate", "run-001")]),
-    )
-
-    result = experiment_pipeline._run_attempts(
-        root,
-        pipeline_dir,
-        _spec(root),
-        {"age": {}},
-        [attempt],
-        poll_seconds=0,
-    )
-
-    persisted = experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")[0]
-    assert result["status"] == "blocked"
-    assert persisted["status"] == "launched"
-    assert persisted["runtime_commit"] == expected_runtime_commit
+    assert persisted["runtime_commit"] == canonical_runtime_commit
 
 
 def test_run_attempts_result_validation_failure_is_terminal_without_changing_canonical_status(

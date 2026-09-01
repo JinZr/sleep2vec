@@ -228,7 +228,8 @@ For command choice, use the [agent contract router](../agent_contracts/README.md
 4. Execute through [launch and queue](../agent_contracts/task_recipe.md#launch-and-queue),
    with [snapshot revalidation](../agent_contracts/task_recipe.md#execution-snapshot-and-launch-revalidation).
    A rolling checkout may use a newer commit, but it must expose the current managed launch protocol before a direct
-   claim or Slurm submission, including runtime-lock descriptor and signal handoff for Slurm.
+   claim or Slurm submission. Direct and Slurm starts use point-in-time identity and artifact checks under the short
+   runtime lock; the self-contained Slurm bootstrap forwards signals and records checkout-local import/start failures.
    Other ordinary routes use the
    [non-hparam runtime contract](../agent_contracts/task_recipe.md#non-hparam-runtime-identity);
    `preset-launch` / `preset-stop` use

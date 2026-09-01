@@ -14,7 +14,7 @@ VARIANTLESS_TASKS = {"sleep2stat"}
 # guard matches raw task-name constants, so kernel modules read the section
 # through this constant).
 CONFIG_FINETUNE_SECTION = "finetune"
-_FULL_GIT_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+_FULL_GIT_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}")
 
 
 def is_full_git_object_id(value: Any) -> bool:

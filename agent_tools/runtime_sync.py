@@ -229,7 +229,7 @@ def _is_importable_package_symlink(raw_path: str, workdir: str) -> bool:
 def _commit(value: str, label: str) -> str:
     commit = value.strip().lower()
     if not is_full_git_object_id(commit):
-        raise RuntimeError(f"{label} is not a full Git object ID: {commit!r}")
+        raise RuntimeError(f"{label} is not a full 40-character Git commit ID: {commit!r}")
     return commit
 
 

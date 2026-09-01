@@ -400,7 +400,7 @@ def test_direct_launch_holds_runtime_sync_through_verification_head_capture_and_
     verification_release = tmp_path / "verification-release"
     before_popen = tmp_path / "before-popen"
     popen_release = tmp_path / "popen-release"
-    script.write_text("#!/usr/bin/env bash\nsleep 30\n")
+    script.write_text("#!/usr/bin/env bash\nsleep 120\n")
     config.write_text("task: unit\n")
 
     real_source = python_programs.source
@@ -637,6 +637,7 @@ def test_remote_runtime_sync_quotes_the_checkout_and_selected_python(monkeypatch
         pytest.param(_runtime_sync_payload(workdir=""), False, id="blank-workdir"),
         pytest.param(_runtime_sync_payload(workdir="relative/runtime"), False, id="relative-workdir"),
         pytest.param(_runtime_sync_payload(before_commit="A" * 40), False, id="invalid-sha"),
+        pytest.param(_runtime_sync_payload(before_commit="a" * 64), False, id="sha256-object-id"),
         pytest.param(_runtime_sync_payload(upstream_commit="b" * 40), False, id="unchanged-relation"),
         pytest.param(
             _runtime_sync_payload(status="update_available", upstream_commit="b" * 40, after_commit="b" * 40),
@@ -697,54 +698,6 @@ def test_remote_runtime_sync_rejects_sourceless_bytecode(rolling_runtime: tuple[
 
     with pytest.raises(RuntimeError, match="untracked or ignored importable code"):
         sync_runtime(runtime, host="unit-host", remote_python=sys.executable, execute=True)
-
-
-def test_remote_runtime_sync_bootstrap_accepts_sha256_git_object_ids(tmp_path: Path, monkeypatch) -> None:
-    source = tmp_path / "source"
-    origin = tmp_path / "origin.git"
-    runtime = tmp_path / "runtime"
-    subprocess.run(["git", "init", "-q", "--object-format=sha256", "-b", "main", str(source)], check=True)
-    first = _commit(source, "Initial", "one\n")
-    subprocess.run(["git", "init", "-q", "--bare", "--object-format=sha256", str(origin)], check=True)
-    _git(source, "remote", "add", "origin", str(origin))
-    _git(source, "push", "-u", "origin", "main")
-    subprocess.run(["git", "clone", "-q", "--branch", "main", str(origin), str(runtime)], check=True)
-    second = _commit(source, "Advance", "two\n")
-    _git(source, "push", "origin", "main")
-    _run_embedded_locally(monkeypatch)
-
-    result = sync_runtime(runtime, host="unit-host", remote_python=sys.executable, execute=True)
-
-    assert len(first) == len(second) == 64
-    assert result["before_commit"] == first
-    assert result["after_commit"] == result["upstream_commit"] == second
-
-
-def test_direct_process_launcher_records_sha256_runtime_commit(tmp_path: Path) -> None:
-    runtime = tmp_path / "runtime"
-    subprocess.run(["git", "init", "-q", "--object-format=sha256", "-b", "main", str(runtime)], check=True)
-    runtime_commit = _commit(runtime, "Initial", "one\n")
-    script = tmp_path / "launch.sh"
-    pid_path = tmp_path / "pid.json"
-    script.write_text("#!/usr/bin/env bash\nsleep 30\n")
-    command = managed_scheduler.build_launch_command(
-        {"workdir": str(runtime), "python": sys.executable, "runtime_commit": runtime_commit},
-        script,
-        tmp_path / "stdout.log",
-        pid_path,
-        [],
-    )
-    identity = None
-    try:
-        result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=10)
-        assert result.returncode == 0, result.stderr
-        identity = run_evidence.read_process_identity(pid_path, {})
-        assert identity is not None
-        assert identity["runtime_commit"] == runtime_commit
-        assert len(identity["runtime_commit"]) == 64
-    finally:
-        if identity is not None and run_evidence.process_identity_running({}, identity) is True:
-            run_evidence.stop_process_group({}, identity)
 
 
 def test_direct_process_launcher_ignores_authored_repository_selection_variables(tmp_path: Path) -> None:

@@ -180,7 +180,7 @@ def execution_contract_issues(
         issues.append(
             _execution_contract_issue(
                 "execution.runtime_commit",
-                "execution.runtime_commit must be a full 40- or 64-character Git object ID.",
+                "execution.runtime_commit must be a full 40-character Git commit ID.",
                 runtime_commit,
                 source_layer,
             )

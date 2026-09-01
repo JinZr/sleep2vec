@@ -21,8 +21,8 @@ SOURCE_HASHES = {
     ),
     "hparam_postprocess.verify_checkpoint_sha256": "edff342d976933beabffc01bfc98080c49cdbe673d1a9ec8e8958989fef569ee",
     "managed_scheduler.cli_preflight": "5620962bcbd5db619b4f934773ad9e3d67e2c6ddc1edc212fac7cda872cb0cd1",
-    "managed_scheduler.process_launch": "47c3ab7745ce2f24f431540b08b5bd73ce1396413a0b8beab6b95d6aa5d15755",
-    "managed_scheduler.runtime_identity": "1bd7d8eb05d6767c75b60192b6b8acb3682a99df8e4e1b98909472e1b7d9e2ed",
+    "managed_scheduler.process_launch": "0ad40681fac86dc521274271c68cfa0661e24176fc1d45d6ea25c553f15a1634",
+    "managed_scheduler.runtime_identity": "ad21db85b664d221a18430c9e053c7626c4055036fd71b653090d87ee334ff96",
     "plan_rendering.commit_status": "7112cb97e0d1ac2bce6fef0c4c453a1dd7adc307eaca04ae7cd66d52416531c9",
     "plan_rendering.verify_input_snapshots": "8c07f2508676126a0362ad9bd080db823a3649d587c00dcf90051149b1fa1701",
     "run_evidence.checkpoint_file_sha256": "96caa2e935be9c7b31c1da2571dc6f94847545281d3cd70589d4979eefd78744",
@@ -32,7 +32,7 @@ SOURCE_HASHES = {
     "run_evidence.process_stop": "779fead9d94d0aca781168c74f3f639a33cd4f4aca17d2db4f9cc477996e6f79",
     "run_evidence.read_pid_text": "f206628bfc983a7d923624bb341c77156d9242804f8e24f179196ca3343e17cf",
     "run_evidence.runtime_artifacts": "3d03f0f32d450801d0179eb5280081765e414abca2d716b8ab80b1e42eabd36e",
-    "runtime_sync.sync": "18690564fc6fc39bdf912c39bc45fa334c860e537acff74768f8dd3072598bfa",
+    "runtime_sync.sync": "3a4ecc3914dbdc17ed3d3226a73def644c2e1ba76906de0a6ad7361bc6b78b00",
     "slurm.worker_bootstrap": "f9a83db38ee5b9c55922c47bda684bebd909d7231f576e0d5d5616d7beb5780e",
 }
 
@@ -50,8 +50,8 @@ COMMAND_HASHES = {
     ),
     "hparam_postprocess.verify_checkpoint_sha256": "0423ef2081129f2e665a1128ccacb092120596d35dd57f8093782ebc3a737869",
     "managed_scheduler.cli_preflight": "f29964331539fb594e8736b27be9aa4005980f493df994833f00a5364c837418",
-    "managed_scheduler.process_launch": "a67bc254b96f99d4bfef8126cfef593712abf6912a2d85b0229fc390d0173c4a",
-    "managed_scheduler.runtime_identity": "04d157788ea0c9dff28038d9804a5f1c48dfef36d909b456a30430f43ce863b8",
+    "managed_scheduler.process_launch": "1c04cb9a82c8e4b39b74e0e2788023c410c814f685190220e1321829e32dcc9f",
+    "managed_scheduler.runtime_identity": "dca67842bd1be75e69edce2cf03a1562a6c6d525bdae55f600b3ce33435e02be",
     "plan_rendering.commit_status": "5c20b6ed04d665521d6bd3e3bd917892e6f0548a1a71d0bf227ff43884d4eb7f",
     "plan_rendering.verify_input_snapshots": "71e4b5683071833f63e1abbf8e578b58cd99debb9731a67fd2c77f3677c7a4b7",
     "run_evidence.checkpoint_file_sha256": "54d7f2d05c2e5d5bbd4adc0cd78201abef73ca8ec794f4b8d213f11b55dca385",
@@ -61,7 +61,7 @@ COMMAND_HASHES = {
     "run_evidence.process_stop": "14308dbf62b516eecec8cf28c777a20a72b7745d77841fb446663aa1bcb97310",
     "run_evidence.read_pid_text": "703861bd3a4230efb30fb4801465c2ec0b2902004519f7bf1428d35ec2405519",
     "run_evidence.runtime_artifacts": "855ce681a6a858d31dc68eb930cbef4e9d832ca1e75459f4e0c47ef41eb7e5ba",
-    "runtime_sync.sync": "f8a0f442da33bcc09393b66667872cc01a264beea274ca1f463118a8095f77e9",
+    "runtime_sync.sync": "d30a8bad53521042edd30268530cceb16369f97f32608eb90f80b172975cf865",
     "slurm.worker_bootstrap": "3a5d44fd6ac4fb9ee6a4f75adc949d54cfed044ae1a6922e2fea871a3c7c9fce",
 }
 

@@ -209,8 +209,8 @@ def test_preset_explicit_executable_name_is_preserved(tmp_path: Path, preset_run
     assert shlex.split(plan["commands"][0])[0] == "python"
 
 
-@pytest.mark.parametrize("runtime_commit", ["A" * 40, "a" * 40, "B" * 64, "b" * 64])
-def test_preset_authored_runtime_commit_is_frozen_lowercase(tmp_path: Path, preset_runtime, runtime_commit: str):
+def test_preset_authored_runtime_commit_is_frozen_lowercase(tmp_path: Path, preset_runtime):
+    runtime_commit = "A" * 40
     preset_runtime["execution"]["runtime_commit"] = runtime_commit
     recipe = _runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
@@ -251,8 +251,7 @@ def test_preset_partial_identity_fails_before_workspace_creation(tmp_path: Path,
         ("runtime_commit", "g" * 40),
         ("runtime_commit", "a" * 39),
         ("runtime_commit", "a" * 41),
-        ("runtime_commit", "a" * 63),
-        ("runtime_commit", "a" * 65),
+        ("runtime_commit", "a" * 64),
         ("workdir", "relative/runtime"),
         ("workdir", []),
         ("target", "ssh"),
@@ -469,10 +468,8 @@ def test_preset_missing_manager_commit_fails_before_workspace_creation(
     assert not preset_runtime["workspace"].exists()
 
 
-@pytest.mark.parametrize("runtime_commit", ["A" * 40, "a" * 40, "B" * 64, "b" * 64])
-def test_preset_auto_bound_runtime_commit_is_frozen_lowercase(
-    tmp_path: Path, preset_runtime, monkeypatch, runtime_commit: str
-):
+def test_preset_auto_bound_runtime_commit_is_frozen_lowercase(tmp_path: Path, preset_runtime, monkeypatch):
+    runtime_commit = "A" * 40
     preset_runtime["execution"] = {}
     recipe = _runtime_recipe(tmp_path, preset_runtime)
     monkeypatch.setattr(
@@ -503,8 +500,7 @@ def test_preset_auto_bound_runtime_commit_is_frozen_lowercase(
         ("runtime_commit", "g" * 40),
         ("runtime_commit", "a" * 39),
         ("runtime_commit", "a" * 41),
-        ("runtime_commit", "a" * 63),
-        ("runtime_commit", "a" * 65),
+        ("runtime_commit", "a" * 64),
     ],
 )
 def test_preset_invalid_auto_bound_identity_fails_before_workspace_creation(

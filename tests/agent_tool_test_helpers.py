@@ -24,7 +24,7 @@ def run_execution_preflight_fixture(execution: dict, command: list[str]) -> subp
             planned_commit = arguments[3]
             assert expected == {}
             assert artifacts == []
-            assert len(planned_commit) in {40, 64} and all(
+            assert len(planned_commit) == 40 and all(
                 character.lower() in "0123456789abcdef" for character in planned_commit
             )
         repo_root = str(execution.get("workdir") or Path(__file__).resolve().parents[1])
