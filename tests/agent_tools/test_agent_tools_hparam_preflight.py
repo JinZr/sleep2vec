@@ -370,9 +370,11 @@ def test_hparam_validate_only_uses_same_provenance_card_without_writes(tmp_path:
     calls = []
     before = _workspace_files(workspace)
 
+    live_runtime_commit = "b" * 40 if _RUNTIME_COMMIT != "b" * 40 else "c" * 40
+
     def inspect(execution, runs, *, plan_label):
         calls.append(plan_label)
-        return _snapshot(execution, runs)
+        return {**_snapshot(execution, runs), "runtime_commit": live_runtime_commit}
 
     monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect)
 
@@ -418,11 +420,13 @@ def test_hparam_validate_only_uses_same_provenance_card_without_writes(tmp_path:
 
     assert modules == {"sleep2vec.finetune"}
     assert snapshot["module"] == "sleep2vec.finetune"
-    assert snapshot["runtime_commit"] == snapshot["expected_runtime_commit"] == _RUNTIME_COMMIT
+    assert snapshot["expected_runtime_commit"] == _RUNTIME_COMMIT
+    assert snapshot["runtime_commit"] == live_runtime_commit
     assert snapshot["validated_argv_sha256"] == expected_argv_sha256
     assert snapshot["python"] in validate_only_card
     assert snapshot["module_origin"] in validate_only_card
-    assert snapshot["runtime_commit"] in validate_only_card
+    assert f"Planned runtime baseline commit: `{_RUNTIME_COMMIT}`" in validate_only_card
+    assert f"Target runtime commit observed at preflight: `{live_runtime_commit}`" in validate_only_card
     assert snapshot["validated_argv_sha256"] in validate_only_card
     assert "Total planned runs: 3" in validate_only_card
     assert "Target CLI argv checks: 3" in validate_only_card
