@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import time
 
@@ -15,8 +16,42 @@ from test_agent_preset_runtime_identity import (
 
 from agent_tools import cli, experiments, managed_scheduler, plans, run_evidence
 from agent_tools.experiment_workspace import PROCESS_IDENTITY_FIELDS, merge_run_manifest, read_run_manifest
+from agent_tools.models import REPO_ROOT
 
-preset_runtime = preset_runtime_fixture
+
+def _commit_runtime_python(preset_runtime):
+    workdir = Path(preset_runtime["execution"]["workdir"])
+    subprocess.run(["git", "add", "--force", "--", "agent_tools", *_PRESET_SCRIPTS.values()], cwd=workdir, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Preset runtime test",
+            "-c",
+            "user.email=preset-test@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "Commit test runtime Python",
+        ],
+        cwd=workdir,
+        check=True,
+    )
+    preset_runtime["execution"]["runtime_commit"] = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=workdir, text=True
+    ).strip()
+
+
+@pytest.fixture
+def preset_runtime(tmp_path):
+    runtime = preset_runtime_fixture.__wrapped__(tmp_path)
+    package = Path(runtime["execution"]["workdir"]) / "agent_tools"
+    package.unlink()
+    shutil.copytree(REPO_ROOT / "agent_tools", package, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    _commit_runtime_python(runtime)
+    return runtime
 
 
 def _plan(tmp_path, preset_runtime, monkeypatch, variant="sleep2vec"):
@@ -90,6 +125,7 @@ def test_preset_detached_worker_commits_terminal_after_launcher_exits(
         "os.write(2, b'delayed stderr\\n')\n"
         f"raise SystemExit({exit_code})\n"
     )
+    _commit_runtime_python(preset_runtime)
     plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch, variant)
     before = read_run_manifest(preset_runtime["workspace"])
     preview = subprocess.run(
@@ -270,6 +306,7 @@ def test_preset_claim_write_failure_never_spawns(tmp_path, preset_runtime, monke
 def _launch_waiting_worker(tmp_path, preset_runtime, monkeypatch):
     worker = Path(preset_runtime["execution"]["workdir"]) / _PRESET_SCRIPTS["sleep2vec"]
     worker.write_text("import time\nprint('worker ready', flush=True)\ntime.sleep(30)\n")
+    _commit_runtime_python(preset_runtime)
     plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
     experiments.launch_preset_run(plan_dir, dry_run=False)
     row = _wait_status(preset_runtime["workspace"], {"running"})
