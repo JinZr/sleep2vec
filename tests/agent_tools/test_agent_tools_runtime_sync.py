@@ -129,6 +129,43 @@ def test_runtime_sync_rejects_ignored_importable_code(
         sync_runtime(runtime, execute=True)
 
 
+@pytest.mark.parametrize("ignored", [False, True], ids=["untracked", "ignored"])
+def test_runtime_sync_rejects_sourceless_bytecode(rolling_runtime: tuple[Path, Path, str], ignored: bool) -> None:
+    _source, runtime, _first = rolling_runtime
+    if ignored:
+        (runtime / ".git" / "info" / "exclude").write_text("orphan.pyc\n")
+    (runtime / "orphan.pyc").write_bytes(b"sourceless bytecode")
+
+    with pytest.raises(RuntimeError, match="untracked or ignored importable code"):
+        sync_runtime(runtime, execute=True)
+
+
+def test_runtime_sync_allows_non_sourceless_bytecode(
+    rolling_runtime: tuple[Path, Path, str],
+) -> None:
+    _source, runtime, _first = rolling_runtime
+    (runtime / "tracked_module.py").write_text("VALUE = 1\n")
+    _git(runtime, "add", "tracked_module.py")
+    _git(
+        runtime,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-m",
+        "Track module",
+    )
+    (runtime / "tracked_module.pyc").write_bytes(b"legacy cache with source")
+    cache_dir = runtime / "__pycache__"
+    cache_dir.mkdir()
+    (cache_dir / "orphan.cpython-310.pyc").write_bytes(b"normal cache layout")
+
+    assert sync_runtime(runtime)["status"] == "update_available"
+
+
 def test_runtime_sync_fast_forwards_detached_head_without_moving_main(
     rolling_runtime: tuple[Path, Path, str],
 ) -> None:
@@ -581,6 +618,22 @@ def test_remote_runtime_sync_bootstraps_checkout_without_agent_tools(
     assert result["after_commit"] == result["upstream_commit"] == second
     assert _git(runtime, "rev-parse", "HEAD") == second
     assert not (runtime / "agent_tools").exists()
+
+
+def test_remote_runtime_sync_rejects_sourceless_bytecode(rolling_runtime: tuple[Path, Path, str], monkeypatch) -> None:
+    _source, runtime, _first = rolling_runtime
+    (runtime / ".git" / "info" / "exclude").write_text("orphan.pyc\n")
+    (runtime / "orphan.pyc").write_bytes(b"sourceless bytecode")
+    monkeypatch.setattr(
+        runtime_sync.transport,
+        "run_shell",
+        lambda _host, command, *, timeout: subprocess.run(
+            ["bash", "-lc", command], text=True, capture_output=True, timeout=timeout
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="untracked or ignored importable code"):
+        sync_runtime(runtime, host="unit-host", remote_python=sys.executable, execute=True)
 
 
 def test_remote_runtime_sync_bootstrap_accepts_sha256_git_object_ids(tmp_path: Path, monkeypatch) -> None:

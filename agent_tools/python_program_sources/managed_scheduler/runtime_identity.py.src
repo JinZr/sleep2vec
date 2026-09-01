@@ -15,8 +15,8 @@ git_commands = [
     ["git", "rev-parse", "HEAD"],
     ["git", "rev-parse", "--show-toplevel"],
     ["git", "status", "--porcelain", "--untracked-files=no"],
-    ["git", "ls-files", "--others", "--exclude-standard", "--", "*.py", "*.pyi", "*.so"],
-    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyi", "*.so"],
+    ["git", "ls-files", "--others", "--exclude-standard", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
+    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
 ]
 # Ordered results preserve diagnostic priority while independent repository scans overlap.
 with ThreadPoolExecutor(max_workers=3) as executor:
@@ -39,10 +39,22 @@ if dirty.stdout.strip():
     print("Target runtime has tracked worktree changes; launch requires a clean commit.", file=sys.stderr)
     raise SystemExit(2)
 
+runtime_repo_root = Path(repo_root.stdout.strip()).resolve()
+
+
 def importable_code(output):
     paths = []
     for raw in output.splitlines():
         path = Path(raw)
+        if path.suffix == ".pyc":
+            if (
+                "__pycache__" not in path.parts
+                and path.stem.isidentifier()
+                and all(part.isidentifier() for part in path.parts[:-1])
+                and not (runtime_repo_root / path).with_suffix(".py").exists()
+            ):
+                paths.append(raw)
+            continue
         module_name = path.name.split(".", 1)[0]
         if module_name.isidentifier() and all(part.isidentifier() for part in path.parts[:-1]):
             paths.append(raw)
@@ -54,7 +66,6 @@ if importable_code(untracked_code.stdout) or importable_code(ignored_code.stdout
         file=sys.stderr,
     )
     raise SystemExit(2)
-runtime_repo_root = Path(repo_root.stdout.strip()).resolve()
 spec = importlib.util.find_spec(module)
 origin = Path(spec.origin).resolve() if spec is not None and spec.origin else None
 if origin is None:

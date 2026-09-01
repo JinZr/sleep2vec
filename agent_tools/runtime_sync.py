@@ -128,14 +128,21 @@ def _require_clean_runtime(workdir: str) -> None:
     if dirty:
         raise RuntimeError("Runtime checkout has tracked worktree changes; refusing to update it.")
     for flags in (("--others", "--exclude-standard"), ("--others", "--ignored", "--exclude-standard")):
-        args = ["ls-files", *flags, "--", "*.py", "*.pyi", "*.so"]
+        args = ["ls-files", *flags, "--", "*.py", "*.pyi", "*.pyc", "*.so"]
         paths = _git(workdir, *args).stdout.splitlines()
-        if any(_is_importable_code(path) for path in paths):
+        if any(_is_importable_code(path, workdir) for path in paths):
             raise RuntimeError("Runtime checkout has untracked or ignored importable code; refusing to update it.")
 
 
-def _is_importable_code(raw_path: str) -> bool:
+def _is_importable_code(raw_path: str, workdir: str) -> bool:
     path = Path(raw_path)
+    if path.suffix == ".pyc":
+        return (
+            "__pycache__" not in path.parts
+            and path.stem.isidentifier()
+            and all(part.isidentifier() for part in path.parts[:-1])
+            and not (Path(workdir) / path).with_suffix(".py").exists()
+        )
     module_name = path.name.split(".", 1)[0]
     return module_name.isidentifier() and all(part.isidentifier() for part in path.parts[:-1])
 

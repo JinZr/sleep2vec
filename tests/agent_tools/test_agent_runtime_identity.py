@@ -20,8 +20,8 @@ GIT_COMMANDS = [
     ["git", "rev-parse", "HEAD"],
     ["git", "rev-parse", "--show-toplevel"],
     ["git", "status", "--porcelain", "--untracked-files=no"],
-    ["git", "ls-files", "--others", "--exclude-standard", "--", "*.py", "*.pyi", "*.so"],
-    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyi", "*.so"],
+    ["git", "ls-files", "--others", "--exclude-standard", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
+    ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyi", "*.pyc", "*.so"],
 ]
 
 
@@ -292,6 +292,40 @@ def test_runtime_identity_rejects_ignored_nested_repository_code(runtime_repo):
     assert result.returncode == 2
     assert result.stdout == ""
     assert "Target runtime has untracked or ignored Python code" in result.stderr
+
+
+def test_runtime_identity_rejects_sourceless_bytecode(runtime_repo):
+    (runtime_repo / ".git" / "info" / "exclude").write_text("orphan.pyc\n")
+    (runtime_repo / "orphan.pyc").write_bytes(b"sourceless bytecode")
+
+    result = subprocess.run(
+        [sys.executable, "-c", python_programs.source("managed_scheduler.runtime_identity"), "runtime_cli"],
+        cwd=runtime_repo,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "Target runtime has untracked or ignored Python code" in result.stderr
+
+
+def test_runtime_identity_allows_non_sourceless_bytecode(runtime_repo):
+    (runtime_repo / "runtime_cli.pyc").write_bytes(b"legacy cache with source")
+    cache_dir = runtime_repo / "__pycache__"
+    cache_dir.mkdir()
+    (cache_dir / "orphan.cpython-310.pyc").write_bytes(b"normal cache layout")
+
+    result = subprocess.run(
+        [sys.executable, "-c", python_programs.source("managed_scheduler.runtime_identity"), "runtime_cli"],
+        cwd=runtime_repo,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_runtime_identity_allows_only_untracked_code_inside_tracked_submodule(runtime_repo):
