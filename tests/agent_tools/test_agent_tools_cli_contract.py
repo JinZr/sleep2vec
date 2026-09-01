@@ -296,6 +296,7 @@ def test_hparam_adaptive_step_cli_contract():
     assert {name for name, action in actions.items() if action.required} == {"workflow_dir"}
     assert args.proposal is None
     assert args.execute is False
+    assert "exact committed proposal may be retried safely" in actions["execute"].help
 
 
 def test_plan_cli_contract():

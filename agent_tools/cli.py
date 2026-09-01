@@ -644,7 +644,7 @@ def _build_parser() -> argparse.ArgumentParser:
     adaptive_step_cmd.add_argument(
         "--execute",
         action="store_true",
-        help="Register and launch the round; enables state changes.",
+        help="Register and launch the round; an exact committed proposal may be retried safely.",
     )
     adaptive_step_cmd.set_defaults(func=_cmd_hparam_adaptive_step)
 
