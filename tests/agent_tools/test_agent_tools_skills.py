@@ -39,3 +39,16 @@ def test_skill_index_references_use_shared_navigation_files():
         assert relevant_index
         assert relevant_index <= INDEX_PATHS
         assert all((REPO_ROOT / path).is_file() for path in relevant_index)
+
+
+def test_hparam_guidance_separates_search_budget_from_launch_authority():
+    agents = (REPO_ROOT / "AGENTS.md").read_text()
+    contract = (REPO_ROOT / "doc/agent_contracts/task_recipe.md").read_text()
+    skill = (REPO_ROOT / "skills/hyperparameter_tuning/SKILL.md").read_text()
+
+    for guidance in (agents, contract, skill):
+        assert "default 12-run search budget" in guidance
+        assert "default 12-run launch budget" not in guidance
+    assert "Launch requires an explicit request" in agents
+    assert "Launch requires an explicit request" in skill
+    assert "does not authorize publication or launch" in contract
