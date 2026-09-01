@@ -1489,8 +1489,10 @@ def _adaptive_step(
 
 def adaptive_loop(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
-    recipe = load_recipe_with_base(_workflow(root)["recipe_path"])
+    workflow = _workflow(root)
+    recipe = load_recipe_with_base(workflow["recipe_path"])
     _validate_adaptive_recipe(recipe)
+    recipe = _with_workflow_execution(recipe, workflow)
     if _suggest_strategy(recipe) == "agent_proposal":
         raise ValueError("hparam-adaptive-loop does not support agent_proposal; use the two-phase adaptive step.")
     workspace = experiment_root(recipe)
@@ -2080,11 +2082,27 @@ def _validate_workflow_scientific_contract(recipe: dict[str, Any], workflow: dic
     initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
     fields = ("task", "variant", "inputs", "evaluation_policy")
     changed = [field for field in fields if recipe.get(field) != initial_recipe.get(field)]
+    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    initial_search = initial_recipe.get("search") if isinstance(initial_recipe.get("search"), dict) else {}
+    adaptive = _adaptive(recipe)
+    initial_adaptive = _adaptive(initial_recipe)
+    suggest = adaptive.get("suggest") if isinstance(adaptive.get("suggest"), dict) else {}
+    initial_suggest = initial_adaptive.get("suggest") if isinstance(initial_adaptive.get("suggest"), dict) else {}
+    frozen_values = {
+        "search.parameters": (search.get("parameters"), initial_search.get("parameters")),
+        "adaptive.suggest.bounds": (suggest.get("bounds"), initial_suggest.get("bounds")),
+        "adaptive.max_rounds": (adaptive.get("max_rounds"), initial_adaptive.get("max_rounds")),
+        "adaptive.max_runs_total": (
+            adaptive.get("max_runs_total"),
+            initial_adaptive.get("max_runs_total"),
+        ),
+    }
+    changed.extend(field for field, values in frozen_values.items() if values[0] != values[1])
     if changed:
         raise ValueError(f"Adaptive source scientific contract differs from frozen round 000: {', '.join(changed)}")
     frozen_config = _round_dir(root, 0) / "config.source.yaml"
     if _source_config_sha256(recipe) != file_sha256(frozen_config):
-        raise ValueError("Adaptive source config differs from frozen round 000.")
+        raise ValueError("Adaptive source config changed from frozen round 000.")
 
 
 def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any]:

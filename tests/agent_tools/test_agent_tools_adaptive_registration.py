@@ -1480,11 +1480,23 @@ def test_adaptive_source_rejects_frozen_python_drift_before_suggestion_write(tmp
     assert events_path.read_bytes() == events_before
 
 
-@pytest.mark.parametrize("drift", ["label", "selection_policy", "test_policy", "source_config"])
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "label",
+        "selection_policy",
+        "test_policy",
+        "source_config",
+        "search_parameters",
+        "suggest_bounds",
+        "max_rounds",
+        "max_runs_total",
+    ],
+)
 def test_adaptive_source_rejects_frozen_scientific_contract_before_suggestion_write(
     tmp_path: Path, monkeypatch, drift: str
 ):
-    recipe = _adaptive_recipe(tmp_path)
+    recipe = _agent_recipe(tmp_path) if drift == "suggest_bounds" else _adaptive_recipe(tmp_path)
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     payload = yaml.safe_load(recipe.read_text())
     if drift == "label":
@@ -1495,17 +1507,23 @@ def test_adaptive_source_rejects_frozen_scientific_contract_before_suggestion_wr
         payload["decisions"]["train_val_test_policy"]["value"] = "train"
     elif drift == "test_policy":
         payload["evaluation_policy"]["require_manual_unlock_for_final_test"] = False
-    else:
+    elif drift == "source_config":
         config_path = Path(yaml.safe_load(Path(payload["base_recipe"]).read_text())["inputs"]["config"])
         config = yaml.safe_load(config_path.read_text())
         changed_index = tmp_path / "changed-index.csv"
         changed_index.write_text((tmp_path / "index.csv").read_text())
         config["data"]["finetune_data_index"] = str(changed_index)
         config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    elif drift == "search_parameters":
+        payload["search"]["parameters"]["runtime.lr"] = [2e-6]
+    elif drift == "suggest_bounds":
+        payload["adaptive"]["suggest"]["bounds"]["runtime.lr"] = [6e-7, 2e-6]
+    else:
+        payload["adaptive"][drift] += 1
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda *_args: pytest.fail("digest must not run"))
 
-    with pytest.raises(ValueError, match="differs from frozen round 000"):
+    with pytest.raises(ValueError, match="frozen round 000"):
         adaptive_hparam.suggest_next_round(workflow_dir)
 
     assert not (workflow_dir / "adaptive" / "suggestions").exists()
