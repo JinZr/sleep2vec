@@ -895,22 +895,6 @@ def test_verified_launch_rechecks_snapshot_and_artifacts_immediately_before_proc
     )
 
 
-@pytest.mark.parametrize("name", ["AGENT_TOOLS_RUNTIME_LOCK_FD", "AGENT_TOOLS_LIFECYCLE_READY_FD"])
-def test_direct_launch_rejects_authored_runtime_lock_descriptor(tmp_path: Path, name: str):
-    with pytest.raises(ValueError, match=rf"{name} is reserved"):
-        managed_scheduler.build_launch_command(
-            {
-                "workdir": str(tmp_path),
-                "python": sys.executable,
-                "env": {name: "1"},
-            },
-            tmp_path / "launch.sh",
-            tmp_path / "stdout.log",
-            tmp_path / "pid.json",
-            [],
-        )
-
-
 def test_verified_launch_rejects_frozen_argv_inside_runtime_lock_before_popen(tmp_path: Path, monkeypatch):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     tracked = tmp_path / "tracked.txt"
@@ -1292,7 +1276,7 @@ def test_execution_probe_rejects_runtime_module_outside_verified_repository(tmp_
         )
 
 
-def test_hparam_launch_rejects_missing_runtime_protocol_before_managed_writes(tmp_path: Path, monkeypatch):
+def test_hparam_launch_rejects_runtime_preflight_failure_before_managed_writes(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
@@ -1301,13 +1285,12 @@ def test_hparam_launch_rejects_missing_runtime_protocol_before_managed_writes(tm
 
     def reject_protocol(_execution, command):
         assert command[2] == python_programs.source("managed_scheduler.runtime_identity")
-        assert json.loads(command[-2]) == list(managed_scheduler.DIRECT_LAUNCH_CAPABILITIES)
         assert command[-1]
-        return subprocess.CompletedProcess(command, 2, "", "Target runtime lacks managed launch capabilities")
+        return subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed")
 
     monkeypatch.setattr(hparam_runtime, "_run_execution_command", reject_protocol)
 
-    with pytest.raises(RuntimeError, match="lacks managed launch capabilities"):
+    with pytest.raises(RuntimeError, match="Target runtime preflight failed"):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"

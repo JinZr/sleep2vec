@@ -18,24 +18,15 @@ def run_execution_preflight_fixture(execution: dict, command: list[str]) -> subp
     if script == python_programs.source("managed_scheduler.runtime_identity"):
         module = arguments[0]
         if len(arguments) > 1:
-            if len(arguments) != 5:
+            if len(arguments) != 4:
                 raise AssertionError(f"Unexpected runtime identity arguments: {arguments}")
-            expected, artifacts, capabilities = map(json.loads, arguments[1:4])
-            planned_commit = arguments[4]
+            expected, artifacts = map(json.loads, arguments[1:3])
+            planned_commit = arguments[3]
             assert expected == {}
             assert artifacts == []
             assert len(planned_commit) in {40, 64} and all(
                 character.lower() in "0123456789abcdef" for character in planned_commit
             )
-            assert capabilities in [
-                ["commit_run_start", "runtime_lock"],
-                [
-                    "commit_run_start",
-                    "runtime_lock",
-                    "slurm_runtime_lock_fd",
-                    "slurm_bootstrap_signal_handoff",
-                ],
-            ]
         repo_root = str(execution.get("workdir") or Path(__file__).resolve().parents[1])
         payload = {
             "python": python_command,

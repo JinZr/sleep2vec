@@ -46,12 +46,6 @@ ACTIVE_STATUSES = frozenset(
 LAUNCH_TIMEOUT_SECONDS = 60
 RETRYABLE_PRE_SPAWN_EXIT_CODE = 75
 EXECUTION_SNAPSHOT_NAME = "execution_snapshot.json"
-DIRECT_LAUNCH_CAPABILITIES = ("commit_run_start", "runtime_lock")
-SLURM_LAUNCH_CAPABILITIES = (
-    *DIRECT_LAUNCH_CAPABILITIES,
-    "slurm_runtime_lock_fd",
-    "slurm_bootstrap_signal_handoff",
-)
 
 
 class MissingPidCapacityError(RuntimeError):
@@ -1718,7 +1712,6 @@ def inspect_execution_target(
         raise ValueError(f"A {plan_label} plan must use exactly one target Python executable.")
     module = next(iter(modules))
     python_command = next(iter(python_commands))
-    backend = _managed_scheduler_type(execution, runs)
     expected_python = execution.get("python")
     planned_commit = execution.get("runtime_commit")
     if expected_python in (None, "") or planned_commit in (None, ""):
@@ -1737,7 +1730,6 @@ def inspect_execution_target(
             module,
             "{}",
             "[]",
-            json.dumps(SLURM_LAUNCH_CAPABILITIES if backend == "slurm" else DIRECT_LAUNCH_CAPABILITIES),
             str(planned_commit),
         ],
     )
@@ -1850,10 +1842,6 @@ def build_launch_command(
 ) -> str:
     workdir = str(execution.get("workdir") or REPO_ROOT)
     env = dict(execution.get("env") or {})
-    reserved = {"AGENT_TOOLS_RUNTIME_LOCK_FD", "AGENT_TOOLS_LIFECYCLE_READY_FD"}.intersection(env)
-    if reserved:
-        name = sorted(reserved)[0]
-        raise ValueError(f"execution.env.{name} is reserved for managed runtime locking.")
     if gpus:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(item) for item in gpus)
     run = [
@@ -1900,7 +1888,6 @@ def build_launch_command(
                         execution_snapshot["module"],
                         json.dumps(execution_snapshot, sort_keys=True),
                         json.dumps(artifacts, sort_keys=True),
-                        json.dumps(DIRECT_LAUNCH_CAPABILITIES),
                         str(execution_snapshot.get("expected_runtime_commit") or execution["runtime_commit"]),
                     ),
                     (
@@ -1914,13 +1901,16 @@ def build_launch_command(
                 ]
             )
         else:
-            # Script-based plans retain artifact checks without claiming a module execution snapshot.
+            # Script-based plans verify the lifecycle runtime without claiming the workload's CLI contract.
             verification_commands.append(
                 (
                     run[0],
                     "-c",
-                    python_programs.source("plan_rendering.verify_input_snapshots"),
+                    python_programs.source("managed_scheduler.runtime_identity"),
+                    "agent_tools.experiment_workspace",
+                    "{}",
                     json.dumps(artifacts, sort_keys=True),
+                    str(execution["runtime_commit"]),
                 )
             )
     run.append(json.dumps(verification_commands))
@@ -1942,27 +1932,15 @@ def start_process(
     execution: dict[str, Any],
     command: str,
     *,
-    runtime_lock_fd: int | None = None,
     retry_pre_spawn_failure: bool = True,
 ) -> str:
     remote = execution.get("target", "local") == "ssh"
-    if remote and runtime_lock_fd is not None:
-        raise ValueError("A local runtime lock descriptor cannot be passed to an SSH launch.")
-    env = os.environ.copy()
-    env.pop("AGENT_TOOLS_RUNTIME_LOCK_FD", None)
-    env.pop("AGENT_TOOLS_LIFECYCLE_READY_FD", None)
-    pass_fds: tuple[int, ...] = ()
-    if runtime_lock_fd is not None:
-        env["AGENT_TOOLS_RUNTIME_LOCK_FD"] = str(runtime_lock_fd)
-        pass_fds = (runtime_lock_fd,)
     try:
         result = subprocess.run(
             ["bash", "-lc", command],
             text=True,
             capture_output=True,
             timeout=LAUNCH_TIMEOUT_SECONDS if remote else None,
-            env=env,
-            pass_fds=pass_fds,
         )
     except subprocess.TimeoutExpired:
         if not remote:

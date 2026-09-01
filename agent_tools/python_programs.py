@@ -55,10 +55,10 @@ _PROGRAMS = {
         "managed_scheduler/_process_launch_body.py.src",
     ),
     "managed_scheduler.cli_preflight": ("managed_scheduler/cli_preflight.py.src",),
-    "plan_rendering.commit_status": (_FRAGMENTS["runtime_guard"], "plan_rendering/commit_status.py.src"),
+    "plan_rendering.commit_status": ("plan_rendering/commit_status.py.src",),
     "plan_rendering.slurm_allocation_guard": ("plan_rendering/slurm_allocation_guard.py.src",),
     "plan_rendering.verify_input_snapshots": ("plan_rendering/verify_input_snapshots.py.src",),
-    "slurm.worker_bootstrap": (_FRAGMENTS["runtime_guard"], "slurm/worker_bootstrap.py.src"),
+    "slurm.worker_bootstrap": ("slurm/worker_bootstrap.py.src",),
     "runtime_sync.sync": (_FRAGMENTS["runtime_guard"], "runtime_sync/sync.py.src"),
     "hparam_postprocess.verify_checkpoint_sha256": ("hparam_postprocess/verify_checkpoint_sha256.py.src",),
 }

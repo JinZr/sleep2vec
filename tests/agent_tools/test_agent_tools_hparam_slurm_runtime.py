@@ -153,7 +153,7 @@ def test_slurm_controller_binding_failure_never_submits_or_transitions_run(
         assert after.get(field, "") == before.get(field, "")
 
 
-def test_slurm_runtime_protocol_preflight_fails_before_controller_or_submit(tmp_path: Path, monkeypatch):
+def test_slurm_runtime_preflight_failure_fails_before_controller_or_submit(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
     before = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
@@ -171,13 +171,12 @@ def test_slurm_runtime_protocol_preflight_fails_before_controller_or_submit(tmp_
 
     def reject_protocol(_execution, command):
         assert command[2] == python_programs.source("managed_scheduler.runtime_identity")
-        assert json.loads(command[-2]) == list(managed_scheduler.SLURM_LAUNCH_CAPABILITIES)
         assert command[-1]
-        return subprocess.CompletedProcess(command, 2, "", "Target runtime lacks managed launch capabilities")
+        return subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed")
 
     monkeypatch.setattr(hparam_runtime, "_run_execution_command", reject_protocol)
 
-    with pytest.raises(RuntimeError, match="lacks managed launch capabilities"):
+    with pytest.raises(RuntimeError, match="Target runtime preflight failed"):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
     after = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])

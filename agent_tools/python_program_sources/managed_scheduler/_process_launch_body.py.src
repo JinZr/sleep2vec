@@ -1,25 +1,12 @@
 script, log_path, pid_path, workdir = sys.argv[1:5]
 capture_runtime_commit = len(sys.argv) > 5 and bool(sys.argv[5])
 verifications = json.loads(sys.argv[6]) if len(sys.argv) > 6 else []
-if capture_runtime_commit:
-    # Legacy internal launch callers omit the planned commit and keep their three-field PID receipt.
-    inherited_lock = os.environ.pop("AGENT_TOOLS_RUNTIME_LOCK_FD", "")
-    if inherited_lock:
-        runtime_lock_descriptor = int(inherited_lock)
-        if runtime_lock_descriptor < 0:
-            raise ValueError("Inherited runtime lock descriptor must be non-negative")
-        os.fstat(runtime_lock_descriptor)
-        guard = nullcontext()
-    else:
-        guard = runtime_guard(workdir)
-else:
-    guard = nullcontext()
+guard = runtime_guard(workdir) if capture_runtime_commit else nullcontext()
 
 try:
     with guard:
         runtime_commit = ""
         child_env = os.environ.copy()
-        child_env.pop("AGENT_TOOLS_LIFECYCLE_READY_FD", None)
         if verifications:
             verification_env = child_env.copy()
             python_path = verification_env.get("PYTHONPATH")
@@ -60,13 +47,6 @@ try:
             # The child records the HEAD captured before Popen even if the checkout advances immediately after.
             child_env["AGENT_TOOLS_PROCESS_RUNTIME_COMMIT"] = runtime_commit
         with open(log_path, "ab", buffering=0) as log_file:
-            lifecycle_ready_reader = None
-            lifecycle_ready_writer = None
-            pass_fds = ()
-            if capture_runtime_commit and "# Agent lifecycle helper: persistent\n" in Path(script).read_text():
-                lifecycle_ready_reader, lifecycle_ready_writer = os.pipe()
-                child_env["AGENT_TOOLS_LIFECYCLE_READY_FD"] = str(lifecycle_ready_writer)
-                pass_fds = (lifecycle_ready_writer,)
             process = subprocess.Popen(
                 ["bash", script],
                 cwd=workdir,
@@ -75,14 +55,7 @@ try:
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
-                pass_fds=pass_fds,
             )
-            if lifecycle_ready_reader is not None and lifecycle_ready_writer is not None:
-                os.close(lifecycle_ready_writer)
-                ready = os.read(lifecycle_ready_reader, 1)
-                os.close(lifecycle_ready_reader)
-                if ready != b"1":
-                    raise RuntimeError("Lifecycle helper exited before freezing its runtime imports")
 except BaseException:
     traceback.print_exc()
     raise SystemExit(RETRYABLE_PRE_SPAWN_EXIT_CODE)

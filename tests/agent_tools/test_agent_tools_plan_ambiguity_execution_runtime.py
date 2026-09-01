@@ -843,15 +843,14 @@ def test_infer_plan_uses_frozen_runtime_python_for_workload_and_lifecycle(tmp_pa
     assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
 
     lines = (plan_dir / "run.sh").read_text().splitlines()
-    lifecycle_index = lines.index("# Agent lifecycle helper: persistent")
     helper_index = lines.index("_agent_commit_status() {")
     running_index = lines.index("_agent_commit_status running")
     workload_index = lines.index(command)
-    helper = "\n".join(lines[lifecycle_index:running_index])
+    helper = "\n".join(lines[helper_index:running_index])
     assert f"{runtime_python} -c " in helper
     assert "record-runtime-commit" in helper
     assert _RUNTIME_COMMIT in helper
-    assert lifecycle_index < helper_index < running_index < workload_index
+    assert helper_index < running_index < workload_index
     plan = json.loads((plan_dir / "plan.json").read_text())
     assert plan["recipe"]["execution"] == recipe["execution"]
     assert yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())["execution"] == recipe["execution"]

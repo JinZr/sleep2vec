@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import fcntl
 import json
-import os
 from pathlib import Path
 import shlex
 import shutil
@@ -157,18 +155,16 @@ def test_preset_detached_worker_commits_terminal_after_launcher_exits(
     assert status["runs"][0]["status"] == row["status"]
 
 
-@pytest.mark.parametrize("failure", ["missing_python", "missing_protocol", "script_hash", "config_hash"])
+@pytest.mark.parametrize("failure", ["missing_python", "runtime_preflight", "script_hash", "config_hash"])
 def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_runtime, monkeypatch, failure):
     if failure == "missing_python":
         preset_runtime["execution"]["python"] = str(tmp_path / "missing-python")
     plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
-    if failure == "missing_protocol":
+    if failure == "runtime_preflight":
         monkeypatch.setattr(
             managed_scheduler,
             "run_execution_command",
-            lambda _execution, command: subprocess.CompletedProcess(
-                command, 2, "", "Target runtime lacks managed launch capabilities"
-            ),
+            lambda _execution, command: subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed"),
         )
     if failure.endswith("_hash"):
         Path(plan["runs"][0][failure.removesuffix("_hash")]).write_text("changed bytes\n")
@@ -179,21 +175,11 @@ def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_run
     assert not preset_runtime["payload"].exists()
 
 
-def test_preset_capability_probe_claim_and_start_share_runtime_lock(tmp_path, preset_runtime, monkeypatch):
+def test_preset_runtime_preflight_claim_and_start_run_in_order(tmp_path, preset_runtime, monkeypatch):
     plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
-    lock_path = Path(preset_runtime["execution"]["workdir"]) / ".agent-tools-runtime.lock"
     events = []
 
-    def assert_runtime_locked():
-        descriptor = os.open(lock_path, os.O_RDWR)
-        try:
-            with pytest.raises(BlockingIOError):
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        finally:
-            os.close(descriptor)
-
     def probe(_execution, command):
-        assert_runtime_locked()
         events.append("probe")
         return subprocess.CompletedProcess(command, 0, "{}\n", "")
 
@@ -201,14 +187,11 @@ def test_preset_capability_probe_claim_and_start_share_runtime_lock(tmp_path, pr
 
     def merge(workspace, rows, **kwargs):
         if rows[0]["status"] == "launched" and "claim" not in events:
-            assert_runtime_locked()
             events.append("claim")
         return original_merge(workspace, rows, **kwargs)
 
-    def start(_execution, _command, *, runtime_lock_fd, retry_pre_spawn_failure):
-        assert os.fstat(runtime_lock_fd)
+    def start(_execution, _command, *, retry_pre_spawn_failure):
         assert retry_pre_spawn_failure is False
-        assert_runtime_locked()
         events.append("start")
         return "launched"
 
@@ -220,14 +203,9 @@ def test_preset_capability_probe_claim_and_start_share_runtime_lock(tmp_path, pr
 
     assert result.started_keys
     assert events == ["probe", "claim", "start"]
-    descriptor = os.open(lock_path, os.O_RDWR)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    finally:
-        os.close(descriptor)
 
 
-def test_preset_reverifies_artifacts_inside_lock_before_claim(tmp_path, preset_runtime, monkeypatch):
+def test_preset_reverifies_artifacts_before_claim(tmp_path, preset_runtime, monkeypatch):
     plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
     run = plan["runs"][0]
     artifact = Path(run["script"])
@@ -240,7 +218,7 @@ def test_preset_reverifies_artifacts_inside_lock_before_claim(tmp_path, preset_r
         calls += 1
         original_verify(candidate)
         if calls == 1:
-            artifact.write_bytes(artifact.read_bytes() + b"\n# changed before locked verification\n")
+            artifact.write_bytes(artifact.read_bytes() + b"\n# changed before claim\n")
 
     monkeypatch.setattr(experiments, "verify_run_snapshot", verify)
 
@@ -299,6 +277,30 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
         identity = run_evidence.read_process_identity(pid_path)
         if identity and run_evidence.process_identity_running({}, identity):
             run_evidence.stop_process_group({}, identity)
+
+
+def test_preset_launch_rechecks_clean_runtime_in_the_actual_start_command(tmp_path, preset_runtime, monkeypatch):
+    plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
+    for name, value in preset_runtime["env"].items():
+        monkeypatch.setenv(name, value)
+    shadow = Path(preset_runtime["execution"]["workdir"]) / "shadow_module.py"
+    original_merge = experiments.merge_run_manifest
+
+    def merge(workspace, rows, **kwargs):
+        committed = original_merge(workspace, rows, **kwargs)
+        if rows[0]["status"] == "launched" and not shadow.exists():
+            shadow.write_text("VALUE = 1\n")
+        return committed
+
+    monkeypatch.setattr(experiments, "merge_run_manifest", merge)
+
+    result = experiments.launch_preset_run(plan_dir, dry_run=False)
+
+    assert result.launch_rows[0]["status"] == "launch_failed"
+    assert not result.started_keys
+    assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "launch_failed"
+    assert not preset_runtime["payload"].exists()
+    assert not (Path(plan["runs"][0]["run_dir"]) / "pid").exists()
 
 
 @pytest.mark.parametrize("execution_snapshot", [None, {"module": "fixture_runtime"}])

@@ -1,14 +1,13 @@
 from datetime import datetime, timezone
 import json
+import os
+from pathlib import Path
 import signal
 import socket
 import subprocess
 import sys
 import time
 import traceback
-
-
-workdir = sys.argv[1]
 
 
 def option(name):
@@ -29,20 +28,14 @@ received_signal = 0
 child = None
 
 
-class BootstrapSignal(BaseException):
-    pass
-
-
-def stop_before_checkout_import(signum, _frame):
+def forward_signal(signum, _frame):
     global received_signal
-    if received_signal:
-        return
-    if child is None:
-        received_signal = signum
-        raise BootstrapSignal
-    if child.poll() is None:
-        received_signal = signum
-        child.send_signal(signum)
+    received_signal = signum
+    if child is not None and child.poll() is None:
+        try:
+            child.send_signal(signum)
+        except ProcessLookupError:
+            pass
 
 
 def write_terminal(exit_code):
@@ -65,7 +58,6 @@ def write_terminal(exit_code):
                     "runtime_commit": "",
                 },
                 file_obj,
-                indent=2,
                 sort_keys=True,
             )
             file_obj.write("\n")
@@ -80,42 +72,25 @@ def write_terminal(exit_code):
 
 
 forwarded_signals = (signal.SIGTERM, signal.SIGINT)
-old_handlers = {signum: signal.signal(signum, stop_before_checkout_import) for signum in forwarded_signals}
-bootstrap_exit_code = None
+old_handlers = {signum: signal.signal(signum, forward_signal) for signum in forwarded_signals}
 try:
-    with runtime_guard(workdir) as runtime_lock_descriptor:
-        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, forwarded_signals)
-        try:
-            child_env = os.environ.copy()
-            child_env["AGENT_TOOLS_BOOTSTRAP_SIGNALS_BLOCKED"] = "1"
-            child = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "agent_tools.slurm",
-                    *sys.argv[2:],
-                    "--runtime-lock-fd",
-                    str(runtime_lock_descriptor),
-                ],
-                env=child_env,
-                pass_fds=(runtime_lock_descriptor,),
-            )
-        finally:
-            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-    bootstrap_exit_code = child.wait()
-    if bootstrap_exit_code < 0:
-        bootstrap_exit_code = 128 + abs(bootstrap_exit_code)
-    if received_signal and bootstrap_exit_code == 0:
-        bootstrap_exit_code = 128 + received_signal
-except BootstrapSignal:
-    bootstrap_exit_code = 128 + received_signal
+    if received_signal:
+        exit_code = 128 + received_signal
+    else:
+        child = subprocess.Popen([sys.executable, "-m", "agent_tools.slurm", *sys.argv[1:]])
+        if received_signal and child.poll() is None:
+            child.send_signal(received_signal)
+        exit_code = child.wait()
+        if exit_code < 0:
+            exit_code = 128 + abs(exit_code)
+        if received_signal and exit_code == 0:
+            exit_code = 128 + received_signal
 except BaseException:
     traceback.print_exc()
-    bootstrap_exit_code = 128 + received_signal if received_signal else 2
+    exit_code = 128 + received_signal if received_signal else 2
 finally:
     for signum, handler in old_handlers.items():
         signal.signal(signum, handler)
-if bootstrap_exit_code is not None:
-    if bootstrap_exit_code != 0 and not Path(result_path).exists():
-        write_terminal(bootstrap_exit_code)
-    raise SystemExit(bootstrap_exit_code)
+if exit_code != 0 and not Path(result_path).exists():
+    write_terminal(exit_code)
+raise SystemExit(exit_code)

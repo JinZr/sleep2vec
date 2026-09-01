@@ -307,10 +307,10 @@ The launcher validates the registered plan and frozen inputs, then records the
 execution identity and launch attempt before starting a detached process.
 The launch command rechecks the frozen worker script and config hashes before
 spawning, including changes made after the manager's initial validation, and
-requires the frozen Python to start. Under the short runtime lock it observes
-HEAD immediately before spawning and adds that value to the new managed PID
-receipt. It does not perform the hparam execution-snapshot module-origin or
-live-argv checks.
+requires a clean importable-code state and the lifecycle module in the current
+repository. Under the short runtime lock it observes HEAD immediately before
+spawning and adds that value to the new managed PID receipt. It does not perform
+the hparam workload module-origin or live-argv checks.
 Stdin is closed to input; stdout and stderr share the run's persistent
 `stdout.log`. The process has its own session and a recorded PID, process group,
 and start token. Loss of the launching connection or an incomplete receipt does
@@ -615,9 +615,9 @@ execute-wave probe above owns live frozen-argv compatibility. Before a direct
 managed child is spawned, one short lock covers the embedded launch verification
 of Python/version, repository root, hostname, module origin, tracked and
 untracked or ignored importable code, and frozen script/config hashes, followed
-by HEAD capture and `Popen`. A self-contained Slurm bootstrap acquires the lock
-before importing the checkout-local allocation wrapper, which retains that same
-lock through preflight and HEAD snapshot, allocation-sidecar publication, and
+by HEAD capture and `Popen`. A small Slurm bootstrap preserves terminal evidence
+when the checkout worker cannot import or start. The allocation worker takes the
+short lock for preflight, HEAD snapshot, allocation-sidecar publication, and
 `srun` `Popen`. The locks are released after spawn;
 these are point-in-time launch observations, not a promise that checkout code
 bytes remain unchanged throughout the job.

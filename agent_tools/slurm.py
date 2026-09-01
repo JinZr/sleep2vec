@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -57,7 +56,6 @@ RESOURCE_FIELDS = {
     "direct_controller",
 }
 _DISTRIBUTED_ENV_FIELDS = {"RANK", "LOCAL_RANK", "WORLD_SIZE"}
-BOOTSTRAP_SIGNAL_HANDOFF = True
 
 
 def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> dict[str, Any]:
@@ -154,7 +152,6 @@ def render_batch_script(
         execution["python"],
         "-c",
         python_programs.source("slurm.worker_bootstrap"),
-        workdir,
         "run-frozen-job",
         "--run-id",
         run["run_id"],
@@ -225,7 +222,6 @@ def run_frozen_job(
     runtime_commit: str,
     module: str,
     gpus_per_run: int,
-    runtime_lock_fd: int | None = None,
 ) -> int:
     started_at = _utc_now()
     job_id = _job_id(os.environ.get("SLURM_JOB_ID", ""))
@@ -260,14 +256,6 @@ def run_frozen_job(
 
     forwarded_signals = (signal.SIGTERM, signal.SIGINT)
     old_handlers = {signum: signal.signal(signum, forward_signal) for signum in forwarded_signals}
-    if os.environ.pop("AGENT_TOOLS_BOOTSTRAP_SIGNALS_BLOCKED", "") == "1":
-        signal.pthread_sigmask(signal.SIG_UNBLOCK, forwarded_signals)
-        if received_signal:
-            exit_code = 128 + received_signal
-            for signum, handler in old_handlers.items():
-                signal.signal(signum, handler)
-            write_terminal(exit_code)
-            return exit_code
     exit_code = 2
     log_target = Path(log_path)
     log_target.parent.mkdir(parents=True, exist_ok=True)
@@ -289,7 +277,7 @@ def run_frozen_job(
                         raise ValueError(f"Frozen run artifact is not an independent file: {artifact}")
                     if hashlib.sha256(artifact.read_bytes()).hexdigest() != expected:
                         raise ValueError(f"Frozen run artifact changed before allocation start: {artifact}")
-                with _runtime_launch_lock(workdir, runtime_lock_fd):
+                with runtime_lock(workdir):
                     snapshot = inspect_execution_target(
                         {
                             "target": "local",
@@ -323,48 +311,44 @@ def run_frozen_job(
                     ]
                     if changed:
                         raise ValueError("Frozen Slurm execution identity changed in allocation: " + ", ".join(changed))
-                    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, forwarded_signals)
-                    try:
-                        if received_signal:
-                            exit_code = 128 + received_signal
-                        else:
-                            _atomic_create_json(
-                                allocation_identity_path,
-                                {
-                                    "schema_version": 1,
-                                    "scheduler_job_id": job_id,
-                                    "scheduler_cluster": cluster,
-                                    "scheduler_submit_token": submit_token,
-                                    "node": node,
-                                    "started_at": started_at,
-                                    "execution_snapshot": snapshot,
-                                },
-                            )
-                            child_env = os.environ.copy()
-                            for env_name in tuple(child_env):
-                                if env_name in _DISTRIBUTED_ENV_FIELDS or env_name.startswith("MASTER_"):
-                                    child_env.pop(env_name)
-                            child = subprocess.Popen(
-                                [
-                                    "srun",
-                                    "--nodes=1",
-                                    f"--ntasks={expected_tasks}",
-                                    f"--ntasks-per-node={expected_tasks}",
-                                    "--kill-on-bad-exit=1",
-                                    "--quit-on-interrupt",
-                                    "--label",
-                                    script,
-                                ],
-                                cwd=workdir,
-                                env=child_env,
-                                stdout=log,
-                                stderr=subprocess.STDOUT,
-                                start_new_session=False,
-                            )
-                            if received_signal and child.poll() is None:
-                                child.send_signal(received_signal)
-                    finally:
-                        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                    if received_signal:
+                        exit_code = 128 + received_signal
+                    else:
+                        _atomic_create_json(
+                            allocation_identity_path,
+                            {
+                                "schema_version": 1,
+                                "scheduler_job_id": job_id,
+                                "scheduler_cluster": cluster,
+                                "scheduler_submit_token": submit_token,
+                                "node": node,
+                                "started_at": started_at,
+                                "execution_snapshot": snapshot,
+                            },
+                        )
+                        child_env = os.environ.copy()
+                        for env_name in tuple(child_env):
+                            if env_name in _DISTRIBUTED_ENV_FIELDS or env_name.startswith("MASTER_"):
+                                child_env.pop(env_name)
+                        child = subprocess.Popen(
+                            [
+                                "srun",
+                                "--nodes=1",
+                                f"--ntasks={expected_tasks}",
+                                f"--ntasks-per-node={expected_tasks}",
+                                "--kill-on-bad-exit=1",
+                                "--quit-on-interrupt",
+                                "--label",
+                                script,
+                            ],
+                            cwd=workdir,
+                            env=child_env,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                            start_new_session=False,
+                        )
+                        if received_signal and child.poll() is None:
+                            child.send_signal(received_signal)
                 if child is not None:
                     exit_code = child.wait()
                     if exit_code < 0:
@@ -827,19 +811,6 @@ def _positive_int(value: Any, field: str) -> int:
     return value
 
 
-@contextmanager
-def _runtime_launch_lock(workdir: str, inherited_descriptor: int | None) -> Iterator[None]:
-    if inherited_descriptor is None:
-        with runtime_lock(workdir):
-            yield
-        return
-    try:
-        os.set_inheritable(inherited_descriptor, False)
-        yield
-    finally:
-        os.close(inherited_descriptor)
-
-
 def _job_name(experiment_id: str, run_id: str) -> str:
     value = re.sub(r"[^A-Za-z0-9_.-]+", "-", f"{experiment_id}-{run_id}").strip("-.")
     return (value or "agent-tools-run")[:128]
@@ -893,7 +864,6 @@ def _main(argv: list[str] | None = None) -> int:
     ):
         worker.add_argument(f"--{name.replace('_', '-')}", required=True)
     worker.add_argument("--gpus-per-run", required=True, type=int)
-    worker.add_argument("--runtime-lock-fd", type=int)
     args = parser.parse_args(argv)
     payload = vars(args)
     payload.pop("command_name")

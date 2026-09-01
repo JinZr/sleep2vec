@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +45,6 @@ from .experiment_workspace import (
     write_status_report,
 )
 from .manifests import read_json, utc_now
-from .runtime_lock import runtime_lock
 
 
 def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:
@@ -134,39 +132,35 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
             return managed_scheduler.LaunchResult(rows, [preview], frozenset(), {}, {})
         if Path(identity["pid_path"]).exists():
             raise ValueError("Preset PID receipt already exists; refusing another launch attempt.")
-        with runtime_lock(execution["workdir"]) as runtime_lock_descriptor:
-            # Commit drift is allowed, but the current launch protocol must be present before this run is claimed.
-            probe = managed_scheduler.run_execution_command(
-                execution,
-                [
-                    execution["python"],
-                    "-c",
-                    python_programs.source("managed_scheduler.runtime_identity"),
-                    "agent_tools.experiment_workspace",
-                    "{}",
-                    "[]",
-                    json.dumps(managed_scheduler.DIRECT_LAUNCH_CAPABILITIES),
-                    str(execution["runtime_commit"]),
-                ],
-            )
-            if probe.returncode != 0:
-                detail = probe.stderr.strip() or probe.stdout.strip() or f"exit code {probe.returncode}"
-                raise RuntimeError(f"Preset runtime preflight failed: {detail}")
-            verify_run_snapshot(run)
-            # Claim before fork: an interrupted manager must not turn an uncertain launch into a retry.
-            attempted = {
-                **preview,
-                "planned_runtime_commit": str(execution["runtime_commit"]),
-                "status": "launched",
-                "launched_at": utc_now(),
-            }
-            merge_run_manifest(workspace, [attempted], lock_held=True)
-            status = managed_scheduler.start_process(
-                execution,
-                identity["command"],
-                runtime_lock_fd=runtime_lock_descriptor,
-                retry_pre_spawn_failure=False,
-            )
+        probe = managed_scheduler.run_execution_command(
+            execution,
+            [
+                execution["python"],
+                "-c",
+                python_programs.source("managed_scheduler.runtime_identity"),
+                "agent_tools.experiment_workspace",
+                "{}",
+                "[]",
+                str(execution["runtime_commit"]),
+            ],
+        )
+        if probe.returncode != 0:
+            detail = probe.stderr.strip() or probe.stdout.strip() or f"exit code {probe.returncode}"
+            raise RuntimeError(f"Preset runtime preflight failed: {detail}")
+        verify_run_snapshot(run)
+        # Claim before fork: an interrupted manager must not turn an uncertain launch into a retry.
+        attempted = {
+            **preview,
+            "planned_runtime_commit": str(execution["runtime_commit"]),
+            "status": "launched",
+            "launched_at": utc_now(),
+        }
+        merge_run_manifest(workspace, [attempted], lock_held=True)
+        status = managed_scheduler.start_process(
+            execution,
+            identity["command"],
+            retry_pre_spawn_failure=False,
+        )
         attempted["status"] = status
         process_identity = evidence.read_process_identity(identity["pid_path"], attempted)
         if process_identity is not None:

@@ -237,23 +237,20 @@ def script_lines(
     if experiment_root is not None:
         if lifecycle_python is None:
             raise ValueError("Lifecycle scripts require an explicit Python interpreter.")
-        commit_command = (
-            render_command(
-                [
-                    lifecycle_python,
-                    "-c",
-                    python_programs.source("plan_rendering.commit_status"),
-                    experiment_root,
-                    step_id,
-                    run_id,
-                ]
-            )
-            + ' fifo "$_agent_lifecycle_in" "$_agent_lifecycle_out"'
-            + (
-                f" record-runtime-commit {shlex.quote(expected_runtime_commit)}"
-                if expected_runtime_commit is not None
-                else ""
-            )
+        commit_command = render_command(
+            [
+                lifecycle_python,
+                "-c",
+                python_programs.source("plan_rendering.commit_status"),
+                experiment_root,
+                step_id,
+                run_id,
+                "__STATUS__",
+            ]
+        ) + (
+            f" record-runtime-commit {shlex.quote(expected_runtime_commit)}"
+            if expected_runtime_commit is not None
+            else ""
         )
         prelaunch_verification_lines = []
         if input_snapshots:
@@ -271,31 +268,8 @@ def script_lines(
                 ]
             )
         lifecycle_lines = [
-            "# Agent lifecycle helper: persistent",
-            '_agent_lifecycle_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-tools-lifecycle.XXXXXX")',
-            '_agent_lifecycle_in="$_agent_lifecycle_dir/status.in"',
-            '_agent_lifecycle_out="$_agent_lifecycle_dir/status.out"',
-            'mkfifo "$_agent_lifecycle_in" "$_agent_lifecycle_out"',
-            f"{commit_command} &",
-            "_agent_lifecycle_pid=$!",
-            'if [ -n "${AGENT_TOOLS_LIFECYCLE_READY_FD:-}" ]; then',
-            '  eval "exec ${AGENT_TOOLS_LIFECYCLE_READY_FD}>&-"',
-            "  unset AGENT_TOOLS_LIFECYCLE_READY_FD",
-            "fi",
             "_agent_commit_status() {",
-            '  printf "%s\\n" "$1" >"$_agent_lifecycle_in"',
-            '  if IFS= read -r _agent_lifecycle_reply <"$_agent_lifecycle_out" && '
-            '[ "$_agent_lifecycle_reply" = ok ]; then',
-            "    _agent_lifecycle_status=0",
-            "  else",
-            "    _agent_lifecycle_status=1",
-            "  fi",
-            '  if [ "$1" = completed ] || [ "$1" = failed ]; then',
-            '    wait "$_agent_lifecycle_pid"',
-            '    rm -f "$_agent_lifecycle_in" "$_agent_lifecycle_out"',
-            '    rmdir "$_agent_lifecycle_dir"',
-            "  fi",
-            '  return "$_agent_lifecycle_status"',
+            f'  {commit_command.replace("__STATUS__", "$1")}',
             "}",
             "_agent_finish_run() {",
             "  _agent_runtime_status=$?",

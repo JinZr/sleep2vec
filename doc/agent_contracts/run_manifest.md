@@ -349,14 +349,10 @@ exactly one JobID row whose comment matches the frozen submit token; blank,
 mismatched, absent, or ambiguous comments fail without changing canonical
 lifecycle. A cluster that does not retain job comments cannot provide terminal
 accounting identity, so monitoring remains unchanged and fails closed. A
-self-contained bootstrap installs SIGTERM/SIGINT handling before it waits for
-the runtime lock, then imports the checkout-local Slurm worker and transfers
-that same open lock descriptor into the worker. A signal received while waiting
-writes the authenticated terminal sidecar without importing or starting the
-checkout worker. Signals are blocked only across descriptor handoff and unblocked
-after the checkout worker installs its handler. The compute wrapper then verifies
-the frozen launch/config hashes.
-Under that short lock it requires a clean importable-code state, verifies that
+small standard-library bootstrap forwards SIGTERM/SIGINT to the checkout-local
+Slurm worker and writes terminal evidence if that worker cannot import or start.
+The compute wrapper verifies the frozen launch/config hashes. Under a short
+runtime lock it requires a clean importable-code state, verifies that
 the named module still resolves inside the current repository, validates the
 live CLI, and observes the allocation-side actual commit. It then verifies the
 exact execution-snapshot bytes and requires current Python/version and module name to
