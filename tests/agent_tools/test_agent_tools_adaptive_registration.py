@@ -1489,6 +1489,8 @@ def test_adaptive_source_rejects_frozen_python_drift_before_suggestion_write(tmp
         "source_config",
         "search_parameters",
         "suggest_bounds",
+        "suggest_strategy",
+        "round_size",
         "max_rounds",
         "max_runs_total",
     ],
@@ -1496,7 +1498,7 @@ def test_adaptive_source_rejects_frozen_python_drift_before_suggestion_write(tmp
 def test_adaptive_source_rejects_frozen_scientific_contract_before_suggestion_write(
     tmp_path: Path, monkeypatch, drift: str
 ):
-    recipe = _agent_recipe(tmp_path) if drift == "suggest_bounds" else _adaptive_recipe(tmp_path)
+    recipe = _agent_recipe(tmp_path) if drift in {"suggest_bounds", "suggest_strategy"} else _adaptive_recipe(tmp_path)
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     payload = yaml.safe_load(recipe.read_text())
     if drift == "label":
@@ -1518,6 +1520,8 @@ def test_adaptive_source_rejects_frozen_scientific_contract_before_suggestion_wr
         payload["search"]["parameters"]["runtime.lr"] = [2e-6]
     elif drift == "suggest_bounds":
         payload["adaptive"]["suggest"]["bounds"]["runtime.lr"] = [6e-7, 2e-6]
+    elif drift == "suggest_strategy":
+        payload["adaptive"]["suggest"] = {"strategy": "best_neighborhood"}
     else:
         payload["adaptive"][drift] += 1
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))

@@ -2099,6 +2099,11 @@ def _validate_workflow_scientific_contract(recipe: dict[str, Any], workflow: dic
     frozen_values = {
         "search.parameters": (search.get("parameters"), initial_search.get("parameters")),
         "adaptive.suggest.bounds": (suggest.get("bounds"), initial_suggest.get("bounds")),
+        "adaptive.suggest.strategy": (_suggest_strategy(recipe), _suggest_strategy(initial_recipe)),
+        "adaptive.round_size": (
+            int(adaptive.get("round_size") or _hparam_count(recipe)),
+            int(initial_adaptive.get("round_size") or _hparam_count(initial_recipe)),
+        ),
         "adaptive.max_rounds": (adaptive.get("max_rounds"), initial_adaptive.get("max_rounds")),
         "adaptive.max_runs_total": (
             adaptive.get("max_runs_total"),
