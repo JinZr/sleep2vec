@@ -858,7 +858,15 @@ def _applied_agent_proposal(root: Path, workspace: Path, proposal_path: str | Pa
         "proposal_sha256": proposal_sha256,
     }
     accepted_text = json.dumps(accepted_payload, indent=2, sort_keys=True) + "\n"
-    snapshots = exp_io.read_managed_files_at(workspace, [accepted_path, suggestion_path])
+    snapshots = exp_io.read_managed_files_at(
+        workspace,
+        [input_path, proposal_file, accepted_path, suggestion_path],
+    )
+    if (
+        snapshots[str(input_path)]["sha256"] != input_sha256
+        or snapshots[str(proposal_file)]["sha256"] != proposal_sha256
+    ):
+        raise ValueError("Agent proposal submission or input snapshot changed during replay validation.")
     if snapshots[str(accepted_path)]["text"] != accepted_text:
         raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {accepted_path}")
     suggestion_sha256 = snapshots[str(suggestion_path)]["sha256"]

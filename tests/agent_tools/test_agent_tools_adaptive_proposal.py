@@ -660,6 +660,42 @@ def test_agent_proposal_execute_replay_rejects_changed_projection(tmp_path: Path
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
 
 
+def test_agent_proposal_execute_replay_rechecks_protocol_files(tmp_path: Path, monkeypatch):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+
+    def fake_launch(run_dir, *, dry_run=True):
+        launch_manifest = Path(run_dir) / "launch_manifest.tsv"
+        runs = json.loads((Path(run_dir) / "plan.json").read_text())["runs"]
+        manifests.write_rows(launch_manifest, [{**row, "status": "launched"} for row in runs])
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": row["step_id"], "run_id": row["run_id"], "status": "launched"} for row in runs],
+        )
+        return launch_manifest
+
+    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+    load_input = adaptive_hparam._load_agent_proposal_input
+
+    def change_proposal_after_input_validation(*args, **kwargs):
+        result = load_input(*args, **kwargs)
+        payload = json.loads(proposal_path.read_text())
+        payload["rationale"] = "changed during replay"
+        proposal_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        return result
+
+    monkeypatch.setattr(adaptive_hparam, "_load_agent_proposal_input", change_proposal_after_input_validation)
+
+    with pytest.raises(ValueError, match="changed during replay validation"):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
+
+
 def test_agent_proposal_execute_replay_requires_committed_launch_event(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
