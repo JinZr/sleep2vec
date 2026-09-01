@@ -209,6 +209,21 @@ def test_preset_explicit_executable_name_is_preserved(tmp_path: Path, preset_run
     assert shlex.split(plan["commands"][0])[0] == "python"
 
 
+@pytest.mark.parametrize("runtime_commit", ["A" * 40, "a" * 40, "B" * 64, "b" * 64])
+def test_preset_authored_runtime_commit_is_frozen_lowercase(tmp_path: Path, preset_runtime, runtime_commit: str):
+    preset_runtime["execution"]["runtime_commit"] = runtime_commit
+    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    plan_dir = preset_runtime["workspace"] / "plan"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+    expected = runtime_commit.lower()
+    assert yaml.safe_load(recipe.read_text())["execution"]["runtime_commit"] == runtime_commit
+    assert json.loads((plan_dir / "plan.json").read_text())["recipe"]["execution"]["runtime_commit"] == expected
+    assert yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())["execution"]["runtime_commit"] == expected
+
+
 @pytest.mark.parametrize("missing_field", ["python", "runtime_commit", "workdir"])
 def test_preset_partial_identity_fails_before_workspace_creation(tmp_path: Path, preset_runtime, missing_field):
     preset_runtime["execution"].pop(missing_field)
@@ -230,8 +245,14 @@ def test_preset_partial_identity_fails_before_workspace_creation(tmp_path: Path,
         ("python", []),
         ("python", "conda run -n exp python"),
         ("python", "~/bin/python"),
-        ("runtime_commit", "A" * 40),
+        ("runtime_commit", ""),
+        ("runtime_commit", "ASK_USER"),
         ("runtime_commit", []),
+        ("runtime_commit", "g" * 40),
+        ("runtime_commit", "a" * 39),
+        ("runtime_commit", "a" * 41),
+        ("runtime_commit", "a" * 63),
+        ("runtime_commit", "a" * 65),
         ("workdir", "relative/runtime"),
         ("workdir", []),
         ("target", "ssh"),
@@ -448,6 +469,27 @@ def test_preset_missing_manager_commit_fails_before_workspace_creation(
     assert not preset_runtime["workspace"].exists()
 
 
+@pytest.mark.parametrize("runtime_commit", ["A" * 40, "a" * 40, "B" * 64, "b" * 64])
+def test_preset_auto_bound_runtime_commit_is_frozen_lowercase(
+    tmp_path: Path, preset_runtime, monkeypatch, runtime_commit: str
+):
+    preset_runtime["execution"] = {}
+    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    monkeypatch.setattr(
+        preset_adapter,
+        "repo_summary",
+        lambda: {"git": {"available": True, "commit": runtime_commit}},
+    )
+    plan_dir = preset_runtime["workspace"] / "plan"
+
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+    expected = runtime_commit.lower()
+    assert json.loads((plan_dir / "plan.json").read_text())["recipe"]["execution"]["runtime_commit"] == expected
+    assert yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())["execution"]["runtime_commit"] == expected
+
+
 @pytest.mark.parametrize("entrypoint", ["evaluate_recipe", "build_plan"])
 @pytest.mark.parametrize("has_preset_build", [True, False])
 @pytest.mark.parametrize(
@@ -456,7 +498,13 @@ def test_preset_missing_manager_commit_fails_before_workspace_creation(
         ("python", "/tmp/runtime with space/bin/python"),
         ("python", ""),
         ("python", "python --isolated"),
-        ("runtime_commit", "A" * 40),
+        ("runtime_commit", "ASK_USER"),
+        ("runtime_commit", []),
+        ("runtime_commit", "g" * 40),
+        ("runtime_commit", "a" * 39),
+        ("runtime_commit", "a" * 41),
+        ("runtime_commit", "a" * 63),
+        ("runtime_commit", "a" * 65),
     ],
 )
 def test_preset_invalid_auto_bound_identity_fails_before_workspace_creation(
