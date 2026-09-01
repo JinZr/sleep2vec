@@ -264,4 +264,6 @@ plans/generated/
 # VSCode settings folder
 .vscode/
 /.codex-tmp
+/runtime-stage/
 /tmp
+.codex-tmp/
