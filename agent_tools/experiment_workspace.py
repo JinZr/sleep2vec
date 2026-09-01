@@ -1351,7 +1351,8 @@ def _run_matrix_text(rows: list[dict[str, Any]]) -> tuple[str, str]:
     else:
         lines.extend(
             [
-                "| run | setting | status | planned commit | actual commit | commit note | metric | score | checkpoint | W&B |",
+                "| run | setting | status | planned commit | actual commit | commit note | "
+                "metric | score | checkpoint | W&B |",
                 "|---|---|---|---|---|---|---|---:|---|---|",
             ]
         )

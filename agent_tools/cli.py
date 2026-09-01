@@ -113,7 +113,8 @@ def _build_parser() -> argparse.ArgumentParser:
     runtime_sync = _command(
         sub,
         "runtime-sync",
-        "Inspect or fast-forward one existing runtime checkout to origin/main in place. Dry run unless --execute is given.",
+        "Inspect or fast-forward one existing runtime checkout to origin/main in place. "
+        "Dry run unless --execute is given.",
     )
     runtime_sync.add_argument("--workdir", required=True, help="Existing Git checkout to inspect or update in place.")
     runtime_sync.add_argument("--host", help="SSH host that owns the checkout; omit for a local checkout.")
