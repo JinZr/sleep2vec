@@ -2107,7 +2107,9 @@ def _validate_workflow_scientific_contract(recipe: dict[str, Any], workflow: dic
     }
     changed.extend(field for field, values in frozen_values.items() if values[0] != values[1])
     if changed:
-        raise ValueError(f"Adaptive source scientific contract differs from frozen round 000: {', '.join(changed)}")
+        raise ValueError(
+            f"Adaptive source recipe changed its scientific contract from frozen round 000: {', '.join(changed)}"
+        )
     frozen_config = _round_dir(root, 0) / "config.source.yaml"
     if _source_config_sha256(recipe) != file_sha256(frozen_config):
         raise ValueError("Adaptive source config changed from frozen round 000.")
