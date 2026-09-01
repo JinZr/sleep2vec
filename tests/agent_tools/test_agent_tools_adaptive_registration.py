@@ -17,6 +17,20 @@ from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _ag
 _stub_execution_snapshot_preflight = test_support._stub_execution_snapshot_preflight
 
 
+def _slurm_scheduler(**updates):
+    return {
+        "type": "slurm",
+        "partition": "gpu",
+        "cpus_per_task": 8,
+        "memory": "64G",
+        "walltime": "01:00:00",
+        "nice": 0,
+        "nodelist": "gpu[1]",
+        "direct_controller": False,
+        **updates,
+    }
+
+
 def test_adaptive_init_preflight_leaves_blocked_root_untouched_then_retries(tmp_path: Path):
     source = tmp_path / "source"
     recipe = _adaptive_recipe(source)
@@ -1225,7 +1239,7 @@ def test_adaptive_rounds_keep_frozen_route_and_python_and_allow_commit_and_capac
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"].update(
         {
-            **frozen_route,
+            **first_plan["recipe"]["execution"],
             "python": frozen_identity["python"],
             "runtime_commit": next_commit,
             "max_concurrent": 2,
@@ -1499,6 +1513,93 @@ def test_adaptive_source_rejects_frozen_route_drift_before_suggestion_write(
 
     assert not (workflow_dir / "adaptive" / "suggestions").exists()
     assert events_path.read_bytes() == events_before
+
+
+def test_adaptive_source_rejects_direct_to_slurm_route_drift_before_suggestion_write(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_zero / "plan.json").read_text())["runs"][0]
+    manifests.write_rows(workflow_dir / "adaptive" / "digests" / "round_000.csv", [{**run, "test_auroc": 0.73}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["scheduler"] = _slurm_scheduler()
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    with pytest.raises(ValueError, match=r"execution\.scheduler\.type differs from the frozen workflow route"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+
+
+def test_adaptive_source_rejects_slurm_to_direct_route_drift_before_suggestion_write(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update({"scheduler": _slurm_scheduler(), "gpus_per_run": 1})
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_zero / "plan.json").read_text())["runs"][0]
+    manifests.write_rows(workflow_dir / "adaptive" / "digests" / "round_000.csv", [{**run, "test_auroc": 0.73}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["scheduler"] = {"type": "direct"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    with pytest.raises(ValueError, match=r"execution\.scheduler\.type differs from the frozen workflow route"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("direct_controller", True), ("partition", "other-gpu"), ("nodelist", "gpu[2]")],
+)
+def test_adaptive_source_rejects_slurm_routing_drift_before_suggestion_write(tmp_path: Path, field: str, value: object):
+    recipe = _adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update({"scheduler": _slurm_scheduler(), "gpus_per_run": 1})
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_zero / "plan.json").read_text())["runs"][0]
+    manifests.write_rows(workflow_dir / "adaptive" / "digests" / "round_000.csv", [{**run, "test_auroc": 0.73}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["scheduler"][field] = value
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    with pytest.raises(
+        ValueError,
+        match=rf"execution\.scheduler\.{field} differs from the frozen workflow route",
+    ):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+
+
+def test_adaptive_source_allows_slurm_resource_and_capacity_updates(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"].update({"scheduler": _slurm_scheduler(), "gpus_per_run": 1})
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_zero / "plan.json").read_text())["runs"][0]
+    manifests.write_rows(workflow_dir / "adaptive" / "digests" / "round_000.csv", [{**run, "test_auroc": 0.73}])
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["scheduler"].update(
+        {"cpus_per_task": 12, "memory": "96G", "walltime": "02:00:00", "nice": 100}
+    )
+    payload["execution"]["gpus_per_run"] = 2
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    suggestion = adaptive_hparam.suggest_next_round(workflow_dir)
+    suggested_execution = yaml.safe_load(suggestion.read_text())["execution"]
+
+    assert suggested_execution["scheduler"]["cpus_per_task"] == 12
+    assert suggested_execution["scheduler"]["memory"] == "96G"
+    assert suggested_execution["scheduler"]["walltime"] == "02:00:00"
+    assert suggested_execution["scheduler"]["nice"] == 100
+    assert suggested_execution["gpus_per_run"] == 2
 
 
 @pytest.mark.parametrize(

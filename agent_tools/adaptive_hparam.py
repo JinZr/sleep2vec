@@ -56,7 +56,16 @@ from .recipes import load_recipe_with_base, recipe_name
 
 _EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
 _FROZEN_EXECUTION_IDENTITY_FIELDS = ("python",)
-_EXECUTION_ROUTE_FIELDS = ("target", "host", "workdir", "conda_env")
+_EXECUTION_ROUTE_FIELDS = (
+    "target",
+    "host",
+    "workdir",
+    "conda_env",
+    "scheduler.type",
+    "scheduler.direct_controller",
+    "scheduler.partition",
+    "scheduler.nodelist",
+)
 _SLURM_ACCEPTED_STATUSES = {"queued", "running", "stopping", "completed", "finished", "failed", "stopped"}
 
 
@@ -2000,11 +2009,18 @@ def _proposal_recipe_sha256(recipe: dict[str, Any], workflow: dict[str, Any]) ->
 
 
 def _execution_route(execution: dict[str, Any]) -> dict[str, str]:
+    scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+    scheduler_type = str(scheduler.get("type") or "direct")
+    slurm_scheduler = scheduler if scheduler_type == "slurm" else {}
     return {
         "target": str(execution.get("target", "local") or "local"),
         "host": str(execution.get("host") or ""),
         "workdir": str(execution.get("workdir") or REPO_ROOT),
         "conda_env": str(execution.get("conda_env") or ""),
+        "scheduler.type": scheduler_type,
+        "scheduler.direct_controller": str(slurm_scheduler.get("direct_controller") is True).lower(),
+        "scheduler.partition": str(slurm_scheduler.get("partition") or ""),
+        "scheduler.nodelist": str(slurm_scheduler.get("nodelist") or ""),
     }
 
 

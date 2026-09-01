@@ -726,7 +726,10 @@ the exact next-round protocol is [below](#proposal-handshake).
 - Initialization resolves `execution.python`, `execution.runtime_commit`,
   `adaptive.objective_metric`, and `adaptive.objective_mode` for round 000. The
   Python, objective, route, and scientific contract are workflow-wide frozen;
-  round 000's commit is baseline provenance.
+  round 000's commit is baseline provenance. The frozen route includes the
+  scheduler type and, for Slurm, `partition`, `nodelist`, and
+  `direct_controller`; scheduler resource limits such as CPU, memory, walltime,
+  and nice remain operational inputs.
 - Later rounds re-read the mutable source recipe, reject conflicting frozen
   Python, route, objective, or scientific values, and may plan from a newer
   runtime commit. Other operational execution fields, including concurrency,
