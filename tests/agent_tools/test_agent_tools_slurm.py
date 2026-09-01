@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -7,10 +8,11 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import time
 
 import pytest
 
-from agent_tools import managed_scheduler, slurm
+from agent_tools import managed_scheduler, python_programs, slurm
 
 
 def _frozen_job_inputs(tmp_path: Path, *, script_text: str = "#!/usr/bin/env bash\ntrue\n"):
@@ -1014,17 +1016,77 @@ def test_render_batch_script_is_one_frozen_leaf_job(tmp_path: Path, whitespace: 
     error_directive = next(line for line in script.splitlines() if line.startswith("#SBATCH --error="))
     assert shlex.split(output_directive) == ["#SBATCH", f"--output={escaped_log_path}"]
     assert shlex.split(error_directive) == ["#SBATCH", f"--error={escaped_log_path}"]
-    assert "agent_tools.slurm run-frozen-job" in script
+    assert "agent_tools.slurm" in script
     assert f"--execution-snapshot-path {tmp_path / 'execution_snapshot.json'}" in script
     assert f"--gpus-per-run {gpus_per_run}" in script
     assert '--execution-snapshot-sha256 "${1:-}"' in script
-    worker = shlex.split(next(line for line in script.splitlines() if line.startswith("exec ")))
-    assert worker[worker.index("--log-path") + 1] == str(log_path)
+    assert f"exec /opt/python -c {shlex.quote(python_programs.source('slurm.worker_bootstrap'))}" in script
+    assert f"--log-path {shlex.quote(str(log_path))}" in script
     assert "export PYTHONPATH=/shared/repo" in script
     assert "${PYTHONPATH" not in script
     assert "hparam-run-queue" not in script
     assert "CUDA_VISIBLE_DEVICES" not in script
     assert "start_new_session" not in script
+
+
+def test_slurm_worker_bootstrap_holds_runtime_lock_before_checkout_import(tmp_path: Path):
+    runtime = tmp_path / "runtime"
+    package = runtime / "agent_tools"
+    (runtime / ".git").mkdir(parents=True)
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    marker = tmp_path / "imported"
+    release = tmp_path / "release"
+    (package / "slurm.py").write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        'descriptor = int(sys.argv[sys.argv.index("--runtime-lock-fd") + 1])\n'
+        'Path(os.environ["IMPORT_MARKER"]).write_text("ready")\n'
+        'while not Path(os.environ["IMPORT_RELEASE"]).exists():\n'
+        "    time.sleep(0.01)\n"
+        "os.close(descriptor)\n"
+    )
+    env = os.environ.copy()
+    env.update({"PYTHONPATH": str(runtime), "IMPORT_MARKER": str(marker), "IMPORT_RELEASE": str(release)})
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            python_programs.source("slurm.worker_bootstrap"),
+            str(runtime),
+            "run-frozen-job",
+        ],
+        env=env,
+        cwd=runtime,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    contender = None
+    try:
+        deadline = time.monotonic() + 10
+        while not marker.exists():
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                pytest.fail(f"Slurm bootstrap exited before checkout import: {stdout}{stderr}")
+            assert time.monotonic() < deadline, "timed out waiting for checkout import"
+            time.sleep(0.01)
+        contender = os.open(runtime / ".agent-tools-runtime.lock", os.O_RDWR)
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        release.touch()
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stdout + stderr
+        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        release.touch(exist_ok=True)
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)
+        if contender is not None:
+            os.close(contender)
 
 
 def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, monkeypatch):
@@ -1078,6 +1140,36 @@ def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, 
     ]
     for env_name in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
         assert env_name not in spawned[0][1]["env"]
+
+
+def test_run_frozen_job_reuses_bootstrap_lock_and_releases_before_wait(tmp_path: Path, monkeypatch):
+    kwargs, snapshot = _frozen_job_inputs(tmp_path)
+    monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    monkeypatch.setenv("SLURM_NTASKS", "1")
+    lock_path = tmp_path / ".agent-tools-runtime.lock"
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    contender = os.open(lock_path, os.O_RDWR)
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(slurm, "runtime_lock", lambda *_args: pytest.fail("bootstrap lock must not be reacquired"))
+
+    class CompletedChild:
+        def wait(self):
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return 0
+
+    def popen(*_args, **_kwargs):
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return CompletedChild()
+
+    monkeypatch.setattr(slurm.subprocess, "Popen", popen)
+    try:
+        assert slurm.run_frozen_job(**kwargs, runtime_lock_fd=descriptor) == 0
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    finally:
+        os.close(contender)
 
 
 def test_run_frozen_job_records_allocation_runtime_commit_drift_without_blocking(tmp_path: Path, monkeypatch):

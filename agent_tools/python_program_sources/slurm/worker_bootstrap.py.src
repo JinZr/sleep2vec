@@ -1,0 +1,17 @@
+import sys
+
+
+workdir = sys.argv[1]
+with runtime_guard(workdir) as runtime_lock_descriptor:
+    os.set_inheritable(runtime_lock_descriptor, True)
+    os.execv(
+        sys.executable,
+        [
+            sys.executable,
+            "-m",
+            "agent_tools.slurm",
+            *sys.argv[2:],
+            "--runtime-lock-fd",
+            str(runtime_lock_descriptor),
+        ],
+    )

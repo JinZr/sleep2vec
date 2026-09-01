@@ -612,9 +612,10 @@ execute-wave probe above owns live frozen-argv compatibility. Before a direct
 managed child is spawned, one short lock covers the embedded launch verification
 of Python/version, repository root, hostname, module origin, tracked and
 untracked or ignored importable code, and frozen script/config hashes, followed
-by HEAD capture and `Popen`. The Slurm allocation wrapper likewise keeps its
-allocation preflight and HEAD snapshot, allocation-sidecar publication, and
-`srun` `Popen` in one short locked section. The locks are released after spawn;
+by HEAD capture and `Popen`. A self-contained Slurm bootstrap acquires the lock
+before importing the checkout-local allocation wrapper, which retains that same
+lock through preflight and HEAD snapshot, allocation-sidecar publication, and
+`srun` `Popen`. The locks are released after spawn;
 these are point-in-time launch observations, not a promise that checkout code
 bytes remain unchanged throughout the job.
 Target and leaf `PYTHONPATH` contain only `execution.workdir`; another manager

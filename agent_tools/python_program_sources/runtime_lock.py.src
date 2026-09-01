@@ -28,6 +28,6 @@ def runtime_guard(workdir):
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise RuntimeError(f"Runtime lock is not a regular file: {path}")
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        yield
+        yield descriptor
     finally:
         os.close(descriptor)

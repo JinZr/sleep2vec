@@ -100,9 +100,8 @@ def test_generated_infer_worker_commits_only_authenticated_terminal_evidence(
     worker_text = Path(run["script"]).read_text()
     assert worker_text.splitlines().count(run["command"]) == 1
     assert "trap _agent_finish_run EXIT" not in worker_text
-    batch_command = shlex.split(
-        next(line for line in Path(run["scheduler_script"]).read_text().splitlines() if line.startswith("exec "))
-    )
+    scheduler_text = Path(run["scheduler_script"]).read_text()
+    batch_command = shlex.split(scheduler_text[scheduler_text.index("exec ") :])
     worker_argv = batch_command[batch_command.index("run-frozen-job") :]
     digest_index = worker_argv.index("--execution-snapshot-sha256") + 1
     assert worker_argv[digest_index] == "${1:-}"

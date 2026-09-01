@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -15,7 +16,7 @@ import tempfile
 import traceback
 from typing import Any
 
-from . import manifests, transport
+from . import manifests, python_programs, transport
 from .runtime_lock import runtime_lock
 
 
@@ -150,8 +151,9 @@ def render_batch_script(
     env_lines = [f"export {key}={transport.sh(value)}" for key, value in sorted((execution.get("env") or {}).items())]
     worker = [
         execution["python"],
-        "-m",
-        "agent_tools.slurm",
+        "-c",
+        python_programs.source("slurm.worker_bootstrap"),
+        workdir,
         "run-frozen-job",
         "--run-id",
         run["run_id"],
@@ -222,6 +224,7 @@ def run_frozen_job(
     runtime_commit: str,
     module: str,
     gpus_per_run: int,
+    runtime_lock_fd: int | None = None,
 ) -> int:
     started_at = _utc_now()
     job_id = _job_id(os.environ.get("SLURM_JOB_ID", ""))
@@ -261,7 +264,7 @@ def run_frozen_job(
                         raise ValueError(f"Frozen run artifact is not an independent file: {artifact}")
                     if hashlib.sha256(artifact.read_bytes()).hexdigest() != expected:
                         raise ValueError(f"Frozen run artifact changed before allocation start: {artifact}")
-                with runtime_lock(workdir):
+                with _runtime_launch_lock(workdir, runtime_lock_fd):
                     snapshot = inspect_execution_target(
                         {
                             "target": "local",
@@ -812,6 +815,19 @@ def _positive_int(value: Any, field: str) -> int:
     return value
 
 
+@contextmanager
+def _runtime_launch_lock(workdir: str, inherited_descriptor: int | None) -> Iterator[None]:
+    if inherited_descriptor is None:
+        with runtime_lock(workdir):
+            yield
+        return
+    try:
+        os.set_inheritable(inherited_descriptor, False)
+        yield
+    finally:
+        os.close(inherited_descriptor)
+
+
 def _job_name(experiment_id: str, run_id: str) -> str:
     value = re.sub(r"[^A-Za-z0-9_.-]+", "-", f"{experiment_id}-{run_id}").strip("-.")
     return (value or "agent-tools-run")[:128]
@@ -865,6 +881,7 @@ def _main(argv: list[str] | None = None) -> int:
     ):
         worker.add_argument(f"--{name.replace('_', '-')}", required=True)
     worker.add_argument("--gpus-per-run", required=True, type=int)
+    worker.add_argument("--runtime-lock-fd", type=int)
     args = parser.parse_args(argv)
     payload = vars(args)
     payload.pop("command_name")

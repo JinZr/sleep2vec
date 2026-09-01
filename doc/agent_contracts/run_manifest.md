@@ -346,12 +346,14 @@ on the bound cluster when accounting is available. Accounting identity requires
 exactly one JobID row whose comment matches the frozen submit token; blank,
 mismatched, absent, or ambiguous comments fail without changing canonical
 lifecycle. A cluster that does not retain job comments cannot provide terminal
-accounting identity, so monitoring remains unchanged and fails closed. The
-compute wrapper first verifies the frozen launch/config hashes. Under the short
-runtime lock it requires a clean importable-code state, verifies that the named
-module still resolves inside the current repository, validates the live CLI,
-and observes the allocation-side actual commit. It then verifies the exact
-execution-snapshot bytes and requires current Python/version and module name to
+accounting identity, so monitoring remains unchanged and fails closed. A
+self-contained bootstrap acquires the runtime lock before importing the
+checkout-local Slurm worker and transfers that same open lock descriptor into
+the worker. The compute wrapper then verifies the frozen launch/config hashes.
+Under that short lock it requires a clean importable-code state, verifies that
+the named module still resolves inside the current repository, validates the
+live CLI, and observes the allocation-side actual commit. It then verifies the
+exact execution-snapshot bytes and requires current Python/version and module name to
 match; it does not require the current module-origin path to equal the frozen
 snapshot field. The wrapper writes allocation evidence and spawns `srun` before
 releasing the lock. The observed SHA does not promise that checkout bytes stay
