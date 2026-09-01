@@ -10,6 +10,7 @@ from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  
 from test_agent_tools_slurm_monitor_context import _bound_rows, _execution, _queue_output, _seed_plan
 
 from agent_tools import experiment_io, experiments, hparam_runtime, managed_scheduler, run_evidence, slurm
+from agent_tools.experiment_workspace import initialize_run_manifest, merge_run_manifest, read_run_manifest
 
 
 @pytest.fixture
@@ -58,6 +59,40 @@ def _stub_queue(monkeypatch, rows, state="RUNNING"):
 
     monkeypatch.setattr(slurm, "run_command", run_command)
     return calls
+
+
+@pytest.mark.parametrize("field", ["allocation_identity_path", "scheduler_result_path"])
+def test_observe_slurm_run_first_fills_canonical_actual_runtime_commit_from_sidecar(
+    tmp_path, monkeypatch, reads, field
+):
+    row = _bound_rows(tmp_path, 1)[0]
+    row.update(
+        experiment_id="unit",
+        planned_runtime_commit="a" * 40,
+        runtime_commit="",
+        scheduler_script=str(tmp_path / "job.sbatch"),
+        scheduler_script_sha256="c" * 64,
+    )
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    merge_run_manifest(tmp_path, [row])
+    row = read_run_manifest(tmp_path)[0]
+    _write_sidecar(row, field)
+    sidecar_path = Path(row[field])
+    payload = json.loads(sidecar_path.read_text())
+    if field == "allocation_identity_path":
+        payload["execution_snapshot"] = {"runtime_commit": "b" * 40}
+    else:
+        payload["runtime_commit"] = "b" * 40
+    sidecar_path.write_text(json.dumps(payload))
+    _stub_queue(monkeypatch, [row])
+
+    observed = managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row)
+    committed = merge_run_manifest(tmp_path, [observed])[0]
+
+    assert committed["status"] == "running"
+    assert committed["planned_runtime_commit"] == "a" * 40
+    assert committed["runtime_commit"] == "b" * 40
 
 
 @pytest.mark.parametrize("target", ["local", "ssh"])

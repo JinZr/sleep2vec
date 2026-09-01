@@ -7,7 +7,7 @@ import shlex
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, hparam_runtime, manifests, run_evidence
+from agent_tools import adaptive_hparam, hparam_runtime, manifests, python_programs, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -106,7 +106,9 @@ def test_adaptive_step_refreshes_terminal_blocker_before_launching_replacement_o
     def start_with_pid(_execution, command):
         started.append(command)
         pid = 122 + len(started)
-        pid_path = Path(shlex.split(command)[-2])
+        command_parts = shlex.split(command)
+        launcher_index = command_parts.index(python_programs.source("managed_scheduler.process_launch"))
+        pid_path = Path(command_parts[launcher_index + 3])
         pid_path.write_text(
             json.dumps(
                 {

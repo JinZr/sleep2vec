@@ -11,7 +11,6 @@ from . import (
     experiment_io as exp_io,
     experiment_tracking as tracking,
     managed_scheduler,
-    python_programs,
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
@@ -132,20 +131,18 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
             return managed_scheduler.LaunchResult(rows, [preview], frozenset(), {}, {})
         if Path(identity["pid_path"]).exists():
             raise ValueError("Preset PID receipt already exists; refusing another launch attempt.")
-        guard = managed_scheduler.run_execution_command(
-            execution,
-            [
-                execution["python"],
-                "-c",
-                python_programs.source("plan_rendering.runtime_commit_guard"),
-                execution["runtime_commit"],
-            ],
-        )
-        if guard.returncode != 0:
-            detail = guard.stderr.strip() or guard.stdout.strip() or f"exit code {guard.returncode}"
+        # Commit drift is allowed, but a missing frozen interpreter is still a deterministic pre-claim failure.
+        probe = managed_scheduler.run_execution_command(execution, [execution["python"], "-c", "import sys"])
+        if probe.returncode != 0:
+            detail = probe.stderr.strip() or probe.stdout.strip() or f"exit code {probe.returncode}"
             raise RuntimeError(f"Preset runtime preflight failed: {detail}")
         # Claim before fork: an interrupted manager must not turn an uncertain launch into a retry.
-        attempted = {**preview, "status": "launched", "launched_at": utc_now()}
+        attempted = {
+            **preview,
+            "planned_runtime_commit": str(execution["runtime_commit"]),
+            "status": "launched",
+            "launched_at": utc_now(),
+        }
         merge_run_manifest(workspace, [attempted], lock_held=True)
         status = managed_scheduler.start_process(execution, identity["command"])
         attempted["status"] = status

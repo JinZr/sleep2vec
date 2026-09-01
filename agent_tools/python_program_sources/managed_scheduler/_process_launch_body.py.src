@@ -1,33 +1,65 @@
-script, log_path, pid_path, workdir = sys.argv[1:]
+script, log_path, pid_path, workdir = sys.argv[1:5]
+capture_runtime_commit = len(sys.argv) > 5 and bool(sys.argv[5])
+verifications = json.loads(sys.argv[6]) if len(sys.argv) > 6 else []
+if capture_runtime_commit:
+    # Legacy internal launch callers omit the planned commit and keep their three-field PID receipt.
+    guard = runtime_guard(workdir)
+else:
+    guard = nullcontext()
 
-with open(log_path, "ab", buffering=0) as log_file:
-    process = subprocess.Popen(
-        ["bash", script],
-        cwd=workdir,
-        env=os.environ.copy(),
-        stdin=subprocess.DEVNULL,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+with guard:
+    runtime_commit = ""
+    child_env = os.environ.copy()
+    if verifications:
+        verification_env = child_env.copy()
+        python_path = verification_env.get("PYTHONPATH")
+        verification_env["PYTHONPATH"] = workdir + (os.pathsep + python_path if python_path else "")
+        for verification in verifications:
+            subprocess.run(
+                verification,
+                cwd=workdir,
+                env=verification_env,
+                stdout=subprocess.DEVNULL,
+                check=True,
+            )
+    if capture_runtime_commit:
+        runtime_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=workdir, text=True
+        ).strip().lower()
+        if re.fullmatch(r"[0-9a-f]{40}", runtime_commit) is None:
+            raise RuntimeError("Runtime HEAD is not a full Git commit SHA")
+        # The child records the HEAD captured before Popen even if the checkout advances immediately after.
+        child_env["AGENT_TOOLS_PROCESS_RUNTIME_COMMIT"] = runtime_commit
+    with open(log_path, "ab", buffering=0) as log_file:
+        process = subprocess.Popen(
+            ["bash", script],
+            cwd=workdir,
+            env=child_env,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+try:
+    identity = {
+        "pid": process.pid,
+        "process_group_id": os.getpgid(process.pid),
+        "process_start_token": start_token(process.pid),
+    }
+    if runtime_commit:
+        identity["runtime_commit"] = runtime_commit
+    if identity["process_start_token"] is None:
+        raise RuntimeError(f"Cannot read process start time for PID {process.pid}")
+    descriptor = os.open(pid_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as file_obj:
+        json.dump(identity, file_obj, sort_keys=True)
+        file_obj.write("\n")
+        file_obj.flush()
+        os.fsync(file_obj.fileno())
+except BaseException:
+    # An unrecorded process group cannot be managed safely, so stop it before surfacing launch failure.
     try:
-        identity = {
-            "pid": process.pid,
-            "process_group_id": os.getpgid(process.pid),
-            "process_start_token": start_token(process.pid),
-        }
-        if identity["process_start_token"] is None:
-            raise RuntimeError(f"Cannot read process start time for PID {process.pid}")
-        descriptor = os.open(pid_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as file_obj:
-            json.dump(identity, file_obj, sort_keys=True)
-            file_obj.write("\n")
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
-    except BaseException:
-        # An unrecorded process group cannot be managed safely, so stop it before surfacing launch failure.
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        raise
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    raise

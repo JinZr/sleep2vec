@@ -1203,20 +1203,30 @@ def test_adaptive_init_rejects_visible_incomplete_round_without_repair(tmp_path:
     assert not workflow_path.exists()
 
 
-def test_adaptive_rounds_keep_frozen_runtime_identity_and_allow_capacity_updates(tmp_path: Path, monkeypatch):
+def test_adaptive_rounds_keep_frozen_python_and_allow_commit_and_capacity_updates(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"] = {}
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    workflow_bytes = workflow_path.read_bytes()
     round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
     first_plan = json.loads((round_zero / "plan.json").read_text())
     frozen_identity = {field: first_plan["recipe"]["execution"][field] for field in ("python", "runtime_commit")}
+    next_commit = "b" * 40
+    assert next_commit != frozen_identity["runtime_commit"]
     run = first_plan["runs"][0]
     digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
     manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
     payload = yaml.safe_load(recipe.read_text())
-    payload["execution"]["max_concurrent"] = 2
+    payload["execution"].update(
+        {
+            "python": frozen_identity["python"],
+            "runtime_commit": next_commit,
+            "max_concurrent": 2,
+        }
+    )
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     monkeypatch.setattr(plan_hparam, "repo_summary", lambda: pytest.fail("later rounds must not resolve HEAD again"))
 
@@ -1234,11 +1244,12 @@ def test_adaptive_rounds_keep_frozen_runtime_identity_and_allow_capacity_updates
     plan_hparam.commit_hparam_plan(next_dir)
 
     assert suggested["execution"]["max_concurrent"] == 2
-    assert {field: suggested["execution"][field] for field in ("python", "runtime_commit")} == frozen_identity
+    assert suggested["execution"]["python"] == frozen_identity["python"]
+    assert suggested["execution"]["runtime_commit"] == next_commit
     second_plan = json.loads((next_dir / "plan.json").read_text())
-    assert {
-        field: second_plan["recipe"]["execution"][field] for field in ("python", "runtime_commit")
-    } == frozen_identity
+    assert second_plan["recipe"]["execution"]["python"] == frozen_identity["python"]
+    assert second_plan["recipe"]["execution"]["runtime_commit"] == next_commit
+    assert workflow_path.read_bytes() == workflow_bytes
 
 
 def test_adaptive_publication_serializes_with_doctor_output(tmp_path: Path, monkeypatch):
@@ -1416,13 +1427,21 @@ def test_adaptive_workflow_rejects_invalid_execution_identity_before_suggestion_
     assert events_path.read_bytes() == events_before
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [("python", "/other/python"), ("runtime_commit", "b" * 40)],
-)
-def test_adaptive_source_rejects_frozen_execution_identity_drift_before_suggestion_write(
-    tmp_path: Path, field: str, value: str
-):
+def test_adaptive_workflow_rejects_baseline_commit_drift_from_round_zero(tmp_path: Path):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    workflow = json.loads(workflow_path.read_text())
+    workflow["execution_identity"]["runtime_commit"] = "b" * 40
+    workflow_path.write_text(json.dumps(workflow))
+
+    with pytest.raises(ValueError, match="baseline execution identity differs from round 000"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+
+
+def test_adaptive_source_rejects_frozen_python_drift_before_suggestion_write(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
@@ -1430,12 +1449,12 @@ def test_adaptive_source_rejects_frozen_execution_identity_drift_before_suggesti
     digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
     manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
     payload = yaml.safe_load(recipe.read_text())
-    payload["execution"][field] = value
+    payload["execution"]["python"] = "/other/python"
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     events_path = tmp_path / "events.jsonl"
     events_before = events_path.read_bytes()
 
-    with pytest.raises(ValueError, match=f"execution.{field} differs"):
+    with pytest.raises(ValueError, match=r"execution\.python differs"):
         adaptive_hparam.suggest_next_round(workflow_dir)
 
     assert not (workflow_dir / "adaptive" / "suggestions").exists()

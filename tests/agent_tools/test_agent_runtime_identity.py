@@ -221,7 +221,31 @@ def test_runtime_identity_drift_precedes_artifact_reads(monkeypatch, capsys, ide
     assert error.value.code == 2
     output = capsys.readouterr()
     assert output.out == ""
-    assert output.err == "Target runtime identity changed before process start: python, runtime_commit\n"
+    assert output.err == "Target runtime identity changed before process start: python\n"
+
+
+def test_runtime_identity_records_commit_drift_and_still_checks_artifacts(
+    tmp_path, monkeypatch, capsys, identity_probe
+):
+    program, _results, payload = identity_probe
+    artifact = tmp_path / "artifact"
+    artifact.write_bytes(b"frozen artifact")
+    expected = {**payload, "runtime_commit": "b" * 40}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            *sys.argv[:2],
+            json.dumps(expected),
+            json.dumps([{"path": str(artifact), "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest()}]),
+        ],
+    )
+
+    exec(program, {})
+
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert json.loads(output.out)["runtime_commit"] == payload["runtime_commit"]
 
 
 @pytest.fixture

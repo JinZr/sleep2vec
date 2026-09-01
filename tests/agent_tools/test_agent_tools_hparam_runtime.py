@@ -190,6 +190,7 @@ def _set_execution_probe(
     *,
     commit: str | None = None,
     missing_options: set[str] | None = None,
+    extra_options: set[str] | None = None,
     parse_error: str | None = None,
 ) -> list[str]:
     plan = json.loads((plan_dir / "plan.json").read_text())
@@ -197,6 +198,7 @@ def _set_execution_probe(
     command = shlex.split(plan["runs"][0]["command"])
     module = command[command.index("-m") + 1]
     options = set(frozen["supported_options"]) - set(missing_options or set())
+    options.update(extra_options or set())
     runtime_commit = commit or frozen["runtime_commit"]
     calls = []
 
@@ -221,7 +223,10 @@ def _set_execution_probe(
             )
         calls.append("parse")
         evidence = json.dumps(
-            {"supported_options": sorted(options), "cli_options_sha256": frozen["cli_options_sha256"]}
+            {
+                "supported_options": sorted(options),
+                "cli_options_sha256": "changed-cli-options" if extra_options else frozen["cli_options_sha256"],
+            }
         )
         return subprocess.CompletedProcess(
             probe_command,

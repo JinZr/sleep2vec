@@ -790,7 +790,7 @@ def _hparam_runtime_identity_issues(execution: dict[str, Any]) -> list[DecisionI
     if not manager_runtime:
         for field, question in (
             ("python", "What Python executable name or absolute path should the target runtime use?"),
-            ("runtime_commit", "What full Git commit hash should the target runtime use?"),
+            ("runtime_commit", "What full Git commit hash should be recorded as the target runtime baseline?"),
         ):
             if field not in execution or execution.get(field) in (None, "ASK_USER"):
                 issues.append(

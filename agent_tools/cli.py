@@ -64,6 +64,7 @@ from .plans import (
 )
 from .progress import format_progress, read_progress
 from .repo import repo_summary
+from .runtime_sync import sync_runtime
 from .skills import list_skills, validate_skills
 
 
@@ -108,6 +109,25 @@ def _build_parser() -> argparse.ArgumentParser:
     repo = _command(sub, "repo-summary", "Summarize repository entrypoints, variants, and tracked configs.")
     repo.add_argument("--json", action="store_true", help="Emit JSON instead of the human-readable rendering.")
     repo.set_defaults(func=_cmd_repo_summary)
+
+    runtime_sync = _command(
+        sub,
+        "runtime-sync",
+        "Inspect or fast-forward one existing runtime checkout to origin/main in place. Dry run unless --execute is given.",
+    )
+    runtime_sync.add_argument("--workdir", required=True, help="Existing Git checkout to inspect or update in place.")
+    runtime_sync.add_argument("--host", help="SSH host that owns the checkout; omit for a local checkout.")
+    runtime_sync.add_argument(
+        "--python",
+        default="python3",
+        help="Python interpreter used for the self-contained sync program on --host; defaults to python3.",
+    )
+    runtime_sync.add_argument(
+        "--execute",
+        action="store_true",
+        help="Fetch origin/main and apply a clean fast-forward update without cloning or resetting.",
+    )
+    runtime_sync.set_defaults(func=_cmd_runtime_sync)
 
     config = _command(sub, "config-summary", "Summarize a resolved training or inference YAML config.")
     config.add_argument("--config", required=True, help="Path to the YAML config to summarize.")
@@ -666,6 +686,14 @@ def _cmd_skills(args: argparse.Namespace) -> int:
 
 def _cmd_repo_summary(args: argparse.Namespace) -> int:
     _emit(repo_summary(), as_json=args.json)
+    return 0
+
+
+def _cmd_runtime_sync(args: argparse.Namespace) -> int:
+    _emit(
+        sync_runtime(args.workdir, host=args.host, remote_python=args.python, execute=args.execute),
+        as_json=True,
+    )
     return 0
 
 

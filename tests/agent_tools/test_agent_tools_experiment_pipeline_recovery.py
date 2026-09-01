@@ -939,7 +939,9 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     running_index = script_lines.index("_agent_commit_status running")
     command_index = script_lines.index(command)
     assert script_lines[helper_index + 1].startswith("  /runtime/python -c ")
-    assert any(line.startswith("/runtime/python -c ") and "a" * 40 in line for line in script_lines)
+    helper_text = "\n".join(script_lines[helper_index:running_index])
+    assert "record-runtime-commit" in helper_text
+    assert "a" * 40 in helper_text
     assert helper_index < running_index < command_index
     assert plan["recipe"]["execution"] == recipe["execution"]
     canonical = read_run_manifest(workspace)[0]
@@ -1484,7 +1486,7 @@ def test_run_attempts_terminal_attempt_skips_live_snapshot_probe_and_verifies_re
     assert launches == [True]
     assert validations == ["attempts", "result"]
     assert persisted["verified"] == "true"
-    assert persisted["runtime_commit"] == "a" * 40
+    assert persisted["runtime_commit"] == ""
 
 
 def test_run_attempts_result_validation_failure_is_terminal_without_changing_canonical_status(

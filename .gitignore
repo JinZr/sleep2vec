@@ -247,6 +247,7 @@ npz_lists/
 *.bak
 .DS_Store
 __MACOSX/
+/.agent-tools-runtime.lock
 log-*/
 wandb_logs/
 recipes/generated/

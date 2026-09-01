@@ -560,6 +560,8 @@ def _launch_command(
     config_path: Path | None = None,
     script_sha256: str | None = None,
     config_sha256: str | None = None,
+    planned_command: str | None = None,
+    run_id: str = "",
 ) -> str:
     return scheduler.build_launch_command(
         execution,
@@ -571,6 +573,8 @@ def _launch_command(
         config_path=config_path,
         script_sha256=script_sha256,
         config_sha256=config_sha256,
+        planned_command=planned_command,
+        run_id=run_id,
     )
 
 

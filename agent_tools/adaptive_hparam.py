@@ -55,6 +55,7 @@ from .plans import build_plan, plan_publication_lock, preflight_plan, publish_st
 from .recipes import load_recipe_with_base, recipe_name
 
 _EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
+_FROZEN_EXECUTION_IDENTITY_FIELDS = ("python",)
 _SLURM_ACCEPTED_STATUSES = {"queued", "running", "stopping", "completed", "finished", "failed", "stopped"}
 
 
@@ -578,7 +579,7 @@ def _agent_proposal_input_payload(
         },
         "digest_rows": rows,
         "parameter_envelopes": adaptive_proposals.validate_parameter_envelopes(parameters, suggest.get("bounds")),
-        "resolved_recipe_sha256": adaptive_proposals.canonical_sha256(_strip_internal_recipe_keys(recipe)),
+        "resolved_recipe_sha256": _proposal_recipe_sha256(recipe, workflow),
         "source_config_sha256": _source_config_sha256(recipe),
         "execution_identity": copy.deepcopy(workflow["execution_identity"]),
     }
@@ -732,7 +733,7 @@ def _validated_agent_proposal_input(
         raise ValueError("Proposal input expected path does not match its request id and target round.")
     _validate_proposal_request_event(workspace, proposal_input, input_path, input_sha256, proposal_path)
     snapshot = proposal_input["input"]
-    recipe_hash = adaptive_proposals.canonical_sha256(_strip_internal_recipe_keys(recipe))
+    recipe_hash = _proposal_recipe_sha256(recipe, workflow)
     if snapshot["resolved_recipe_sha256"] != recipe_hash:
         raise ValueError("Adaptive source recipe changed after the proposal input was created.")
     if snapshot["source_config_sha256"] != _source_config_sha256(recipe):
@@ -1553,8 +1554,13 @@ def _validate_workflow_payload(
     plan = artifacts.read_hparam_plan(round_dir, require_adaptive_commit=require_adaptive_commit)
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     plan_execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    if any(plan_execution.get(field) != execution_identity[field] for field in _EXECUTION_IDENTITY_FIELDS):
+    if any(plan_execution.get(field) != execution_identity[field] for field in _FROZEN_EXECUTION_IDENTITY_FIELDS):
         raise ValueError(f"Adaptive workflow execution identity differs from the current round plan: {round_dir}")
+    initial_plan = plan if round_index == 0 else artifacts.read_hparam_plan(_round_dir(root, 0))
+    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    initial_execution = initial_recipe.get("execution") if isinstance(initial_recipe.get("execution"), dict) else {}
+    if any(initial_execution.get(field) != execution_identity[field] for field in _EXECUTION_IDENTITY_FIELDS):
+        raise ValueError(f"Adaptive workflow baseline execution identity differs from round 000: {path}")
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
@@ -1978,6 +1984,15 @@ def _strip_internal_recipe_keys(recipe: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in recipe.items() if not str(key).startswith("_")}
 
 
+def _proposal_recipe_sha256(recipe: dict[str, Any], workflow: dict[str, Any]) -> str:
+    payload = _strip_internal_recipe_keys(copy.deepcopy(recipe))
+    execution = payload.get("execution") if isinstance(payload.get("execution"), dict) else None
+    baseline = workflow.get("execution_identity") if isinstance(workflow.get("execution_identity"), dict) else {}
+    if execution is not None and baseline.get("runtime_commit") not in (None, ""):
+        execution["runtime_commit"] = baseline["runtime_commit"]
+    return adaptive_proposals.canonical_sha256(payload)
+
+
 def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any]:
     frozen = workflow.get("execution_identity")
     if (
@@ -1991,23 +2006,22 @@ def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -
         if str(adaptive.get(field) or default) != str(workflow.get(field) or default):
             raise ValueError(f"Adaptive source adaptive.{field} differs from the frozen workflow.")
     current = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    for field in _EXECUTION_IDENTITY_FIELDS:
+    for field in _FROZEN_EXECUTION_IDENTITY_FIELDS:
         value = current.get(field)
         expected = frozen[field]
         if value in (None, "", "ASK_USER"):
             continue
-        if field == "runtime_commit" and isinstance(value, str) and isinstance(expected, str):
-            value = value.lower()
-            expected = expected.lower()
         if value != expected:
             raise ValueError(f"Adaptive source execution.{field} differs from the frozen workflow.")
     execution = dict(current)
-    execution.update(copy.deepcopy(frozen))
+    execution.update({field: copy.deepcopy(frozen[field]) for field in _FROZEN_EXECUTION_IDENTITY_FIELDS})
+    if execution.get("runtime_commit") in (None, "", "ASK_USER"):
+        execution["runtime_commit"] = copy.deepcopy(frozen["runtime_commit"])
     recipe["execution"] = execution
     if isinstance(recipe.get("_local_recipe"), dict):
         local = copy.deepcopy(recipe["_local_recipe"])
         local_execution = dict(local.get("execution")) if isinstance(local.get("execution"), dict) else {}
-        local_execution.update(copy.deepcopy(frozen))
+        local_execution.update({field: copy.deepcopy(execution[field]) for field in _EXECUTION_IDENTITY_FIELDS})
         local["execution"] = local_execution
         recipe["_local_recipe"] = local
     return recipe

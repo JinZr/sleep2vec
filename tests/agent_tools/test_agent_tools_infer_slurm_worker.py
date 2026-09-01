@@ -28,7 +28,7 @@ from agent_tools.models import REPO_ROOT
         ("sleep2expert", "infer", "inner-kill", False, 137, "TIMEOUT", "failed"),
         ("sex_age_baseline", "evaluate", "success", True, 0, "COMPLETED", "completed"),
         ("sleep2vec", "infer", "topology", True, 2, "FAILED", "failed"),
-        ("sleep2vec2", "evaluate", "runtime-drift", False, 1, "FAILED", "failed"),
+        ("sleep2vec2", "evaluate", "rolling-runtime", False, 0, "COMPLETED", "completed"),
         ("sleep2expert", "infer", "outer-kill", True, -9, "TIMEOUT", "unknown_scheduler"),
         ("sleep2vec", "infer", "success", False, 0, "MISSING", "completed"),
         ("sleep2vec2", "evaluate", "nonzero", True, 17, "MISSING", "failed"),
@@ -97,10 +97,6 @@ def test_generated_infer_worker_commits_only_authenticated_terminal_evidence(
         "os.execv(sys.argv[-1], [sys.argv[-1]])\n"
     )
     fixture_srun.chmod(0o755)
-    if mode == "runtime-drift":
-        fixture_git = tmp_path / "guarded-bin" / "git"
-        fixture_git.write_text("#!/bin/sh\nprintf '%040d\\n' 0\n")
-        fixture_git.chmod(0o755)
     worker_text = Path(run["script"]).read_text()
     assert worker_text.splitlines().count(run["command"]) == 1
     assert "trap _agent_finish_run EXIT" not in worker_text
@@ -123,12 +119,16 @@ def test_generated_infer_worker_commits_only_authenticated_terminal_evidence(
     # Only target identity/argparse probes are fixture-backed. The generated worker,
     # allocation/runtime guards, srun child handling and sidecar writers execute normally.
     bootstrap = (
-        "import os, sys; "
-        "from agent_tool_test_helpers import run_execution_preflight_fixture; "
-        "from agent_tools import managed_scheduler, slurm; "
-        "managed_scheduler.run_execution_command = run_execution_preflight_fixture; "
-        "os.environ['INFER_WORKER_TEST_OUTER_PID'] = str(os.getpid()); "
-        "sys.exit(slurm._main(sys.argv[1:]))"
+        "import os, sys\n"
+        "from agent_tool_test_helpers import run_execution_preflight_fixture\n"
+        "from agent_tools import managed_scheduler, slurm\n"
+        "def runtime_preflight(execution, command):\n"
+        "    if os.environ['INFER_WORKER_TEST_MODE'] == 'rolling-runtime':\n"
+        "        execution = {**execution, 'runtime_commit': '0' * 40}\n"
+        "    return run_execution_preflight_fixture(execution, command)\n"
+        "managed_scheduler.run_execution_command = runtime_preflight\n"
+        "os.environ['INFER_WORKER_TEST_OUTER_PID'] = str(os.getpid())\n"
+        "sys.exit(slurm._main(sys.argv[1:]))\n"
     )
     completed = subprocess.run(
         [sys.executable, "-c", bootstrap, *worker_argv],
@@ -141,7 +141,7 @@ def test_generated_infer_worker_commits_only_authenticated_terminal_evidence(
     log_text = Path(run["log_path"]).read_text()
     assert completed.returncode == expected_exit, completed.stderr + log_text
     assert (workspace / "run_manifest.tsv").read_bytes() == manifest_before_worker
-    if mode in {"topology", "runtime-drift"}:
+    if mode == "topology":
         assert not workload_marker.exists()
     else:
         assert json.loads(workload_marker.read_text()) == shlex.split(run["command"])[1:]
@@ -165,6 +165,8 @@ def test_generated_infer_worker_commits_only_authenticated_terminal_evidence(
         assert slurm.sidecar_identity(terminal, run["scheduler_submit_token"]) == slurm.JobIdentity(
             "3880", "unit-cluster"
         )
+        if mode == "rolling-runtime":
+            assert terminal["runtime_commit"] == "0" * 40
 
     monkeypatch.setattr(slurm, "active_jobs", lambda *_a, **_k: [])
     if scheduler_state == "MISSING":
@@ -187,6 +189,9 @@ def test_generated_infer_worker_commits_only_authenticated_terminal_evidence(
     (canonical,) = experiment_workspace.read_run_manifest(workspace)
     assert canonical["status"] == expected_status
     assert canonical["scheduler_raw_state"] == scheduler_state
+    if mode == "rolling-runtime":
+        assert canonical["planned_runtime_commit"] == request.getfixturevalue("_runtime_commit")
+        assert canonical["runtime_commit"] == "0" * 40
     assert experiments.experiment_status(workspace)["runs"][0]["status"] == expected_status
     monkeypatch.setattr(slurm, "submit", lambda *_a, **_k: pytest.fail("Repeated execute must not resubmit"))
     experiments.launch_infer_run(plan_dir, dry_run=False)

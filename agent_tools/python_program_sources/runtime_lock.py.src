@@ -1,0 +1,33 @@
+# Embedded programs cannot assume the target checkout exposes agent_tools, so they carry this lock protocol inline.
+from contextlib import contextmanager
+import fcntl
+import os
+from pathlib import Path
+import stat
+
+
+@contextmanager
+def runtime_guard(workdir):
+    checkout = Path(workdir).resolve()
+    for root in (checkout, *checkout.parents):
+        marker = root / ".git"
+        if marker.is_dir():
+            break
+        if marker.is_file():
+            if marker.read_text().strip().startswith("gitdir: "):
+                break
+            raise RuntimeError(f"Malformed Git worktree marker: {marker}")
+    else:
+        raise RuntimeError(f"Cannot locate the runtime checkout root from {checkout}.")
+    path = Path(root) / ".agent-tools-runtime.lock"
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError(f"Runtime lock is not a regular file: {path}")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)

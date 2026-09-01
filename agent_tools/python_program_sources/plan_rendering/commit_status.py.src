@@ -1,1 +1,31 @@
-import sys; from agent_tools.experiment_workspace import merge_run_manifest; rows = merge_run_manifest(sys.argv[1], [{'step_id': sys.argv[2], 'run_id': sys.argv[3], 'status': sys.argv[4]}]); row = next((row for row in rows if row.get('step_id') == sys.argv[2] and row.get('run_id') == sys.argv[3]), None); (row is not None and row.get('status') == sys.argv[4]) or sys.exit('Canonical run status did not commit as ' + sys.argv[4])
+import os
+import subprocess
+import sys
+
+from agent_tools.experiment_workspace import commit_run_start, merge_run_manifest
+from agent_tools.runtime_lock import runtime_lock
+
+update = {"step_id": sys.argv[2], "run_id": sys.argv[3], "status": sys.argv[4]}
+if len(sys.argv) > 6 and sys.argv[5] == "record-runtime-commit" and sys.argv[4] == "running":
+    # Record once at process start; a later checkout update must not rewrite this run's provenance.
+    runtime_commit = os.environ.get("AGENT_TOOLS_PROCESS_RUNTIME_COMMIT")
+    if not runtime_commit:
+        # Read HEAD under the runtime lock, then release it before taking the manifest lock below.
+        with runtime_lock("."):
+            runtime_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip().lower()
+    rows = commit_run_start(
+        sys.argv[1],
+        sys.argv[2],
+        sys.argv[3],
+        planned_runtime_commit=sys.argv[6],
+        runtime_commit=runtime_commit,
+    )
+else:
+    rows = merge_run_manifest(sys.argv[1], [update])
+row = next(
+    (row for row in rows if row.get("step_id") == sys.argv[2] and row.get("run_id") == sys.argv[3]),
+    None,
+)
+(row is not None and row.get("status") == sys.argv[4]) or sys.exit(
+    "Canonical run status did not commit as " + sys.argv[4]
+)

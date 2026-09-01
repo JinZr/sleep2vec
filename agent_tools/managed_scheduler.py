@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -658,6 +659,14 @@ def _launch_managed_runs(
                     if checkpoint_path not in (None, "") or checkpoint_sha256 not in (None, "")
                     else {}
                 )
+                runtime_verification_args = (
+                    {
+                        "planned_command": str(planned["command"]),
+                        "run_id": str(planned["run_id"]),
+                    }
+                    if execution_snapshot is not None
+                    else {}
+                )
                 identity["command"] = build_command(
                     execution,
                     Path(str(row["script"])),
@@ -668,8 +677,11 @@ def _launch_managed_runs(
                     config_path=Path(str(row["config"])),
                     script_sha256=str(row["script_sha256"]),
                     config_sha256=str(row["config_sha256"]),
+                    **runtime_verification_args,
                     **checkpoint_args,
                 )
+                if execution.get("runtime_commit") not in (None, ""):
+                    identity["planned_runtime_commit"] = str(execution["runtime_commit"])
                 row.update(identity)
                 hooks.validate_run_update(
                     workspace_by_key[managed_run_key(row)],
@@ -1037,6 +1049,8 @@ def _slurm_execution_identity(
         "command": command,
         **{field: "" for field in PROCESS_IDENTITY_FIELDS},
     }
+    if execution.get("runtime_commit") not in (None, ""):
+        identity["planned_runtime_commit"] = str(execution["runtime_commit"])
     if execution_snapshot_sha256:
         identity["execution_snapshot_sha256"] = execution_snapshot_sha256
     return identity
@@ -1348,6 +1362,9 @@ def observe_slurm_run(
                 "scheduler_started_at": terminal.get("started_at", ""),
             }
         )
+        runtime_commit = _slurm_sidecar_runtime_commit(terminal)
+        if runtime_commit:
+            observation["runtime_commit"] = runtime_commit
     else:
         allocation = (
             monitor_context.sidecar(owner, execution, row, "allocation_identity_path")
@@ -1362,6 +1379,9 @@ def observe_slurm_run(
                 job_id = allocation_identity.job_id
             observation["scheduler_node"] = allocation.get("node", "")
             observation["scheduler_started_at"] = allocation.get("started_at", "")
+            runtime_commit = _slurm_sidecar_runtime_commit(allocation)
+            if runtime_commit:
+                observation["runtime_commit"] = runtime_commit
     health_error = ""
     try:
         if not job_id:
@@ -1517,6 +1537,16 @@ def observe_slurm_run(
     return _slurm_artifact_observation(observation, health=health, health_error=health_error)
 
 
+def _slurm_sidecar_runtime_commit(payload: dict[str, Any]) -> str:
+    snapshot = payload.get("execution_snapshot")
+    value = snapshot.get("runtime_commit") if isinstance(snapshot, dict) else payload.get("runtime_commit")
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{40}", value) is None:
+        raise ValueError("Slurm sidecar runtime_commit must be a lowercase 40-character Git commit SHA.")
+    return value
+
+
 def _read_slurm_json(owner_dir: Path, execution: dict[str, Any], path: str | Path) -> dict[str, Any]:
     remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
     text = exp_io.read_managed_output_texts_at(owner_dir, [path], remote=remote)[str(path)]
@@ -1598,8 +1628,14 @@ def validated_execution_snapshot(
         if not isinstance(frozen, dict):
             raise ValueError(f"Execution snapshot must be a mapping: {snapshot_path}")
         actual = inspect(execution, runs)
-        if frozen != actual:
-            changed = sorted(key for key in set(frozen) | set(actual) if frozen.get(key) != actual.get(key))
+        # A rolling checkout may advance after registration; its live commit is recorded per run at launch.
+        rolling_evidence_fields = {"runtime_commit", "supported_options", "cli_options_sha256"}
+        changed = sorted(
+            key
+            for key in set(frozen) | set(actual)
+            if key not in rolling_evidence_fields and frozen.get(key) != actual.get(key)
+        )
+        if changed:
             raise ValueError(f"Frozen execution snapshot changed: {', '.join(changed)}")
         return actual, False
     for run in runs:
@@ -1660,8 +1696,8 @@ def inspect_execution_target(
     module = next(iter(modules))
     python_command = next(iter(python_commands))
     expected_python = execution.get("python")
-    expected_commit = execution.get("runtime_commit")
-    if expected_python in (None, "") or expected_commit in (None, ""):
+    planned_commit = execution.get("runtime_commit")
+    if expected_python in (None, "") or planned_commit in (None, ""):
         raise ValueError(
             f"Frozen {plan_label} plan lacks execution.python or execution.runtime_commit; create a new plan."
         )
@@ -1694,12 +1730,6 @@ def inspect_execution_target(
     )
     if not isinstance(identity, dict) or any(identity.get(field) in (None, "") for field in identity_fields):
         raise ValueError("Target execution identity preflight returned incomplete evidence.")
-    if identity["runtime_commit"] != str(expected_commit):
-        raise ValueError(
-            "Target runtime commit differs from the frozen plan: "
-            f"expected {expected_commit}, observed {identity['runtime_commit']}."
-        )
-
     parse_result = run_command(
         execution,
         [
@@ -1736,7 +1766,7 @@ def inspect_execution_target(
         "workdir": str(execution.get("workdir") or REPO_ROOT),
         "conda_env": str(execution.get("conda_env") or ""),
         "python_command": python_command,
-        "expected_runtime_commit": str(expected_commit),
+        "expected_runtime_commit": str(planned_commit),
         "execution_env_sha256": hashlib.sha256(
             json.dumps(execution_env, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest(),
@@ -1780,6 +1810,8 @@ def build_launch_command(
     config_sha256: str | None = None,
     checkpoint_path: Path | None = None,
     checkpoint_sha256: str | None = None,
+    planned_command: str | None = None,
+    run_id: str = "",
 ) -> str:
     workdir = str(execution.get("workdir") or REPO_ROOT)
     env = dict(execution.get("env") or {})
@@ -1793,8 +1825,9 @@ def build_launch_command(
         str(log_path),
         str(pid_path),
         workdir,
+        str(execution.get("runtime_commit") or ""),
     ]
-    verification = None
+    verification_commands = []
     if execution_snapshot is not None or any(
         value is not None for value in (config_path, script_sha256, config_sha256, checkpoint_path, checkpoint_sha256)
     ):
@@ -1809,44 +1842,59 @@ def build_launch_command(
         if checkpoint_path is not None:
             artifacts.append({"path": str(checkpoint_path), "sha256": checkpoint_sha256})
         if execution_snapshot is not None:
-            verification_args = (
-                execution["python"],
-                "-c",
-                python_programs.source("managed_scheduler.runtime_identity"),
-                execution_snapshot["module"],
-                json.dumps(execution_snapshot, sort_keys=True),
-                json.dumps(artifacts, sort_keys=True),
+            if planned_command is None:
+                raise ValueError("Verified module launch requires its frozen command.")
+            tokens = shlex.split(planned_command)
+            try:
+                module_index = tokens.index("-m") + 1
+            except (ValueError, IndexError) as exc:
+                raise ValueError("Verified module launch command has no Python module.") from exc
+            if module_index != 2 or tokens[module_index] != execution_snapshot["module"]:
+                raise ValueError("Verified module launch command differs from its execution snapshot.")
+            planned_argv = [{"run_id": run_id or script.stem, "args": tokens[module_index + 1 :]}]
+            verification_commands.extend(
+                [
+                    (
+                        execution["python"],
+                        "-c",
+                        python_programs.source("managed_scheduler.runtime_identity"),
+                        execution_snapshot["module"],
+                        json.dumps(execution_snapshot, sort_keys=True),
+                        json.dumps(artifacts, sort_keys=True),
+                    ),
+                    (
+                        execution["python"],
+                        "-c",
+                        python_programs.source("managed_scheduler.cli_preflight"),
+                        execution_snapshot["module"],
+                        json.dumps(planned_argv, sort_keys=True),
+                        execution_snapshot["module_origin"],
+                    ),
+                ]
             )
         else:
             # Script-based plans retain artifact checks without claiming a module execution snapshot.
-            verification_args = (
-                run[0],
-                "-c",
-                python_programs.source("plan_rendering.verify_input_snapshots"),
-                json.dumps(artifacts, sort_keys=True),
+            verification_commands.append(
+                (
+                    run[0],
+                    "-c",
+                    python_programs.source("plan_rendering.verify_input_snapshots"),
+                    json.dumps(artifacts, sort_keys=True),
+                )
             )
-        verification_inner = (
-            "export PYTHONPATH=" + _sh(workdir) + " && " + " ".join(_sh(part) for part in verification_args)
-        )
-        verification = ["bash", "-c", verification_inner]
+    run.append(json.dumps(verification_commands))
     if execution.get("conda_env"):
         wrapper = ["conda", "run", "--no-capture-output", "-n", str(execution["conda_env"])]
         run = [*wrapper, *run]
-        if verification is not None:
-            verification = [*wrapper, *verification]
     run_command = " ".join(_sh(part) for part in run)
-    verification_command = " ".join(_sh(part) for part in verification) if verification is not None else ""
     if env:
         env_prefix = " ".join(f"{key}={_sh(value)}" for key, value in sorted(env.items()))
         run_command = f"env {env_prefix} {run_command}"
-        if verification_command:
-            verification_command = f"env {env_prefix} {verification_command}"
-    guard = f"{verification_command} >/dev/null && " if verification_command else ""
     if execution.get("target", "local") == "ssh":
         mkdir = f"mkdir -p {_sh(_parent_path(log_path))} {_sh(_parent_path(pid_path))}"
-        inner = f"{mkdir} && cd {_sh(workdir)} && {guard}{run_command}"
+        inner = f"{mkdir} && cd {_sh(workdir)} && {run_command}"
         return f"ssh {_sh(execution['host'])} {_sh(inner)}"
-    return f"cd {_sh(workdir)} && {guard}{run_command}"
+    return f"cd {_sh(workdir)} && {run_command}"
 
 
 def start_process(execution: dict[str, Any], command: str) -> str:

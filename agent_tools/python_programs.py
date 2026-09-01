@@ -8,6 +8,7 @@ _FRAGMENTS = {
     "managed_descriptors": "experiment_io/_managed_descriptors.py.src",
     "process_start_token": "run_evidence/process_start_token.py.src",
     "process_group_running": "run_evidence/process_group_running.py.src",
+    "runtime_guard": "runtime_lock.py.src",
 }
 
 _PROGRAMS = {
@@ -49,14 +50,15 @@ _PROGRAMS = {
     "managed_scheduler.runtime_identity": ("managed_scheduler/runtime_identity.py.src",),
     "managed_scheduler.process_launch": (
         "managed_scheduler/_process_launch_header.py.src",
+        _FRAGMENTS["runtime_guard"],
         _FRAGMENTS["process_start_token"],
         "managed_scheduler/_process_launch_body.py.src",
     ),
     "managed_scheduler.cli_preflight": ("managed_scheduler/cli_preflight.py.src",),
     "plan_rendering.commit_status": ("plan_rendering/commit_status.py.src",),
-    "plan_rendering.runtime_commit_guard": ("plan_rendering/runtime_commit_guard.py.src",),
     "plan_rendering.slurm_allocation_guard": ("plan_rendering/slurm_allocation_guard.py.src",),
     "plan_rendering.verify_input_snapshots": ("plan_rendering/verify_input_snapshots.py.src",),
+    "runtime_sync.sync": (_FRAGMENTS["runtime_guard"], "runtime_sync/sync.py.src"),
     "hparam_postprocess.verify_checkpoint_sha256": ("hparam_postprocess/verify_checkpoint_sha256.py.src",),
 }
 

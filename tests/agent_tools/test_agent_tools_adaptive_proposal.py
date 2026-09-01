@@ -955,6 +955,30 @@ def test_agent_proposal_rejects_source_recipe_drift_after_snapshot(tmp_path: Pat
     assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
 
 
+def test_agent_proposal_accepts_source_runtime_commit_drift_after_snapshot(tmp_path: Path):
+    recipe = _agent_recipe(tmp_path)
+    workflow_dir = tmp_path / "workflow"
+    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    assert result.returncode == 0, result.stderr
+    _write_fake_manifest(workflow_dir)
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    workflow_path = workflow_dir / "adaptive" / "workflow.json"
+    workflow_bytes = workflow_path.read_bytes()
+    baseline = json.loads(workflow_bytes)["execution_identity"]
+    next_commit = "b" * 40
+    assert next_commit != baseline["runtime_commit"]
+    payload = yaml.safe_load(recipe.read_text())
+    payload["execution"]["runtime_commit"] = next_commit
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    assert adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path) == proposal_path
+    assert json.loads(input_path.read_text())["input"]["execution_identity"] == baseline
+    assert workflow_path.read_bytes() == workflow_bytes
+
+
 def test_agent_proposal_rechecks_live_budget_after_snapshot(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"

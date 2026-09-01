@@ -2168,6 +2168,171 @@ def test_frozen_validator_allows_only_one_trusted_process_identity_fill():
         validate_frozen_run_update({**existing, "pid": 123}, {"pid": 456}, allow_execution_identity_fill=True)
 
 
+def test_commit_run_start_first_fills_different_planned_and_actual_runtime_commits(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "experiment_id": "unit",
+                "step_id": "train",
+                "run_id": "run-000",
+                "planned_runtime_commit": "a" * 40,
+                "status": "planned",
+            }
+        ],
+    )
+
+    committed = experiment_workspace.commit_run_start(
+        tmp_path,
+        "train",
+        "run-000",
+        planned_runtime_commit="a" * 40,
+        runtime_commit="b" * 40,
+    )
+
+    row = committed[0]
+    assert row["status"] == "running"
+    assert row["planned_runtime_commit"] == "a" * 40
+    assert row["runtime_commit"] == "b" * 40
+    assert read_run_manifest(tmp_path)[0] == row
+
+
+def test_commit_run_start_accepts_monitor_winning_with_identical_provenance(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    expected = {
+        "experiment_id": "unit",
+        "step_id": "train",
+        "run_id": "run-000",
+        "planned_runtime_commit": "a" * 40,
+        "runtime_commit": "b" * 40,
+        "status": "running",
+    }
+    merge_run_manifest(tmp_path, [expected])
+    before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    committed = experiment_workspace.commit_run_start(
+        tmp_path,
+        "train",
+        "run-000",
+        planned_runtime_commit="a" * 40,
+        runtime_commit="b" * 40,
+    )
+
+    assert committed == [expected]
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("planned_commit", "runtime_commit"),
+    [
+        pytest.param("c" * 40, "b" * 40, id="planned-mismatch"),
+        pytest.param("a" * 40, "c" * 40, id="actual-mismatch"),
+    ],
+)
+def test_commit_run_start_rejects_running_provenance_mismatch(tmp_path: Path, planned_commit: str, runtime_commit: str):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "experiment_id": "unit",
+                "step_id": "train",
+                "run_id": "run-000",
+                "planned_runtime_commit": "a" * 40,
+                "runtime_commit": "b" * 40,
+                "status": "running",
+            }
+        ],
+    )
+    before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    with pytest.raises(ValueError, match="running provenance differs"):
+        experiment_workspace.commit_run_start(
+            tmp_path,
+            "train",
+            "run-000",
+            planned_runtime_commit=planned_commit,
+            runtime_commit=runtime_commit,
+        )
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+
+
+@pytest.mark.parametrize("field", ["planned_runtime_commit", "runtime_commit"])
+def test_runtime_provenance_cannot_be_rewritten_after_run_start(tmp_path: Path, field: str):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    merge_run_manifest(
+        tmp_path,
+        [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
+    )
+    experiment_workspace.commit_run_start(
+        tmp_path,
+        "train",
+        "run-000",
+        planned_runtime_commit="a" * 40,
+        runtime_commit="b" * 40,
+    )
+    before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    with pytest.raises(ValueError, match=field):
+        merge_run_manifest(
+            tmp_path,
+            [{"step_id": "train", "run_id": "run-000", field: "c" * 40, "status": "completed"}],
+        )
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+    assert read_run_manifest(tmp_path)[0]["planned_runtime_commit"] == "a" * 40
+    assert read_run_manifest(tmp_path)[0]["runtime_commit"] == "b" * 40
+
+
+def test_stale_start_cannot_backfill_runtime_provenance_into_terminal_run(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    merge_run_manifest(
+        tmp_path,
+        [
+            {
+                "experiment_id": "unit",
+                "step_id": "train",
+                "run_id": "run-000",
+                "planned_runtime_commit": "a" * 40,
+                "status": "completed",
+            }
+        ],
+    )
+    before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    with pytest.raises(ValueError, match="cannot start from status completed"):
+        experiment_workspace.commit_run_start(
+            tmp_path,
+            "train",
+            "run-000",
+            planned_runtime_commit="a" * 40,
+            runtime_commit="b" * 40,
+        )
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+    row = read_run_manifest(tmp_path)[0]
+    assert row["planned_runtime_commit"] == "a" * 40
+    assert row.get("runtime_commit", "") == ""
+
+
+@pytest.mark.parametrize("field", ["planned_runtime_commit", "runtime_commit"])
+@pytest.mark.parametrize("commit", ["a" * 39, "A" * 40, "g" * 40, 123])
+def test_managed_rows_reject_malformed_runtime_provenance(field: str, commit: object):
+    with pytest.raises(ValueError, match=rf"invalid {field}"):
+        validate_managed_run_rows(
+            [{"step_id": "train", "run_id": "run-000", field: commit}],
+            source="unit manifest",
+            cardinality="one_per_run",
+        )
+
+
 def test_plan_registration_accepts_canonical_execution_identity_fill(tmp_path: Path):
     (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
     initialize_run_manifest(tmp_path)

@@ -119,11 +119,9 @@ def test_preset_detached_worker_commits_terminal_after_launcher_exits(
     assert status["runs"][0]["status"] == row["status"]
 
 
-@pytest.mark.parametrize("failure", ["wrong_commit", "missing_python", "script_hash", "config_hash"])
+@pytest.mark.parametrize("failure", ["missing_python", "script_hash", "config_hash"])
 def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_runtime, monkeypatch, failure):
-    if failure == "wrong_commit":
-        preset_runtime["execution"]["runtime_commit"] = "0" * 40
-    elif failure == "missing_python":
+    if failure == "missing_python":
         preset_runtime["execution"]["python"] = str(tmp_path / "missing-python")
     plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
     if failure.endswith("_hash"):
@@ -135,7 +133,7 @@ def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_run
     assert not preset_runtime["payload"].exists()
 
 
-@pytest.mark.parametrize("mutation_phase", ["runtime_guard", "claim"])
+@pytest.mark.parametrize("mutation_phase", ["claim", "start"])
 @pytest.mark.parametrize("artifact", ["script", "config"])
 def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
     tmp_path, preset_runtime, monkeypatch, mutation_phase, artifact
@@ -146,16 +144,9 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
     original_bytes = artifact_path.read_bytes()
     for name, value in preset_runtime["env"].items():
         monkeypatch.setenv(name, value)
-    original_guard = managed_scheduler.run_execution_command
     original_merge = experiments.merge_run_manifest
     original_start = managed_scheduler.start_process
     start_commands = []
-
-    def guard(execution, command):
-        result = original_guard(execution, command)
-        if mutation_phase == "runtime_guard":
-            artifact_path.write_bytes(original_bytes + b"\n# changed after plan preflight\n")
-        return result
 
     def merge(workspace, rows, **kwargs):
         result = original_merge(workspace, rows, **kwargs)
@@ -166,9 +157,10 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
     def start(execution, command):
         assert read_run_manifest(preset_runtime["workspace"])[0]["command"] == command
         start_commands.append(command)
+        if mutation_phase == "start":
+            artifact_path.write_bytes(original_bytes + b"\n# changed immediately before start\n")
         return original_start(execution, command)
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", guard)
     monkeypatch.setattr(experiments, "merge_run_manifest", merge)
     monkeypatch.setattr(managed_scheduler, "start_process", start)
     pid_path = Path(run["run_dir"]) / "pid"

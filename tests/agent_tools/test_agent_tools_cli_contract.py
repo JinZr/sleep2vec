@@ -17,6 +17,7 @@ from agent_tools.recipes import load_consultation_policy
 SUBCOMMAND_GROUPS = {
     "Kernel": {
         "repo-summary",
+        "runtime-sync",
         "collect-runs",
         "hparam-launch",
         "infer-launch",
@@ -93,11 +94,11 @@ def _subcommand_help(parser: argparse.ArgumentParser, name: str) -> str | None:
     return next((choice.help for choice in subparsers._choices_actions if choice.dest == name), None)
 
 
-def test_cli_has_exactly_39_subcommands():
+def test_cli_has_exactly_40_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == set.union(*SUBCOMMAND_GROUPS.values())
-    assert len(subcommands) == 39
+    assert len(subcommands) == 40
 
 
 def test_every_subcommand_documents_itself():
@@ -181,8 +182,8 @@ def test_architecture_cli_triage_matches_parser_and_ownership():
 @pytest.mark.parametrize(
     ("original", "replacement"),
     [
-        ("39 subcommands", "37 subcommands"),
-        ("Kernel (28)", "Kernel (26)"),
+        ("40 subcommands", "38 subcommands"),
+        ("Kernel (29)", "Kernel (27)"),
         ("infer-launch, ", ""),
         ("infer-launch, ", "unknown-command, "),
         ("infer-launch, infer-stop", "infer-launch, infer-launch"),
@@ -201,7 +202,7 @@ def test_architecture_cli_triage_guard_rejects_drift(original: str, replacement:
 
 def test_architecture_cli_triage_guard_rejects_omission_with_matching_counts():
     document = (Path(cli.__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-    document = document.replace("39 subcommands", "38 subcommands").replace("Kernel (28)", "Kernel (27)")
+    document = document.replace("40 subcommands", "39 subcommands").replace("Kernel (29)", "Kernel (28)")
     document = document.replace("infer-launch, ", "", 1)
 
     with pytest.raises(AssertionError):
@@ -217,6 +218,34 @@ def test_experiment_status_cli_contract():
     assert set(actions) - {"help"} == {"run_dir", "remote", "json"}
     assert args.remote is None
     assert args.json is False
+
+
+def test_runtime_sync_cli_defaults_to_dry_run_and_documents_in_place_fast_forward(monkeypatch):
+    parser, subcommands = _parser_contract()
+    runtime_sync = subcommands["runtime-sync"]
+    actions = _actions(runtime_sync)
+    args = parser.parse_args(["runtime-sync", "--workdir", "runtime"])
+
+    assert {name for name, action in actions.items() if action.required} == {"workdir"}
+    assert set(actions) - {"help"} == {"workdir", "host", "python", "execute"}
+    assert args.workdir == "runtime"
+    assert args.host is None
+    assert args.python == "python3"
+    assert args.execute is False
+    assert "Dry run unless --execute is given" in (_subcommand_help(parser, "runtime-sync") or "")
+    assert "fast-forward" in runtime_sync.format_help()
+    assert "without cloning or resetting" in actions["execute"].help
+
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "sync_runtime",
+        lambda workdir, *, host, remote_python, execute: calls.append((workdir, host, remote_python, execute))
+        or {"status": "update_available", "executed": execute},
+    )
+
+    assert cli.main(["runtime-sync", "--workdir", "runtime"]) == 0
+    assert calls == [("runtime", None, "python3", False)]
 
 
 def test_experiment_note_cli_contract():

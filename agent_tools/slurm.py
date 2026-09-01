@@ -16,6 +16,7 @@ import traceback
 from typing import Any
 
 from . import manifests, transport
+from .runtime_lock import runtime_lock
 
 
 @dataclass(frozen=True)
@@ -229,6 +230,7 @@ def run_frozen_job(
     node = socket.gethostname()
     child: subprocess.Popen | None = None
     received_signal = 0
+    observed_runtime_commit = ""
 
     def forward_signal(signum, _frame):
         nonlocal received_signal
@@ -259,80 +261,82 @@ def run_frozen_job(
                         raise ValueError(f"Frozen run artifact is not an independent file: {artifact}")
                     if hashlib.sha256(artifact.read_bytes()).hexdigest() != expected:
                         raise ValueError(f"Frozen run artifact changed before allocation start: {artifact}")
-                snapshot = inspect_execution_target(
-                    {
-                        "target": "local",
-                        "workdir": workdir,
-                        "python": python,
-                        "runtime_commit": runtime_commit,
-                    },
-                    [{"run_id": run_id, "command": command, "script": script}],
-                    plan_label="Slurm",
-                )
-                if snapshot["module"] != module:
-                    raise ValueError("Frozen Slurm module differs from the verified runtime module.")
-                expected_snapshot_sha256 = _sha256(execution_snapshot_sha256)
-                snapshot_artifact = Path(execution_snapshot_path)
-                if (
-                    snapshot_artifact.is_symlink()
-                    or not snapshot_artifact.is_file()
-                    or snapshot_artifact.stat().st_nlink != 1
-                ):
-                    raise ValueError(f"Frozen execution snapshot is not an independent file: {snapshot_artifact}")
-                snapshot_bytes = snapshot_artifact.read_bytes()
-                if hashlib.sha256(snapshot_bytes).hexdigest() != expected_snapshot_sha256:
-                    raise ValueError("Frozen Slurm execution snapshot changed before allocation start.")
-                frozen_snapshot = json.loads(snapshot_bytes)
-                identity_fields = ("python", "python_version")
-                changed = [
-                    field
-                    for field in identity_fields
-                    if not isinstance(frozen_snapshot, dict) or snapshot.get(field) != frozen_snapshot.get(field)
-                ]
-                if changed:
-                    raise ValueError("Frozen Slurm execution identity changed in allocation: " + ", ".join(changed))
-                previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, forwarded_signals)
-                try:
-                    if received_signal:
-                        exit_code = 128 + received_signal
-                    else:
-                        _atomic_create_json(
-                            allocation_identity_path,
-                            {
-                                "schema_version": 1,
-                                "scheduler_job_id": job_id,
-                                "scheduler_cluster": cluster,
-                                "scheduler_submit_token": submit_token,
-                                "node": node,
-                                "started_at": started_at,
-                                "execution_snapshot": snapshot,
-                            },
-                        )
-                        child_env = os.environ.copy()
-                        for env_name in tuple(child_env):
-                            if env_name in _DISTRIBUTED_ENV_FIELDS or env_name.startswith("MASTER_"):
-                                child_env.pop(env_name)
-                        child = subprocess.Popen(
-                            [
-                                "srun",
-                                "--nodes=1",
-                                f"--ntasks={expected_tasks}",
-                                f"--ntasks-per-node={expected_tasks}",
-                                "--kill-on-bad-exit=1",
-                                "--quit-on-interrupt",
-                                "--label",
-                                script,
-                            ],
-                            cwd=workdir,
-                            env=child_env,
-                            stdout=log,
-                            stderr=subprocess.STDOUT,
-                            start_new_session=False,
-                        )
-                        if received_signal and child.poll() is None:
-                            child.send_signal(received_signal)
-                finally:
-                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                with runtime_lock(workdir):
+                    snapshot = inspect_execution_target(
+                        {
+                            "target": "local",
+                            "workdir": workdir,
+                            "python": python,
+                            "runtime_commit": runtime_commit,
+                        },
+                        [{"run_id": run_id, "command": command, "script": script}],
+                        plan_label="Slurm",
+                    )
+                    observed_runtime_commit = str(snapshot["runtime_commit"])
+                    if snapshot["module"] != module:
+                        raise ValueError("Frozen Slurm module differs from the verified runtime module.")
+                    expected_snapshot_sha256 = _sha256(execution_snapshot_sha256)
+                    snapshot_artifact = Path(execution_snapshot_path)
+                    if (
+                        snapshot_artifact.is_symlink()
+                        or not snapshot_artifact.is_file()
+                        or snapshot_artifact.stat().st_nlink != 1
+                    ):
+                        raise ValueError(f"Frozen execution snapshot is not an independent file: {snapshot_artifact}")
+                    snapshot_bytes = snapshot_artifact.read_bytes()
+                    if hashlib.sha256(snapshot_bytes).hexdigest() != expected_snapshot_sha256:
+                        raise ValueError("Frozen Slurm execution snapshot changed before allocation start.")
+                    frozen_snapshot = json.loads(snapshot_bytes)
+                    identity_fields = ("python", "python_version")
+                    changed = [
+                        field
+                        for field in identity_fields
+                        if not isinstance(frozen_snapshot, dict) or snapshot.get(field) != frozen_snapshot.get(field)
+                    ]
+                    if changed:
+                        raise ValueError("Frozen Slurm execution identity changed in allocation: " + ", ".join(changed))
+                    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, forwarded_signals)
+                    try:
+                        if received_signal:
+                            exit_code = 128 + received_signal
+                        else:
+                            _atomic_create_json(
+                                allocation_identity_path,
+                                {
+                                    "schema_version": 1,
+                                    "scheduler_job_id": job_id,
+                                    "scheduler_cluster": cluster,
+                                    "scheduler_submit_token": submit_token,
+                                    "node": node,
+                                    "started_at": started_at,
+                                    "execution_snapshot": snapshot,
+                                },
+                            )
+                            child_env = os.environ.copy()
+                            for env_name in tuple(child_env):
+                                if env_name in _DISTRIBUTED_ENV_FIELDS or env_name.startswith("MASTER_"):
+                                    child_env.pop(env_name)
+                            child = subprocess.Popen(
+                                [
+                                    "srun",
+                                    "--nodes=1",
+                                    f"--ntasks={expected_tasks}",
+                                    f"--ntasks-per-node={expected_tasks}",
+                                    "--kill-on-bad-exit=1",
+                                    "--quit-on-interrupt",
+                                    "--label",
+                                    script,
+                                ],
+                                cwd=workdir,
+                                env=child_env,
+                                stdout=log,
+                                stderr=subprocess.STDOUT,
+                                start_new_session=False,
+                            )
+                            if received_signal and child.poll() is None:
+                                child.send_signal(received_signal)
+                    finally:
+                        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
                 if child is not None:
                     exit_code = child.wait()
                     if exit_code < 0:
@@ -357,6 +361,7 @@ def run_frozen_job(
             "started_at": started_at,
             "ended_at": _utc_now(),
             "exit_code": exit_code,
+            "runtime_commit": observed_runtime_commit,
         },
     )
     return exit_code

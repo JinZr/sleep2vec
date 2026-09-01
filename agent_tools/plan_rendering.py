@@ -247,20 +247,13 @@ def script_lines(
                 ]
             )
             + ' "$1"'
+            + (
+                f" record-runtime-commit {shlex.quote(expected_runtime_commit)}"
+                if expected_runtime_commit is not None
+                else ""
+            )
         )
         prelaunch_verification_lines = []
-        if expected_runtime_commit is not None:
-            prelaunch_verification_lines = [
-                render_command(
-                    [
-                        lifecycle_python,
-                        "-c",
-                        python_programs.source("plan_rendering.runtime_commit_guard"),
-                        expected_runtime_commit,
-                    ]
-                ),
-                "",
-            ]
         if input_snapshots:
             prelaunch_verification_lines.extend(
                 [

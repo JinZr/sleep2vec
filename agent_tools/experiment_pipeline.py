@@ -1653,15 +1653,7 @@ def _run_attempts(
             if row.get("status") != status:
                 row["status"] = status
                 changed = True
-            if int(row["attempt"]) == 1:
-                owner_dir = (
-                    pipeline_dir if len(initial_variants) == 1 else pipeline_dir / "initial_schedulers" / row["variant"]
-                )
-            else:
-                owner_dir = pipeline_dir / "retry_schedulers" / row["job_id"]
-            snapshot_path = owner_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
-            snapshot = read_json(snapshot_path) if snapshot_path.exists() else {}
-            runtime_commit = str(snapshot.get("runtime_commit") or "")
+            runtime_commit = str(run.get("runtime_commit") or "")
             if row.get("runtime_commit") != runtime_commit:
                 row["runtime_commit"] = runtime_commit
                 changed = True

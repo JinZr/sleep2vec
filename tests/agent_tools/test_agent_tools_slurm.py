@@ -14,6 +14,7 @@ from agent_tools import managed_scheduler, slurm
 
 
 def _frozen_job_inputs(tmp_path: Path, *, script_text: str = "#!/usr/bin/env bash\ntrue\n"):
+    (tmp_path / ".git").mkdir()
     config = tmp_path / "config.yaml"
     config.write_text("task: unit\n")
     script = tmp_path / "launch.sh"
@@ -1077,6 +1078,42 @@ def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, 
     ]
     for env_name in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
         assert env_name not in spawned[0][1]["env"]
+
+
+def test_run_frozen_job_records_allocation_runtime_commit_drift_without_blocking(tmp_path: Path, monkeypatch):
+    kwargs, frozen_snapshot = _frozen_job_inputs(tmp_path)
+    planned_commit = "a" * 40
+    actual_commit = "b" * 40
+    kwargs["runtime_commit"] = planned_commit
+    frozen_snapshot["runtime_commit"] = planned_commit
+    snapshot_path = Path(kwargs["execution_snapshot_path"])
+    snapshot_path.write_text(json.dumps(frozen_snapshot))
+    kwargs["execution_snapshot_sha256"] = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+    actual_snapshot = {**frozen_snapshot, "expected_runtime_commit": planned_commit, "runtime_commit": actual_commit}
+    monkeypatch.setenv("SLURM_JOB_ID", "3880")
+    monkeypatch.setenv("SLURM_CLUSTER_NAME", "wuji-h20")
+    monkeypatch.setenv("SLURM_NTASKS", "1")
+
+    inspected = []
+
+    def inspect_execution_target(execution, *_args, **_kwargs):
+        inspected.append(execution)
+        return actual_snapshot
+
+    class CompletedChild:
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect_execution_target)
+    monkeypatch.setattr(slurm.subprocess, "Popen", lambda *_args, **_kwargs: CompletedChild())
+
+    assert slurm.run_frozen_job(**kwargs) == 0
+
+    assert inspected[0]["runtime_commit"] == planned_commit
+    allocation = json.loads(Path(kwargs["allocation_identity_path"]).read_text())
+    terminal = json.loads(Path(kwargs["result_path"]).read_text())
+    assert allocation["execution_snapshot"]["runtime_commit"] == actual_commit
+    assert terminal["runtime_commit"] == actual_commit
 
 
 @pytest.mark.parametrize(("field", "observed"), [("python", "/other/python"), ("python_version", "3.11.0")])

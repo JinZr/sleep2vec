@@ -74,16 +74,16 @@ payload = {
     "module": module,
     "module_origin": str(origin),
 }
-identity_fields = (
+stable_identity_fields = (
     "python",
     "python_version",
-    "runtime_commit",
     "runtime_repo_root",
     "runtime_hostname",
     "module",
     "module_origin",
 )
-changed = [field for field in identity_fields if expected and payload[field] != expected.get(field)]
+# Commit drift is expected for a rolling checkout; payload still records the commit seen at this process start.
+changed = [field for field in stable_identity_fields if expected and payload[field] != expected.get(field)]
 if changed:
     print("Target runtime identity changed before process start: " + ", ".join(changed), file=sys.stderr)
     raise SystemExit(2)
