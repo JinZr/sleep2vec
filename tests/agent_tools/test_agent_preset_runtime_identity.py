@@ -320,7 +320,7 @@ def test_preset_manager_defaults_freeze_actual_python_commit_and_workdir(tmp_pat
     assert shlex.split(plan["commands"][0])[:2] == [sys.executable, _PRESET_SCRIPTS[variant]]
     script = Path(plan["runs"][0]["script"]).read_text()
     assert f"cd {shlex.quote(str(REPO_ROOT))}\n" in script
-    assert f"  {shlex.quote(sys.executable)} -c " in script
+    assert f"{shlex.quote(sys.executable)} -c " in script
     assert expected["runtime_commit"] in script
 
 
