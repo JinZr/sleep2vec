@@ -261,6 +261,16 @@ artifacts/agent_plans/
 runs/generated/
 plans/generated/
 
+# Agent tools runtime artifacts
+agent_tools/**/*.lock
+run_manifest.tsv.lock
+slurm_terminal.json
+allocation_identity.json
+**/pid
+**/*.staging/
+**/*.backup/
+*.cas.lock
+
 # VSCode settings folder
 .vscode/
 /.codex-tmp
