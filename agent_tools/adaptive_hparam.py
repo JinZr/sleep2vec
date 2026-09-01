@@ -2074,6 +2074,19 @@ def _workflow_execution_route(workflow: dict[str, Any]) -> dict[str, str]:
     return _execution_route(initial_execution)
 
 
+def _validate_workflow_scientific_contract(recipe: dict[str, Any], workflow: dict[str, Any]) -> None:
+    root = Path(str(workflow.get("root") or ""))
+    initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
+    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    fields = ("task", "variant", "inputs", "evaluation_policy")
+    changed = [field for field in fields if recipe.get(field) != initial_recipe.get(field)]
+    if changed:
+        raise ValueError(f"Adaptive source scientific contract differs from frozen round 000: {', '.join(changed)}")
+    frozen_config = _round_dir(root, 0) / "config.source.yaml"
+    if _source_config_sha256(recipe) != file_sha256(frozen_config):
+        raise ValueError("Adaptive source config differs from frozen round 000.")
+
+
 def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any]:
     frozen = workflow.get("execution_identity")
     if (
@@ -2086,6 +2099,7 @@ def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -
     for field, default in (("objective_metric", "test_auroc"), ("objective_mode", "max")):
         if str(adaptive.get(field) or default) != str(workflow.get(field) or default):
             raise ValueError(f"Adaptive source adaptive.{field} differs from the frozen workflow.")
+    _validate_workflow_scientific_contract(recipe, workflow)
     current = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
     frozen_route = _workflow_execution_route(workflow)
     current_route = _execution_route(current)

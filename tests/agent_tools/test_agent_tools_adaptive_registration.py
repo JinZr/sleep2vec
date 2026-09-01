@@ -1480,6 +1480,37 @@ def test_adaptive_source_rejects_frozen_python_drift_before_suggestion_write(tmp
     assert events_path.read_bytes() == events_before
 
 
+@pytest.mark.parametrize("drift", ["label", "selection_policy", "test_policy", "source_config"])
+def test_adaptive_source_rejects_frozen_scientific_contract_before_suggestion_write(
+    tmp_path: Path, monkeypatch, drift: str
+):
+    recipe = _adaptive_recipe(tmp_path)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    payload = yaml.safe_load(recipe.read_text())
+    if drift == "label":
+        payload.setdefault("inputs", {})["label_name"] = "stage5"
+        payload["decisions"]["label_name"]["value"] = "stage5"
+    elif drift == "selection_policy":
+        payload["evaluation_policy"]["selection_split"] = "train"
+        payload["decisions"]["train_val_test_policy"]["value"] = "train"
+    elif drift == "test_policy":
+        payload["evaluation_policy"]["require_manual_unlock_for_final_test"] = False
+    else:
+        config_path = Path(yaml.safe_load(Path(payload["base_recipe"]).read_text())["inputs"]["config"])
+        config = yaml.safe_load(config_path.read_text())
+        changed_index = tmp_path / "changed-index.csv"
+        changed_index.write_text((tmp_path / "index.csv").read_text())
+        config["data"]["finetune_data_index"] = str(changed_index)
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda *_args: pytest.fail("digest must not run"))
+
+    with pytest.raises(ValueError, match="differs from frozen round 000"):
+        adaptive_hparam.suggest_next_round(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+
+
 @pytest.mark.parametrize(
     ("field", "value", "additional"),
     [
