@@ -210,6 +210,11 @@ records both values. They are point-in-time provenance: code imported or read
 after the lock is released is not guaranteed to remain entirely at A or B.
 Mixed commits are not a scientific variable.
 
+Local direct launch waits for the embedded launcher to return a definitive
+pre-spawn failure or committed PID receipt; it does not apply the SSH transport
+timeout while that launcher waits for the runtime lock. An SSH timeout remains
+outcome-unknown evidence and is reconciled without automatic relaunch.
+
 Commit drift does not authorize mutation of registered recipes, plans, configs,
 scripts, or `execution_snapshot.json`. `execution.runtime_commit` remains the
 planned/baseline commit, and a different launch-time HEAD is recorded and

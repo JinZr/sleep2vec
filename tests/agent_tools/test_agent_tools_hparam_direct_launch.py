@@ -1072,14 +1072,28 @@ def test_monitor_owned_launch_uses_shell_exit_code(tmp_path: Path, exit_code: in
     assert observed["status"] == expected_status
 
 
-def test_launch_timeout_remains_nonterminal_until_process_evidence_reconciles(monkeypatch):
+@pytest.mark.parametrize("target", ["local", "ssh"])
+def test_launch_timeout_is_uncertain_only_over_ssh(monkeypatch, target: str):
+    calls = []
+
+    def timeout(*_args, **kwargs):
+        calls.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired("launch", kwargs["timeout"])
+
     monkeypatch.setattr(
         hparam_runtime.subprocess,
         "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("launch", 60)),
+        timeout,
     )
 
-    assert hparam_runtime._start_process({}, "managed launch") == "launched"
+    execution = {"target": target, **({"host": "unit-host"} if target == "ssh" else {})}
+    if target == "ssh":
+        assert hparam_runtime._start_process(execution, "managed launch") == "launched"
+        assert calls == [hparam_runtime.LAUNCH_TIMEOUT_SECONDS]
+    else:
+        with pytest.raises(subprocess.TimeoutExpired):
+            hparam_runtime._start_process(execution, "managed launch")
+        assert calls == [None]
 
 
 @pytest.mark.parametrize(
@@ -1099,7 +1113,7 @@ def test_launch_returncode_255_is_uncertain_only_over_ssh(monkeypatch, execution
     assert hparam_runtime._start_process(execution, "managed launch") == expected_status
 
 
-def test_unresolved_launch_timeout_is_not_relaunched(tmp_path: Path, monkeypatch):
+def test_uncertain_remote_launch_is_not_relaunched(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     starts = []
     monkeypatch.setattr(
