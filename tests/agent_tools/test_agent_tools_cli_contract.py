@@ -233,6 +233,7 @@ def test_runtime_sync_cli_defaults_to_dry_run_and_documents_in_place_fast_forwar
     assert args.python == "python3"
     assert args.execute is False
     assert "Dry run unless --execute is given" in (_subcommand_help(parser, "runtime-sync") or "")
+    assert "Never launches work" in (_subcommand_help(parser, "runtime-sync") or "")
     assert "fast-forward" in runtime_sync.format_help()
     assert "without cloning or resetting" in actions["execute"].help
 
