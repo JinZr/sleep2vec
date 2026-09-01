@@ -1490,7 +1490,15 @@ def _adaptive_step(
 def adaptive_loop(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     root = canonical_local_experiment_root(workflow_dir, Path.cwd())
     workflow = _workflow(root)
-    recipe = load_recipe_with_base(workflow["recipe_path"])
+    next_dir = _round_dir(root, _next_round_index(root))
+    recipe, _, source_preflight = preflight_plan(
+        recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
+    )
+    if source_preflight.exit_code != 0:
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in source_preflight.blocking_issues())
+        raise RuntimeError(
+            f"Adaptive source recipe failed preflight with exit code {source_preflight.exit_code}: {details}"
+        )
     _validate_adaptive_recipe(recipe)
     recipe = _with_workflow_execution(recipe, workflow)
     if _suggest_strategy(recipe) == "agent_proposal":

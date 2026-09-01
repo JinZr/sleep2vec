@@ -780,6 +780,40 @@ def test_adaptive_loop_stops_when_step_cannot_create_a_budgeted_round(tmp_path: 
     assert calls == [(workflow_dir, True)]
 
 
+def test_adaptive_loop_materializes_source_before_budget_check(tmp_path: Path, monkeypatch):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].pop("test_after_fit")
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    observed = []
+
+    def budget_exhausted(_root, effective_recipe):
+        observed.append(effective_recipe["evaluation_policy"]["test_after_fit"])
+        return True
+
+    monkeypatch.setattr(adaptive_hparam, "_budget_exhausted", budget_exhausted)
+
+    assert adaptive_hparam.adaptive_loop(workflow_dir) == workflow_dir
+    assert observed == [True]
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
+
+    payload["adaptive"]["max_runs_total"] += 1
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    monkeypatch.setattr(
+        adaptive_hparam,
+        "_budget_exhausted",
+        lambda *_args, **_kwargs: pytest.fail("budget check must not run"),
+    )
+
+    with pytest.raises(ValueError, match="adaptive.max_runs_total"):
+        adaptive_hparam.adaptive_loop(workflow_dir)
+
+    assert not (workflow_dir / "adaptive" / "suggestions").exists()
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
+
+
 def test_running_stop_passes_remote_status_row_to_failure_log_check(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=1)
     workflow_dir = tmp_path / "workflow"
