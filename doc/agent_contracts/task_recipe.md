@@ -839,6 +839,9 @@ completion event after launch and replacement handling finished. It does not
 stage, register, emit, or launch again. A preview remains subject to the live
 round binding, while an incomplete target registry or any uncommitted,
 conflicting, or uncertain launch state continues to fail closed.
+Acceptance, launch, and completion events must occur in that order. Replaying
+an older proposal also requires every later committed agent-proposal round to
+have the same ordered completion evidence and no canonical `launch_failed` row.
 
 A proposal changes only the search space and submits exactly one of:
 

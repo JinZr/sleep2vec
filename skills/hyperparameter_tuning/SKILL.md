@@ -84,7 +84,9 @@ If an execute receipt is lost, a heartbeat may repeat only the exact same
 proposal execute. The command returns the existing suggestion when canonical
 committed evidence includes successful execute completion; incomplete,
 unresolved, or conflicting state does not authorize a new launch. Monitors
-remain non-launching.
+remain non-launching. An older execute is not a successful replay while any
+later committed proposal lacks ordered completion evidence or retains a
+canonical launch failure.
 Later rounds may use a newer commit while Python, route, objective, and the
 scientific contract remain frozen. Treat mixed commits as recorded provenance,
 not an experimental arm, and never rewrite earlier plan or snapshot bytes.
