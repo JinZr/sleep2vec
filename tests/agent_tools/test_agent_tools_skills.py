@@ -52,3 +52,10 @@ def test_hparam_guidance_separates_search_budget_from_launch_authority():
     assert "Launch requires an explicit request" in agents
     assert "Launch requires an explicit request" in skill
     assert "does not authorize publication or launch" in contract
+
+
+def test_user_decision_guidance_preserves_explicit_final_test_unlock():
+    contract = (REPO_ROOT / "doc/agent_contracts/user_decisions.md").read_text()
+
+    assert "A concrete user-authorized `final_eval_unlock` value retains" in contract
+    assert "its task-owned final-test semantics" in contract

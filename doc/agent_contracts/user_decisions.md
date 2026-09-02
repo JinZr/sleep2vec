@@ -39,8 +39,10 @@ second approval format.
 If later validation exposes another decision, preserve the concrete
 `explicit_user` entries and ask only for the new `ASK_USER` delta. A changed
 value, incompatible task or expanded scientific scope requires renewed user
-intent. A decision file records that intent, but does not by itself authorize
-publication, launch or final-test access.
+intent. A decision file records that intent. Its mere presence does not
+authorize publication or launch, and an unedited template does not authorize
+final-test access. A concrete user-authorized `final_eval_unlock` value retains
+its task-owned final-test semantics.
 
 Concrete values with a task-owned canonical field are materialized into the
 effective recipe's existing `inputs`, `evaluation_policy`, `preset`, `search`,
