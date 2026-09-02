@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from agent_tools import cli, hparam_postprocess
+from agent_tools import cli, hparam_postprocess, hparam_selection
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest
 from agent_tools.models import REPO_ROOT
 
@@ -106,7 +106,9 @@ def _read_table(path: Path) -> list[dict[str, str]]:
 
 
 def _first_run(plan_dir: Path) -> dict:
-    return json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    _set_run_status(plan_dir, plan["runs"])
+    return plan["runs"][0]
 
 
 def _set_run_status(plan_dir: Path, runs: dict | list[dict], status: str = "completed") -> None:
@@ -281,7 +283,7 @@ def test_hparam_external_eval_rejects_unsuccessful_canonical_run_before_writing(
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    run = _first_run(plan_dir)
+    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     merge_run_manifest(
         tmp_path,
         [{"step_id": run["step_id"], "run_id": run["run_id"], "status": canonical_status}],
@@ -302,8 +304,8 @@ def test_hparam_external_eval_rejects_unsuccessful_canonical_run_before_writing(
     )
 
     assert result.returncode == 1
-    assert "Selected candidate is not canonically successful" in result.stderr
-    assert f"status={canonical_status}" in result.stderr
+    error = "requires every registered run to be terminal" if canonical_status == "planned" else "No successful"
+    assert error in result.stderr
     assert not (plan_dir / "external_eval_configs").exists()
     assert not (plan_dir / "external_eval_manifest.tsv").exists()
     assert not (plan_dir / "external_eval.sh").exists()
@@ -314,8 +316,8 @@ def test_hparam_external_eval_checks_status_after_top_k_filtering(tmp_path: Path
     plan_dir = tmp_path / "plan"
     prepare_hparam_plan_fixture(recipe, plan_dir)
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
-    _set_run_status(plan_dir, runs[0])
-    _set_run_status(plan_dir, runs[1], "failed")
+    _set_run_status(plan_dir, runs[0], "failed")
+    _set_run_status(plan_dir, runs[1])
     selected = plan_dir / "selected.csv"
     selected.write_text(
         "step_id,run_id,rank,status,checkpoint_path\n"
@@ -344,9 +346,8 @@ def test_hparam_external_eval_checks_status_after_top_k_filtering(tmp_path: Path
     )
 
     assert top.returncode == 0, top.stderr
-    assert [row["run_id"] for row in _read_table(plan_dir / "external_eval_manifest.tsv")] == [runs[0]["run_id"]]
-    assert all_candidates.returncode == 1
-    assert f"{runs[1]['step_id']} / {runs[1]['run_id']} (status=failed)" in all_candidates.stderr
+    assert [row["run_id"] for row in _read_table(plan_dir / "external_eval_manifest.tsv")] == [runs[1]["run_id"]]
+    assert all_candidates.returncode == 0, all_candidates.stderr
 
 
 @pytest.mark.parametrize("snapshot_field", ["config", "script"])
@@ -716,14 +717,13 @@ def test_hparam_external_eval_validates_other_step_rows_before_filtering(tmp_pat
 
 
 def test_selected_candidates_reject_legacy_other_step_before_filtering():
-    plan = {"runs": [{"step_id": "current-step", "run_id": "run-000"}]}
     rows = [
         {"step_id": "other-step", "run_id": "run-000", "trial_id": "trial_000"},
         {"step_id": "current-step", "run_id": "run-000"},
     ]
 
     with pytest.raises(ValueError, match="Historical trial_id"):
-        hparam_postprocess._selected_candidate_rows(rows, plan=plan)
+        hparam_selection.resolve_hparam_candidates("unused", rows)
 
 
 def test_hparam_external_eval_rejects_header_only_removed_candidate_table(tmp_path: Path):
@@ -753,6 +753,7 @@ def test_selected_candidates_reject_foreign_experiment_before_plan_fields_replac
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
+    _set_run_status(plan_dir, plan["runs"])
     run = plan["runs"][0]
     rows = [
         {
@@ -766,7 +767,7 @@ def test_selected_candidates_reject_foreign_experiment_before_plan_fields_replac
     ]
 
     with pytest.raises(ValueError, match="Frozen run field differs.*experiment_id"):
-        hparam_postprocess._selected_candidate_rows(rows, plan=plan)
+        hparam_selection.resolve_hparam_candidates(plan_dir, rows)
 
 
 def test_selected_candidates_reject_foreign_other_step_before_filtering(tmp_path: Path):
@@ -792,7 +793,7 @@ def test_selected_candidates_reject_foreign_other_step_before_filtering(tmp_path
     ]
 
     with pytest.raises(ValueError, match="Frozen run field differs.*experiment_id"):
-        hparam_postprocess._selected_candidate_rows(rows, plan=plan)
+        hparam_selection.resolve_hparam_candidates(plan_dir, rows)
 
 
 def test_selected_candidates_keep_managed_same_step_rows_from_registered_plans(tmp_path: Path):
@@ -803,20 +804,21 @@ def test_selected_candidates_keep_managed_same_step_rows_from_registered_plans(t
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(second_plan_dir)).returncode == 0
     first_run = _first_run(first_plan_dir)
     second_plan = json.loads((second_plan_dir / "plan.json").read_text())
+    _set_run_status(second_plan_dir, second_plan["runs"])
     second_run = second_plan["runs"][0]
 
     rows = [
         {"step_id": first_run["step_id"], "run_id": first_run["run_id"], "rank": "2"},
         {"step_id": second_run["step_id"], "run_id": second_run["run_id"], "rank": "1"},
     ]
-    selected, _owner_plans = hparam_postprocess._selected_candidate_rows(
+    selected, _owner_plans = hparam_selection.resolve_hparam_candidates(
+        second_plan_dir,
         rows,
-        plan=second_plan,
         all_candidates=True,
     )
-    top, _owner_plans = hparam_postprocess._selected_candidate_rows(rows, plan=second_plan)
+    top, _owner_plans = hparam_selection.resolve_hparam_candidates(second_plan_dir, rows)
 
-    assert [row["run_id"] for row in selected] == [first_run["run_id"], second_run["run_id"]]
+    assert [row["run_id"] for row in selected] == [second_run["run_id"], first_run["run_id"]]
     assert [row["run_id"] for row in top] == [second_run["run_id"]]
 
 
@@ -828,33 +830,36 @@ def test_selected_candidates_rank_all_registered_plans_in_current_step(tmp_path:
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(second_plan_dir)).returncode == 0
     first_run = _first_run(first_plan_dir)
     second_plan = json.loads((second_plan_dir / "plan.json").read_text())
+    _set_run_status(second_plan_dir, second_plan["runs"])
     better, worse = second_plan["runs"]
 
-    selected, _owner_plans = hparam_postprocess._selected_candidate_rows(
+    selected, _owner_plans = hparam_selection.resolve_hparam_candidates(
+        second_plan_dir,
         [
             {"step_id": first_run["step_id"], "run_id": first_run["run_id"], "rank": "1"},
             {"step_id": worse["step_id"], "run_id": worse["run_id"], "rank": "4"},
             {"step_id": better["step_id"], "run_id": better["run_id"], "rank": "3"},
         ],
-        plan=second_plan,
         top_k=1,
     )
 
     assert [row["run_id"] for row in selected] == [first_run["run_id"]]
 
 
-def test_selected_candidates_reject_registered_selection_split_drift(tmp_path: Path):
+def test_selected_candidates_reject_plan_recipe_drift(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
+    _set_run_status(plan_dir, plan["runs"])
     run = plan["runs"][0]
     plan["recipe"]["evaluation_policy"]["selection_split"] = "test"
+    (plan_dir / "plan.json").write_text(json.dumps(plan))
 
-    with pytest.raises(ValueError, match="selection split differs"):
-        hparam_postprocess._selected_candidate_rows(
+    with pytest.raises(ValueError, match="recipe differs from recipe.resolved.yaml"):
+        hparam_selection.resolve_hparam_candidates(
+            plan_dir,
             [{"step_id": run["step_id"], "run_id": run["run_id"], "rank": "1"}],
-            plan=plan,
         )
 
 
@@ -867,7 +872,6 @@ def test_test_selected_candidates_require_frozen_checkpoint_hash(
     plan_dir = tmp_path / "plan"
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
-    plan = json.loads((plan_dir / "plan.json").read_text())
     _run_row, _checkpoints, frozen = _freeze_test_selected_candidate(plan_dir)
     row = {
         "step_id": frozen["step_id"],
@@ -881,12 +885,12 @@ def test_test_selected_candidates_require_frozen_checkpoint_hash(
         Path(frozen["checkpoint_path"]).write_text("drifted checkpoint")
 
     if evidence_case == "valid":
-        selected, _owner_plans = hparam_postprocess._selected_candidate_rows([row], plan=plan)
+        selected, _owner_plans = hparam_selection.resolve_hparam_candidates(plan_dir, [row])
         assert selected[0]["checkpoint_sha256"] == row["checkpoint_sha256"]
         return
     error = "missing frozen checkpoint_sha256" if evidence_case == "missing-hash" else "SHA-256 differs"
     with pytest.raises(ValueError, match=error):
-        hparam_postprocess._selected_candidate_rows([row], plan=plan)
+        hparam_selection.resolve_hparam_candidates(plan_dir, [row])
 
 
 def test_test_selected_external_eval_rejects_checkpoint_hash_drift_before_writing(tmp_path: Path):
@@ -953,13 +957,13 @@ def test_test_selected_candidate_must_match_frozen_hparam_selection_before_rehas
     row[mismatch_field] = str(checkpoints[1]) if mismatch_field == "checkpoint_path" else file_sha256(checkpoints[1])
     rehash_calls = []
     monkeypatch.setattr(
-        hparam_postprocess.evidence,
+        hparam_selection.evidence,
         "checkpoint_file_sha256",
         lambda *_args: rehash_calls.append(True),
     )
 
     with pytest.raises(ValueError, match=f"candidate {mismatch_field} differs from frozen hparam selection"):
-        hparam_postprocess._selected_candidate_rows([row], plan=json.loads((plan_dir / "plan.json").read_text()))
+        hparam_selection.resolve_hparam_candidates(plan_dir, [row])
 
     assert rehash_calls == []
 
@@ -1057,13 +1061,13 @@ def test_test_selected_candidate_rank_must_match_frozen_hparam_ranking_before_to
     frozen[0]["rank"], frozen[1]["rank"] = frozen[1]["rank"], frozen[0]["rank"]
     rehash_calls = []
     monkeypatch.setattr(
-        hparam_postprocess.evidence,
+        hparam_selection.evidence,
         "checkpoint_file_sha256",
         lambda *_args: rehash_calls.append(True),
     )
 
     with pytest.raises(ValueError, match="candidate rank differs from frozen hparam selection"):
-        hparam_postprocess._selected_candidate_rows(frozen, plan=plan, top_k=1)
+        hparam_selection.resolve_hparam_candidates(plan_dir, frozen, top_k=1)
 
     assert rehash_calls == []
 
@@ -1099,7 +1103,7 @@ def test_test_selected_top_k_rehashes_only_retained_checkpoints(tmp_path: Path):
     frozen_by_rank = {row["rank"]: row for row in frozen}
     Path(frozen_by_rank["2"]["checkpoint_path"]).write_text("drifted lower-rank checkpoint")
 
-    selected, _owner_plans = hparam_postprocess._selected_candidate_rows(frozen, plan=plan, top_k=1)
+    selected, _owner_plans = hparam_selection.resolve_hparam_candidates(plan_dir, frozen, top_k=1)
 
     assert [row["run_id"] for row in selected] == [frozen_by_rank["1"]["run_id"]]
     ranking_path = _ranking_path(plan_dir)
@@ -1114,7 +1118,7 @@ def test_test_selected_top_k_rehashes_only_retained_checkpoints(tmp_path: Path):
     ]
     assert [row["run_id"] for row in _read_table(logits_manifest)] == [frozen_by_rank["1"]["run_id"]]
     with pytest.raises(ValueError, match="Frozen checkpoint SHA-256 differs"):
-        hparam_postprocess._selected_candidate_rows(frozen, plan=plan, all_candidates=True)
+        hparam_selection.resolve_hparam_candidates(plan_dir, frozen, all_candidates=True)
 
 
 def test_validation_selected_external_eval_does_not_require_checkpoint_hash(tmp_path: Path):
@@ -1216,12 +1220,13 @@ def test_selected_candidates_require_positive_integer_rank(tmp_path: Path, rank)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
+    _set_run_status(plan_dir, plan["runs"])
     run = plan["runs"][0]
 
     with pytest.raises(ValueError, match="rank must be a positive integer"):
-        hparam_postprocess._selected_candidate_rows(
+        hparam_selection.resolve_hparam_candidates(
+            plan_dir,
             [{"step_id": run["step_id"], "run_id": run["run_id"], "rank": rank}],
-            plan=plan,
         )
 
 
@@ -1230,11 +1235,26 @@ def test_selected_candidates_enforce_top_k_as_hard_limit(tmp_path: Path):
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
-    rows = [{"step_id": run["step_id"], "run_id": run["run_id"], "rank": "1"} for run in plan["runs"]]
+    _set_run_status(plan_dir, plan["runs"])
+    rows = [
+        {"step_id": run["step_id"], "run_id": run["run_id"], "rank": rank} for run, rank in zip(plan["runs"], (2, 1))
+    ]
 
-    selected, _owner_plans = hparam_postprocess._selected_candidate_rows(rows, plan=plan, top_k=1)
+    selected, _owner_plans = hparam_selection.resolve_hparam_candidates(plan_dir, rows, top_k=1)
 
-    assert [row["run_id"] for row in selected] == [plan["runs"][0]["run_id"]]
+    assert [row["run_id"] for row in selected] == [plan["runs"][1]["run_id"]]
+
+
+def test_selected_candidates_reject_duplicate_ranks(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, run_count=2)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    _set_run_status(plan_dir, plan["runs"])
+    rows = [{"step_id": run["step_id"], "run_id": run["run_id"], "rank": 1} for run in plan["runs"]]
+
+    with pytest.raises(ValueError, match="ranks must be unique"):
+        hparam_selection.resolve_hparam_candidates(plan_dir, rows, all_candidates=True)
 
 
 @pytest.mark.parametrize("top_k", [0, -1, True])
@@ -1246,9 +1266,9 @@ def test_selected_candidates_require_positive_integer_top_k(tmp_path: Path, top_
     run = plan["runs"][0]
 
     with pytest.raises(ValueError, match="top_k must be a positive integer"):
-        hparam_postprocess._selected_candidate_rows(
+        hparam_selection.resolve_hparam_candidates(
+            plan_dir,
             [{"step_id": run["step_id"], "run_id": run["run_id"], "rank": 1}],
-            plan=plan,
             top_k=top_k,
         )
 
@@ -1628,6 +1648,7 @@ def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: 
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
+    _set_run_status(plan_dir, runs)
     selected = plan_dir / "selected.csv"
     selected.write_text(
         "step_id,run_id,rank,config,checkpoint_path\n"
@@ -2009,6 +2030,8 @@ def test_hparam_threshold_and_ensemble_compute_binary_metrics(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, run_count=3)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
+    _set_run_status(plan_dir, runs)
     val_a = tmp_path / "val_a.csv"
     test_a = tmp_path / "test_a.csv"
     val_b = tmp_path / "val_b.csv"
@@ -2066,6 +2089,8 @@ def test_hparam_threshold_and_ensemble_read_repo_prediction_csv_lists(tmp_path: 
     recipe = _hparam_recipe(tmp_path, run_count=4)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
+    _set_run_status(plan_dir, runs)
     val_seq = tmp_path / "val_seq.csv"
     test_seq = tmp_path / "test_seq.csv"
     val_ahi = tmp_path / "val_ahi.csv"

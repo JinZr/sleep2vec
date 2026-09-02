@@ -5,7 +5,7 @@ from .hparam_postprocess import (
     threshold_hparam_outputs,
 )
 from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, run_hparam_queue, stop_hparam_run
-from .hparam_selection import scan_hparam_checkpoints, select_hparam_candidates
+from .hparam_selection import resolve_hparam_candidates, scan_hparam_checkpoints, select_hparam_candidates
 
 __all__ = [
     "ensemble_hparam_outputs",
@@ -14,6 +14,7 @@ __all__ = [
     "launch_hparam_runs",
     "monitor_hparam_runs",
     "run_hparam_queue",
+    "resolve_hparam_candidates",
     "scan_hparam_checkpoints",
     "select_hparam_candidates",
     "stop_hparam_run",

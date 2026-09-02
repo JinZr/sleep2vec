@@ -309,6 +309,152 @@ def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path
     assert canonical["selection_report_sha256"] == selected["selection_report_sha256"]
 
 
+def test_resolve_hparam_candidates_uses_canonical_rank_and_skips_terminal_failures(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, max_runs=3)
+    plan_dir = tmp_path / "plan"
+    prepare_hparam_plan_fixture(recipe, plan_dir)
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    _first_run(plan_dir)
+    failed_run = plan["runs"][1]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": failed_run["step_id"], "run_id": failed_run["run_id"], "status": "failed"}],
+    )
+    for run, score in ((plan["runs"][0], 0.7), (plan["runs"][2], 0.9)):
+        checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_text(run["run_id"])
+        Path(run["runtime_dir"], "run_manifest.json").write_text(
+            json.dumps(
+                {
+                    "metrics": {"val_ahi_pearson": score},
+                    "best_model_path": str(checkpoint),
+                    "epoch": 1,
+                }
+            )
+        )
+    hparam_selection.select_hparam_candidates(plan_dir)
+    ranking = _ranking_path(plan_dir)
+    ranking_before = ranking.read_bytes()
+    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    all_rows, _owner_plans = hparam_selection.resolve_hparam_candidates(
+        plan_dir,
+        list(reversed(plan["runs"])),
+        all_candidates=True,
+    )
+    top_rows, _owner_plans = hparam_selection.resolve_hparam_candidates(
+        plan_dir,
+        list(reversed(plan["runs"])),
+        top_k=5,
+    )
+
+    assert [row["run_id"] for row in all_rows] == [plan["runs"][2]["run_id"], plan["runs"][0]["run_id"]]
+    assert [row["rank"] for row in all_rows] == [1, 2]
+    assert [row["run_id"] for row in top_rows] == [plan["runs"][2]["run_id"], plan["runs"][0]["run_id"]]
+    assert ranking.read_bytes() == ranking_before
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
+
+
+def test_resolve_hparam_candidates_rejects_forged_validation_rank(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    prepare_hparam_plan_fixture(recipe, plan_dir)
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    Path(run["runtime_dir"], "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "metrics": {"val_ahi_pearson": 0.8},
+                "best_model_path": str(checkpoint),
+                "epoch": 1,
+            }
+        )
+    )
+    hparam_selection.select_hparam_candidates(plan_dir)
+    selector = _read_table(_ranking_path(plan_dir))[0]
+    selector["rank"] = "2"
+    before = _ranking_path(plan_dir).read_bytes()
+
+    with pytest.raises(ValueError, match="rank differs from frozen hparam selection"):
+        hparam_selection.resolve_hparam_candidates(plan_dir, [selector])
+
+    assert _ranking_path(plan_dir).read_bytes() == before
+
+
+def test_resolve_hparam_candidates_rejects_active_run_without_writing(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    with pytest.raises(ValueError, match="requires every registered run to be terminal"):
+        hparam_selection.resolve_hparam_candidates(plan_dir, plan["runs"])
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
+    assert not _ranking_path(plan_dir).exists()
+
+
+def test_resolve_hparam_candidates_filters_failed_explicit_rows_before_ranking(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, max_runs=2)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    _first_run(plan_dir)
+    failed, successful = plan["runs"]
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": failed["step_id"], "run_id": failed["run_id"], "status": "failed"}],
+    )
+    rows = [
+        {
+            "step_id": failed["step_id"],
+            "run_id": failed["run_id"],
+            "rank": 1,
+            "runtime.lr": 999,
+            "checkpoint_path": str(tmp_path / "stale.ckpt"),
+        },
+        {"step_id": successful["step_id"], "run_id": successful["run_id"], "rank": 2},
+    ]
+    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    top, _owner_plans = hparam_selection.resolve_hparam_candidates(plan_dir, rows)
+    all_rows, _owner_plans = hparam_selection.resolve_hparam_candidates(
+        plan_dir, list(reversed(rows)), all_candidates=True
+    )
+
+    assert [row["run_id"] for row in top] == [successful["run_id"]]
+    assert [row["run_id"] for row in all_rows] == [successful["run_id"]]
+    assert [row["rank"] for row in all_rows] == [2]
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
+    assert not _ranking_path(plan_dir).exists()
+
+
+def test_resolve_hparam_candidates_rejects_all_failed_explicit_rows(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, max_runs=2)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    merge_run_manifest(
+        tmp_path,
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "failed"} for run in plan["runs"]],
+    )
+
+    with pytest.raises(ValueError, match="No successful selected candidates"):
+        hparam_selection.resolve_hparam_candidates(
+            plan_dir,
+            [
+                {"step_id": run["step_id"], "run_id": run["run_id"], "rank": rank}
+                for rank, run in enumerate(plan["runs"], 1)
+            ],
+        )
+
+    assert not _ranking_path(plan_dir).exists()
+
+
 def test_hparam_select_rejects_completed_experiment_without_mutation(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"

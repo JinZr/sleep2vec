@@ -39,7 +39,7 @@ from .experiment_workspace import (
     validate_step_registration,
 )
 from .hparam_runtime import monitor_hparam_runs
-from .hparam_selection import select_hparam_candidates
+from .hparam_selection import resolve_hparam_candidates, select_hparam_candidates
 from .manifests import read_json, read_rows, utc_now
 from .models import is_full_git_object_id
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
@@ -549,9 +549,15 @@ def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list
         statuses = [str(row.get("status") or "") for row in rows]
         uncertain = [row["run_id"] for row in rows if row.get("status") in SOURCE_UNCERTAIN_STATUSES]
         failed = [row["run_id"] for row in rows if row.get("status") in TERMINAL_STATUSES - SUCCESS_STATUSES]
-        complete = bool(rows) and all(status in SUCCESS_STATUSES for status in statuses)
+        complete = (
+            bool(rows)
+            and all(status in TERMINAL_STATUSES for status in statuses)
+            and any(status in SUCCESS_STATUSES for status in statuses)
+        )
         if complete:
-            for run in plan["runs"]:
+            for run, row in zip(plan["runs"], rows, strict=True):
+                if row.get("status") not in SUCCESS_STATUSES:
+                    continue
                 manifest_path = artifacts.find_run_manifest(run)
                 if manifest_path is None or manifest_path.is_symlink() or not manifest_path.is_file():
                     raise ValueError(f"Successful source run lacks a valid run_manifest.json: {run['run_id']}")
@@ -575,12 +581,12 @@ def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list
 
 
 def _source_summary_status(states: list[dict[str, Any]]) -> str:
-    if any(state["failed_runs"] for state in states):
-        return "failed"
     if any(state["uncertain_runs"] for state in states):
         return "blocked"
     if all(state["complete"] for state in states):
         return "ready"
+    if any(state["statuses"] and len(state["failed_runs"]) == len(state["statuses"]) for state in states):
+        return "failed"
     return "waiting_for_sources"
 
 
@@ -734,27 +740,24 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[dict[st
         recipe = plan["recipe"]
         step_id = str(recipe["step"]["id"])
         select_hparam_candidates(plan_dir, source["selection_metric"], source["selection_mode"])
-        ranking = read_rows(root / "reports" / "ranking.csv", require_managed_identity=True)
-        source_run_keys = {managed_run_key(run) for run in plan["runs"]}
-        candidates = [row for row in ranking if managed_run_key(row) in source_run_keys]
-        if not candidates:
-            raise ValueError(f"No ranked checkpoint selection is owned by source plan {source_id}.")
-        row = min(candidates, key=lambda candidate: int(candidate["rank"]))
-        key = (str(row["step_id"]), str(row["run_id"]))
-        canonical = {managed_run_key(item): item for item in read_run_manifest(root)}
-        canonical_row = canonical.get(key)
-        if canonical_row is None or canonical_row.get("status") not in SUCCESS_STATUSES:
-            raise ValueError(f"Selected checkpoint source is not successful: {source_id}")
+        candidates, _owner_plans = resolve_hparam_candidates(plan_dir, plan["runs"], top_k=1)
+        row = candidates[0]
         config = Path(str(row.get("config") or ""))
         checkpoint = Path(str(row.get("checkpoint_path") or ""))
         if config.is_symlink() or not config.is_file():
             raise ValueError(f"Selected config is not a regular file: {config}")
         if checkpoint.is_symlink() or not checkpoint.is_file():
             raise ValueError(f"Selected checkpoint is not a regular file: {checkpoint}")
-        checkpoint_dir = Path(str(canonical_row.get("checkpoint_dir") or ""))
+        checkpoint_dir = Path(str(row.get("checkpoint_dir") or ""))
         if checkpoint.parent != checkpoint_dir or checkpoint_dir.is_symlink():
             raise ValueError(f"Selected checkpoint is outside its frozen checkpoint directory: {checkpoint}")
         exp_io.validate_managed_output_paths(checkpoint_dir, [checkpoint])
+        config_sha256 = file_sha256(config)
+        checkpoint_sha256 = file_sha256(checkpoint)
+        if config_sha256 != row.get("config_sha256"):
+            raise ValueError(f"Frozen config SHA-256 differs for source {source_id}: {config}")
+        if checkpoint_sha256 != row.get("checkpoint_sha256"):
+            raise ValueError(f"Frozen checkpoint SHA-256 differs for source {source_id}: {checkpoint}")
         config_payload = read_managed_yaml_mapping(config.read_text(), source=f"Selected config {config}")
         averaging_paths = _mapping_key_paths(config_payload, "model_averaging")
         if policy["require_no_model_averaging"] and averaging_paths:
@@ -774,9 +777,9 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[dict[st
             "selection_mode": source["selection_mode"],
             "score": score,
             "config": str(config),
-            "config_sha256": file_sha256(config),
+            "config_sha256": config_sha256,
             "checkpoint": str(checkpoint),
-            "checkpoint_sha256": file_sha256(checkpoint),
+            "checkpoint_sha256": checkpoint_sha256,
             "variant": str(recipe.get("variant") or ""),
             "label_name": label_name,
             "source_task": label_name,

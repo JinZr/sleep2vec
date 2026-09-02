@@ -385,29 +385,77 @@ def test_schema_requires_both_model_averaging_prefixes(tmp_path: Path, prefixes:
         experiment_pipeline._validate_spec(spec, tmp_path, unlock_final_test=True)
 
 
-def test_successful_source_accepts_no_test_after_fit_manifest(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("failed_status", ["failed", "stopped"])
+def test_mixed_terminal_source_accepts_no_test_after_fit_manifest(
+    tmp_path: Path,
+    monkeypatch,
+    failed_status: str,
+):
     root = tmp_path / "workspace"
     spec = _spec(root)
-    run = {"step_id": "train-age", "run_id": "run-000"}
+    successful = {"step_id": "train-age", "run_id": "run-000"}
+    unsuccessful = {"step_id": "train-age", "run_id": "run-001"}
     manifest_path = tmp_path / "run_manifest.json"
     manifest_path.write_text(json.dumps({"status": "skipped_test", "metrics": {"val_mae": 4.5}}) + "\n")
 
     monkeypatch.setattr(
         experiment_pipeline.artifacts,
         "read_hparam_plan",
-        lambda _plan_dir: {"runs": [run]},
+        lambda _plan_dir: {"runs": [successful, unsuccessful]},
     )
     monkeypatch.setattr(
         experiment_pipeline,
         "read_run_manifest",
-        lambda _root: [{**run, "status": "finished"}],
+        lambda _root: [
+            {**successful, "status": "finished"},
+            {**unsuccessful, "status": failed_status},
+        ],
     )
-    monkeypatch.setattr(experiment_pipeline.artifacts, "find_run_manifest", lambda _run: manifest_path)
+    monkeypatch.setattr(
+        experiment_pipeline.artifacts,
+        "find_run_manifest",
+        lambda run: manifest_path if run == successful else pytest.fail("failed runs have no success manifest"),
+    )
 
     states = experiment_pipeline._inspect_sources(root, spec, refresh=False)
 
     assert states[0]["complete"] is True
-    assert states[0]["failed_runs"] == []
+    assert states[0]["failed_runs"] == ["run-001"]
+    assert experiment_pipeline._source_summary_status(states) == "ready"
+
+
+@pytest.mark.parametrize("status", ["planned", "running"])
+def test_active_source_waits_for_terminal_status(tmp_path: Path, monkeypatch, status: str):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    run = {"step_id": "train-age", "run_id": "run-000"}
+    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: {"runs": [run]})
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [{**run, "status": status}])
+
+    states = experiment_pipeline._inspect_sources(root, spec, refresh=False)
+
+    assert states[0]["complete"] is False
+    assert experiment_pipeline._source_summary_status(states) == "waiting_for_sources"
+
+
+def test_all_unsuccessful_terminal_source_fails(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    runs = [
+        {"step_id": "train-age", "run_id": "run-000"},
+        {"step_id": "train-age", "run_id": "run-001"},
+    ]
+    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: {"runs": runs})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "read_run_manifest",
+        lambda _root: [{**runs[0], "status": "failed"}, {**runs[1], "status": "stopped"}],
+    )
+
+    states = experiment_pipeline._inspect_sources(root, spec, refresh=False)
+
+    assert states[0]["complete"] is False
+    assert experiment_pipeline._source_summary_status(states) == "failed"
 
 
 @pytest.mark.parametrize("status", ["submitting", "unknown_scheduler"])

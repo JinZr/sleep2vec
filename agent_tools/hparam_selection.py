@@ -5,6 +5,7 @@ import csv
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,223 @@ def select_hparam_candidates(
 ) -> Path:
     selection = _build_hparam_selection(run_dir, metric=metric, mode=mode)
     return _commit_hparam_selection(selection)
+
+
+def resolve_hparam_candidates(
+    run_dir: str | Path,
+    candidate_rows: list[dict[str, Any]],
+    *,
+    top_k: int = 1,
+    all_candidates: bool = False,
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
+    if not all_candidates and (type(top_k) is not int or top_k <= 0):
+        raise ValueError("top_k must be a positive integer.")
+    validate_managed_run_rows(candidate_rows, source="selected candidates", cardinality="one_per_run")
+    root = Path(run_dir)
+    plan = artifacts.read_hparam_plan(root)
+    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    selection_metric = str(evaluation.get("selection_metric") or "")
+    selection_mode = str(evaluation.get("selection_mode") or "")
+    selection_split = str(evaluation.get("selection_split") or "")
+    workspace = experiment_root(recipe)
+    if workspace is None:
+        raise ValueError("Selected candidates require a managed experiment workspace.")
+    step = recipe.get("step") if isinstance(recipe.get("step"), dict) else {}
+    step_id = str(step.get("id") or "")
+    workspace_rows = read_run_manifest(workspace)
+    workspace_by_key = {managed_run_key(run): run for run in workspace_rows}
+
+    owner_runs_by_key = {}
+    owner_plans_by_key = {}
+    for _registered_root, owner_plan in artifacts.iter_registered_hparam_plans(
+        workspace,
+        step_id,
+        selection_metric=selection_metric,
+        selection_mode=selection_mode,
+        selection_split=selection_split,
+    ):
+        for run in owner_plan["runs"]:
+            key = managed_run_key(run)
+            if key in owner_runs_by_key:
+                raise ValueError(f"Managed run is owned by multiple registered hparam plans: {key[0]} / {key[1]}")
+            owner_runs_by_key[key] = run
+            owner_plans_by_key[key] = owner_plan
+
+    active_runs = []
+    for key, run in owner_runs_by_key.items():
+        canonical = workspace_by_key.get(key)
+        if canonical is None:
+            raise ValueError(f"Managed run is missing from run_manifest.tsv: {run['step_id']} / {run['run_id']}")
+        status = str(canonical.get("status") or "")
+        if status not in TERMINAL_STATUSES:
+            active_runs.append(f"{run['step_id']} / {run['run_id']} ({status})")
+    selectors_by_key = {}
+    matched_current_step = False
+    for row in candidate_rows:
+        key = managed_run_key(row)
+        managed = workspace_by_key.get(key)
+        if managed is None:
+            if str(row.get("step_id") or "") == step_id:
+                raise ValueError(
+                    f"Selected candidate is not managed by a registered hparam plan for the current step: "
+                    f"{row['step_id']} / {row['run_id']}"
+                )
+            raise ValueError(
+                f"Selected candidate is not managed by the experiment workspace: {row['step_id']} / {row['run_id']}"
+            )
+        candidate_parameters = managed_run_parameters(row)
+        ownership_evidence = (
+            {field: value for field, value in row.items() if field not in candidate_parameters}
+            if key in owner_runs_by_key
+            else row
+        )
+        if key not in owner_runs_by_key:
+            validate_frozen_run_update(managed, ownership_evidence, require_checkpoint_ownership=True)
+        if str(row.get("step_id") or "") != step_id:
+            continue
+        matched_current_step = True
+        run = owner_runs_by_key.get(key)
+        if run is None:
+            raise ValueError(
+                f"Selected candidate is not managed by a registered hparam plan for the current step: "
+                f"{key[0]} / {key[1]}"
+            )
+        if str(managed.get("status") or "") not in SUCCESS_STATUSES:
+            continue
+        plan_parameters = managed_run_parameters(run)
+        extra_parameters = sorted(set(candidate_parameters) - set(plan_parameters))
+        if extra_parameters:
+            raise ValueError(
+                f"Selected candidate defines parameters outside the managed plan: {', '.join(extra_parameters)}"
+            )
+        for field, value in candidate_parameters.items():
+            expected = "" if plan_parameters[field] is None else str(plan_parameters[field])
+            actual = "" if value is None else str(value)
+            if actual != expected:
+                raise ValueError(f"Selected candidate parameter differs from the managed plan: {field}")
+        derived = {field: value for field, value in row.items() if field not in candidate_parameters}
+        validate_frozen_run_update(
+            run,
+            derived,
+            require_checkpoint_ownership=True,
+            allow_execution_identity_fill=True,
+        )
+        selectors_by_key[key] = (derived, run)
+    if active_runs:
+        raise ValueError(
+            "Hparam candidate resolution requires every registered run to be terminal: " + ", ".join(active_runs)
+        )
+    if not matched_current_step:
+        raise ValueError(f"No selected candidates match the current hparam step: {step_id}")
+    if not selectors_by_key:
+        raise ValueError("No successful selected candidates remain after canonical status filtering.")
+
+    step_rows = [workspace_by_key[key] for key in owner_runs_by_key]
+    canonical_ranked = tracking.validated_hparam_ranking(
+        {
+            "step_id": step_id,
+            "selection": {"metric": selection_metric, "mode": selection_mode, "split": selection_split},
+            "rows": step_rows,
+        }
+    )
+    ranking_rows = tracking.hparam_ranking_projection(canonical_ranked) if canonical_ranked is not None else []
+    ranking_by_key = {managed_run_key(row): row for row in ranking_rows}
+    if ranking_by_key:
+        ranking_path = workspace / "reports" / "ranking.csv"
+        frozen_ranking = read_rows(ranking_path, require_managed_identity=True)
+        validate_managed_run_rows(frozen_ranking, source=str(ranking_path), cardinality="one_per_run")
+        frozen_by_key = {
+            managed_run_key(row): row for row in frozen_ranking if str(row.get("step_id") or "") == step_id
+        }
+        if set(frozen_by_key) != set(ranking_by_key):
+            raise ValueError(f"Frozen hparam ranking candidates differ from canonical selection: {step_id}")
+        for key, expected_row in ranking_by_key.items():
+            frozen_row = frozen_by_key[key]
+            for field, expected in expected_row.items():
+                actual = "" if frozen_row.get(field) is None else str(frozen_row.get(field))
+                expected_value = "" if expected is None else str(expected)
+                if actual != expected_value:
+                    raise ValueError(
+                        f"Frozen hparam ranking {field} differs from canonical selection: {key[0]} / {key[1]}"
+                    )
+
+    resolved = []
+    selection_fields = ("rank", "checkpoint_path", "checkpoint_sha256")
+    if ranking_by_key:
+        for key, ranking_row in ranking_by_key.items():
+            selector = selectors_by_key.get(key)
+            if selector is None:
+                continue
+            derived, run = selector
+            if (
+                selection_split == "test"
+                and any(
+                    derived.get(field) not in (None, "") for field in ("rank", "checkpoint_path", "checkpoint_sha256")
+                )
+                and derived.get("checkpoint_sha256") in (None, "")
+            ):
+                raise ValueError(f"Test-selected candidate is missing frozen checkpoint_sha256: {key[0]} / {key[1]}")
+            for field in selection_fields:
+                value = derived.get(field)
+                if value in (None, ""):
+                    continue
+                expected = "" if ranking_row.get(field) is None else str(ranking_row.get(field))
+                if str(value) != expected:
+                    raise ValueError(
+                        f"Selected candidate {field} differs from frozen hparam selection: {key[0]} / {key[1]}"
+                    )
+            resolved.append({**derived, **run, **ranking_row, "status": workspace_by_key[key].get("status", "")})
+        if not resolved:
+            raise ValueError("No successful selected candidates remain after canonical selection filtering.")
+        selected = resolved if all_candidates else resolved[:top_k]
+    else:
+        ranked_rows = []
+        seen_ranks = set()
+        for key, (derived, run) in selectors_by_key.items():
+            row = {**derived, **run, "status": workspace_by_key[key].get("status", "")}
+            rank = row.get("rank")
+            try:
+                numeric_rank = float(rank)
+            except (TypeError, ValueError):
+                numeric_rank = math.nan
+            if (
+                isinstance(rank, bool)
+                or not math.isfinite(numeric_rank)
+                or not numeric_rank.is_integer()
+                or numeric_rank <= 0
+            ):
+                raise ValueError(
+                    f"Selected candidate rank must be a positive integer: {row['step_id']} / {row['run_id']}"
+                )
+            integer_rank = int(numeric_rank)
+            if integer_rank in seen_ranks:
+                raise ValueError(f"Selected candidate ranks must be unique: {integer_rank}")
+            seen_ranks.add(integer_rank)
+            ranked_rows.append((integer_rank, row))
+        ranked_rows.sort(key=lambda item: item[0])
+        selected = [row for _rank, row in ranked_rows]
+        if not all_candidates:
+            selected = selected[:top_k]
+
+    if selection_split == "test" and ranking_by_key:
+        # Physical I/O follows selection so an unused lower-rank checkpoint cannot block top-k postprocessing.
+        for row in selected:
+            key = managed_run_key(row)
+            canonical = workspace_by_key[key]
+            checkpoint_path = str(canonical.get("checkpoint_path") or "")
+            checkpoint_sha256 = str(canonical.get("checkpoint_sha256") or "")
+            evidence_row = {**owner_runs_by_key[key], **canonical}
+            owner_recipe = (
+                owner_plans_by_key[key].get("recipe") if isinstance(owner_plans_by_key[key].get("recipe"), dict) else {}
+            )
+            execution = owner_recipe.get("execution") if isinstance(owner_recipe.get("execution"), dict) else {}
+            for field in ("target", "host"):
+                if evidence_row.get(field) in (None, ""):
+                    evidence_row[field] = execution.get(field, "")
+            if evidence.checkpoint_file_sha256(evidence_row, checkpoint_path) != checkpoint_sha256:
+                raise ValueError(f"Frozen checkpoint SHA-256 differs: {checkpoint_path}")
+    return selected, owner_plans_by_key
 
 
 def _build_hparam_selection(
