@@ -267,6 +267,10 @@ External matrices use [`experiment-run`](../agent_contracts/experiment_pipeline.
 over [registered-ranking-selected checkpoints](../agent_contracts/experiment_pipeline.md#source-and-checkpoint-gates),
 with [managed attempts](../agent_contracts/experiment_pipeline.md#managed-attempts-and-results)
 and [completion gates](../agent_contracts/experiment_pipeline.md#completion-and-finalization).
+When internal cohorts must gate a candidate set, use the same command's
+[`cohort_selection` contract](../agent_contracts/experiment_pipeline.md#cohort-selection-and-report-only-boundary):
+complete the frozen candidate-by-selection-cohort matrix, freeze the
+internal-rank winner, and only then materialize external report-only jobs.
 Recurring follow-up starts from the workspace's
 [short heartbeat guidance](../agent_contracts/experiment_workspace.md#short-heartbeat-maintenance).
 

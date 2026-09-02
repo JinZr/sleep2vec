@@ -16,6 +16,7 @@ import yaml
 
 from . import (
     experiment_io as exp_io,
+    experiment_pipeline_cohort_selection as cohort_selection,
     experiment_pipeline_results as pipeline_results,
     managed_scheduler,
     run_artifacts as artifacts,
@@ -45,8 +46,8 @@ from .manifests import read_json, read_rows, utc_now
 from .models import is_full_git_object_id
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 
-SCHEMA_VERSION = 1
 PIPELINE_KIND = "external_matrix"
+COHORT_SELECTION_KIND = "cohort_selection"
 SOURCE_MANIFEST_SUCCESS_STATUSES = SUCCESS_STATUSES | {"skipped_test"}
 ACTIVE_STATUSES = {"launched", "running"}
 UNCERTAIN_STATUSES = pipeline_results.UNCERTAIN_STATUSES
@@ -66,8 +67,7 @@ class PipelineRegistrationRecoveryError(RuntimeError):
     pass
 
 
-_TOP_LEVEL_FIELDS = {
-    "schema_version",
+_COMMON_TOP_LEVEL_FIELDS = {
     "pipeline",
     "runtime",
     "execution",
@@ -76,6 +76,8 @@ _TOP_LEVEL_FIELDS = {
     "checkpoint_sources",
     "jobs",
 }
+_TOP_LEVEL_FIELDS = _COMMON_TOP_LEVEL_FIELDS | {"schema_version"}
+_COHORT_TOP_LEVEL_FIELDS = _COMMON_TOP_LEVEL_FIELDS | {"candidates", "selector"}
 _PIPELINE_FIELDS = {"id", "kind", "experiment_id", "step", "finalize"}
 _STEP_FIELDS = {"id", "phase", "purpose"}
 _RUNTIME_FIELDS = {
@@ -115,6 +117,10 @@ _JOB_FIELDS = {
     "variant",
     "label_name",
 }
+_COHORT_JOB_FIELDS = (_JOB_FIELDS - {"checkpoint_source"}) | {"role", "provenance"}
+_CANDIDATE_FIELDS = {"kind", "count"}
+_SELECTOR_FIELDS = {"strategy", "gates", "tie_breaker", "on_no_feasible"}
+_GATE_FIELDS = {"job", "metric", "mode", "threshold"}
 
 
 def run_experiment_pipeline(
@@ -149,11 +155,11 @@ def run_experiment_pipeline(
         source_plan = artifacts.read_hparam_plan(Path(source["plan"]))
         source_recipe = source_plan.get("recipe") if isinstance(source_plan.get("recipe"), dict) else {}
         source_execution = source_recipe.get("execution") if isinstance(source_recipe.get("execution"), dict) else {}
-        # Schema v1 reads source artifacts on the manager and has no SSH staging boundary.
+        # Managed pipeline schemas read source artifacts on the manager and have no SSH staging boundary.
         if str(source_execution.get("target") or "local") == "ssh":
             raise ValueError(
                 f"checkpoint_sources.{source_id}.plan uses an SSH execution target; "
-                "schema v1 external pipelines require local source plans."
+                "managed experiment pipelines require local source plans."
             )
 
     if not execute:
@@ -215,14 +221,21 @@ def run_experiment_pipeline(
 
 
 def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool | None) -> None:
-    _reject_unknown_fields(spec, _TOP_LEVEL_FIELDS, "spec")
-    if type(spec.get("schema_version")) is not int or spec["schema_version"] != SCHEMA_VERSION:
-        raise ValueError(f"schema_version must be {SCHEMA_VERSION}.")
+    raw_pipeline = spec.get("pipeline")
+    kind = raw_pipeline.get("kind") if isinstance(raw_pipeline, dict) else None
+    legacy_version = spec.get("schema_version")
+    if kind == PIPELINE_KIND and (type(legacy_version) is not int or legacy_version != 1):
+        raise ValueError("Legacy external_matrix specs require schema_version: 1.")
+    _reject_unknown_fields(
+        spec,
+        _COHORT_TOP_LEVEL_FIELDS if kind == COHORT_SELECTION_KIND else _TOP_LEVEL_FIELDS,
+        "spec",
+    )
     pipeline = _mapping(spec, "pipeline")
     _reject_unknown_fields(pipeline, _PIPELINE_FIELDS, "pipeline")
     pipeline_id = _required_slug(pipeline, "id", "pipeline")
-    if pipeline.get("kind") != PIPELINE_KIND:
-        raise ValueError(f"pipeline.kind must be {PIPELINE_KIND!r}.")
+    if kind not in {PIPELINE_KIND, COHORT_SELECTION_KIND}:
+        raise ValueError(f"pipeline.kind must be {PIPELINE_KIND!r} or {COHORT_SELECTION_KIND!r}.")
     _required_slug(pipeline, "experiment_id", "pipeline")
     step = _mapping(pipeline, "step")
     _reject_unknown_fields(step, _STEP_FIELDS, "pipeline.step")
@@ -232,7 +245,7 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
     if not str(step.get("purpose") or "").strip():
         raise ValueError("pipeline.step.purpose is required.")
     if pipeline.get("finalize") is not True:
-        raise ValueError("pipeline.finalize must be true in schema v1.")
+        raise ValueError("pipeline.finalize must be true.")
 
     runtime = _mapping(spec, "runtime")
     _reject_unknown_fields(runtime, _RUNTIME_FIELDS, "runtime")
@@ -259,11 +272,11 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
     if not is_full_git_object_id(runtime["runtime_commit"]):
         raise ValueError("runtime.runtime_commit must be a full lowercase 40-character Git commit ID.")
     if runtime.get("accelerator") != "gpu" or runtime.get("device") != "cuda":
-        raise ValueError("Schema v1 external evaluation requires GPU/CUDA runtime.")
+        raise ValueError("Managed evaluation pipelines require GPU/CUDA runtime.")
     if str(runtime.get("precision")) not in {"32", "32-true"}:
-        raise ValueError("Schema v1 external evaluation requires FP32 precision.")
+        raise ValueError("Managed evaluation pipelines require FP32 precision.")
     if type(runtime.get("batch_size")) is not int or runtime["batch_size"] != 128:
-        raise ValueError("Schema v1 external evaluation requires runtime.batch_size=128.")
+        raise ValueError("Managed evaluation pipelines require runtime.batch_size=128.")
     if isinstance(runtime.get("seed"), bool) or not isinstance(runtime.get("seed"), int):
         raise ValueError("runtime.seed must be an integer.")
 
@@ -273,7 +286,7 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
         scheduler = _mapping(execution, "scheduler")
         _reject_unknown_fields(scheduler, {"type"}, "execution.scheduler")
         if scheduler.get("type") != "direct":
-            raise ValueError("Schema v1 external evaluation supports only execution.scheduler.type=direct.")
+            raise ValueError("Managed evaluation pipeline supports only execution.scheduler.type=direct.")
     gpu_pool = execution.get("gpu_pool")
     if (
         not isinstance(gpu_pool, list)
@@ -284,7 +297,7 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
     if len(gpu_pool) != len(set(gpu_pool)):
         raise ValueError("execution.gpu_pool contains duplicate GPUs.")
     if type(execution.get("gpus_per_run")) is not int or execution["gpus_per_run"] != 1:
-        raise ValueError("Schema v1 requires execution.gpus_per_run=1.")
+        raise ValueError("Managed evaluation pipelines require execution.gpus_per_run=1.")
     max_concurrent = execution.get("max_concurrent")
     if (
         isinstance(max_concurrent, bool)
@@ -293,7 +306,7 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
     ):
         raise ValueError("execution.max_concurrent must be between 1 and the GPU pool size.")
     if type(execution.get("max_attempts")) is not int or execution["max_attempts"] != 2:
-        raise ValueError("Schema v1 requires execution.max_attempts=2.")
+        raise ValueError("Managed evaluation pipelines require execution.max_attempts=2.")
 
     evaluation = _mapping(spec, "evaluation_policy")
     _reject_unknown_fields(evaluation, _EVALUATION_FIELDS, "evaluation_policy")
@@ -341,6 +354,9 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
         if source.get("selection_mode") not in {"min", "max"}:
             raise ValueError(f"checkpoint_sources.{source_id}.selection_mode must be min or max.")
 
+    if kind == COHORT_SELECTION_KIND and len(sources) != 1:
+        raise ValueError("cohort_selection requires exactly one checkpoint source.")
+
     jobs = spec.get("jobs")
     if not isinstance(jobs, list) or not jobs:
         raise ValueError("jobs must be a non-empty list.")
@@ -348,14 +364,27 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
     for index, job in enumerate(jobs):
         if not isinstance(job, dict):
             raise ValueError(f"jobs[{index}] must be a mapping.")
-        _reject_unknown_fields(job, _JOB_FIELDS, f"jobs[{index}]")
+        _reject_unknown_fields(
+            job,
+            _COHORT_JOB_FIELDS if kind == COHORT_SELECTION_KIND else _JOB_FIELDS,
+            f"jobs[{index}]",
+        )
         job_id = _required_slug(job, "id", f"jobs[{index}]")
         if job_id in seen:
             raise ValueError(f"Duplicate external job id: {job_id}")
         seen.add(job_id)
-        source_id = str(job.get("checkpoint_source") or "")
-        if source_id not in sources:
-            raise ValueError(f"jobs[{index}].checkpoint_source is unknown: {source_id}")
+        if kind == PIPELINE_KIND:
+            source_id = str(job.get("checkpoint_source") or "")
+            if source_id not in sources:
+                raise ValueError(f"jobs[{index}].checkpoint_source is unknown: {source_id}")
+        else:
+            if job.get("role") not in {"selection", "report_only"}:
+                raise ValueError(f"jobs[{index}].role must be selection or report_only.")
+            if job.get("provenance") not in {"internal", "external"}:
+                raise ValueError(f"jobs[{index}].provenance must be internal or external.")
+            expected_provenance = "internal" if job["role"] == "selection" else "external"
+            if job["provenance"] != expected_provenance:
+                raise ValueError(f"jobs[{index}].provenance must be {expected_provenance} for {job['role']} jobs.")
         for field in ("cohort", "modality"):
             if not str(job.get(field) or "").strip():
                 raise ValueError(f"jobs[{index}].{field} is required.")
@@ -368,8 +397,76 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
         expected_workers = {"psg": 8, "bcg": 16}.get(str(job["modality"]).lower())
         if expected_workers is not None and workers != expected_workers:
             raise ValueError(f"jobs[{index}].num_workers must be {expected_workers} for {job['modality']} inference.")
+    if kind == COHORT_SELECTION_KIND:
+        _validate_cohort_selection_contract(spec)
     if not pipeline_id:
         raise AssertionError("validated pipeline id is empty")
+
+
+def _validate_cohort_selection_contract(spec: dict[str, Any]) -> None:
+    candidates = _mapping(spec, "candidates")
+    _reject_unknown_fields(candidates, _CANDIDATE_FIELDS, "candidates")
+    if candidates.get("kind") == "top_k":
+        count = candidates.get("count")
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            raise ValueError("candidates.count must be a positive integer for candidates.kind=top_k.")
+    elif candidates.get("kind") == "all":
+        if "count" in candidates:
+            raise ValueError("candidates.count is not allowed for candidates.kind=all.")
+    else:
+        raise ValueError("candidates.kind must be top_k or all.")
+
+    roles = {job["role"] for job in spec["jobs"]}
+    if roles != {"selection", "report_only"}:
+        raise ValueError("cohort_selection requires at least one selection and one report_only job.")
+    for first_index, first in enumerate(spec["jobs"]):
+        for second in spec["jobs"][first_index + 1 :]:
+            if first["role"] == second["role"]:
+                continue
+            if first["cohort"] == second["cohort"]:
+                raise ValueError("The same cohort cannot be both selection and report_only.")
+            if first["inference_preset_path"] == second["inference_preset_path"]:
+                raise ValueError("The same preset cannot be both selection and report_only.")
+
+    selector = _mapping(spec, "selector")
+    _reject_unknown_fields(selector, _SELECTOR_FIELDS, "selector")
+    expected = {
+        "strategy": "target_gate",
+        "tie_breaker": "internal_rank",
+        "on_no_feasible": "no_winner",
+    }
+    for field, value in expected.items():
+        if selector.get(field) != value:
+            raise ValueError(f"selector.{field} must be {value!r}.")
+    gates = selector.get("gates")
+    if not isinstance(gates, list) or not gates:
+        raise ValueError("selector.gates must be a non-empty list.")
+    jobs = {job["id"]: job for job in spec["jobs"]}
+    seen_gates = set()
+    referenced_jobs = set()
+    for index, gate in enumerate(gates):
+        if not isinstance(gate, dict):
+            raise ValueError(f"selector.gates[{index}] must be a mapping.")
+        _reject_unknown_fields(gate, _GATE_FIELDS, f"selector.gates[{index}]")
+        job_id = str(gate.get("job") or "")
+        metric = str(gate.get("metric") or "")
+        if job_id not in jobs or jobs[job_id]["role"] != "selection":
+            raise ValueError(f"selector.gates[{index}].job must identify a selection job.")
+        if not metric:
+            raise ValueError(f"selector.gates[{index}].metric is required.")
+        if gate.get("mode") not in {"min", "max"}:
+            raise ValueError(f"selector.gates[{index}].mode must be min or max.")
+        threshold = gate.get("threshold")
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold):
+            raise ValueError(f"selector.gates[{index}].threshold must be finite.")
+        identity = (job_id, metric)
+        if identity in seen_gates:
+            raise ValueError(f"Duplicate selector gate: {job_id} / {metric}")
+        seen_gates.add(identity)
+        referenced_jobs.add(job_id)
+    selection_jobs = {job["id"] for job in spec["jobs"] if job["role"] == "selection"}
+    if referenced_jobs != selection_jobs:
+        raise ValueError("Every selection job must contribute at least one selector gate.")
 
 
 def _validate_experiment(root: Path, spec: dict[str, Any], *, allow_completed: bool = False) -> dict[str, Any]:
@@ -393,7 +490,6 @@ def _freeze_pipeline(root: Path, pipeline_dir: Path, spec_file: Path, source_tex
     sources = _source_plan_snapshots(root, spec)
     resolved_text = yaml.safe_dump(spec, sort_keys=False)
     state = {
-        "schema_version": SCHEMA_VERSION,
         "pipeline_id": spec["pipeline"]["id"],
         "experiment_id": experiment["id"],
         "status": "waiting_for_sources",
@@ -406,6 +502,8 @@ def _freeze_pipeline(root: Path, pipeline_dir: Path, spec_file: Path, source_tex
         "created_at": utc_now(),
         "updated_at": utc_now(),
     }
+    if spec["pipeline"]["kind"] == PIPELINE_KIND:
+        state = {"schema_version": spec["schema_version"], **state}
     # Reserve controller ownership first so an interrupted freeze remains an unmaterialized pipeline blocker.
     commit_step_manifest(
         root,
@@ -445,6 +543,10 @@ def _validate_frozen_pipeline(pipeline_dir: Path, source_text: str, spec: dict[s
         "spec_resolved_sha256": _text_sha256(resolved_text),
         "runtime_commit": spec["runtime"]["runtime_commit"],
     }
+    if spec["pipeline"]["kind"] == PIPELINE_KIND:
+        expected = {"schema_version": spec["schema_version"], **expected}
+    elif "schema_version" in state:
+        raise ValueError("cohort_selection state must not contain schema_version.")
     for field, value in expected.items():
         if state.get(field) != value:
             raise ValueError(f"Frozen pipeline field drifted: {field}")
@@ -492,14 +594,27 @@ def _validate_frozen_pipeline(pipeline_dir: Path, source_text: str, spec: dict[s
             raise ValueError(f"Frozen external preset path drifted: {job['id']}")
         if preset.is_symlink() or not preset.is_file() or file_sha256(preset) != snapshot.get("sha256"):
             raise ValueError(f"Frozen external preset changed: {preset}")
-    checkpoints_path = pipeline_dir / "checkpoints.json"
-    if checkpoints_path.exists():
-        expected_hash = state.get("checkpoint_selection_sha256")
-        if isinstance(expected_hash, str) and file_sha256(checkpoints_path) != expected_hash:
+    selections_path = _selection_manifest_path(pipeline_dir, spec)
+    selection_hash_field = _selection_hash_field(spec)
+    if selections_path.exists():
+        expected_hash = state.get(selection_hash_field)
+        if isinstance(expected_hash, str) and file_sha256(selections_path) != expected_hash:
             raise ValueError("Frozen checkpoint selection manifest changed or was not committed.")
-        _read_frozen_selections(checkpoints_path, spec)
-    elif state.get("checkpoint_selection_sha256") not in (None, ""):
+        _read_frozen_selections(selections_path, spec)
+    elif state.get(selection_hash_field) not in (None, ""):
         raise ValueError("Frozen checkpoint selection manifest is missing.")
+    if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
+        decision_artifacts = {
+            "cohort_ranking_sha256": pipeline_dir / "cohort_selection_ranking.csv",
+            "cohort_winner_sha256": pipeline_dir / "cohort_selection_winner.json",
+        }
+        bound = [state.get(field) for field in decision_artifacts]
+        if any(value not in (None, "") for value in bound):
+            if any(not isinstance(value, str) or not value for value in bound):
+                raise ValueError("Frozen cohort-selection decision bindings are incomplete.")
+            for field, path in decision_artifacts.items():
+                if path.is_symlink() or not path.is_file() or file_sha256(path) != state[field]:
+                    raise ValueError(f"Frozen cohort-selection decision changed: {path}")
     return state
 
 
@@ -534,6 +649,15 @@ def _preset_snapshots(spec: dict[str, Any]) -> list[dict[str, str]]:
         if preset.is_symlink() or not preset.is_file():
             raise ValueError(f"External preset is missing or aliased: {preset}")
         snapshots.append({"job_id": job["id"], "path": str(preset), "sha256": file_sha256(preset)})
+    if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
+        jobs = {job["id"]: job for job in spec["jobs"]}
+        for first_index, first in enumerate(snapshots):
+            for second in snapshots[first_index + 1 :]:
+                if (
+                    jobs[first["job_id"]]["role"] != jobs[second["job_id"]]["role"]
+                    and first["sha256"] == second["sha256"]
+                ):
+                    raise ValueError("The same preset bytes cannot be both selection and report_only.")
     return snapshots
 
 
@@ -617,6 +741,15 @@ def _execute_pipeline(
             break
         time.sleep(poll_seconds)
 
+    if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
+        return _execute_cohort_selection(
+            root,
+            pipeline_dir,
+            spec,
+            poll_seconds=poll_seconds,
+            finalize_callback=finalize_callback,
+        )
+
     selections = _load_or_freeze_selections(root, pipeline_dir, spec)
     attempts = _load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
     _update_state(pipeline_dir, status="running_external", missing_pid_blocker=None)
@@ -678,6 +811,14 @@ def _finalize_completed_pipeline(
             raise ValueError(f"Completed pipeline artifact is outside its pipeline directory: {path}") from exc
         if path.is_symlink() or not path.is_file() or file_sha256(path) != expected_hash:
             raise ValueError(f"Completed pipeline artifact changed: {path}")
+    if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
+        return _finalize_completed_cohort_selection(
+            root,
+            pipeline_dir,
+            spec,
+            report,
+            finalize_callback,
+        )
     selections = _load_or_freeze_selections(root, pipeline_dir, spec)
     attempts = read_rows(pipeline_dir / "jobs.tsv", require_managed_identity=True)
     _validate_attempt_rows(root, pipeline_dir, spec, selections, attempts)
@@ -700,40 +841,381 @@ def _finalize_completed_pipeline(
     }
 
 
+def _execute_cohort_selection(
+    root: Path,
+    pipeline_dir: Path,
+    spec: dict[str, Any],
+    *,
+    poll_seconds: float,
+    finalize_callback: Callable[[str | Path, str | Path], Path] | None,
+) -> dict[str, Any]:
+    candidates = _load_or_freeze_selections(root, pipeline_dir, spec)
+    selection_spec = _cohort_phase_spec(
+        spec,
+        pipeline_dir,
+        "selection",
+        cohort_selection.build_phase_jobs(spec, candidates, role="selection"),
+    )
+    selection_result = _execute_cohort_phase(
+        root,
+        pipeline_dir,
+        selection_spec,
+        candidates,
+        poll_seconds=poll_seconds,
+        controller_spec=spec,
+    )
+    if selection_result["status"] != "completed":
+        _update_state(
+            pipeline_dir,
+            status=selection_result["status"],
+            selection_jobs=selection_result["jobs"],
+            missing_pid_blocker=selection_result.get("missing_pid_blocker"),
+        )
+        return selection_result
+
+    _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
+    evidence = pipeline_results.selection_evidence(
+        pipeline_dir / "phases" / "selection",
+        selection_spec,
+        candidates,
+    )
+    _ranking, decision = _load_or_freeze_cohort_decision(root, pipeline_dir, spec, candidates, evidence)
+    winner = decision["winner"]
+    if winner is None:
+        report = _write_no_winner_report(pipeline_dir, decision)
+        _update_state(
+            pipeline_dir,
+            status="failed",
+            failed_at=utc_now(),
+            failure="no_feasible_candidate",
+            final_report=str(report),
+            result_artifacts={str(report): file_sha256(report)},
+            selection_jobs=selection_result["jobs"],
+        )
+        return {
+            "status": "failed",
+            "pipeline_id": spec["pipeline"]["id"],
+            "pipeline_dir": str(pipeline_dir),
+            "report": str(report),
+            "jobs": selection_result["jobs"],
+        }
+
+    report_spec = _cohort_phase_spec(
+        spec,
+        pipeline_dir,
+        "report_only",
+        cohort_selection.build_phase_jobs(
+            spec,
+            candidates,
+            role="report_only",
+            winner_id=str(winner["candidate_id"]),
+        ),
+    )
+    report_result = _execute_cohort_phase(
+        root,
+        pipeline_dir,
+        report_spec,
+        candidates,
+        poll_seconds=poll_seconds,
+        controller_spec=spec,
+    )
+    if report_result["status"] != "completed":
+        _update_state(
+            pipeline_dir,
+            status=report_result["status"],
+            selection_jobs=selection_result["jobs"],
+            report_only_jobs=report_result["jobs"],
+            missing_pid_blocker=report_result.get("missing_pid_blocker"),
+        )
+        return report_result
+
+    _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
+    _validate_cohort_decision(pipeline_dir, spec, candidates, evidence)
+    report = pipeline_results.write_cohort_result_summary(
+        pipeline_dir,
+        spec,
+        candidates,
+        winner,
+        selection_spec,
+        report_spec,
+    )
+    result_paths = [
+        pipeline_dir / "results.csv",
+        pipeline_dir / "metrics.csv",
+        pipeline_dir / "summary.md",
+        report,
+    ]
+    all_jobs = [*selection_result["jobs"], *report_result["jobs"]]
+    _update_state(
+        pipeline_dir,
+        status="completed",
+        completed_at=utc_now(),
+        final_report=str(report),
+        result_artifacts={str(path): file_sha256(path) for path in result_paths},
+        selection_jobs=selection_result["jobs"],
+        report_only_jobs=report_result["jobs"],
+    )
+    append_event(root, "pipeline_completed", {"pipeline_id": spec["pipeline"]["id"], "report": str(report)})
+    if spec["pipeline"]["finalize"]:
+        if finalize_callback is None:
+            raise RuntimeError("Pipeline finalization callback is unavailable.")
+        finalize_callback(root, report)
+    return {
+        "status": "completed",
+        "pipeline_id": spec["pipeline"]["id"],
+        "pipeline_dir": str(pipeline_dir),
+        "report": str(report),
+        "jobs": all_jobs,
+    }
+
+
+def _execute_cohort_phase(
+    root: Path,
+    pipeline_dir: Path,
+    phase_spec: dict[str, Any],
+    candidates: dict[str, dict[str, Any]],
+    *,
+    poll_seconds: float,
+    controller_spec: dict[str, Any],
+) -> dict[str, Any]:
+    phase = str(phase_spec["_execution_stage"])
+    phase_dir = pipeline_dir / "phases" / phase
+    attempts = _load_or_create_initial_attempts(root, phase_dir, phase_spec, candidates)
+    _update_state(pipeline_dir, status=f"running_{phase}", missing_pid_blocker=None)
+    return _run_attempts(
+        root,
+        phase_dir,
+        phase_spec,
+        candidates,
+        attempts,
+        poll_seconds=poll_seconds,
+        frozen_pipeline_dir=pipeline_dir,
+        frozen_spec=controller_spec,
+        state_dir=pipeline_dir,
+    )
+
+
+def _cohort_phase_spec(
+    spec: dict[str, Any], pipeline_dir: Path, phase: str, jobs: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return {
+        **spec,
+        "jobs": jobs,
+        "_execution_stage": phase,
+        "_controller_dir": str(pipeline_dir),
+    }
+
+
+def _load_or_freeze_cohort_decision(
+    root: Path,
+    pipeline_dir: Path,
+    spec: dict[str, Any],
+    candidates: dict[str, dict[str, Any]],
+    evidence: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    ranking, decision, artifacts_by_field = _cohort_decision_artifacts(pipeline_dir, spec, candidates, evidence)
+    for path, text in artifacts_by_field.values():
+        if path.exists():
+            if path.is_symlink() or not path.is_file() or path.read_text() != text:
+                raise ValueError(f"Frozen cohort-selection decision changed: {path}")
+        else:
+            _atomic_write_text(path, text)
+    hashes = {field: file_sha256(path) for field, (path, _text) in artifacts_by_field.items()}
+    state = read_json(pipeline_dir / "pipeline.json")
+    for field, value in hashes.items():
+        if state.get(field) not in (None, "", value):
+            raise ValueError(f"Frozen cohort-selection decision hash changed: {field}")
+    if any(state.get(field) in (None, "") for field in hashes):
+        _update_state(pipeline_dir, **hashes, cohort_selected_at=utc_now())
+    winner = decision["winner"]
+    _reconcile_pipeline_event(
+        root,
+        "pipeline_cohort_selected",
+        {
+            "pipeline_id": spec["pipeline"]["id"],
+            "winner": winner["candidate_id"] if winner is not None else None,
+        },
+        identity_fields=("pipeline_id",),
+    )
+    return ranking, decision
+
+
+def _validate_cohort_decision(
+    pipeline_dir: Path,
+    spec: dict[str, Any],
+    candidates: dict[str, dict[str, Any]],
+    evidence: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    ranking, decision, artifacts_by_field = _cohort_decision_artifacts(pipeline_dir, spec, candidates, evidence)
+    state = read_json(pipeline_dir / "pipeline.json")
+    for field, (path, text) in artifacts_by_field.items():
+        if path.is_symlink() or not path.is_file() or path.read_text() != text or state.get(field) != file_sha256(path):
+            raise ValueError(f"Frozen cohort-selection decision changed: {path}")
+    return ranking, decision
+
+
+def _cohort_decision_artifacts(
+    pipeline_dir: Path,
+    spec: dict[str, Any],
+    candidates: dict[str, dict[str, Any]],
+    evidence: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, tuple[Path, str]]]:
+    ranking, decision = cohort_selection.rank_candidates(spec, candidates, evidence)
+    ranking_path = pipeline_dir / "cohort_selection_ranking.csv"
+    return (
+        ranking,
+        decision,
+        {
+            "cohort_ranking_sha256": (
+                ranking_path,
+                pipeline_results.render_rows(ranking_path, ranking),
+            ),
+            "cohort_winner_sha256": (
+                pipeline_dir / "cohort_selection_winner.json",
+                json.dumps(decision, indent=2, sort_keys=True) + "\n",
+            ),
+        },
+    )
+
+
+def _write_no_winner_report(pipeline_dir: Path, decision: dict[str, Any]) -> Path:
+    lines = [
+        "# Cohort Selection Pipeline",
+        "",
+        "Status: failed (no feasible candidate)",
+        "",
+        "No candidate passed every frozen target gate. Report-only jobs were not materialized.",
+        "",
+        "| Candidate | Internal rank | Failed gates |",
+        "|---|---:|---|",
+    ]
+    for candidate in decision["candidates"]:
+        failed = ", ".join(candidate["failed_gates"]) or "none"
+        lines.append(f"| {candidate['candidate_id']} | {candidate['source_rank']} | {failed} |")
+    report = pipeline_dir / "selection_failure.md"
+    _atomic_write_text(report, "\n".join(lines) + "\n")
+    return report
+
+
+def _finalize_completed_cohort_selection(
+    root: Path,
+    pipeline_dir: Path,
+    spec: dict[str, Any],
+    report: Path,
+    finalize_callback: Callable[[str | Path, str | Path], Path] | None,
+) -> dict[str, Any]:
+    candidates = _load_or_freeze_selections(root, pipeline_dir, spec)
+    selection_spec = _cohort_phase_spec(
+        spec,
+        pipeline_dir,
+        "selection",
+        cohort_selection.build_phase_jobs(spec, candidates, role="selection"),
+    )
+    selection_dir = pipeline_dir / "phases" / "selection"
+    selection_jobs = _validated_completed_phase(root, selection_dir, selection_spec, candidates)
+    evidence = pipeline_results.selection_evidence(selection_dir, selection_spec, candidates)
+    _ranking, decision = _validate_cohort_decision(pipeline_dir, spec, candidates, evidence)
+    winner = decision["winner"]
+    if winner is None:
+        raise ValueError("A completed cohort-selection pipeline must have a frozen winner.")
+
+    report_spec = _cohort_phase_spec(
+        spec,
+        pipeline_dir,
+        "report_only",
+        cohort_selection.build_phase_jobs(
+            spec,
+            candidates,
+            role="report_only",
+            winner_id=str(winner["candidate_id"]),
+        ),
+    )
+    report_dir = pipeline_dir / "phases" / "report_only"
+    report_jobs = _validated_completed_phase(root, report_dir, report_spec, candidates)
+
+    experiment = _validate_experiment(root, spec, allow_completed=True)
+    if experiment.get("status") != "completed":
+        if finalize_callback is None:
+            raise RuntimeError("Pipeline finalization callback is unavailable.")
+        finalize_callback(root, report)
+    return {
+        "status": "completed",
+        "pipeline_id": spec["pipeline"]["id"],
+        "pipeline_dir": str(pipeline_dir),
+        "report": str(report),
+        "jobs": [*selection_jobs, *report_jobs],
+    }
+
+
+def _validated_completed_phase(
+    root: Path,
+    phase_dir: Path,
+    phase_spec: dict[str, Any],
+    candidates: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    attempts = read_rows(phase_dir / "jobs.tsv", require_managed_identity=True)
+    _validate_attempt_rows(root, phase_dir, phase_spec, candidates, attempts)
+    logical = _logical_job_states(phase_spec, attempts)
+    if any(job["status"] != "completed" for job in logical) or any(
+        row.get("status") in ACTIVE_STATUSES | UNCERTAIN_STATUSES for row in attempts
+    ):
+        phase = phase_spec["_execution_stage"]
+        raise ValueError(f"Completed cohort-selection pipeline has an incomplete {phase} matrix.")
+    return logical
+
+
 def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    path = pipeline_dir / "checkpoints.json"
+    path = _selection_manifest_path(pipeline_dir, spec)
+    hash_field = _selection_hash_field(spec)
     if path.exists():
         selections = _read_frozen_selections(path, spec)
         state = read_json(pipeline_dir / "pipeline.json")
-        if state.get("checkpoint_selection_sha256") in (None, ""):
+        if state.get(hash_field) in (None, ""):
             derived = _select_checkpoint_sources(root, spec)
             if list(selections.values()) != derived:
                 raise ValueError("Uncommitted checkpoint selection differs from validation-derived selection.")
+            selected_at_field = (
+                "candidates_selected_at"
+                if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
+                else "checkpoint_selected_at"
+            )
             _update_state(
                 pipeline_dir,
-                checkpoint_selection_sha256=file_sha256(path),
-                checkpoint_selected_at=read_json(path).get("created_at"),
+                **{hash_field: file_sha256(path)},
+                **{selected_at_field: read_json(path).get("created_at")},
             )
         return selections
 
     frozen = _select_checkpoint_sources(root, spec)
+    cohort_kind = spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
     payload = {
         "pipeline_id": spec["pipeline"]["id"],
         "created_at": utc_now(),
-        "sources": frozen,
+        "candidates" if cohort_kind else "sources": frozen,
     }
+    if cohort_kind:
+        candidate_scope = spec["candidates"]
+        payload["candidate_scope"] = {
+            "kind": candidate_scope["kind"],
+            "requested_count": candidate_scope.get("count"),
+            "realized_count": len(frozen),
+        }
     _atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     _update_state(
         pipeline_dir,
-        checkpoint_selection_sha256=file_sha256(path),
-        checkpoint_selected_at=payload["created_at"],
+        **{hash_field: file_sha256(path)},
+        **{"candidates_selected_at" if cohort_kind else "checkpoint_selected_at": payload["created_at"]},
     )
     append_event(
         root,
-        "pipeline_checkpoints_frozen",
-        {"pipeline_id": spec["pipeline"]["id"], "source_count": len(frozen)},
+        "pipeline_candidates_frozen" if cohort_kind else "pipeline_checkpoints_frozen",
+        {
+            "pipeline_id": spec["pipeline"]["id"],
+            "candidate_count" if cohort_kind else "source_count": len(frozen),
+        },
     )
-    return {item["source_id"]: item for item in frozen}
+    key = "candidate_id" if cohort_kind else "source_id"
+    return {str(item[key]): item for item in frozen}
 
 
 def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[dict[str, Any]]:
@@ -745,56 +1227,84 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[dict[st
         recipe = plan["recipe"]
         step_id = str(recipe["step"]["id"])
         select_hparam_candidates(plan_dir, source["selection_metric"], source["selection_mode"])
-        candidates, _owner_plans = resolve_hparam_candidates(plan_dir, plan["runs"], top_k=1)
-        row = candidates[0]
-        config = Path(str(row.get("config") or ""))
-        checkpoint = Path(str(row.get("checkpoint_path") or ""))
-        if config.is_symlink() or not config.is_file():
-            raise ValueError(f"Selected config is not a regular file: {config}")
-        if checkpoint.is_symlink() or not checkpoint.is_file():
-            raise ValueError(f"Selected checkpoint is not a regular file: {checkpoint}")
-        checkpoint_dir = Path(str(row.get("checkpoint_dir") or ""))
-        if checkpoint.parent != checkpoint_dir or checkpoint_dir.is_symlink():
-            raise ValueError(f"Selected checkpoint is outside its frozen checkpoint directory: {checkpoint}")
-        exp_io.validate_managed_output_paths(checkpoint_dir, [checkpoint])
-        config_sha256 = file_sha256(config)
-        checkpoint_sha256 = file_sha256(checkpoint)
-        if config_sha256 != row.get("config_sha256"):
-            raise ValueError(f"Frozen config SHA-256 differs for source {source_id}: {config}")
-        if checkpoint_sha256 != row.get("checkpoint_sha256"):
-            raise ValueError(f"Frozen checkpoint SHA-256 differs for source {source_id}: {checkpoint}")
-        config_payload = read_managed_yaml_mapping(config.read_text(), source=f"Selected config {config}")
-        averaging_paths = _mapping_key_paths(config_payload, "model_averaging")
-        if policy["require_no_model_averaging"] and averaging_paths:
-            raise ValueError(f"Selected config contains model_averaging: {', '.join(averaging_paths)}")
-        label_name = str((recipe.get("inputs") or {}).get("label_name") or "")
-        checkpoint_evidence = _validate_checkpoint_payload(checkpoint, label_name, policy)
-        score = artifacts.float_or_none(row.get("score"))
-        if score is None or not math.isfinite(score):
-            raise ValueError(f"Selected validation score is not finite for source {source_id}.")
-        selection = {
-            "source_id": source_id,
-            "plan": str(plan_dir),
-            "step_id": step_id,
-            "run_id": str(row["run_id"]),
-            "run_name": str(row.get("run_name") or ""),
-            "selection_metric": source["selection_metric"],
-            "selection_mode": source["selection_mode"],
-            "score": score,
-            "config": str(config),
-            "config_sha256": config_sha256,
-            "checkpoint": str(checkpoint),
-            "checkpoint_sha256": checkpoint_sha256,
-            "variant": str(recipe.get("variant") or ""),
-            "label_name": label_name,
-            "source_task": label_name,
-            "source_plan_task": str(recipe.get("task") or ""),
-            "inference_task": "infer",
-            **checkpoint_evidence,
-        }
-        _assert_job_semantic_assertions(spec, source_id, selection)
-        frozen.append(selection)
+        if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
+            candidate_scope = spec["candidates"]
+            resolver_args = (
+                {"top_k": candidate_scope["count"]} if candidate_scope["kind"] == "top_k" else {"all_candidates": True}
+            )
+        else:
+            resolver_args = {"top_k": 1}
+        candidates, _owner_plans = resolve_hparam_candidates(plan_dir, plan["runs"], **resolver_args)
+        for row in candidates:
+            selection = _freeze_checkpoint_candidate(spec, source_id, source, plan_dir, step_id, recipe, row, policy)
+            if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
+                source_rank = int(row["rank"])
+                selection = {
+                    **selection,
+                    "candidate_id": f"{source_id}-rank-{source_rank:03d}",
+                    "source_rank": source_rank,
+                }
+            frozen.append(selection)
     return frozen
+
+
+def _freeze_checkpoint_candidate(
+    spec: dict[str, Any],
+    source_id: str,
+    source: dict[str, Any],
+    plan_dir: Path,
+    step_id: str,
+    recipe: dict[str, Any],
+    row: dict[str, Any],
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    config = Path(str(row.get("config") or ""))
+    checkpoint = Path(str(row.get("checkpoint_path") or ""))
+    if config.is_symlink() or not config.is_file():
+        raise ValueError(f"Selected config is not a regular file: {config}")
+    if checkpoint.is_symlink() or not checkpoint.is_file():
+        raise ValueError(f"Selected checkpoint is not a regular file: {checkpoint}")
+    checkpoint_dir = Path(str(row.get("checkpoint_dir") or ""))
+    if checkpoint.parent != checkpoint_dir or checkpoint_dir.is_symlink():
+        raise ValueError(f"Selected checkpoint is outside its frozen checkpoint directory: {checkpoint}")
+    exp_io.validate_managed_output_paths(checkpoint_dir, [checkpoint])
+    config_sha256 = file_sha256(config)
+    checkpoint_sha256 = file_sha256(checkpoint)
+    if config_sha256 != row.get("config_sha256"):
+        raise ValueError(f"Frozen config SHA-256 differs for source {source_id}: {config}")
+    if checkpoint_sha256 != row.get("checkpoint_sha256"):
+        raise ValueError(f"Frozen checkpoint SHA-256 differs for source {source_id}: {checkpoint}")
+    config_payload = read_managed_yaml_mapping(config.read_text(), source=f"Selected config {config}")
+    averaging_paths = _mapping_key_paths(config_payload, "model_averaging")
+    if policy["require_no_model_averaging"] and averaging_paths:
+        raise ValueError(f"Selected config contains model_averaging: {', '.join(averaging_paths)}")
+    label_name = str((recipe.get("inputs") or {}).get("label_name") or "")
+    checkpoint_evidence = _validate_checkpoint_payload(checkpoint, label_name, policy)
+    score = artifacts.float_or_none(row.get("score"))
+    if score is None or not math.isfinite(score):
+        raise ValueError(f"Selected validation score is not finite for source {source_id}.")
+    selection = {
+        "source_id": source_id,
+        "plan": str(plan_dir),
+        "step_id": step_id,
+        "run_id": str(row["run_id"]),
+        "run_name": str(row.get("run_name") or ""),
+        "selection_metric": source["selection_metric"],
+        "selection_mode": source["selection_mode"],
+        "score": score,
+        "config": str(config),
+        "config_sha256": config_sha256,
+        "checkpoint": str(checkpoint),
+        "checkpoint_sha256": checkpoint_sha256,
+        "variant": str(recipe.get("variant") or ""),
+        "label_name": label_name,
+        "source_task": label_name,
+        "source_plan_task": str(recipe.get("task") or ""),
+        "inference_task": "infer",
+        **checkpoint_evidence,
+    }
+    _assert_job_semantic_assertions(spec, source_id, selection)
+    return selection
 
 
 def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -803,14 +1313,36 @@ def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[
     payload = read_json(path)
     if not isinstance(payload, dict) or payload.get("pipeline_id") != spec["pipeline"]["id"]:
         raise ValueError(f"Frozen checkpoint selection manifest has the wrong pipeline id: {path}")
-    selections = payload.get("sources")
+    cohort_kind = spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
+    selections = payload.get("candidates" if cohort_kind else "sources")
     if not isinstance(selections, list) or any(not isinstance(item, dict) for item in selections):
         raise ValueError(f"Frozen checkpoint selections are malformed: {path}")
-    by_id = {str(item.get("source_id") or ""): item for item in selections}
-    if len(by_id) != len(selections) or set(by_id) != set(spec["checkpoint_sources"]):
+    key_field = "candidate_id" if cohort_kind else "source_id"
+    by_id = {str(item.get(key_field) or ""): item for item in selections}
+    if len(by_id) != len(selections):
+        raise ValueError("Frozen checkpoint selection identities are duplicated or empty.")
+    if not cohort_kind and set(by_id) != set(spec["checkpoint_sources"]):
         raise ValueError("Frozen checkpoint source identities differ from the pipeline spec.")
-    for source_id, source in spec["checkpoint_sources"].items():
-        selection = by_id[source_id]
+    if cohort_kind:
+        scope = payload.get("candidate_scope")
+        expected_scope = spec["candidates"]
+        if not isinstance(scope, dict) or scope.get("kind") != expected_scope["kind"]:
+            raise ValueError("Frozen candidate scope differs from the pipeline spec.")
+        if scope.get("requested_count") != expected_scope.get("count") or scope.get("realized_count") != len(
+            selections
+        ):
+            raise ValueError("Frozen candidate scope counts differ from the pipeline spec.")
+        source_id = next(iter(spec["checkpoint_sources"]))
+        ranks = [item.get("source_rank") for item in selections]
+        if any(isinstance(rank, bool) or not isinstance(rank, int) or rank <= 0 for rank in ranks):
+            raise ValueError("Frozen candidate ranks must be positive integers.")
+        if len(set(ranks)) != len(ranks) or any(item.get("source_id") != source_id for item in selections):
+            raise ValueError("Frozen candidate source identities or ranks are invalid.")
+    for selection in selections:
+        source_id = str(selection.get("source_id") or "")
+        source = spec["checkpoint_sources"].get(source_id)
+        if source is None:
+            raise ValueError("Frozen checkpoint source identities differ from the pipeline spec.")
         expected = {
             "plan": str(source["plan"]),
             "selection_metric": source["selection_metric"],
@@ -834,6 +1366,19 @@ def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[
                 raise ValueError(f"Frozen selected {path_field} changed: {selected_path}")
         _assert_job_semantic_assertions(spec, source_id, selection)
     return by_id
+
+
+def _selection_manifest_path(pipeline_dir: Path, spec: dict[str, Any]) -> Path:
+    name = "candidates.json" if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND else "checkpoints.json"
+    return pipeline_dir / name
+
+
+def _selection_hash_field(spec: dict[str, Any]) -> str:
+    return (
+        "candidate_selection_sha256"
+        if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
+        else "checkpoint_selection_sha256"
+    )
 
 
 def _validate_checkpoint_payload(checkpoint: Path, label_name: str, policy: dict[str, Any]) -> dict[str, Any]:
@@ -868,7 +1413,7 @@ def _assert_job_semantic_assertions(spec: dict[str, Any], source_id: str, select
         "label_name": selection["label_name"],
     }
     for job in spec["jobs"]:
-        if job["checkpoint_source"] != source_id:
+        if spec["pipeline"]["kind"] == PIPELINE_KIND and job["checkpoint_source"] != source_id:
             continue
         for field, value in expected.items():
             assertion = job.get(field)
@@ -899,7 +1444,7 @@ def _load_or_create_initial_attempts(
 
     recipes = []
     for job in spec["jobs"]:
-        selection = selections[job["checkpoint_source"]]
+        selection = cohort_selection.candidate_for_job(job, selections)
         attempt = 1
         recipe, recipe_path, plan_dir, result_root = _attempt_recipe(pipeline_dir, spec, job, selection, attempt)
         _freeze_attempt_recipe(
@@ -957,7 +1502,11 @@ def _load_or_create_initial_attempts(
 
 def _reconcile_pipeline_jobs_planned_event(root: Path, spec: dict[str, Any]) -> None:
     payload = {"pipeline_id": spec["pipeline"]["id"], "job_count": len(spec["jobs"])}
-    _reconcile_pipeline_event(root, "pipeline_jobs_planned", payload, identity_fields=("pipeline_id",))
+    identity_fields = ("pipeline_id",)
+    if spec.get("_execution_stage"):
+        payload["phase"] = spec["_execution_stage"]
+        identity_fields = ("pipeline_id", "phase")
+    _reconcile_pipeline_event(root, "pipeline_jobs_planned", payload, identity_fields=identity_fields)
 
 
 def _reconcile_pipeline_retry_planned_event(root: Path, spec: dict[str, Any], attempt: dict[str, Any]) -> None:
@@ -966,11 +1515,15 @@ def _reconcile_pipeline_retry_planned_event(root: Path, spec: dict[str, Any], at
         "job_id": str(attempt["job_id"]),
         "attempt": int(attempt["attempt"]),
     }
+    identity_fields = ("pipeline_id", "job_id", "attempt")
+    if spec.get("_execution_stage"):
+        payload["phase"] = spec["_execution_stage"]
+        identity_fields = ("pipeline_id", "phase", "job_id", "attempt")
     _reconcile_pipeline_event(
         root,
         "pipeline_job_retry_planned",
         payload,
-        identity_fields=("pipeline_id", "job_id", "attempt"),
+        identity_fields=identity_fields,
     )
 
 
@@ -1340,7 +1893,8 @@ def _attempt_recipe(
     plan_dir = pipeline_dir / "plans" / job["id"] / attempt_name
     result_root = pipeline_dir / "results" / job["id"] / attempt_name
     runtime = spec["runtime"]
-    experiment_path = pipeline_dir.parent.parent / "experiment.yaml"
+    controller_dir = Path(str(spec.get("_controller_dir") or pipeline_dir))
+    experiment_path = controller_dir.parent.parent / "experiment.yaml"
     experiment_manifest = read_managed_yaml_mapping(
         experiment_path.read_text(), source=f"Managed experiment manifest {experiment_path}"
     )["experiment"]
@@ -1406,7 +1960,7 @@ def _attempt_projection(
     recipe_path: Path,
     plan_dir: Path,
 ) -> dict[str, Any]:
-    return {
+    projection = {
         "step_id": run["step_id"],
         "run_id": run["run_id"],
         "pipeline_id": run["pipeline_id"],
@@ -1431,6 +1985,10 @@ def _attempt_projection(
         "plan_dir": str(plan_dir),
         "runtime_commit": "",
     }
+    for field in ("candidate_id", "job_template_id", "role", "provenance"):
+        if field in job:
+            projection[field] = job[field]
+    return projection
 
 
 def _validate_attempt_rows(
@@ -1462,7 +2020,7 @@ def _validate_attempt_rows(
             raise ValueError(f"Pipeline attempt identity is invalid or duplicated: {job_id} / {attempt}")
         seen_attempts.add(attempt_key)
         job = jobs[job_id]
-        selection = selections[job["checkpoint_source"]]
+        selection = cohort_selection.candidate_for_job(job, selections)
         expected = {
             "pipeline_id": spec["pipeline"]["id"],
             "checkpoint_source": job["checkpoint_source"],
@@ -1480,6 +2038,9 @@ def _validate_attempt_rows(
             "recipe": str(pipeline_dir / "recipes" / job_id / f"attempt-{attempt:03d}.yaml"),
             "plan_dir": str(pipeline_dir / "plans" / job_id / f"attempt-{attempt:03d}"),
         }
+        for field in ("candidate_id", "job_template_id", "role", "provenance"):
+            if field in job:
+                expected[field] = job[field]
         for field, value in expected.items():
             if str(row.get(field) or "") != str(value):
                 raise ValueError(f"Pipeline attempt field drifted: {job_id}.{field}")
@@ -1601,12 +2162,22 @@ def _run_attempts(
     attempts: list[dict[str, Any]],
     *,
     poll_seconds: float,
+    frozen_pipeline_dir: Path | None = None,
+    frozen_spec: dict[str, Any] | None = None,
+    state_dir: Path | None = None,
 ) -> dict[str, Any]:
     jobs_path = pipeline_dir / "jobs.tsv"
     execution = _pipeline_execution(spec)
     runtime = {"devices": [0]}
+    controller_dir = frozen_pipeline_dir or pipeline_dir
+    controller_spec = frozen_spec or spec
+    controller_state_dir = state_dir or controller_dir
     while True:
-        _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
+        _validate_frozen_pipeline(
+            controller_dir,
+            (controller_dir / "spec.source.yaml").read_text(),
+            controller_spec,
+        )
         attempts = read_rows(jobs_path, require_managed_identity=True)
         _validate_attempt_rows(root, pipeline_dir, spec, selections, attempts)
         groups: list[tuple[Path, list[dict[str, Any]]]] = []
@@ -1656,7 +2227,11 @@ def _run_attempts(
             and str(row.get("verified") or "").lower() != "true"
             for row in attempts
         ):
-            _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
+            _validate_frozen_pipeline(
+                controller_dir,
+                (controller_dir / "spec.source.yaml").read_text(),
+                controller_spec,
+            )
         changed = False
         for row in attempts:
             key = managed_run_key(row)
@@ -1718,7 +2293,9 @@ def _run_attempts(
             independent_active = any(row.get("status") in ACTIVE_STATUSES | {"planned", "pending"} for row in attempts)
             if not independent_active:
                 raise
-            _update_state(pipeline_dir, status="running_external", retry_preparation_error=str(exc))
+            phase = spec.get("_execution_stage")
+            status = f"running_{phase}" if phase else "running_external"
+            _update_state(controller_state_dir, status=status, retry_preparation_error=str(exc))
             time.sleep(poll_seconds)
             continue
         if retry_created:
@@ -1820,7 +2397,7 @@ def _create_needed_retries(
         ):
             continue
         job = jobs[job_id]
-        selection = selections[job["checkpoint_source"]]
+        selection = cohort_selection.candidate_for_job(job, selections)
         attempt = int(latest["attempt"]) + 1
         recipe, recipe_path, plan_dir, result_root = _attempt_recipe(pipeline_dir, spec, job, selection, attempt)
         _freeze_attempt_recipe(recipe, recipe_path, drift_message="Retry recipe changed during resume")

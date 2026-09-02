@@ -1,8 +1,9 @@
-# External Evaluation Pipeline Contract
+# Managed Evaluation Pipeline Contract
 
-`experiment-run` is the explicit, resumable owner for the standard workflow
-that waits for managed hparam sources, freezes checkpoints selected by their registered rankings,
-runs an external-evaluation matrix, and finalizes the experiment. It is not a
+`experiment-run` is the explicit, resumable owner for two focused workflows:
+an `external_matrix` evaluates the registered-ranking winner, while
+`cohort_selection` evaluates frozen candidates on internal selection cohorts,
+freezes one winner, and only then runs external report-only jobs. It is not a
 general command DAG and is not a monitoring command.
 
 ## Invocation and frozen state
@@ -10,7 +11,7 @@ general command DAG and is not a monitoring command.
 ```bash
 python -m agent_tools experiment-run \
   --run-dir <experiment-root> \
-  --spec <external-matrix-v1.yaml> \
+  --spec <pipeline.yaml> \
   --unlock-final-test \
   [--execute | --dry-run] \
   [--resume] \
@@ -30,7 +31,7 @@ that every pipeline read or controller transition re-probes the runtime. A
 rolling checkout's commit advance is recorded per attempt and does not rewrite
 frozen pipeline or snapshot bytes.
 
-The workspace links to this pipeline-owned subtree:
+An `external_matrix` uses this pipeline-owned subtree:
 
 ```text
 pipelines/<pipeline-id>/
@@ -55,14 +56,34 @@ pipelines/<pipeline-id>/
 
 Multi-variant initial schedulers use the variant-specific snapshot paths.
 
-The v1 spec is a closed contract for one canonical `evaluate` step. It declares
+A `cohort_selection` uses the same managed-attempt owners under two isolated
+phase directories and adds only the decision artifacts needed to keep external
+results out of selection:
+
+```text
+pipelines/<pipeline-id>/
+├── spec.source.yaml
+├── spec.resolved.yaml
+├── pipeline.json
+├── candidates.json
+├── cohort_selection_ranking.csv
+├── cohort_selection_winner.json
+├── phases/selection/{jobs.tsv,preflight.json,recipes/,plans/,results/}
+├── phases/report_only/{jobs.tsv,preflight.json,recipes/,plans/,results/}
+├── results.csv
+├── metrics.csv
+├── summary.md
+└── final.md
+```
+
+The established `external_matrix` spec is a closed contract for one canonical `evaluate` step. It declares
 the pipeline and experiment ids, planned/baseline runtime commit, GPU
 concurrency, at most two attempts per logical job, checkpoint sources and
 policy, external jobs, and whether finalization is enabled. Task, variant,
 label, config, and inference module are derived from each frozen source plan.
 The spec may assert those values but cannot define a second semantic source.
 
-The closed v1 sections are:
+Its closed sections are:
 
 - `pipeline`: `kind: external_matrix`, matching experiment id, one `evaluate`
   step, and `finalize: true`;
@@ -89,7 +110,7 @@ Selection reuses the managed hparam-ranking and candidate-resolution owner and
 requires an exact metric and mode match. The pipeline freezes the selected
 score, config, checkpoint path, and content hashes before any external job
 starts.
-Schema v1 has no remote source-artifact staging boundary, so it accepts only
+The external-matrix controller has no remote source-artifact staging boundary, so it accepts only
 local source plans and rejects an SSH-owned source before creating pipeline
 state or other outputs.
 If interruption leaves `checkpoints.json` before its hash reaches pipeline
@@ -101,6 +122,37 @@ Checkpoint policy is evaluated before the matrix is launched. It can require a
 non-averaged config, reject EMA state keys, require `avg_ckpts=1`, and require
 checkpoint-owned AHI threshold evidence for AHI jobs. External results never
 participate in checkpoint selection or tuning.
+
+## Cohort selection and report-only boundary
+
+`cohort_selection` has no schema-generation marker. It has exactly one managed
+hparam source and a `candidates` scope of either `top_k` with a positive count,
+or `all`. The source ranking owner remains `hparam_selection`; this controller
+does not invent a second ranking or reinterpret source metrics.
+
+Every job template has one role and matching provenance:
+
+- `selection` jobs are `internal` and are expanded across every frozen
+  candidate;
+- `report_only` jobs are `external` and are not materialized until a winner is
+  frozen.
+
+A cohort, preset path, or identical preset bytes cannot occur in both roles.
+The selector is deliberately narrow: `target_gate` declares one or more finite
+metric thresholds for each selection job, `internal_rank` is the only
+tie-breaker, and `no_winner` is the only no-feasible policy. A candidate is
+feasible only when the complete frozen candidate-by-selection-cohort matrix is
+verified and every gate passes. Among feasible candidates, the best already
+frozen internal rank wins; selection-cohort metric values never silently create
+a new optimization objective.
+
+The controller writes and hash-binds `candidates.json`,
+`cohort_selection_ranking.csv`, and `cohort_selection_winner.json` before it
+creates any report-only plan. The winner artifact binds the contributing result
+manifest paths and hashes. If no candidate is feasible, the pipeline writes
+`selection_failure.md`, becomes terminally failed, and never creates the
+report-only phase. External/report-only metrics are summarized but can never
+change the winner.
 
 Every declared inference recipe passes the normal `doctor` and `plan` gates,
 including the explicit final-test unlock and preset validation, before the
@@ -163,10 +215,11 @@ managed row are defined in [run_manifest.md](run_manifest.md).
 
 ## Completion and finalization
 
-The pipeline succeeds only when every declared logical job has one verified
-successful attempt and no attempt remains active. The user-selected `--spec`
-defines the job set; schema v1 does not impose a fixed matrix size. Every job
-frozen from that spec must complete (N/N). The pipeline then writes
+The pipeline succeeds only when every required logical job has one verified
+successful attempt and no attempt remains active. For an `external_matrix`,
+every authored job must complete. For `cohort_selection`, the full frozen
+candidate-by-selection-job matrix must complete before selection, followed by
+every report-only job for the frozen winner. The pipeline then writes
 `results.csv`, `metrics.csv`, `summary.md`, and `final.md` from all scalar
 manifest metrics, preserving non-finite values explicitly, including the
 frozen checkpoint, preset, actual runtime commit, and result path for each job;

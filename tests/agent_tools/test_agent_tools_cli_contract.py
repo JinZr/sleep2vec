@@ -265,6 +265,7 @@ def test_experiment_run_cli_contract():
     actions = _actions(subcommands["experiment-run"])
     args = parser.parse_args(["experiment-run", "--run-dir", "experiment", "--spec", "matrix.yaml"])
 
+    assert "managed evaluation pipeline" in subcommands["experiment-run"].description.lower()
     assert {name for name, action in actions.items() if action.required} == {"run_dir", "spec"}
     assert args.dry_run is True
     assert args.execute is False

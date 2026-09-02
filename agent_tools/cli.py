@@ -378,7 +378,7 @@ def _build_parser() -> argparse.ArgumentParser:
     experiment_run = _command(
         sub,
         "experiment-run",
-        "Run the managed validation-to-external-test pipeline for an experiment step. "
+        "Run a managed evaluation pipeline for an experiment step. "
         "Dry run unless --execute is given; --execute is an explicit launching action.",
     )
     experiment_run.add_argument("--run-dir", required=True, help="Experiment workspace root to run.")
