@@ -28,7 +28,7 @@ Read by question:
 │   ├── hparam_selection.md
 │   ├── experiment_ranking.csv
 │   └── final.md
-├── pipelines/<pipeline-id>/  # optional managed external-evaluation state
+├── pipelines/<pipeline-id>/  # optional managed evaluation-pipeline state
 ├── steps/<step.id>/step.yaml
 └── <plan directory>/
     ├── recipe.resolved.yaml
@@ -401,7 +401,7 @@ fact should not create an entry.
 | `hparam-select` | Commit step-scoped ranking/selection; [selection and consumers](task_recipe.md#selection-and-selected-candidate-consumers). |
 | `hparam-adaptive-*` | Tool-owned round publication and advancement; [adaptive workflow](task_recipe.md#adaptive-workflow). |
 | `experiment-note` | Append an evidence-backed [research note](#research-log), no lifecycle change. |
-| `experiment-run` | Explicit resumable [external matrix](experiment_pipeline.md); dry-run starts nothing. |
+| `experiment-run` | Explicit resumable [managed evaluation pipeline](experiment_pipeline.md); dry-run starts nothing. |
 | `experiment-status` | Validate and display the [read-only snapshot](#read-only-status-and-advisory-actions). |
 | `experiment-rank`, `experiment-finalize` | Write experiment ranking; commit completion only under [finalization](#finalization). |
 

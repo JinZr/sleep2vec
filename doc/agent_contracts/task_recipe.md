@@ -360,7 +360,7 @@ the unique run through the shared Slurm stop transaction. Repeated execute
 does not resubmit a queued, active, terminal, or uncertain run. The
 [Slurm evidence contract](run_manifest.md#slurm-scheduler-evidence) owns terminal
 and lost-receipt rules, including failures before the workload starts. This
-does not extend external-evaluation pipelines or migrate historical manually
+does not extend managed evaluation pipelines or migrate historical manually
 wrapped inference plans.
 
 ## Hparam workflow
@@ -693,7 +693,7 @@ The detailed [status read-set](experiment_workspace.md#read-only-status-and-advi
 and [final report acceptance](experiment_workspace.md#finalization) have one
 workspace owner, including mixed/all-failed cases and historical completed-read
 compatibility. Final test authorization belongs to
-[external_test_locking.md](external_test_locking.md); managed external matrices
+[external_test_locking.md](external_test_locking.md); managed evaluation pipelines
 belong to [experiment_pipeline.md](experiment_pipeline.md).
 
 ## Adaptive workflow

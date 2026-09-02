@@ -1,7 +1,7 @@
 # Managed Evaluation Pipeline Contract
 
 `experiment-run` is the explicit, resumable owner for two focused workflows:
-an `external_matrix` evaluates the registered-ranking winner, while
+an `external_matrix` evaluates one registered-ranking winner per source, while
 `cohort_selection` evaluates frozen candidates on internal selection cohorts,
 freezes one winner, and only then runs external report-only jobs. It is not a
 general command DAG and is not a monitoring command.
@@ -20,9 +20,10 @@ python -m agent_tools experiment-run \
 
 Dry-run is the default and starts no process. Execute mode holds one exclusive
 runner lock beside `pipelines/<pipeline-id>/` and atomically freezes the source
-and parsed spec, their SHA-256 identity, source-plan identities, external-preset
-hashes, checkpoint selection, job/attempt mapping, and runtime identity under
-that directory. Once state exists, execution requires `--resume --execute`; any
+and parsed spec, their SHA-256 identity, source-plan identities, inference-preset
+hashes, checkpoint or candidate selection, job/attempt mapping, and runtime
+identity under that directory. Once state exists, execution requires
+`--resume --execute`; any
 frozen spec, source-plan, preset, config, checkpoint, or artifact drift fails
 closed. When an eligible attempt reaches the shared managed scheduler, its
 separate Python, route, clean/importable-code, module-origin, live-argv, and
@@ -107,16 +108,17 @@ before checkpoint selection. A source is ready when at least one run completed
 successfully; failed or stopped runs remain recorded but do not block selection
 from the successful per-run winners. A source with no successful run fails.
 Selection reuses the managed hparam-ranking and candidate-resolution owner and
-requires an exact metric and mode match. The pipeline freezes the selected
-score, config, checkpoint path, and content hashes before any external job
-starts.
-The external-matrix controller has no remote source-artifact staging boundary, so it accepts only
-local source plans and rejects an SSH-owned source before creating pipeline
-state or other outputs.
-If interruption leaves `checkpoints.json` before its hash reaches pipeline
-state, resume reruns the hparam-ranking owner and accepts the orphan only
-when every selected field still matches; it never adopts the file by hashing
-its current bytes alone.
+requires an exact metric and mode match. An `external_matrix` freezes each
+selected score, config, checkpoint path, and content hash before external jobs
+start. A `cohort_selection` pipeline freezes the requested ranked candidates
+and the same evidence before internal selection jobs start.
+The managed evaluation controller has no remote source-artifact staging
+boundary, so it accepts only local source plans and rejects an SSH-owned source
+before creating pipeline state or other outputs.
+If interruption leaves `checkpoints.json` or `candidates.json` before its hash
+reaches pipeline state, resume reruns the hparam-ranking and candidate-resolution
+owner and accepts the orphan only when every selected field still matches; it
+never adopts the file by hashing its current bytes alone.
 
 Checkpoint policy is evaluated before the matrix is launched. It can require a
 non-averaged config, reject EMA state keys, require `avg_ckpts=1`, and require
@@ -129,6 +131,14 @@ participate in checkpoint selection or tuning.
 hparam source and a `candidates` scope of either `top_k` with a positive count,
 or `all`. The source ranking owner remains `hparam_selection`; this controller
 does not invent a second ranking or reinterpret source metrics.
+
+Its closed spec reuses the common `pipeline`, `runtime`, `execution`,
+`evaluation_policy`, `checkpoint_policy`, `checkpoint_sources`, and `jobs`
+sections. `pipeline.kind` is `cohort_selection`; `checkpoint_sources` contains
+exactly one source; `candidates` selects `top_k` or `all`; `selector` declares
+the fixed target-gate decision; and each job replaces `checkpoint_source` with
+one `role` and its matching `provenance`. No other top-level or job fields are
+accepted.
 
 Every job template has one role and matching provenance:
 
