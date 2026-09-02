@@ -331,6 +331,7 @@ def test_profile_rejects_freezing_random_source_backbone():
         (lambda recipe: recipe["search"].update({"parameters": {"runtime.lr": [1e-6]}}), DecisionStatus.FAIL),
         (lambda recipe: recipe.update({"variant": "sleep2expert"}), DecisionStatus.NEEDS_USER_INPUT),
         (lambda recipe: recipe["inputs"].update({"label_name": "stage5"}), DecisionStatus.NEEDS_USER_INPUT),
+        (lambda recipe: recipe["inputs"].update({"label_name": "custom_label"}), DecisionStatus.NEEDS_USER_INPUT),
         (lambda recipe: recipe["search"].update({"max_runs": 3}), DecisionStatus.NEEDS_USER_INPUT),
         (lambda recipe: recipe["search"].update({"max_runs": 33}), DecisionStatus.NEEDS_USER_INPUT),
         (lambda recipe: recipe.update({"adaptive": {"enabled": True}}), DecisionStatus.NEEDS_USER_INPUT),
@@ -535,9 +536,13 @@ def test_task_recipe_schema_profile_skeleton_keeps_test_locked():
     ("config_path", "variant", "label"),
     [
         ("configs/ppg_ahi_finetune_large.yaml", "sleep2vec", "ahi"),
+        ("configs/ppg_age_finetune_large.yaml", "sleep2vec", "age"),
+        ("configs/ppg_sex_finetune_large.yaml", "sleep2vec", "sex"),
         ("configs/examples/arousal/FINETUNE_EXAMPLE.yaml", "sleep2vec", "arousal"),
         ("configs/examples/stage4/FINETUNE_EXAMPLE.yaml", "sleep2vec", "stage4"),
         ("configs/sleep2vec2/ppg_ahi_finetune_large.yaml", "sleep2vec2", "ahi"),
+        ("configs/sleep2vec2/ppg_age_finetune_large.yaml", "sleep2vec2", "age"),
+        ("configs/sleep2vec2/ppg_sex_finetune_large.yaml", "sleep2vec2", "sex"),
     ],
 )
 def test_generated_points_pass_variant_config_validation(config_path: str, variant: str, label: str):
@@ -546,6 +551,8 @@ def test_generated_points_pass_variant_config_validation(config_path: str, varia
     summary = config_summary(source, variant=variant, validate_survival_local_paths=False)
     compiled = _compile(recipe=_recipe(label=label, variant=variant), summary=summary)
 
+    assert compiled["max_runs"] == 12
+    assert len(compiled["configurations"]) == 12
     first = compiled["configurations"][0]
     assert first["yaml:/finetune/layer_mix"] == payload["finetune"]["layer_mix"]
     assert first["yaml:/finetune/lora"] == payload["finetune"]["lora"]
