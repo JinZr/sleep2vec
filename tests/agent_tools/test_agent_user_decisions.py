@@ -701,3 +701,33 @@ def test_user_split_decision_rejects_train_selection(tmp_path: Path):
         issue.field == "train_val_test_policy" and "must be val or test" in issue.message
         for issue in report.blocking_issues()
     )
+
+
+def test_authored_train_split_decision_is_rejected(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"]["selection_split"] = "train"
+    payload["decisions"]["train_val_test_policy"] = {"value": "train", "source": "explicit_recipe"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    effective, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 1
+    assert effective["evaluation_policy"]["selection_split"] == "train"
+    assert any(
+        issue.field == "train_val_test_policy" and "must be val or test" in issue.message
+        for issue in report.blocking_issues()
+    )
+
+
+def test_authored_canonical_train_split_is_rejected(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"]["selection_split"] = "train"
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    effective, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 1
+    assert effective["evaluation_policy"]["selection_split"] == "train"
+    assert any(issue.field == "evaluation_policy.selection_split" for issue in report.blocking_issues())

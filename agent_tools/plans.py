@@ -201,9 +201,12 @@ def _materialize_decisions(
                     )
                 )
 
-    if user_supplied and "train_val_test_policy" in decision_values:
+    if "train_val_test_policy" in decision_values:
         selection_split = decision_values["train_val_test_policy"]
-        if selection_split not in (None, "", "ASK_USER") and selection_split not in ("val", "test"):
+        invalid_selection_split = selection_split == "train" or (
+            user_supplied and selection_split not in (None, "", "ASK_USER") and selection_split not in ("val", "test")
+        )
+        if invalid_selection_split:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
@@ -240,6 +243,20 @@ def _materialize_decisions(
     if user_supplied:
         recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
         recipe["decisions"] = {**recipe_decisions, **decisions}
+        evaluation_policy = recipe.get("evaluation_policy")
+        selection_split = evaluation_policy.get("selection_split") if isinstance(evaluation_policy, dict) else None
+        if selection_split not in (None, "", "ASK_USER", "val", "test") and not any(
+            issue.field == "train_val_test_policy" for issue in issues
+        ):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "evaluation_policy.selection_split",
+                    "evaluation_policy.selection_split must be val or test.",
+                    None,
+                    {"value": selection_split, "preflight_before_workspace": True},
+                )
+            )
     return issues
 
 
