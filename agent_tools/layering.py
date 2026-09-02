@@ -42,6 +42,7 @@ KERNEL_MODULES: frozenset[str] = frozenset(
         "experiment_sources",
         "experiment_tracking",
         "experiment_pipeline",
+        "experiment_pipeline_cohort_selection",
         "experiment_pipeline_results",
         "experiments",
         "run_artifacts",
