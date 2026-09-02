@@ -201,22 +201,6 @@ def _materialize_decisions(
                     )
                 )
 
-    if "train_val_test_policy" in decision_values:
-        selection_split = decision_values["train_val_test_policy"]
-        invalid_selection_split = selection_split == "train" or (
-            user_supplied and selection_split not in (None, "", "ASK_USER") and selection_split not in ("val", "test")
-        )
-        if invalid_selection_split:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "train_val_test_policy",
-                    "Explicit train_val_test_policy must be val or test.",
-                    None,
-                    {"value": selection_split, "preflight_before_workspace": True},
-                )
-            )
-
     canonical_fields = _resolve_write_targets(recipe.get("task"))
     if decision_values.get("train_val_test_policy") not in ("val", "test"):
         canonical_fields.pop("train_val_test_policy", None)
@@ -239,6 +223,23 @@ def _materialize_decisions(
             )
             continue
         target = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
+        if field == "train_val_test_policy" and not user_supplied:
+            existing_value = target.get(key)
+            if existing_value not in (None, "", "ASK_USER") and existing_value != value:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        field,
+                        "Authored train_val_test_policy conflicts with evaluation_policy.selection_split.",
+                        None,
+                        {
+                            "decision": value,
+                            "selection_split": existing_value,
+                            "preflight_before_workspace": True,
+                        },
+                    )
+                )
+                continue
         recipe[section] = {**target, key: value}
     if user_supplied:
         recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}

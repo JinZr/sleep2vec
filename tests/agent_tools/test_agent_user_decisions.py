@@ -95,7 +95,7 @@ def test_user_decision_yaml_resolves_external_test_locked(tmp_path: Path):
             "decisions": {
                 "task": {"value": "hparam_tune", "source": "explicit_recipe"},
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
                 "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
@@ -645,7 +645,7 @@ def test_layered_hparam_task_template_preserves_user_decisions(tmp_path: Path):
             "decisions": {
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
         },
@@ -719,7 +719,7 @@ def test_user_split_decision_rejects_train_selection(tmp_path: Path):
     assert report.exit_code == 1
     assert effective["evaluation_policy"]["selection_split"] == "val"
     assert any(
-        issue.field == "train_val_test_policy" and "must be val or test" in issue.message
+        issue.field == "train_val_test_policy" and "must be one of" in issue.message
         for issue in report.blocking_issues()
     )
 
@@ -735,8 +735,24 @@ def test_authored_train_split_decision_is_rejected(tmp_path: Path):
 
     assert report.exit_code == 1
     assert effective["evaluation_policy"]["selection_split"] == "train"
+    assert any(issue.field == "evaluation_policy.selection_split" for issue in report.blocking_issues())
+
+
+def test_authored_descriptive_split_decision_is_rejected(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"]["train_val_test_policy"] = {
+        "value": "select on test",
+        "source": "explicit_recipe",
+    }
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    effective, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 1
+    assert effective["evaluation_policy"]["selection_split"] == "val"
     assert any(
-        issue.field == "train_val_test_policy" and "must be val or test" in issue.message
+        issue.field == "train_val_test_policy" and "must be one of" in issue.message
         for issue in report.blocking_issues()
     )
 
@@ -751,4 +767,7 @@ def test_authored_canonical_train_split_is_rejected(tmp_path: Path):
 
     assert report.exit_code == 1
     assert effective["evaluation_policy"]["selection_split"] == "train"
-    assert any(issue.field == "evaluation_policy.selection_split" for issue in report.blocking_issues())
+    assert any(
+        issue.field == "train_val_test_policy" and "conflicts with" in issue.message
+        for issue in report.blocking_issues()
+    )

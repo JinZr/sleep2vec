@@ -29,6 +29,7 @@ high_impact_fields:
 
   - id: train_val_test_policy
     required_for_tasks: ["finetune", "hparam_tune"]
+    allowed_values: ["val", "test"]
     question: "Which supported split should be used for model selection: val for direct finetune; val or explicitly authorized test for hparam tuning?"
 
   - id: external_test_locked
