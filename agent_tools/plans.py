@@ -80,9 +80,8 @@ def _recipe_contract_issues(recipe: dict, user_decisions: dict, policy: dict) ->
     recipe_decisions = task_owner.get("decisions") if isinstance(task_owner.get("decisions"), dict) else {}
     effective_task = recipe_task
     if effective_task in (None, "", "ASK_USER"):
-        effective_task = _decision_value(recipe_decisions.get("task"))
-    if effective_task in (None, "", "ASK_USER"):
-        effective_task = _decision_value(user_decisions.get("task"))
+        task_decision = user_decisions.get("task") if "task" in user_decisions else recipe_decisions.get("task")
+        effective_task = _decision_value(task_decision)
     # ASK_USER is an unresolved sentinel, not a task scope for contract validation.
     if effective_task == "ASK_USER":
         effective_task = None

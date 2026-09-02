@@ -571,6 +571,55 @@ def test_user_task_fills_missing_recipe_task(tmp_path: Path):
     assert effective["task"] == "finetune"
 
 
+def test_user_task_scopes_contract_before_authored_task_fallback(tmp_path: Path):
+    base = write_finetune_recipe(tmp_path)
+    recipe = write_yaml(
+        tmp_path / "tune.yaml",
+        {
+            "name": "unit_tune",
+            "variant": "sleep2vec",
+            "base_recipe": str(base),
+            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
+            "evaluation_policy": {
+                "selection_metric": "val_ahi_pearson",
+                "selection_mode": "max",
+                "selection_split": "val",
+                "external_test_locked": True,
+                "test_after_fit": False,
+                "final_eval_split": "test",
+                "final_test_unlocked": False,
+                "require_manual_unlock_for_final_test": True,
+            },
+            "decisions": {
+                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
+                "label_name": {"value": "ahi", "source": "explicit_recipe"},
+                "external_test_locked": {"value": True, "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
+                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+    decisions = _write_decisions(
+        tmp_path,
+        {"task": {"value": "finetune", "source": "explicit_user"}},
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 1
+    assert "search" in result.stdout
+    assert not (output_dir / "run.sh").exists()
+
+
 def test_generated_task_template_remains_unresolved_until_filled(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
