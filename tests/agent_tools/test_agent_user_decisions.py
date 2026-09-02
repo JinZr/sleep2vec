@@ -282,6 +282,35 @@ def test_doctor_requires_fresh_output_for_new_decision(tmp_path: Path):
     assert template.read_text() == original
 
 
+def test_doctor_requires_fresh_output_for_changed_concrete_decision(tmp_path: Path):
+    recipe = {"task": "finetune"}
+    report = DecisionReport(
+        status=DecisionStatus.NEEDS_USER_INPUT,
+        issues=[DecisionIssue(DecisionStatus.NEEDS_USER_INPUT, "overwrite_policy", "Overwrite policy is missing.")],
+        decisions={
+            "label_name": ResolvedDecision("label_name", "stage5", "explicit_user", "high", {}),
+        },
+    )
+    output_dir = tmp_path / "doctor"
+    output_dir.mkdir()
+    template = output_dir / "decisions.yaml"
+    original = yaml.safe_dump(
+        {
+            "decisions": {
+                "label_name": {"value": "ahi", "source": "explicit_user"},
+                "overwrite_policy": {"value": "ASK_USER", "source": "explicit_user"},
+            }
+        },
+        sort_keys=False,
+    )
+    template.write_text(original)
+
+    with pytest.raises(ValueError, match="conflicts with current resolved decisions"):
+        write_user_decision_template(output_dir, recipe, report, preserve_existing=True)
+
+    assert template.read_text() == original
+
+
 def test_plan_cli_does_not_advertise_stale_user_decisions_file(tmp_path: Path, monkeypatch, capsys):
     output_dir = tmp_path / "plan"
     output_dir.mkdir()

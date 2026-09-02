@@ -19,8 +19,9 @@ values the user has actually decided, then pass the file explicitly with
 Existing independent `decisions.yaml` files are not overwritten by doctor;
 a file that appears during blocked-plan publication fails before canonical registration.
 Doctor may reuse a doctor-only output directory only while its existing
-`decisions.yaml` contains every currently requested decision. A newly exposed
-decision requires a fresh doctor `--output-dir`; the old file is never merged or
+`decisions.yaml` contains every currently requested decision and matches every
+currently resolved concrete value. A newly exposed decision or changed concrete
+value requires a fresh doctor `--output-dir`; the old file is never merged or
 overwritten. Any blocked or PASS plan marker also makes the directory plan-owned
 and requires a fresh doctor `--output-dir`.
 

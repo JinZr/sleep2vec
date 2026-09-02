@@ -690,6 +690,17 @@ def write_user_decision_template(
                 f"Existing user decisions file is missing newly requested decisions; "
                 f"retry with a fresh --output-dir: {target}"
             ) from None
+        conflicting_fields = [
+            field
+            for field, requested in payload["decisions"].items()
+            if _decision_value(requested) not in (None, "", "ASK_USER")
+            and _decision_value(existing_decisions[field]) != _decision_value(requested)
+        ]
+        if conflicting_fields:
+            raise ValueError(
+                f"Existing user decisions file conflicts with current resolved decisions "
+                f"({', '.join(sorted(conflicting_fields))}); retry with a fresh --output-dir: {target}"
+            ) from None
     finally:
         temporary_path.unlink(missing_ok=True)
     exp_io.validate_managed_output_paths(target.parent, [target])
