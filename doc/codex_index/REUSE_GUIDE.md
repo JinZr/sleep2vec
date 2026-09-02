@@ -149,7 +149,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   not direct Markdown writes; see [research-log ownership](../agent_contracts/experiment_workspace.md#research-log).
 - Reuse `managed_scheduler` for backend lifecycle and `slurm` for resource, command, state,
   and sidecar primitives; [run-manifest evidence](../agent_contracts/run_manifest.md#slurm-scheduler-evidence)
-  owns their interpretation. Keep external-matrix policy and orchestration in `experiment_pipeline`,
+  owns their interpretation. Keep managed evaluation policy and orchestration in `experiment_pipeline`,
   with reduction in `experiment_pipeline_results`; see [pipeline gates](../agent_contracts/experiment_pipeline.md#invocation-and-frozen-state).
 - Reuse `runtime-sync` for a clean in-place `origin/main` fast-forward and the shared runtime lock for
   launch/update coordination. Keep the planned commit in frozen artifacts and record the actual start commit

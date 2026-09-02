@@ -2,8 +2,9 @@
 
 This contract owns test-access authorization and final-test boundaries. The
 [selection contract](task_recipe.md#selection-and-selected-candidate-consumers)
-owns ranking, checkpoint choice, and selected-candidate consumers; the
-[pipeline contract](experiment_pipeline.md) owns external matrices and retries.
+owns source ranking, checkpoint choice, and selected-candidate consumers; the
+[pipeline contract](experiment_pipeline.md) owns managed evaluation workflows
+and retries.
 
 ## Selection and test access policy
 
@@ -18,7 +19,8 @@ not select a scientific split, unlock test access, or authorize final evaluation
 | Validation-selected tuning with post-fit test | `selection_split: val` | `test_after_fit: true` | `external_test_locked: false`; results do not change the selection split. |
 | Test-selected hparam tuning | `selection_split: test` | `test_after_fit: true`, with complete all-checkpoint evidence | `external_test_locked: false` explicitly authorizes tuning access; final external evaluation remains separate. |
 | Direct `infer` / `evaluate` on test | `eval_split: test` | Not a post-fit operation | Both `external_test_locked: false` and `final_test_unlocked: true`. |
-| Managed final external-test matrix | Frozen pipeline evaluation policy | Separate explicit operation | `experiment-run --unlock-final-test`; source selection is not rewritten. |
+| Managed external matrix | Registered-ranking winner per source | Separate explicit operation | `experiment-run --unlock-final-test`; external metrics do not rewrite source selection. |
+| Managed cohort selection and external report | Frozen ranked candidates plus internal target gates | Separate explicit operation | `experiment-run --unlock-final-test`; report-only metrics do not change the frozen winner. |
 
 For finetune and hparam recipes, omitted `test_after_fit` is materialized as
 `evaluation_policy.test_after_fit=true` before consultation, with a
@@ -59,10 +61,15 @@ If final script generation is skipped, stale `final_external_test.sh` and
 frozen final-test config artifacts must be blocked or removed under explicit
 overwrite approval.
 
-`experiment-run` derives and freezes checkpoints from source plans' registered
-ranking before its explicitly unlocked matrix launch. Metrics from that matrix
-never rewrite selection. The pipeline runner is a launcher; `hparam-monitor`
-and `experiment-monitor` never start pending external jobs. Multi-source scope,
-attempt isolation, retries, result validation, and finalization order belong to
-[experiment_pipeline.md](experiment_pipeline.md), not an inferred retry after
-missing output or an SSH disconnect.
+For an `external_matrix`, `experiment-run` derives and freezes each checkpoint
+from its source plan's registered ranking before the explicitly unlocked jobs
+launch. For `cohort_selection`, it freezes ranked candidates, completes the
+internal target-gate matrix, freezes the best feasible candidate by the
+documented `internal_rank` tie-breaker, and only then materializes external
+report-only jobs. External-matrix metrics never rewrite source selection, and
+report-only metrics never
+rewrite the cohort-selection winner. The pipeline runner is a launcher;
+`hparam-monitor` and `experiment-monitor` never start pending pipeline jobs.
+Source scope, candidate freezing, attempt isolation, retries, result validation,
+and finalization order belong to [experiment_pipeline.md](experiment_pipeline.md),
+not an inferred retry after missing output or an SSH disconnect.
