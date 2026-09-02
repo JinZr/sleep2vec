@@ -203,6 +203,8 @@ def resolve_hparam_candidates(
     )
     ranking_rows = tracking.hparam_ranking_projection(canonical_ranked) if canonical_ranked is not None else []
     ranking_by_key = {managed_run_key(row): row for row in ranking_rows}
+    if selection_split == "test" and not ranking_by_key:
+        raise ValueError("Test-selected candidate resolution requires canonical hparam selection.")
     if ranking_by_key:
         ranking_path = workspace / "reports" / "ranking.csv"
         frozen_ranking = read_rows(ranking_path, require_managed_identity=True)

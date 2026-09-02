@@ -36,6 +36,7 @@ from .experiment_workspace import (
     read_experiment_events,
     read_managed_yaml_mapping,
     read_run_manifest,
+    stopped_runs_without_reason,
     validate_step_registration,
 )
 from .hparam_runtime import monitor_hparam_runs
@@ -546,6 +547,10 @@ def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list
             monitor_hparam_runs(plan_dir, once=True, health=True)
             canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
         rows = [canonical[managed_run_key(run)] for run in plan["runs"]]
+        missing_stop_reasons = stopped_runs_without_reason(rows)
+        if missing_stop_reasons:
+            run_ids = [str(row["run_id"]) for row in missing_stop_reasons]
+            raise ValueError(f"Stopped source runs are missing required stop_reason: {run_ids}")
         statuses = [str(row.get("status") or "") for row in rows]
         uncertain = [row["run_id"] for row in rows if row.get("status") in SOURCE_UNCERTAIN_STATUSES]
         failed = [row["run_id"] for row in rows if row.get("status") in TERMINAL_STATUSES - SUCCESS_STATUSES]

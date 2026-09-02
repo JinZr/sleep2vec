@@ -455,6 +455,39 @@ def test_resolve_hparam_candidates_rejects_all_failed_explicit_rows(tmp_path: Pa
     assert not _ranking_path(plan_dir).exists()
 
 
+def test_resolve_hparam_candidates_requires_canonical_test_selection(tmp_path: Path):
+    recipe = _hparam_recipe(
+        tmp_path,
+        selection_metric="test_ahi_pearson",
+        selection_split="test",
+        config_monitor="val_ahi_pearson",
+    )
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("mutable checkpoint")
+    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
+
+    with pytest.raises(ValueError, match="requires canonical hparam selection"):
+        hparam_selection.resolve_hparam_candidates(
+            plan_dir,
+            [
+                {
+                    "step_id": run["step_id"],
+                    "run_id": run["run_id"],
+                    "rank": 1,
+                    "checkpoint_path": str(checkpoint),
+                    "checkpoint_sha256": "forged",
+                }
+            ],
+        )
+
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
+    assert not _ranking_path(plan_dir).exists()
+
+
 def test_hparam_select_rejects_completed_experiment_without_mutation(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"

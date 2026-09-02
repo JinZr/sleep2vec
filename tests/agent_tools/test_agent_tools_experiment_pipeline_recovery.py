@@ -408,7 +408,11 @@ def test_mixed_terminal_source_accepts_no_test_after_fit_manifest(
         "read_run_manifest",
         lambda _root: [
             {**successful, "status": "finished"},
-            {**unsuccessful, "status": failed_status},
+            {
+                **unsuccessful,
+                "status": failed_status,
+                **({"stop_reason": "stopped after invalid candidate"} if failed_status == "stopped" else {}),
+            },
         ],
     )
     monkeypatch.setattr(
@@ -422,6 +426,24 @@ def test_mixed_terminal_source_accepts_no_test_after_fit_manifest(
     assert states[0]["complete"] is True
     assert states[0]["failed_runs"] == ["run-001"]
     assert experiment_pipeline._source_summary_status(states) == "ready"
+
+
+def test_mixed_terminal_source_rejects_stopped_run_without_reason(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    runs = [
+        {"step_id": "train-age", "run_id": "run-000"},
+        {"step_id": "train-age", "run_id": "run-001"},
+    ]
+    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: {"runs": runs})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "read_run_manifest",
+        lambda _root: [{**runs[0], "status": "finished"}, {**runs[1], "status": "stopped"}],
+    )
+
+    with pytest.raises(ValueError, match="Stopped source runs are missing required stop_reason.*run-001"):
+        experiment_pipeline._inspect_sources(root, spec, refresh=False)
 
 
 @pytest.mark.parametrize("status", ["planned", "running"])
@@ -449,7 +471,10 @@ def test_all_unsuccessful_terminal_source_fails(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         experiment_pipeline,
         "read_run_manifest",
-        lambda _root: [{**runs[0], "status": "failed"}, {**runs[1], "status": "stopped"}],
+        lambda _root: [
+            {**runs[0], "status": "failed"},
+            {**runs[1], "status": "stopped", "stop_reason": "budget exhausted"},
+        ],
     )
 
     states = experiment_pipeline._inspect_sources(root, spec, refresh=False)

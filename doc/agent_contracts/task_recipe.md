@@ -682,8 +682,10 @@ these direct helpers lack remote config-staging and result-collection protocols.
 Read-only candidate resolution is owned by `hparam_selection`: when canonical
 selection exists it verifies `reports/ranking.csv`, preserves canonical rank,
 and resolves top-K/all over successful per-run winners only. Direct analysis
-helpers may still consume an explicit ranked candidate table before canonical
-selection; that path validates the table without publishing lifecycle state.
+helpers may still consume an explicit one-winner-per-run candidate table before
+canonical selection for validation-selected plans; that path validates the
+table without publishing lifecycle state. Test-selected plans require canonical
+selection and raw multi-epoch checkpoint rankings are not postprocess inputs.
 
 Status validates bound audits and reconstructs the global checkpoint/run
 ranking; finalization rehashes every audited checkpoint on its frozen target.
