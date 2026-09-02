@@ -105,6 +105,32 @@ def test_separate_adapters_only_train_channel_lora_weights(monkeypatch, module_n
     assert encoder.active_adapter == "ch_breath"
 
 
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.downstream_model",
+        "sleep2vec2.downstream_model",
+        "sleep2expert.downstream_model",
+    ],
+)
+def test_frozen_backbone_without_lora_stays_in_eval_mode(module_name: str):
+    downstream_module = importlib.import_module(module_name)
+    model = _downstream_with_backbone(downstream_module.Sleep2vecDownstreamModel, ["heartbeat"])
+
+    model.train()
+    model.freeze_backbone_and_insert_lora(insert_lora=False)
+
+    assert model.training is True
+    assert model.backbone.training is False
+    assert all(not parameter.requires_grad for parameter in model.backbone.parameters())
+
+    model.eval()
+    model.train()
+
+    assert model.training is True
+    assert model.backbone.training is False
+
+
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 @pytest.mark.parametrize("layer_mix_enabled", [False, True])
 def test_real_peft_lora_forward_backward_smoke(variant: str, layer_mix_enabled: bool):

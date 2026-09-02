@@ -52,6 +52,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         # core attributes
         self.model_config = model_config
         self.backbone = backbone
+        self._keep_frozen_backbone_in_eval = False
         self.channel_names = [c.name for c in model_config.channels] if model_config else channel_names
         self.device = device
         self.output_dim = output_dim
@@ -518,6 +519,7 @@ class Sleep2vecDownstreamModel(nn.Module):
     ):
         # 0) 先冻结 backbone 全部参数
         self.separate_adapters = False
+        self._keep_frozen_backbone_in_eval = not insert_lora
         for _, p in self.backbone.named_parameters():
             p.requires_grad = False
 
@@ -549,6 +551,8 @@ class Sleep2vecDownstreamModel(nn.Module):
                     self.channel_adapters.append(name)
                 self._enable_all_adapters_trainable()
 
+        self.train(self.training)
+
         # —— 全模型统计 ——
         total_all = sum(p.numel() for _, p in self.named_parameters())
         train_all = sum(p.numel() for _, p in self.named_parameters() if p.requires_grad)
@@ -571,6 +575,12 @@ class Sleep2vecDownstreamModel(nn.Module):
             f"{b_ratio:.4%}",
             lora_train,
         )
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if getattr(self, "_keep_frozen_backbone_in_eval", False):
+            self.backbone.eval()
+        return self
 
     # 在所有 adapter 都 add 完之后调用
     def _enable_all_adapters_trainable(self):
