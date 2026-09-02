@@ -690,11 +690,15 @@ def write_user_decision_template(
                 f"Existing user decisions file is missing newly requested decisions; "
                 f"retry with a fresh --output-dir: {target}"
             ) from None
+        resolved_values = {
+            field: decision.value
+            for field, decision in report.decisions.items()
+            if decision.value not in (None, "", "ASK_USER")
+        }
         conflicting_fields = [
             field
-            for field, requested in payload["decisions"].items()
-            if _decision_value(requested) not in (None, "", "ASK_USER")
-            and _decision_value(existing_decisions[field]) != _decision_value(requested)
+            for field, resolved_value in resolved_values.items()
+            if field in existing_decisions and _decision_value(existing_decisions[field]) != resolved_value
         ]
         if conflicting_fields:
             raise ValueError(

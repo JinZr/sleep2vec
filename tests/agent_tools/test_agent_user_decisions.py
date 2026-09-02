@@ -282,13 +282,14 @@ def test_doctor_requires_fresh_output_for_new_decision(tmp_path: Path):
     assert template.read_text() == original
 
 
-def test_doctor_requires_fresh_output_for_changed_concrete_decision(tmp_path: Path):
+@pytest.mark.parametrize("source", ["explicit_user", "explicit_recipe"])
+def test_doctor_requires_fresh_output_for_changed_concrete_decision(tmp_path: Path, source: str):
     recipe = {"task": "finetune"}
     report = DecisionReport(
         status=DecisionStatus.NEEDS_USER_INPUT,
         issues=[DecisionIssue(DecisionStatus.NEEDS_USER_INPUT, "overwrite_policy", "Overwrite policy is missing.")],
         decisions={
-            "label_name": ResolvedDecision("label_name", "stage5", "explicit_user", "high", {}),
+            "label_name": ResolvedDecision("label_name", "stage5", source, "high", {}),
         },
     )
     output_dir = tmp_path / "doctor"
