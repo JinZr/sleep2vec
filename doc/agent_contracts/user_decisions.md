@@ -57,8 +57,9 @@ Special cases are explicit:
 - A user `task` may fill a missing recipe task but cannot replace an explicit
   recipe task. For layered hparam recipes, it is compared with the local
   overlay rather than the base finetune task.
-- `train_val_test_policy` must be exactly `train`, `val`, or `test`;
-  descriptive text is not interpreted as a split.
+- `train_val_test_policy` must be exactly `val` or `test`; direct finetune
+  rejects `test`, and hparam tuning requires explicit test access.
+  Descriptive text is not interpreted as a split.
 
 ```yaml
 decisions:

@@ -203,19 +203,19 @@ def _materialize_decisions(
 
     if user_supplied and "train_val_test_policy" in decision_values:
         selection_split = decision_values["train_val_test_policy"]
-        if selection_split not in (None, "", "ASK_USER") and selection_split not in ("train", "val", "test"):
+        if selection_split not in (None, "", "ASK_USER") and selection_split not in ("val", "test"):
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
                     "train_val_test_policy",
-                    "Explicit train_val_test_policy must be train, val, or test.",
+                    "Explicit train_val_test_policy must be val or test.",
                     None,
                     {"value": selection_split, "preflight_before_workspace": True},
                 )
             )
 
     canonical_fields = _resolve_write_targets(recipe.get("task"))
-    if decision_values.get("train_val_test_policy") not in ("train", "val", "test"):
+    if decision_values.get("train_val_test_policy") not in ("val", "test"):
         canonical_fields.pop("train_val_test_policy", None)
 
     for field, (section, key) in canonical_fields.items():

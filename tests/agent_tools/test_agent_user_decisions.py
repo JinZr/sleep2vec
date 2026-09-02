@@ -673,7 +673,20 @@ def test_user_split_decision_requires_concrete_split(tmp_path: Path):
     assert any(issue.field == "train_val_test_policy" for issue in report.blocking_issues())
 
 
-def test_user_split_decision_materializes_selection_split(tmp_path: Path):
+def test_user_split_decision_materializes_val_selection_split(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    decisions = _write_decisions(
+        tmp_path,
+        {"train_val_test_policy": {"value": "val", "source": "explicit_user"}},
+    )
+
+    effective, _cfg, report = evaluate_recipe(recipe, decisions)
+
+    assert report.exit_code == 0
+    assert effective["evaluation_policy"]["selection_split"] == "val"
+
+
+def test_user_split_decision_rejects_train_selection(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     decisions = _write_decisions(
         tmp_path,
@@ -682,5 +695,9 @@ def test_user_split_decision_materializes_selection_split(tmp_path: Path):
 
     effective, _cfg, report = evaluate_recipe(recipe, decisions)
 
-    assert report.exit_code == 0
-    assert effective["evaluation_policy"]["selection_split"] == "train"
+    assert report.exit_code == 1
+    assert effective["evaluation_policy"]["selection_split"] == "val"
+    assert any(
+        issue.field == "train_val_test_policy" and "must be val or test" in issue.message
+        for issue in report.blocking_issues()
+    )
