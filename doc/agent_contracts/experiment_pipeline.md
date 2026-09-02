@@ -81,11 +81,14 @@ The closed v1 sections are:
 
 ## Source and checkpoint gates
 
-All source plans must belong to the workspace, have no active runs, and finish
-successfully before checkpoint selection. Selection reuses the managed
-hparam-ranking owner and requires an exact metric and mode match. The
-pipeline freezes the selected score, config, checkpoint path, and content
-hashes before any external job starts.
+All source plans must belong to the workspace and have only terminal runs
+before checkpoint selection. A source is ready when at least one run completed
+successfully; failed or stopped runs remain recorded but do not block selection
+from the successful per-run winners. A source with no successful run fails.
+Selection reuses the managed hparam-ranking and candidate-resolution owner and
+requires an exact metric and mode match. The pipeline freezes the selected
+score, config, checkpoint path, and content hashes before any external job
+starts.
 Schema v1 has no remote source-artifact staging boundary, so it accepts only
 local source plans and rejects an SSH-owned source before creating pipeline
 state or other outputs.

@@ -556,6 +556,21 @@ def test_checkpoint_selection_stays_with_frozen_source_plan(tmp_path: Path, monk
     monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", lambda *_args: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: canonical)
     monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: ranking)
+    resolver_calls = []
+
+    def resolve_candidates(plan_dir, candidate_rows, **kwargs):
+        resolver_calls.append((plan_dir, candidate_rows, kwargs))
+        return [
+            {
+                **ranking[1],
+                "config_sha256": file_sha256(source_config),
+                "checkpoint_dir": str(source_checkpoint_dir),
+                "checkpoint_sha256": file_sha256(source_checkpoint),
+                "status": "completed",
+            }
+        ], {}
+
+    monkeypatch.setattr(experiment_pipeline, "resolve_hparam_candidates", resolve_candidates)
     monkeypatch.setattr(
         experiment_pipeline,
         "_validate_checkpoint_payload",
@@ -568,6 +583,7 @@ def test_checkpoint_selection_stays_with_frozen_source_plan(tmp_path: Path, monk
     assert selected[0]["run_id"] == source_run["run_id"]
     assert selected[0]["checkpoint"] == str(source_checkpoint)
     assert selected[0]["score"] == 4.5
+    assert resolver_calls == [(source_plan_dir, [source_run], {"top_k": 1})]
 
 
 @pytest.mark.parametrize(
@@ -619,8 +635,22 @@ def test_checkpoint_selection_uses_canonical_status_after_ranking(
     def select_candidates(*_args):
         canonical["status"] = current_status
 
+    def resolve_candidates(_plan_dir, _candidate_rows, **_kwargs):
+        if canonical["status"] not in {"completed", "finished"}:
+            raise ValueError("No successful selected candidates remain after canonical selection filtering.")
+        return [
+            {
+                **ranking[0],
+                "config_sha256": file_sha256(config),
+                "checkpoint_dir": str(checkpoint_dir),
+                "checkpoint_sha256": file_sha256(checkpoint),
+                "status": canonical["status"],
+            }
+        ], {}
+
     monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: source_plan)
     monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", select_candidates)
+    monkeypatch.setattr(experiment_pipeline, "resolve_hparam_candidates", resolve_candidates)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(canonical)])
     monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: ranking)
     monkeypatch.setattr(
@@ -630,7 +660,7 @@ def test_checkpoint_selection_uses_canonical_status_after_ranking(
     )
 
     if not should_select:
-        with pytest.raises(ValueError, match="Selected checkpoint source is not successful"):
+        with pytest.raises(ValueError, match="No successful selected candidates"):
             experiment_pipeline._select_checkpoint_sources(root, spec)
         return
 
@@ -671,6 +701,22 @@ def test_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path, monk
     monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", lambda *_args: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: canonical)
     monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: ranking)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "resolve_hparam_candidates",
+        lambda *_args, **_kwargs: (
+            [
+                {
+                    **ranking[0],
+                    "config_sha256": file_sha256(Path(selection["config"])),
+                    "checkpoint_dir": str(checkpoint.parent),
+                    "checkpoint_sha256": file_sha256(checkpoint),
+                    "status": "completed",
+                }
+            ],
+            {},
+        ),
+    )
 
     with pytest.raises(ValueError, match="independent regular files"):
         experiment_pipeline._select_checkpoint_sources(root, spec)

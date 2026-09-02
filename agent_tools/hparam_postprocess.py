@@ -13,16 +13,9 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from . import experiment_io as exp_io, python_programs, run_artifacts as artifacts, run_evidence as evidence
-from .experiment_workspace import (
-    canonical_local_experiment_root,
-    experiment_root,
-    managed_run_key,
-    managed_run_parameters,
-    read_run_manifest,
-    validate_frozen_run_update,
-    validate_managed_run_rows,
-)
+from . import experiment_io as exp_io, python_programs, run_artifacts as artifacts
+from .experiment_workspace import canonical_local_experiment_root, managed_run_key
+from .hparam_selection import resolve_hparam_candidates
 from .manifests import read_rows, write_rows, write_text
 from .models import REPO_ROOT, module_for_variant
 from .plan_rendering import infer_runtime_cli_args, render_command
@@ -43,10 +36,9 @@ def generate_external_eval(
     if not unlock_final_test:
         raise ValueError("hparam-external-eval requires --unlock-final-test.")
     root = canonical_local_experiment_root(run_dir, Path.cwd())
-    plan = artifacts.read_hparam_plan(root)
-    rows, owner_plans = _selected_candidate_rows(
+    rows, owner_plans = resolve_hparam_candidates(
+        root,
         read_rows(selected_csv, require_managed_identity=True),
-        plan=plan,
         top_k=top_k,
         all_candidates=all_candidates,
     )
@@ -171,10 +163,9 @@ def export_hparam_logits(
         raise ValueError("hparam-export-logits requires --unlock-final-test unless --skip-test is used.")
 
     root = canonical_local_experiment_root(run_dir, Path.cwd())
-    plan = artifacts.read_hparam_plan(root)
-    rows, owner_plans = _selected_candidate_rows(
+    rows, owner_plans = resolve_hparam_candidates(
+        root,
         read_rows(selected_csv, require_managed_identity=True),
-        plan=plan,
         top_k=top_k,
         all_candidates=all_candidates,
     )
@@ -374,9 +365,10 @@ def export_hparam_logits(
 
 def threshold_hparam_outputs(run_dir: str | Path, selected_csv: str | Path) -> Path:
     root = canonical_local_experiment_root(run_dir, Path.cwd())
-    plan = artifacts.read_hparam_plan(root)
-    selected_rows, _owner_plans = _selected_candidate_rows(
-        read_rows(selected_csv, require_managed_identity=True), plan=plan, all_candidates=True
+    selected_rows, _owner_plans = resolve_hparam_candidates(
+        root,
+        read_rows(selected_csv, require_managed_identity=True),
+        all_candidates=True,
     )
     out = root / "threshold_summary.csv"
     exp_io.validate_managed_output_paths(root, [out])
@@ -427,9 +419,10 @@ def ensemble_hparam_outputs(
     top_k: int | None = None,
 ) -> Path:
     root = canonical_local_experiment_root(run_dir, Path.cwd())
-    plan = artifacts.read_hparam_plan(root)
-    rows, _owner_plans = _selected_candidate_rows(
-        read_rows(candidates_csv, require_managed_identity=True), plan=plan, all_candidates=True
+    rows, _owner_plans = resolve_hparam_candidates(
+        root,
+        read_rows(candidates_csv, require_managed_identity=True),
+        all_candidates=True,
     )
     out = root / "ensemble_summary.csv"
     exp_io.validate_managed_output_paths(root, [out])
@@ -446,166 +439,6 @@ def ensemble_hparam_outputs(
         summary.append(_ensemble_summary_row(usable))
     write_rows(out, summary)
     return out
-
-
-def _selected_candidate_rows(
-    rows: list[dict[str, str]],
-    *,
-    plan: dict[str, Any],
-    top_k: int = 1,
-    all_candidates: bool = False,
-) -> tuple[list[dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
-    validate_managed_run_rows(rows, source="selected candidates", cardinality="many_per_run")
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    selection_metric = evaluation.get("selection_metric")
-    selection_mode = evaluation.get("selection_mode")
-    selection_split = evaluation.get("selection_split")
-    workspace = experiment_root(recipe)
-    if workspace is None:
-        raise ValueError("Selected candidates require a managed experiment workspace.")
-    step = recipe.get("step") if isinstance(recipe.get("step"), dict) else {}
-    step_id = str(step.get("id") or "")
-    workspace_by_key = {managed_run_key(run): run for run in read_run_manifest(workspace)}
-    frozen_ranking_by_key = {}
-    if selection_split == "test":
-        ranking_path = workspace / "reports" / "ranking.csv"
-        frozen_ranking = read_rows(ranking_path, require_managed_identity=True)
-        validate_managed_run_rows(frozen_ranking, source=str(ranking_path), cardinality="one_per_run")
-        frozen_ranking_by_key = {managed_run_key(row): row for row in frozen_ranking}
-
-    owner_runs_by_key = {}
-    owner_plans_by_key = {}
-    for registered_root, owner_plan in artifacts.iter_registered_hparam_plans(
-        workspace,
-        step_id,
-        selection_metric=selection_metric,
-        selection_mode=selection_mode,
-        selection_split=selection_split,
-    ):
-        for run in owner_plan["runs"]:
-            key = managed_run_key(run)
-            if key in owner_runs_by_key:
-                raise ValueError(f"Managed run is owned by multiple registered hparam plans: {key[0]} / {key[1]}")
-            owner_runs_by_key[key] = run
-            owner_plans_by_key[key] = owner_plan
-
-    for row in rows:
-        key = managed_run_key(row)
-        managed = workspace_by_key.get(key)
-        if managed is None:
-            if str(row.get("step_id") or "") == step_id:
-                raise ValueError(
-                    f"Selected candidate is not managed by a registered hparam plan for the current step: "
-                    f"{row['step_id']} / {row['run_id']}"
-                )
-            raise ValueError(
-                f"Selected candidate is not managed by the experiment workspace: {row['step_id']} / {row['run_id']}"
-            )
-        candidate_parameters = managed_run_parameters(row)
-        ownership_evidence = (
-            {field: value for field, value in row.items() if field not in candidate_parameters}
-            if key in owner_runs_by_key
-            else row
-        )
-        # A selected checkpoint is external evidence and must belong to its frozen managed run.
-        validate_frozen_run_update(managed, ownership_evidence, require_checkpoint_ownership=True)
-    rows = [row for row in rows if str(row.get("step_id") or "") == step_id]
-    if not rows:
-        raise ValueError(f"No selected candidates match the current hparam step: {step_id}")
-    managed_rows = []
-    for row in rows:
-        key = managed_run_key(row)
-        run = owner_runs_by_key.get(key)
-        if run is None:
-            raise ValueError(
-                f"Selected candidate is not managed by a registered hparam plan for the current step: "
-                f"{key[0]} / {key[1]}"
-            )
-        candidate_parameters = managed_run_parameters(row)
-        plan_parameters = managed_run_parameters(run)
-        extra_parameters = sorted(set(candidate_parameters) - set(plan_parameters))
-        if extra_parameters:
-            raise ValueError(
-                f"Selected candidate defines parameters outside the managed plan: {', '.join(extra_parameters)}"
-            )
-        for field, value in candidate_parameters.items():
-            expected = "" if plan_parameters[field] is None else str(plan_parameters[field])
-            actual = "" if value is None else str(value)
-            if actual != expected:
-                raise ValueError(f"Selected candidate parameter differs from the managed plan: {field}")
-        derived = {field: value for field, value in row.items() if field not in candidate_parameters}
-        validate_frozen_run_update(run, derived, require_checkpoint_ownership=True)
-        if selection_split == "test":
-            checkpoint_path = str(derived.get("checkpoint_path") or "")
-            checkpoint_sha256 = str(derived.get("checkpoint_sha256") or "")
-            if not checkpoint_path or not checkpoint_sha256:
-                raise ValueError(f"Test-selected candidate is missing frozen checkpoint_sha256: {key[0]} / {key[1]}")
-            # Caller rows are selectors; frozen selection provenance remains owned by hparam-select outputs.
-            frozen_ranking = frozen_ranking_by_key.get(key)
-            if frozen_ranking is None:
-                raise ValueError(
-                    f"Test-selected candidate is missing from the frozen hparam ranking: {key[0]} / {key[1]}"
-                )
-            canonical = workspace_by_key[key]
-            for field, value in (
-                ("rank", "" if derived.get("rank") is None else str(derived.get("rank"))),
-                ("checkpoint_path", checkpoint_path),
-                ("checkpoint_sha256", checkpoint_sha256),
-            ):
-                frozen_value = "" if frozen_ranking.get(field) is None else str(frozen_ranking.get(field))
-                canonical_value = "" if canonical.get(field) is None else str(canonical.get(field))
-                if value != frozen_value or value != canonical_value:
-                    raise ValueError(
-                        f"Test-selected candidate {field} differs from frozen hparam selection: {key[0]} / {key[1]}"
-                    )
-            for field in ("metric", "score", "epoch", "checkpoint_rank", "source"):
-                frozen_value = "" if frozen_ranking.get(field) is None else str(frozen_ranking.get(field))
-                canonical_value = "" if canonical.get(field) is None else str(canonical.get(field))
-                if frozen_value != canonical_value:
-                    raise ValueError(
-                        f"Frozen hparam ranking {field} differs from canonical selection: {key[0]} / {key[1]}"
-                    )
-            derived.update(frozen_ranking)
-        managed_rows.append({**derived, **run, "status": workspace_by_key[key].get("status", "")})
-    if not all_candidates and (type(top_k) is not int or top_k <= 0):
-        raise ValueError("top_k must be a positive integer.")
-    ranked_rows = []
-    for index, row in enumerate(managed_rows):
-        rank = row.get("rank")
-        try:
-            numeric_rank = float(rank)
-        except (TypeError, ValueError):
-            numeric_rank = math.nan
-        if (
-            isinstance(rank, bool)
-            or not math.isfinite(numeric_rank)
-            or not numeric_rank.is_integer()
-            or numeric_rank <= 0
-        ):
-            raise ValueError(f"Selected candidate rank must be a positive integer: {row['step_id']} / {row['run_id']}")
-        ranked_rows.append((int(numeric_rank), index, row))
-    selected = managed_rows if all_candidates else [row for _rank, _index, row in sorted(ranked_rows)[:top_k]]
-    if not selected:
-        raise ValueError("No selected candidates remain after rank/top_k filtering.")
-    if selection_split == "test":
-        # Physical I/O follows selection so an unused lower-rank checkpoint cannot block top-k postprocessing.
-        for row in selected:
-            key = managed_run_key(row)
-            canonical = workspace_by_key[key]
-            checkpoint_path = str(canonical.get("checkpoint_path") or "")
-            checkpoint_sha256 = str(canonical.get("checkpoint_sha256") or "")
-            evidence_row = {**owner_runs_by_key[key], **canonical}
-            owner_recipe = (
-                owner_plans_by_key[key].get("recipe") if isinstance(owner_plans_by_key[key].get("recipe"), dict) else {}
-            )
-            execution = owner_recipe.get("execution") if isinstance(owner_recipe.get("execution"), dict) else {}
-            for field in ("target", "host"):
-                if evidence_row.get(field) in (None, ""):
-                    evidence_row[field] = execution.get(field, "")
-            if evidence.checkpoint_file_sha256(evidence_row, checkpoint_path) != checkpoint_sha256:
-                raise ValueError(f"Frozen checkpoint SHA-256 differs: {checkpoint_path}")
-    return selected, owner_plans_by_key
 
 
 def _require_local_postprocess_execution(
