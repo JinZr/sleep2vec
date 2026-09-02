@@ -19,10 +19,12 @@ python -m agent_tools experiment-run \
 ```
 
 Dry-run is the default and starts no process. Execute mode holds one exclusive
-runner lock beside `pipelines/<pipeline-id>/` and atomically freezes the source
-and parsed spec, their SHA-256 identity, source-plan identities, inference-preset
-hashes, checkpoint or candidate selection, job/attempt mapping, and runtime
-identity under that directory. Once state exists, execution requires
+runner lock beside `pipelines/<pipeline-id>/` and atomically publishes the
+initial control state: source and parsed spec, their SHA-256 identity,
+source-plan identities, inference-preset hashes, and runtime identity. That
+state waits for ready sources. The controller then separately derives and
+hash-binds `checkpoints.json` or `candidates.json` before it materializes the
+corresponding jobs and attempts. Once state exists, execution requires
 `--resume --execute`; any
 frozen spec, source-plan, preset, config, checkpoint, or artifact drift fails
 closed. When an eligible attempt reaches the shared managed scheduler, its
