@@ -42,6 +42,37 @@ def test_user_decision_yaml_resolves_missing_label_name(tmp_path: Path):
     assert "Status: PASS" in result.stdout
 
 
+def test_user_decision_file_is_reused_unchanged_by_doctor_and_fresh_plan(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path, include_label=False)
+    decisions = _write_decisions(tmp_path, {"label_name": {"value": "ahi", "source": "explicit_user"}})
+    decision_bytes = decisions.read_bytes()
+
+    doctor = _run(
+        "doctor",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(tmp_path / "doctor"),
+    )
+    plan_dir = tmp_path / "plans" / "first"
+    plan = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(plan_dir),
+    )
+
+    assert doctor.returncode == 0, doctor.stdout
+    assert plan.returncode == 0, plan.stdout
+    assert (plan_dir / "run.sh").is_file()
+    assert decisions.read_bytes() == decision_bytes
+
+
 def test_user_decision_yaml_resolves_external_test_locked(tmp_path: Path):
     base = write_finetune_recipe(tmp_path)
     recipe = write_yaml(
@@ -64,7 +95,7 @@ def test_user_decision_yaml_resolves_external_test_locked(tmp_path: Path):
             "decisions": {
                 "task": {"value": "hparam_tune", "source": "explicit_recipe"},
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
                 "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
@@ -235,6 +266,52 @@ def test_doctor_does_not_overwrite_existing_user_decisions_file(tmp_path: Path):
     assert template.read_text() == original
 
 
+def test_doctor_requires_fresh_output_for_new_decision(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path, include_label=False)
+    output_dir = tmp_path / "doctor"
+    output_dir.mkdir()
+    template = output_dir / "decisions.yaml"
+    original = "decisions:\n  overwrite_policy:\n    value: false\n"
+    template.write_text(original)
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "missing newly requested decisions" in result.stderr
+    assert "fresh --output-dir" in result.stderr
+    assert template.read_text() == original
+
+
+@pytest.mark.parametrize("source", ["explicit_user", "explicit_recipe"])
+def test_doctor_requires_fresh_output_for_changed_concrete_decision(tmp_path: Path, source: str):
+    recipe = {"task": "finetune"}
+    report = DecisionReport(
+        status=DecisionStatus.NEEDS_USER_INPUT,
+        issues=[DecisionIssue(DecisionStatus.NEEDS_USER_INPUT, "overwrite_policy", "Overwrite policy is missing.")],
+        decisions={
+            "label_name": ResolvedDecision("label_name", "stage5", source, "high", {}),
+        },
+    )
+    output_dir = tmp_path / "doctor"
+    output_dir.mkdir()
+    template = output_dir / "decisions.yaml"
+    original = yaml.safe_dump(
+        {
+            "decisions": {
+                "label_name": {"value": "ahi", "source": "explicit_user"},
+                "overwrite_policy": {"value": "ASK_USER", "source": "explicit_user"},
+            }
+        },
+        sort_keys=False,
+    )
+    template.write_text(original)
+
+    with pytest.raises(ValueError, match="conflicts with current resolved decisions"):
+        write_user_decision_template(output_dir, recipe, report, preserve_existing=True)
+
+    assert template.read_text() == original
+
+
 def test_plan_cli_does_not_advertise_stale_user_decisions_file(tmp_path: Path, monkeypatch, capsys):
     output_dir = tmp_path / "plan"
     output_dir.mkdir()
@@ -263,13 +340,18 @@ def test_doctor_does_not_overwrite_user_decisions_created_during_publication(tmp
 
     def competing_link(source, destination, *args, **kwargs):
         if Path(destination) == template:
-            template.write_text("user competitor\n")
+            template.write_text(
+                yaml.safe_dump(
+                    {"decisions": {"label_name": {"value": "ahi", "source": "explicit_user"}}},
+                    sort_keys=False,
+                )
+            )
         return real_link(source, destination, *args, **kwargs)
 
     monkeypatch.setattr(os, "link", competing_link)
 
     assert write_user_decision_template(output_dir, recipe, report, preserve_existing=True) == (template, False)
-    assert template.read_text() == "user competitor\n"
+    assert yaml.safe_load(template.read_text())["decisions"]["label_name"]["value"] == "ahi"
     assert not list(output_dir.glob(".decisions.yaml.*.tmp"))
 
 
@@ -489,6 +571,55 @@ def test_user_task_fills_missing_recipe_task(tmp_path: Path):
     assert effective["task"] == "finetune"
 
 
+def test_user_task_scopes_contract_before_authored_task_fallback(tmp_path: Path):
+    base = write_finetune_recipe(tmp_path)
+    recipe = write_yaml(
+        tmp_path / "tune.yaml",
+        {
+            "name": "unit_tune",
+            "variant": "sleep2vec",
+            "base_recipe": str(base),
+            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
+            "evaluation_policy": {
+                "selection_metric": "val_ahi_pearson",
+                "selection_mode": "max",
+                "selection_split": "val",
+                "external_test_locked": True,
+                "test_after_fit": False,
+                "final_eval_split": "test",
+                "final_test_unlocked": False,
+                "require_manual_unlock_for_final_test": True,
+            },
+            "decisions": {
+                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
+                "label_name": {"value": "ahi", "source": "explicit_recipe"},
+                "external_test_locked": {"value": True, "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
+                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
+            },
+        },
+    )
+    decisions = _write_decisions(
+        tmp_path,
+        {"task": {"value": "finetune", "source": "explicit_user"}},
+    )
+    output_dir = tmp_path / "plan"
+
+    result = _run(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(decisions),
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert result.returncode == 1
+    assert "search" in result.stdout
+    assert not (output_dir / "run.sh").exists()
+
+
 def test_generated_task_template_remains_unresolved_until_filled(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -593,7 +724,7 @@ def test_layered_hparam_task_template_preserves_user_decisions(tmp_path: Path):
             "decisions": {
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
         },
@@ -642,7 +773,20 @@ def test_user_split_decision_requires_concrete_split(tmp_path: Path):
     assert any(issue.field == "train_val_test_policy" for issue in report.blocking_issues())
 
 
-def test_user_split_decision_materializes_selection_split(tmp_path: Path):
+def test_user_split_decision_materializes_val_selection_split(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    decisions = _write_decisions(
+        tmp_path,
+        {"train_val_test_policy": {"value": "val", "source": "explicit_user"}},
+    )
+
+    effective, _cfg, report = evaluate_recipe(recipe, decisions)
+
+    assert report.exit_code == 0
+    assert effective["evaluation_policy"]["selection_split"] == "val"
+
+
+def test_user_split_decision_rejects_train_selection(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     decisions = _write_decisions(
         tmp_path,
@@ -651,5 +795,75 @@ def test_user_split_decision_materializes_selection_split(tmp_path: Path):
 
     effective, _cfg, report = evaluate_recipe(recipe, decisions)
 
-    assert report.exit_code == 0
+    assert report.exit_code == 1
+    assert effective["evaluation_policy"]["selection_split"] == "val"
+    assert any(
+        issue.field == "train_val_test_policy" and "must be one of" in issue.message
+        for issue in report.blocking_issues()
+    )
+
+
+def test_authored_train_split_decision_is_rejected(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"]["selection_split"] = "train"
+    payload["decisions"]["train_val_test_policy"] = {"value": "train", "source": "explicit_recipe"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    effective, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 1
     assert effective["evaluation_policy"]["selection_split"] == "train"
+    assert any(issue.field == "evaluation_policy.selection_split" for issue in report.blocking_issues())
+
+
+def test_authored_descriptive_split_decision_is_rejected(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"]["train_val_test_policy"] = {
+        "value": "select on test",
+        "source": "explicit_recipe",
+    }
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    effective, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 1
+    assert effective["evaluation_policy"]["selection_split"] == "val"
+    assert any(
+        issue.field == "train_val_test_policy" and "must be one of" in issue.message
+        for issue in report.blocking_issues()
+    )
+
+
+def test_authored_canonical_train_split_is_rejected(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"]["selection_split"] = "train"
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    effective, _cfg, report = evaluate_recipe(recipe)
+
+    assert report.exit_code == 1
+    assert effective["evaluation_policy"]["selection_split"] == "train"
+    assert any(
+        issue.field == "train_val_test_policy" and "conflicts with" in issue.message
+        for issue in report.blocking_issues()
+    )
+
+
+def test_user_split_decision_resolves_authored_selection_conflict(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"]["train_val_test_policy"] = {"value": "test", "source": "explicit_recipe"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    decisions = _write_decisions(
+        tmp_path,
+        {"train_val_test_policy": {"value": "val", "source": "explicit_user"}},
+    )
+
+    effective, _cfg, report = evaluate_recipe(recipe, decisions)
+
+    assert report.exit_code == 0
+    assert effective["evaluation_policy"]["selection_split"] == "val"
+    assert effective["decisions"]["train_val_test_policy"] == {"value": "val", "source": "explicit_user"}

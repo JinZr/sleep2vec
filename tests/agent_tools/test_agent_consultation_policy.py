@@ -15,6 +15,20 @@ from agent_tools.plans import evaluate_recipe
 from agent_tools.recipes import load_consultation_policy
 
 
+def test_selection_split_and_test_access_questions_are_distinct():
+    policy = load_consultation_policy()
+    fields = {field["id"]: field for field in policy["high_impact_fields"]}
+
+    assert fields["train_val_test_policy"]["question"] == (
+        "Which supported split should be used for model selection: val for direct finetune; "
+        "val or explicitly authorized test for hparam tuning?"
+    )
+    assert fields["train_val_test_policy"]["allowed_values"] == ["val", "test"]
+    assert fields["external_test_locked"]["question"] == (
+        "Should test data remain locked during this task, or is test access explicitly authorized?"
+    )
+
+
 def _run(*args: str, cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-m", "agent_tools", *args], cwd=cwd, text=True, capture_output=True)
 
@@ -136,7 +150,7 @@ def test_remote_deferred_survival_sidecars_do_not_require_local_files(tmp_path: 
                     "source": "explicit_recipe",
                     "meaning": "train from scratch",
                 },
-                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
                 "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             },
         },
@@ -190,7 +204,7 @@ def test_survival_preset_does_not_require_sidecar_files(tmp_path: Path):
                     "source": "explicit_recipe",
                     "meaning": "train from scratch",
                 },
-                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
                 "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             },
         },
@@ -451,7 +465,7 @@ def test_remote_ssh_survival_checks_do_not_read_local_sidecars_or_index(tmp_path
                         "source": "explicit_recipe",
                         "meaning": "train from scratch",
                     },
-                    "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                    "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
                     "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 },
             },
@@ -510,7 +524,7 @@ def test_remote_ssh_survival_checks_do_not_read_local_sidecars_or_index(tmp_path
                     "source": "explicit_recipe",
                     "meaning": "train from scratch",
                 },
-                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
                 "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             },
         },
@@ -790,7 +804,7 @@ def test_hparam_tune_blocks_on_base_config_blocking_issues(tmp_path: Path):
             "task": {"value": "hparam_tune", "source": "explicit_recipe"},
             "label_name": {"value": "ahi", "source": "explicit_recipe"},
             "external_test_locked": {"value": True, "source": "explicit_recipe"},
-            "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+            "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
             "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
         },
@@ -866,7 +880,7 @@ def test_hparam_tune_blocks_when_selection_metric_conflicts_with_config(tmp_path
             "task": {"value": "hparam_tune", "source": "explicit_recipe"},
             "label_name": {"value": "ahi", "source": "explicit_recipe"},
             "external_test_locked": {"value": True, "source": "explicit_recipe"},
-            "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+            "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
             "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
         },
@@ -897,6 +911,20 @@ def test_missing_high_impact_label_requires_user_input():
 
     assert report.status == DecisionStatus.NEEDS_USER_INPUT
     assert any(issue.field == "label_name" for issue in report.issues)
+
+
+def test_direct_finetune_uses_task_neutral_test_access_question():
+    policy = load_consultation_policy()
+    report = evaluate_consultation_gates(
+        "finetune",
+        {"task": "finetune", "evaluation_policy": {"test_after_fit": False}},
+        None,
+        {},
+        policy,
+    )
+
+    issue = next(issue for issue in report.issues if issue.field == "external_test_locked")
+    assert issue.question == "Should test data remain locked during this task, or is test access explicitly authorized?"
 
 
 def test_consultation_policy_rejects_tasks_without_registered_adapters():

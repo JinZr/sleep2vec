@@ -80,9 +80,8 @@ def _recipe_contract_issues(recipe: dict, user_decisions: dict, policy: dict) ->
     recipe_decisions = task_owner.get("decisions") if isinstance(task_owner.get("decisions"), dict) else {}
     effective_task = recipe_task
     if effective_task in (None, "", "ASK_USER"):
-        effective_task = _decision_value(recipe_decisions.get("task"))
-    if effective_task in (None, "", "ASK_USER"):
-        effective_task = _decision_value(user_decisions.get("task"))
+        task_decision = user_decisions.get("task") if "task" in user_decisions else recipe_decisions.get("task")
+        effective_task = _decision_value(task_decision)
     # ASK_USER is an unresolved sentinel, not a task scope for contract validation.
     if effective_task == "ASK_USER":
         effective_task = None
@@ -201,21 +200,8 @@ def _materialize_decisions(
                     )
                 )
 
-    if user_supplied and "train_val_test_policy" in decision_values:
-        selection_split = decision_values["train_val_test_policy"]
-        if selection_split not in (None, "", "ASK_USER") and selection_split not in ("train", "val", "test"):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "train_val_test_policy",
-                    "Explicit train_val_test_policy must be train, val, or test.",
-                    None,
-                    {"value": selection_split, "preflight_before_workspace": True},
-                )
-            )
-
     canonical_fields = _resolve_write_targets(recipe.get("task"))
-    if decision_values.get("train_val_test_policy") not in ("train", "val", "test"):
+    if decision_values.get("train_val_test_policy") not in ("val", "test"):
         canonical_fields.pop("train_val_test_policy", None)
 
     for field, (section, key) in canonical_fields.items():
@@ -236,10 +222,41 @@ def _materialize_decisions(
             )
             continue
         target = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
+        if field == "train_val_test_policy" and not user_supplied:
+            existing_value = target.get(key)
+            if existing_value not in (None, "", "ASK_USER") and existing_value != value:
+                issues.append(
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        field,
+                        "Authored train_val_test_policy conflicts with evaluation_policy.selection_split.",
+                        None,
+                        {
+                            "decision": value,
+                            "selection_split": existing_value,
+                            "preflight_before_workspace": True,
+                        },
+                    )
+                )
+                continue
         recipe[section] = {**target, key: value}
     if user_supplied:
         recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
         recipe["decisions"] = {**recipe_decisions, **decisions}
+        evaluation_policy = recipe.get("evaluation_policy")
+        selection_split = evaluation_policy.get("selection_split") if isinstance(evaluation_policy, dict) else None
+        if selection_split not in (None, "", "ASK_USER", "val", "test") and not any(
+            issue.field == "train_val_test_policy" for issue in issues
+        ):
+            issues.append(
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "evaluation_policy.selection_split",
+                    "evaluation_policy.selection_split must be val or test.",
+                    None,
+                    {"value": selection_split, "preflight_before_workspace": True},
+                )
+            )
     return issues
 
 
@@ -309,7 +326,8 @@ def evaluate_recipe(
         else:
             recipe_decisions.pop("task", None)
         recipe["decisions"] = recipe_decisions
-    materialization_issues = _materialize_decisions(recipe, recipe_decisions)
+    authored_decisions = {field: raw for field, raw in recipe_decisions.items() if field not in user_decisions}
+    materialization_issues = _materialize_decisions(recipe, authored_decisions)
     materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))
     _materialize_task_defaults(recipe, policy, user_decisions)
 
@@ -657,6 +675,35 @@ def write_user_decision_template(
         if not preserve_existing:
             raise ValueError(
                 f"User decisions appeared during blocked plan publication; retry with a fresh --output-dir: {target}"
+            ) from None
+        try:
+            existing_text = exp_io.read_managed_output_texts_at(target.parent, [target])[str(target)]
+        except ValueError as exc:
+            raise ValueError(f"Managed output paths must be independent regular files: {target}") from exc
+        try:
+            existing_payload = yaml.safe_load(existing_text) if existing_text is not None else None
+        except (TypeError, yaml.YAMLError):
+            existing_payload = None
+        existing_decisions = existing_payload.get("decisions") if isinstance(existing_payload, dict) else None
+        if not isinstance(existing_decisions, dict) or not set(payload["decisions"]).issubset(existing_decisions):
+            raise ValueError(
+                f"Existing user decisions file is missing newly requested decisions; "
+                f"retry with a fresh --output-dir: {target}"
+            ) from None
+        resolved_values = {
+            field: decision.value
+            for field, decision in report.decisions.items()
+            if decision.value not in (None, "", "ASK_USER")
+        }
+        conflicting_fields = [
+            field
+            for field, resolved_value in resolved_values.items()
+            if field in existing_decisions and _decision_value(existing_decisions[field]) != resolved_value
+        ]
+        if conflicting_fields:
+            raise ValueError(
+                f"Existing user decisions file conflicts with current resolved decisions "
+                f"({', '.join(sorted(conflicting_fields))}); retry with a fresh --output-dir: {target}"
             ) from None
     finally:
         temporary_path.unlink(missing_ok=True)

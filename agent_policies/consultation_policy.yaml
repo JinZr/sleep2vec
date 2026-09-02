@@ -29,11 +29,12 @@ high_impact_fields:
 
   - id: train_val_test_policy
     required_for_tasks: ["finetune", "hparam_tune"]
-    question: "Which split should be used for model selection, and should the test split remain locked until final evaluation?"
+    allowed_values: ["val", "test"]
+    question: "Which supported split should be used for model selection: val for direct finetune; val or explicitly authorized test for hparam tuning?"
 
   - id: external_test_locked
     required_for_tasks: ["hparam_tune"]
-    question: "Should the external test set remain locked during all hyper-parameter runs?"
+    question: "Should test data remain locked during this task, or is test access explicitly authorized?"
 
   - id: selection_metric
     required_for_tasks: ["finetune", "hparam_tune"]

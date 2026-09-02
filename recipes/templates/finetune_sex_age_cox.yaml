@@ -52,7 +52,7 @@ decisions:
     source: explicit_recipe
     meaning: "sex_age_baseline has no pretrained backbone"
   train_val_test_policy:
-    value: "select on val; run test after fit"
+    value: val
     source: explicit_recipe
   external_test_locked:
     value: false

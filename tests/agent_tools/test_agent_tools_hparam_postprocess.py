@@ -72,7 +72,7 @@ def _hparam_recipe(
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "external_test_locked": {"value": True, "source": "explicit_recipe"},
                 "train_val_test_policy": {
-                    "value": "select on val",
+                    "value": "val",
                     "source": "explicit_recipe",
                 },
                 "overwrite_policy": {"value": False, "source": "explicit_recipe"},

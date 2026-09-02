@@ -46,7 +46,7 @@ BASE_RECIPE_FIELDS: dict[str, RecipeField] = {
     "train_val_test_policy": RecipeField(
         (("evaluation_policy", "selection_split"),),
         ("evaluation_policy", "selection_split"),
-        write_value_whitelist=frozenset({"train", "val", "test"}),
+        write_value_whitelist=frozenset({"val", "test"}),
     ),
     "external_test_locked": RecipeField(
         (("evaluation_policy", "external_test_locked"),),

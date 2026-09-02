@@ -234,7 +234,7 @@ def write_finetune_recipe(tmp_path: Path, *, include_label: bool = True, variant
                 "source": "explicit_recipe",
                 "meaning": "train from scratch",
             },
-            "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+            "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
             "overwrite_policy": {"value": False, "source": "explicit_recipe"},
         },
     }

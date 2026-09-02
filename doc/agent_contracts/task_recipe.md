@@ -434,14 +434,15 @@ While creating a new hparam recipe, an explicit request to tune selects the
 unique supported `finetune_balanced` profile only when no authored parameters,
 configurations, or adaptive search exists. Existing explicit/adaptive search
 always wins. That request covers the profile's deterministic technical levels
-and default 12-run launch budget when experiment, step, config, label,
+and default 12-run search budget when experiment, step, config, label,
 selection split/metric/mode, test policy, host, and runtime identity are already
 unambiguous. An authored budget override or expansion needs separate authority.
 Without `inputs.pretrained_backbone_path`, LoRA adaptation stays fixed;
 `inputs.ckpt_path` is final-evaluation-only, not a tuning backbone.
 
-When those decisions and consultation are complete, carry the authorized scope
-through doctor, plan, launch dry-run, queue execute, terminal monitoring,
+The tuning request alone does not authorize publication or launch. Publication
+may carry the authorized scope through doctor and plan. Once launch is explicitly
+authorized, continue through launch dry-run, queue execute, terminal monitoring,
 selection, final report, and finalization without asking again about tool-owned
 technical levels or execution. This does not authorize test unlock, changed
 label/split/checkpoint/data, or an adaptive round. Report only the best observed

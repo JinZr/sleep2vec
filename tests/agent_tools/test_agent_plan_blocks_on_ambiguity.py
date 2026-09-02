@@ -97,7 +97,7 @@ def _hparam_recipe(
                 "task": {"value": "hparam_tune", "source": "explicit_recipe"},
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
                 "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
@@ -138,7 +138,7 @@ def _survival_recipe_with_missing_sidecar_key(tmp_path: Path) -> tuple[Path, Pat
                 "source": "explicit_recipe",
                 "meaning": "train from scratch",
             },
-            "train_val_test_policy": {"value": "select on val", "source": "explicit_recipe"},
+            "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
             "overwrite_policy": {"value": False, "source": "explicit_recipe"},
         },
     }
