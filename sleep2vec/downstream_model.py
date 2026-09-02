@@ -547,6 +547,8 @@ class Sleep2vecDownstreamModel(nn.Module):
     def train(self, mode: bool = True):
         super().train(mode)
         if getattr(self, "_keep_frozen_backbone_in_eval", False):
+            # Later policies may re-enable tokenizers or encoder/MoE groups, so only modules
+            # that remain fully frozen should be forced back to eval mode.
             if all(not parameter.requires_grad for parameter in self.backbone.parameters()):
                 self.backbone.eval()
             else:
