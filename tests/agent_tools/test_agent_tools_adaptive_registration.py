@@ -1516,8 +1516,9 @@ def test_adaptive_source_rejects_frozen_scientific_contract_before_suggestion_wr
         payload["step"] = yaml.safe_load(Path(payload["base_recipe"]).read_text())["step"]
         payload["step"]["id"] = "changed-step"
     elif drift == "selection_policy":
-        payload["evaluation_policy"]["selection_split"] = "train"
-        payload["decisions"]["train_val_test_policy"]["value"] = "train"
+        payload["evaluation_policy"]["selection_split"] = "test"
+        payload["evaluation_policy"]["selection_metric"] = "test_ahi_pearson"
+        payload["decisions"]["train_val_test_policy"]["value"] = "test"
     elif drift == "test_policy":
         payload["evaluation_policy"]["require_manual_unlock_for_final_test"] = False
     elif drift == "source_config":
