@@ -565,9 +565,23 @@ def test_generated_points_pass_variant_config_validation(config_path: str, varia
         candidate = copy.deepcopy(payload)
         apply_search_overrides(candidate, point)
         validate_finetune_config_bytes(
-            {"variant": variant},
+            _recipe(label=label, variant=variant),
             yaml.safe_dump(candidate, sort_keys=False).encode(),
         )
+
+
+@pytest.mark.parametrize(
+    ("config_path", "variant", "label"),
+    [
+        ("configs/ppg_sex_finetune_large.yaml", "sleep2vec", "age"),
+        ("configs/sleep2vec2/ppg_age_finetune_large.yaml", "sleep2vec2", "sex"),
+    ],
+)
+def test_profile_candidate_validation_rejects_label_task_mismatch(config_path: str, variant: str, label: str):
+    source = REPO_ROOT / config_path
+
+    with pytest.raises(ValueError, match=f"when --label-name is '{label}'"):
+        validate_finetune_config_bytes(_recipe(label=label, variant=variant), source.read_bytes())
 
 
 @pytest.mark.parametrize("case", ["conflicting_search", "unsupported_variant", "missing_lora"])
@@ -620,6 +634,26 @@ def test_generated_config_validation_failure_precedes_workspace_mutation(tmp_pat
     assert before == after
     assert not workspace.exists()
     issue = next(issue for issue in report.issues if issue.field == "hparam_search_space")
+    assert issue.evidence["preflight_before_workspace"] is True
+
+
+def test_profile_label_task_mismatch_fails_before_workspace_mutation(tmp_path: Path):
+    recipe_path, workspace = _profile_recipe(tmp_path)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    base_path = Path(recipe["base_recipe"])
+    base = yaml.safe_load(base_path.read_text())
+    base["inputs"]["label_name"] = "age"
+    base["decisions"]["label_name"]["value"] = "age"
+    base_path.write_text(yaml.safe_dump(base, sort_keys=False))
+    recipe["decisions"]["label_name"]["value"] = "age"
+    recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
+
+    report = plans.build_plan(recipe_path=recipe_path, output_dir=workspace / "plans" / "auto")
+
+    assert report.exit_code == 1
+    assert not workspace.exists()
+    issue = next(issue for issue in report.issues if issue.field == "hparam_search_space")
+    assert "when --label-name is 'age'" in issue.message
     assert issue.evidence["preflight_before_workspace"] is True
 
 

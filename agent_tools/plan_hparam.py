@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 from tempfile import NamedTemporaryFile
+from types import SimpleNamespace
 from typing import Any
 
 import yaml
@@ -234,6 +235,17 @@ def validate_finetune_config_bytes(recipe: dict, config_bytes: bytes) -> None:
         snapshot.flush()
         bundle = config_module.load_finetune_config(Path(snapshot.name))
         config_module.validate_model_config(bundle.model)
+        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        label_name = inputs.get("label_name")
+        search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+        if (
+            search.get("profile") == "finetune_balanced"
+            and recipe.get("variant") != "sex_age_baseline"
+            and label_name not in (None, "", "ASK_USER")
+        ):
+            # Match the final finetune entrypoint's label/task validation before freezing candidate runs.
+            common_module = import_module(rendering.variant_module(recipe, "common"))
+            common_module.apply_task_flags(SimpleNamespace(label_name=label_name), bundle.finetune.task)
 
 
 def validate_hparam_run_configs(recipe: dict, run_configs: list[tuple[dict[str, Any], bytes]]) -> None:
