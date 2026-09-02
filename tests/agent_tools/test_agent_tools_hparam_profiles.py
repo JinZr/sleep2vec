@@ -331,6 +331,7 @@ def test_profile_rejects_freezing_random_source_backbone():
         (lambda recipe: recipe["search"].update({"parameters": {"runtime.lr": [1e-6]}}), DecisionStatus.FAIL),
         (lambda recipe: recipe.update({"variant": "sleep2expert"}), DecisionStatus.NEEDS_USER_INPUT),
         (lambda recipe: recipe["inputs"].update({"label_name": "stage5"}), DecisionStatus.NEEDS_USER_INPUT),
+        (lambda recipe: recipe["inputs"].update({"label_name": "custom_label"}), DecisionStatus.NEEDS_USER_INPUT),
         (lambda recipe: recipe["search"].update({"max_runs": 3}), DecisionStatus.NEEDS_USER_INPUT),
         (lambda recipe: recipe["search"].update({"max_runs": 33}), DecisionStatus.NEEDS_USER_INPUT),
         (lambda recipe: recipe.update({"adaptive": {"enabled": True}}), DecisionStatus.NEEDS_USER_INPUT),
@@ -535,9 +536,13 @@ def test_task_recipe_schema_profile_skeleton_keeps_test_locked():
     ("config_path", "variant", "label"),
     [
         ("configs/ppg_ahi_finetune_large.yaml", "sleep2vec", "ahi"),
+        ("configs/ppg_age_finetune_large.yaml", "sleep2vec", "age"),
+        ("configs/ppg_sex_finetune_large.yaml", "sleep2vec", "sex"),
         ("configs/examples/arousal/FINETUNE_EXAMPLE.yaml", "sleep2vec", "arousal"),
         ("configs/examples/stage4/FINETUNE_EXAMPLE.yaml", "sleep2vec", "stage4"),
         ("configs/sleep2vec2/ppg_ahi_finetune_large.yaml", "sleep2vec2", "ahi"),
+        ("configs/sleep2vec2/ppg_age_finetune_large.yaml", "sleep2vec2", "age"),
+        ("configs/sleep2vec2/ppg_sex_finetune_large.yaml", "sleep2vec2", "sex"),
     ],
 )
 def test_generated_points_pass_variant_config_validation(config_path: str, variant: str, label: str):
@@ -546,6 +551,8 @@ def test_generated_points_pass_variant_config_validation(config_path: str, varia
     summary = config_summary(source, variant=variant, validate_survival_local_paths=False)
     compiled = _compile(recipe=_recipe(label=label, variant=variant), summary=summary)
 
+    assert compiled["max_runs"] == 12
+    assert len(compiled["configurations"]) == 12
     first = compiled["configurations"][0]
     assert first["yaml:/finetune/layer_mix"] == payload["finetune"]["layer_mix"]
     assert first["yaml:/finetune/lora"] == payload["finetune"]["lora"]
@@ -558,8 +565,82 @@ def test_generated_points_pass_variant_config_validation(config_path: str, varia
         candidate = copy.deepcopy(payload)
         apply_search_overrides(candidate, point)
         validate_finetune_config_bytes(
-            {"variant": variant},
+            _recipe(label=label, variant=variant),
             yaml.safe_dump(candidate, sort_keys=False).encode(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("config_path", "variant", "label"),
+    [
+        ("configs/ppg_sex_finetune_large.yaml", "sleep2vec", "age"),
+        ("configs/sleep2vec2/ppg_age_finetune_large.yaml", "sleep2vec2", "sex"),
+    ],
+)
+def test_profile_candidate_validation_rejects_label_task_mismatch(config_path: str, variant: str, label: str):
+    source = REPO_ROOT / config_path
+
+    with pytest.raises(ValueError, match=f"when --label-name is '{label}'"):
+        validate_finetune_config_bytes(_recipe(label=label, variant=variant), source.read_bytes())
+
+
+@pytest.mark.parametrize(
+    ("config_path", "variant", "label", "section", "field", "value", "message"),
+    [
+        (
+            "configs/ppg_age_finetune_large.yaml",
+            "sleep2vec",
+            "age",
+            "loss",
+            "class_weights",
+            [1.0],
+            "class_weights is only supported for single-label classification",
+        ),
+        (
+            "configs/sleep2vec2/ppg_age_finetune_large.yaml",
+            "sleep2vec2",
+            "age",
+            "loss",
+            "pos_weight",
+            1.0,
+            "pos_weight is only supported for multilabel classification",
+        ),
+        (
+            "configs/ppg_age_finetune_large.yaml",
+            "sleep2vec",
+            "age",
+            "sampler",
+            "weighted_random",
+            True,
+            "weighted_random is only supported for binary non-sequence classification",
+        ),
+        (
+            "configs/sleep2vec2/ppg_sex_finetune_large.yaml",
+            "sleep2vec2",
+            "sex",
+            "loss",
+            "pos_weight",
+            1.0,
+            "pos_weight is only supported for multilabel classification",
+        ),
+    ],
+)
+def test_profile_candidate_validation_rejects_task_incompatible_imbalance(
+    config_path: str,
+    variant: str,
+    label: str,
+    section: str,
+    field: str,
+    value,
+    message: str,
+):
+    payload = yaml.safe_load((REPO_ROOT / config_path).read_text())
+    payload["finetune"][section][field] = value
+
+    with pytest.raises(ValueError, match=message):
+        validate_finetune_config_bytes(
+            _recipe(label=label, variant=variant),
+            yaml.safe_dump(payload, sort_keys=False).encode(),
         )
 
 
@@ -613,6 +694,26 @@ def test_generated_config_validation_failure_precedes_workspace_mutation(tmp_pat
     assert before == after
     assert not workspace.exists()
     issue = next(issue for issue in report.issues if issue.field == "hparam_search_space")
+    assert issue.evidence["preflight_before_workspace"] is True
+
+
+def test_profile_label_task_mismatch_fails_before_workspace_mutation(tmp_path: Path):
+    recipe_path, workspace = _profile_recipe(tmp_path)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    base_path = Path(recipe["base_recipe"])
+    base = yaml.safe_load(base_path.read_text())
+    base["inputs"]["label_name"] = "age"
+    base["decisions"]["label_name"]["value"] = "age"
+    base_path.write_text(yaml.safe_dump(base, sort_keys=False))
+    recipe["decisions"]["label_name"]["value"] = "age"
+    recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
+
+    report = plans.build_plan(recipe_path=recipe_path, output_dir=workspace / "plans" / "auto")
+
+    assert report.exit_code == 1
+    assert not workspace.exists()
+    issue = next(issue for issue in report.issues if issue.field == "hparam_search_space")
+    assert "when --label-name is 'age'" in issue.message
     assert issue.evidence["preflight_before_workspace"] is True
 
 

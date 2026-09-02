@@ -12,7 +12,7 @@ PROFILE_ID = "finetune_balanced"
 DEFAULT_MAX_RUNS = 12
 MAX_RUNS = 32
 _SUPPORTED_VARIANTS = {"sleep2vec", "sleep2vec2"}
-_SUPPORTED_LABELS = {"ahi", "arousal", "stage4"}
+_SUPPORTED_LABELS = {"ahi", "arousal", "stage4", "age", "sex"}
 
 
 def compile_finetune_balanced_profile(

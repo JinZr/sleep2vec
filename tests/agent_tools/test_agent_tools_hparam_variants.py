@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from importlib import import_module
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 import yaml
@@ -80,6 +82,49 @@ def test_finetune_config_bytes_use_variant_loader(monkeypatch, variant: str, con
 
     with pytest.raises(ValueError):
         validate_finetune_config_bytes({"variant": variant}, b"{}\n")
+
+
+@pytest.mark.parametrize(
+    ("variant", "label", "config_path"),
+    [
+        ("sleep2vec", "age", "configs/ppg_age_finetune_large.yaml"),
+        ("sleep2vec2", "age", "configs/sleep2vec2/ppg_age_finetune_large.yaml"),
+    ],
+)
+def test_finetune_balanced_validation_stays_torch_free(variant: str, label: str, config_path: str):
+    script = """
+import builtins
+from pathlib import Path
+import sys
+
+original_import = builtins.__import__
+
+def import_without_torch(name, *args, **kwargs):
+    if name == "torch" or name.startswith("torch."):
+        raise ModuleNotFoundError("No module named 'torch'")
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = import_without_torch
+from agent_tools.plan_hparam import validate_finetune_config_bytes
+
+validate_finetune_config_bytes(
+    {
+        "variant": sys.argv[1],
+        "inputs": {"label_name": sys.argv[2]},
+        "search": {"profile": "finetune_balanced"},
+    },
+    Path(sys.argv[3]).read_bytes(),
+)
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script, variant, label, str(REPO_ROOT / config_path)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(

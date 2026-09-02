@@ -387,8 +387,8 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   after expansion. Reordering parameter mapping keys does not change run ids
   or the selected grid prefix.
 - `search.profile: finetune_balanced` is the alternative authored intent for
-  `sleep2vec` and `sleep2vec2` finetuning labels `ahi`, `arousal`, and
-  `stage4`. It is mutually exclusive with authored `parameters` or
+  `sleep2vec` and `sleep2vec2` finetuning labels `ahi`, `arousal`, `stage4`,
+  `age`, and `sex`. It is mutually exclusive with authored `parameters` or
   `configurations`. The hparam adapter resolves config facts and materializes
   `method: grid`, a default `max_runs: 12`, and deterministic complete joint
   configurations before consultation. An explicit budget override must be in
