@@ -801,3 +801,20 @@ def test_authored_canonical_train_split_is_rejected(tmp_path: Path):
         issue.field == "train_val_test_policy" and "conflicts with" in issue.message
         for issue in report.blocking_issues()
     )
+
+
+def test_user_split_decision_resolves_authored_selection_conflict(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["decisions"]["train_val_test_policy"] = {"value": "test", "source": "explicit_recipe"}
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    decisions = _write_decisions(
+        tmp_path,
+        {"train_val_test_policy": {"value": "val", "source": "explicit_user"}},
+    )
+
+    effective, _cfg, report = evaluate_recipe(recipe, decisions)
+
+    assert report.exit_code == 0
+    assert effective["evaluation_policy"]["selection_split"] == "val"
+    assert effective["decisions"]["train_val_test_policy"] == {"value": "val", "source": "explicit_user"}

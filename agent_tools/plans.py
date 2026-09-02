@@ -327,7 +327,8 @@ def evaluate_recipe(
         else:
             recipe_decisions.pop("task", None)
         recipe["decisions"] = recipe_decisions
-    materialization_issues = _materialize_decisions(recipe, recipe_decisions)
+    authored_decisions = {field: raw for field, raw in recipe_decisions.items() if field not in user_decisions}
+    materialization_issues = _materialize_decisions(recipe, authored_decisions)
     materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))
     _materialize_task_defaults(recipe, policy, user_decisions)
 
