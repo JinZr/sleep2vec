@@ -55,7 +55,9 @@ Collect unresolved scientific decisions once. Reuse the same authorized
 `decisions.yaml` for later doctor checks and fresh plan publication; resolved
 plan artifacts carry those choices into launch and recovery. Ask only for new
 unresolved decisions introduced by validation, input drift or an expanded
-scope. The decision file records intent but does not itself authorize a later
+scope. If doctor exposes a new decision absent from its existing template, use a
+fresh doctor output directory; doctor does not merge the new field into the old
+file. The decision file records intent but does not itself authorize a later
 interaction stage.
 
 When creating a new recipe, a tuning request selects the unique supported

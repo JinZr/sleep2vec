@@ -266,6 +266,22 @@ def test_doctor_does_not_overwrite_existing_user_decisions_file(tmp_path: Path):
     assert template.read_text() == original
 
 
+def test_doctor_requires_fresh_output_for_new_decision(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path, include_label=False)
+    output_dir = tmp_path / "doctor"
+    output_dir.mkdir()
+    template = output_dir / "decisions.yaml"
+    original = "decisions:\n  overwrite_policy:\n    value: false\n"
+    template.write_text(original)
+
+    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1
+    assert "missing newly requested decisions" in result.stderr
+    assert "fresh --output-dir" in result.stderr
+    assert template.read_text() == original
+
+
 def test_plan_cli_does_not_advertise_stale_user_decisions_file(tmp_path: Path, monkeypatch, capsys):
     output_dir = tmp_path / "plan"
     output_dir.mkdir()
@@ -294,13 +310,18 @@ def test_doctor_does_not_overwrite_user_decisions_created_during_publication(tmp
 
     def competing_link(source, destination, *args, **kwargs):
         if Path(destination) == template:
-            template.write_text("user competitor\n")
+            template.write_text(
+                yaml.safe_dump(
+                    {"decisions": {"label_name": {"value": "ahi", "source": "explicit_user"}}},
+                    sort_keys=False,
+                )
+            )
         return real_link(source, destination, *args, **kwargs)
 
     monkeypatch.setattr(os, "link", competing_link)
 
     assert write_user_decision_template(output_dir, recipe, report, preserve_existing=True) == (template, False)
-    assert template.read_text() == "user competitor\n"
+    assert yaml.safe_load(template.read_text())["decisions"]["label_name"]["value"] == "ahi"
     assert not list(output_dir.glob(".decisions.yaml.*.tmp"))
 
 

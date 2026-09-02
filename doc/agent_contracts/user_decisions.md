@@ -18,8 +18,11 @@ values the user has actually decided, then pass the file explicitly with
 `--user-decisions`. A blocked-plan retry must use a fresh `--output-dir`.
 Existing independent `decisions.yaml` files are not overwritten by doctor;
 a file that appears during blocked-plan publication fails before canonical registration.
-Doctor may reuse a doctor-only output directory, but any blocked or PASS plan marker
-makes that directory plan-owned and requires a fresh doctor `--output-dir`.
+Doctor may reuse a doctor-only output directory only while its existing
+`decisions.yaml` contains every currently requested decision. A newly exposed
+decision requires a fresh doctor `--output-dir`; the old file is never merged or
+overwritten. Any blocked or PASS plan marker also makes the directory plan-owned
+and requires a fresh doctor `--output-dir`.
 
 No template is written for PASS/WARN, FAIL or mixed FAIL/NEEDS_USER_INPUT results,
 non-decision-only blockers, `plan --validate-only`, unsafe or occupied plan
@@ -43,6 +46,10 @@ intent. A decision file records that intent. Its mere presence does not
 authorize publication or launch, and an unedited template does not authorize
 final-test access. A concrete user-authorized `final_eval_unlock` value retains
 its task-owned final-test semantics.
+
+Publish a newly exposed doctor delta in a fresh output directory. Reuse the
+authorized values in the new input file; do not expect doctor to merge a new
+field into an earlier `decisions.yaml`.
 
 Concrete values with a task-owned canonical field are materialized into the
 effective recipe's existing `inputs`, `evaluation_policy`, `preset`, `search`,

@@ -675,6 +675,20 @@ def write_user_decision_template(
             raise ValueError(
                 f"User decisions appeared during blocked plan publication; retry with a fresh --output-dir: {target}"
             ) from None
+        try:
+            existing_text = exp_io.read_managed_output_texts_at(target.parent, [target])[str(target)]
+        except ValueError as exc:
+            raise ValueError(f"Managed output paths must be independent regular files: {target}") from exc
+        try:
+            existing_payload = yaml.safe_load(existing_text) if existing_text is not None else None
+        except (TypeError, yaml.YAMLError):
+            existing_payload = None
+        existing_decisions = existing_payload.get("decisions") if isinstance(existing_payload, dict) else None
+        if not isinstance(existing_decisions, dict) or not set(payload["decisions"]).issubset(existing_decisions):
+            raise ValueError(
+                f"Existing user decisions file is missing newly requested decisions; "
+                f"retry with a fresh --output-dir: {target}"
+            ) from None
     finally:
         temporary_path.unlink(missing_ok=True)
     exp_io.validate_managed_output_paths(target.parent, [target])
