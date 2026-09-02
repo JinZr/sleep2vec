@@ -547,7 +547,12 @@ class Sleep2vecDownstreamModel(nn.Module):
     def train(self, mode: bool = True):
         super().train(mode)
         if getattr(self, "_keep_frozen_backbone_in_eval", False):
-            self.backbone.eval()
+            if all(not parameter.requires_grad for parameter in self.backbone.parameters()):
+                self.backbone.eval()
+            else:
+                for module in self.backbone.children():
+                    if all(not parameter.requires_grad for parameter in module.parameters()):
+                        module.eval()
         return self
 
     # 在所有 adapter 都 add 完之后调用

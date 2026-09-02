@@ -38,12 +38,19 @@ class _Backbone(nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = _BaseEncoder()
+        self.tokenizer_mapping = nn.ModuleDict(
+            {"heartbeat": nn.Sequential(nn.Linear(1, 1, bias=False), nn.Dropout(p=0.5))}
+        )
 
     def get_encoder(self):
         return self.encoder
 
     def replace_encoder(self, encoder: nn.Module):
         self.encoder = encoder
+
+    def set_tokenizers_trainable(self, trainable: bool):
+        for parameter in self.tokenizer_mapping.parameters():
+            parameter.requires_grad = trainable
 
 
 def _downstream_with_backbone(model_cls, channel_names):
@@ -104,6 +111,12 @@ def test_separate_adapters_only_train_channel_lora_weights(monkeypatch, module_n
     model._set_active_adapter("ch_breath")
     assert encoder.active_adapter == "ch_breath"
 
+    model.eval()
+    model.train()
+
+    assert model.backbone.training is True
+    assert encoder.training is True
+
 
 @pytest.mark.parametrize(
     "module_name",
@@ -129,6 +142,61 @@ def test_frozen_backbone_without_lora_stays_in_eval_mode(module_name: str):
 
     assert model.training is True
     assert model.backbone.training is False
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.downstream_model",
+        "sleep2vec2.downstream_model",
+        "sleep2expert.downstream_model",
+    ],
+)
+def test_trainable_tokenizer_remains_in_train_mode_with_frozen_backbone(module_name: str):
+    downstream_module = importlib.import_module(module_name)
+    model = _downstream_with_backbone(downstream_module.Sleep2vecDownstreamModel, ["heartbeat"])
+
+    model.freeze_backbone_and_insert_lora(insert_lora=False)
+    model.backbone.set_tokenizers_trainable(True)
+    model.train()
+
+    assert model.backbone.training is True
+    assert model.backbone.encoder.training is False
+    assert model.backbone.tokenizer_mapping.training is True
+    assert model.backbone.tokenizer_mapping["heartbeat"].training is True
+    assert model.backbone.tokenizer_mapping["heartbeat"][1].training is True
+    assert all(parameter.requires_grad for parameter in model.backbone.tokenizer_mapping.parameters())
+    assert all(not parameter.requires_grad for parameter in model.backbone.encoder.parameters())
+
+    model.eval()
+    model.train()
+
+    assert model.training is True
+    assert model.backbone.training is True
+    assert model.backbone.encoder.training is False
+    assert model.backbone.tokenizer_mapping["heartbeat"][1].training is True
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.downstream_model",
+        "sleep2vec2.downstream_model",
+        "sleep2expert.downstream_model",
+    ],
+)
+def test_later_trainable_backbone_parameters_preserve_train_mode(module_name: str):
+    downstream_module = importlib.import_module(module_name)
+    model = _downstream_with_backbone(downstream_module.Sleep2vecDownstreamModel, ["heartbeat"])
+
+    model.freeze_backbone_and_insert_lora(insert_lora=False)
+    for parameter in model.backbone.encoder.parameters():
+        parameter.requires_grad = True
+    model.train()
+
+    assert model.backbone.training is True
+    assert model.backbone.encoder.training is True
+    assert model.backbone.tokenizer_mapping.training is False
 
 
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
