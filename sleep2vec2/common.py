@@ -337,7 +337,7 @@ def apply_task_flags(args, task_cfg: TaskConfig | None = None) -> None:
     )
 
 
-def _validate_and_apply_imbalance_config(args: argparse.Namespace, finetune_cfg: FinetuneConfig) -> None:
+def validate_and_apply_imbalance_config(args: argparse.Namespace, finetune_cfg: FinetuneConfig) -> None:
     loss_cfg = finetune_cfg.loss
     sampler_cfg = finetune_cfg.sampler
 
@@ -421,7 +421,7 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
         )
 
     apply_task_flags(args, config_bundle.finetune.task)
-    _validate_and_apply_imbalance_config(args, finetune_cfg)
+    validate_and_apply_imbalance_config(args, finetune_cfg)
     return config_bundle, model_cfg
 
 

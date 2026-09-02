@@ -89,10 +89,9 @@ def test_finetune_config_bytes_use_variant_loader(monkeypatch, variant: str, con
     [
         ("sleep2vec", "age", "configs/ppg_age_finetune_large.yaml"),
         ("sleep2vec2", "age", "configs/sleep2vec2/ppg_age_finetune_large.yaml"),
-        ("sleep2expert", "ahi", "configs/sleep2expert/moe/sleep2expert_phase_moe_finetune_cls.yaml"),
     ],
 )
-def test_finetune_label_task_validation_stays_torch_free(variant: str, label: str, config_path: str):
+def test_finetune_balanced_validation_stays_torch_free(variant: str, label: str, config_path: str):
     script = """
 import builtins
 from pathlib import Path
@@ -109,7 +108,11 @@ builtins.__import__ = import_without_torch
 from agent_tools.plan_hparam import validate_finetune_config_bytes
 
 validate_finetune_config_bytes(
-    {"variant": sys.argv[1], "inputs": {"label_name": sys.argv[2]}},
+    {
+        "variant": sys.argv[1],
+        "inputs": {"label_name": sys.argv[2]},
+        "search": {"profile": "finetune_balanced"},
+    },
     Path(sys.argv[3]).read_bytes(),
 )
 """

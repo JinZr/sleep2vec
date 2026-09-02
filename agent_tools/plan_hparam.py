@@ -243,9 +243,11 @@ def validate_finetune_config_bytes(recipe: dict, config_bytes: bytes) -> None:
             and recipe.get("variant") != "sex_age_baseline"
             and label_name not in (None, "", "ASK_USER")
         ):
-            # Match the final finetune entrypoint's label/task validation before freezing candidate runs.
+            # Match the final finetune entrypoint's task and imbalance validation before freezing candidate runs.
             common_module = import_module(rendering.variant_module(recipe, "common"))
-            common_module.apply_task_flags(SimpleNamespace(label_name=label_name), bundle.finetune.task)
+            task_args = SimpleNamespace(label_name=label_name)
+            common_module.apply_task_flags(task_args, bundle.finetune.task)
+            common_module.validate_and_apply_imbalance_config(task_args, bundle.finetune)
 
 
 def validate_hparam_run_configs(recipe: dict, run_configs: list[tuple[dict[str, Any], bytes]]) -> None:

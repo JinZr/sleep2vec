@@ -584,6 +584,66 @@ def test_profile_candidate_validation_rejects_label_task_mismatch(config_path: s
         validate_finetune_config_bytes(_recipe(label=label, variant=variant), source.read_bytes())
 
 
+@pytest.mark.parametrize(
+    ("config_path", "variant", "label", "section", "field", "value", "message"),
+    [
+        (
+            "configs/ppg_age_finetune_large.yaml",
+            "sleep2vec",
+            "age",
+            "loss",
+            "class_weights",
+            [1.0],
+            "class_weights is only supported for single-label classification",
+        ),
+        (
+            "configs/sleep2vec2/ppg_age_finetune_large.yaml",
+            "sleep2vec2",
+            "age",
+            "loss",
+            "pos_weight",
+            1.0,
+            "pos_weight is only supported for multilabel classification",
+        ),
+        (
+            "configs/ppg_age_finetune_large.yaml",
+            "sleep2vec",
+            "age",
+            "sampler",
+            "weighted_random",
+            True,
+            "weighted_random is only supported for binary non-sequence classification",
+        ),
+        (
+            "configs/sleep2vec2/ppg_sex_finetune_large.yaml",
+            "sleep2vec2",
+            "sex",
+            "loss",
+            "pos_weight",
+            1.0,
+            "pos_weight is only supported for multilabel classification",
+        ),
+    ],
+)
+def test_profile_candidate_validation_rejects_task_incompatible_imbalance(
+    config_path: str,
+    variant: str,
+    label: str,
+    section: str,
+    field: str,
+    value,
+    message: str,
+):
+    payload = yaml.safe_load((REPO_ROOT / config_path).read_text())
+    payload["finetune"][section][field] = value
+
+    with pytest.raises(ValueError, match=message):
+        validate_finetune_config_bytes(
+            _recipe(label=label, variant=variant),
+            yaml.safe_dump(payload, sort_keys=False).encode(),
+        )
+
+
 @pytest.mark.parametrize("case", ["conflicting_search", "unsupported_variant", "missing_lora"])
 def test_profile_contract_failure_precedes_workspace_mutation(tmp_path: Path, case: str):
     recipe_path, workspace = _profile_recipe(tmp_path)
