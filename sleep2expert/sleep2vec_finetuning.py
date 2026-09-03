@@ -119,6 +119,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self.model.collect_train_moe_aux = bool(
                 getattr(moe_reg, "enabled", False) and getattr(moe_reg, "collect_train_moe_aux", False)
             )
+
+        # All trainability policies are applied above; refresh the frozen-backbone mode contract.
+        self.model.sync_backbone_mode_policy()
+
         self.moe_finetune_status = self._build_moe_finetune_status()
 
         self._stage_outputs = {"train": [], "val": [], "test": []}

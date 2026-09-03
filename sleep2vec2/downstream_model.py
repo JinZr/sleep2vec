@@ -53,7 +53,6 @@ class Sleep2vecDownstreamModel(nn.Module):
         # core attributes
         self.model_config = model_config
         self.backbone = backbone
-        self._keep_frozen_backbone_in_eval = False
         self.channel_names = [c.name for c in model_config.channels] if model_config else channel_names
         self.device = device
         self.output_dim = output_dim
@@ -557,7 +556,6 @@ class Sleep2vecDownstreamModel(nn.Module):
     ):
         # 0) 先冻结 backbone 全部参数
         self.separate_adapters = False
-        self._keep_frozen_backbone_in_eval = not insert_lora
         for _, p in self.backbone.named_parameters():
             p.requires_grad = False
 
@@ -589,7 +587,7 @@ class Sleep2vecDownstreamModel(nn.Module):
                     self.channel_adapters.append(name)
                 self._enable_all_adapters_trainable()
 
-        self.train(self.training)
+        self.sync_backbone_mode_policy()
 
         # —— 全模型统计 ——
         total_all = sum(p.numel() for _, p in self.named_parameters())
@@ -616,16 +614,32 @@ class Sleep2vecDownstreamModel(nn.Module):
 
     def train(self, mode: bool = True):
         super().train(mode)
-        if getattr(self, "_keep_frozen_backbone_in_eval", False):
-            # Later policies may re-enable tokenizers or encoder/MoE groups, so only modules
-            # that remain fully frozen should be forced back to eval mode.
-            if all(not parameter.requires_grad for parameter in self.backbone.parameters()):
-                self.backbone.eval()
-            else:
-                for module in self.backbone.children():
-                    if all(not parameter.requires_grad for parameter in module.parameters()):
-                        module.eval()
+        self._apply_backbone_mode_policy()
         return self
+
+    def sync_backbone_mode_policy(self) -> None:
+        """Re-apply the backbone mode contract after a trainability policy changed."""
+        self.train(self.training)
+
+    def _apply_backbone_mode_policy(self) -> None:
+        # Backbone trainability is decided by several independent callers (LoRA insertion,
+        # tokenizer freezing, MoE tuning policies), so derive the mode contract from
+        # requires_grad instead of a flag owned by any single caller.
+        backbone = getattr(self, "backbone", None)
+        if backbone is None or not self.training:
+            return
+        parameters = list(backbone.parameters())
+        if not parameters:
+            return
+        if not any(parameter.requires_grad for parameter in parameters):
+            backbone.eval()
+            return
+        # Groups that were re-enabled (tokenizers, LoRA adapters, MoE experts/routers) keep
+        # training; only submodules that remain fully frozen are forced back to eval mode.
+        for module in backbone.children():
+            module_parameters = list(module.parameters())
+            if module_parameters and not any(parameter.requires_grad for parameter in module_parameters):
+                module.eval()
 
     # 在所有 adapter 都 add 完之后调用
     def _enable_all_adapters_trainable(self):

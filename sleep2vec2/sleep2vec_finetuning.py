@@ -109,6 +109,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
         else:
             self.backbone.set_tokenizers_trainable(True)
 
+        # All trainability policies are applied above; refresh the frozen-backbone mode contract.
+        self.model.sync_backbone_mode_policy()
+
         self._stage_outputs = {"train": [], "val": [], "test": []}
         self._prediction_records = {"val": [], "test": []}
         self.prediction_rows = []

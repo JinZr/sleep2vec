@@ -185,6 +185,57 @@ def test_trainable_tokenizer_remains_in_train_mode_with_frozen_backbone(module_n
         "sleep2expert.downstream_model",
     ],
 )
+def test_backbone_frozen_without_lora_helper_stays_in_eval_mode(module_name: str):
+    """Head-only recipes freeze the backbone without calling freeze_backbone_and_insert_lora."""
+    downstream_module = importlib.import_module(module_name)
+    model = _downstream_with_backbone(downstream_module.Sleep2vecDownstreamModel, ["heartbeat"])
+
+    for parameter in model.backbone.parameters():
+        parameter.requires_grad = False
+    model.sync_backbone_mode_policy()
+
+    assert model.training is True
+    assert model.backbone.training is False
+
+    model.eval()
+    model.train()
+
+    assert model.training is True
+    assert model.backbone.training is False
+    assert model.backbone.tokenizer_mapping["heartbeat"][1].training is False
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.downstream_model",
+        "sleep2vec2.downstream_model",
+        "sleep2expert.downstream_model",
+    ],
+)
+def test_partially_frozen_backbone_without_lora_helper_keeps_trainable_groups(module_name: str):
+    downstream_module = importlib.import_module(module_name)
+    model = _downstream_with_backbone(downstream_module.Sleep2vecDownstreamModel, ["heartbeat"])
+
+    for parameter in model.backbone.parameters():
+        parameter.requires_grad = False
+    for parameter in model.backbone.encoder.parameters():
+        parameter.requires_grad = True
+    model.train()
+
+    assert model.backbone.training is True
+    assert model.backbone.encoder.training is True
+    assert model.backbone.tokenizer_mapping.training is False
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.downstream_model",
+        "sleep2vec2.downstream_model",
+        "sleep2expert.downstream_model",
+    ],
+)
 def test_later_trainable_backbone_parameters_preserve_train_mode(module_name: str):
     downstream_module = importlib.import_module(module_name)
     model = _downstream_with_backbone(downstream_module.Sleep2vecDownstreamModel, ["heartbeat"])
