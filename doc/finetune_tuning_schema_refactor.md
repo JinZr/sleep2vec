@@ -476,6 +476,14 @@ Settled 2026-09-04.
 - **The migration manifest merges instead of replacing.** An entry can only be derived
   from a config's *legacy* text, which is gone once that config is migrated, so a second
   run of the tool must not drop the entries the first run recorded.
+- **Two groups have sub-group granularity, and the policy pass has to honor both.**
+  `moe_top_experts` trains only the experts of the selected MoE layers, and
+  `separate_adapters` trains only the `ch_<channel>` adapters — never the `default`
+  adapter PEFT creates alongside them. A pass that writes `requires_grad` from the group
+  table alone un-freezes `default`, because adapter insertion runs first and the policy
+  pass runs last. The adapter question is answered in one place,
+  `Sleep2vecDownstreamModel.lora_param_is_trainable`, which both the insertion helper
+  and the policy pass call.
 
 ## What was verified
 
@@ -494,4 +502,7 @@ Not verified here: anything that imports torch. `torch`, `pytorch_lightning` and
 are absent from the development environment, so the runtime apply sites
 (`_apply_finetune_tuning_policy`, `_assert_tuning_invariants`, `configure_optimizers`)
 are covered by review and by the config-layer equivalence gate, not by an executed test.
+`tests/models/test_finetune_separate_adapters.py` builds a full finetuning module under
+`preset: lora` with `separate_adapters: true` and asserts the `default` adapter reaches
+neither `requires_grad` nor an optimizer group; it skips here for the same reason.
 The pre-existing failures in `tests/variants` are identical before and after this change.
