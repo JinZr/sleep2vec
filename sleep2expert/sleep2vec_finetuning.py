@@ -55,6 +55,22 @@ from .downstream_model import Sleep2vecDownstreamModel
 from .pretrain_model import Sleep2vecPretrainModel
 
 
+# Bump when the shape of finetune_status.json changes so downstream readers can tell
+# a v1 file from whatever replaces it.
+FINETUNE_STATUS_SCHEMA_VERSION = 1
+
+
+def _require_tuning_config(finetune_config):
+    """The trainability policy has no implicit default; a config must state one."""
+    tuning = getattr(finetune_config, "tuning", None) if finetune_config is not None else None
+    if tuning is None:
+        raise ValueError(
+            "Finetuning requires a finetune.tuning block. "
+            "Run `python utils/migrate_finetune_tuning.py` if this config predates it."
+        )
+    return tuning
+
+
 class Sleep2vecFinetuning(pl.LightningModule):
     def __init__(self, args, model_config, finetune_config=None, averaging_config=None):
         super().__init__()
@@ -93,37 +109,36 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self.model.load_pretrained_backbone(args.pretrained_backbone_path)
             logging.info(f"loaded pretrain model from {args.pretrained_backbone_path}")
 
-        if args.freeze_backbone_and_insert_lora:
-            self.model.freeze_backbone_and_insert_lora(
-                insert_lora=args.insert_lora,
-                r=args.lora_r,
-                lora_alpha=args.lora_alpha,
-                lora_dropout=args.lora_dropout,
-                target_modules=args.lora_target_modules,
-                use_dora=args.lora_use_dora,
-                separate_adapters=args.separate_adapters,
-            )
-
-        if getattr(args, "freeze_tokenizer", True):
-            self.backbone.set_tokenizers_trainable(False)
-        else:
-            self.backbone.set_tokenizers_trainable(True)
-
+        self.tuning_config = _require_tuning_config(finetune_config)
         self._finetune_param_to_group: dict[str, str] = {}
         self._finetune_group_summary: dict[str, dict[str, int]] = {}
         self._finetune_lr_scales: dict[str, float] = {}
-        moe_tuning = getattr(finetune_config, "moe_tuning", None) if finetune_config is not None else None
-        if moe_tuning is not None:
-            self._apply_moe_tuning_policy()
-            moe_reg = moe_tuning.moe_regularization
-            self.model.collect_train_moe_aux = bool(
-                getattr(moe_reg, "enabled", False) and getattr(moe_reg, "collect_train_moe_aux", False)
+
+        # Adapter insertion is structural, not a trainability decision: it has to run
+        # before the policy pass because it creates the parameters that pass classifies.
+        if self.tuning_config.trains("lora"):
+            lora_cfg = self.tuning_config.lora
+            self.model.freeze_backbone_and_insert_lora(
+                insert_lora=True,
+                r=lora_cfg.r,
+                lora_alpha=lora_cfg.alpha,
+                lora_dropout=lora_cfg.dropout,
+                target_modules=lora_cfg.target_modules,
+                use_dora=lora_cfg.use_dora,
+                separate_adapters=lora_cfg.separate_adapters,
             )
 
-        # All trainability policies are applied above; refresh the frozen-backbone mode contract.
+        # A single pass over named_parameters() is now the only place requires_grad is
+        # written, so what trains is exactly what finetune.tuning.groups says. Nothing
+        # here depends on the order two independent switches happened to be applied in.
+        self._apply_finetune_tuning_policy()
+        moe_reg = finetune_config.moe_regularization
+        self.model.collect_train_moe_aux = bool(moe_reg.enabled and moe_reg.collect_train_moe_aux)
+
+        # Trainability is settled; refresh the frozen-backbone eval-mode contract.
         self.model.sync_backbone_mode_policy()
 
-        self.moe_finetune_status = self._build_moe_finetune_status()
+        self.finetune_status = self._build_finetune_status()
 
         self._stage_outputs = {"train": [], "val": [], "test": []}
         self._prediction_records = {"val": [], "test": []}
@@ -164,19 +179,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
             getattr(finetune_config, "eval_visualizations", None) if finetune_config is not None else None
         )
 
-    def _apply_moe_tuning_policy(self):
-        cfg = self.finetune_config.moe_tuning
-        lr_scales = cfg.lr_scales
-        self._finetune_lr_scales = {
-            "head": float(lr_scales.head),
-            "backbone": float(lr_scales.backbone),
-            "experts": float(lr_scales.experts),
-            "routers": float(lr_scales.routers),
-            "tokenizers": float(lr_scales.tokenizers),
-            "projection": float(lr_scales.projection),
-            "lora": float(lr_scales.lora),
-        }
-        self._set_param_trainability_from_policy(cfg)
+    def _apply_finetune_tuning_policy(self):
+        tuning = self.tuning_config
+        self._finetune_lr_scales = {group: tuning.lr_scale(group) for group in tuning.groups}
+        self._set_param_trainability_from_policy(tuning)
         self._log_finetune_param_group_summary()
 
     def _semantic_group_for_param(self, name: str) -> str:
@@ -193,17 +199,23 @@ class Sleep2vecFinetuning(pl.LightningModule):
         if name.startswith(("backbone.proj_head.", "backbone.mask_embed.")):
             return "projection"
         if name.startswith("backbone."):
-            return "backbone"
+            return "encoder"
         return "head"
 
-    def _set_param_trainability_from_policy(self, cfg):
-        groups = ("head", "backbone", "experts", "routers", "tokenizers", "projection", "lora")
+    def _set_param_trainability_from_policy(self, tuning):
+        """Write requires_grad for every parameter from the config's group table.
+
+        The legacy path decided this across four keys applied in sequence, so what
+        trained depended on which switch ran last. Here every parameter is classified
+        once and the answer comes straight from `finetune.tuning.groups`.
+        """
+        groups = tuple(tuning.groups)
         self._finetune_param_to_group = {}
         self._finetune_group_summary = {
             group: {"total_params": 0, "trainable_params": 0, "total_tensors": 0, "trainable_tensors": 0}
             for group in groups
         }
-        selected_layers = set(cfg.train_moe_layer_indices or [])
+        selected_layers = set(tuning.moe.layer_indices or [])
         selected_expert_param_count = 0
 
         def expert_layer_idx(name: str) -> int | None:
@@ -225,34 +237,18 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
         for name, param in self.model.named_parameters():
             group = self._semantic_group_for_param(name)
-            if group not in self._finetune_lr_scales:
-                raise ValueError(f"Unknown finetune parameter group '{group}' for parameter '{name}'.")
+            if group not in self._finetune_group_summary:
+                raise ValueError(
+                    f"Parameter '{name}' classified as group '{group}', which this config does not define. "
+                    f"Groups: {sorted(groups)}."
+                )
             self._finetune_param_to_group[name] = group
 
-            trainable = False
-            if group == "lora":
-                trainable = self._finetune_lr_scales[group] > 0.0
-            elif cfg.mode == "head_only":
-                trainable = group == "head"
-            elif cfg.mode == "conservative_full_router_frozen":
-                trainable = group in {"head", "backbone", "experts"}
-            elif cfg.mode == "conservative_full_router_trainable":
-                trainable = group in {"head", "backbone", "experts", "routers"}
-            elif cfg.mode == "top_moe_layer_expert_only":
-                trainable = group == "head" or (group == "experts" and is_selected_expert(name))
-            elif cfg.mode == "custom":
-                trainable = self._finetune_lr_scales[group] > 0.0
-                if group == "routers" and cfg.freeze_router:
-                    trainable = False
-                if group == "experts" and cfg.freeze_experts:
-                    trainable = False
-            else:
-                raise ValueError(f"Unsupported finetune MoE tuning mode: {cfg.mode}")
-
-            if group == "tokenizers" and getattr(self.args, "freeze_tokenizer", True):
-                trainable = False
-            if self._finetune_lr_scales[group] == 0.0:
-                trainable = False
+            trainable = tuning.trains(group)
+            # moe_top_experts is the one preset with sub-group granularity: only the
+            # experts of the selected MoE layers train.
+            if trainable and group == "experts" and selected_layers:
+                trainable = is_selected_expert(name)
 
             param.requires_grad = trainable
             param_count = int(param.numel())
@@ -262,136 +258,106 @@ class Sleep2vecFinetuning(pl.LightningModule):
             if trainable:
                 summary["trainable_params"] += param_count
                 summary["trainable_tensors"] += 1
-            if cfg.mode == "top_moe_layer_expert_only" and group == "experts" and is_selected_expert(name):
-                selected_expert_param_count += param_count
+                if group == "experts" and selected_layers:
+                    selected_expert_param_count += param_count
 
-        if cfg.mode == "head_only":
+        self._assert_tuning_invariants(tuning, selected_layers, selected_expert_param_count)
+
+    def _assert_tuning_invariants(self, tuning, selected_layers: set[int], selected_expert_param_count: int) -> None:
+        """Catch a policy that silently trained nothing, or nothing it was meant to."""
+        if self._finetune_group_summary["head"]["trainable_params"] == 0:
+            raise ValueError(f"finetune.tuning preset '{tuning.preset}' left no trainable head parameters.")
+
+        if not tuning.trains("encoder"):
             offenders = [
                 name
                 for name, param in self.model.named_parameters()
                 if name.startswith("backbone.")
                 and param.requires_grad
-                and self._semantic_group_for_param(name) != "lora"
+                and self._finetune_param_to_group[name] not in {"lora", "tokenizers", "experts", "routers"}
             ]
             if offenders:
-                raise ValueError(f"head_only MoE tuning left backbone parameters trainable: {offenders[:5]}")
-            if self._finetune_group_summary["head"]["trainable_params"] == 0:
-                raise ValueError("head_only MoE tuning found no trainable head parameters.")
+                raise ValueError(
+                    f"finetune.tuning froze the encoder but left backbone parameters trainable: {offenders[:5]}"
+                )
 
-        if cfg.mode == "conservative_full_router_frozen":
+        if not tuning.trains("routers"):
             offenders = [
                 name
                 for name, param in self.model.named_parameters()
                 if ".moe_ffn.router." in name and param.requires_grad
             ]
             if offenders:
-                raise ValueError(f"conservative_full_router_frozen left router parameters trainable: {offenders[:5]}")
+                raise ValueError(f"finetune.tuning froze the routers but left them trainable: {offenders[:5]}")
 
-        if cfg.mode == "top_moe_layer_expert_only":
+        if tuning.preset == "moe_top_experts":
             if not selected_layers:
-                raise ValueError("top_moe_layer_expert_only requires train_moe_layer_indices.")
+                raise ValueError("finetune.tuning preset 'moe_top_experts' requires tuning.moe.layer_indices.")
             if selected_expert_param_count == 0:
                 raise ValueError(
-                    "top_moe_layer_expert_only found no expert parameters for "
-                    f"train_moe_layer_indices={sorted(selected_layers)}."
-                )
-            offenders = [
-                name
-                for name, param in self.model.named_parameters()
-                if name.startswith("backbone.")
-                and param.requires_grad
-                and self._semantic_group_for_param(name) != "lora"
-                and not is_selected_expert(name)
-            ]
-            if offenders:
-                raise ValueError(
-                    "top_moe_layer_expert_only left non-selected backbone parameters " f"trainable: {offenders[:5]}"
+                    "finetune.tuning preset 'moe_top_experts' matched no expert parameters for "
+                    f"layer_indices={sorted(selected_layers)}."
                 )
 
     def _log_finetune_param_group_summary(self):
-        cfg = self.finetune_config.moe_tuning
         total_params = sum(summary["total_params"] for summary in self._finetune_group_summary.values())
         trainable_params = sum(summary["trainable_params"] for summary in self._finetune_group_summary.values())
-        logging.info("[finetune_moe_tuning] mode=%s", cfg.mode)
-        for group in ("head", "backbone", "experts", "routers", "tokenizers", "projection", "lora"):
-            summary = self._finetune_group_summary[group]
+        logging.info("[finetune_tuning] preset=%s", self.tuning_config.preset)
+        for group, summary in self._finetune_group_summary.items():
             logging.info(
-                "[finetune_moe_tuning] group=%s trainable_params=%s total_params=%s lr_scale=%s",
+                "[finetune_tuning] group=%s train=%s trainable_params=%s total_params=%s lr_scale=%s",
                 group,
+                self.tuning_config.trains(group),
                 summary["trainable_params"],
                 summary["total_params"],
                 self._finetune_lr_scales[group],
             )
         logging.info(
-            "[finetune_moe_tuning] trainable_params=%s total_params=%s",
+            "[finetune_tuning] trainable_params=%s total_params=%s",
             trainable_params,
             total_params,
         )
 
-    def _build_moe_finetune_status(self) -> dict:
+    def _build_finetune_status(self) -> dict:
         moe_cfg = getattr(self.model_config.backbone, "moe", None)
-        moe_tuning = getattr(self.finetune_config, "moe_tuning", None) if self.finetune_config is not None else None
-        if moe_tuning is None:
-            param_groups = {"legacy": self._legacy_param_group_summary()}
-            lr_scales = {}
-            moe_regularization = {}
-            mode = None
-        else:
-            param_groups = {
-                group: {
-                    "total_params": int(summary["total_params"]),
-                    "trainable_params": int(summary["trainable_params"]),
-                    "total_tensors": int(summary["total_tensors"]),
-                    "trainable_tensors": int(summary["trainable_tensors"]),
-                    "lr_scale": float(self._finetune_lr_scales[group]),
-                }
-                for group, summary in self._finetune_group_summary.items()
+        tuning = self.tuning_config
+        param_groups = {
+            group: {
+                "total_params": int(summary["total_params"]),
+                "trainable_params": int(summary["trainable_params"]),
+                "total_tensors": int(summary["total_tensors"]),
+                "trainable_tensors": int(summary["trainable_tensors"]),
+                "train": bool(tuning.trains(group)),
+                "lr_scale": float(self._finetune_lr_scales[group]),
             }
-            lr_scales = dict(self._finetune_lr_scales)
-            moe_regularization = asdict(moe_tuning.moe_regularization)
-            mode = moe_tuning.mode
+            for group, summary in self._finetune_group_summary.items()
+        }
 
         return {
+            "schema_version": FINETUNE_STATUS_SCHEMA_VERSION,
+            "preset": tuning.preset,
             "moe_enabled": bool(moe_cfg is not None and getattr(moe_cfg, "enabled", False)),
             "moe_layer_indices": list(getattr(moe_cfg, "layer_indices", None) or []),
+            "tuning_moe_layer_indices": list(tuning.moe.layer_indices or []),
             "num_experts": getattr(moe_cfg, "num_experts", None),
             "top_k": getattr(moe_cfg, "top_k", None),
             "router_type": getattr(moe_cfg, "router_type", None),
-            "moe_tuning_present": moe_tuning is not None,
-            "moe_tuning_mode": mode,
-            "lr_scales": lr_scales,
+            "lr_scales": dict(self._finetune_lr_scales),
             "collect_train_moe_aux": bool(getattr(self.model, "collect_train_moe_aux", False)),
-            "moe_regularization": moe_regularization,
+            "moe_regularization": asdict(self.finetune_config.moe_regularization),
             "param_groups": param_groups,
             "total_params": int(sum(group["total_params"] for group in param_groups.values())),
             "trainable_params": int(sum(group["trainable_params"] for group in param_groups.values())),
         }
 
-    def _legacy_param_group_summary(self) -> dict[str, int | float]:
-        summary = {
-            "total_params": 0,
-            "trainable_params": 0,
-            "total_tensors": 0,
-            "trainable_tensors": 0,
-            "lr_scale": 1.0,
-        }
-        for _, param in self.model.named_parameters():
-            param_count = int(param.numel())
-            summary["total_params"] += param_count
-            summary["total_tensors"] += 1
-            if param.requires_grad:
-                summary["trainable_params"] += param_count
-                summary["trainable_tensors"] += 1
-        return summary
-
-    def moe_finetune_hparams(self) -> dict[str, bool | int | float | str]:
+    def finetune_hparams(self) -> dict[str, bool | int | float | str]:
         flat: dict[str, bool | int | float | str] = {}
-        self._flatten_moe_status("moe_finetune", self.moe_finetune_status, flat)
+        self._flatten_status("finetune", self.finetune_status, flat)
         return flat
 
-    def moe_finetune_param_group_rows(self) -> list[list[bool | int | float | str | None]]:
+    def finetune_param_group_rows(self) -> list[list[bool | int | float | str | None]]:
         rows = []
-        for group, summary in self.moe_finetune_status.get("param_groups", {}).items():
+        for group, summary in self.finetune_status.get("param_groups", {}).items():
             rows.append(
                 [
                     group,
@@ -399,17 +365,18 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     summary["trainable_params"],
                     summary["total_tensors"],
                     summary["trainable_tensors"],
+                    summary.get("train"),
                     summary.get("lr_scale"),
                 ]
             )
         return rows
 
-    def _flatten_moe_status(self, prefix: str, value, flat: dict[str, bool | int | float | str]) -> None:
+    def _flatten_status(self, prefix: str, value, flat: dict[str, bool | int | float | str]) -> None:
         if prefix.endswith("param_groups"):
             return
         if isinstance(value, dict):
             for key, item in value.items():
-                self._flatten_moe_status(f"{prefix}/{key}", item, flat)
+                self._flatten_status(f"{prefix}/{key}", item, flat)
             return
         if isinstance(value, (list, tuple)):
             flat[prefix] = ",".join(str(item) for item in value)
@@ -554,9 +521,8 @@ class Sleep2vecFinetuning(pl.LightningModule):
             loss = None
         else:
             loss, valid_count = loss_info
-            moe_tuning = getattr(self.finetune_config, "moe_tuning", None) if self.finetune_config is not None else None
-            moe_reg = getattr(moe_tuning, "moe_regularization", None) if moe_tuning is not None else None
-            if stage == "train" and getattr(moe_reg, "enabled", False):
+            moe_reg = self.finetune_config.moe_regularization
+            if stage == "train" and moe_reg.enabled:
                 supervised_loss = loss
                 moe_out = compute_downstream_moe_regularization(
                     getattr(model.backbone, "last_moe_aux", None),
@@ -2034,78 +2000,40 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return self.model
 
     def configure_optimizers(self):
-        moe_tuning = getattr(self.finetune_config, "moe_tuning", None) if self.finetune_config is not None else None
-        if moe_tuning is not None:
-            grouped_params = {
-                (group, decay_type): []
-                for group in ("head", "backbone", "experts", "routers", "tokenizers", "projection", "lora")
-                for decay_type in ("decay", "no_decay")
+        grouped_params: dict[tuple[str, str], list] = {}
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            group = self._finetune_param_to_group.get(name) or self._semantic_group_for_param(name)
+            self._finetune_param_to_group[name] = group
+            lr_scale = self._finetune_lr_scales[group]
+            if lr_scale <= 0.0:
+                raise ValueError(f"Parameter '{name}' is trainable but group '{group}' has lr_scale {lr_scale}.")
+            decay_type = (
+                "decay" if param.ndim >= 2 and "norm" not in name.lower() and "bias" not in name.lower() else "no_decay"
+            )
+            grouped_params.setdefault((group, decay_type), []).append(param)
+
+        optimizer_groups = [
+            {
+                "params": params,
+                "weight_decay": self.args.weight_decay if decay_type == "decay" else 0.0,
+                "lr": self.args.lr * self._finetune_lr_scales[group],
+                "name": f"{group}/{decay_type}",
             }
-            for n, p in self.model.named_parameters():
-                if not p.requires_grad:
-                    continue
-                group = self._finetune_param_to_group.get(n)
-                if group is None:
-                    group = self._semantic_group_for_param(n)
-                    self._finetune_param_to_group[n] = group
-                lr_scale = self._finetune_lr_scales[group]
-                if lr_scale == 0.0:
-                    raise ValueError(f"Parameter '{n}' is trainable but its finetune LR scale is zero.")
-                if p.ndim >= 2 and ("norm" not in n.lower()) and ("bias" not in n.lower()):
-                    decay_type = "decay"
-                else:
-                    decay_type = "no_decay"
-                grouped_params[(group, decay_type)].append(p)
+            for group in self.tuning_config.groups
+            for decay_type in ("decay", "no_decay")
+            if (params := grouped_params.get((group, decay_type)))
+        ]
+        if not optimizer_groups:
+            raise ValueError(f"finetune.tuning preset '{self.tuning_config.preset}' produced no trainable parameters.")
 
-            optimizer_groups = []
-            for group in ("head", "backbone", "experts", "routers", "tokenizers", "projection", "lora"):
-                for decay_type in ("decay", "no_decay"):
-                    params = grouped_params[(group, decay_type)]
-                    if not params:
-                        continue
-                    optimizer_groups.append(
-                        {
-                            "params": params,
-                            "weight_decay": self.args.weight_decay if decay_type == "decay" else 0.0,
-                            "lr": self.args.lr * self._finetune_lr_scales[group],
-                            "name": f"{group}/{decay_type}",
-                        }
-                    )
-
-            if moe_tuning.mode == "head_only" and not any(
-                group["name"].startswith("head/") for group in optimizer_groups
-            ):
-                raise ValueError("head_only MoE tuning found no trainable head optimizer group.")
-            if moe_tuning.mode == "top_moe_layer_expert_only" and not any(
-                group["name"].startswith("experts/") for group in optimizer_groups
-            ):
-                raise ValueError("top_moe_layer_expert_only found no trainable expert optimizer group.")
-
-            optimizer = torch.optim.AdamW(
-                optimizer_groups,
-                lr=self.args.lr,
-                betas=(0.9, 0.95),
-                eps=1e-8,
-            )
-        else:
-            decay, no_decay = [], []
-            for n, p in self.model.named_parameters():
-                if not p.requires_grad:
-                    continue
-                if p.ndim >= 2 and ("norm" not in n.lower()) and ("bias" not in n.lower()):
-                    decay.append(p)
-                else:
-                    no_decay.append(p)
-
-            optimizer = torch.optim.AdamW(
-                [
-                    {"params": decay, "weight_decay": self.args.weight_decay},
-                    {"params": no_decay, "weight_decay": 0.0},
-                ],
-                lr=self.args.lr,
-                betas=(0.9, 0.95),
-                eps=1e-8,
-            )
+        optimizer = torch.optim.AdamW(
+            optimizer_groups,
+            lr=self.args.lr,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+        )
 
         scheduler = build_warmup_cosine_scheduler(
             optimizer,

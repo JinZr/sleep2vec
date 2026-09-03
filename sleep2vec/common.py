@@ -387,8 +387,6 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     model_cfg = config_bundle.model
     data_cfg = config_bundle.data
     finetune_cfg = config_bundle.finetune
-    lora_cfg = finetune_cfg.lora
-
     apply_model_config_args(args, model_cfg)
     args.data_channel_names = data_cfg.data_channel_names or args.channel_names
     args.max_tokens = data_cfg.max_tokens
@@ -399,15 +397,9 @@ def apply_finetune_config(args) -> tuple[t.Any, t.Any]:
     args.n_few_shot = data_cfg.n_few_shot
     apply_data_backend_args(args, data_cfg, preset_attr="finetune_preset_path")
 
-    args.freeze_backbone_and_insert_lora = lora_cfg.freeze_backbone_and_insert_lora
-    args.insert_lora = lora_cfg.insert_lora
-    args.separate_adapters = lora_cfg.separate_adapters
-    args.lora_r = lora_cfg.r
-    args.lora_alpha = lora_cfg.alpha
-    args.lora_dropout = lora_cfg.dropout
-    args.lora_target_modules = lora_cfg.target_modules
-    args.lora_use_dora = lora_cfg.use_dora
-    args.freeze_tokenizer = finetune_cfg.freeze_tokenizer
+    # Trainability now lives entirely in finetune.tuning; the finetuning module reads it
+    # from the config rather than through flattened args, so nothing can set it twice.
+    args.finetune_tuning = finetune_cfg.tuning
     args.eval_visualizations = finetune_cfg.eval_visualizations
     args.survival = finetune_cfg.survival
     args.multilabel = finetune_cfg.multilabel
