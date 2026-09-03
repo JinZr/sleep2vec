@@ -106,7 +106,11 @@ def test_default_profile_materializes_twelve_deterministic_unique_joint_points()
         "layer_indices": None,
         "shared_across_modalities": False,
     }
-    assert baseline["yaml:/finetune/tuning/preset"] == "full"
+    assert baseline["yaml:/finetune/tuning"] == {
+        "groups": {"tokenizers": {"train": False}},
+        "lora": {"alpha": 16, "r": 8},
+        "preset": "full",
+    }
 
     audit = finetune_balanced_profile_audit(first)
     assert audit["candidate_count"] == 12
@@ -115,7 +119,9 @@ def test_default_profile_materializes_twelve_deterministic_unique_joint_points()
         "optimization.weight_decay": 3,
         "model.layer_mix": 4,
         "regularization.dropout": 3,
-        "adaptation.strategy": 3,
+        # Four, not three: this source carries a `groups` override, so it is a policy the
+        # three clean preset arms do not reproduce.
+        "adaptation.strategy": 4,
     }
 
 
@@ -258,12 +264,23 @@ def test_regularization_profile_synchronizes_a_mismatched_source_dropout():
 
 def test_adaptation_keeps_source_first_and_sweeps_the_preset_arms():
     configurations = _compile()["configurations"]
-    values = _unique_values(configurations, "yaml:/finetune/tuning/preset")
+    values = _unique_values(configurations, "yaml:/finetune/tuning")
 
-    # The three arms are preset names now; the source preset stays first and the axis
-    # rewrites only the preset, never the LoRA hyperparameters beside it.
-    assert values == ["full", "head_only", "lora"]
-    assert all("yaml:/finetune/tuning/lora" not in point for point in configurations)
+    # The source block stays first, verbatim. Each swept arm then replaces the whole
+    # block: it keeps the LoRA hyperparameters, which are shape rather than a switch, and
+    # drops the source's `groups` overrides -- an arm named head_only that inherited them
+    # would not be head-only.
+    assert values[0] == {
+        "groups": {"tokenizers": {"train": False}},
+        "lora": {"alpha": 16, "r": 8},
+        "preset": "full",
+    }
+    assert values[1:] == [
+        {"lora": {"alpha": 16, "r": 8}, "preset": "full"},
+        {"lora": {"alpha": 16, "r": 8}, "preset": "head_only"},
+        {"lora": {"alpha": 16, "r": 8}, "preset": "lora"},
+    ]
+    assert all("yaml:/finetune/tuning/preset" not in point for point in configurations)
 
 
 @pytest.mark.parametrize("source_preset", ["head_only", "lora"])
@@ -271,10 +288,10 @@ def test_adaptation_adds_full_arm_when_source_backbone_is_frozen(source_preset: 
     summary = _summary()
     summary["finetune"]["tuning"]["preset"] = source_preset
 
-    values = _unique_values(_compile(summary=summary)["configurations"], "yaml:/finetune/tuning/preset")
+    values = _unique_values(_compile(summary=summary)["configurations"], "yaml:/finetune/tuning")
 
-    assert values[0] == source_preset
-    assert set(values) == {"full", "head_only", "lora"}
+    assert values[0]["preset"] == source_preset
+    assert {value["preset"] for value in values} == {"full", "head_only", "lora"}
 
 
 def test_adaptation_does_not_freeze_a_randomly_initialized_backbone():
@@ -283,9 +300,9 @@ def test_adaptation_does_not_freeze_a_randomly_initialized_backbone():
 
     compiled = _compile(recipe=recipe)
     configurations = compiled["configurations"]
-    values = _unique_values(configurations, "yaml:/finetune/tuning/preset")
+    values = _unique_values(configurations, "yaml:/finetune/tuning")
 
-    assert values == ["full"]
+    assert [value["preset"] for value in values] == ["full"]
     assert "adaptation.strategy" not in {
         family["id"] for family in finetune_balanced_profile_audit(compiled)["searched_families"]
     }
@@ -295,9 +312,31 @@ def test_final_evaluation_checkpoint_does_not_enable_frozen_backbone_arms():
     recipe = _recipe()
     recipe["inputs"].update({"pretrained_backbone_path": None, "ckpt_path": "/resume.ckpt"})
 
-    values = _unique_values(_compile(recipe=recipe)["configurations"], "yaml:/finetune/tuning/preset")
+    values = _unique_values(_compile(recipe=recipe)["configurations"], "yaml:/finetune/tuning")
 
-    assert values == ["full"]
+    assert [value["preset"] for value in values] == ["full"]
+
+
+def test_random_backbone_preflight_reads_the_groups_override_not_the_preset_name():
+    """A `groups` override decides trainability, so the preflight has to read it.
+
+    Both halves matter: `head_only` that unfreezes the encoder does train a backbone from
+    scratch, and `full` that freezes it does not, whatever the preset is called.
+    """
+    recipe = _recipe()
+    recipe["inputs"]["pretrained_backbone_path"] = None
+
+    trains_anyway = _summary()
+    trains_anyway["finetune"]["tuning"] = {"preset": "head_only", "groups": {"encoder": {"train": True}}}
+    compiled, issues = compile_finetune_balanced_profile(recipe, trains_anyway)
+    assert issues == []
+    assert compiled is not None
+
+    frozen_anyway = _summary()
+    frozen_anyway["finetune"]["tuning"] = {"preset": "full", "groups": {"encoder": {"train": False}}}
+    compiled, issues = compile_finetune_balanced_profile(recipe, frozen_anyway)
+    assert compiled is None
+    assert [issue.status for issue in issues] == [DecisionStatus.FAIL]
 
 
 def test_profile_rejects_freezing_random_source_backbone():
@@ -441,8 +480,8 @@ def test_profile_binding_and_plan_freeze_exact_expansion(tmp_path: Path):
     assert len(plan["runs"]) == len(effective["search"]["configurations"])
     base_config = yaml.safe_load(source_config_bytes)
     assert effective["inputs"]["pretrained_backbone_path"] is None
-    assert _unique_values(effective["search"]["configurations"], "yaml:/finetune/tuning/preset") == [
-        base_config["finetune"]["tuning"]["preset"]
+    assert _unique_values(effective["search"]["configurations"], "yaml:/finetune/tuning") == [
+        base_config["finetune"]["tuning"]
     ]
     for run, point in zip(plan["runs"], effective["search"]["configurations"]):
         assert {key: run[key] for key in point} == point
@@ -542,7 +581,7 @@ def test_generated_points_pass_variant_config_validation(config_path: str, varia
     assert len(compiled["configurations"]) == 12
     first = compiled["configurations"][0]
     assert first["yaml:/finetune/layer_mix"] == payload["finetune"]["layer_mix"]
-    assert first["yaml:/finetune/tuning/preset"] == payload["finetune"]["tuning"]["preset"]
+    assert first["yaml:/finetune/tuning"] == payload["finetune"]["tuning"]
     assert first["yaml:/model/head/dropout"] == payload["model"]["head"]["dropout"]
     for field in ("attn_dropout", "temporal_dropout"):
         if field in payload["model"]["head"].get("kwargs", {}):

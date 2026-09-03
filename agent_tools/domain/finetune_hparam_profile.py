@@ -124,7 +124,7 @@ def finetune_balanced_profile_audit(search: dict[str, Any]) -> dict[str, Any]:
                 "yaml:/model/head/kwargs/temporal_dropout",
             }
         ],
-        "adaptation.strategy": [key for key in keys if key == "yaml:/finetune/tuning/preset"],
+        "adaptation.strategy": [key for key in keys if key == "yaml:/finetune/tuning"],
         "loss.pos_weight": [key for key in keys if key == "yaml:/finetune/loss/pos_weight"],
     }
     families = []
@@ -249,15 +249,24 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
         raise ValueError("finetune_balanced requires an explicit finetune.tuning.preset.")
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     has_trained_backbone = inputs.get("pretrained_backbone_path") not in (None, "")
-    if preset != "full" and not has_trained_backbone:
-        raise ValueError(f"finetune_balanced cannot run preset '{preset}' without a pretrained backbone.")
+    # What matters is which parameters receive gradient, not what the preset is called: a
+    # `head_only` config that unfreezes the encoder through `groups` does train a backbone,
+    # and a `full` config that freezes it through `groups` does not. Read the effective value.
+    if not has_trained_backbone and not _trains_encoder(tuning):
+        raise ValueError(
+            f"finetune_balanced cannot freeze the encoder under preset '{preset}' without a pretrained backbone."
+        )
     # The three adaptation strategies are now presets, so the axis sweeps preset names
-    # instead of the boolean pair that used to encode them.
-    preset_levels = [preset]
+    # instead of the boolean pair that used to encode them. It has to replace the whole
+    # `tuning` block rather than just the preset: leaving the source config's `groups`
+    # overrides in place would let an arm labelled `head_only` keep training whatever the
+    # source unfroze. The adapter shape rides along -- it is hyperparameters, not a switch,
+    # so a preset that leaves the lora group untrained may still carry it.
+    lora_shape = {"lora": tuning["lora"]} if isinstance(tuning.get("lora"), dict) else {}
+    tuning_levels = [_canonical(tuning)]
     if has_trained_backbone:
-        preset_levels.extend(("full", "head_only", "lora"))
-    preset_levels = _stable_unique(preset_levels)
-    axes.append(_axis("adaptation.strategy", "yaml:/finetune/tuning/preset", preset_levels))
+        tuning_levels.extend(_canonical({"preset": name, **lora_shape}) for name in ("full", "head_only", "lora"))
+    axes.append(_axis("adaptation.strategy", "yaml:/finetune/tuning", _stable_unique(tuning_levels)))
 
     loss = finetune.get("loss") if isinstance(finetune.get("loss"), dict) else {}
     pos_weight = loss.get("pos_weight")
@@ -338,6 +347,20 @@ def _stable_unique(values: list[Any]) -> list[Any]:
             seen.add(canonical)
             unique.append(_canonical(value))
     return unique
+
+
+# Duplicated from the variants' preset tables, which agent_tools cannot import across the
+# enforced-fork boundary. `full` is the only preset of the supported variants whose encoder
+# trains; `custom` carries no table at all and must state every group explicitly.
+_ENCODER_TRAINING_PRESETS = {"full"}
+
+
+def _trains_encoder(tuning: dict[str, Any]) -> bool:
+    groups = tuning.get("groups") if isinstance(tuning.get("groups"), dict) else {}
+    override = groups.get("encoder") if isinstance(groups.get("encoder"), dict) else {}
+    if "train" in override:
+        return bool(override["train"])
+    return tuning.get("preset") in _ENCODER_TRAINING_PRESETS
 
 
 def _canonical(value: Any) -> Any:
