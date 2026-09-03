@@ -55,6 +55,10 @@ from .downstream_model import Sleep2vecDownstreamModel
 from .pretrain_model import Sleep2vecPretrainModel
 
 
+# Groups whose parameters live under `backbone.` without being the encoder. A frozen
+# encoder says nothing about whether these train, so the invariant has to skip them.
+_NON_ENCODER_BACKBONE_GROUPS = {"lora", "tokenizers", "experts", "routers", "projection"}
+
 
 def _require_tuning_config(finetune_config):
     """The trainability policy has no implicit default; a config must state one."""
@@ -274,7 +278,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 for name, param in self.model.named_parameters()
                 if name.startswith("backbone.")
                 and param.requires_grad
-                and self._finetune_param_to_group[name] not in {"lora", "tokenizers", "experts", "routers"}
+                and self._finetune_param_to_group[name] not in _NON_ENCODER_BACKBONE_GROUPS
             ]
             if offenders:
                 raise ValueError(
