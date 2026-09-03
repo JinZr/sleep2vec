@@ -77,11 +77,10 @@ def _finetune_payload() -> dict:
             "n_few_shot": 16,
         },
         "finetune": {
-            "freeze_tokenizer": True,
-            "lora": {
-                "freeze_backbone_and_insert_lora": False,
-                "insert_lora": False,
-                "separate_adapters": False,
+            "tuning": {
+                "preset": "full",
+                "groups": {"tokenizers": {"train": False}},
+                "lora": {"separate_adapters": False},
             },
             "task": {
                 "type": "classification",

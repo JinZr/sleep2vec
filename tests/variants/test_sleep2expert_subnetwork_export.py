@@ -72,7 +72,7 @@ def _write_config(
             "channel_agg": {"name": "gated_scalar", "kwargs": {}},
             "temporal_agg": {"name": "mean", "kwargs": {}},
         }
-        payload["finetune"] = {"freeze_tokenizer": True}
+        payload["finetune"] = {"tuning": {"preset": "full", "groups": {"tokenizers": {"train": False}}}}
     else:
         payload["loss"] = {"name": "weighted_info_nce", "temperature": 0.2, "params": {}}
     path.write_text(yaml.safe_dump(payload, sort_keys=False))

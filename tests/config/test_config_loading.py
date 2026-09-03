@@ -85,18 +85,16 @@ def _finetune_payload() -> dict:
             "n_few_shot": 16,
         },
         "finetune": {
-            "freeze_tokenizer": True,
+            "tuning": {
+                "preset": "full",
+                "groups": {"tokenizers": {"train": False}},
+            },
             "loss": {
                 "class_weights": None,
                 "pos_weight": None,
             },
             "sampler": {
                 "weighted_random": False,
-            },
-            "lora": {
-                "freeze_backbone_and_insert_lora": False,
-                "insert_lora": True,
-                "separate_adapters": False,
             },
             "layer_mix": {
                 "enabled": False,
@@ -370,11 +368,15 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.finetune.loss.class_weights is None
     assert bundle.finetune.loss.pos_weight is None
     assert bundle.finetune.sampler.weighted_random is False
-    assert bundle.finetune.lora.r == 8
-    assert bundle.finetune.lora.alpha == 16
-    assert bundle.finetune.lora.dropout == 0.05
-    assert bundle.finetune.lora.target_modules == ["query", "key", "value"]
-    assert bundle.finetune.lora.use_dora is False
+    assert bundle.finetune.tuning.preset == "full"
+    assert bundle.finetune.tuning.trains("encoder") is True
+    assert bundle.finetune.tuning.trains("tokenizers") is False
+    assert bundle.finetune.tuning.trains("lora") is False
+    assert bundle.finetune.tuning.lora.r == 8
+    assert bundle.finetune.tuning.lora.alpha == 16
+    assert bundle.finetune.tuning.lora.dropout == 0.05
+    assert bundle.finetune.tuning.lora.target_modules == ["query", "key", "value"]
+    assert bundle.finetune.tuning.lora.use_dora is False
 
 
 @pytest.mark.parametrize(
@@ -388,24 +390,28 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
 def test_load_finetune_config_parses_lora_hyperparameters(tmp_path: Path, module_name: str):
     loader = importlib.import_module(module_name).load_finetune_config
     payload = _finetune_payload()
-    payload["finetune"]["lora"].update(
-        {
+    payload["finetune"]["tuning"] = {
+        "preset": "lora",
+        "lora": {
             "r": 4,
             "alpha": 12,
             "dropout": 0.15,
             "target_modules": ["query", "dense"],
             "use_dora": True,
-        }
-    )
+        },
+    }
     config_path = _write_yaml(tmp_path, payload)
 
     bundle = loader(config_path)
 
-    assert bundle.finetune.lora.r == 4
-    assert bundle.finetune.lora.alpha == 12
-    assert bundle.finetune.lora.dropout == 0.15
-    assert bundle.finetune.lora.target_modules == ["query", "dense"]
-    assert bundle.finetune.lora.use_dora is True
+    assert bundle.finetune.tuning.preset == "lora"
+    assert bundle.finetune.tuning.trains("lora") is True
+    assert bundle.finetune.tuning.trains("encoder") is False
+    assert bundle.finetune.tuning.lora.r == 4
+    assert bundle.finetune.tuning.lora.alpha == 12
+    assert bundle.finetune.tuning.lora.dropout == 0.15
+    assert bundle.finetune.tuning.lora.target_modules == ["query", "dense"]
+    assert bundle.finetune.tuning.lora.use_dora is True
 
 
 @pytest.mark.parametrize(
@@ -419,12 +425,6 @@ def test_load_finetune_config_parses_lora_hyperparameters(tmp_path: Path, module
 def test_load_finetune_config_parses_imbalance_blocks_across_namespaces(tmp_path: Path, module_name: str):
     loader = importlib.import_module(module_name).load_finetune_config
     payload = _finetune_payload()
-    if module_name != "sleep2vec.config":
-        payload["finetune"]["lora"] = {
-            "freeze_backbone_and_insert_lora": False,
-            "insert_lora": False,
-            "separate_adapters": False,
-        }
     payload["finetune"]["loss"] = {"class_weights": [1, 2.5], "pos_weight": 3}
     payload["finetune"]["sampler"] = {"weighted_random": True}
     config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}.yaml")

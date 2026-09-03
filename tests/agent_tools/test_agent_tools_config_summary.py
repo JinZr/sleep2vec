@@ -18,13 +18,15 @@ def test_config_summary_extracts_channels_task_backend_and_monitor(tmp_path: Pat
     payload["model"]["head"]["temporal_agg"] = {"name": "attn", "kwargs": {"heads": 2}}
     payload["model"]["head"]["kwargs"] = {"temporal_dropout": 0.15}
     payload["model"]["backbone"]["num_hidden_layers"] = 16
-    payload["finetune"]["freeze_tokenizer"] = True
     payload["finetune"]["layer_mix"] = {
         "enabled": True,
         "shared_across_modalities": False,
         "layer_indices": [15, 16],
     }
-    payload["finetune"]["lora"] = {"freeze_backbone_and_insert_lora": True, "insert_lora": False}
+    payload["finetune"]["tuning"] = {
+        "preset": "lora",
+        "groups": {"tokenizers": {"train": False}},
+    }
     payload["model_averaging"] = {"name": "ema", "params": {"enabled": True}}
     config = write_yaml(tmp_path / "config.yaml", payload)
 
@@ -41,12 +43,10 @@ def test_config_summary_extracts_channels_task_backend_and_monitor(tmp_path: Pat
     assert summary["model"]["backbone_depth"] == 16
     assert summary["model"]["layer_mix_present"] is True
     assert summary["model"]["layer_mix"]["layer_indices"] == [15, 16]
-    assert summary["model"]["freeze"]["freeze_tokenizer"] is True
-    assert summary["finetune"]["lora_present"] is True
-    assert summary["finetune"]["lora"] == {
-        "freeze_backbone_and_insert_lora": True,
-        "insert_lora": False,
-    }
+    assert summary["model"]["tuning"]["preset"] == "lora"
+    assert summary["model"]["tuning"]["group_overrides"] == {"tokenizers": False}
+    assert summary["finetune"]["tuning_present"] is True
+    assert summary["finetune"]["tuning"]["preset"] == "lora"
     assert summary["model"]["model_averaging"]["present"] is True
     assert summary["finetune"]["task"]["monitor"] == "val_ahi_pearson"
     assert summary["preset_build"]["required_channels"] == ["ppg", "ahi", "stage5"]

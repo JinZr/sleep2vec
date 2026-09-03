@@ -68,11 +68,9 @@ def _ppg_finetune_payload(*, is_seq: bool, preset_build: dict | None, task_overr
             "n_few_shot": 16,
         },
         "finetune": {
-            "freeze_tokenizer": True,
-            "lora": {
-                "freeze_backbone_and_insert_lora": False,
-                "insert_lora": True,
-                "separate_adapters": False,
+            "tuning": {
+                "preset": "full",
+                "groups": {"tokenizers": {"train": False}},
             },
             "task": {
                 "type": "classification" if is_seq else "regression",

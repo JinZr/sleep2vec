@@ -64,7 +64,6 @@ def _finetune_payload() -> dict:
             "n_few_shot": 32,
         },
         "finetune": {
-            "freeze_tokenizer": False,
             "loss": {
                 "class_weights": None,
                 "pos_weight": None,
@@ -72,15 +71,16 @@ def _finetune_payload() -> dict:
             "sampler": {
                 "weighted_random": False,
             },
-            "lora": {
-                "freeze_backbone_and_insert_lora": True,
-                "insert_lora": True,
-                "separate_adapters": True,
-                "r": 4,
-                "alpha": 12,
-                "dropout": 0.15,
-                "target_modules": ["query", "dense"],
-                "use_dora": True,
+            "tuning": {
+                "preset": "lora",
+                "lora": {
+                    "separate_adapters": True,
+                    "r": 4,
+                    "alpha": 12,
+                    "dropout": 0.15,
+                    "target_modules": ["query", "dense"],
+                    "use_dora": True,
+                },
             },
             "task": {
                 "type": "classification",
@@ -427,15 +427,8 @@ def test_apply_finetune_config_populates_namespace(tmp_path: Path):
     assert args.train_dataset_names == ["train_a"]
     assert args.test_dataset_names == ["test_a"]
     assert args.n_few_shot == 32
-    assert args.freeze_backbone_and_insert_lora is True
-    assert args.insert_lora is True
-    assert args.separate_adapters is True
-    assert args.lora_r == 4
-    assert args.lora_alpha == 12
-    assert args.lora_dropout == 0.15
-    assert args.lora_target_modules == ["query", "dense"]
-    assert args.lora_use_dora is True
-    assert args.freeze_tokenizer is False
+    assert args.finetune_tuning is config_bundle.finetune.tuning
+    assert args.finetune_tuning.preset == "lora"
     assert args.eval_visualizations is None
     assert args.output_dim == 2
     assert args.is_classification is True
@@ -464,21 +457,24 @@ def test_apply_finetune_config_populates_channel_aliases(tmp_path: Path):
         "sleep2expert.common",
     ],
 )
-def test_variant_apply_finetune_config_populates_lora_namespace(tmp_path: Path, module_name: str):
+def test_variant_apply_finetune_config_populates_tuning_namespace(tmp_path: Path, module_name: str):
     apply_config = importlib.import_module(module_name).apply_finetune_config
     config_path = _write_yaml(tmp_path, _finetune_payload())
     args = argparse.Namespace(config=config_path, label_name="custom_target")
 
     apply_config(args)
 
-    assert args.freeze_backbone_and_insert_lora is True
-    assert args.insert_lora is True
-    assert args.separate_adapters is True
-    assert args.lora_r == 4
-    assert args.lora_alpha == 12
-    assert args.lora_dropout == 0.15
-    assert args.lora_target_modules == ["query", "dense"]
-    assert args.lora_use_dora is True
+    tuning = args.finetune_tuning
+    assert tuning.preset == "lora"
+    assert tuning.trains("lora") is True
+    assert tuning.trains("encoder") is False
+    assert tuning.trains("head") is True
+    assert tuning.lora.separate_adapters is True
+    assert tuning.lora.r == 4
+    assert tuning.lora.alpha == 12
+    assert tuning.lora.dropout == 0.15
+    assert tuning.lora.target_modules == ["query", "dense"]
+    assert tuning.lora.use_dora is True
 
 
 def test_apply_finetune_config_applies_binary_imbalance_knobs(tmp_path: Path):

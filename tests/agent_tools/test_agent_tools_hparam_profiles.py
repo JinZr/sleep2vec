@@ -53,12 +53,11 @@ def _summary(*, depth: int = 12, channels: int = 1, temporal: str | None = None,
             },
         },
         "finetune": {
-            "lora_present": True,
-            "lora": {
-                "freeze_backbone_and_insert_lora": False,
-                "insert_lora": True,
-                "r": 8,
-                "alpha": 16,
+            "tuning_present": True,
+            "tuning": {
+                "preset": "full",
+                "groups": {"tokenizers": {"train": False}},
+                "lora": {"r": 8, "alpha": 16},
             },
             "loss": {"pos_weight": pos_weight, "class_weights": [1.0, 1.0, 1.0, 1.0]},
         },
@@ -88,7 +87,7 @@ def test_default_profile_materializes_twelve_deterministic_unique_joint_points()
     first = _compile()
     reordered = _summary()
     reordered["model"]["layer_mix"] = dict(reversed(list(reordered["model"]["layer_mix"].items())))
-    reordered["finetune"]["lora"] = dict(reversed(list(reordered["finetune"]["lora"].items())))
+    reordered["finetune"]["tuning"] = dict(reversed(list(reordered["finetune"]["tuning"].items())))
     second = _compile(summary=reordered)
 
     assert first == second
@@ -107,8 +106,7 @@ def test_default_profile_materializes_twelve_deterministic_unique_joint_points()
         "layer_indices": None,
         "shared_across_modalities": False,
     }
-    assert baseline["yaml:/finetune/lora"]["freeze_backbone_and_insert_lora"] is False
-    assert baseline["yaml:/finetune/lora"]["insert_lora"] is True
+    assert baseline["yaml:/finetune/tuning/preset"] == "full"
 
     audit = finetune_balanced_profile_audit(first)
     assert audit["candidate_count"] == 12
@@ -117,7 +115,7 @@ def test_default_profile_materializes_twelve_deterministic_unique_joint_points()
         "optimization.weight_decay": 3,
         "model.layer_mix": 4,
         "regularization.dropout": 3,
-        "adaptation.strategy": 4,
+        "adaptation.strategy": 3,
     }
 
 
@@ -258,34 +256,25 @@ def test_regularization_profile_synchronizes_a_mismatched_source_dropout():
     assert configurations[0]["yaml:/model/head/kwargs/temporal_dropout"] == 0.2
 
 
-def test_adaptation_keeps_source_first_and_includes_explicit_full_arm():
+def test_adaptation_keeps_source_first_and_sweeps_the_preset_arms():
     configurations = _compile()["configurations"]
-    values = _unique_values(configurations, "yaml:/finetune/lora")
+    values = _unique_values(configurations, "yaml:/finetune/tuning/preset")
 
-    assert {(value["freeze_backbone_and_insert_lora"], value["insert_lora"]) for value in values} == {
-        (False, True),
-        (False, False),
-        (True, False),
-        (True, True),
-    }
-    assert values[0] == _summary()["finetune"]["lora"]
-    assert {(value["r"], value["alpha"]) for value in values} == {(8, 16)}
-    assert all("yaml:/finetune/lora/insert_lora" not in point for point in configurations)
+    # The three arms are preset names now; the source preset stays first and the axis
+    # rewrites only the preset, never the LoRA hyperparameters beside it.
+    assert values == ["full", "head_only", "lora"]
+    assert all("yaml:/finetune/tuning/lora" not in point for point in configurations)
 
 
-@pytest.mark.parametrize("insert_lora", [False, True])
-def test_adaptation_adds_full_arm_when_source_backbone_is_frozen(insert_lora: bool):
+@pytest.mark.parametrize("source_preset", ["head_only", "lora"])
+def test_adaptation_adds_full_arm_when_source_backbone_is_frozen(source_preset: str):
     summary = _summary()
-    summary["finetune"]["lora"].update({"freeze_backbone_and_insert_lora": True, "insert_lora": insert_lora})
+    summary["finetune"]["tuning"]["preset"] = source_preset
 
-    values = _unique_values(_compile(summary=summary)["configurations"], "yaml:/finetune/lora")
+    values = _unique_values(_compile(summary=summary)["configurations"], "yaml:/finetune/tuning/preset")
 
-    assert values[0] == summary["finetune"]["lora"]
-    assert {(value["freeze_backbone_and_insert_lora"], value["insert_lora"]) for value in values} == {
-        (False, False),
-        (True, False),
-        (True, True),
-    }
+    assert values[0] == source_preset
+    assert set(values) == {"full", "head_only", "lora"}
 
 
 def test_adaptation_does_not_freeze_a_randomly_initialized_backbone():
@@ -294,10 +283,9 @@ def test_adaptation_does_not_freeze_a_randomly_initialized_backbone():
 
     compiled = _compile(recipe=recipe)
     configurations = compiled["configurations"]
-    values = _unique_values(configurations, "yaml:/finetune/lora")
+    values = _unique_values(configurations, "yaml:/finetune/tuning/preset")
 
-    assert values == [_summary()["finetune"]["lora"]]
-    assert all(value["freeze_backbone_and_insert_lora"] is False for value in values)
+    assert values == ["full"]
     assert "adaptation.strategy" not in {
         family["id"] for family in finetune_balanced_profile_audit(compiled)["searched_families"]
     }
@@ -307,17 +295,16 @@ def test_final_evaluation_checkpoint_does_not_enable_frozen_backbone_arms():
     recipe = _recipe()
     recipe["inputs"].update({"pretrained_backbone_path": None, "ckpt_path": "/resume.ckpt"})
 
-    values = _unique_values(_compile(recipe=recipe)["configurations"], "yaml:/finetune/lora")
+    values = _unique_values(_compile(recipe=recipe)["configurations"], "yaml:/finetune/tuning/preset")
 
-    assert values == [_summary()["finetune"]["lora"]]
-    assert all(value["freeze_backbone_and_insert_lora"] is False for value in values)
+    assert values == ["full"]
 
 
 def test_profile_rejects_freezing_random_source_backbone():
     recipe = _recipe()
     recipe["inputs"]["pretrained_backbone_path"] = None
     summary = _summary()
-    summary["finetune"]["lora"]["freeze_backbone_and_insert_lora"] = True
+    summary["finetune"]["tuning"]["preset"] = "head_only"
 
     compiled, issues = compile_finetune_balanced_profile(recipe, summary)
 
@@ -352,11 +339,11 @@ def test_profile_rejects_ambiguous_or_invalid_inputs(mutate, status: DecisionSta
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda summary: summary["finetune"].update({"lora_present": False, "lora": {}}),
-        lambda summary: summary["finetune"]["lora"].pop("insert_lora"),
+        lambda summary: summary["finetune"].update({"tuning_present": False, "tuning": {}}),
+        lambda summary: summary["finetune"]["tuning"].pop("preset"),
     ],
 )
-def test_profile_requires_explicit_lora_control_mapping(mutate):
+def test_profile_requires_explicit_tuning_mapping(mutate):
     summary = _summary()
     mutate(summary)
 
@@ -454,8 +441,8 @@ def test_profile_binding_and_plan_freeze_exact_expansion(tmp_path: Path):
     assert len(plan["runs"]) == len(effective["search"]["configurations"])
     base_config = yaml.safe_load(source_config_bytes)
     assert effective["inputs"]["pretrained_backbone_path"] is None
-    assert _unique_values(effective["search"]["configurations"], "yaml:/finetune/lora") == [
-        base_config["finetune"]["lora"]
+    assert _unique_values(effective["search"]["configurations"], "yaml:/finetune/tuning/preset") == [
+        base_config["finetune"]["tuning"]["preset"]
     ]
     for run, point in zip(plan["runs"], effective["search"]["configurations"]):
         assert {key: run[key] for key in point} == point
@@ -555,7 +542,7 @@ def test_generated_points_pass_variant_config_validation(config_path: str, varia
     assert len(compiled["configurations"]) == 12
     first = compiled["configurations"][0]
     assert first["yaml:/finetune/layer_mix"] == payload["finetune"]["layer_mix"]
-    assert first["yaml:/finetune/lora"] == payload["finetune"]["lora"]
+    assert first["yaml:/finetune/tuning/preset"] == payload["finetune"]["tuning"]["preset"]
     assert first["yaml:/model/head/dropout"] == payload["model"]["head"]["dropout"]
     for field in ("attn_dropout", "temporal_dropout"):
         if field in payload["model"]["head"].get("kwargs", {}):
@@ -644,7 +631,7 @@ def test_profile_candidate_validation_rejects_task_incompatible_imbalance(
         )
 
 
-@pytest.mark.parametrize("case", ["conflicting_search", "unsupported_variant", "missing_lora"])
+@pytest.mark.parametrize("case", ["conflicting_search", "unsupported_variant", "missing_tuning"])
 def test_profile_contract_failure_precedes_workspace_mutation(tmp_path: Path, case: str):
     recipe_path, workspace = _profile_recipe(tmp_path)
     recipe = yaml.safe_load(recipe_path.read_text())
@@ -660,7 +647,7 @@ def test_profile_contract_failure_precedes_workspace_mutation(tmp_path: Path, ca
         base = yaml.safe_load(Path(recipe["base_recipe"]).read_text())
         config_path = Path(base["inputs"]["config"])
         config = yaml.safe_load(config_path.read_text())
-        config["finetune"].pop("lora")
+        config["finetune"].pop("tuning")
         config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
 
