@@ -1185,7 +1185,9 @@ def _build_finetune_tuning_config(raw: t.Any, model_cfg: ModelConfig) -> Finetun
         raise ValueError(f"finetune.tuning.preset must be one of {sorted(FINETUNE_TUNING_PRESETS)}.")
 
     legal_groups = _finetune_tuning_legal_groups(model_cfg)
-    overrides_raw = raw.get("groups") or {}
+    overrides_raw = raw.get("groups")
+    if overrides_raw is None:
+        overrides_raw = {}
     if not isinstance(overrides_raw, dict):
         raise ValueError("finetune.tuning.groups must be a mapping of group name to {train, lr_scale}.")
     unknown = sorted(set(overrides_raw) - set(FINETUNE_TUNING_GROUPS))
@@ -1206,7 +1208,9 @@ def _build_finetune_tuning_config(raw: t.Any, model_cfg: ModelConfig) -> Finetun
     if base is None:
         missing = sorted(legal_groups - set(overrides))
         if missing:
-            raise ValueError(f"finetune.tuning.preset 'custom' requires every group to be explicit. Missing: {missing}.")
+            raise ValueError(
+                f"finetune.tuning.preset 'custom' requires every group to be explicit. Missing: {missing}."
+            )
 
     groups: dict[str, FinetuneGroupConfig] = {}
     for name in FINETUNE_TUNING_GROUPS:
@@ -1251,9 +1255,13 @@ def _validate_finetune_tuning_config(
     if cfg.preset != "moe_top_experts" and cfg.moe.layer_indices is not None:
         raise ValueError("finetune.tuning.moe.layer_indices is only supported for preset 'moe_top_experts'.")
 
+    # A dense backbone has no expert or router groups, so every moe_* preset would
+    # collapse to the same head-plus-encoder policy while still carrying a name that
+    # claims otherwise. Reject the combination instead of silently renaming a policy.
+    if cfg.preset.startswith("moe_") and not moe_enabled:
+        raise ValueError(f"finetune.tuning.preset '{cfg.preset}' requires model.backbone.moe.enabled=true.")
+
     if cfg.preset == "moe_top_experts":
-        if not moe_enabled:
-            raise ValueError("finetune.tuning.preset 'moe_top_experts' requires model.backbone.moe.enabled=true.")
         moe_layers = list(getattr(moe_cfg, "layer_indices", None) or [])
         if cfg.moe.layer_indices is None:
             if not moe_layers:
@@ -1274,6 +1282,22 @@ _LEGACY_FINETUNE_TRAINABILITY_KEYS = {
     "freeze_tokenizer": "finetune.tuning.groups.tokenizers.train",
     "lora": "finetune.tuning.groups.lora.train plus finetune.tuning.lora",
     "moe_tuning": "finetune.tuning.preset plus finetune.moe_regularization",
+}
+
+
+# Every block the finetune parser reads. The list is closed so a misspelled key fails at
+# load instead of silently reverting to a default -- `moe_regulrization` would otherwise
+# disable the auxiliary loss a run was configured around, and nothing would say so.
+FINETUNE_BLOCK_FIELDS = {
+    "eval_visualizations",
+    "layer_mix",
+    "loss",
+    "moe_regularization",
+    "multilabel",
+    "sampler",
+    "survival",
+    "task",
+    "tuning",
 }
 
 
@@ -1503,6 +1527,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     if not isinstance(finetune_block, dict):
         raise ValueError("finetune block must be a mapping.")
     _reject_legacy_finetune_keys(finetune_block)
+    _reject_extra_fields(finetune_block, FINETUNE_BLOCK_FIELDS, "finetune")
     averaging_cfg = _build_model_averaging_config(data)
     model_cfg = _build_model_config(model_block, require_head=True)
     layer_mix_cfg = _build_layer_mix_config(finetune_block.get("layer_mix"))

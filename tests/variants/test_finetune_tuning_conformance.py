@@ -160,3 +160,38 @@ def test_every_variant_points_a_legacy_config_at_the_migration_tool(variant: str
 
     with pytest.raises(ValueError, match="utils/migrate_finetune_tuning.py"):
         _config(variant).load_finetune_config(path)
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_every_variant_rejects_an_unknown_finetune_block(variant: str, tmp_path: Path):
+    """A misspelled block name must fail rather than fall back to a default.
+
+    `moe_regularization` used to sit inside `moe_tuning`, which rejected unknown keys.
+    Lifting it to a sibling of `tuning` would otherwise let `moe_regulrization` silently
+    disable the auxiliary loss a run was configured around.
+    """
+    payload = yaml.safe_load((REPO_ROOT / REPRESENTATIVE_CONFIGS[variant]).read_text())
+    payload["finetune"]["moe_regulrization"] = {"enabled": True}
+    path = tmp_path / "typo.yaml"
+    path.write_text(yaml.safe_dump(payload))
+
+    with pytest.raises(ValueError, match="finetune has unsupported fields"):
+        _config(variant).load_finetune_config(path)
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_every_variant_tells_an_absent_groups_key_from_a_malformed_one(variant: str, tmp_path: Path):
+    """Only absence means "no overrides"; anything else is a mapping that failed to parse."""
+    payload = yaml.safe_load((REPO_ROOT / REPRESENTATIVE_CONFIGS[variant]).read_text())
+    payload["finetune"]["tuning"] = {"preset": "head_only", "groups": []}
+    path = tmp_path / "empty_groups.yaml"
+    path.write_text(yaml.safe_dump(payload))
+
+    with pytest.raises(ValueError, match="finetune.tuning.groups must be a mapping"):
+        _config(variant).load_finetune_config(path)
+
+    payload["finetune"]["tuning"] = {"preset": "head_only", "groups": None}
+    path = tmp_path / "null_groups.yaml"
+    path.write_text(yaml.safe_dump(payload))
+
+    assert _config(variant).load_finetune_config(path).finetune.tuning.preset == "head_only"

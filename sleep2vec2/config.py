@@ -788,6 +788,21 @@ _LEGACY_FINETUNE_TRAINABILITY_KEYS = {
 }
 
 
+# Every block the finetune parser reads. The list is closed so a misspelled key fails at
+# load instead of silently reverting to a default -- `moe_regulrization` would otherwise
+# disable the auxiliary loss a run was configured around, and nothing would say so.
+FINETUNE_BLOCK_FIELDS = {
+    "eval_visualizations",
+    "layer_mix",
+    "loss",
+    "multilabel",
+    "sampler",
+    "survival",
+    "task",
+    "tuning",
+}
+
+
 def _reject_legacy_finetune_keys(finetune_block: dict[str, t.Any]) -> None:
     """Fail loudly on the pre-`tuning` schema instead of silently ignoring it.
 
@@ -865,7 +880,9 @@ def _build_finetune_tuning_config(raw: t.Any) -> FinetuneTuningConfig:
     if type(preset) is not str or preset not in _FINETUNE_TUNING_PRESETS:
         raise ValueError(f"finetune.tuning.preset must be one of {sorted(FINETUNE_TUNING_PRESETS)}.")
 
-    overrides_raw = raw.get("groups") or {}
+    overrides_raw = raw.get("groups")
+    if overrides_raw is None:
+        overrides_raw = {}
     if not isinstance(overrides_raw, dict):
         raise ValueError("finetune.tuning.groups must be a mapping of group name to {train, lr_scale}.")
     unknown = sorted(set(overrides_raw) - set(FINETUNE_TUNING_GROUPS))
@@ -884,7 +901,9 @@ def _build_finetune_tuning_config(raw: t.Any) -> FinetuneTuningConfig:
     if base is None:
         missing = sorted(set(FINETUNE_TUNING_GROUPS) - set(overrides))
         if missing:
-            raise ValueError(f"finetune.tuning.preset 'custom' requires every group to be explicit. Missing: {missing}.")
+            raise ValueError(
+                f"finetune.tuning.preset 'custom' requires every group to be explicit. Missing: {missing}."
+            )
 
     groups: dict[str, FinetuneGroupConfig] = {}
     for name in FINETUNE_TUNING_GROUPS:
@@ -1111,6 +1130,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     if not isinstance(finetune_block, dict):
         raise ValueError("finetune block must be a mapping.")
     _reject_legacy_finetune_keys(finetune_block)
+    _reject_extra_finetune_tuning_fields(finetune_block, FINETUNE_BLOCK_FIELDS, "finetune")
     averaging_cfg = _build_model_averaging_config(data)
     model_cfg = _build_model_config(model_block, require_head=True)
     layer_mix_cfg = _build_layer_mix_config(finetune_block.get("layer_mix"))

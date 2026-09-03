@@ -549,3 +549,20 @@ def test_sleep2expert_finetune_tuning_rejects_the_legacy_keys(tmp_path: Path):
 
     with pytest.raises(ValueError, match="was replaced by finetune.tuning"):
         load_finetune_config(path)
+
+
+@pytest.mark.parametrize("preset", ["moe_conservative", "moe_conservative_routers", "moe_top_experts"])
+def test_sleep2expert_finetune_tuning_rejects_every_moe_preset_without_moe(preset: str, tmp_path: Path):
+    """A dense backbone has no expert or router group to act on.
+
+    Every moe_* preset would collapse to the same head-plus-encoder policy while still
+    carrying a name that claims otherwise, so the run report and the logged group table
+    would describe a MoE policy that never existed.
+    """
+    payload = _valid_finetune_payload()
+    payload["model"]["backbone"].pop("moe")
+    _tuning(payload, preset=preset)
+    path = _write_config(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="requires model.backbone.moe.enabled=true"):
+        load_finetune_config(path)
