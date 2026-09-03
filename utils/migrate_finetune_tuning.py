@@ -49,8 +49,11 @@ if str(REPO_ROOT) not in sys.path:
 # --------------------------------------------------------------------------------------
 
 LEGACY_GROUPS = ("head", "backbone", "experts", "routers", "tokenizers", "projection", "lora")
-# Mirrors FinetuneLrScalesConfig's dataclass defaults, which applied whenever a config
-# omitted a group from moe_tuning.lr_scales.
+# Mirrors `_default_finetune_moe_lr_scales(mode)`, which filled in every group a config
+# omitted from moe_tuning.lr_scales. The defaults were mode-dependent, and the difference
+# is not cosmetic: under `head_only` the backbone defaulted to 0.0, and a 0.0 scale was
+# itself a freeze switch. Reading one flat table for every mode would migrate such a
+# config to a policy that trains the backbone the legacy run kept frozen.
 LEGACY_DEFAULT_SCALES = {
     "head": 1.0,
     "backbone": 0.1,
@@ -60,17 +63,26 @@ LEGACY_DEFAULT_SCALES = {
     "projection": 0.0,
     "lora": 1.0,
 }
+LEGACY_MODE_SCALES = {
+    "head_only": {**LEGACY_DEFAULT_SCALES, "backbone": 0.0, "experts": 0.0},
+    "conservative_full_router_trainable": {**LEGACY_DEFAULT_SCALES, "routers": 0.01},
+    "top_moe_layer_expert_only": {**LEGACY_DEFAULT_SCALES, "backbone": 0.0},
+}
 # The legacy `backbone` group is the new `encoder` group: same parameters, and the
 # semantic classifier already excluded tokenizers/experts/routers/projection from it.
 LEGACY_TO_NEW_GROUP = {"backbone": "encoder"}
 
 
-def legacy_trainability_table(finetune_block: dict[str, t.Any]) -> dict[str, list[t.Any]]:
+def legacy_trainability_table(
+    finetune_block: dict[str, t.Any],
+    moe_layer_indices: t.Sequence[int] = (),
+) -> dict[str, list[t.Any]]:
     """Return {group: [train, lr_scale]} under the *legacy* runtime semantics.
 
     Transcribed from `_set_param_trainability_from_policy` (sleep2expert) and from the
     `freeze_backbone_and_insert_lora` -> `freeze_tokenizer` sequence that the two
-    non-MoE variants run in `Sleep2vecFinetuning.__init__`.
+    non-MoE variants run in `Sleep2vecFinetuning.__init__`. `moe_layer_indices` comes
+    from `model.backbone.moe`, because one legacy mode defaulted to it.
     """
     lora_block = finetune_block.get("lora") or {}
     freeze_backbone = bool(lora_block.get("freeze_backbone_and_insert_lora", False))
@@ -96,10 +108,10 @@ def legacy_trainability_table(finetune_block: dict[str, t.Any]) -> dict[str, lis
         # no per-group scaling, so every trained group runs at the base learning rate.
         return {group: [train[group], 1.0] for group in LEGACY_GROUPS}
 
-    scales = dict(LEGACY_DEFAULT_SCALES)
-    scales.update({key: float(value) for key, value in (moe_tuning.get("lr_scales") or {}).items()})
     mode = moe_tuning.get("mode", "conservative_full_router_frozen")
-    selected_layers = set(moe_tuning.get("train_moe_layer_indices") or [])
+    scales = dict(LEGACY_MODE_SCALES.get(mode, LEGACY_DEFAULT_SCALES))
+    scales.update({key: float(value) for key, value in (moe_tuning.get("lr_scales") or {}).items()})
+    selected_layers = set(legacy_selected_moe_layers(moe_tuning, moe_layer_indices))
 
     table: dict[str, list[t.Any]] = {}
     for group in LEGACY_GROUPS:
@@ -130,6 +142,25 @@ def legacy_trainability_table(finetune_block: dict[str, t.Any]) -> dict[str, lis
     if not adapters_inserted:
         table["lora"][0] = False
     return table
+
+
+def legacy_selected_moe_layers(
+    moe_tuning: dict[str, t.Any],
+    moe_layer_indices: t.Sequence[int] = (),
+) -> list[int]:
+    """Which MoE layers the legacy run trained experts in.
+
+    `top_moe_layer_expert_only` did not require `train_moe_layer_indices`: validation
+    filled it with the deepest MoE layer. A config relying on that default names no
+    layers in its own text, so reading the key alone would migrate it to a policy that
+    trains no experts at all.
+    """
+    explicit = moe_tuning.get("train_moe_layer_indices")
+    if explicit:
+        return list(explicit)
+    if moe_tuning.get("mode") == "top_moe_layer_expert_only" and moe_layer_indices:
+        return [max(moe_layer_indices)]
+    return []
 
 
 def to_new_groups(legacy_table: dict[str, list[t.Any]], legal_groups: t.Sequence[str]) -> dict[str, list[t.Any]]:
@@ -306,7 +337,9 @@ def migrate_text(text: str, path: Path) -> tuple[str | None, dict[str, t.Any] | 
 
     is_expert = is_sleep2expert_config(path, data)
     legal = legal_groups_for(data, is_expert)
-    legacy_table = legacy_trainability_table(finetune_block)
+    model_moe = ((data.get("model") or {}).get("backbone") or {}).get("moe") or {}
+    model_moe_layers = list(model_moe.get("layer_indices") or [])
+    legacy_table = legacy_trainability_table(finetune_block, model_moe_layers)
     target = to_new_groups(legacy_table, legal)
     preset, overrides = select_preset(target, legal)
 
@@ -319,7 +352,9 @@ def migrate_text(text: str, path: Path) -> tuple[str | None, dict[str, t.Any] | 
             if key in lora_block
         }
     moe_tuning = finetune_block.get("moe_tuning") or {}
-    moe_layer_indices = moe_tuning.get("train_moe_layer_indices") if preset == "moe_top_experts" else None
+    moe_layer_indices = None
+    if preset == "moe_top_experts":
+        moe_layer_indices = legacy_selected_moe_layers(moe_tuning, model_moe_layers)
 
     lines = text.splitlines()
     finetune_start = next(index for index, line in enumerate(lines) if line.startswith("finetune:"))
@@ -335,6 +370,14 @@ def migrate_text(text: str, path: Path) -> tuple[str | None, dict[str, t.Any] | 
         if "moe_regularization" in inner:
             reg_start, reg_end = inner["moe_regularization"]
             regularization_lines = _dedent(lines[reg_start:reg_end], 2)
+        elif moe_tuning.get("moe_regularization") is not None:
+            # The lift is textual so it keeps the block's comments, and a flow-style
+            # `moe_tuning: {...}` puts moe_regularization on a line this splice deletes
+            # wholesale. Refuse rather than silently disable an auxiliary loss.
+            raise ValueError(
+                "finetune.moe_tuning carries moe_regularization on an inline mapping; "
+                "rewrite it as a block mapping before migrating."
+            )
 
     legacy_spans = [spans[key] for key in ("freeze_tokenizer", "lora", "moe_tuning") if key in spans]
     doomed = sorted(legacy_spans)
