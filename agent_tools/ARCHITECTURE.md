@@ -94,10 +94,11 @@ embedding_extraction.
 `finetune_balanced` candidate compiler and its frozen audit view. The hparam
 adapter invokes it through the effective-recipe binding hook before
 consultation; generic decision code does not duplicate sleep2vec config fields.
-The compiler requires a complete explicit LayerMix block and explicit LoRA
-control booleans, preserves the exact source as candidate zero, and only
-expands its registered technical axes. Omitted non-control LoRA fields retain
-canonical variant loader defaults frozen by config and runtime identity.
+The compiler requires a complete explicit LayerMix block and an explicit
+`finetune.tuning` preset, preserves the exact source as candidate zero, and only
+expands its registered technical axes. Omitted `finetune.tuning.lora`
+hyper-parameters retain canonical variant loader defaults frozen by config and
+runtime identity.
 
 ### Mixed bridges (9) — generic orchestration with tolerated domain coupling
 | Module | Domain coupling (tolerated) |

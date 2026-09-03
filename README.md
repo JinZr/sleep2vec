@@ -450,24 +450,40 @@ finetune:
 - Validation uses per-pair dataloaders to log contrastive accuracy per modality pair.
 - W&B logs a heatmap image (`val_pair_acc_matrix`) plus scalar metrics under `val_pair_acc/<pair>`.
 
-**LoRA fine-tuning**  
-- Controlled by YAML `finetune` block (parsed by `apply_finetune_config`):
+**Trainability (`finetune.tuning`)**
+- Every finetune config must declare a required `finetune.tuning` block. It is the single
+  source of truth for which parameters train and at what learning-rate scale:
   ```yaml
   finetune:
-    freeze_tokenizer: true
-    lora:
-      freeze_backbone_and_insert_lora: true
-      insert_lora: true
-      separate_adapters: false
-      r: 8
-      alpha: 16
-      dropout: 0.05
-      target_modules: [query, key, value]
-      use_dora: false
+    tuning:
+      preset: full
+      groups:
+        tokenizers: {train: false}
   ```
-- `freeze_tokenizer: true` freezes tokenizer parameters during downstream finetuning (default).
-- When enabled, `finetune.py` injects PEFT LoRA/DoRA adapters into the transformer backbone and freezes base weights.
-- `separate_adapters: true` creates channel-specific adapters named `ch_<channel>`; the default LoRA adapter is frozen and only the channel adapters are trainable.
+- `preset` picks a complete trainability table over the variant's semantic parameter
+  groups; `groups` overrides individual entries on top of it. Shared presets are `full`,
+  `head_only`, `lora`, and `custom` (which requires every group to be spelled out).
+  `sleep2expert` adds `moe_conservative`, `moe_conservative_routers`, and
+  `moe_top_experts`.
+- Groups are `head`, `encoder`, `tokenizers`, `projection`, `lora`, plus `experts` and
+  `routers` on `sleep2expert`. Each entry is `{train: <bool>, lr_scale: <float>}`.
+  `lr_scale` must be finite and `> 0`; freezing is expressed only by `train: false`, never
+  by a zero learning-rate scale.
+- A preset may not train the encoder and LoRA at the same time; LoRA adapts a frozen
+  backbone.
+- `finetune.tuning.lora` carries LoRA hyper-parameters (`r`, `alpha`, `dropout`,
+  `target_modules`, `use_dora`, `separate_adapters`). They are read only when the `lora`
+  group trains, and they may be present under a preset that does not train it — they are
+  hyper-parameters, not a switch.
+- `separate_adapters: true` creates channel-specific adapters named `ch_<channel>`; the
+  default LoRA adapter is frozen and only the channel adapters are trainable.
+- Frozen groups are also put in eval mode, so their BatchNorm/dropout stop updating.
+- The legacy keys `finetune.freeze_tokenizer`, `finetune.lora.insert_lora`,
+  `finetune.lora.freeze_backbone_and_insert_lora`, and `finetune.moe_tuning` are rejected
+  at load time. Convert an old config with:
+  ```bash
+  python -m utils.migrate_finetune_tuning
+  ```
 
 ---
 

@@ -399,9 +399,9 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   supported dropout fields, full/head-only/LoRA adaptation arms when a
   pretrained backbone is passed to tuning, and positive
   scalar `pos_weight` when it exists. A complete explicit
-  `finetune.layer_mix` mapping and an explicit `finetune.lora` control mapping
-  containing both control booleans are required. Omitted non-control LoRA
-  fields retain canonical variant loader defaults; the exact generated config
+  `finetune.layer_mix` mapping and an explicit `finetune.tuning` mapping
+  naming a preset are required. Omitted `finetune.tuning.lora`
+  hyper-parameters retain canonical variant loader defaults; the exact generated config
   and hashes plus runtime/repository identity preserve provenance. Disabled
   source LayerMix must already use `layer_indices:
   null` and `shared_across_modalities: false`; single-channel source LayerMix
