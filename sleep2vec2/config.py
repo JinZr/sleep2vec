@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 import typing as t
 
@@ -211,16 +212,71 @@ class FinetuneDataConfig:
         self.backend = _validate_data_backend(self.backend)
 
 
+FINETUNE_TUNING_GROUPS = ("head", "encoder", "tokenizers", "projection", "lora")
+
+# Materialized (train, lr_scale) per group for each preset. `custom` has no table:
+# it requires every group to be spelled out in the config.
+_FINETUNE_TUNING_PRESETS: dict[str, dict[str, tuple[bool, float]] | None] = {
+    "full": {
+        "head": (True, 1.0),
+        "encoder": (True, 1.0),
+        "tokenizers": (True, 1.0),
+        "projection": (True, 1.0),
+        "lora": (False, 1.0),
+    },
+    "head_only": {
+        "head": (True, 1.0),
+        "encoder": (False, 1.0),
+        "tokenizers": (False, 1.0),
+        "projection": (False, 1.0),
+        "lora": (False, 1.0),
+    },
+    "lora": {
+        "head": (True, 1.0),
+        "encoder": (False, 1.0),
+        "tokenizers": (False, 1.0),
+        "projection": (False, 1.0),
+        "lora": (True, 1.0),
+    },
+    "custom": None,
+}
+
+FINETUNE_TUNING_PRESETS = tuple(_FINETUNE_TUNING_PRESETS)
+
+
 @dataclass
-class LoraConfig:
-    freeze_backbone_and_insert_lora: bool = False
-    insert_lora: bool = False
-    separate_adapters: bool = False
+class FinetuneGroupConfig:
+    """Trainability and learning-rate multiplier for one semantic parameter group."""
+
+    train: bool
+    lr_scale: float = 1.0
+
+
+@dataclass
+class FinetuneTuningLoraConfig:
+    """Adapter shape. Only read when groups['lora'].train is true."""
+
     r: int = 8
     alpha: int = 16
     dropout: float = 0.05
     target_modules: t.List[str] = field(default_factory=lambda: ["query", "key", "value"])
     use_dora: bool = False
+    separate_adapters: bool = False
+
+
+@dataclass
+class FinetuneTuningConfig:
+    preset: str
+    groups: dict[str, FinetuneGroupConfig]
+    lora: FinetuneTuningLoraConfig = field(default_factory=FinetuneTuningLoraConfig)
+
+    def trains(self, group: str) -> bool:
+        entry = self.groups.get(group)
+        return bool(entry is not None and entry.train)
+
+    def lr_scale(self, group: str) -> float:
+        entry = self.groups.get(group)
+        return float(entry.lr_scale) if entry is not None else 1.0
 
 
 @dataclass
@@ -268,8 +324,7 @@ class MultilabelConfig:
 
 @dataclass
 class FinetuneConfig:
-    freeze_tokenizer: bool = True
-    lora: LoraConfig = field(default_factory=LoraConfig)
+    tuning: FinetuneTuningConfig
     layer_mix: LayerMixConfig | None = None
     loss: FinetuneLossConfig = field(default_factory=FinetuneLossConfig)
     sampler: FinetuneSamplerConfig = field(default_factory=FinetuneSamplerConfig)
@@ -727,6 +782,135 @@ def _build_multilabel_config(raw: t.Any, task_cfg: TaskConfig | None) -> Multila
     return MultilabelConfig(**values)
 
 
+_LEGACY_FINETUNE_TRAINABILITY_KEYS = {
+    "freeze_tokenizer": "finetune.tuning.groups.tokenizers.train",
+    "lora": "finetune.tuning.groups.lora.train plus finetune.tuning.lora",
+}
+
+
+def _reject_legacy_finetune_keys(finetune_block: dict[str, t.Any]) -> None:
+    """Fail loudly on the pre-`tuning` schema instead of silently ignoring it.
+
+    These keys used to decide trainability between them, so quietly dropping one would
+    train a different set of parameters than the config asks for. There is no
+    deprecation window: `python utils/migrate_finetune_tuning.py` rewrites a config.
+    """
+    found = sorted(set(_LEGACY_FINETUNE_TRAINABILITY_KEYS) & set(finetune_block))
+    if not found:
+        return
+    replacements = "; ".join(f"finetune.{key} -> {_LEGACY_FINETUNE_TRAINABILITY_KEYS[key]}" for key in found)
+    raise ValueError(
+        f"finetune.{{{','.join(found)}}} was replaced by finetune.tuning. {replacements}. "
+        "Run `python utils/migrate_finetune_tuning.py` to migrate this config."
+    )
+
+
+def _reject_extra_finetune_tuning_fields(raw: dict[str, t.Any], allowed: set[str], field_name: str) -> None:
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise ValueError(f"{field_name} has unsupported fields: {unknown}. Allowed: {sorted(allowed)}.")
+
+
+def _build_finetune_group_config(raw: t.Any, field_name: str) -> tuple[bool, float | None]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"{field_name} must be a mapping with a 'train' field.")
+    _reject_extra_finetune_tuning_fields(raw, {"train", "lr_scale"}, field_name)
+    if "train" not in raw:
+        raise ValueError(f"{field_name}.train is required.")
+    train = raw["train"]
+    if type(train) is not bool:
+        raise ValueError(f"{field_name}.train must be a boolean.")
+
+    if "lr_scale" not in raw:
+        return train, None
+    lr_scale = raw["lr_scale"]
+    if type(lr_scale) not in (int, float) or type(lr_scale) is bool:
+        raise ValueError(f"{field_name}.lr_scale must be a number.")
+    lr_scale = float(lr_scale)
+    if not math.isfinite(lr_scale):
+        raise ValueError(f"{field_name}.lr_scale must be finite.")
+    if lr_scale <= 0.0:
+        raise ValueError(
+            f"{field_name}.lr_scale must be > 0; use 'train: false' to freeze the group. "
+            "A zero learning-rate scale is no longer accepted as a freeze switch."
+        )
+    if not train:
+        raise ValueError(f"{field_name}.lr_scale is meaningless when train is false; remove one of them.")
+    return train, lr_scale
+
+
+def _build_finetune_tuning_lora_config(raw: t.Any) -> FinetuneTuningLoraConfig:
+    if raw is None:
+        return FinetuneTuningLoraConfig()
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.tuning.lora must be a mapping when provided.")
+    _reject_extra_finetune_tuning_fields(
+        raw,
+        {"r", "alpha", "dropout", "target_modules", "use_dora", "separate_adapters"},
+        "finetune.tuning.lora",
+    )
+    return FinetuneTuningLoraConfig(**raw)
+
+
+def _build_finetune_tuning_config(raw: t.Any) -> FinetuneTuningConfig:
+    if raw is None:
+        raise ValueError("finetune.tuning is required. See doc/finetune_tuning_schema_refactor.md for the schema.")
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.tuning must be a mapping.")
+    _reject_extra_finetune_tuning_fields(raw, {"preset", "groups", "lora"}, "finetune.tuning")
+
+    if "preset" not in raw:
+        raise ValueError(f"finetune.tuning.preset is required and must be one of {sorted(FINETUNE_TUNING_PRESETS)}.")
+    preset = raw["preset"]
+    if type(preset) is not str or preset not in _FINETUNE_TUNING_PRESETS:
+        raise ValueError(f"finetune.tuning.preset must be one of {sorted(FINETUNE_TUNING_PRESETS)}.")
+
+    overrides_raw = raw.get("groups") or {}
+    if not isinstance(overrides_raw, dict):
+        raise ValueError("finetune.tuning.groups must be a mapping of group name to {train, lr_scale}.")
+    unknown = sorted(set(overrides_raw) - set(FINETUNE_TUNING_GROUPS))
+    if unknown:
+        raise ValueError(
+            f"finetune.tuning.groups has unknown groups: {unknown}. "
+            f"This variant has no MoE backbone, so its groups are {sorted(FINETUNE_TUNING_GROUPS)}."
+        )
+
+    overrides = {
+        name: _build_finetune_group_config(block, f"finetune.tuning.groups.{name}")
+        for name, block in overrides_raw.items()
+    }
+
+    base = _FINETUNE_TUNING_PRESETS[preset]
+    if base is None:
+        missing = sorted(set(FINETUNE_TUNING_GROUPS) - set(overrides))
+        if missing:
+            raise ValueError(f"finetune.tuning.preset 'custom' requires every group to be explicit. Missing: {missing}.")
+
+    groups: dict[str, FinetuneGroupConfig] = {}
+    for name in FINETUNE_TUNING_GROUPS:
+        if name in overrides:
+            train, lr_scale = overrides[name]
+            if lr_scale is None:
+                lr_scale = base[name][1] if base is not None else 1.0
+        else:
+            train, lr_scale = base[name]
+        groups[name] = FinetuneGroupConfig(train=train, lr_scale=float(lr_scale))
+
+    cfg = FinetuneTuningConfig(preset=preset, groups=groups, lora=_build_finetune_tuning_lora_config(raw.get("lora")))
+    _validate_finetune_tuning_config(cfg)
+    return cfg
+
+
+def _validate_finetune_tuning_config(cfg: FinetuneTuningConfig) -> None:
+    if cfg.trains("encoder") and cfg.trains("lora"):
+        raise ValueError(
+            "finetune.tuning cannot train the encoder and insert LoRA at the same time: "
+            "adapter insertion freezes the backbone first. Use preset 'lora' or preset 'full'."
+        )
+    # finetune.tuning.lora holds hyperparameters, not a switch, so a preset that leaves the
+    # lora group untrained may still carry it; that is what lets a sweep flip the preset alone.
+
+
 def _validate_layer_mix_config(layer_mix_cfg: LayerMixConfig | None, backbone_cfg: BackboneConfig) -> None:
     if layer_mix_cfg is None or not layer_mix_cfg.layer_indices:
         return
@@ -926,7 +1110,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         raise ValueError("Finetune YAML must include a top-level 'finetune' block.")
     if not isinstance(finetune_block, dict):
         raise ValueError("finetune block must be a mapping.")
-    lora_block = finetune_block.get("lora", {})
+    _reject_legacy_finetune_keys(finetune_block)
     averaging_cfg = _build_model_averaging_config(data)
     model_cfg = _build_model_config(model_block, require_head=True)
     layer_mix_cfg = _build_layer_mix_config(finetune_block.get("layer_mix"))
@@ -938,10 +1122,8 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     multilabel_cfg = _build_multilabel_config(finetune_block.get("multilabel"), task_cfg)
     _validate_layer_mix_config(layer_mix_cfg, model_cfg.backbone)
     data_cfg = FinetuneDataConfig(**data_block)
-    lora_cfg = LoraConfig(**lora_block)
     finetune_cfg = FinetuneConfig(
-        freeze_tokenizer=finetune_block.get("freeze_tokenizer", True),
-        lora=lora_cfg,
+        tuning=_build_finetune_tuning_config(finetune_block.get("tuning")),
         layer_mix=layer_mix_cfg,
         loss=loss_cfg,
         sampler=sampler_cfg,
@@ -981,7 +1163,10 @@ __all__ = [
     "TemporalAggConfig",
     "ModelAveragingConfig",
     "ProjectionConfig",
-    "LoraConfig",
+    "FinetuneTuningConfig",
+    "FinetuneGroupConfig",
+    "FINETUNE_TUNING_GROUPS",
+    "FINETUNE_TUNING_PRESETS",
     "TaskConfig",
     "load_finetune_config",
     "load_pretrain_config",
