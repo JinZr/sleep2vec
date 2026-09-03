@@ -55,10 +55,6 @@ from .downstream_model import Sleep2vecDownstreamModel
 from .pretrain_model import Sleep2vecPretrainModel
 
 
-# Bump when the shape of finetune_status.json changes so downstream readers can tell
-# a v1 file from whatever replaces it.
-FINETUNE_STATUS_SCHEMA_VERSION = 1
-
 
 def _require_tuning_config(finetune_config):
     """The trainability policy has no implicit default; a config must state one."""
@@ -338,7 +334,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
         }
 
         return {
-            "schema_version": FINETUNE_STATUS_SCHEMA_VERSION,
             "preset": tuning.preset,
             "moe_enabled": bool(moe_cfg is not None and getattr(moe_cfg, "enabled", False)),
             "moe_layer_indices": list(getattr(moe_cfg, "layer_indices", None) or []),

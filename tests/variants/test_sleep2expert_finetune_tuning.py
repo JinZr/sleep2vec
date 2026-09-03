@@ -405,7 +405,6 @@ def test_status_snapshot_records_moe_conservative_trainability():
     status = module.finetune_status
     groups = status["param_groups"]
 
-    assert status["schema_version"] == 1
     assert status["preset"] == "moe_conservative"
     assert status["moe_enabled"] is True
     assert status["moe_layer_indices"] == [1, 3]
