@@ -641,18 +641,29 @@ class Sleep2vecDownstreamModel(nn.Module):
             if module_parameters and not any(parameter.requires_grad for parameter in module_parameters):
                 module.eval()
 
+    def lora_param_is_trainable(self, name: str) -> bool:
+        """Whether a LoRA parameter may train, given the adapter layout.
+
+        Without `separate_adapters` there is a single adapter and every LoRA weight
+        belongs to it. With `separate_adapters` each channel gets its own adapter and
+        only those may train: PEFT still creates a `default` adapter alongside them,
+        and training it would leak one shared adaptation across all channels. Anything
+        that writes `requires_grad` over LoRA weights has to ask here first.
+        """
+        if not getattr(self, "separate_adapters", False):
+            return True
+        return any(
+            (f".{adp}." in name or f"_{adp}." in name or name.endswith(f".{adp}.weight"))
+            for adp in getattr(self, "channel_adapters", ())
+        )
+
     # 在所有 adapter 都 add 完之后调用
     def _enable_all_adapters_trainable(self):
         encoder = self._backbone_encoder()
         for n, p in encoder.named_parameters():
-            if "lora_" in n:
-                p.requires_grad = False
-        for n, p in encoder.named_parameters():
             # 仅放开这些 adapter 的参数（避免误放开 default）
-            if "lora_" in n and any(
-                (f".{adp}." in n or f"_{adp}." in n or n.endswith(f".{adp}.weight")) for adp in self.channel_adapters
-            ):
-                p.requires_grad = True
+            if "lora_" in n:
+                p.requires_grad = self.lora_param_is_trainable(n)
 
     # ---- helpers ----
     @staticmethod

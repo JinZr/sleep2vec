@@ -245,10 +245,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self._finetune_param_to_group[name] = group
 
             trainable = tuning.trains(group)
-            # moe_top_experts is the one preset with sub-group granularity: only the
-            # experts of the selected MoE layers train.
+            # Two layouts have sub-group granularity. moe_top_experts trains only the
+            # experts of the selected MoE layers; separate_adapters trains only the
+            # per-channel adapters, never the `default` adapter PEFT creates alongside
+            # them.
             if trainable and group == "experts" and selected_layers:
                 trainable = is_selected_expert(name)
+            if trainable and group == "lora":
+                trainable = self.model.lora_param_is_trainable(name)
 
             param.requires_grad = trainable
             param_count = int(param.numel())

@@ -1774,7 +1774,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     f"Groups: {sorted(tuning.groups)}."
                 )
             self._finetune_param_to_group[name] = group
+
             trainable = tuning.trains(group)
+            # separate_adapters is the one layout with sub-group granularity: only the
+            # per-channel adapters train, never the `default` adapter PEFT creates
+            # alongside them.
+            if trainable and group == "lora":
+                trainable = self.model.lora_param_is_trainable(name)
+
             param.requires_grad = trainable
 
             param_count = int(param.numel())
