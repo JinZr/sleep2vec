@@ -31,6 +31,10 @@ data:
   finetune_preset_path: null
 
 finetune:
+  tuning:
+    preset: full
+    groups:
+      tokenizers: {train: false}
   task:
     type: classification
     output_dim: 30
