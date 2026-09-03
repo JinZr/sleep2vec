@@ -181,10 +181,10 @@ def _preset_tables() -> dict[str, dict[str, tuple[bool, float]] | None]:
     return _FINETUNE_TUNING_PRESETS
 
 
-def legal_groups_for(config_data: dict[str, t.Any], is_sleep2expert: bool) -> tuple[str, ...]:
+def legal_groups_for(config_data: dict[str, t.Any], config_module: str) -> tuple[str, ...]:
     from sleep2expert.config import FINETUNE_TUNING_GROUPS, FINETUNE_TUNING_MOE_GROUPS
 
-    if not is_sleep2expert:
+    if config_module != "sleep2expert.config":
         return NON_MOE_GROUPS
     backbone = (config_data.get("model") or {}).get("backbone") or {}
     moe = backbone.get("moe") or {}
@@ -193,10 +193,16 @@ def legal_groups_for(config_data: dict[str, t.Any], is_sleep2expert: bool) -> tu
     return FINETUNE_TUNING_GROUPS
 
 
-def is_sleep2expert_config(path: Path, config_data: dict[str, t.Any]) -> bool:
+def config_module_for(path: Path, config_data: dict[str, t.Any]) -> str:
+    """The config module that owns this file, e.g. ``sleep2vec2.config``.
+
+    The variants are enforced forks with no cross-imports, so the manifest records the
+    module by name rather than a base/expert flag: replaying a `configs/sleep2vec2/**`
+    entry through `sleep2vec.config` would check a parser that never loads that file.
+    """
     from utils.check_configs import _resolve_config_variant
 
-    return _resolve_config_variant(path, config_data).config_module == "sleep2expert.config"
+    return _resolve_config_variant(path, config_data).config_module
 
 
 # --------------------------------------------------------------------------------------
@@ -335,8 +341,8 @@ def migrate_text(text: str, path: Path) -> tuple[str | None, dict[str, t.Any] | 
     # A config with none of the legacy keys still needs a tuning block, because
     # finetune.tuning is required now. Its legacy defaults trained everything.
 
-    is_expert = is_sleep2expert_config(path, data)
-    legal = legal_groups_for(data, is_expert)
+    config_module = config_module_for(path, data)
+    legal = legal_groups_for(data, config_module)
     model_moe = ((data.get("model") or {}).get("backbone") or {}).get("moe") or {}
     model_moe_layers = list(model_moe.get("layer_indices") or [])
     legacy_table = legacy_trainability_table(finetune_block, model_moe_layers)
@@ -396,7 +402,7 @@ def migrate_text(text: str, path: Path) -> tuple[str | None, dict[str, t.Any] | 
 
     entry = {
         "path": str(path.relative_to(REPO_ROOT)),
-        "variant": "sleep2expert" if is_expert else "base",
+        "config_module": config_module,
         "legacy": legacy_table,
         "groups": legal,
         "expected": target,

@@ -1,5 +1,6 @@
 [
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -60,10 +61,10 @@
       ]
     },
     "path": "configs/cls_emb/sleep2vec_dense_finetune_cls.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -124,10 +125,10 @@
       ]
     },
     "path": "configs/cls_emb/sleep2vec_dense_finetune_reg.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -188,10 +189,10 @@
       ]
     },
     "path": "configs/examples/age/FINETUNE_EXAMPLE.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -252,10 +253,10 @@
       ]
     },
     "path": "configs/examples/ahi/FINETUNE_EXAMPLE.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -316,10 +317,10 @@
       ]
     },
     "path": "configs/examples/arousal/FINETUNE_EXAMPLE.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         false,
@@ -380,10 +381,10 @@
       ]
     },
     "path": "configs/examples/sex/FINETUNE_EXAMPLE.yaml",
-    "preset": "lora",
-    "variant": "base"
+    "preset": "lora"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -444,10 +445,10 @@
       ]
     },
     "path": "configs/examples/stage3/FINETUNE_EXAMPLE.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         false,
@@ -508,10 +509,10 @@
       ]
     },
     "path": "configs/examples/stage4/FINETUNE_EXAMPLE.yaml",
-    "preset": "lora",
-    "variant": "base"
+    "preset": "lora"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         false,
@@ -572,10 +573,10 @@
       ]
     },
     "path": "configs/examples/stage5/FINETUNE_EXAMPLE.yaml",
-    "preset": "lora",
-    "variant": "base"
+    "preset": "lora"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -636,10 +637,10 @@
       ]
     },
     "path": "configs/heartbeat_breath_age_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -700,10 +701,10 @@
       ]
     },
     "path": "configs/heartbeat_breath_ahi_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -764,10 +765,10 @@
       ]
     },
     "path": "configs/heartbeat_breath_sex_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -828,10 +829,10 @@
       ]
     },
     "path": "configs/ppg_age_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -892,10 +893,10 @@
       ]
     },
     "path": "configs/ppg_ahi_finetune.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -956,10 +957,10 @@
       ]
     },
     "path": "configs/ppg_ahi_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -1020,10 +1021,10 @@
       ]
     },
     "path": "configs/ppg_ahi_finetune_large_temporal_conv.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -1084,10 +1085,10 @@
       ]
     },
     "path": "configs/ppg_cox_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -1148,10 +1149,10 @@
       ]
     },
     "path": "configs/ppg_sex_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -1212,10 +1213,10 @@
       ]
     },
     "path": "configs/ppg_stage3_finetune.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -1276,10 +1277,10 @@
       ]
     },
     "path": "configs/ppg_stage3_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -1340,10 +1341,10 @@
       ]
     },
     "path": "configs/ppg_stage4_finetune.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -1404,10 +1405,10 @@
       ]
     },
     "path": "configs/ppg_stage4_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -1468,10 +1469,10 @@
       ]
     },
     "path": "configs/ppg_stage5_finetune.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -1532,10 +1533,10 @@
       ]
     },
     "path": "configs/ppg_stage5_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2expert.config",
     "expected": {
       "encoder": [
         true,
@@ -1606,10 +1607,10 @@
       ]
     },
     "path": "configs/sleep2expert/moe/finetune_ablations/router_trainable.yaml",
-    "preset": "moe_conservative_routers",
-    "variant": "sleep2expert"
+    "preset": "moe_conservative_routers"
   },
   {
+    "config_module": "sleep2expert.config",
     "expected": {
       "encoder": [
         false,
@@ -1680,10 +1681,10 @@
       ]
     },
     "path": "configs/sleep2expert/moe/finetune_ablations/top_moe_layer_expert_only.yaml",
-    "preset": "moe_top_experts",
-    "variant": "sleep2expert"
+    "preset": "moe_top_experts"
   },
   {
+    "config_module": "sleep2expert.config",
     "expected": {
       "encoder": [
         true,
@@ -1754,10 +1755,10 @@
       ]
     },
     "path": "configs/sleep2expert/moe/heartbeat_breath_ahi_finetune.yaml",
-    "preset": "moe_conservative",
-    "variant": "sleep2expert"
+    "preset": "moe_conservative"
   },
   {
+    "config_module": "sleep2expert.config",
     "expected": {
       "encoder": [
         true,
@@ -1828,10 +1829,10 @@
       ]
     },
     "path": "configs/sleep2expert/moe/heartbeat_breath_cox_finetune.yaml",
-    "preset": "moe_conservative",
-    "variant": "sleep2expert"
+    "preset": "moe_conservative"
   },
   {
+    "config_module": "sleep2expert.config",
     "expected": {
       "encoder": [
         true,
@@ -1902,10 +1903,10 @@
       ]
     },
     "path": "configs/sleep2expert/moe/heartbeat_breath_stage5_finetune.yaml",
-    "preset": "moe_conservative",
-    "variant": "sleep2expert"
+    "preset": "moe_conservative"
   },
   {
+    "config_module": "sleep2expert.config",
     "expected": {
       "encoder": [
         true,
@@ -1976,10 +1977,10 @@
       ]
     },
     "path": "configs/sleep2expert/moe/heartbeat_breath_stage5_finetune_shhs.yaml",
-    "preset": "moe_conservative",
-    "variant": "sleep2expert"
+    "preset": "moe_conservative"
   },
   {
+    "config_module": "sleep2expert.config",
     "expected": {
       "encoder": [
         true,
@@ -2050,10 +2051,10 @@
       ]
     },
     "path": "configs/sleep2expert/moe/sleep2expert_phase_moe_finetune_cls.yaml",
-    "preset": "full",
-    "variant": "sleep2expert"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2expert.config",
     "expected": {
       "encoder": [
         true,
@@ -2124,10 +2125,10 @@
       ]
     },
     "path": "configs/sleep2expert/moe/sleep2expert_phase_moe_finetune_cls_conservative.yaml",
-    "preset": "moe_conservative",
-    "variant": "sleep2expert"
+    "preset": "moe_conservative"
   },
   {
+    "config_module": "sleep2expert.config",
     "expected": {
       "encoder": [
         false,
@@ -2198,10 +2199,10 @@
       ]
     },
     "path": "configs/sleep2expert/moe/sleep2expert_phase_moe_finetune_cls_head_only_fewshot.yaml",
-    "preset": "head_only",
-    "variant": "sleep2expert"
+    "preset": "head_only"
   },
   {
+    "config_module": "sleep2expert.config",
     "expected": {
       "encoder": [
         true,
@@ -2272,10 +2273,10 @@
       ]
     },
     "path": "configs/sleep2expert/moe/sleep2expert_phase_moe_finetune_reg.yaml",
-    "preset": "full",
-    "variant": "sleep2expert"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2expert.config",
     "expected": {
       "encoder": [
         true,
@@ -2346,10 +2347,10 @@
       ]
     },
     "path": "configs/sleep2expert/moe/sleep2expert_phase_moe_finetune_reg_conservative_tokens.yaml",
-    "preset": "moe_conservative",
-    "variant": "sleep2expert"
+    "preset": "moe_conservative"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -2410,10 +2411,10 @@
       ]
     },
     "path": "configs/sleep2vec2/cls_emb/sleep2vec_dense_finetune_cls.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -2474,10 +2475,10 @@
       ]
     },
     "path": "configs/sleep2vec2/cls_emb/sleep2vec_dense_finetune_reg.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -2538,10 +2539,10 @@
       ]
     },
     "path": "configs/sleep2vec2/heartbeat_breath_age_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -2602,10 +2603,10 @@
       ]
     },
     "path": "configs/sleep2vec2/heartbeat_breath_ahi_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -2666,10 +2667,10 @@
       ]
     },
     "path": "configs/sleep2vec2/heartbeat_breath_sex_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -2730,10 +2731,10 @@
       ]
     },
     "path": "configs/sleep2vec2/ppg_age_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -2794,10 +2795,10 @@
       ]
     },
     "path": "configs/sleep2vec2/ppg_ahi_finetune.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -2858,10 +2859,10 @@
       ]
     },
     "path": "configs/sleep2vec2/ppg_ahi_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -2922,10 +2923,10 @@
       ]
     },
     "path": "configs/sleep2vec2/ppg_ahi_finetune_large_temporal_conv.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -2986,10 +2987,10 @@
       ]
     },
     "path": "configs/sleep2vec2/ppg_cox_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3050,10 +3051,10 @@
       ]
     },
     "path": "configs/sleep2vec2/ppg_sex_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3114,10 +3115,10 @@
       ]
     },
     "path": "configs/sleep2vec2/ppg_stage3_finetune.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3178,10 +3179,10 @@
       ]
     },
     "path": "configs/sleep2vec2/ppg_stage3_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3242,10 +3243,10 @@
       ]
     },
     "path": "configs/sleep2vec2/ppg_stage4_finetune.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3306,10 +3307,10 @@
       ]
     },
     "path": "configs/sleep2vec2/ppg_stage4_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3370,10 +3371,10 @@
       ]
     },
     "path": "configs/sleep2vec2/ppg_stage5_finetune.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3434,10 +3435,10 @@
       ]
     },
     "path": "configs/sleep2vec2/ppg_stage5_finetune_large.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3498,10 +3499,10 @@
       ]
     },
     "path": "configs/sleep2vec2/sleep2vec_dense_finetune_cls.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3562,10 +3563,10 @@
       ]
     },
     "path": "configs/sleep2vec2/sleep2vec_dense_finetune_custom_cls.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3626,10 +3627,10 @@
       ]
     },
     "path": "configs/sleep2vec2/sleep2vec_dense_finetune_custom_reg.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3690,10 +3691,10 @@
       ]
     },
     "path": "configs/sleep2vec2/sleep2vec_dense_finetune_reg.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3754,10 +3755,10 @@
       ]
     },
     "path": "configs/sleep2vec2/token_emb/sleep2vec_dense_finetune_cls_attn.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3818,10 +3819,10 @@
       ]
     },
     "path": "configs/sleep2vec2/token_emb/sleep2vec_dense_finetune_cls_mean.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3882,10 +3883,10 @@
       ]
     },
     "path": "configs/sleep2vec2/token_emb/sleep2vec_dense_finetune_reg_attn.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec2.config",
     "expected": {
       "encoder": [
         true,
@@ -3946,10 +3947,10 @@
       ]
     },
     "path": "configs/sleep2vec2/token_emb/sleep2vec_dense_finetune_reg_mean.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -4010,10 +4011,10 @@
       ]
     },
     "path": "configs/sleep2vec_dense_finetune_cls.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -4074,10 +4075,10 @@
       ]
     },
     "path": "configs/sleep2vec_dense_finetune_custom_cls.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -4138,10 +4139,10 @@
       ]
     },
     "path": "configs/sleep2vec_dense_finetune_custom_reg.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -4202,10 +4203,10 @@
       ]
     },
     "path": "configs/sleep2vec_dense_finetune_reg.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -4266,10 +4267,10 @@
       ]
     },
     "path": "configs/stage5_all_9_channels_finetune_kaldi.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -4330,10 +4331,10 @@
       ]
     },
     "path": "configs/token_emb/sleep2vec_dense_finetune_cls_attn.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -4394,10 +4395,10 @@
       ]
     },
     "path": "configs/token_emb/sleep2vec_dense_finetune_cls_mean.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -4458,10 +4459,10 @@
       ]
     },
     "path": "configs/token_emb/sleep2vec_dense_finetune_reg_attn.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -4522,10 +4523,10 @@
       ]
     },
     "path": "configs/token_emb/sleep2vec_dense_finetune_reg_mean.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   },
   {
+    "config_module": "sleep2vec.config",
     "expected": {
       "encoder": [
         true,
@@ -4586,7 +4587,6 @@
       ]
     },
     "path": "recipes/examples/fixtures/tiny_finetune_config.yaml",
-    "preset": "full",
-    "variant": "base"
+    "preset": "full"
   }
 ]

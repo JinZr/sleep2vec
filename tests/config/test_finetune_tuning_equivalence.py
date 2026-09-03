@@ -12,6 +12,7 @@ with the config and group named.
 
 from __future__ import annotations
 
+from importlib import import_module
 import json
 from pathlib import Path
 import sys
@@ -30,11 +31,14 @@ def _manifest() -> list[dict]:
 
 
 def _load(entry: dict):
-    if entry["variant"] == "sleep2expert":
-        from sleep2expert.config import load_finetune_config
-    else:
-        from sleep2vec.config import load_finetune_config
-    return load_finetune_config(REPO_ROOT / entry["path"])
+    """Load through the config module that actually owns the file.
+
+    The variants are enforced forks: `sleep2vec2.config` is a separate parser with its
+    own preset tables, so replaying a `configs/sleep2vec2/**` entry through
+    `sleep2vec.config` would gate a module that never reads that config.
+    """
+    module = import_module(entry["config_module"])
+    return module.load_finetune_config(REPO_ROOT / entry["path"])
 
 
 MANIFEST = _manifest()
@@ -45,6 +49,12 @@ def test_manifest_covers_every_finetune_config() -> None:
     recorded = {entry["path"] for entry in MANIFEST}
     assert len(recorded) == len(MANIFEST), "manifest has duplicate paths"
     assert recorded, "manifest is empty"
+    # Every fork has to be represented, or a whole variant's configs go unchecked.
+    assert {entry["config_module"] for entry in MANIFEST} == {
+        "sleep2vec.config",
+        "sleep2vec2.config",
+        "sleep2expert.config",
+    }
 
 
 @pytest.mark.parametrize("entry", MANIFEST, ids=lambda entry: entry["path"])
