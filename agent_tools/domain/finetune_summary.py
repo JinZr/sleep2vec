@@ -68,7 +68,8 @@ def finetune_summary_body(
     temporal_agg = head.get("temporal_agg") if isinstance(head.get("temporal_agg"), dict) else {}
     channel_agg = head.get("channel_agg") if isinstance(head.get("channel_agg"), dict) else {}
     layer_mix = finetune.get("layer_mix") if isinstance(finetune.get("layer_mix"), dict) else {}
-    lora = finetune.get("lora") if isinstance(finetune.get("lora"), dict) else {}
+    tuning = finetune.get("tuning") if isinstance(finetune.get("tuning"), dict) else {}
+    tuning_groups = tuning.get("groups") if isinstance(tuning.get("groups"), dict) else {}
     backbone = model.get("backbone") if isinstance(model.get("backbone"), dict) else {}
     averaging = data.get("model_averaging") if isinstance(data.get("model_averaging"), dict) else None
     channels_raw = model.get("channels") if isinstance(model.get("channels"), list) else []
@@ -108,8 +109,8 @@ def finetune_summary_body(
             "monitor": task.get("monitor"),
             "monitor_mod": task.get("monitor_mod"),
         },
-        "lora": lora,
-        "lora_present": isinstance(finetune.get("lora"), dict),
+        "tuning": tuning,
+        "tuning_present": isinstance(finetune.get("tuning"), dict),
         "loss": finetune.get("loss") if isinstance(finetune.get("loss"), dict) else {},
     }
     if survival is not None:
@@ -155,10 +156,11 @@ def finetune_summary_body(
             },
             "layer_mix_present": isinstance(finetune.get("layer_mix"), dict),
             "layer_mix": layer_mix,
-            "freeze": {
-                "freeze_tokenizer": finetune.get("freeze_tokenizer"),
-                "freeze_backbone_and_insert_lora": lora.get("freeze_backbone_and_insert_lora"),
-                "insert_lora": lora.get("insert_lora"),
+            "tuning": {
+                "preset": tuning.get("preset"),
+                "group_overrides": {
+                    group: block.get("train") for group, block in tuning_groups.items() if isinstance(block, dict)
+                },
             },
             "model_averaging": {
                 "present": averaging is not None,

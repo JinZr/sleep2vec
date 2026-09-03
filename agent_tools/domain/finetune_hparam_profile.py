@@ -124,7 +124,7 @@ def finetune_balanced_profile_audit(search: dict[str, Any]) -> dict[str, Any]:
                 "yaml:/model/head/kwargs/temporal_dropout",
             }
         ],
-        "adaptation.strategy": [key for key in keys if key == "yaml:/finetune/lora"],
+        "adaptation.strategy": [key for key in keys if key == "yaml:/finetune/tuning/preset"],
         "loss.pos_weight": [key for key in keys if key == "yaml:/finetune/loss/pos_weight"],
     }
     families = []
@@ -241,26 +241,23 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
         synchronized.append({key: value for key in dropout_keys})
     axes.append({"id": "regularization.dropout", "levels": _stable_unique(synchronized)})
 
-    lora = finetune.get("lora")
-    if not finetune.get("lora_present") or not isinstance(lora, dict):
-        raise ValueError("finetune_balanced requires an explicit finetune.lora control mapping.")
-    freeze = lora.get("freeze_backbone_and_insert_lora")
-    insert = lora.get("insert_lora")
-    if type(freeze) is not bool or type(insert) is not bool:
-        raise ValueError("finetune_balanced requires explicit boolean LoRA freeze and insert values.")
+    tuning = finetune.get("tuning")
+    if not finetune.get("tuning_present") or not isinstance(tuning, dict):
+        raise ValueError("finetune_balanced requires an explicit finetune.tuning mapping.")
+    preset = tuning.get("preset")
+    if type(preset) is not str or not preset:
+        raise ValueError("finetune_balanced requires an explicit finetune.tuning.preset.")
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     has_trained_backbone = inputs.get("pretrained_backbone_path") not in (None, "")
-    if freeze and not has_trained_backbone:
-        raise ValueError("finetune_balanced cannot freeze a source backbone without a pretrained backbone.")
-    lora_levels = [lora]
+    if preset != "full" and not has_trained_backbone:
+        raise ValueError(f"finetune_balanced cannot run preset '{preset}' without a pretrained backbone.")
+    # The three adaptation strategies are now presets, so the axis sweeps preset names
+    # instead of the boolean pair that used to encode them.
+    preset_levels = [preset]
     if has_trained_backbone:
-        # Keep an explicit full-finetune arm when the exact source baseline has an inert insert_lora=true.
-        full = {**lora, "freeze_backbone_and_insert_lora": False, "insert_lora": False}
-        head_only = {**lora, "freeze_backbone_and_insert_lora": True, "insert_lora": False}
-        with_lora = {**lora, "freeze_backbone_and_insert_lora": True, "insert_lora": True}
-        lora_levels.extend((full, head_only, with_lora))
-    lora_levels = _stable_unique(lora_levels)
-    axes.append(_axis("adaptation.strategy", "yaml:/finetune/lora", lora_levels))
+        preset_levels.extend(("full", "head_only", "lora"))
+    preset_levels = _stable_unique(preset_levels)
+    axes.append(_axis("adaptation.strategy", "yaml:/finetune/tuning/preset", preset_levels))
 
     loss = finetune.get("loss") if isinstance(finetune.get("loss"), dict) else {}
     pos_weight = loss.get("pos_weight")

@@ -107,7 +107,10 @@ def _resolve_config_variant(path: Path, config_data: dict[str, t.Any] | None = N
     backbone_block = model_block.get("backbone") if isinstance(model_block, dict) else None
     finetune_block = config_data.get("finetune") if config_data is not None else None
     has_moe_backbone = isinstance(backbone_block, dict) and "moe" in backbone_block
-    has_moe_tuning = isinstance(finetune_block, dict) and "moe_tuning" in finetune_block
+    tuning_block = finetune_block.get("tuning") if isinstance(finetune_block, dict) else None
+    has_moe_tuning = isinstance(tuning_block, dict) and (
+        "moe" in tuning_block or str(tuning_block.get("preset", "")).startswith("moe_")
+    )
     if has_moe_backbone or has_moe_tuning:
         return CONFIG_VARIANTS["sleep2expert"]
     return BASE_VARIANT
