@@ -10,6 +10,7 @@ import torch.nn as nn
 from sleep2vec.checkpoints import (
     _parse_epoch,
     average_checkpoints,
+    backbone_init_prefixes,
     extract_pretrain_init_state_dict,
     get_state_dict_from_checkpoint,
     load_pretrain_init_weights,
@@ -157,3 +158,83 @@ def test_load_pretrain_init_weights_reports_partial_channel_mismatch(tmp_path: P
     assert result.used_prefix == "model."
     assert "tokenizer_mapping.new.weight" in result.unexpected_keys
     assert "tokenizer_mapping.new.bias" in result.unexpected_keys
+
+
+def test_backbone_init_prefixes_try_the_finetune_subtree_first():
+    """A finetune checkpoint holds the backbone under `backbone.`, a pretrain one does not.
+
+    The general prefixes have to come last: `model.` matches a finetune checkpoint's
+    `model.backbone.*` and strips it to `backbone.*`, which a bare pretrain model does not
+    have -- and extraction only raises when *no* prefix matches, so it looked like a hit.
+    """
+    assert backbone_init_prefixes("ema") == (
+        "ema_model.backbone.",
+        "model.backbone.",
+        "backbone.",
+        "ema_model.",
+        "model.",
+    )
+    assert backbone_init_prefixes(None) == ("model.backbone.", "backbone.", "model.")
+
+
+def test_extract_pretrain_init_state_dict_unwraps_a_finetune_checkpoint():
+    """`Sleep2vecFinetuning` registers the same backbone twice, so both subtrees are present."""
+    ckpt = {
+        "state_dict": {
+            "backbone.encoder.weight": torch.tensor([1.0]),
+            "model.backbone.encoder.weight": torch.tensor([1.0]),
+            "model.head.weight": torch.tensor([9.0]),
+        }
+    }
+
+    state_dict, used_prefix = extract_pretrain_init_state_dict(ckpt, prefixes=backbone_init_prefixes(None))
+
+    assert used_prefix == "model.backbone."
+    assert set(state_dict) == {"encoder.weight"}
+
+
+def test_extract_pretrain_init_state_dict_leaves_a_pretrain_checkpoint_alone():
+    ckpt = {"state_dict": {"model.encoder.weight": torch.tensor([2.0])}}
+
+    state_dict, used_prefix = extract_pretrain_init_state_dict(ckpt, prefixes=backbone_init_prefixes(None))
+
+    assert used_prefix == "model."
+    assert set(state_dict) == {"encoder.weight"}
+
+
+def test_every_variant_agrees_on_the_backbone_init_prefixes():
+    """Enforced forks each own a copy; a checkpoint must unwrap the same way in all three."""
+    import importlib
+
+    expected = backbone_init_prefixes("ema")
+    for variant in ("sleep2vec", "sleep2vec2", "sleep2expert"):
+        module = importlib.import_module(f"{variant}.checkpoints")
+        assert module.backbone_init_prefixes("ema") == expected, variant
+        assert module.backbone_init_prefixes(None) == backbone_init_prefixes(None), variant
+
+
+def test_load_pretrain_init_weights_rejects_a_checkpoint_that_loads_nothing(tmp_path: Path):
+    """`strict=False` tolerates a partial mismatch, not a total one.
+
+    A total mismatch leaves every parameter at its random initialization, and the caller
+    logs a successful load and trains on -- the failure mode that made the README's
+    "pass the old checkpoint as --pretrained-backbone-path" advice unsafe.
+    """
+    module = _TinyInitModule()
+    ckpt_path = tmp_path / "other.ckpt"
+    torch.save({"state_dict": {"model.some.other.weight": torch.ones(2, 2)}}, ckpt_path)
+
+    with pytest.raises(ValueError, match="No weights loaded"):
+        load_pretrain_init_weights(module, ckpt_path, device="cpu", strict=False)
+
+
+def test_load_pretrain_init_weights_still_allows_a_partial_load(tmp_path: Path):
+    module = _TinyInitModule()
+    ckpt_path = tmp_path / "partial.ckpt"
+    state_dict = dict(module.state_dict())
+    state_dict["tokenizer_mapping.new.weight"] = torch.ones(2, 2)
+    torch.save({"state_dict": {f"model.{k}": v for k, v in state_dict.items()}}, ckpt_path)
+
+    result = load_pretrain_init_weights(module, ckpt_path, device="cpu", strict=False)
+
+    assert result.unexpected_keys == ["tokenizer_mapping.new.weight"]

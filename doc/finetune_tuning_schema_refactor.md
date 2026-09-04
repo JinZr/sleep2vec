@@ -499,6 +499,19 @@ Settled 2026-09-04.
   The layers are fine; the group is frozen. Same override-defeats-the-preset family as the
   head and the scale, and the same fix: refuse it where the config is parsed, and say
   which key did it.
+- **The `--pretrained-backbone-path` fallback had to be made true before it could be
+  documented.** This change breaks `--ckpt-path` resume for pre-schema finetune
+  checkpoints -- the optimizer carries one parameter group per `(semantic group, decay)`
+  pair now, not two -- and the README offered `--pretrained-backbone-path` as the way
+  round it. That path did not work: `Sleep2vecFinetuning` registers the same backbone at
+  `self.backbone` and inside `self.model`, so the checkpoint holds `backbone.*` and
+  `model.backbone.*`, while the loader stripped `model.` and handed `backbone.*` to a bare
+  pretrain model. Extraction only raises when *no* prefix matches, so that counted as a
+  match and `strict=False` dropped every key -- a run that trained from a random backbone
+  and logged `Loaded 0 / N keys`. The prefixes now go specific before general, and a load
+  where the module accepts nothing raises instead of returning. LoRA-era checkpoints still
+  cannot be recovered (PEFT renames the encoder under `base_model.model.`); they now say
+  so instead of training anyway.
 - **Training the routers requires a learned router.** Only `router_type: learned` builds
   router parameters; `random`, `hard_modality` and `hard_group` route without any. So
   `moe_conservative_routers`, or `groups.routers: {train: true}`, on one of those three

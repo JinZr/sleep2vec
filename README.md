@@ -488,8 +488,12 @@ finetune:
 - **Finetune checkpoints written before this schema cannot be resumed with `--ckpt-path`.**
   The optimizer now carries one parameter group per `(semantic group, decay)` pair instead
   of the two it used to, so restoring the saved optimizer state raises a size mismatch.
-  Weights load fine — start the run fresh (pass the old checkpoint as
-  `--pretrained-backbone-path`, not `--ckpt-path`) rather than resuming it.
+  Start the run fresh instead of resuming it, and prefer the *pretrain* checkpoint the old
+  finetune started from: `--pretrained-backbone-path` reads a backbone, not a finetuned
+  model. A finetune checkpoint works only when the old run inserted no LoRA — PEFT renames
+  the encoder under `base_model.model.`, and no prefix recovers a plain backbone from that.
+  Either way the head is not restored; it trains from scratch. If nothing matches, the load
+  raises rather than starting from a random backbone.
 
 ---
 

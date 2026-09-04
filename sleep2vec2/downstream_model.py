@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import yaml
 
-from sleep2vec2.checkpoints import load_checkpoint, load_pretrain_init_weights
+from sleep2vec2.checkpoints import backbone_init_prefixes, load_checkpoint, load_pretrain_init_weights
 from sleep2vec2.config import HeadConfig, LayerMixConfig, ModelConfig
 from sleep2vec2.modules.layer_mix import LayerMix
 
@@ -515,7 +515,7 @@ class Sleep2vecDownstreamModel(nn.Module):
             averaging_name = use_ema
         elif use_ema:
             averaging_name = "ema"
-        prefixes = (f"{averaging_name}_model.", "model.") if averaging_name else ("model.",)
+        prefixes = backbone_init_prefixes(averaging_name)
 
         # Sanity check CLS settings against serialized config in checkpoint (assumes YAML is present)
         self._warn_on_cls_mismatch(ckpt)
@@ -533,7 +533,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         missing_keys = load_info.missing_keys
         unexpected_keys = load_info.unexpected_keys
 
-        logging.info(f"✅ Loaded {total_keys - len(missing_keys)} / {total_keys} keys into backbone.")
+        logging.info(f"✅ Loaded {total_keys - len(unexpected_keys)} / {total_keys} keys into backbone.")
         if missing_keys:
             logging.warning(f"Missing keys ({len(missing_keys)}):")
             for k in missing_keys:

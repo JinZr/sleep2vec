@@ -66,6 +66,19 @@ def extract_pretrain_init_state_dict(
     )
 
 
+def backbone_init_prefixes(averaging_name: str | None = None) -> tuple[str, ...]:
+    """State-dict prefixes to try when initializing a bare backbone, specific first.
+
+    A finetune checkpoint registers the same backbone twice -- `backbone.*` and
+    `model.backbone.*` -- while a pretrain checkpoint has only `model.*`. Trying the general
+    prefixes first matched a finetune checkpoint's `model.backbone.*` and stripped it to
+    `backbone.*`, which a bare pretrain model does not have; extraction raises only when *no*
+    prefix matches, so that counted as a match and `strict=False` dropped every key.
+    """
+    general = (f"{averaging_name}_model.", "model.") if averaging_name else ("model.",)
+    return tuple(f"{prefix}backbone." for prefix in general) + ("backbone.",) + general
+
+
 def load_pretrain_init_weights(
     module: torch.nn.Module,
     ckpt_path: Path | str,
@@ -77,6 +90,16 @@ def load_pretrain_init_weights(
     ckpt = load_checkpoint(ckpt_path, device)
     filtered_state_dict, used_prefix = extract_pretrain_init_state_dict(ckpt, prefixes=prefixes)
     load_info = module.load_state_dict(filtered_state_dict, strict=strict)
+    # A subtree matched but the module took nothing from it: this checkpoint holds a different
+    # model. `strict=False` is there to tolerate a partial mismatch -- a renamed channel, a
+    # dropped CLS head -- not a total one, which leaves every parameter at its random
+    # initialization while the caller logs a successful load and trains on.
+    if filtered_state_dict and len(load_info.unexpected_keys) == len(filtered_state_dict):
+        preview = ", ".join(list(load_info.unexpected_keys)[:3])
+        raise ValueError(
+            f"No weights loaded from {ckpt_path}: all {len(filtered_state_dict)} keys under prefix "
+            f"'{used_prefix}' were unexpected for this module. Unexpected: [{preview}]"
+        )
     return PretrainInitLoadResult(
         used_prefix=used_prefix,
         loaded_keys=len(filtered_state_dict),
@@ -173,6 +196,7 @@ def average_checkpoints(
 __all__ = [
     "PretrainInitLoadResult",
     "average_checkpoints",
+    "backbone_init_prefixes",
     "extract_pretrain_init_state_dict",
     "get_state_dict_from_checkpoint",
     "load_checkpoint",
