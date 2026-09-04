@@ -649,6 +649,12 @@ Settled 2026-09-04.
   the three sleep2vec-family loaders alongside such a config is a contradiction, not a
   preference: the guard now names both halves rather than picking a winner. A test ties the
   message to `DECLARABLE_VARIANTS`, so making a fourth family declarable fails here first.
+- **Scoping one document leaves the other one wrong.** The finetuning skill was scoped to the
+  three variants that parse `finetune.tuning`, but the README's trainability section kept the
+  every-variant claim -- so the same requirement now read one way in the skill and another way
+  two files over, and on `sex_age_baseline` the README's reading invites a block its loader
+  silently ignores. Scoped it the same way, and the new test derives the variant split from
+  `config.py` for both documents at once rather than restating it in either.
 - **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
   `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
   a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate

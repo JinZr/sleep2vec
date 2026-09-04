@@ -451,8 +451,13 @@ finetune:
 - W&B logs a heatmap image (`val_pair_acc_matrix`) plus scalar metrics under `val_pair_acc/<pair>`.
 
 **Trainability (`finetune.tuning`)**
-- Every finetune config must declare a required `finetune.tuning` block. It is the single
-  source of truth for which parameters train and at what learning-rate scale:
+- This section describes `sleep2vec`, `sleep2vec2` and `sleep2expert`. `sex_age_baseline`
+  trains its own model rather than adapting a pretrained backbone, and its config module
+  never reads `finetune.tuning` — a block written there is silently ignored, so do not
+  write one.
+- On those three variants every finetune config must declare a required `finetune.tuning`
+  block. It is the single source of truth for which parameters train and at what
+  learning-rate scale:
   ```yaml
   finetune:
     tuning:

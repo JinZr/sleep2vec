@@ -74,6 +74,29 @@ def test_finetuning_skill_scopes_the_tuning_block_to_the_variants_that_parse_it(
         assert all(variant in line for variant in parses_tuning), line
 
 
+def test_the_readme_scopes_its_tuning_section_the_way_the_skill_does():
+    """The same claim lives in two documents, so scoping one and not the other splits them.
+
+    `skills/finetuning/SKILL.md` names the three variants that parse `finetune.tuning`; the
+    README's trainability section made the requirement unconditional, which for
+    `sex_age_baseline` invites a block its loader silently ignores.
+    """
+    readme = (REPO_ROOT / "README.md").read_text()
+
+    parses_tuning = _variants_that_parse_finetune_tuning()
+    heading = "**Trainability (`finetune.tuning`)**"
+    assert heading in readme
+    section = readme.split(heading, 1)[1].split("\n## ", 1)[0]
+
+    scope = section.split("\n- ", 2)[1]
+    for variant in parses_tuning:
+        assert variant in scope, variant
+    ignores = [variant for variant in SUPPORTED_VARIANTS if variant not in parses_tuning]
+    assert ignores == ["sex_age_baseline"]
+    for variant in ignores:
+        assert variant in scope, variant
+
+
 def test_hparam_guidance_separates_search_budget_from_launch_authority():
     agents = (REPO_ROOT / "AGENTS.md").read_text()
     contract = (REPO_ROOT / "doc/agent_contracts/task_recipe.md").read_text()
