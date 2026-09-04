@@ -99,6 +99,99 @@ def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> dict[st
     }
 
 
+def fixed_node_resource_capacity(
+    execution: dict[str, Any],
+    resources: dict[str, Any],
+    planned_runs: int,
+    *,
+    timeout: float = transport.SSH_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    node = str(resources.get("nodelist") or "")
+    if re.fullmatch(r"[A-Za-z0-9_.-]+", node) is None:
+        return {
+            "status": "unknown",
+            "reason": "fixed-node capacity requires one literal execution.scheduler.nodelist",
+            "planned_runs": planned_runs,
+        }
+
+    result = run_command(execution, ["scontrol", "show", "node", node, "-o"], timeout=timeout)
+    if result.returncode != 0:
+        raise SlurmCommandError("fixed-node resource capacity query", result)
+    lines = [line.strip() for line in str(result.stdout or "").splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise ValueError("scontrol show node must return exactly one row for a literal nodelist.")
+    fields = _parse_scontrol_oneline(lines[0])
+    if fields.get("NodeName") != node:
+        raise ValueError(f"scontrol returned node {fields.get('NodeName')!r} while querying {node!r}.")
+    try:
+        node_cpus = int(fields["CPUTot"])
+        node_memory_mib = int(fields["RealMemory"])
+    except (KeyError, ValueError) as exc:
+        raise ValueError("scontrol node output lacks valid CPUTot or RealMemory capacity.") from exc
+    if node_cpus <= 0 or node_memory_mib <= 0:
+        raise ValueError("scontrol node output lacks positive CPUTot or RealMemory capacity.")
+
+    gres = fields.get("Gres")
+    if not gres:
+        raise ValueError("scontrol node output lacks configured GPU capacity in Gres.")
+    node_gpus = 0
+    for token in gres.split(","):
+        configured = token.strip().split("(", 1)[0]
+        if not configured.startswith("gpu:"):
+            continue
+        match = re.fullmatch(r"gpu:(?:[^:,()]+:)?([1-9][0-9]*)", configured)
+        if match is None:
+            raise ValueError(f"scontrol node output has malformed GPU capacity in Gres: {token.strip()!r}.")
+        node_gpus += int(match.group(1))
+    if not node_gpus:
+        raise ValueError("scontrol node output lacks configured GPU capacity in Gres.")
+
+    memory = str(resources["memory"])
+    memory_match = re.fullmatch(r"([1-9][0-9]*)([KMGTP])", memory)
+    if memory_match is None:
+        raise ValueError("Frozen Slurm memory does not use a supported size unit.")
+    memory_kib = (
+        int(memory_match.group(1))
+        * {
+            "K": 1,
+            "M": 1024,
+            "G": 1024**2,
+            "T": 1024**3,
+            "P": 1024**4,
+        }[memory_match.group(2)]
+    )
+    per_run_gpus = int(resources["gpus_per_run"])
+    per_run_cpus = per_run_gpus * int(resources["cpus_per_task"])
+    node_memory_kib = node_memory_mib * 1024
+    limits = {
+        "cpu": node_cpus // per_run_cpus,
+        "memory": node_memory_kib // memory_kib,
+        "gpu": node_gpus // per_run_gpus,
+    }
+    overall_limit = min(limits.values())
+    return {
+        "status": "known",
+        "node": node,
+        "planned_runs": planned_runs,
+        "per_run": {
+            "gpus": per_run_gpus,
+            "cpus": per_run_cpus,
+            "memory": memory,
+            "memory_kib": memory_kib,
+        },
+        "node_capacity": {
+            "gpus": node_gpus,
+            "cpus": node_cpus,
+            "memory_mib": node_memory_mib,
+            "memory_kib": node_memory_kib,
+        },
+        "limits": limits,
+        "overall_empty_node_limit": overall_limit,
+        "limiting_resources": [name for name, limit in limits.items() if limit == overall_limit],
+        "minimum_waves": (planned_runs + overall_limit - 1) // overall_limit if overall_limit else None,
+    }
+
+
 def submit_token(run: dict[str, Any], resources: dict[str, Any], runtime_commit: str) -> str:
     payload = {
         "experiment_id": run["experiment_id"],
