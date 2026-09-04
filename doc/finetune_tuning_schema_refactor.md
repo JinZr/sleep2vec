@@ -1,73 +1,49 @@
-# Finetune Trainability Schema Refactor
+# Finetune Trainability Schema (`finetune.tuning`)
 
-Design note. No code changes yet; this document is the proposal to review before
-implementation.
+Reference for the `finetune.tuning` block of `sleep2vec/`, `sleep2vec2/` and
+`sleep2expert/`. It is the single source of truth for which parameters train and at
+what learning-rate scale.
 
-## Scope
+**Converting a config that still uses the old keys?** Skip to
+[Converting a legacy config](#converting-a-legacy-config). The parsers reject
+`finetune.lora.freeze_backbone_and_insert_lora`, `finetune.lora.insert_lora`,
+`finetune.freeze_tokenizer` and `finetune.moe_tuning`, and their error messages point
+here for that table.
 
-In scope: the `finetune` block of `sleep2vec/`, `sleep2vec2/`, `sleep2expert/`.
+Two things this document does not cover. `sex_age_baseline` trains its own model rather
+than adapting a pretrained backbone; its config module never reads `finetune.tuning`, so
+a block written there is silently ignored. And `adapt.stage2.lr_scales` is a separate
+trainability system with its own vocabulary (`encoder`, `shared_legacy`,
+`new_modalities`, built from `get_adaptation_param_groups`) that selects parameters by
+*phase* and skips `requires_grad=False` tensors, so it never overloads `lr_scale` as a
+freeze switch. Note the tension it leaves: `finetune.tuning.groups.encoder.lr_scale` and
+`adapt.stage2.lr_scales.encoder` are two spellings of one concept, which AGENTS.md
+("one canonical spelling and location for each concept") would eventually want
+reconciled.
 
-Explicitly out of scope, and why:
+## Why one block
 
-- **`adapt.stage2.lr_scales`** is a parallel trainability system with a different
-  vocabulary (`encoder`, `shared_legacy`, `new_modalities`, built from
-  `get_adaptation_param_groups`) and a different mechanism: it selects parameters by
-  *phase* and skips `requires_grad=False` tensors, so it never overloads `lr_scale`
-  as a freeze switch. It does not have the bug this refactor fixes. Note the tension
-  it leaves behind: after this change, `finetune.tuning.groups.encoder.lr_scale` and
-  `adapt.stage2.lr_scales.encoder` are two spellings of one concept, which AGENTS.md
-  ("one canonical spelling and location for each concept") would eventually want
-  reconciled. Follow-up, not this change.
-- **`sleep2vec_moe/`** ships `pretrain` only — no finetune surface.
-- **`sex_age_baseline/config.py`** has its own unrelated finetune config and none of
-  these four keys.
+Trainability used to be decided by four independent YAML entry points that the runtime
+applied in sequence, last writer wins.
 
-## Problem
+| Order | Key | Effect |
+| --- | --- | --- |
+| 1 | `finetune.lora.freeze_backbone_and_insert_lora` | Freezes every backbone parameter |
+| 2 | `finetune.lora.insert_lora` | Inserts LoRA; **only read when 1 is true** |
+| 3 | `finetune.freeze_tokenizer` | Re-writes tokenizer trainability after 1/2 |
+| 4 | `finetune.moe_tuning.mode`, `lr_scales[g] == 0`, `freeze_router`, `freeze_experts` | Overwrites every group (`sleep2expert` only) |
 
-Four independent YAML entry points decide which parameters train, and the runtime
-applies them in sequence, last writer wins.
+Nothing derived the final state from one place, so a policy at step 4 could silently
+invalidate an assumption captured at step 1 — and the failure was always quiet. Two
+further hazards came with it: `lr_scales` carried two meanings at once (a learning-rate
+multiplier, and a freeze switch at `0.0`), and `insert_lora: true` under
+`freeze_backbone_and_insert_lora: false` was inert, so a config could advertise a LoRA
+recipe that never ran.
 
-| Order | Key | Effect | Owner |
-| --- | --- | --- | --- |
-| 1 | `finetune.lora.freeze_backbone_and_insert_lora` | Freezes every backbone parameter | `sleep2vec_finetuning.py` |
-| 2 | `finetune.lora.insert_lora` | Inserts LoRA; **only read when 1 is true** | `downstream_model.freeze_backbone_and_insert_lora` |
-| 3 | `finetune.freeze_tokenizer` | Re-writes tokenizer trainability after 1/2 | `backbone.set_tokenizers_trainable` |
-| 4 | `finetune.moe_tuning.mode`, `lr_scales[g] == 0`, `freeze_router`, `freeze_experts` | Overwrites every group (sleep2expert only) | `_apply_moe_tuning_policy` |
+The block below replaces all four. Every parameter is classified into exactly one group,
+the group table is materialized once at parse time, and the trainer applies it once.
 
-Nothing derives the final state from one place, so a policy at step 4 can silently
-invalidate an assumption captured at step 1. PR #230 is exactly that failure: the
-"keep a frozen backbone in eval mode" contract was attached to step 1, while the
-head-only recipe freezes the backbone at step 4.
-
-### Evidence
-
-Measured over the 69 finetune configs under `configs/` that carry a `finetune.lora` block:
-
-| Observation | Count |
-| --- | --- |
-| `insert_lora: true` **and** `freeze_backbone_and_insert_lora: true` (LoRA actually inserted) | 3 |
-| `insert_lora: true` but `freeze_backbone_and_insert_lora: false` (**inert; LoRA never inserted**) | 30 |
-| `freeze_backbone_and_insert_lora: true` with `insert_lora: false` (the path PR #230's flag was written for) | 0 |
-| `freeze_tokenizer: true` | 69 (never varied) |
-| `moe_tuning` present | 9 |
-
-- 30 recipes advertise LoRA that never runs. `agent_tools/domain/finetune_hparam_profile.py:257`
-  already carries a comment working around "an inert `insert_lora=true`", so the
-  schema is misleading its automated consumers too.
-- The only frozen-backbone recipe in the tree freezes through `moe_tuning`, not through
-  the LoRA helper — i.e. the flag PR #230 keyed on is dead in every checked-in config.
-- `lr_scales` carries two meanings: a learning-rate multiplier and a freeze switch
-  (`== 0.0` freezes, in `_set_param_trainability_from_policy`).
-- Parsing strictness is inconsistent: `lora` and `data` are built with
-  `LoraConfig(**block)` (unknown key raises), while the `finetune` block is read key by
-  key with `.get()` (`sleep2expert/config.py:1401`), so a typo there is silently ignored.
-- The schema is triplicated across `sleep2vec/config.py`, `sleep2vec2/config.py`,
-  `sleep2expert/config.py` (954 / 989 / 1453 lines) and the copies have already drifted:
-  `LoraConfig.insert_lora` defaults to `True` in sleep2vec and `False` in sleep2expert.
-
-## Target schema
-
-One block owns trainability. LoRA describes adapter shape only.
+## The schema
 
 ```yaml
 finetune:
@@ -96,18 +72,18 @@ finetune:
     enabled: false
 ```
 
-`moe_regularization` moves out of `moe_tuning` and becomes a sibling of `tuning`.
-The old block conflated two unrelated concerns: which parameters receive gradient,
-and which auxiliary loss terms are added to the objective. Only the first belongs
-in `tuning`. One config (`configs/sleep2expert/moe/router_trainable.yaml`) sets it
-to something other than `{enabled: false}`, so the migration must carry it across
-rather than drop it.
+`experts`, `routers` and `moe` exist only on `sleep2expert`, and only when
+`model.backbone.moe.enabled`. `sleep2vec` and `sleep2vec2` have the five-group
+vocabulary and no `moe` block.
+
+`moe_regularization` is a sibling of `tuning`, not part of it: which parameters receive
+gradient and which auxiliary loss terms are added to the objective are unrelated
+concerns, and only the first belongs in `tuning`.
 
 ### Invariants
 
 1. `train` is the only freeze switch. `lr_scale` only scales the learning rate and
-   must be `> 0`; `lr_scale: 0` is a parse error, not a silent freeze. Migration
-   rewrites every existing `lr_scales[g]: 0.0` into `train: false`.
+   must be `> 0`; `lr_scale: 0` is a parse error, not a silent freeze.
 2. LoRA insertion is `groups.lora.train`. There is no second gate, so
    "configured but inert" is unrepresentable. `train` sets `requires_grad`; it never
    sets train/eval mode, which stays derived (see "Frozen encoder + LoRA").
@@ -121,20 +97,17 @@ rather than drop it.
    (`backbone.*` minus tokenizers/experts/routers/projection/lora), so
    `{encoder, tokenizers}` x `{train, freeze}` spells all four combinations
    directly and none of them depends on key ordering.
-7. Each variant keeps its **own** schema module. The variants are enforced forks
-   (see "Why not one shared module"); a cross-variant conformance test, not a
-   shared import, is what keeps them from drifting.
+7. Each variant keeps its **own** schema module. The variants are enforced forks (see
+   "Why each variant implements the schema itself"); a cross-variant conformance test,
+   not a shared import, is what keeps them from drifting.
+
+The group is named `encoder`, not `backbone`, because `self.backbone` the module
+*contains* the tokenizers — reusing that name for the group that *excludes* them is
+exactly the ambiguity this schema exists to remove.
 
 ### Preset table
 
 Materialized group tables (`t` = trains, `-` = frozen).
-
-`full` means **full**: every group trains, `tokenizers` included. That is deliberately
-*not* what today's configs do — all 69 freeze the tokenizers — so the 57 configs that
-map to `full` migrate with an explicit `tokenizers: {train: false}` override rather than
-inheriting a frozen default from a preset named "full". The freeze becomes visible in
-every file that performs it, and the preset name stops lying. Cost: 57 extra lines in
-the migration diff.
 
 | preset | head | encoder | experts | routers | projection | lora | tokenizers |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -146,37 +119,39 @@ the migration diff.
 | `moe_top_experts` | t | - | selected only | - | - | - | - |
 | `custom` | explicit `groups` required | | | | | | |
 
-Only `full` changed meaning here. The other presets keep `tokenizers` frozen because
-that is what those named policies actually do — `moe_conservative` and friends set the
-tokenizer scale to `0.0` today — not because of an inherited default.
+`full` means **full**: every group trains, `tokenizers` included. A config that wants
+the tokenizers frozen — which in practice is nearly all of them — writes
+`tokenizers: {train: false}` explicitly, so the freeze is visible in the file that
+performs it rather than hidden in a preset named "full". The other presets keep
+`tokenizers` frozen because that is what those named policies actually do, not because
+of an inherited default.
 
-Semantic tightening to note: today `mode: head_only` still trains any LoRA parameter
-(`lr_scales.lora` defaults to `1.0`), so "head only" is really "head plus LoRA". Under
-the new table `head_only` means head only and `lora` is a separate preset. No current
-config changes behavior, because no `head_only` config inserts LoRA.
+`head_only` means head only. Under the legacy schema `mode: head_only` still trained any
+LoRA parameter, because `lr_scales.lora` defaulted to `1.0`; here `lora` is a separate
+preset.
+
+`moe_conservative_routers` scales the routers by `0.01` rather than `1.0`, matching the
+learning-rate defaults its legacy mode carried.
 
 ### Tokenizers vs encoder
 
-These are separate axes and the schema must keep them separate. Today the four
-combinations are reachable only as a side effect of evaluation order: the trainer
-first applies `freeze_backbone_and_insert_lora` (which freezes the *whole* backbone,
-tokenizers included) and then lets `freeze_tokenizer: false` unfreeze the tokenizers
-back out of it.
+These are separate axes and the schema keeps them separate. Under the legacy keys the
+four combinations were reachable only as a side effect of evaluation order: the trainer
+first applied `freeze_backbone_and_insert_lora` (which froze the *whole* backbone,
+tokenizers included) and then let `freeze_tokenizer: false` unfreeze the tokenizers back
+out of it.
 
-| Intent | Today | New |
+| Intent | Legacy | `finetune.tuning` |
 | --- | --- | --- |
 | neither | `freeze_backbone_and_insert_lora: true`, `freeze_tokenizer: true` | `encoder: {train: false}`, `tokenizers: {train: false}` |
 | tokenizers only | `freeze_backbone_and_insert_lora: true`, `insert_lora: false`, `freeze_tokenizer: false` | `encoder: {train: false}`, `tokenizers: {train: true}` |
 | encoder only | `freeze_backbone_and_insert_lora: false`, `freeze_tokenizer: true` | `encoder: {train: true}`, `tokenizers: {train: false}` |
 | both | `freeze_backbone_and_insert_lora: false`, `freeze_tokenizer: false` | `encoder: {train: true}`, `tokenizers: {train: true}` |
 
-Two observations. The "tokenizers only" row is the dead combination found in the
-audit: **0 of 69** configs use it, and it is the only way to reach that state, which
-is a fair sign nobody realised it was reachable. And the row's meaning depends on
-`freeze_tokenizer` being applied *after* the LoRA helper — reorder the two blocks and
-two of the four rows change behavior silently. Independent `train` flags on disjoint
-groups remove both problems: the table above is the schema, not an emergent property
-of it.
+The legacy column's meaning depended on `freeze_tokenizer` being applied *after* the
+LoRA helper — reorder the two blocks and two of the four rows change behavior silently.
+Independent `train` flags on disjoint groups remove that: the table is the schema, not
+an emergent property of it.
 
 ### Frozen encoder + LoRA
 
@@ -199,29 +174,23 @@ to eval. That asymmetry is deliberate and should not be spelled in YAML; adding 
 `mode:` key per group would let a config express "trainable but in eval mode", which is
 never correct.
 
-**`encoder: {train: true}` + `lora: {train: true}` is rejected.** Today it is
-unreachable: `insert_lora` is only read when `freeze_backbone_and_insert_lora` is true,
-and that helper's first act is an unconditional freeze of every backbone parameter. The
-new schema makes the combination *spellable*, so the parser must reject it explicitly,
-otherwise a config could ask for something the insertion path cannot build. Supporting
-it would mean reordering the freeze inside `freeze_backbone_and_insert_lora`, which is
-a behavior change and out of scope here.
+**`encoder: {train: true}` + `lora: {train: true}` is rejected.** Adapter insertion
+freezes the backbone first, so the combination asks for something the insertion path
+cannot build. Supporting it would mean reordering that freeze, which is a behavior
+change; revisit only if a recipe actually wants adapters on a trainable encoder.
 
 `separate_adapters` and the rest of `tuning.lora` are adapter *shape*, read only when
-`groups.lora.train` — matching today's rule that they are meaningless without
-insertion. On the inference side this is what collapses
-`_finetune_adapters_enabled` (currently the literal AND of the two booleans) into a
-single flag.
+`groups.lora.train`.
 
-## Migration
+## Converting a legacy config
 
 The mapping is not a textual rename. Converting a config means **evaluating** the old
-keys into a group table and then writing the new block. This is the table the loader's
+keys into a group table and then writing the new block. This is the table the loaders'
 rejection messages point at:
 
 | Old state | New |
 | --- | --- |
-| `freeze: false` (no `moe_tuning`) — 57 configs | `preset: full` + explicit `groups.tokenizers.train: false` |
+| `freeze: false` (no `moe_tuning`) | `preset: full` + explicit `groups.tokenizers.train: false` |
 | `freeze: true, insert: false` | `preset: head_only` |
 | `freeze: true, insert: true` | `preset: lora` + `tuning.lora` shape |
 | `moe_tuning.mode: head_only` | `preset: head_only` |
@@ -235,482 +204,64 @@ rejection messages point at:
 Rule: build the group table from what the legacy keys *did* at runtime, compare it
 against the preset table above, use the matching preset name, and fall back to
 `preset: custom` with an explicit `groups` map when nothing matches exactly. Never
-translate a key by name alone. Two defaults make this more than a rename and are easy to
-miss by reading a config's text: `moe_tuning.lr_scales` defaulted per *mode* and a `0.0`
-scale was itself a freeze, and `train_moe_layer_indices` defaulted to the deepest MoE
-layer. Both are transcribed in `tests/config/legacy_finetune_semantics.py`.
+translate a key by name alone.
+
+Four defaults make this more than a rename, and all four are easy to miss by reading a
+config's text:
+
+- `moe_tuning.lr_scales` defaulted **per mode**, and a `0.0` scale was itself a freeze.
+- `train_moe_layer_indices` defaulted to the deepest MoE layer.
+- `insert_lora` defaulted to `True` on `sleep2vec` and `False` on `sleep2vec2` and
+  `sleep2expert`, so one file with `freeze_backbone_and_insert_lora: true` and no
+  `insert_lora` describes two different runs depending on which variant loaded it.
+- An `insert_lora: true` with `freeze_backbone_and_insert_lora: false` inserted nothing.
+  Such a config converts to `groups.lora.train: false` — its real behavior — not to
+  `true`. Translating the literal value would enable LoRA in a recipe that never used
+  it and break reproducibility of results produced from it.
+
+All four are transcribed executably in `tests/config/legacy_finetune_semantics.py`,
+which is the authoritative statement of what the old keys did.
 
 One legacy combination has no representation in the new schema. `sleep2expert` read
 `freeze_backbone_and_insert_lora` and `moe_tuning` from the same config, so setting both
-evaluates to a table that trains the encoder *and* inserts LoRA -- which the new schema
-rejects by design, because adapter insertion freezes the backbone first. Such a config
-has to be resolved by deciding which of the two policies it meant, not converted. No
-checked-in config combined them.
+evaluates to a table that trains the encoder *and* inserts LoRA — which the new schema
+rejects by design. Such a config has to be resolved by deciding which of the two
+policies it meant, not converted.
 
-### The one dangerous case
+**Old finetune checkpoints do not resume.** The optimizer now carries one parameter
+group per `(semantic group, decay)` pair, so its state does not load. Restart through
+`--pretrained-backbone-path`, as the README says. Inference on an existing checkpoint is
+unaffected: `extract_embeddings` reads the config from the YAML file, never from the
+checkpoint, so a converted YAML reconstructs identical adapter geometry.
 
-The 30 configs with an inert `insert_lora: true` must migrate to
-`groups.lora.train: false` — their real behavior today. Translating the literal `true`
-would silently enable LoRA in 30 recipes and break reproducibility of every result
-produced from them. These are the files that needed explicit sign-off, since some of
-them were probably *intended* to use LoRA:
+## Why each variant implements the schema itself
 
-```
-configs/cls_emb/sleep2vec_dense_finetune_cls.yaml
-configs/cls_emb/sleep2vec_dense_finetune_reg.yaml
-configs/examples/age/FINETUNE_EXAMPLE.yaml
-configs/examples/ahi/FINETUNE_EXAMPLE.yaml
-configs/examples/arousal/FINETUNE_EXAMPLE.yaml
-configs/examples/stage3/FINETUNE_EXAMPLE.yaml
-configs/heartbeat_breath_age_finetune_large.yaml
-configs/heartbeat_breath_ahi_finetune_large.yaml
-configs/heartbeat_breath_sex_finetune_large.yaml
-configs/ppg_age_finetune_large.yaml
-configs/ppg_ahi_finetune.yaml
-configs/ppg_ahi_finetune_large.yaml
-configs/ppg_ahi_finetune_large_temporal_conv.yaml
-configs/ppg_cox_finetune_large.yaml
-configs/ppg_sex_finetune_large.yaml
-configs/ppg_stage3_finetune.yaml
-configs/ppg_stage3_finetune_large.yaml
-configs/ppg_stage4_finetune.yaml
-configs/ppg_stage4_finetune_large.yaml
-configs/ppg_stage5_finetune.yaml
-configs/ppg_stage5_finetune_large.yaml
-configs/sleep2vec_dense_finetune_cls.yaml
-configs/sleep2vec_dense_finetune_custom_cls.yaml
-configs/sleep2vec_dense_finetune_custom_reg.yaml
-configs/sleep2vec_dense_finetune_reg.yaml
-configs/stage5_all_9_channels_finetune_kaldi.yaml
-configs/token_emb/sleep2vec_dense_finetune_cls_attn.yaml
-configs/token_emb/sleep2vec_dense_finetune_cls_mean.yaml
-configs/token_emb/sleep2vec_dense_finetune_reg_attn.yaml
-configs/token_emb/sleep2vec_dense_finetune_reg_mean.yaml
-```
-
-The three configs that really use LoRA — `configs/examples/{sex,stage4,stage5}/FINETUNE_EXAMPLE.yaml`
-— migrate to `preset: lora`.
-
-### Hard cut
-
-No compatibility window. `load_finetune_config` rejects every old key
-(`finetune.lora.freeze_backbone_and_insert_lora`, `finetune.lora.insert_lora`,
-`finetune.freeze_tokenizer`, `finetune.moe_tuning`) with an error naming the replacement
-key and this document. All 69 in-tree configs are rewritten in the same commit;
-the equivalence gate below is what makes that safe.
-
-Consequence to plan for: a config outside this repo, or an hparam plan already frozen
-against the old keys, fails immediately instead of drifting. The error message is the
-mitigation, so it must carry the offending key, the file, and the exact replacement
-block.
-
-### Equivalence gate
-
-For all 69 checked-in configs: parse through the compat shim and through the new block,
-materialize both group tables, and assert `(train, lr_scale)` are identical per group.
-This runs without torch and is the gate that makes the migration reviewable.
-
-## Persisted artifacts
-
-The keys do not only live in YAML. Three on-disk surfaces derive from them.
-
-**The run status file, renamed `moe_finetune_status.json` -> `finetune_status.json`.**
-Written per run by `sleep2expert/finetune.py:222`, and on the `allowed_files` whitelist
-at `sleep2expert/finetune.py:127`. Its schema is shaped by the old keys:
-`moe_tuning_present`, `moe_tuning_mode`, a `lr_scales` map, and a `param_groups` map
-that exists only when `moe_tuning` is present — otherwise it falls back to a single
-synthetic `"legacy"` group. After the refactor every config has a group table, so
-`moe_tuning_present` is always true, `moe_tuning_mode` becomes `preset`, and the
-`"legacy"` branch disappears. The file is no longer MoE-specific, which is why it takes
-the honest name — but it stays a `sleep2expert` artifact: only that variant ever wrote
-one, and adding an emitter to the other two would be new run output no one asked for.
-The old name is **retired, not dual-written** — consistent with the hard-cut decision. Concretely: update the
-`allowed_files` whitelist. The file carries no version marker: AGENTS.md forbids
-`schema_version`-style markers on new research-facing reports, and the fields it does
-carry (`preset`, the group table, the lr scales) already say what the run did.
-
-**Logged metrics.** `_flatten_moe_status` turns that dict into logger keys such as
-`moe_finetune/lr_scales/backbone` and `moe_finetune/moe_tuning_mode`. The group rename
-changes those keys. Confirmed with the repo owner that nothing outside this repo reads
-them, so this needs no announcement and no separate commit — it rides along with the
-hard cut. Historical runs keep their old metric names; a dashboard spanning the cut will
-show two series.
-
-**Checkpoints.** `on_save_checkpoint` stores `checkpoint["finetune_config"]` and
-`finetune_config_yaml`. Confirmed **write-only**: nothing in the repo reads either field
-back. Existing checkpoints therefore keep the old shape forever with no runtime effect.
-
-Related reassurance, worth stating because it is the first question a reviewer will ask:
-**old checkpoints stay usable.** `extract_embeddings._load_config_bundle` reads the
-config from the YAML file (`load_finetune_config(args.config)`), never from the
-checkpoint, so inference on an existing checkpoint works as long as its YAML is migrated
-with the rest. The equivalence gate is what guarantees the migrated YAML reconstructs
-identical adapter geometry.
-
-## Rollback
-
-The hard cut is one commit touching 69 configs plus three parsers, so rollback is
-`git revert` of that commit — but only until a new run has written a
-`finetune_status.json` in the new format, or a new checkpoint has embedded a new
-`finetune_config`. Neither is read back, so even then the revert is safe; the cost is
-that any config edited *after* the cut has to be hand-translated back. Practical rule:
-land the cut early in a week, and do not batch unrelated config edits into it.
-
-## Why not one shared module
-
-An earlier draft of this document proposed extracting one finetune schema module for
-all three variants. That is the wrong call here, for three reasons.
-
-**The isolation is deliberate and enforced.** `sleep2vec2/` and `sleep2expert/` are
-full forks of the runtime, not layers over `sleep2vec/`. There are zero cross-variant
-imports today, and two tests actively forbid adding one:
+**The isolation is deliberate and enforced.** `sleep2vec2/` and `sleep2expert/` are full
+forks of the runtime, not layers over `sleep2vec/`. There are zero cross-variant imports,
+and two tests actively forbid adding one:
 `tests/variants/test_sleep2expert_namespace.py::test_sleep2expert_copied_runtime_uses_local_namespace`
 rejects any `sleep2expert/` file matching `(from|import) (sleep2vec2|sleep2vec|data|preprocess)`,
 and `tests/variants/test_sleep2vec2_namespace.py` does the same for `sleep2vec2/`. A
 shared schema module placed in either variant would fail those tests; placed in a new
 top-level package it would still cut against the fork policy AGENTS.md assigns to the
-`variant-maintainer` role. Reversing that policy is a much larger decision than this
-refactor, and this refactor does not need it.
+`variant-maintainer` role.
 
-**The vocabularies genuinely differ.** `FinetuneLrScalesConfig` exists only in
-`sleep2expert/config.py`. The MoE variant has seven groups; `sleep2vec` and
-`sleep2vec2` have four (`head`, `encoder`, `tokenizers`, `lora`) and no MoE block at
-all. A shared module would have to carry `experts`/`routers`/`moe.layer_indices` as
-permanently-inert keys in two of the three variants, which reintroduces exactly the
-"configured but does nothing" failure mode this refactor exists to remove.
+**The vocabularies genuinely differ.** `sleep2expert` has seven groups; `sleep2vec` and
+`sleep2vec2` have five and no MoE block at all. A shared module would have to carry
+`experts`/`routers`/`moe.layer_indices` as permanently-inert keys in two of the three
+variants, which reintroduces exactly the "configured but does nothing" failure mode this
+schema exists to remove.
 
-**The thing worth sharing is small and is better tested than imported.** The
-trainability schema is roughly 67 lines per variant, and `diff sleep2vec sleep2vec2`
-over that region shows only the `insert_lora` default (`True` vs `False`) and two
-`covariate_fusion` fields. The only real risk of duplication is that kind of default
-drift, and the fix for it is:
-
-- Make `preset` a **required** key with no default. A required key cannot drift.
-- Add `tests/variants/test_finetune_schema_conformance.py`: load one shared YAML
-  fixture through all three `load_finetune_config` functions and assert the
-  materialized group tables are identical for every preset the variant supports.
-  Group names outside a variant's vocabulary must raise, and the test asserts which
-  names each variant rejects.
+**The thing worth sharing is small and is better tested than imported.** The trainability
+schema is a compact block per variant, and the only real risk of duplication is default
+drift — which is what the legacy `insert_lora` split was. Two things prevent it:
+`preset` is a **required** key with no default, and a required key cannot drift; and
+`tests/variants/test_finetune_tuning_conformance.py` pins what the three schemas must
+agree on — the shared group names and their relative order, the shared preset names,
+identical meanings for `full`/`head_only`/`lora` over the shared groups, every preset
+covering every group, every preset training the head, no preset pairing a trainable
+encoder with LoRA, and no preset pairing a frozen group with a non-neutral `lr_scale`
+(replayed through the parser too, since an override could otherwise defeat it).
 
 That gives the same protection against drift as a shared import, costs one test file,
 and keeps the fork boundary intact.
-
-## Blast radius
-
-| Area | Files |
-| --- | --- |
-| Schema and parsing | `sleep2vec/config.py`, `sleep2vec2/config.py`, `sleep2expert/config.py` (three parallel implementations, one conformance test) |
-| Namespace flattening | `{sleep2vec,sleep2vec2,sleep2expert}/common.py:402` |
-| Policy application | `{sleep2vec,sleep2vec2,sleep2expert}/sleep2vec_finetuning.py`; `_apply_moe_tuning_policy` and `_set_param_trainability_from_policy` become the single apply site for all three variants |
-| Adapter reconstruction | `{sleep2vec,sleep2vec2,sleep2expert}/extract_embeddings.py:492` (`_finetune_adapters_enabled` collapses to one flag) |
-| Agent tooling | `agent_tools/domain/finetune_summary.py:159`, `agent_tools/domain/finetune_hparam_profile.py:247` — the `adaptation.strategy` axis becomes three presets on `yaml:/finetune/tuning` instead of a two-flag product on `yaml:/finetune/lora`. The axis replaces the whole block, not just the preset: a swept arm that inherited the source's `groups` overrides would not be the policy its name claims |
-| Config validation | `utils/check_configs.py:110` keys off `"moe_tuning" in finetune_block` |
-| Run artifacts | `sleep2expert/finetune.py:127,222` (rename to `finetune_status.json`, update whitelist); `_build_moe_finetune_status` / `_flatten_moe_status` in `sleep2expert/sleep2vec_finetuning.py:331,389` |
-| Optimizer groups | `sleep2expert/sleep2vec_finetuning.py:2036` `configure_optimizers` reads `_finetune_lr_scales[group]` — the rename to `encoder` lands here too |
-| Documentation | `README.md:426,440,457-468` documents `freeze_tokenizer` / `freeze_backbone_and_insert_lora` / `insert_lora` as the public interface |
-| Configs | 69 finetune YAMLs |
-| Tests | Ranked by number of references to the old keys: `tests/variants/test_sleep2expert_moe_config.py` (41), `tests/variants/test_sleep2expert_finetune_moe_tuning.py` (27), `tests/agent_tools/test_agent_tools_hparam_profiles.py` (14), `tests/models/test_downstream_separate_adapters.py` (8), `tests/config/test_common_finetune_apply.py` (8), `tests/config/test_config_loading.py` (7), `tests/agent_tools/test_agent_tools_config_summary.py` (5), `tests/config/test_check_configs.py` (3), `tests/variants/test_sleep2{vec2,expert}_kaldi_backend.py` (3 each), `tests/variants/test_sleep2expert_moe_forward.py` (2), `tests/variants/test_sleep2expert_subnetwork_export.py` (1) |
-
-Stored hparam recipes and run manifests that recorded the JSON pointer
-`yaml:/finetune/lora` will not resolve after the rename. With the hard cut, those plans
-have to be re-frozen, and the pointer resolver must fail loudly on the old form rather
-than silently yielding an empty axis.
-
-## Sequencing
-
-1. Land the PR #230 eval-mode fix. It is a correctness bug and is independent of the schema.
-2. Implement the schema per variant, plus the cross-variant conformance test (no
-   behavior change, no YAML change).
-3. Add the new `finetune.tuning` block and the equivalence gate.
-4. Write a migration script that derives the preset from legacy runtime semantics
-   rather than by renaming keys, and run it over the tree.
-5. Commit the rewritten YAMLs, the new block, and the deletion of the old keys as one
-   hard cut, then delete the script. Update `utils/check_configs.py` and `README.md` in
-   the same commit — a config validator that still looks for `moe_tuning` would pass
-   every migrated file vacuously.
-6. Rename the status file to `finetune_status.json` in `sleep2expert` (drop the
-   `"legacy"` branch, update the `allowed_files` whitelist and retire the old name).
-7. Update agent tooling axes and pointers; re-freeze any plan pinned to
-   `yaml:/finetune/lora`.
-
-## Decisions
-
-Settled 2026-09-04.
-
-- **`lr_scale: 0` is rejected.** `train: false` is the only way to freeze a group. The
-  migration tool converts the affected `moe_tuning` configs.
-- **`tokenizers` stays a group.** It already exists in the sleep2expert group split and
-  in `lr_scales`; dropping it would cost code changes for no gain.
-- **No deprecation window.** Old keys raise; all 69 configs migrate in one commit.
-- **The 30 inert-LoRA configs migrate to `lora.train: false`** — behavior unchanged,
-  historical results reproducible. The migration tool still emits that list separately so
-  individual files can be moved to `preset: lora` later, deliberately.
-- **No shared schema module.** Each variant implements the schema itself; a
-  cross-variant conformance test replaces the shared import. See
-  "Why not one shared module".
-- **`encoder: train: true` together with `lora: train: true` is a parse error**,
-  preserving today's reachable set. Revisit only if a recipe actually wants adapters on
-  a trainable encoder.
-- **`adapt.stage2.lr_scales` is out of scope** and keeps its own vocabulary. See "Scope".
-- **The group is named `encoder`, not `backbone`.** `self.backbone` the module
-  *contains* the tokenizers, so reusing the name for the group that *excludes* them is
-  the ambiguity this refactor should kill. The hard cut makes the rename free; only
-  `lr_scales.backbone` is affected, in sleep2expert configs. Confirmed that nothing
-  outside this repo consumes the `moe_finetune/*` logged metrics, so the metric rename
-  needs no announcement and no separate commit.
-- **`preset: full` trains tokenizers.** The 57 configs that map to it carry an explicit
-  `tokenizers: {train: false}` override, so the freeze is visible per file instead of
-  hidden in a preset default.
-- **The status file is renamed `finetune_status.json`**; `moe_finetune_status.json` is
-  retired, not dual-written. It remains `sleep2expert`-only.
-
-### Settled during implementation
-
-- **`finetune.tuning.lora` is allowed under a preset that does not train LoRA.** The
-  block holds hyperparameters (`r`, `alpha`, `dropout`, `target_modules`, `use_dora`,
-  `separate_adapters`), not a switch, so an unused one is not the `insert_lora` defect
-  coming back. Rejecting it would also make preset sweeps impossible: the automatic
-  hparam profile flips `finetune.tuning.preset` alone across `full`/`head_only`/`lora`,
-  and a config that carries LoRA hyperparameters would fail validation on two of the
-  three arms. `moe.layer_indices` keeps its strict check, because it selects *which
-  parameters train* and a stale value there is a trainability bug, not dead
-  hyperparameters.
-- **`lr_scale` must be finite.** `nan <= 0.0` is false, so the `> 0` check alone let a
-  NaN scale through into the optimizer's learning rate.
-- **Freezing a group through an override drops the preset's scale.** `{train: false}`
-  carries no scale of its own, and filling that gap from the preset made
-  `moe_conservative` plus `groups.encoder: {train: false}` materialize `train: false,
-  lr_scale: 0.1` -- a pair the parser rejects when a config spells it out, and one no
-  preset table contains. It reached the status block and the logged hparams, so the run
-  reported a policy the schema forbids. The override now normalizes to the neutral scale,
-  which puts the two axes back where the `0.0`-means-frozen removal left them.
-- **An override cannot freeze the head.** The head is the one group every preset trains,
-  which `test_every_preset_trains_the_head` pins across all three variants -- but the pin
-  covers the tables, and `groups.head: {train: false}` is a table-level invariant defeated
-  on the way out, the same shape as the scale case above. The runtime invariant did catch
-  it, after the model was built and the data loaded, with `preset '<name>' left no
-  trainable head parameters` -- a message that names the preset for a policy only the
-  override stated. The parser owns the contradiction now; the runtime check stays for
-  configs built in Python rather than parsed.
-- **`moe_top_experts` cannot freeze the experts.** The preset says one thing -- train the
-  experts on the selected layers -- so the override empties it. The runtime invariant did
-  refuse the run, but as `matched no expert parameters for layer_indices=[...]`, which
-  reads as a bad layer list and sends the reader to `model.backbone.moe.layer_indices`.
-  The layers are fine; the group is frozen. Same override-defeats-the-preset family as the
-  head and the scale, and the same fix: refuse it where the config is parsed, and say
-  which key did it.
-- **The `--pretrained-backbone-path` fallback had to be made true before it could be
-  documented.** This change breaks `--ckpt-path` resume for pre-schema finetune
-  checkpoints -- the optimizer carries one parameter group per `(semantic group, decay)`
-  pair now, not two -- and the README offered `--pretrained-backbone-path` as the way
-  round it. That path did not work: `Sleep2vecFinetuning` registers the same backbone at
-  `self.backbone` and inside `self.model`, so the checkpoint holds `backbone.*` and
-  `model.backbone.*`, while the loader stripped `model.` and handed `backbone.*` to a bare
-  pretrain model. Extraction only raises when *no* prefix matches, so that counted as a
-  match and `strict=False` dropped every key -- a run that trained from a random backbone
-  and logged `Loaded 0 / N keys`. The prefixes now go specific before general, and a load
-  where the module accepts nothing raises instead of returning. LoRA-era checkpoints still
-  cannot be recovered (PEFT renames the encoder under `base_model.model.`); they now say
-  so instead of training anyway.
-- **Training the routers requires a learned router.** Only `router_type: learned` builds
-  router parameters; `random`, `hard_modality` and `hard_group` route without any. So
-  `moe_conservative_routers`, or `groups.routers: {train: true}`, on one of those three
-  gives a routers group with zero trainable parameters and no optimizer group -- a run
-  that reports the authored adaptation and executes none of it. The ablation grid is
-  exactly where that meets: `finetune_ablations/router_trainable.yaml` asks whether router
-  adaptation helps, and `ablations/random_router.yaml` supplies a backbone that cannot
-  answer. It is rejected at config load, the way
-  `required_expert_weight_mode: router` already is.
-- **The migration script was deleted along with the migration.** It walked `configs/`
-  and `recipes/` (finetune configs also ship as recipe fixtures) rewriting files in
-  place; once the tree was migrated that did nothing on every subsequent run. Trimmed to
-  a single `--config path` that printed one converted config, it kept failing review for
-  its line-based YAML splicing — flow-style `finetune: {...}` blocks, four-space
-  indentation nesting the legacy keys *inside* the `tuning:` block it had just written —
-  defects in a code path with no in-repo caller, guarding a case the mapping table above
-  answers directly. A converter that has to be checked by hand against that table anyway
-  is not carrying its weight in a research framework. The half worth keeping is the
-  legacy semantics, transcribed into `tests/config/legacy_finetune_semantics.py`, which
-  two tests read; the splicer is gone, and a legacy config outside this repo is converted
-  by hand.
-- **A config with no legacy keys still gets a `tuning` block.** `finetune.tuning` is
-  required now, so "no legacy keys" means "relied on the legacy defaults", which trained
-  everything except the tokenizers. Only the `sex_age_baseline` configs are skipped:
-  they are a different runtime with no trainability groups at all.
-- **The migration manifest is frozen test data.** An entry can only be derived from a
-  config's *legacy* text, which is gone once that config is migrated — so nothing can
-  regenerate it, and it lives at `tests/config/finetune_tuning_migration.json` next to
-  the test that replays it rather than in `doc/`, which stores assets.
-- **Two groups have sub-group granularity, and the policy pass has to honor both.**
-  `moe_top_experts` trains only the experts of the selected MoE layers, and
-  `separate_adapters` trains only the `ch_<channel>` adapters — never the `default`
-  adapter PEFT creates alongside them. A pass that writes `requires_grad` from the group
-  table alone un-freezes `default`, because adapter insertion runs first and the policy
-  pass runs last. The adapter question is answered in one place,
-  `Sleep2vecDownstreamModel.lora_param_is_trainable`, which both the insertion helper
-  and the policy pass call.
-- **Pre-schema finetune checkpoints cannot be resumed, and that is accepted.**
-  `configure_optimizers` used to build two AdamW groups (`decay`, `no_decay`); it now
-  builds up to two per semantic group, so `trainer.fit(ckpt_path=...)` on an older
-  checkpoint raises a parameter-group size mismatch. Only `preset: head_only` stays
-  structurally compatible, one config of the seventy. A shim that remapped old optimizer
-  state would be exactly the resume/repair protocol AGENTS.md rules out, and the weights
-  still load — so this is a documented break in `README.md`, not code.
-- **The finetune block's key set is closed.** Lifting `moe_regularization` out of
-  `moe_tuning` moved it from a block that rejected unknown keys to one that did not, so a
-  `moe_regulrization` typo would have silently disabled an auxiliary loss the run was
-  configured around. The nine blocks the parser reads are now the allowed set.
-- **`agent_tools` decides trainability from the group table, not the preset name.** The
-  `finetune_balanced` preflight refuses to freeze a randomly initialized encoder; reading
-  `preset != "full"` got that wrong in both directions, because a `groups` override can
-  unfreeze the encoder under `head_only` and freeze it under `full`. For the same reason
-  the `adaptation.strategy` axis replaces the whole `finetune.tuning` block: an arm that
-  inherited the source config's `groups` overrides would not be the policy its name claims.
-- **`agent_tools` blocks a plan whose finetune config has no `finetune.tuning`.** The
-  block is required by every loader, and the summary cannot ask a loader whether a config
-  is valid -- the variants are enforced forks, so it reads the YAML. Recording
-  `tuning_present: false` and no blocking issue let `doctor` and `plan` hand over a
-  command that died at config load, the same failure the `backend=npz` and
-  `backend=kaldi` input checks beside it already prevent. The check asks two questions
-  only: is there a mapping, and does it name a `preset`. `finetune.tuning: {}` satisfies
-  presence while stating no policy, which is the same gap; `finetune_balanced` already
-  refuses it on the same grounds. Whether the named preset *exists*, and whether the
-  group blocks are well formed, is deliberately left to the loader -- answering it here
-  would make `agent_tools` a fourth copy of a schema each fork owns once, and every
-  finetune plan already carries `python utils/check_configs.py <config>`, which calls
-  the owning loader. The finetune checks gate on whether the `finetune:` key holds a
-  mapping, not on whether that mapping is truthy: `finetune: {}` is falsy, so a truthiness
-  gate skipped every one of them while the summary still reported `is_finetune: true` --
-  the emptiest possible finetune config was the one that planned clean.
-- **`finetune.tuning` is reported once, whole.** The summary's `model` block carried a
-  second copy of the policy -- the preset plus each group's `train` flag -- inherited from
-  the `model.freeze` it replaced, whose name honestly described its three booleans. Under
-  the new schema that same shape silently drops every `groups.*.lr_scale` and the entire
-  `tuning.lora` sub-block, so an agent reading `model.tuning` saw a policy the config never
-  stated. Nothing in the repo read it, so it is deleted rather than completed: a second
-  projection can only fall behind the first again the next time the block grows a key.
-- **`finetune.tuning` is a three-variant contract, and agent guidance says so.** The fourth
-  supported variant, `sex_age_baseline`, has its own `finetune.py` and its own much smaller
-  config module that never reads `tuning` -- neither of its checked-in configs carries the
-  block. `agent_tools` is already correct by construction here: `config_summary` routes that
-  variant to its own provider, so the "finetune.tuning is missing" blocking issue cannot fire
-  on it, and `finetune_balanced` refuses any variant outside `{sleep2vec, sleep2vec2}` with a
-  named blocking issue. Only `skills/finetuning/SKILL.md` asked for the block unconditionally,
-  which sent the agent hunting for a policy nothing in that variant states.
-- **The out-of-tree variant marker is derived from the two schemas, not listed.**
-  `check_configs` routes a config outside `configs/` by sniffing its content, and the marker
-  was `finetune.moe_tuning` -- which used to *contain* `moe_regularization`. Lifting that
-  field to a sibling of `tuning` left a dense `sleep2expert` finetune config under a shared
-  preset with no marker at all: no `model.backbone.moe`, no `moe_` preset, nothing. Closing
-  the finetune key set turned that miss into a hard failure, because the base loader now
-  rejects `moe_regularization` instead of ignoring it, so a valid config failed validation
-  naming the field as unsupported. The marker is now
-  `sleep2expert.FINETUNE_BLOCK_FIELDS - sleep2vec.FINETUNE_BLOCK_FIELDS`, computed at call
-  time: the next expert-only finetune key routes without anyone remembering this file.
-- **A renamed key has to reach the messages that name it.** `extract_embeddings` caught a
-  checkpoint holding adapter weights against a config that does not train them and told the
-  reader to look at `finetune.lora` -- a key the loader now rejects outright, so the only
-  way to act on the message was to author a config that no longer loads. All three forks
-  now name the live policy (`finetune.tuning`, its `lora` preset, `groups.lora.train`) and
-  say what a pretrain config does here, since that path reaches the same raise with no
-  `finetune.tuning` to point at. `test_no_variant_message_sends_the_reader_back_to_a_rejected_finetune_key`
-  walks each variant's string literals against `_LEGACY_FINETUNE_TRAINABILITY_KEYS`, so the
-  class closes rather than this one instance; `config.py` is exempt because it owns the
-  rejection table and must name the old keys to map them.
-- **A LoRA finetune checkpoint cannot seed a bare backbone, and now says so.** The
-  README sends pre-schema finetune checkpoints through `--pretrained-backbone-path`, and the
-  total-mismatch guard added earlier in this PR only raises when *every* filtered key is
-  unexpected. A PEFT checkpoint is the case that guard cannot see: PEFT renamed each wrapped
-  module to `<name>.base_layer` and added `lora_A`/`lora_B` beside it, so the encoder weights
-  are all unexpected while `mask_embed`, `embedding_projection` and `proj_head` -- never
-  wrapped -- still load. Enough keys land for the guard to pass, and the run trains on a
-  randomly initialized encoder without a word. All three forks now reject an adapter-bearing
-  state dict before touching the module, naming the two markers they matched on.
-- **A preset means what the mode it converts meant.** `moe_conservative_routers` shipped with
-  `routers: 0.1`, but the legacy `conservative_full_router_trainable` defaulted the router
-  scale to `0.01` -- an order of magnitude below the encoder's, deliberately. The equivalence
-  gate replays checked-in configs, and the one config on that preset carries an explicit
-  `routers` override, so no replayed config ever exercised the default and the gap stayed
-  invisible. Anyone following the README's manual conversion got 10x the legacy router rate.
-  `test_each_preset_carries_the_lr_scales_of_the_mode_it_converts` now ties the preset table
-  to the legacy transcription directly, for every preset that is a documented conversion.
-- **A declared variant beats the content probe.** Deriving the out-of-tree marker fixed one
-  direction and opened the other: a plan declaring `variant: sleep2vec` whose config carries
-  `finetune.moe_regularization` now routed to `sleep2expert.config`, which accepts the field,
-  while the generated `python -m sleep2vec.finetune` rejects it -- validation green, run dead
-  at config load. `check_configs` takes `--variant` now, and `plan_context` passes the
-  recipe's own variant, so the loader that validates is the loader that runs. Content
-  sniffing stays what it always was: a fallback for configs that declared nothing.
-- **A declaration the dispatcher never reaches is not a declaration.** `--variant` settled
-  the content probe but sat behind `check_config_file`'s two special-family early returns, so
-  `--variant sleep2vec` on a `sex_age_baseline` or `sleep2stat` config still validated under
-  the detected loader and reported success -- the exact failure the flag was added to close,
-  one dispatch layer up. Those two families are not declarable, so a declaration naming one of
-  the three sleep2vec-family loaders alongside such a config is a contradiction, not a
-  preference: the guard now names both halves rather than picking a winner. A test ties the
-  message to `DECLARABLE_VARIANTS`, so making a fourth family declarable fails here first.
-- **Scoping one document leaves the other one wrong.** The finetuning skill was scoped to the
-  three variants that parse `finetune.tuning`, but the README's trainability section kept the
-  every-variant claim -- so the same requirement now read one way in the skill and another way
-  two files over, and on `sex_age_baseline` the README's reading invites a block its loader
-  silently ignores. Scoped it the same way, and the new test derives the variant split from
-  `config.py` for both documents at once rather than restating it in either.
-- **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
-  `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
-  a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate
-  to a policy that trains a backbone the legacy run held frozen. `top_moe_layer_expert_only`
-  is the matching case for `train_moe_layer_indices`, which validation defaulted to the
-  deepest MoE layer. No shipped config exercised either default — which is the point:
-  the manifest gate cannot catch a misreading it also generated.
-  `tests/config/legacy_finetune_semantics.py` is the only remaining record of either.
-- **A guard the other two forks carry is a guard this one needs.** `sleep2vec2` and
-  `sleep2expert` refuse a Hugging Face RoFormer checkpoint at `load_pretrain_init_weights`;
-  `sleep2vec` accepted the mirror case silently. Its backbone names attention `.attention.self.`
-  and the forks name it `.attention.self_attention.`, so a fork's checkpoint matches the
-  tokenizers, `mask_embed`, `embedding_projection` and `proj_head` around the encoder while
-  every encoder key is unexpected -- a partial match the total-mismatch guard accepts, leaving
-  a randomly initialized encoder behind a successful load. The guard is now symmetric, and a
-  test reads all three sources to assert each variant rejects the layout it cannot read.
-- **The legacy `insert_lora` default was not one default.** `LoraConfig.insert_lora` shipped
-  as `True` on `sleep2vec` and `False` on both forks, so a legacy base config with
-  `freeze_backbone_and_insert_lora: true` and no `insert_lora` inserted adapters while the same
-  file under either fork did not. The transcribed oracle read a single default for all three,
-  which turns a LoRA run into head-only trainability for anyone converting such a config by
-  hand -- and no shipped config exposed it, since all three that set the freeze key also set
-  `insert_lora` explicitly. `legacy_trainability_table` now requires the variant and refuses a
-  name it has no transcription for; a test derives that name set from which `config.py` modules
-  still define the legacy keys.
-
-## What was verified
-
-`tests/config/test_finetune_tuning_equivalence.py` replays the manifest's 70 recorded
-legacy tables against the new parser: for every checked-in config, the group table the
-new block produces equals the table the old keys produced. That is the substantive
-proof that the hard cut preserved behavior. Each entry is loaded through the config
-module that owns it — the manifest records `sleep2vec.config`, `sleep2vec2.config` or
-`sleep2expert.config` — because the variants are enforced forks and replaying a
-`configs/sleep2vec2/**` entry through `sleep2vec.config` would gate a parser that never
-reads that file.
-
-That gate has one structural limit: the manifest was generated by the same code it
-checks, so a misreading of the legacy schema would sit on both sides of the comparison.
-`tests/config/test_legacy_finetune_semantics.py` closes the gap where it matters, stating
-the legacy mode-dependent defaults directly rather than deriving them — those are exactly
-the paths no shipped config exercised, so the manifest could not have caught them.
-
-`tests/variants/test_finetune_tuning_conformance.py` pins what the three forked schemas
-must agree on: the shared group names and their relative order, the shared preset names,
-identical meanings for `full`/`head_only`/`lora` over the shared groups, every preset
-covering every group, every preset training the head, no preset pairing a trainable
-encoder with LoRA, and no preset pairing a frozen group with a non-neutral `lr_scale` --
-the last of these also replayed through the parser, since a preset table that honours the
-invariant is no use if an override can defeat it on the way out.
-
-Not verified here: anything that imports torch. `torch`, `pytorch_lightning` and `peft`
-are absent from the development environment, so the runtime apply sites
-(`_apply_finetune_tuning_policy`, `_assert_tuning_invariants`, `configure_optimizers`)
-are covered by review and by the config-layer equivalence gate, not by an executed test.
-`tests/models/test_finetune_separate_adapters.py` builds a full finetuning module under
-`preset: lora` with `separate_adapters: true` and asserts the `default` adapter reaches
-neither `requires_grad` nor an optimizer group; it skips here for the same reason.
-The pre-existing failures in `tests/variants` are identical before and after this change.
