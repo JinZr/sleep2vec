@@ -1264,6 +1264,17 @@ def _validate_finetune_tuning_config(
     if cfg.preset.startswith("moe_") and not moe_enabled:
         raise ValueError(f"finetune.tuning.preset '{cfg.preset}' requires model.backbone.moe.enabled=true.")
 
+    # Only the learned router builds parameters -- `random`, `hard_modality` and `hard_group`
+    # route without any. Training the routers on those would leave the routers group with zero
+    # trainable parameters and no optimizer group, so the run reports the authored policy and
+    # executes nothing of it. `required_expert_weight_mode='router'` is rejected the same way.
+    router_type = getattr(moe_cfg, "router_type", None)
+    if cfg.trains("routers") and router_type != "learned":
+        raise ValueError(
+            "finetune.tuning trains the routers, which requires model.backbone.moe.router_type='learned'; "
+            f"router_type={router_type!r} has no router parameters to train."
+        )
+
     if cfg.preset == "moe_top_experts":
         moe_layers = list(getattr(moe_cfg, "layer_indices", None) or [])
         if cfg.moe.layer_indices is None:

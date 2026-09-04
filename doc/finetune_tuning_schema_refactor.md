@@ -484,6 +484,15 @@ Settled 2026-09-04.
   preset table contains. It reached the status block and the logged hparams, so the run
   reported a policy the schema forbids. The override now normalizes to the neutral scale,
   which puts the two axes back where the `0.0`-means-frozen removal left them.
+- **Training the routers requires a learned router.** Only `router_type: learned` builds
+  router parameters; `random`, `hard_modality` and `hard_group` route without any. So
+  `moe_conservative_routers`, or `groups.routers: {train: true}`, on one of those three
+  gives a routers group with zero trainable parameters and no optimizer group -- a run
+  that reports the authored adaptation and executes none of it. The ablation grid is
+  exactly where that meets: `finetune_ablations/router_trainable.yaml` asks whether router
+  adaptation helps, and `ablations/random_router.yaml` supplies a backbone that cannot
+  answer. It is rejected at config load, the way
+  `required_expert_weight_mode: router` already is.
 - **The migration script was deleted along with the migration.** It walked `configs/`
   and `recipes/` (finetune configs also ship as recipe fixtures) rewriting files in
   place; once the tree was migrated that did nothing on every subsequent run. Trimmed to

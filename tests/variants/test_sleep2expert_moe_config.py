@@ -406,6 +406,36 @@ def test_sleep2expert_finetune_tuning_freezing_a_scaled_group_drops_its_scale(tm
     assert cfg.lr_scale("experts") == pytest.approx(1.0)
 
 
+@pytest.mark.parametrize("router_type", ["random", "hard_modality", "hard_group"])
+def test_sleep2expert_finetune_tuning_rejects_training_a_parameterless_router(tmp_path: Path, router_type: str):
+    """Only the learned router has parameters, so training any other trains nothing.
+
+    The ablation grid is where this bites: `finetune_ablations/router_trainable.yaml` asks
+    whether router adaptation helps, and pointing it at a `random` router backbone would
+    answer with a run whose routers group holds zero trainable parameters.
+    """
+    payload = _valid_finetune_payload()
+    payload["model"]["backbone"]["moe"]["router_type"] = router_type
+    payload["model"]["backbone"]["moe"].pop("route_consistency_layers", None)
+    _tuning(payload, preset="moe_conservative", groups={"routers": {"train": True}})
+    path = _write_config(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="requires model.backbone.moe.router_type='learned'"):
+        load_finetune_config(path)
+
+
+@pytest.mark.parametrize("router_type", ["random", "hard_modality", "hard_group"])
+def test_sleep2expert_moe_conservative_routers_preset_needs_a_learned_router(tmp_path: Path, router_type: str):
+    payload = _valid_finetune_payload()
+    payload["model"]["backbone"]["moe"]["router_type"] = router_type
+    payload["model"]["backbone"]["moe"].pop("route_consistency_layers", None)
+    _tuning(payload, preset="moe_conservative_routers")
+    path = _write_config(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="requires model.backbone.moe.router_type='learned'"):
+        load_finetune_config(path)
+
+
 def test_sleep2expert_finetune_tuning_head_only_allows_dense_config(tmp_path: Path):
     payload = _valid_finetune_payload()
     payload["model"]["backbone"].pop("moe")
