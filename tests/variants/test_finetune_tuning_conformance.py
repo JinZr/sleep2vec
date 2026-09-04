@@ -198,15 +198,46 @@ def test_every_variant_requires_a_tuning_block(variant: str, tmp_path: Path):
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
-def test_every_variant_points_a_legacy_config_at_the_conversion_table(variant: str, tmp_path: Path):
+def test_every_variant_rejects_a_legacy_config_at_load(variant: str, tmp_path: Path):
     payload = yaml.safe_load((REPO_ROOT / REPRESENTATIVE_CONFIGS[variant]).read_text())
     payload["finetune"].pop("tuning")
     payload["finetune"]["freeze_tokenizer"] = True
     path = tmp_path / "legacy.yaml"
     path.write_text(yaml.safe_dump(payload))
 
-    with pytest.raises(ValueError, match=re.escape("doc/finetune_tuning_schema_refactor.md")):
+    with pytest.raises(ValueError, match=re.escape("Trainability section of README.md")):
         _config(variant).load_finetune_config(path)
+
+
+def test_the_schema_is_where_the_rejection_messages_say_it_is():
+    """The pointer in those messages is only useful while it resolves.
+
+    It previously named a design note that opened with "No code changes yet", which is
+    what a reader following the error saw first. Tie the message to the section that
+    actually carries the schema, so moving one without the other fails here.
+    """
+    readme = (REPO_ROOT / "README.md").read_text()
+
+    assert "**Trainability (`finetune.tuning`)**" in readme
+    section = readme.split("**Trainability (`finetune.tuning`)**", 1)[1].split("\n---", 1)[0]
+
+    # A config is written against this section alone, so every part of the block it has to
+    # spell has to be here: the two keys, the groups, and the presets that name a table.
+    for spelling in ("preset", "groups", "lr_scale", "moe.layer_indices", "finetune.tuning.lora"):
+        assert spelling in section, f"the schema does not mention {spelling}"
+
+    # The rules the loader enforces but no schema listing implies. Each one is a config that
+    # parses as well-formed and is then rejected, so a reader who cannot find it here writes
+    # a block that does not load.
+    assert "The `head` group must train." in section
+    assert "may not train the encoder and LoRA at the same time" in section
+    assert "router_type: learned" in section
+    assert "must keep the `experts` group training" in section
+
+    # Old keys crash rather than convert, and no conversion guidance survives to imply
+    # otherwise -- this section is the whole contract.
+    assert "legacy" not in section.lower()
+    assert "convert" not in section.lower()
 
 
 @pytest.mark.parametrize("variant", VARIANTS)

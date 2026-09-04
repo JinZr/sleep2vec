@@ -466,16 +466,36 @@ finetune:
         tokenizers: {train: false}
   ```
 - `preset` picks a complete trainability table over the variant's semantic parameter
-  groups; `groups` overrides individual entries on top of it. Shared presets are `full`,
-  `head_only`, `lora`, and `custom` (which requires every group to be spelled out).
-  `sleep2expert` adds `moe_conservative`, `moe_conservative_routers`, and
+  groups; `groups` overrides individual entries on top of it. The materialized
+  `(train, lr_scale)` per group for each preset is `_FINETUNE_TUNING_PRESETS` in the
+  variant's `config.py` — that dict is the definition, not a copy of one. Shared presets
+  are `full`, `head_only`, `lora`, and `custom` (which requires every group to be spelled
+  out). `sleep2expert` adds `moe_conservative`, `moe_conservative_routers`, and
   `moe_top_experts`.
 - Groups are `head`, `encoder`, `tokenizers`, `projection`, `lora`, plus `experts` and
   `routers` on `sleep2expert`. Each entry is `{train: <bool>, lr_scale: <float>}`.
   `lr_scale` must be finite and `> 0`; freezing is expressed only by `train: false`, never
   by a zero learning-rate scale.
+- The `head` group must train. A frozen head leaves the classifier at its random
+  initialization, so `groups.head.train: false` is rejected under every preset, `custom`
+  included.
 - A preset may not train the encoder and LoRA at the same time; LoRA adapts a frozen
   backbone.
+- On `sleep2expert` the `experts` and `routers` groups exist only when
+  `model.backbone.moe.enabled: true`. On a dense config, naming either under `groups` is
+  rejected even as `{train: false}`, and `preset: custom` there requires exactly the five
+  non-MoE groups — spelling the MoE two is an error, not harmless redundancy. Every `moe_*`
+  preset likewise requires an enabled MoE backbone.
+- Training the `routers` group also requires `model.backbone.moe.router_type: learned`. The
+  `random`, `hard_modality` and `hard_group` routers hold no parameters, so
+  `moe_conservative_routers` — or a `routers` override on any other preset — is rejected on
+  those.
+- `preset: moe_top_experts` must keep the `experts` group training. The preset exists to train
+  the experts on the selected layers, so `groups.experts: {train: false}` is rejected rather
+  than quietly reducing to a head-only run. Pick a preset that does not train them.
+- `finetune.tuning.moe.layer_indices` is accepted only under `preset: moe_top_experts`, and
+  must be a subset of `model.backbone.moe.layer_indices`. Omit it and the deepest configured
+  MoE layer is selected; the preset fails at load if the model configures none.
 - `finetune.tuning.lora` carries LoRA hyper-parameters (`r`, `alpha`, `dropout`,
   `target_modules`, `use_dora`, `separate_adapters`). They are read only when the `lora`
   group trains, and they may be present under a preset that does not train it — they are
@@ -489,22 +509,6 @@ finetune:
   trainable parameters and stays in train mode with its dropout active, even though the
   `encoder` group is frozen. Frozen weights never update either way; this is only about
   the stochastic and running-statistics layers around them.
-- The legacy keys `finetune.freeze_tokenizer`, `finetune.lora.insert_lora`,
-  `finetune.lora.freeze_backbone_and_insert_lora`, and `finetune.moe_tuning` are rejected
-  at load time. Every checked-in config was converted; a config from outside this repo is
-  converted by hand against the mapping table in
-  `doc/finetune_tuning_schema_refactor.md`. The old keys did not translate by name — the
-  MoE learning-rate defaults varied per `mode` and a `0.0` scale meant "frozen" — so read
-  that table rather than renaming keys.
-- **Finetune checkpoints written before this schema cannot be resumed with `--ckpt-path`.**
-  The optimizer now carries one parameter group per `(semantic group, decay)` pair instead
-  of the two it used to, so restoring the saved optimizer state raises a size mismatch.
-  Start the run fresh instead of resuming it, and prefer the *pretrain* checkpoint the old
-  finetune started from: `--pretrained-backbone-path` reads a backbone, not a finetuned
-  model. A finetune checkpoint works only when the old run inserted no LoRA — PEFT renames
-  the encoder under `base_model.model.`, and no prefix recovers a plain backbone from that.
-  Either way the head is not restored; it trains from scratch. If nothing matches, the load
-  raises rather than starting from a random backbone.
 
 ---
 

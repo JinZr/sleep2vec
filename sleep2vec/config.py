@@ -772,9 +772,9 @@ def _reject_legacy_finetune_keys(finetune_block: dict[str, t.Any]) -> None:
     """Fail loudly on the pre-`tuning` schema instead of silently ignoring it.
 
     These keys used to decide trainability between them, so quietly dropping one would
-    train a different set of parameters than the config asks for. There is no
-    deprecation window; `doc/finetune_tuning_schema_refactor.md` carries the mapping table
-    for converting a config by hand.
+    train a different set of parameters than the config asks for. There is no deprecation
+    window and no conversion path: write a `finetune.tuning` block against the current
+    schema instead.
     """
     found = sorted(set(_LEGACY_FINETUNE_TRAINABILITY_KEYS) & set(finetune_block))
     if not found:
@@ -782,7 +782,7 @@ def _reject_legacy_finetune_keys(finetune_block: dict[str, t.Any]) -> None:
     replacements = "; ".join(f"finetune.{key} -> {_LEGACY_FINETUNE_TRAINABILITY_KEYS[key]}" for key in found)
     raise ValueError(
         f"finetune.{{{','.join(found)}}} was replaced by finetune.tuning. {replacements}. "
-        "See doc/finetune_tuning_schema_refactor.md for the conversion table."
+        "See the Trainability section of README.md for the schema."
     )
 
 
@@ -835,7 +835,7 @@ def _build_finetune_tuning_lora_config(raw: t.Any) -> FinetuneTuningLoraConfig:
 
 def _build_finetune_tuning_config(raw: t.Any) -> FinetuneTuningConfig:
     if raw is None:
-        raise ValueError("finetune.tuning is required. See doc/finetune_tuning_schema_refactor.md for the schema.")
+        raise ValueError("finetune.tuning is required. See the Trainability section of README.md for the schema.")
     if not isinstance(raw, dict):
         raise ValueError("finetune.tuning must be a mapping.")
     _reject_extra_finetune_tuning_fields(raw, {"preset", "groups", "lora"}, "finetune.tuning")
