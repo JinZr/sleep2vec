@@ -43,7 +43,11 @@ def finetune_summary_body(
     data = load_yaml(resolved)
     model = data.get("model") if isinstance(data.get("model"), dict) else {}
     data_block = data.get("data") if isinstance(data.get("data"), dict) else {}
-    finetune = data.get(CONFIG_FINETUNE_SECTION) if isinstance(data.get(CONFIG_FINETUNE_SECTION), dict) else {}
+    # A `finetune:` block that is present but empty is still a finetune config, so the checks
+    # below ask this rather than `if finetune` -- `{}` is falsy and would skip every one of
+    # them while the summary still reports `is_finetune: true`.
+    is_finetune = isinstance(data.get(CONFIG_FINETUNE_SECTION), dict)
+    finetune = data.get(CONFIG_FINETUNE_SECTION) if is_finetune else {}
     task = finetune.get("task") if isinstance(finetune.get("task"), dict) else {}
     survival = survival_summary(
         finetune,
@@ -91,23 +95,23 @@ def finetune_summary_body(
             blocking_issues.append("data.backend=kaldi does not support data.finetune_preset_path.")
     if (
         backend == "npz"
-        and finetune
+        and is_finetune
         and not data_block.get("finetune_data_index")
         and not data_block.get("finetune_preset_path")
     ):
         blocking_issues.append("data.backend=npz but both finetune_data_index and finetune_preset_path are missing.")
-    if finetune and not isinstance(finetune.get("tuning"), dict):
+    if is_finetune and not isinstance(finetune.get("tuning"), dict):
         # Every variant loader requires this block, and agent_tools cannot call those loaders
         # (enforced forks). Without the check, `plan` emits a command that dies at config load.
         blocking_issues.append("finetune.tuning is missing; the config loader requires it.")
-    elif finetune and not (type(tuning.get("preset")) is str and tuning["preset"]):
+    elif is_finetune and not (type(tuning.get("preset")) is str and tuning["preset"]):
         # A block that names no preset states no policy, so it is the same gap as an absent
         # one -- `finetune.tuning: {}` reaches here as "present". Whether the named preset
         # exists is the loader's question; this only asks that the config named one.
         blocking_issues.append("finetune.tuning.preset is missing; the config loader requires it.")
-    if finetune and task == {}:
+    if is_finetune and task == {}:
         warnings.append("finetune.task is missing; custom label semantics may be ambiguous.")
-    if model_channel_names == ["ppg"] and finetune and "required_channels" not in preset_build:
+    if model_channel_names == ["ppg"] and is_finetune and "required_channels" not in preset_build:
         warnings.append("single-channel PPG finetune config has no preset_build.required_channels.")
 
     finetune_summary = {
@@ -130,8 +134,8 @@ def finetune_summary_body(
     summary = {
         "config_path": repo_relative(resolved),
         "variant_guess": guess_variant(resolved),
-        "is_finetune": isinstance(data.get(CONFIG_FINETUNE_SECTION), dict),
-        "is_pretrain": not isinstance(data.get(CONFIG_FINETUNE_SECTION), dict),
+        "is_finetune": is_finetune,
+        "is_pretrain": not is_finetune,
         "data_backend": backend,
         "model": {
             "backbone": (model.get("backbone") or {}).get("name") if isinstance(model.get("backbone"), dict) else None,

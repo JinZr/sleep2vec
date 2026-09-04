@@ -118,6 +118,25 @@ def test_config_summary_blocks_a_tuning_block_that_names_no_preset(tmp_path: Pat
     assert "finetune.tuning is missing; the config loader requires it." not in blocking
 
 
+def test_config_summary_blocks_an_empty_finetune_block(tmp_path: Path):
+    """`finetune: {}` is reported as a finetune config, so it must face the finetune checks.
+
+    The block is falsy, so gating those checks on `if finetune` skipped every one of them
+    while `is_finetune` -- which asks whether the key is a dict -- still said true. The config
+    then planned clean and died at load.
+    """
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration\nx.npz,train,60\n")
+    payload = config_payload(index)
+    payload["finetune"] = {}
+    config = write_yaml(tmp_path / "empty_finetune.yaml", payload)
+
+    summary = config_summary(config)
+
+    assert summary["is_finetune"] is True
+    assert "finetune.tuning is missing; the config loader requires it." in summary["blocking_issues"]
+
+
 def test_config_summary_validates_survival_sidecars(tmp_path: Path):
     index = tmp_path / "index.csv"
     index.write_text("path,split,duration,eid\nx.npz,train,60,001\n")

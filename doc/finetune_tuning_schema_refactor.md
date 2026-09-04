@@ -550,7 +550,10 @@ Settled 2026-09-04.
   group blocks are well formed, is deliberately left to the loader -- answering it here
   would make `agent_tools` a fourth copy of a schema each fork owns once, and every
   finetune plan already carries `python utils/check_configs.py <config>`, which calls
-  the owning loader.
+  the owning loader. The finetune checks gate on whether the `finetune:` key holds a
+  mapping, not on whether that mapping is truthy: `finetune: {}` is falsy, so a truthiness
+  gate skipped every one of them while the summary still reported `is_finetune: true` --
+  the emptiest possible finetune config was the one that planned clean.
 - **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
   `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
   a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate
