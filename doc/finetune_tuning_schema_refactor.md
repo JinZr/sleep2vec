@@ -313,8 +313,9 @@ synthetic `"legacy"` group. After the refactor every config has a group table, s
 `"legacy"` branch disappears. The file is then no longer MoE-specific and all three
 variants emit it, which is why it takes the honest name. The old name is **retired, not
 dual-written** — consistent with the hard-cut decision. Concretely: update the
-`allowed_files` whitelist, and keep a `schema_version` field inside the file so a future
-change does not have to be inferred from field names.
+`allowed_files` whitelist. The file carries no version marker: AGENTS.md forbids
+`schema_version`-style markers on new research-facing reports, and the fields it does
+carry (`preset`, the group table, the lr scales) already say what the run did.
 
 **Logged metrics.** `_flatten_moe_status` turns that dict into logger keys such as
 `moe_finetune/lr_scales/backbone` and `moe_finetune/moe_tuning_mode`. The group rename
@@ -390,7 +391,7 @@ and keeps the fork boundary intact.
 | Namespace flattening | `{sleep2vec,sleep2vec2,sleep2expert}/common.py:402` |
 | Policy application | `{sleep2vec,sleep2vec2,sleep2expert}/sleep2vec_finetuning.py`; `_apply_moe_tuning_policy` and `_set_param_trainability_from_policy` become the single apply site for all three variants |
 | Adapter reconstruction | `{sleep2vec,sleep2vec2,sleep2expert}/extract_embeddings.py:492` (`_finetune_adapters_enabled` collapses to one flag) |
-| Agent tooling | `agent_tools/domain/finetune_summary.py:159`, `agent_tools/domain/finetune_hparam_profile.py:247` — the `adaptation.strategy` axis becomes three presets on `yaml:/finetune/tuning/preset` instead of a two-flag product on `yaml:/finetune/lora` |
+| Agent tooling | `agent_tools/domain/finetune_summary.py:159`, `agent_tools/domain/finetune_hparam_profile.py:247` — the `adaptation.strategy` axis becomes three presets on `yaml:/finetune/tuning` instead of a two-flag product on `yaml:/finetune/lora`. The axis replaces the whole block, not just the preset: a swept arm that inherited the source's `groups` overrides would not be the policy its name claims |
 | Config validation | `utils/check_configs.py:110` keys off `"moe_tuning" in finetune_block` |
 | Run artifacts | `sleep2expert/finetune.py:127,222` (rename to `finetune_status.json`, update whitelist); `_build_moe_finetune_status` / `_flatten_moe_status` in `sleep2expert/sleep2vec_finetuning.py:331,389`; the same emitter added to `sleep2vec/` and `sleep2vec2/` |
 | Optimizer groups | `sleep2expert/sleep2vec_finetuning.py:2036` `configure_optimizers` reads `_finetune_lr_scales[group]` — the rename to `encoder` lands here too |
@@ -416,9 +417,9 @@ than silently yielding an empty axis.
    of the old keys as one hard cut. Update `utils/check_configs.py` and `README.md` in
    the same commit — a config validator that still looks for `moe_tuning` would pass
    every migrated file vacuously.
-6. Rename the status file to `finetune_status.json` (add `schema_version`, drop the
-   `"legacy"` branch, emit it from all three variants, update the `allowed_files`
-   whitelist and retire the old name).
+6. Rename the status file to `finetune_status.json` (drop the `"legacy"` branch, emit
+   it from all three variants, update the `allowed_files` whitelist and retire the old
+   name).
 7. Update agent tooling axes and pointers; re-freeze any plan pinned to
    `yaml:/finetune/lora`.
 
@@ -484,13 +485,47 @@ Settled 2026-09-04.
   pass runs last. The adapter question is answered in one place,
   `Sleep2vecDownstreamModel.lora_param_is_trainable`, which both the insertion helper
   and the policy pass call.
+- **Pre-schema finetune checkpoints cannot be resumed, and that is accepted.**
+  `configure_optimizers` used to build two AdamW groups (`decay`, `no_decay`); it now
+  builds up to two per semantic group, so `trainer.fit(ckpt_path=...)` on an older
+  checkpoint raises a parameter-group size mismatch. Only `preset: head_only` stays
+  structurally compatible, one config of the seventy. A shim that remapped old optimizer
+  state would be exactly the resume/repair protocol AGENTS.md rules out, and the weights
+  still load — so this is a documented break in `README.md`, not code.
+- **The finetune block's key set is closed.** Lifting `moe_regularization` out of
+  `moe_tuning` moved it from a block that rejected unknown keys to one that did not, so a
+  `moe_regulrization` typo would have silently disabled an auxiliary loss the run was
+  configured around. The nine blocks the parser reads are now the allowed set.
+- **`agent_tools` decides trainability from the group table, not the preset name.** The
+  `finetune_balanced` preflight refuses to freeze a randomly initialized encoder; reading
+  `preset != "full"` got that wrong in both directions, because a `groups` override can
+  unfreeze the encoder under `head_only` and freeze it under `full`. For the same reason
+  the `adaptation.strategy` axis replaces the whole `finetune.tuning` block: an arm that
+  inherited the source config's `groups` overrides would not be the policy its name claims.
+- **The migration tool replays the legacy *mode* defaults, not one flat table.**
+  `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
+  a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate
+  to a policy that trains a backbone the legacy run held frozen. `top_moe_layer_expert_only`
+  is the matching case for `train_moe_layer_indices`, which validation defaulted to the
+  deepest MoE layer. No shipped config exercised either default — which is the point:
+  the manifest gate cannot catch a misreading it also generated.
 
 ## What was verified
 
 `tests/config/test_finetune_tuning_equivalence.py` replays the manifest's 70 recorded
 legacy tables against the new parser: for every checked-in config, the group table the
 new block produces equals the table the old keys produced. That is the substantive
-proof that the hard cut preserved behavior.
+proof that the hard cut preserved behavior. Each entry is loaded through the config
+module that owns it — the manifest records `sleep2vec.config`, `sleep2vec2.config` or
+`sleep2expert.config` — because the variants are enforced forks and replaying a
+`configs/sleep2vec2/**` entry through `sleep2vec.config` would gate a parser that never
+reads that file.
+
+That gate has one structural limit: the manifest was generated by the same code it
+checks, so a misreading of the legacy schema would sit on both sides of the comparison.
+`tests/config/test_migrate_finetune_tuning.py` closes the gap where it matters, stating
+the legacy mode-dependent defaults directly rather than deriving them — those are exactly
+the paths no shipped config exercised, so the manifest could not have caught them.
 
 `tests/variants/test_finetune_tuning_conformance.py` pins what the three forked schemas
 must agree on: the shared group names and their relative order, the shared preset names,

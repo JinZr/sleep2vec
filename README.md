@@ -484,6 +484,11 @@ finetune:
   ```bash
   python -m utils.migrate_finetune_tuning
   ```
+- **Finetune checkpoints written before this schema cannot be resumed with `--ckpt-path`.**
+  The optimizer now carries one parameter group per `(semantic group, decay)` pair instead
+  of the two it used to, so restoring the saved optimizer state raises a size mismatch.
+  Weights load fine — start the run fresh (pass the old checkpoint as
+  `--pretrained-backbone-path`, not `--ckpt-path`) rather than resuming it.
 
 ---
 
