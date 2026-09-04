@@ -480,9 +480,10 @@ finetune:
 - Frozen groups are also put in eval mode, so their BatchNorm/dropout stop updating.
 - The legacy keys `finetune.freeze_tokenizer`, `finetune.lora.insert_lora`,
   `finetune.lora.freeze_backbone_and_insert_lora`, and `finetune.moe_tuning` are rejected
-  at load time. Convert an old config with:
+  at load time. `utils/migrate_finetune_tuning.py` converts one, printing the result so
+  the derived preset can be read before it lands:
   ```bash
-  python -m utils.migrate_finetune_tuning
+  python -m utils.migrate_finetune_tuning --config path/to/config.yaml > migrated.yaml
   ```
 - **Finetune checkpoints written before this schema cannot be resumed with `--ckpt-path`.**
   The optimizer now carries one parameter group per `(semantic group, decay)` pair instead

@@ -2,7 +2,9 @@
 
 `utils/migrate_finetune_tuning.py` did not rename keys. It evaluated the legacy
 runtime semantics for every config and emitted the preset that reproduced the
-resulting per-group table, recording both in ``doc/finetune_tuning_migration.json``.
+resulting per-group table. Both are frozen next to this file in
+``finetune_tuning_migration.json``: the legacy configs are gone, so nothing can
+regenerate it, and it is fixture data rather than a rebuildable artifact.
 
 This module replays that manifest through the *new* parser and asserts the two agree
 on `(train, lr_scale)` for every group of every config. A preset table edit, a builder
@@ -23,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-MANIFEST_PATH = REPO_ROOT / "doc" / "finetune_tuning_migration.json"
+MANIFEST_PATH = Path(__file__).with_name("finetune_tuning_migration.json")
 
 
 def _manifest() -> list[dict]:

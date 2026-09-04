@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+import re
 
 import pytest
 import yaml
@@ -156,7 +157,7 @@ def test_every_variant_points_a_legacy_config_at_the_migration_tool(variant: str
     path = tmp_path / "legacy.yaml"
     path.write_text(yaml.safe_dump(payload))
 
-    with pytest.raises(ValueError, match="utils/migrate_finetune_tuning.py"):
+    with pytest.raises(ValueError, match=re.escape("utils.migrate_finetune_tuning --config")):
         _config(variant).load_finetune_config(path)
 
 

@@ -773,7 +773,8 @@ def _reject_legacy_finetune_keys(finetune_block: dict[str, t.Any]) -> None:
 
     These keys used to decide trainability between them, so quietly dropping one would
     train a different set of parameters than the config asks for. There is no
-    deprecation window: `python utils/migrate_finetune_tuning.py` rewrites a config.
+    deprecation window: `python -m utils.migrate_finetune_tuning --config <path>`
+    prints the converted config.
     """
     found = sorted(set(_LEGACY_FINETUNE_TRAINABILITY_KEYS) & set(finetune_block))
     if not found:
@@ -781,7 +782,7 @@ def _reject_legacy_finetune_keys(finetune_block: dict[str, t.Any]) -> None:
     replacements = "; ".join(f"finetune.{key} -> {_LEGACY_FINETUNE_TRAINABILITY_KEYS[key]}" for key in found)
     raise ValueError(
         f"finetune.{{{','.join(found)}}} was replaced by finetune.tuning. {replacements}. "
-        "Run `python utils/migrate_finetune_tuning.py` to migrate this config."
+        "Run `python -m utils.migrate_finetune_tuning --config <path>` to convert this config."
     )
 
 

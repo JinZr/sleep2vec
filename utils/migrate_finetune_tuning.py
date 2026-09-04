@@ -16,31 +16,30 @@ This tool does not translate keys by name. It evaluates the *legacy runtime sema
 presets, and emits the preset that reproduces it -- with an explicit `groups` override
 for any group the preset does not match, or `preset: custom` when nothing is close.
 
-Every migrated config is recorded in a manifest (``doc/finetune_tuning_migration.json``)
-holding the legacy table it was computed from. ``tests/config/test_finetune_tuning_equivalence.py``
-replays that manifest against the new parser, so the claim "this migration preserved
-behaviour" is checked rather than asserted.
+The in-tree configs were migrated once, and the legacy table each one was computed
+from is frozen in ``tests/config/finetune_tuning_migration.json``, which
+``tests/config/test_finetune_tuning_equivalence.py`` replays against the new parser --
+so the claim "this migration preserved behaviour" is checked rather than asserted. That
+manifest is test data now; nothing regenerates it.
+
+What is left is for configs the repo does not own. The conversion is printed, never
+written: it is a semantic rewrite (the preset is derived from legacy runtime behaviour,
+not from key names), so it wants a human read before it lands.
 
 Usage:
-    python utils/migrate_finetune_tuning.py            # rewrite configs + manifest
-    python utils/migrate_finetune_tuning.py --check    # fail if anything is unmigrated
+    python -m utils.migrate_finetune_tuning --config path/to/config.yaml > migrated.yaml
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
-import subprocess
 import sys
 import typing as t
 
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# Finetune configs also ship as recipe fixtures, and they need the same rewrite.
-CONFIG_ROOTS = (REPO_ROOT / "configs", REPO_ROOT / "recipes")
-MANIFEST_PATH = REPO_ROOT / "doc" / "finetune_tuning_migration.json"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -200,9 +199,18 @@ def config_module_for(path: Path, config_data: dict[str, t.Any]) -> str:
     The variants are enforced forks with no cross-imports, so the manifest records the
     module by name rather than a base/expert flag: replaying a `configs/sleep2vec2/**`
     entry through `sleep2vec.config` would check a parser that never loads that file.
-    """
-    from utils.check_configs import _resolve_config_variant
 
+    `check_configs` resolves the variant from the migrated shape and knows nothing about
+    `finetune.moe_tuning`, which only ever existed in sleep2expert. This tool is the last
+    reader of that block, so the legacy marker is checked here rather than teaching a dead
+    schema to a module that has no other use for it. It matters for a config passed by
+    path, where the directory layout says nothing about the variant.
+    """
+    from utils.check_configs import CONFIG_VARIANTS, _resolve_config_variant
+
+    finetune_block = config_data.get("finetune")
+    if isinstance(finetune_block, dict) and "moe_tuning" in finetune_block:
+        return CONFIG_VARIANTS["sleep2expert"].config_module
     return _resolve_config_variant(path, config_data).config_module
 
 
@@ -402,7 +410,7 @@ def migrate_text(text: str, path: Path) -> tuple[str | None, dict[str, t.Any] | 
         keep.append(line)
 
     entry = {
-        "path": str(path.relative_to(REPO_ROOT)),
+        "path": _display_path(path),
         "config_module": config_module,
         "legacy": legacy_table,
         "groups": legal,
@@ -412,65 +420,42 @@ def migrate_text(text: str, path: Path) -> tuple[str | None, dict[str, t.Any] | 
     return "\n".join(keep) + "\n", entry
 
 
-def _repo_is_dirty() -> bool:
-    result = subprocess.run(
-        ["git", "status", "--porcelain", "--", *[str(root.relative_to(REPO_ROOT)) for root in CONFIG_ROOTS]],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return bool(result.stdout.strip())
+def _display_path(path: Path) -> str:
+    """Repo-relative when the file is in the tree, verbatim otherwise."""
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def convert_one(path: Path) -> int:
+    """Print the converted YAML to stdout and what it concluded to stderr."""
+    try:
+        text = path.read_text()
+    except OSError as error:
+        print(f"{path}: {error}", file=sys.stderr)
+        return 2
+    try:
+        new_text, entry = migrate_text(text, path)
+    except Exception as error:  # noqa: BLE001 - surface the offending file
+        print(f"{path}: {error}", file=sys.stderr)
+        return 1
+    if new_text is None or entry is None:
+        print(f"{path}: nothing to migrate (no finetune block, or already on finetune.tuning).", file=sys.stderr)
+        return 1
+    # The preset is derived from legacy runtime semantics, so the diff alone does not show
+    # why it was chosen. Report the table it was matched against.
+    print(f"{path}: {entry['config_module']} -> preset '{entry['preset']}'", file=sys.stderr)
+    for group, (trains, scale) in sorted(entry["expected"].items()):
+        print(f"  {group}: train={trains} lr_scale={scale}", file=sys.stderr)
+    sys.stdout.write(new_text)
+    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--check", action="store_true", help="Report unmigrated configs without writing.")
-    parser.add_argument("--allow-dirty", action="store_true", help="Skip the clean-worktree guard.")
-    args = parser.parse_args()
-
-    if not args.check and not args.allow_dirty and _repo_is_dirty():
-        print("configs/ or recipes/ has uncommitted changes; commit them or pass --allow-dirty.", file=sys.stderr)
-        return 2
-
-    manifest: list[dict[str, t.Any]] = []
-    pending: list[str] = []
-    for path in sorted(path for root in CONFIG_ROOTS for path in root.rglob("*.yaml")):
-        text = path.read_text()
-        try:
-            new_text, entry = migrate_text(text, path)
-        except Exception as error:  # noqa: BLE001 - surface the offending file
-            print(f"{path.relative_to(REPO_ROOT)}: {error}", file=sys.stderr)
-            return 1
-        if new_text is None or entry is None:
-            continue
-        pending.append(entry["path"])
-        manifest.append(entry)
-        if not args.check:
-            path.write_text(new_text)
-
-    if args.check:
-        if pending:
-            print("Configs still using the legacy finetune trainability keys:", file=sys.stderr)
-            for item in pending:
-                print(f"  {item}", file=sys.stderr)
-            return 1
-        print("All configs use finetune.tuning.")
-        return 0
-
-    # The manifest is the equivalence gate's evidence, and it can only be derived from a
-    # config's legacy text. Once a config is migrated that text is gone, so merge into the
-    # existing manifest rather than replacing it: a re-run must never drop earlier entries.
-    merged: dict[str, dict[str, t.Any]] = {}
-    if MANIFEST_PATH.exists():
-        merged = {entry["path"]: entry for entry in json.loads(MANIFEST_PATH.read_text())}
-    merged.update({entry["path"]: entry for entry in manifest})
-    MANIFEST_PATH.write_text(json.dumps([merged[key] for key in sorted(merged)], indent=2, sort_keys=True) + "\n")
-    print(
-        f"Migrated {len(manifest)} configs; manifest at {MANIFEST_PATH.relative_to(REPO_ROOT)} "
-        f"now records {len(merged)}."
-    )
-    return 0
+    parser.add_argument("--config", type=Path, required=True, help="The config to convert.")
+    return convert_one(parser.parse_args().config)
 
 
 if __name__ == "__main__":
