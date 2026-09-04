@@ -5,20 +5,15 @@ from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status, needs_issue
 from ..decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
-from ..models import REPO_ROOT, coerce_list, recipe_name
+from ..models import REPO_ROOT, recipe_name
 from ..plan_rendering import (
     FINETUNE_RUNTIME_FIELDS,
     finetune_input_cli_args,
-    finetune_loaded_split_values,
     render_command,
     runtime_cli_args,
     variant_module,
 )
-from .base import TaskAdapter
-
-
-def _inputs(recipe: dict[str, Any]) -> dict[str, Any]:
-    return recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+from .base import TaskAdapter, config_summary_issues, recipe_inputs
 
 
 class FinetuneAdapter(TaskAdapter):
@@ -47,7 +42,7 @@ class FinetuneAdapter(TaskAdapter):
         return ("python", "-m", variant_module(recipe, "finetune"))
 
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
-        inputs = _inputs(recipe)
+        inputs = recipe_inputs(recipe)
         required: list[tuple[str, Any]] = []
         for input_field in ("pretrained_backbone_path", "ckpt_path"):
             if recipe.get("variant") == "sex_age_baseline" and input_field == "pretrained_backbone_path":
@@ -67,35 +62,7 @@ class FinetuneAdapter(TaskAdapter):
         issues: list[DecisionIssue] = []
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
 
-        if config_summary:
-            for issue in config_summary.get("blocking_issues", []):
-                issues.append(
-                    DecisionIssue(
-                        DecisionStatus.NEEDS_USER_INPUT,
-                        "config",
-                        issue,
-                        "Please fix the config before the agent generates commands.",
-                        {"config_path": config_summary.get("config_path")},
-                    )
-                )
-            # Only the structural config-family marker is a routing gate; variant_guess can be path-derived.
-            config_variant = config_summary.get("authoritative_variant")
-            recipe_variant = recipe.get("variant")
-            # An unresolved variant belongs to the consultation gate; only an explicit conflict is invalid.
-            if (
-                config_variant is not None
-                and recipe_variant not in (None, "", "ASK_USER")
-                and recipe_variant != config_variant
-            ):
-                issues.append(
-                    DecisionIssue(
-                        DecisionStatus.FAIL,
-                        "variant",
-                        f"Config family requires variant={config_variant}.",
-                        None,
-                        {"config_variant": config_variant, "recipe_variant": recipe_variant},
-                    )
-                )
+        issues.extend(config_summary_issues(recipe, config_summary))
         test_after_fit = decisions["test_after_fit"].value
         if type(test_after_fit) is not bool:
             issues.append(
@@ -191,7 +158,7 @@ class FinetuneAdapter(TaskAdapter):
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
 
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
-        inputs = _inputs(recipe)
+        inputs = recipe_inputs(recipe)
         runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
         artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
@@ -221,28 +188,6 @@ class FinetuneAdapter(TaskAdapter):
     def managed_runtime_dir(self, recipe: dict[str, Any], version: str) -> Path | None:
         execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
         return Path(str(execution.get("workdir") or REPO_ROOT)) / "log-finetune" / version
-
-    def index_summary_inputs_override(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
-    ) -> tuple[list[Any], Any, list[Any]] | None:
-        if recipe.get("task") != self.task:
-            return None
-        inputs = _inputs(recipe)
-        split_values = finetune_loaded_split_values(recipe)
-        if self._effective_preset_path(config_summary) not in (None, ""):
-            return [], inputs.get("config"), split_values
-        data = (config_summary or {}).get("data") or {}
-        return coerce_list(data.get("finetune_data_index")), inputs.get("config"), split_values
-
-    @staticmethod
-    def _effective_preset_path(cfg: dict[str, Any] | None) -> Any:
-        # finetune has no recipe-level preset field (inference_preset_path is
-        # infer/evaluate-only); only the config's finetune_preset_path applies.
-        if cfg:
-            value = (cfg.get("data") or {}).get("finetune_preset_path")
-            if value not in (None, "", "ASK_USER"):
-                return value
-        return None
 
 
 FINETUNE_ADAPTER = FinetuneAdapter()
