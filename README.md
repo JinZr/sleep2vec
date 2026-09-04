@@ -450,24 +450,61 @@ finetune:
 - Validation uses per-pair dataloaders to log contrastive accuracy per modality pair.
 - W&B logs a heatmap image (`val_pair_acc_matrix`) plus scalar metrics under `val_pair_acc/<pair>`.
 
-**LoRA fine-tuning**  
-- Controlled by YAML `finetune` block (parsed by `apply_finetune_config`):
+**Trainability (`finetune.tuning`)**
+- This section describes `sleep2vec`, `sleep2vec2` and `sleep2expert`. `sex_age_baseline`
+  trains its own model rather than adapting a pretrained backbone, and its config module
+  never reads `finetune.tuning` — a block written there is silently ignored, so do not
+  write one.
+- On those three variants every finetune config must declare a required `finetune.tuning`
+  block. It is the single source of truth for which parameters train and at what
+  learning-rate scale:
   ```yaml
   finetune:
-    freeze_tokenizer: true
-    lora:
-      freeze_backbone_and_insert_lora: true
-      insert_lora: true
-      separate_adapters: false
-      r: 8
-      alpha: 16
-      dropout: 0.05
-      target_modules: [query, key, value]
-      use_dora: false
+    tuning:
+      preset: full
+      groups:
+        tokenizers: {train: false}
   ```
-- `freeze_tokenizer: true` freezes tokenizer parameters during downstream finetuning (default).
-- When enabled, `finetune.py` injects PEFT LoRA/DoRA adapters into the transformer backbone and freezes base weights.
-- `separate_adapters: true` creates channel-specific adapters named `ch_<channel>`; the default LoRA adapter is frozen and only the channel adapters are trainable.
+- `preset` picks a complete trainability table over the variant's semantic parameter
+  groups; `groups` overrides individual entries on top of it. Shared presets are `full`,
+  `head_only`, `lora`, and `custom` (which requires every group to be spelled out).
+  `sleep2expert` adds `moe_conservative`, `moe_conservative_routers`, and
+  `moe_top_experts`.
+- Groups are `head`, `encoder`, `tokenizers`, `projection`, `lora`, plus `experts` and
+  `routers` on `sleep2expert`. Each entry is `{train: <bool>, lr_scale: <float>}`.
+  `lr_scale` must be finite and `> 0`; freezing is expressed only by `train: false`, never
+  by a zero learning-rate scale.
+- A preset may not train the encoder and LoRA at the same time; LoRA adapts a frozen
+  backbone.
+- `finetune.tuning.lora` carries LoRA hyper-parameters (`r`, `alpha`, `dropout`,
+  `target_modules`, `use_dora`, `separate_adapters`). They are read only when the `lora`
+  group trains, and they may be present under a preset that does not train it — they are
+  hyper-parameters, not a switch.
+- `separate_adapters: true` creates channel-specific adapters named `ch_<channel>`; the
+  default LoRA adapter is frozen and only the channel adapters are trainable.
+- Eval mode follows the module tree, not the group table. A backbone submodule is forced
+  back to eval only when none of its parameters train, and the backbone as a whole only
+  when none of it trains at all — so `head_only` does stop the backbone's BatchNorm and
+  dropout. Under `lora`, or a MoE preset that trains only the experts, the encoder holds
+  trainable parameters and stays in train mode with its dropout active, even though the
+  `encoder` group is frozen. Frozen weights never update either way; this is only about
+  the stochastic and running-statistics layers around them.
+- The legacy keys `finetune.freeze_tokenizer`, `finetune.lora.insert_lora`,
+  `finetune.lora.freeze_backbone_and_insert_lora`, and `finetune.moe_tuning` are rejected
+  at load time. Every checked-in config was converted; a config from outside this repo is
+  converted by hand against the mapping table in
+  `doc/finetune_tuning_schema_refactor.md`. The old keys did not translate by name — the
+  MoE learning-rate defaults varied per `mode` and a `0.0` scale meant "frozen" — so read
+  that table rather than renaming keys.
+- **Finetune checkpoints written before this schema cannot be resumed with `--ckpt-path`.**
+  The optimizer now carries one parameter group per `(semantic group, decay)` pair instead
+  of the two it used to, so restoring the saved optimizer state raises a size mismatch.
+  Start the run fresh instead of resuming it, and prefer the *pretrain* checkpoint the old
+  finetune started from: `--pretrained-backbone-path` reads a backbone, not a finetuned
+  model. A finetune checkpoint works only when the old run inserted no LoRA — PEFT renames
+  the encoder under `base_model.model.`, and no prefix recovers a plain backbone from that.
+  Either way the head is not restored; it trains from scratch. If nothing matches, the load
+  raises rather than starting from a random backbone.
 
 ---
 

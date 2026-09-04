@@ -444,7 +444,10 @@ def _load_backbone_checkpoint(
     }
     if _has_adapter_keys(filtered) and not adapters_enabled:
         raise ValueError(
-            "Checkpoint contains adapter weights, but the YAML finetune.lora settings do not enable adapters."
+            "Checkpoint contains adapter weights, but this config does not train them: "
+            "finetune.tuning must train the lora group (preset lora, or groups.lora.train: true). "
+            "A pretrain config carries no finetune.tuning at all, so pass the finetune config "
+            "the checkpoint was trained with."
         )
     load_info = model.load_state_dict(filtered, strict=False)
     unexpected_cls_keys = _cls_state_keys(load_info.unexpected_keys)
@@ -492,12 +495,8 @@ def _extend_roformer_position_capacity(model: Sleep2vecPretrainModel, capacity: 
 def _finetune_adapters_enabled(bundle: t.Any, config_kind: str) -> bool:
     if config_kind != "finetune":
         return False
-    lora_cfg = getattr(getattr(bundle, "finetune", None), "lora", None)
-    return bool(
-        lora_cfg
-        and getattr(lora_cfg, "freeze_backbone_and_insert_lora", False)
-        and getattr(lora_cfg, "insert_lora", False)
-    )
+    tuning = getattr(getattr(bundle, "finetune", None), "tuning", None)
+    return bool(tuning is not None and tuning.trains("lora"))
 
 
 def _apply_finetune_adapters(
@@ -507,14 +506,14 @@ def _apply_finetune_adapters(
 ) -> Sleep2vecPretrainModel:
     from sleep2vec.downstream_model import Sleep2vecDownstreamModel
 
-    lora_cfg = finetune_cfg.lora
+    lora_cfg = finetune_cfg.tuning.lora
     adapter_host = Sleep2vecDownstreamModel.__new__(Sleep2vecDownstreamModel)
     torch.nn.Module.__init__(adapter_host)
     adapter_host.backbone = backbone
     adapter_host.channel_names = [c.name for c in model_cfg.channels]
     adapter_host.separate_adapters = False
     adapter_host.freeze_backbone_and_insert_lora(
-        insert_lora=lora_cfg.insert_lora,
+        insert_lora=True,
         r=lora_cfg.r,
         lora_alpha=lora_cfg.alpha,
         lora_dropout=lora_cfg.dropout,

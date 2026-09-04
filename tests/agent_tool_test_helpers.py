@@ -104,13 +104,17 @@ def config_payload(index_path: Path) -> dict:
             "finetune_preset_path": None,
         },
         "finetune": {
+            "tuning": {
+                "preset": "full",
+                "groups": {"tokenizers": {"train": False}},
+            },
             "task": {
                 "type": "classification",
                 "output_dim": 30,
                 "is_seq": True,
                 "monitor": "val_ahi_pearson",
                 "monitor_mod": "max",
-            }
+            },
         },
         "preset_build": {"required_channels": ["ppg", "ahi", "stage5"], "min_channels": 3},
     }

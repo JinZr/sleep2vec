@@ -18,13 +18,16 @@ def test_config_summary_extracts_channels_task_backend_and_monitor(tmp_path: Pat
     payload["model"]["head"]["temporal_agg"] = {"name": "attn", "kwargs": {"heads": 2}}
     payload["model"]["head"]["kwargs"] = {"temporal_dropout": 0.15}
     payload["model"]["backbone"]["num_hidden_layers"] = 16
-    payload["finetune"]["freeze_tokenizer"] = True
     payload["finetune"]["layer_mix"] = {
         "enabled": True,
         "shared_across_modalities": False,
         "layer_indices": [15, 16],
     }
-    payload["finetune"]["lora"] = {"freeze_backbone_and_insert_lora": True, "insert_lora": False}
+    payload["finetune"]["tuning"] = {
+        "preset": "lora",
+        "groups": {"tokenizers": {"train": False}, "encoder": {"lr_scale": 0.1}},
+        "lora": {"r": 4, "use_dora": True},
+    }
     payload["model_averaging"] = {"name": "ema", "params": {"enabled": True}}
     config = write_yaml(tmp_path / "config.yaml", payload)
 
@@ -41,12 +44,12 @@ def test_config_summary_extracts_channels_task_backend_and_monitor(tmp_path: Pat
     assert summary["model"]["backbone_depth"] == 16
     assert summary["model"]["layer_mix_present"] is True
     assert summary["model"]["layer_mix"]["layer_indices"] == [15, 16]
-    assert summary["model"]["freeze"]["freeze_tokenizer"] is True
-    assert summary["finetune"]["lora_present"] is True
-    assert summary["finetune"]["lora"] == {
-        "freeze_backbone_and_insert_lora": True,
-        "insert_lora": False,
-    }
+    assert summary["finetune"]["tuning_present"] is True
+    # The authored block is reported whole, and only here. `model` used to carry a second copy
+    # holding the preset plus each group's `train` and nothing else, so a reader who trusted it
+    # saw neither the `lr_scale` nor the `lora` shape below.
+    assert summary["finetune"]["tuning"] == payload["finetune"]["tuning"]
+    assert "tuning" not in summary["model"]
     assert summary["model"]["model_averaging"]["present"] is True
     assert summary["finetune"]["task"]["monitor"] == "val_ahi_pearson"
     assert summary["preset_build"]["required_channels"] == ["ppg", "ahi", "stage5"]
@@ -75,6 +78,66 @@ def test_config_summary_closes_generic_kaldi_runtime_inputs(tmp_path: Path):
 
     assert "data.backend=kaldi but data.kaldi_data_root is missing." in blocking
     assert "data.backend=kaldi does not support data.finetune_preset_path." in blocking
+
+
+def test_config_summary_blocks_a_finetune_config_without_a_tuning_block(tmp_path: Path):
+    """`plan` must not emit a command the config loader will reject.
+
+    `finetune.tuning` has no default in any variant, and `agent_tools` cannot call those
+    loaders to find out -- the variants are enforced forks. A pre-schema config recorded
+    `tuning_present: false` and nothing else, so the run died at config load with the plan
+    already written.
+    """
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration\nx.npz,train,60\n")
+    payload = config_payload(index)
+    payload["finetune"].pop("tuning")
+    config = write_yaml(tmp_path / "legacy.yaml", payload)
+
+    summary = config_summary(config)
+
+    assert summary["finetune"]["tuning_present"] is False
+    assert "finetune.tuning is missing; the config loader requires it." in summary["blocking_issues"]
+
+
+def test_config_summary_blocks_a_tuning_block_that_names_no_preset(tmp_path: Path):
+    """A present-but-empty block is the same gap as an absent one.
+
+    `finetune.tuning: {}` satisfies `tuning_present`, so the absent-block check above lets it
+    through, but `finetune.tuning.preset` is required by every variant loader and by
+    `finetune_balanced`. Whether the named preset *exists* stays the loader's question.
+    """
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration\nx.npz,train,60\n")
+    payload = config_payload(index)
+    payload["finetune"]["tuning"] = {}
+    config = write_yaml(tmp_path / "empty_tuning.yaml", payload)
+
+    summary = config_summary(config)
+
+    assert summary["finetune"]["tuning_present"] is True
+    blocking = summary["blocking_issues"]
+    assert "finetune.tuning.preset is missing; the config loader requires it." in blocking
+    assert "finetune.tuning is missing; the config loader requires it." not in blocking
+
+
+def test_config_summary_blocks_an_empty_finetune_block(tmp_path: Path):
+    """`finetune: {}` is reported as a finetune config, so it must face the finetune checks.
+
+    The block is falsy, so gating those checks on `if finetune` skipped every one of them
+    while `is_finetune` -- which asks whether the key is a dict -- still said true. The config
+    then planned clean and died at load.
+    """
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration\nx.npz,train,60\n")
+    payload = config_payload(index)
+    payload["finetune"] = {}
+    config = write_yaml(tmp_path / "empty_finetune.yaml", payload)
+
+    summary = config_summary(config)
+
+    assert summary["is_finetune"] is True
+    assert "finetune.tuning is missing; the config loader requires it." in summary["blocking_issues"]
 
 
 def test_config_summary_validates_survival_sidecars(tmp_path: Path):

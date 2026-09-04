@@ -12,6 +12,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | --- | --- | --- |
 | Load model and task YAML | `load_pretrain_config`, `load_finetune_config` in [`sleep2vec/config.py`](../../sleep2vec/config.py) | entrypoints or tests |
 | Bind finetune/runtime state | `apply_finetune_config` and related binders in [`sleep2vec/common.py`](../../sleep2vec/common.py) | trainer modules |
+| Decide which parameters a finetune run trains | the `finetune.tuning` block: `FinetuneTuningConfig` (`trains`, `lr_scale`) parsed in each variant's `config.py`, applied by `_apply_finetune_tuning_policy` in each variant's `sleep2vec_finetuning.py` | new freeze/insert flags, or a `requires_grad` branch in a model, entrypoint, or agent adapter |
 | Persist run config and CLI state | `persist_run_config_and_args` in [`sleep2vec/common.py`](../../sleep2vec/common.py) | each entrypoint |
 | Construct registered components | factories in [`sleep2vec/builders.py`](../../sleep2vec/builders.py) and [`sleep2vec/registry.py`](../../sleep2vec/registry.py) | name-based runtime branches |
 | Build the pretrained feature path | `Sleep2vecPretrainModel` in [`sleep2vec/pretrain_model.py`](../../sleep2vec/pretrain_model.py) | downstream heads |

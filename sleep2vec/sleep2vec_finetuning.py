@@ -54,6 +54,17 @@ from .downstream_model import Sleep2vecDownstreamModel
 from .pretrain_model import Sleep2vecPretrainModel
 
 
+def _require_tuning_config(finetune_config):
+    """The trainability policy has no implicit default; a config must state one."""
+    tuning = getattr(finetune_config, "tuning", None) if finetune_config is not None else None
+    if tuning is None:
+        raise ValueError(
+            "Finetuning requires a finetune.tuning block. "
+            "See doc/finetune_tuning_schema_refactor.md for the conversion table."
+        )
+    return tuning
+
+
 class Sleep2vecFinetuning(pl.LightningModule):
     def __init__(self, args, model_config, finetune_config=None, averaging_config=None):
         super().__init__()
@@ -92,21 +103,33 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self.model.load_pretrained_backbone(args.pretrained_backbone_path)
             logging.info(f"loaded pretrain model from {args.pretrained_backbone_path}")
 
-        if args.freeze_backbone_and_insert_lora:
+        self.tuning_config = _require_tuning_config(finetune_config)
+        self._finetune_param_to_group: dict[str, str] = {}
+        self._finetune_group_summary: dict[str, dict[str, int]] = {}
+        self._finetune_lr_scales: dict[str, float] = {}
+
+        # Adapter insertion is structural, not a trainability decision: it has to run
+        # before the policy pass because it creates the parameters that pass classifies.
+        if self.tuning_config.trains("lora"):
+            lora_cfg = self.tuning_config.lora
             self.model.freeze_backbone_and_insert_lora(
-                insert_lora=args.insert_lora,
-                r=args.lora_r,
-                lora_alpha=args.lora_alpha,
-                lora_dropout=args.lora_dropout,
-                target_modules=args.lora_target_modules,
-                use_dora=args.lora_use_dora,
-                separate_adapters=args.separate_adapters,
+                insert_lora=True,
+                r=lora_cfg.r,
+                lora_alpha=lora_cfg.alpha,
+                lora_dropout=lora_cfg.dropout,
+                target_modules=lora_cfg.target_modules,
+                use_dora=lora_cfg.use_dora,
+                separate_adapters=lora_cfg.separate_adapters,
             )
 
-        if getattr(args, "freeze_tokenizer", True):
-            self.backbone.set_tokenizers_trainable(False)
-        else:
-            self.backbone.set_tokenizers_trainable(True)
+        # A single pass over named_parameters() is now the only place requires_grad is
+        # written, so what trains is exactly what finetune.tuning.groups says. The old
+        # path froze the whole backbone and then unfroze the tokenizers back out, which
+        # meant the result depended on the order the two switches were applied in.
+        self._apply_finetune_tuning_policy()
+
+        # Trainability is settled; refresh the frozen-backbone eval-mode contract.
+        self.model.sync_backbone_mode_policy()
 
         self._stage_outputs = {"train": [], "val": [], "test": []}
         self._prediction_records = {"val": [], "test": []}
@@ -1719,21 +1742,105 @@ class Sleep2vecFinetuning(pl.LightningModule):
             return self.model_averager.eval_model()
         return self.model
 
+    def _semantic_group_for_param(self, name: str) -> str:
+        """Assign a parameter to exactly one group. First match wins."""
+        if "lora_" in name:
+            return "lora"
+        if name.startswith(("head.", "temporal_agg.", "layer_mix.")):
+            return "head"
+        if name.startswith("backbone.tokenizer_mapping."):
+            return "tokenizers"
+        if name.startswith(("backbone.proj_head.", "backbone.mask_embed.")):
+            return "projection"
+        if name.startswith("backbone."):
+            return "encoder"
+        return "head"
+
+    def _apply_finetune_tuning_policy(self) -> None:
+        tuning = self.tuning_config
+        self._finetune_lr_scales = {group: tuning.lr_scale(group) for group in tuning.groups}
+        self._finetune_param_to_group = {}
+        self._finetune_group_summary = {
+            group: {"total_params": 0, "trainable_params": 0, "total_tensors": 0, "trainable_tensors": 0}
+            for group in tuning.groups
+        }
+
+        for name, param in self.model.named_parameters():
+            group = self._semantic_group_for_param(name)
+            if group not in self._finetune_group_summary:
+                raise ValueError(
+                    f"Parameter '{name}' classified as group '{group}', which this config does not define. "
+                    f"Groups: {sorted(tuning.groups)}."
+                )
+            self._finetune_param_to_group[name] = group
+
+            trainable = tuning.trains(group)
+            # separate_adapters is the one layout with sub-group granularity: only the
+            # per-channel adapters train, never the `default` adapter PEFT creates
+            # alongside them.
+            if trainable and group == "lora":
+                trainable = self.model.lora_param_is_trainable(name)
+
+            param.requires_grad = trainable
+
+            param_count = int(param.numel())
+            summary = self._finetune_group_summary[group]
+            summary["total_params"] += param_count
+            summary["total_tensors"] += 1
+            if trainable:
+                summary["trainable_params"] += param_count
+                summary["trainable_tensors"] += 1
+
+        if self._finetune_group_summary["head"]["trainable_params"] == 0:
+            raise ValueError(f"finetune.tuning preset '{tuning.preset}' left no trainable head parameters.")
+        self._log_finetune_param_group_summary()
+
+    def _log_finetune_param_group_summary(self) -> None:
+        total_params = sum(summary["total_params"] for summary in self._finetune_group_summary.values())
+        trainable_params = sum(summary["trainable_params"] for summary in self._finetune_group_summary.values())
+        logging.info("[finetune_tuning] preset=%s", self.tuning_config.preset)
+        for group, summary in self._finetune_group_summary.items():
+            logging.info(
+                "[finetune_tuning] group=%s train=%s trainable_params=%s total_params=%s lr_scale=%s",
+                group,
+                self.tuning_config.trains(group),
+                summary["trainable_params"],
+                summary["total_params"],
+                self._finetune_lr_scales[group],
+            )
+        logging.info("[finetune_tuning] trainable_params=%s total_params=%s", trainable_params, total_params)
+
     def configure_optimizers(self):
-        decay, no_decay = [], []
-        for n, p in self.model.named_parameters():
-            if not p.requires_grad:
+        grouped_params: dict[tuple[str, str], list] = {}
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
                 continue
-            if p.ndim >= 2 and ("norm" not in n.lower()) and ("bias" not in n.lower()):
-                decay.append(p)
-            else:
-                no_decay.append(p)
+            group = self._finetune_param_to_group.get(name) or self._semantic_group_for_param(name)
+            self._finetune_param_to_group[name] = group
+            lr_scale = self._finetune_lr_scales[group]
+            if lr_scale <= 0.0:
+                raise ValueError(f"Parameter '{name}' is trainable but group '{group}' has lr_scale {lr_scale}.")
+            decay_type = (
+                "decay" if param.ndim >= 2 and "norm" not in name.lower() and "bias" not in name.lower() else "no_decay"
+            )
+            grouped_params.setdefault((group, decay_type), []).append(param)
+
+        optimizer_groups = [
+            {
+                "params": params,
+                "weight_decay": self.args.weight_decay if decay_type == "decay" else 0.0,
+                "lr": self.args.lr * self._finetune_lr_scales[group],
+                "name": f"{group}/{decay_type}",
+            }
+            for group in self.tuning_config.groups
+            for decay_type in ("decay", "no_decay")
+            if (params := grouped_params.get((group, decay_type)))
+        ]
+        if not optimizer_groups:
+            raise ValueError(f"finetune.tuning preset '{self.tuning_config.preset}' produced no trainable parameters.")
 
         optimizer = torch.optim.AdamW(
-            [
-                {"params": decay, "weight_decay": self.args.weight_decay},
-                {"params": no_decay, "weight_decay": 0.0},
-            ],
+            optimizer_groups,
             lr=self.args.lr,
             betas=(0.9, 0.95),
             eps=1e-8,

@@ -19,9 +19,11 @@ from sleep2expert.config import (
     ChannelConfig,
     ClsConfig,
     FinetuneConfig,
-    FinetuneLrScalesConfig,
+    FinetuneGroupConfig,
     FinetuneMoeRegularizationConfig,
-    FinetuneMoeTuningConfig,
+    FinetuneTuningConfig,
+    FinetuneTuningLoraConfig,
+    FinetuneTuningMoeConfig,
     HeadConfig,
     ModelConfig,
     MoeConfig,
@@ -91,12 +93,7 @@ def _fake_get_peft_model(encoder, cfg):
     return _FakePeftEncoder(encoder, cfg)
 
 
-def _args(
-    *,
-    freeze_tokenizer: bool = True,
-    enable_lora: bool = False,
-    lora_target_modules: list[str] | None = None,
-) -> SimpleNamespace:
+def _args() -> SimpleNamespace:
     return SimpleNamespace(
         device="cpu",
         label_name="stage5",
@@ -104,15 +101,6 @@ def _args(
         is_classification=True,
         is_seq=True,
         pretrained_backbone_path=None,
-        freeze_backbone_and_insert_lora=enable_lora,
-        insert_lora=enable_lora,
-        separate_adapters=False,
-        lora_r=4,
-        lora_alpha=12,
-        lora_dropout=0.15,
-        lora_target_modules=lora_target_modules or ["query", "key", "value"],
-        lora_use_dora=False,
-        freeze_tokenizer=freeze_tokenizer,
         print_diagnostics=False,
         diagnostics_steps=5,
         is_multilabel=False,
@@ -122,89 +110,51 @@ def _args(
     )
 
 
-def _tuning(
-    mode: str,
-    *,
-    train_moe_layer_indices: list[int] | None = None,
-    moe_regularization: FinetuneMoeRegularizationConfig | None = None,
-    lora_lr: float = 1.0,
-) -> FinetuneMoeTuningConfig:
-    lr_scales = FinetuneLrScalesConfig()
-    if mode == "head_only":
-        lr_scales = FinetuneLrScalesConfig(
-            head=1.0,
-            backbone=0.0,
-            experts=0.0,
-            routers=0.0,
-            tokenizers=0.0,
-            projection=0.0,
-            lora=lora_lr,
-        )
-    elif mode == "conservative_full_router_trainable":
-        lr_scales = FinetuneLrScalesConfig(
-            head=1.0,
-            backbone=0.1,
-            experts=0.1,
-            routers=0.01,
-            tokenizers=0.0,
-            projection=0.0,
-            lora=lora_lr,
-        )
-    elif mode == "top_moe_layer_expert_only":
-        lr_scales = FinetuneLrScalesConfig(
-            head=1.0,
-            backbone=0.0,
-            experts=0.1,
-            routers=0.0,
-            tokenizers=0.0,
-            projection=0.0,
-            lora=lora_lr,
-        )
-    else:
-        lr_scales.lora = lora_lr
-    kwargs = {}
-    if moe_regularization is not None:
-        kwargs["moe_regularization"] = moe_regularization
-    return FinetuneMoeTuningConfig(
-        mode=mode,
-        train_moe_layer_indices=train_moe_layer_indices,
-        lr_scales=lr_scales,
-        **kwargs,
-    )
+def _groups(**overrides: tuple[bool, float]) -> dict[str, FinetuneGroupConfig]:
+    """Spell out a full group table the way `preset: custom` requires."""
+    table = {
+        "head": (True, 1.0),
+        "encoder": (True, 1.0),
+        "tokenizers": (True, 1.0),
+        "experts": (True, 1.0),
+        "routers": (True, 1.0),
+        "projection": (True, 1.0),
+        "lora": (False, 1.0),
+    }
+    table.update(overrides)
+    return {group: FinetuneGroupConfig(train=train, lr_scale=lr_scale) for group, (train, lr_scale) in table.items()}
 
 
 def _module(
-    mode: str | None,
+    preset: str,
     *,
-    freeze_tokenizer: bool = True,
-    train_moe_layer_indices: list[int] | None = None,
+    groups: dict[str, FinetuneGroupConfig] | None = None,
+    layer_indices: list[int] | None = None,
     moe_regularization: FinetuneMoeRegularizationConfig | None = None,
-    enable_lora: bool = False,
     lora_target_modules: list[str] | None = None,
-    lora_lr: float = 1.0,
 ) -> Sleep2vecFinetuning:
-    finetune_config = FinetuneConfig(
-        freeze_tokenizer=freeze_tokenizer,
-        moe_tuning=(
-            _tuning(
-                mode,
-                train_moe_layer_indices=train_moe_layer_indices,
-                moe_regularization=moe_regularization,
-                lora_lr=lora_lr,
-            )
-            if mode is not None
-            else None
+    """Build a finetuning module from a `finetune.tuning` policy.
+
+    `groups` is the resolved table the config loader would have produced; the tests pass
+    it directly so they exercise the runtime pass, not the preset lookup.
+    """
+    tuning = FinetuneTuningConfig(
+        preset=preset,
+        groups=groups if groups is not None else _groups(),
+        lora=FinetuneTuningLoraConfig(
+            r=4,
+            alpha=12,
+            dropout=0.15,
+            target_modules=lora_target_modules or ["query", "key", "value"],
+            use_dora=False,
         ),
+        moe=FinetuneTuningMoeConfig(layer_indices=layer_indices),
     )
-    return Sleep2vecFinetuning(
-        _args(
-            freeze_tokenizer=freeze_tokenizer,
-            enable_lora=enable_lora,
-            lora_target_modules=lora_target_modules,
-        ),
-        _model_config(),
-        finetune_config=finetune_config,
-    )
+    kwargs = {}
+    if moe_regularization is not None:
+        kwargs["moe_regularization"] = moe_regularization
+    finetune_config = FinetuneConfig(tuning=tuning, **kwargs)
+    return Sleep2vecFinetuning(_args(), _model_config(), finetune_config=finetune_config)
 
 
 def _named_params(module: Sleep2vecFinetuning, fragment: str) -> list[tuple[str, torch.nn.Parameter]]:
@@ -239,14 +189,33 @@ def _routing_aux(router_probs: torch.Tensor, *, layer_idx: int = 1) -> MoERoutin
 
 
 def test_head_only_freezes_entire_backbone():
-    module = _module("head_only")
+    module = _module(
+        "head_only",
+        groups=_groups(
+            encoder=(False, 1.0),
+            tokenizers=(False, 1.0),
+            experts=(False, 1.0),
+            routers=(False, 1.0),
+            projection=(False, 1.0),
+        ),
+    )
 
     assert all(not param.requires_grad for _, param in _named_params(module, "backbone."))
     assert any(param.requires_grad for _, param in _named_params(module, "head."))
 
 
-def test_conservative_router_frozen_freezes_tokenizers_and_routers_but_trains_experts():
-    module = _module("conservative_full_router_frozen")
+def _conservative_groups(*, routers: tuple[bool, float] = (False, 1.0)) -> dict[str, FinetuneGroupConfig]:
+    return _groups(
+        encoder=(True, 0.1),
+        tokenizers=(False, 1.0),
+        experts=(True, 0.1),
+        routers=routers,
+        projection=(False, 1.0),
+    )
+
+
+def test_moe_conservative_freezes_tokenizers_and_routers_but_trains_experts():
+    module = _module("moe_conservative", groups=_conservative_groups())
 
     tokenizers = _named_params(module, "tokenizer_mapping.")
     routers = _named_params(module, "moe_ffn.router.")
@@ -260,8 +229,8 @@ def test_conservative_router_frozen_freezes_tokenizers_and_routers_but_trains_ex
     assert any(param.requires_grad for _, param in _named_params(module, "embedding_projection."))
 
 
-def test_router_trainable_mode_trains_router_with_experts():
-    module = _module("conservative_full_router_trainable")
+def test_moe_conservative_routers_trains_router_with_experts():
+    module = _module("moe_conservative_routers", groups=_conservative_groups(routers=(True, 0.01)))
 
     routers = _named_params(module, "moe_ffn.router.")
     experts = _named_params(module, "moe_ffn.experts.")
@@ -271,8 +240,18 @@ def test_router_trainable_mode_trains_router_with_experts():
     assert all(param.requires_grad for _, param in experts)
 
 
-def test_top_moe_layer_expert_only_trains_only_selected_layer_experts():
-    module = _module("top_moe_layer_expert_only", train_moe_layer_indices=[3])
+def test_moe_top_experts_trains_only_selected_layer_experts():
+    module = _module(
+        "moe_top_experts",
+        groups=_groups(
+            encoder=(False, 1.0),
+            tokenizers=(False, 1.0),
+            experts=(True, 0.1),
+            routers=(False, 1.0),
+            projection=(False, 1.0),
+        ),
+        layer_indices=[3],
+    )
 
     selected = _named_params(module, "backbone.encoder.encoder.layer.2.moe_ffn.experts.")
     unselected = _named_params(module, "backbone.encoder.encoder.layer.0.moe_ffn.experts.")
@@ -285,8 +264,28 @@ def test_top_moe_layer_expert_only_trains_only_selected_layer_experts():
     assert any(param.requires_grad for _, param in _named_params(module, "head."))
 
 
-def test_projection_and_mask_embeddings_are_frozen_under_moe_tuning():
-    module = _module("conservative_full_router_frozen")
+def test_moe_top_experts_rejects_layer_indices_that_match_no_expert():
+    with pytest.raises(ValueError, match="matched no expert parameters"):
+        _module(
+            "moe_top_experts",
+            groups=_groups(
+                encoder=(False, 1.0),
+                tokenizers=(False, 1.0),
+                experts=(True, 0.1),
+                routers=(False, 1.0),
+                projection=(False, 1.0),
+            ),
+            layer_indices=[99],
+        )
+
+
+def test_a_preset_that_trains_no_head_parameter_is_rejected():
+    with pytest.raises(ValueError, match="left no trainable head parameters"):
+        _module("custom", groups=_groups(head=(False, 1.0)))
+
+
+def test_projection_and_mask_embeddings_are_frozen_under_moe_conservative():
+    module = _module("moe_conservative", groups=_conservative_groups())
 
     projection = _named_params(module, "backbone.proj_head.")
     mask_embeddings = _named_params(module, "backbone.mask_embed.")
@@ -296,25 +295,33 @@ def test_projection_and_mask_embeddings_are_frozen_under_moe_tuning():
     assert all(not param.requires_grad for _, param in mask_embeddings)
 
 
-def test_absent_moe_tuning_preserves_existing_trainability_except_freeze_tokenizer():
-    module = _module(None, freeze_tokenizer=True)
+def test_full_preset_trains_everything_except_the_tokenizers_when_they_are_overridden():
+    module = _module("full", groups=_groups(tokenizers=(False, 1.0)))
 
-    assert module._finetune_param_to_group == {}
     assert all(not param.requires_grad for _, param in _named_params(module, "tokenizer_mapping."))
     assert all(param.requires_grad for _, param in _named_params(module, "moe_ffn.router."))
     assert all(param.requires_grad for _, param in _named_params(module, "moe_ffn.experts."))
     assert all(param.requires_grad for _, param in _named_params(module, "backbone.proj_head."))
 
 
+def test_every_parameter_is_classified_into_a_declared_group():
+    module = _module("full")
+
+    names = {name for name, _ in module.model.named_parameters()}
+    assert names
+    assert set(module._finetune_param_to_group) == names
+    assert set(module._finetune_param_to_group.values()) <= set(module.tuning_config.groups)
+
+
 def test_configure_optimizers_uses_semantic_lr_multipliers():
-    module = _module("conservative_full_router_trainable")
+    module = _module("moe_conservative_routers", groups=_conservative_groups(routers=(True, 0.01)))
     _set_fake_trainer(module)
 
     optimizers, _ = module.configure_optimizers()
     groups = {group["name"]: group["lr"] for group in optimizers[0].param_groups}
 
     assert groups["head/decay"] == pytest.approx(module.args.lr)
-    assert groups["backbone/decay"] == pytest.approx(module.args.lr * 0.1)
+    assert groups["encoder/decay"] == pytest.approx(module.args.lr * 0.1)
     assert groups["experts/decay"] == pytest.approx(module.args.lr * 0.1)
     assert groups["routers/decay"] == pytest.approx(module.args.lr * 0.01)
 
@@ -335,26 +342,32 @@ def test_sleep2expert_finetune_cli_default_lr_is_sleep_staging_scale():
     pytest.fail("sleep2expert.finetune --lr argument not found")
 
 
-def test_zero_lr_groups_are_not_in_optimizer():
-    module = _module("conservative_full_router_frozen")
+def test_frozen_groups_are_not_in_optimizer():
+    module = _module("moe_conservative", groups=_conservative_groups())
     _set_fake_trainer(module)
 
     optimizers, _ = module.configure_optimizers()
     semantic_groups = {group["name"].split("/")[0] for group in optimizers[0].param_groups}
 
-    assert {"head", "backbone", "experts"}.issubset(semantic_groups)
+    assert {"head", "encoder", "experts"}.issubset(semantic_groups)
     assert "routers" not in semantic_groups
     assert "tokenizers" not in semantic_groups
     assert "projection" not in semantic_groups
 
 
-def test_lora_uses_independent_moe_optimizer_group(monkeypatch):
+def test_lora_uses_independent_optimizer_group(monkeypatch):
     monkeypatch.setattr(downstream_module, "get_peft_model", _fake_get_peft_model)
     module = _module(
-        "conservative_full_router_frozen",
-        enable_lora=True,
+        "custom",
+        groups=_groups(
+            encoder=(False, 1.0),
+            tokenizers=(False, 1.0),
+            experts=(True, 0.1),
+            routers=(False, 1.0),
+            projection=(False, 1.0),
+            lora=(True, 0.25),
+        ),
         lora_target_modules=["query", "key", "value", "dense_in", "dense_out"],
-        lora_lr=0.25,
     )
     _set_fake_trainer(module)
 
@@ -373,91 +386,80 @@ def test_lora_uses_independent_moe_optimizer_group(monkeypatch):
     assert groups["lora/decay"] == pytest.approx(module.args.lr * 0.25)
     assert groups["experts/decay"] == pytest.approx(module.args.lr * 0.1)
     assert "routers/decay" not in groups
-    assert module.moe_finetune_status["param_groups"]["lora"]["trainable_params"] > 0
+    assert module.finetune_status["param_groups"]["lora"]["trainable_params"] > 0
 
 
-def test_zero_lora_lr_freezes_lora_params_and_omits_optimizer_group(monkeypatch):
+def test_an_untrained_lora_group_inserts_no_adapter_and_gets_no_optimizer_group(monkeypatch):
+    """`train: false` is the only freeze switch; a zero lr_scale is rejected by the loader."""
     monkeypatch.setattr(downstream_module, "get_peft_model", _fake_get_peft_model)
-    module = _module("conservative_full_router_trainable", enable_lora=True, lora_lr=0.0)
+    module = _module("moe_conservative_routers", groups=_conservative_groups(routers=(True, 0.01)))
     _set_fake_trainer(module)
 
-    lora_params = _named_params(module, "lora_")
-    assert lora_params
-    assert all(not param.requires_grad for _, param in lora_params)
+    assert _named_params(module, "lora_") == []
 
     optimizers, _ = module.configure_optimizers()
     semantic_groups = {group["name"].split("/")[0] for group in optimizers[0].param_groups}
     assert "lora" not in semantic_groups
-    assert module.moe_finetune_status["param_groups"]["lora"]["trainable_params"] == 0
+    assert module.finetune_status["param_groups"]["lora"]["trainable_params"] == 0
 
 
-def test_no_moe_tuning_uses_legacy_two_groups():
-    module = _module(None, freeze_tokenizer=False)
-    _set_fake_trainer(module)
-
-    optimizers, _ = module.configure_optimizers()
-    optimizer_groups = optimizers[0].param_groups
-
-    assert len(optimizer_groups) == 2
-    assert all("name" not in group for group in optimizer_groups)
-    assert all(group["lr"] == pytest.approx(module.args.lr) for group in optimizer_groups)
-
-
-def test_moe_status_snapshot_records_conservative_trainability():
-    module = _module("conservative_full_router_frozen")
-    status = module.moe_finetune_status
+def test_status_snapshot_records_moe_conservative_trainability():
+    module = _module("moe_conservative", groups=_conservative_groups())
+    status = module.finetune_status
     groups = status["param_groups"]
 
+    assert status["preset"] == "moe_conservative"
     assert status["moe_enabled"] is True
     assert status["moe_layer_indices"] == [1, 3]
     assert status["num_experts"] == 4
     assert status["top_k"] == 2
     assert status["router_type"] == "learned"
-    assert status["moe_tuning_present"] is True
-    assert status["moe_tuning_mode"] == "conservative_full_router_frozen"
     assert status["collect_train_moe_aux"] is False
+    assert groups["routers"]["train"] is False
     assert groups["routers"]["trainable_params"] == 0
     assert groups["routers"]["total_params"] > 0
     assert groups["experts"]["trainable_params"] > 0
-    assert groups["backbone"]["trainable_params"] > 0
-    assert groups["routers"]["lr_scale"] == pytest.approx(0.0)
+    assert groups["encoder"]["trainable_params"] > 0
+    assert groups["encoder"]["lr_scale"] == pytest.approx(0.1)
 
-    hparams = module.moe_finetune_hparams()
-    assert hparams["moe_finetune/moe_tuning_present"] is True
-    assert hparams["moe_finetune/moe_layer_indices"] == "1,3"
-    assert any(row[0] == "routers" for row in module.moe_finetune_param_group_rows())
+    hparams = module.finetune_hparams()
+    assert hparams["finetune/preset"] == "moe_conservative"
+    assert hparams["finetune/moe_layer_indices"] == "1,3"
+    assert any(row[0] == "routers" for row in module.finetune_param_group_rows())
 
 
-def test_moe_status_snapshot_records_router_trainable_regularized_mode():
+def test_status_snapshot_records_router_trainable_regularized_mode():
     reg_cfg = FinetuneMoeRegularizationConfig(
         enabled=True,
         collect_train_moe_aux=True,
         router_z_loss_coef=0.1,
     )
-    module = _module("conservative_full_router_trainable", moe_regularization=reg_cfg)
-    status = module.moe_finetune_status
+    module = _module(
+        "moe_conservative_routers",
+        groups=_conservative_groups(routers=(True, 0.01)),
+        moe_regularization=reg_cfg,
+    )
+    status = module.finetune_status
     groups = status["param_groups"]
 
-    assert status["moe_tuning_mode"] == "conservative_full_router_trainable"
+    assert status["preset"] == "moe_conservative_routers"
     assert status["collect_train_moe_aux"] is True
     assert status["moe_regularization"]["enabled"] is True
     assert status["moe_regularization"]["collect_train_moe_aux"] is True
+    assert groups["routers"]["train"] is True
     assert groups["routers"]["trainable_params"] > 0
     assert groups["routers"]["lr_scale"] == pytest.approx(0.01)
 
 
-def test_moe_status_snapshot_records_legacy_no_tuning_path():
-    module = _module(None, freeze_tokenizer=False)
-    status = module.moe_finetune_status
+def test_status_snapshot_covers_every_group_under_the_full_preset():
+    module = _module("full")
+    status = module.finetune_status
 
-    assert status["moe_enabled"] is True
-    assert status["moe_tuning_present"] is False
-    assert status["moe_tuning_mode"] is None
-    assert status["lr_scales"] == {}
-    assert status["moe_regularization"] == {}
+    assert set(status["param_groups"]) == set(module.tuning_config.groups)
+    assert status["lr_scales"] == {group: 1.0 for group in module.tuning_config.groups}
+    assert status["moe_regularization"]["enabled"] is False
     assert status["collect_train_moe_aux"] is False
-    assert set(status["param_groups"]) == {"legacy"}
-    assert status["param_groups"]["legacy"]["trainable_params"] == status["trainable_params"]
+    assert status["trainable_params"] == sum(group["trainable_params"] for group in status["param_groups"].values())
 
 
 def test_shared_step_adds_downstream_moe_zloss_only_when_enabled(monkeypatch):
@@ -466,7 +468,11 @@ def test_shared_step_adds_downstream_moe_zloss_only_when_enabled(monkeypatch):
         collect_train_moe_aux=True,
         router_z_loss_coef=0.1,
     )
-    module = _module("conservative_full_router_trainable", moe_regularization=reg_cfg)
+    module = _module(
+        "moe_conservative_routers",
+        groups=_conservative_groups(routers=(True, 0.01)),
+        moe_regularization=reg_cfg,
+    )
     assert module.model.collect_train_moe_aux is True
 
     class DummyModel:
@@ -503,7 +509,7 @@ def test_shared_step_adds_downstream_moe_zloss_only_when_enabled(monkeypatch):
 
 
 def test_eval_steps_log_downstream_moe_metrics_when_aux_is_available(monkeypatch):
-    module = _module("conservative_full_router_frozen")
+    module = _module("moe_conservative", groups=_conservative_groups())
     router_probs = torch.tensor(
         [
             [[0.70, 0.20, 0.05, 0.05], [0.10, 0.70, 0.10, 0.10], [0.25, 0.25, 0.25, 0.25]],
@@ -541,7 +547,7 @@ def test_eval_steps_log_downstream_moe_metrics_when_aux_is_available(monkeypatch
 
 
 def test_main_conservative_mode_does_not_collect_train_aux_or_add_moe_loss(monkeypatch):
-    module = _module("conservative_full_router_frozen")
+    module = _module("moe_conservative", groups=_conservative_groups())
     assert module.model.collect_train_moe_aux is False
 
     class DummyModel:

@@ -66,6 +66,28 @@ def extract_pretrain_init_state_dict(
     )
 
 
+# PEFT wraps a target module as `<name>.base_layer` and adds `<name>.lora_A/lora_B`, so a
+# checkpoint carrying either marker was written after adapters were inserted.
+_ADAPTER_KEY_MARKERS = ("lora_", ".base_layer.")
+
+
+def _adapter_keys(state_dict: t.Mapping[str, t.Any]) -> list[str]:
+    return [key for key in state_dict if any(marker in key for marker in _ADAPTER_KEY_MARKERS)]
+
+
+def backbone_init_prefixes(averaging_name: str | None = None) -> tuple[str, ...]:
+    """State-dict prefixes to try when initializing a bare backbone, specific first.
+
+    A finetune checkpoint registers the same backbone twice -- `backbone.*` and
+    `model.backbone.*` -- while a pretrain checkpoint has only `model.*`. Trying the general
+    prefixes first matched a finetune checkpoint's `model.backbone.*` and stripped it to
+    `backbone.*`, which a bare pretrain model does not have; extraction raises only when *no*
+    prefix matches, so that counted as a match and `strict=False` dropped every key.
+    """
+    general = (f"{averaging_name}_model.", "model.") if averaging_name else ("model.",)
+    return tuple(f"{prefix}backbone." for prefix in general) + ("backbone.",) + general
+
+
 def load_pretrain_init_weights(
     module: torch.nn.Module,
     ckpt_path: Path | str,
@@ -76,6 +98,19 @@ def load_pretrain_init_weights(
 ) -> PretrainInitLoadResult:
     ckpt = load_checkpoint(ckpt_path, device)
     filtered_state_dict, used_prefix = extract_pretrain_init_state_dict(ckpt, prefixes=prefixes)
+    # A LoRA finetune checkpoint cannot initialize a bare backbone: PEFT renamed every wrapped
+    # module, so the encoder weights arrive under names this model does not have and `strict=False`
+    # drops them -- while `mask_embed`, `embedding_projection` and `proj_head` were never wrapped
+    # and still load. That partial match is enough for the total-mismatch guard below to pass, so
+    # the run would train on a randomly initialized encoder and say nothing.
+    adapter_keys = _adapter_keys(filtered_state_dict)
+    if adapter_keys:
+        preview = ", ".join(adapter_keys[:3])
+        raise ValueError(
+            f"Cannot initialize a backbone from {ckpt_path}: it holds LoRA adapter weights, so its "
+            "encoder weights sit under PEFT's renamed modules. Merge the adapters into the base model "
+            f"first, or start from a pretrain checkpoint. Adapter keys: [{preview}]"
+        )
     target_keys = module.state_dict().keys()
     target_uses_standalone_roformer = any(".attention.self_attention." in key for key in target_keys)
     legacy_roformer_keys = [
@@ -91,6 +126,16 @@ def load_pretrain_init_weights(
         )
     filtered_state_dict = initialize_moe_from_dense_if_possible(module, filtered_state_dict)
     load_info = module.load_state_dict(filtered_state_dict, strict=strict)
+    # A subtree matched but the module took nothing from it: this checkpoint holds a different
+    # model. `strict=False` is there to tolerate a partial mismatch -- a renamed channel, a
+    # dropped CLS head -- not a total one, which leaves every parameter at its random
+    # initialization while the caller logs a successful load and trains on.
+    if filtered_state_dict and len(load_info.unexpected_keys) == len(filtered_state_dict):
+        preview = ", ".join(list(load_info.unexpected_keys)[:3])
+        raise ValueError(
+            f"No weights loaded from {ckpt_path}: all {len(filtered_state_dict)} keys under prefix "
+            f"'{used_prefix}' were unexpected for this module. Unexpected: [{preview}]"
+        )
     return PretrainInitLoadResult(
         used_prefix=used_prefix,
         loaded_keys=len(filtered_state_dict),
@@ -257,6 +302,7 @@ def average_checkpoints(
 __all__ = [
     "PretrainInitLoadResult",
     "average_checkpoints",
+    "backbone_init_prefixes",
     "extract_pretrain_init_state_dict",
     "get_state_dict_from_checkpoint",
     "load_checkpoint",

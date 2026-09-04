@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from copy import deepcopy
 import importlib
 from itertools import combinations
@@ -22,6 +23,8 @@ from sleep2vec.config import (
     load_pretrain_config,
     validate_model_config,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _write_yaml(tmp_path: Path, payload: dict, name: str = "config.yaml") -> Path:
@@ -85,18 +88,16 @@ def _finetune_payload() -> dict:
             "n_few_shot": 16,
         },
         "finetune": {
-            "freeze_tokenizer": True,
+            "tuning": {
+                "preset": "full",
+                "groups": {"tokenizers": {"train": False}},
+            },
             "loss": {
                 "class_weights": None,
                 "pos_weight": None,
             },
             "sampler": {
                 "weighted_random": False,
-            },
-            "lora": {
-                "freeze_backbone_and_insert_lora": False,
-                "insert_lora": True,
-                "separate_adapters": False,
             },
             "layer_mix": {
                 "enabled": False,
@@ -370,11 +371,15 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.finetune.loss.class_weights is None
     assert bundle.finetune.loss.pos_weight is None
     assert bundle.finetune.sampler.weighted_random is False
-    assert bundle.finetune.lora.r == 8
-    assert bundle.finetune.lora.alpha == 16
-    assert bundle.finetune.lora.dropout == 0.05
-    assert bundle.finetune.lora.target_modules == ["query", "key", "value"]
-    assert bundle.finetune.lora.use_dora is False
+    assert bundle.finetune.tuning.preset == "full"
+    assert bundle.finetune.tuning.trains("encoder") is True
+    assert bundle.finetune.tuning.trains("tokenizers") is False
+    assert bundle.finetune.tuning.trains("lora") is False
+    assert bundle.finetune.tuning.lora.r == 8
+    assert bundle.finetune.tuning.lora.alpha == 16
+    assert bundle.finetune.tuning.lora.dropout == 0.05
+    assert bundle.finetune.tuning.lora.target_modules == ["query", "key", "value"]
+    assert bundle.finetune.tuning.lora.use_dora is False
 
 
 @pytest.mark.parametrize(
@@ -388,24 +393,28 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
 def test_load_finetune_config_parses_lora_hyperparameters(tmp_path: Path, module_name: str):
     loader = importlib.import_module(module_name).load_finetune_config
     payload = _finetune_payload()
-    payload["finetune"]["lora"].update(
-        {
+    payload["finetune"]["tuning"] = {
+        "preset": "lora",
+        "lora": {
             "r": 4,
             "alpha": 12,
             "dropout": 0.15,
             "target_modules": ["query", "dense"],
             "use_dora": True,
-        }
-    )
+        },
+    }
     config_path = _write_yaml(tmp_path, payload)
 
     bundle = loader(config_path)
 
-    assert bundle.finetune.lora.r == 4
-    assert bundle.finetune.lora.alpha == 12
-    assert bundle.finetune.lora.dropout == 0.15
-    assert bundle.finetune.lora.target_modules == ["query", "dense"]
-    assert bundle.finetune.lora.use_dora is True
+    assert bundle.finetune.tuning.preset == "lora"
+    assert bundle.finetune.tuning.trains("lora") is True
+    assert bundle.finetune.tuning.trains("encoder") is False
+    assert bundle.finetune.tuning.lora.r == 4
+    assert bundle.finetune.tuning.lora.alpha == 12
+    assert bundle.finetune.tuning.lora.dropout == 0.15
+    assert bundle.finetune.tuning.lora.target_modules == ["query", "dense"]
+    assert bundle.finetune.tuning.lora.use_dora is True
 
 
 @pytest.mark.parametrize(
@@ -419,12 +428,6 @@ def test_load_finetune_config_parses_lora_hyperparameters(tmp_path: Path, module
 def test_load_finetune_config_parses_imbalance_blocks_across_namespaces(tmp_path: Path, module_name: str):
     loader = importlib.import_module(module_name).load_finetune_config
     payload = _finetune_payload()
-    if module_name != "sleep2vec.config":
-        payload["finetune"]["lora"] = {
-            "freeze_backbone_and_insert_lora": False,
-            "insert_lora": False,
-            "separate_adapters": False,
-        }
     payload["finetune"]["loss"] = {"class_weights": [1, 2.5], "pos_weight": 3}
     payload["finetune"]["sampler"] = {"weighted_random": True}
     config_path = _write_yaml(tmp_path, payload, name=f"{module_name.replace('.', '_')}.yaml")
@@ -1050,3 +1053,44 @@ def test_validate_model_config_rejects_invalid_channel_aggregator():
 
     with pytest.raises(ValueError, match="channel_agg.name must be 'mean', 'concat', or 'gated_scalar'"):
         validate_model_config(model_cfg)
+
+
+VARIANTS_WITH_A_TUNING_SCHEMA = ("sleep2vec", "sleep2vec2", "sleep2expert")
+
+
+def _rejected_finetune_key_paths(variant: str) -> set[str]:
+    config = importlib.import_module(f"{variant}.config")
+    return {f"finetune.{key}" for key in config._LEGACY_FINETUNE_TRAINABILITY_KEYS}
+
+
+def _string_literals(path: Path) -> list[str]:
+    return [
+        node.value
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+
+@pytest.mark.parametrize("variant", VARIANTS_WITH_A_TUNING_SCHEMA)
+def test_no_variant_message_sends_the_reader_back_to_a_rejected_finetune_key(variant: str):
+    """Renaming a config key has to reach the messages that name it, not just the loader.
+
+    `extract_embeddings` told a user whose checkpoint held adapter weights to look at
+    `finetune.lora` for a whole release after the loader started rejecting that key
+    outright, so the only way to act on the message was to author a config that no
+    longer loads. `config.py` is exempt: it owns the rejection table and must name the
+    old keys to map them onto the new ones.
+    """
+    rejected = _rejected_finetune_key_paths(variant)
+    assert "finetune.lora" in rejected
+
+    offenders = [
+        f"{source.relative_to(REPO_ROOT)}: {key}"
+        for source in sorted((REPO_ROOT / variant).rglob("*.py"))
+        if source.name != "config.py"
+        for literal in _string_literals(source)
+        for key in sorted(rejected)
+        if key in literal
+    ]
+
+    assert offenders == []

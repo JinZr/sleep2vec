@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import yaml
 
-from sleep2expert.checkpoints import load_checkpoint, load_pretrain_init_weights
+from sleep2expert.checkpoints import backbone_init_prefixes, load_checkpoint, load_pretrain_init_weights
 from sleep2expert.config import HeadConfig, LayerMixConfig, ModelConfig
 from sleep2expert.modules.layer_mix import LayerMix
 
@@ -477,7 +477,7 @@ class Sleep2vecDownstreamModel(nn.Module):
             averaging_name = use_ema
         elif use_ema:
             averaging_name = "ema"
-        prefixes = (f"{averaging_name}_model.", "model.") if averaging_name else ("model.",)
+        prefixes = backbone_init_prefixes(averaging_name)
 
         # Sanity check CLS settings against serialized config in checkpoint (assumes YAML is present)
         self._warn_on_cls_mismatch(ckpt)
@@ -495,7 +495,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         missing_keys = load_info.missing_keys
         unexpected_keys = load_info.unexpected_keys
 
-        logging.info(f"✅ Loaded {total_keys - len(missing_keys)} / {total_keys} keys into backbone.")
+        logging.info(f"✅ Loaded {total_keys - len(unexpected_keys)} / {total_keys} keys into backbone.")
         if missing_keys:
             logging.warning(f"Missing keys ({len(missing_keys)}):")
             for k in missing_keys:
@@ -549,6 +549,8 @@ class Sleep2vecDownstreamModel(nn.Module):
                     self.channel_adapters.append(name)
                 self._enable_all_adapters_trainable()
 
+        self.sync_backbone_mode_policy()
+
         # —— 全模型统计 ——
         total_all = sum(p.numel() for _, p in self.named_parameters())
         train_all = sum(p.numel() for _, p in self.named_parameters() if p.requires_grad)
@@ -572,18 +574,58 @@ class Sleep2vecDownstreamModel(nn.Module):
             lora_train,
         )
 
+    def train(self, mode: bool = True):
+        super().train(mode)
+        self._apply_backbone_mode_policy()
+        return self
+
+    def sync_backbone_mode_policy(self) -> None:
+        """Re-apply the backbone mode contract after a trainability policy changed."""
+        self.train(self.training)
+
+    def _apply_backbone_mode_policy(self) -> None:
+        # Backbone trainability is decided by several independent callers (LoRA insertion,
+        # tokenizer freezing, MoE tuning policies), so derive the mode contract from
+        # requires_grad instead of a flag owned by any single caller.
+        backbone = getattr(self, "backbone", None)
+        if backbone is None or not self.training:
+            return
+        parameters = list(backbone.parameters())
+        if not parameters:
+            return
+        if not any(parameter.requires_grad for parameter in parameters):
+            backbone.eval()
+            return
+        # Groups that were re-enabled (tokenizers, LoRA adapters, MoE experts/routers) keep
+        # training; only submodules that remain fully frozen are forced back to eval mode.
+        for module in backbone.children():
+            module_parameters = list(module.parameters())
+            if module_parameters and not any(parameter.requires_grad for parameter in module_parameters):
+                module.eval()
+
+    def lora_param_is_trainable(self, name: str) -> bool:
+        """Whether a LoRA parameter may train, given the adapter layout.
+
+        Without `separate_adapters` there is a single adapter and every LoRA weight
+        belongs to it. With `separate_adapters` each channel gets its own adapter and
+        only those may train: PEFT still creates a `default` adapter alongside them,
+        and training it would leak one shared adaptation across all channels. Anything
+        that writes `requires_grad` over LoRA weights has to ask here first.
+        """
+        if not getattr(self, "separate_adapters", False):
+            return True
+        return any(
+            (f".{adp}." in name or f"_{adp}." in name or name.endswith(f".{adp}.weight"))
+            for adp in getattr(self, "channel_adapters", ())
+        )
+
     # 在所有 adapter 都 add 完之后调用
     def _enable_all_adapters_trainable(self):
         encoder = self._backbone_encoder()
         for n, p in encoder.named_parameters():
-            if "lora_" in n:
-                p.requires_grad = False
-        for n, p in encoder.named_parameters():
             # 仅放开这些 adapter 的参数（避免误放开 default）
-            if "lora_" in n and any(
-                (f".{adp}." in n or f"_{adp}." in n or n.endswith(f".{adp}.weight")) for adp in self.channel_adapters
-            ):
-                p.requires_grad = True
+            if "lora_" in n:
+                p.requires_grad = self.lora_param_is_trainable(n)
 
     # ---- helpers ----
     @staticmethod

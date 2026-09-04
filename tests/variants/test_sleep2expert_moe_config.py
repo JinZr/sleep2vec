@@ -7,7 +7,7 @@ import typing as t
 import pytest
 import yaml
 
-from sleep2expert.config import FinetuneMoeTuningConfig, MoeConfig, load_finetune_config, load_pretrain_config
+from sleep2expert.config import FinetuneTuningConfig, MoeConfig, load_finetune_config, load_pretrain_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -74,7 +74,7 @@ def _valid_finetune_payload() -> dict[str, t.Any]:
         "channel_agg": {"name": "mean"},
         "temporal_agg": {"name": "mean"},
     }
-    payload["finetune"] = {"freeze_tokenizer": True}
+    payload["finetune"] = {"tuning": {"preset": "full", "groups": {"tokenizers": {"train": False}}}}
     return payload
 
 
@@ -353,59 +353,126 @@ def test_sleep2expert_non_learned_router_ablations_keep_aux_losses_disabled(rela
         "configs/sleep2expert/moe/sleep2expert_phase_moe_finetune_cls.yaml",
     ],
 )
-def test_sleep2expert_plain_moe_finetune_yaml_does_not_enable_moe_tuning(relative_path: str):
+def test_sleep2expert_plain_moe_finetune_yaml_trains_everything(relative_path: str):
     bundle = load_finetune_config(REPO_ROOT / relative_path)
 
-    assert bundle.finetune.moe_tuning is None
+    tuning = bundle.finetune.tuning
+    assert tuning.preset == "full"
+    assert tuning.trains("experts") is True
+    assert tuning.trains("routers") is True
+    assert bundle.finetune.moe_regularization.enabled is False
 
 
-def test_sleep2expert_finetune_moe_tuning_conservative_mode_parses(tmp_path: Path):
+def _tuning(payload: dict[str, t.Any], **tuning_block: t.Any) -> None:
+    payload["finetune"]["tuning"] = tuning_block
+
+
+def test_sleep2expert_finetune_tuning_moe_conservative_preset_parses(tmp_path: Path):
     payload = _valid_finetune_payload()
-    payload["finetune"]["moe_tuning"] = {"mode": "conservative_full_router_frozen"}
+    _tuning(payload, preset="moe_conservative")
     path = _write_config(tmp_path, payload)
 
     bundle = load_finetune_config(path)
 
-    cfg = bundle.finetune.moe_tuning
-    assert isinstance(cfg, FinetuneMoeTuningConfig)
-    assert cfg.mode == "conservative_full_router_frozen"
-    assert cfg.freeze_router is True
-    assert cfg.freeze_experts is False
-    assert cfg.lr_scales.head == pytest.approx(1.0)
-    assert cfg.lr_scales.backbone == pytest.approx(0.1)
-    assert cfg.lr_scales.experts == pytest.approx(0.1)
-    assert cfg.lr_scales.routers == pytest.approx(0.0)
-    assert cfg.lr_scales.tokenizers == pytest.approx(0.0)
-    assert cfg.lr_scales.projection == pytest.approx(0.0)
-    assert cfg.moe_regularization.enabled is False
+    cfg = bundle.finetune.tuning
+    assert isinstance(cfg, FinetuneTuningConfig)
+    assert cfg.preset == "moe_conservative"
+    assert cfg.trains("routers") is False
+    assert cfg.trains("experts") is True
+    assert cfg.lr_scale("head") == pytest.approx(1.0)
+    assert cfg.lr_scale("encoder") == pytest.approx(0.1)
+    assert cfg.lr_scale("experts") == pytest.approx(0.1)
+    assert cfg.trains("tokenizers") is False
+    assert cfg.trains("projection") is False
+    assert bundle.finetune.moe_regularization.enabled is False
 
 
-def test_sleep2expert_finetune_moe_tuning_head_only_allows_dense_config(tmp_path: Path):
+def test_sleep2expert_finetune_tuning_freezing_a_scaled_group_drops_its_scale(tmp_path: Path):
+    """Freezing a group must drop the preset's scale, not inherit it.
+
+    `moe_conservative` scales the encoder by 0.1. An override of `{train: false}` used to
+    keep that 0.1, so `finetune_status` reported `train: false, lr_scale: 0.1` -- the pair
+    the parser rejects when a config writes it out, and one no preset table contains.
+    """
+    payload = _valid_finetune_payload()
+    _tuning(payload, preset="moe_conservative", groups={"encoder": {"train": False}, "experts": {"train": False}})
+    path = _write_config(tmp_path, payload)
+
+    cfg = load_finetune_config(path).finetune.tuning
+
+    assert cfg.trains("encoder") is False
+    assert cfg.lr_scale("encoder") == pytest.approx(1.0)
+    assert cfg.trains("experts") is False
+    assert cfg.lr_scale("experts") == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("router_type", ["random", "hard_modality", "hard_group"])
+def test_sleep2expert_finetune_tuning_rejects_training_a_parameterless_router(tmp_path: Path, router_type: str):
+    """Only the learned router has parameters, so training any other trains nothing.
+
+    The ablation grid is where this bites: `finetune_ablations/router_trainable.yaml` asks
+    whether router adaptation helps, and pointing it at a `random` router backbone would
+    answer with a run whose routers group holds zero trainable parameters.
+    """
+    payload = _valid_finetune_payload()
+    payload["model"]["backbone"]["moe"]["router_type"] = router_type
+    payload["model"]["backbone"]["moe"].pop("route_consistency_layers", None)
+    _tuning(payload, preset="moe_conservative", groups={"routers": {"train": True}})
+    path = _write_config(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="requires model.backbone.moe.router_type='learned'"):
+        load_finetune_config(path)
+
+
+@pytest.mark.parametrize("router_type", ["random", "hard_modality", "hard_group"])
+def test_sleep2expert_moe_conservative_routers_preset_needs_a_learned_router(tmp_path: Path, router_type: str):
+    payload = _valid_finetune_payload()
+    payload["model"]["backbone"]["moe"]["router_type"] = router_type
+    payload["model"]["backbone"]["moe"].pop("route_consistency_layers", None)
+    _tuning(payload, preset="moe_conservative_routers")
+    path = _write_config(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="requires model.backbone.moe.router_type='learned'"):
+        load_finetune_config(path)
+
+
+def test_sleep2expert_moe_top_experts_rejects_freezing_the_experts(tmp_path: Path):
+    """The preset's whole content is "train the experts on these layers".
+
+    Frozen, it reached the runtime invariant as "matched no expert parameters for
+    layer_indices=[...]", which blames the layer list for what the override did.
+    """
+    payload = _valid_finetune_payload()
+    _tuning(payload, preset="moe_top_experts", groups={"experts": {"train": False}})
+    path = _write_config(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="groups.experts sets train: false"):
+        load_finetune_config(path)
+
+
+def test_sleep2expert_finetune_tuning_head_only_allows_dense_config(tmp_path: Path):
     payload = _valid_finetune_payload()
     payload["model"]["backbone"].pop("moe")
-    payload["finetune"]["moe_tuning"] = {"mode": "head_only"}
+    _tuning(payload, preset="head_only")
     path = _write_config(tmp_path, payload)
 
     bundle = load_finetune_config(path)
 
-    cfg = bundle.finetune.moe_tuning
-    assert cfg is not None
-    assert cfg.mode == "head_only"
-    assert cfg.lr_scales.head == pytest.approx(1.0)
-    assert cfg.lr_scales.backbone == pytest.approx(0.0)
-    assert cfg.lr_scales.experts == pytest.approx(0.0)
+    cfg = bundle.finetune.tuning
+    assert cfg.preset == "head_only"
+    assert cfg.trains("head") is True
+    assert cfg.trains("encoder") is False
+    assert cfg.trains("experts") is False
 
 
-def test_sleep2expert_finetune_moe_tuning_rejects_dense_moe_regularization(tmp_path: Path):
+def test_sleep2expert_finetune_rejects_dense_moe_regularization(tmp_path: Path):
     payload = _valid_finetune_payload()
     payload["model"]["backbone"].pop("moe")
-    payload["finetune"]["moe_tuning"] = {
-        "mode": "head_only",
-        "moe_regularization": {
-            "enabled": True,
-            "collect_train_moe_aux": True,
-            "router_z_loss_coef": 0.1,
-        },
+    _tuning(payload, preset="head_only")
+    payload["finetune"]["moe_regularization"] = {
+        "enabled": True,
+        "collect_train_moe_aux": True,
+        "router_z_loss_coef": 0.1,
     }
     path = _write_config(tmp_path, payload)
 
@@ -414,72 +481,94 @@ def test_sleep2expert_finetune_moe_tuning_rejects_dense_moe_regularization(tmp_p
 
 
 @pytest.mark.parametrize(
-    ("moe_tuning", "message"),
+    ("tuning", "message"),
     [
-        ({"mode": "bad"}, "mode must be one of"),
-        ({"mode": "head_only", "lr_scales": {"backbone": -0.1}}, "lr_scales.backbone must be >= 0"),
-        ({"mode": "head_only", "lr_scales": {"backbone": float("nan")}}, "lr_scales.backbone must be finite"),
-        ({"mode": "head_only", "lr_scales": {"head": True}}, "lr_scales.head must be a number"),
+        ({"preset": "bad"}, "preset must be one of"),
         (
-            {"mode": "head_only", "moe_regularization": {"router_z_loss_coef": float("inf")}},
-            "moe_regularization.router_z_loss_coef must be finite",
+            {"preset": "head_only", "groups": {"encoder": {"train": True, "lr_scale": -0.1}}},
+            "lr_scale must be > 0",
         ),
-        ({"mode": "custom", "freeze_router": True}, "custom requires explicit"),
-        ({"mode": "head_only", "freeze_router": True}, "only supported in custom mode"),
         (
-            {"mode": "conservative_full_router_frozen", "train_moe_layer_indices": [3]},
-            "train_moe_layer_indices is only supported",
+            {"preset": "head_only", "groups": {"encoder": {"train": True, "lr_scale": float("nan")}}},
+            "lr_scale must be finite",
         ),
+        (
+            {"preset": "head_only", "groups": {"head": {"train": True, "lr_scale": True}}},
+            "lr_scale must be a number",
+        ),
+        ({"preset": "head_only", "groups": {"encoder": {"lr_scale": 0.1}}}, "train is required"),
+        ({"preset": "head_only", "groups": {"nonsense": {"train": True}}}, "unknown group"),
+        ({"preset": "custom"}, "requires every group to be explicit"),
+        (
+            {"preset": "moe_conservative", "moe": {"layer_indices": [3]}},
+            "only supported for preset 'moe_top_experts'",
+        ),
+        ({"preset": "full", "groups": {"lora": {"train": True}}}, "cannot train the encoder and insert LoRA"),
     ],
 )
-def test_sleep2expert_finetune_moe_tuning_rejects_invalid_settings(
+def test_sleep2expert_finetune_tuning_rejects_invalid_settings(
     tmp_path: Path,
-    moe_tuning: dict[str, t.Any],
+    tuning: dict[str, t.Any],
     message: str,
 ):
     payload = _valid_finetune_payload()
-    payload["finetune"]["moe_tuning"] = deepcopy(moe_tuning)
+    payload["finetune"]["tuning"] = deepcopy(tuning)
     path = _write_config(tmp_path, payload)
 
     with pytest.raises(ValueError, match=message):
         load_finetune_config(path)
 
 
-def test_sleep2expert_finetune_moe_tuning_rejects_top_layer_mode_without_moe(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("field_name", "message"),
+    [
+        ("router_z_loss_coef", "moe_regularization.router_z_loss_coef must be finite"),
+    ],
+)
+def test_sleep2expert_finetune_moe_regularization_rejects_non_finite_coefficients(
+    tmp_path: Path,
+    field_name: str,
+    message: str,
+):
+    payload = _valid_finetune_payload()
+    payload["finetune"]["moe_regularization"] = {field_name: float("inf")}
+    path = _write_config(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=message):
+        load_finetune_config(path)
+
+
+def test_sleep2expert_finetune_tuning_rejects_top_experts_preset_without_moe(tmp_path: Path):
     payload = _valid_finetune_payload()
     payload["model"]["backbone"].pop("moe")
-    payload["finetune"]["moe_tuning"] = {"mode": "top_moe_layer_expert_only"}
+    _tuning(payload, preset="moe_top_experts")
     path = _write_config(tmp_path, payload)
 
     with pytest.raises(ValueError, match="requires model.backbone.moe.enabled=true"):
         load_finetune_config(path)
 
 
-def test_sleep2expert_finetune_moe_tuning_rejects_invalid_top_layer_index(tmp_path: Path):
+def test_sleep2expert_finetune_tuning_rejects_invalid_top_layer_index(tmp_path: Path):
     payload = _valid_finetune_payload()
-    payload["finetune"]["moe_tuning"] = {
-        "mode": "top_moe_layer_expert_only",
-        "train_moe_layer_indices": [4],
-    }
+    _tuning(payload, preset="moe_top_experts", moe={"layer_indices": [4]})
     path = _write_config(tmp_path, payload)
 
     with pytest.raises(ValueError, match="must be a subset"):
         load_finetune_config(path)
 
 
-def test_sleep2expert_finetune_moe_tuning_defaults_to_last_moe_layer(tmp_path: Path):
+def test_sleep2expert_finetune_tuning_defaults_to_last_moe_layer(tmp_path: Path):
     payload = _valid_finetune_payload()
-    payload["finetune"]["moe_tuning"] = {"mode": "top_moe_layer_expert_only"}
+    _tuning(payload, preset="moe_top_experts")
     path = _write_config(tmp_path, payload)
 
     bundle = load_finetune_config(path)
 
-    cfg = bundle.finetune.moe_tuning
-    assert cfg is not None
-    assert cfg.train_moe_layer_indices == [3]
-    assert cfg.lr_scales.head == pytest.approx(1.0)
-    assert cfg.lr_scales.experts == pytest.approx(0.1)
-    assert cfg.lr_scales.backbone == pytest.approx(0.0)
+    cfg = bundle.finetune.tuning
+    assert cfg.moe.layer_indices == [3]
+    assert cfg.lr_scale("head") == pytest.approx(1.0)
+    assert cfg.lr_scale("experts") == pytest.approx(0.1)
+    assert cfg.trains("encoder") is False
 
 
 @pytest.mark.parametrize(
@@ -491,29 +580,52 @@ def test_sleep2expert_finetune_moe_tuning_defaults_to_last_moe_layer(tmp_path: P
         ("entropy_coef", "downstream entropy regularization is not supported yet"),
     ],
 )
-def test_sleep2expert_finetune_moe_tuning_rejects_unsupported_downstream_regularizers(
+def test_sleep2expert_finetune_rejects_unsupported_downstream_regularizers(
     tmp_path: Path,
     field_name: str,
     message: str,
 ):
     payload = _valid_finetune_payload()
-    payload["finetune"]["moe_tuning"] = {
-        "mode": "conservative_full_router_frozen",
-        "moe_regularization": {field_name: 0.1},
-    }
+    _tuning(payload, preset="moe_conservative")
+    payload["finetune"]["moe_regularization"] = {field_name: 0.1}
     path = _write_config(tmp_path, payload)
 
     with pytest.raises(ValueError, match=message):
         load_finetune_config(path)
 
 
-def test_sleep2expert_finetune_moe_tuning_requires_train_aux_when_regularization_enabled(tmp_path: Path):
+def test_sleep2expert_finetune_requires_train_aux_when_regularization_enabled(tmp_path: Path):
     payload = _valid_finetune_payload()
-    payload["finetune"]["moe_tuning"] = {
-        "mode": "conservative_full_router_frozen",
-        "moe_regularization": {"enabled": True},
-    }
+    _tuning(payload, preset="moe_conservative")
+    payload["finetune"]["moe_regularization"] = {"enabled": True}
     path = _write_config(tmp_path, payload)
 
     with pytest.raises(ValueError, match="collect_train_moe_aux must be true"):
+        load_finetune_config(path)
+
+
+def test_sleep2expert_finetune_tuning_rejects_the_legacy_keys(tmp_path: Path):
+    payload = _valid_finetune_payload()
+    payload["finetune"].pop("tuning")
+    payload["finetune"]["moe_tuning"] = {"mode": "conservative_full_router_frozen"}
+    path = _write_config(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="was replaced by finetune.tuning"):
+        load_finetune_config(path)
+
+
+@pytest.mark.parametrize("preset", ["moe_conservative", "moe_conservative_routers", "moe_top_experts"])
+def test_sleep2expert_finetune_tuning_rejects_every_moe_preset_without_moe(preset: str, tmp_path: Path):
+    """A dense backbone has no expert or router group to act on.
+
+    Every moe_* preset would collapse to the same head-plus-encoder policy while still
+    carrying a name that claims otherwise, so the run report and the logged group table
+    would describe a MoE policy that never existed.
+    """
+    payload = _valid_finetune_payload()
+    payload["model"]["backbone"].pop("moe")
+    _tuning(payload, preset=preset)
+    path = _write_config(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="requires model.backbone.moe.enabled=true"):
         load_finetune_config(path)

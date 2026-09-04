@@ -412,38 +412,6 @@ class FinetuneDataConfig:
 
 
 @dataclass
-class LoraConfig:
-    freeze_backbone_and_insert_lora: bool = False
-    insert_lora: bool = False
-    separate_adapters: bool = False
-    r: int = 8
-    alpha: int = 16
-    dropout: float = 0.05
-    target_modules: t.List[str] = field(default_factory=lambda: ["query", "key", "value"])
-    use_dora: bool = False
-
-
-@dataclass
-class TaskConfig:
-    type: str
-    output_dim: int
-    is_seq: bool
-    monitor: str
-    monitor_mod: str
-
-
-@dataclass
-class FinetuneLrScalesConfig:
-    head: float = 1.0
-    backbone: float = 0.1
-    experts: float = 0.1
-    routers: float = 0.0
-    tokenizers: float = 0.0
-    projection: float = 0.0
-    lora: float = 1.0
-
-
-@dataclass
 class FinetuneMoeRegularizationConfig:
     enabled: bool = False
     collect_train_moe_aux: bool = False
@@ -455,13 +423,122 @@ class FinetuneMoeRegularizationConfig:
 
 
 @dataclass
-class FinetuneMoeTuningConfig:
-    mode: str = "conservative_full_router_frozen"
-    freeze_router: bool | None = None
-    freeze_experts: bool | None = None
-    train_moe_layer_indices: list[int] | None = None
-    lr_scales: FinetuneLrScalesConfig = field(default_factory=FinetuneLrScalesConfig)
-    moe_regularization: FinetuneMoeRegularizationConfig = field(default_factory=FinetuneMoeRegularizationConfig)
+class TaskConfig:
+    type: str
+    output_dim: int
+    is_seq: bool
+    monitor: str
+    monitor_mod: str
+
+
+FINETUNE_TUNING_GROUPS = ("head", "encoder", "tokenizers", "experts", "routers", "projection", "lora")
+FINETUNE_TUNING_MOE_GROUPS = frozenset({"experts", "routers"})
+
+# Materialized (train, lr_scale) per group for each preset. `custom` has no table:
+# it requires every group to be spelled out in the config.
+_FINETUNE_TUNING_PRESETS: dict[str, dict[str, tuple[bool, float]] | None] = {
+    "full": {
+        "head": (True, 1.0),
+        "encoder": (True, 1.0),
+        "tokenizers": (True, 1.0),
+        "experts": (True, 1.0),
+        "routers": (True, 1.0),
+        "projection": (True, 1.0),
+        "lora": (False, 1.0),
+    },
+    "head_only": {
+        "head": (True, 1.0),
+        "encoder": (False, 1.0),
+        "tokenizers": (False, 1.0),
+        "experts": (False, 1.0),
+        "routers": (False, 1.0),
+        "projection": (False, 1.0),
+        "lora": (False, 1.0),
+    },
+    "lora": {
+        "head": (True, 1.0),
+        "encoder": (False, 1.0),
+        "tokenizers": (False, 1.0),
+        "experts": (False, 1.0),
+        "routers": (False, 1.0),
+        "projection": (False, 1.0),
+        "lora": (True, 1.0),
+    },
+    "moe_conservative": {
+        "head": (True, 1.0),
+        "encoder": (True, 0.1),
+        "tokenizers": (False, 1.0),
+        "experts": (True, 0.1),
+        "routers": (False, 1.0),
+        "projection": (False, 1.0),
+        "lora": (False, 1.0),
+    },
+    "moe_conservative_routers": {
+        "head": (True, 1.0),
+        "encoder": (True, 0.1),
+        "tokenizers": (False, 1.0),
+        "experts": (True, 0.1),
+        # 0.01, not 0.1: the legacy `conservative_full_router_trainable` mode defaulted the
+        # router scale an order of magnitude below the encoder's, and this preset is the
+        # documented hard-cut conversion for that mode.
+        "routers": (True, 0.01),
+        "projection": (False, 1.0),
+        "lora": (False, 1.0),
+    },
+    "moe_top_experts": {
+        "head": (True, 1.0),
+        "encoder": (False, 1.0),
+        "tokenizers": (False, 1.0),
+        "experts": (True, 0.1),
+        "routers": (False, 1.0),
+        "projection": (False, 1.0),
+        "lora": (False, 1.0),
+    },
+    "custom": None,
+}
+
+FINETUNE_TUNING_PRESETS = tuple(_FINETUNE_TUNING_PRESETS)
+
+
+@dataclass
+class FinetuneGroupConfig:
+    """Trainability and learning-rate multiplier for one semantic parameter group."""
+
+    train: bool
+    lr_scale: float = 1.0
+
+
+@dataclass
+class FinetuneTuningLoraConfig:
+    """Adapter shape. Only read when groups['lora'].train is true."""
+
+    r: int = 8
+    alpha: int = 16
+    dropout: float = 0.05
+    target_modules: t.List[str] = field(default_factory=lambda: ["query", "key", "value"])
+    use_dora: bool = False
+    separate_adapters: bool = False
+
+
+@dataclass
+class FinetuneTuningMoeConfig:
+    layer_indices: t.List[int] | None = None
+
+
+@dataclass
+class FinetuneTuningConfig:
+    preset: str
+    groups: dict[str, FinetuneGroupConfig]
+    lora: FinetuneTuningLoraConfig = field(default_factory=FinetuneTuningLoraConfig)
+    moe: FinetuneTuningMoeConfig = field(default_factory=FinetuneTuningMoeConfig)
+
+    def trains(self, group: str) -> bool:
+        entry = self.groups.get(group)
+        return bool(entry is not None and entry.train)
+
+    def lr_scale(self, group: str) -> float:
+        entry = self.groups.get(group)
+        return float(entry.lr_scale) if entry is not None else 1.0
 
 
 @dataclass
@@ -498,8 +575,8 @@ class MultilabelConfig:
 
 @dataclass
 class FinetuneConfig:
-    freeze_tokenizer: bool = True
-    lora: LoraConfig = field(default_factory=LoraConfig)
+    tuning: FinetuneTuningConfig
+    moe_regularization: FinetuneMoeRegularizationConfig = field(default_factory=FinetuneMoeRegularizationConfig)
     layer_mix: LayerMixConfig | None = None
     loss: FinetuneLossConfig = field(default_factory=FinetuneLossConfig)
     sampler: FinetuneSamplerConfig = field(default_factory=FinetuneSamplerConfig)
@@ -507,7 +584,6 @@ class FinetuneConfig:
     survival: SurvivalConfig | None = None
     multilabel: MultilabelConfig | None = None
     eval_visualizations: EvalVisualizationsConfig | None = None
-    moe_tuning: FinetuneMoeTuningConfig | None = None
 
 
 @dataclass
@@ -960,15 +1036,6 @@ def _build_multilabel_config(raw: t.Any, task_cfg: TaskConfig | None) -> Multila
     return MultilabelConfig(**values)
 
 
-_FINETUNE_MOE_TUNING_MODES = {
-    "head_only",
-    "conservative_full_router_frozen",
-    "conservative_full_router_trainable",
-    "top_moe_layer_expert_only",
-    "custom",
-}
-
-
 def _reject_extra_fields(raw: dict[str, t.Any], allowed: set[str], field_name: str) -> None:
     extra = sorted(set(raw.keys()) - allowed)
     if extra:
@@ -992,7 +1059,7 @@ def _validate_finetune_moe_nonnegative_number(value: t.Any, field_name: str) -> 
 def _validate_finetune_moe_layer_indices(value: t.Any) -> list[int] | None:
     if value is None:
         return None
-    field_name = "finetune.moe_tuning.train_moe_layer_indices"
+    field_name = "finetune.tuning.moe.layer_indices"
     if not isinstance(value, list) or not value:
         raise ValueError(f"{field_name} must be a non-empty list when provided.")
     if not all(type(idx) is int for idx in value):
@@ -1000,66 +1067,6 @@ def _validate_finetune_moe_layer_indices(value: t.Any) -> list[int] | None:
     if len(set(value)) != len(value):
         raise ValueError(f"{field_name} must not contain duplicates.")
     return list(value)
-
-
-def _default_finetune_moe_lr_scales(mode: str) -> dict[str, float]:
-    if mode == "head_only":
-        return {
-            "head": 1.0,
-            "backbone": 0.0,
-            "experts": 0.0,
-            "routers": 0.0,
-            "tokenizers": 0.0,
-            "projection": 0.0,
-            "lora": 1.0,
-        }
-    if mode == "conservative_full_router_trainable":
-        return {
-            "head": 1.0,
-            "backbone": 0.1,
-            "experts": 0.1,
-            "routers": 0.01,
-            "tokenizers": 0.0,
-            "projection": 0.0,
-            "lora": 1.0,
-        }
-    if mode == "top_moe_layer_expert_only":
-        return {
-            "head": 1.0,
-            "backbone": 0.0,
-            "experts": 0.1,
-            "routers": 0.0,
-            "tokenizers": 0.0,
-            "projection": 0.0,
-            "lora": 1.0,
-        }
-    return {
-        "head": 1.0,
-        "backbone": 0.1,
-        "experts": 0.1,
-        "routers": 0.0,
-        "tokenizers": 0.0,
-        "projection": 0.0,
-        "lora": 1.0,
-    }
-
-
-def _build_finetune_lr_scales_config(raw: t.Any, mode: str) -> FinetuneLrScalesConfig:
-    allowed = {"head", "backbone", "experts", "routers", "tokenizers", "projection", "lora"}
-    values = _default_finetune_moe_lr_scales(mode)
-    if raw is not None:
-        if not isinstance(raw, dict):
-            raise ValueError("finetune.moe_tuning.lr_scales must be a mapping when provided.")
-        _reject_extra_fields(raw, allowed, "finetune.moe_tuning.lr_scales")
-        values.update(raw)
-
-    cfg = FinetuneLrScalesConfig(**values)
-    for field_name in allowed:
-        _validate_finetune_moe_nonnegative_number(
-            getattr(cfg, field_name),
-            f"finetune.moe_tuning.lr_scales.{field_name}",
-        )
-    return cfg
 
 
 def _build_finetune_moe_regularization_config(raw: t.Any) -> FinetuneMoeRegularizationConfig:
@@ -1075,24 +1082,24 @@ def _build_finetune_moe_regularization_config(raw: t.Any) -> FinetuneMoeRegulari
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
-        raise ValueError("finetune.moe_tuning.moe_regularization must be a mapping when provided.")
-    _reject_extra_fields(raw, allowed, "finetune.moe_tuning.moe_regularization")
+        raise ValueError("finetune.moe_regularization must be a mapping when provided.")
+    _reject_extra_fields(raw, allowed, "finetune.moe_regularization")
 
     cfg = FinetuneMoeRegularizationConfig(**raw)
-    _validate_finetune_moe_bool(cfg.enabled, "finetune.moe_tuning.moe_regularization.enabled")
+    _validate_finetune_moe_bool(cfg.enabled, "finetune.moe_regularization.enabled")
     _validate_finetune_moe_bool(
         cfg.collect_train_moe_aux,
-        "finetune.moe_tuning.moe_regularization.collect_train_moe_aux",
+        "finetune.moe_regularization.collect_train_moe_aux",
     )
     for field_name in allowed - {"enabled", "collect_train_moe_aux"}:
         _validate_finetune_moe_nonnegative_number(
             getattr(cfg, field_name),
-            f"finetune.moe_tuning.moe_regularization.{field_name}",
+            f"finetune.moe_regularization.{field_name}",
         )
 
     if cfg.enabled and not cfg.collect_train_moe_aux:
         raise ValueError(
-            "finetune.moe_tuning.moe_regularization.collect_train_moe_aux must be true "
+            "finetune.moe_regularization.collect_train_moe_aux must be true "
             "when downstream MoE regularization is enabled."
         )
     unsupported = {
@@ -1107,78 +1114,253 @@ def _build_finetune_moe_regularization_config(raw: t.Any) -> FinetuneMoeRegulari
     return cfg
 
 
-def _build_finetune_moe_tuning_config(raw: t.Any) -> FinetuneMoeTuningConfig | None:
-    if raw is None:
-        return None
+def _finetune_tuning_legal_groups(model_cfg: ModelConfig) -> set[str]:
+    """Group names this config may spell. MoE groups need an MoE backbone."""
+    moe_cfg = getattr(model_cfg.backbone, "moe", None)
+    moe_enabled = moe_cfg is not None and getattr(moe_cfg, "enabled", False)
+    legal = set(FINETUNE_TUNING_GROUPS)
+    if not moe_enabled:
+        legal -= FINETUNE_TUNING_MOE_GROUPS
+    return legal
+
+
+def _build_finetune_group_config(raw: t.Any, field_name: str) -> tuple[bool, float | None]:
     if not isinstance(raw, dict):
-        raise ValueError("finetune.moe_tuning must be a mapping when provided.")
-    allowed = {
-        "mode",
-        "freeze_router",
-        "freeze_experts",
-        "train_moe_layer_indices",
-        "lr_scales",
-        "moe_regularization",
-    }
-    _reject_extra_fields(raw, allowed, "finetune.moe_tuning")
+        raise ValueError(f"{field_name} must be a mapping with a 'train' field.")
+    _reject_extra_fields(raw, {"train", "lr_scale"}, field_name)
+    if "train" not in raw:
+        raise ValueError(f"{field_name}.train is required.")
+    train = raw["train"]
+    if type(train) is not bool:
+        raise ValueError(f"{field_name}.train must be a boolean.")
 
-    if "mode" not in raw:
-        raise ValueError("finetune.moe_tuning.mode is required when finetune.moe_tuning is provided.")
-    mode = raw.get("mode")
-    if type(mode) is not str or mode not in _FINETUNE_MOE_TUNING_MODES:
-        raise ValueError("finetune.moe_tuning.mode must be one of " f"{sorted(_FINETUNE_MOE_TUNING_MODES)}.")
-
-    freeze_router = raw.get("freeze_router")
-    freeze_experts = raw.get("freeze_experts")
-    if mode == "custom":
-        if "freeze_router" not in raw or "freeze_experts" not in raw:
-            raise ValueError("finetune.moe_tuning.custom requires explicit freeze_router and freeze_experts.")
-        _validate_finetune_moe_bool(freeze_router, "finetune.moe_tuning.freeze_router")
-        _validate_finetune_moe_bool(freeze_experts, "finetune.moe_tuning.freeze_experts")
-    else:
-        if "freeze_router" in raw or "freeze_experts" in raw:
-            raise ValueError("finetune.moe_tuning.freeze_router/freeze_experts are only supported in custom mode.")
-        freeze_router = mode in {"head_only", "conservative_full_router_frozen", "top_moe_layer_expert_only"}
-        freeze_experts = mode == "head_only"
-
-    if mode != "top_moe_layer_expert_only" and "train_moe_layer_indices" in raw:
+    if "lr_scale" not in raw:
+        return train, None
+    lr_scale = raw["lr_scale"]
+    if type(lr_scale) not in (int, float) or type(lr_scale) is bool:
+        raise ValueError(f"{field_name}.lr_scale must be a number.")
+    lr_scale = float(lr_scale)
+    if not math.isfinite(lr_scale):
+        raise ValueError(f"{field_name}.lr_scale must be finite.")
+    if lr_scale <= 0.0:
         raise ValueError(
-            "finetune.moe_tuning.train_moe_layer_indices is only supported when " "mode is top_moe_layer_expert_only."
+            f"{field_name}.lr_scale must be > 0; use 'train: false' to freeze the group. "
+            "A zero learning-rate scale is no longer accepted as a freeze switch."
+        )
+    if not train:
+        raise ValueError(f"{field_name}.lr_scale is meaningless when train is false; remove one of them.")
+    return train, lr_scale
+
+
+def _build_finetune_tuning_lora_config(raw: t.Any) -> FinetuneTuningLoraConfig:
+    if raw is None:
+        return FinetuneTuningLoraConfig()
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.tuning.lora must be a mapping when provided.")
+    _reject_extra_fields(
+        raw,
+        {"r", "alpha", "dropout", "target_modules", "use_dora", "separate_adapters"},
+        "finetune.tuning.lora",
+    )
+    return FinetuneTuningLoraConfig(**raw)
+
+
+def _build_finetune_tuning_moe_config(raw: t.Any) -> FinetuneTuningMoeConfig:
+    if raw is None:
+        return FinetuneTuningMoeConfig()
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.tuning.moe must be a mapping when provided.")
+    _reject_extra_fields(raw, {"layer_indices"}, "finetune.tuning.moe")
+    return FinetuneTuningMoeConfig(layer_indices=_validate_finetune_moe_layer_indices(raw.get("layer_indices")))
+
+
+def _build_finetune_tuning_config(raw: t.Any, model_cfg: ModelConfig) -> FinetuneTuningConfig:
+    if raw is None:
+        raise ValueError("finetune.tuning is required. See doc/finetune_tuning_schema_refactor.md for the schema.")
+    if not isinstance(raw, dict):
+        raise ValueError("finetune.tuning must be a mapping.")
+    _reject_extra_fields(raw, {"preset", "groups", "lora", "moe"}, "finetune.tuning")
+
+    if "preset" not in raw:
+        raise ValueError(f"finetune.tuning.preset is required and must be one of {sorted(FINETUNE_TUNING_PRESETS)}.")
+    preset = raw["preset"]
+    if type(preset) is not str or preset not in _FINETUNE_TUNING_PRESETS:
+        raise ValueError(f"finetune.tuning.preset must be one of {sorted(FINETUNE_TUNING_PRESETS)}.")
+
+    legal_groups = _finetune_tuning_legal_groups(model_cfg)
+    overrides_raw = raw.get("groups")
+    if overrides_raw is None:
+        overrides_raw = {}
+    if not isinstance(overrides_raw, dict):
+        raise ValueError("finetune.tuning.groups must be a mapping of group name to {train, lr_scale}.")
+    unknown = sorted(set(overrides_raw) - set(FINETUNE_TUNING_GROUPS))
+    if unknown:
+        raise ValueError(f"finetune.tuning.groups has unknown groups: {unknown}.")
+    illegal = sorted(set(overrides_raw) & FINETUNE_TUNING_MOE_GROUPS - legal_groups)
+    if illegal:
+        raise ValueError(f"finetune.tuning.groups {illegal} require model.backbone.moe.enabled=true.")
+
+    overrides = {
+        name: _build_finetune_group_config(block, f"finetune.tuning.groups.{name}")
+        for name, block in overrides_raw.items()
+    }
+
+    base = _FINETUNE_TUNING_PRESETS[preset]
+    if base is None:
+        missing = sorted(legal_groups - set(overrides))
+        if missing:
+            raise ValueError(
+                f"finetune.tuning.preset 'custom' requires every group to be explicit. Missing: {missing}."
+            )
+
+    groups: dict[str, FinetuneGroupConfig] = {}
+    for name in FINETUNE_TUNING_GROUPS:
+        if name not in legal_groups:
+            continue
+        if name in overrides:
+            train, lr_scale = overrides[name]
+            if not train:
+                # Freezing a group drops the preset's scale with it. Inheriting the scale would
+                # report `train: false, lr_scale: 0.1` -- the pair `_build_finetune_group_config`
+                # refuses when a config states it, and one no preset table contains.
+                lr_scale = 1.0
+            elif lr_scale is None:
+                lr_scale = base[name][1] if base is not None else 1.0
+        else:
+            train, lr_scale = base[name]
+        groups[name] = FinetuneGroupConfig(train=train, lr_scale=float(lr_scale))
+
+    lora_cfg = _build_finetune_tuning_lora_config(raw.get("lora"))
+    moe_cfg = _build_finetune_tuning_moe_config(raw.get("moe"))
+    cfg = FinetuneTuningConfig(preset=preset, groups=groups, lora=lora_cfg, moe=moe_cfg)
+    _validate_finetune_tuning_config(cfg, model_cfg, has_moe_block="moe" in raw)
+    return cfg
+
+
+def _validate_finetune_tuning_config(
+    cfg: FinetuneTuningConfig,
+    model_cfg: ModelConfig,
+    has_moe_block: bool,
+) -> None:
+    if not cfg.trains("head"):
+        # Every preset trains the head, so only an override reaches here. Without this the run
+        # builds the model, then raises "preset '<name>' left no trainable head parameters" --
+        # naming the preset for a policy the preset did not state.
+        raise ValueError(
+            "finetune.tuning must train the head: a frozen head leaves the classifier at its "
+            "random initialization. Remove the groups.head override."
+        )
+    if cfg.trains("encoder") and cfg.trains("lora"):
+        raise ValueError(
+            "finetune.tuning cannot train the encoder and insert LoRA at the same time: "
+            "adapter insertion freezes the backbone first. Use preset 'lora' or preset 'full'."
+        )
+    # finetune.tuning.lora holds hyperparameters, not a switch, so a preset that leaves the
+    # lora group untrained may still carry it; that is what lets a sweep flip the preset alone.
+
+    router_targets = [target for target in cfg.lora.target_modules if "router" in target.lower()]
+    if cfg.trains("lora") and router_targets:
+        raise ValueError("sleep2expert LoRA does not support router target modules.")
+
+    moe_cfg = getattr(model_cfg.backbone, "moe", None)
+    moe_enabled = moe_cfg is not None and getattr(moe_cfg, "enabled", False)
+    if has_moe_block and not moe_enabled:
+        raise ValueError("finetune.tuning.moe requires model.backbone.moe.enabled=true.")
+    if cfg.preset != "moe_top_experts" and cfg.moe.layer_indices is not None:
+        raise ValueError("finetune.tuning.moe.layer_indices is only supported for preset 'moe_top_experts'.")
+
+    # A dense backbone has no expert or router groups, so every moe_* preset would
+    # collapse to the same head-plus-encoder policy while still carrying a name that
+    # claims otherwise. Reject the combination instead of silently renaming a policy.
+    if cfg.preset.startswith("moe_") and not moe_enabled:
+        raise ValueError(f"finetune.tuning.preset '{cfg.preset}' requires model.backbone.moe.enabled=true.")
+
+    # Only the learned router builds parameters -- `random`, `hard_modality` and `hard_group`
+    # route without any. Training the routers on those would leave the routers group with zero
+    # trainable parameters and no optimizer group, so the run reports the authored policy and
+    # executes nothing of it. `required_expert_weight_mode='router'` is rejected the same way.
+    router_type = getattr(moe_cfg, "router_type", None)
+    if cfg.trains("routers") and router_type != "learned":
+        raise ValueError(
+            "finetune.tuning trains the routers, which requires model.backbone.moe.router_type='learned'; "
+            f"router_type={router_type!r} has no router parameters to train."
         )
 
-    return FinetuneMoeTuningConfig(
-        mode=mode,
-        freeze_router=freeze_router,
-        freeze_experts=freeze_experts,
-        train_moe_layer_indices=_validate_finetune_moe_layer_indices(raw.get("train_moe_layer_indices")),
-        lr_scales=_build_finetune_lr_scales_config(raw.get("lr_scales"), mode),
-        moe_regularization=_build_finetune_moe_regularization_config(raw.get("moe_regularization")),
-    )
-
-
-def _validate_finetune_moe_tuning_config(cfg: FinetuneMoeTuningConfig | None, model_cfg: ModelConfig) -> None:
-    if cfg is None:
-        return
-    moe_cfg = model_cfg.backbone.moe
-    moe_enabled = moe_cfg is not None and moe_cfg.enabled
-    if cfg.mode != "head_only" and not moe_enabled:
-        raise ValueError("finetune.moe_tuning.mode requires model.backbone.moe.enabled=true unless mode is head_only.")
-    if cfg.moe_regularization.enabled and not moe_enabled:
-        raise ValueError("finetune.moe_tuning.moe_regularization.enabled requires model.backbone.moe.enabled=true.")
-
-    moe_layers = moe_cfg.layer_indices if moe_cfg is not None and moe_cfg.layer_indices is not None else []
-    if cfg.train_moe_layer_indices is not None:
-        if not moe_enabled:
-            raise ValueError("finetune.moe_tuning.train_moe_layer_indices requires model.backbone.moe.enabled=true.")
-        invalid = sorted(set(cfg.train_moe_layer_indices) - set(moe_layers))
+    if cfg.preset == "moe_top_experts":
+        # The preset exists to train the experts on selected layers. With the group frozen the
+        # layer selection has nothing to select, and the runtime invariant reports it as
+        # "matched no expert parameters for layer_indices=[...]" -- which reads as a bad layer
+        # list. Name the frozen group instead.
+        if not cfg.trains("experts"):
+            raise ValueError(
+                "finetune.tuning.preset 'moe_top_experts' trains the experts on the selected "
+                "layers, but groups.experts sets train: false. Remove the override, or pick a "
+                "preset that does not train the experts."
+            )
+        moe_layers = list(getattr(moe_cfg, "layer_indices", None) or [])
+        if cfg.moe.layer_indices is None:
+            if not moe_layers:
+                raise ValueError(
+                    "finetune.tuning.preset 'moe_top_experts' needs model.backbone.moe.layer_indices "
+                    "or an explicit finetune.tuning.moe.layer_indices."
+                )
+            cfg.moe.layer_indices = [max(moe_layers)]
+        invalid = sorted(set(cfg.moe.layer_indices) - set(moe_layers))
         if invalid:
             raise ValueError(
-                "finetune.moe_tuning.train_moe_layer_indices must be a subset of "
+                "finetune.tuning.moe.layer_indices must be a subset of "
                 f"model.backbone.moe.layer_indices. Invalid: {invalid}."
             )
 
-    if cfg.mode == "top_moe_layer_expert_only" and cfg.train_moe_layer_indices is None:
-        cfg.train_moe_layer_indices = [max(moe_layers)]
+
+_LEGACY_FINETUNE_TRAINABILITY_KEYS = {
+    "freeze_tokenizer": "finetune.tuning.groups.tokenizers.train",
+    "lora": "finetune.tuning.groups.lora.train plus finetune.tuning.lora",
+    "moe_tuning": "finetune.tuning.preset plus finetune.moe_regularization",
+}
+
+
+# Every block the finetune parser reads. The list is closed so a misspelled key fails at
+# load instead of silently reverting to a default -- `moe_regulrization` would otherwise
+# disable the auxiliary loss a run was configured around, and nothing would say so.
+FINETUNE_BLOCK_FIELDS = {
+    "eval_visualizations",
+    "layer_mix",
+    "loss",
+    "moe_regularization",
+    "multilabel",
+    "sampler",
+    "survival",
+    "task",
+    "tuning",
+}
+
+
+def _reject_legacy_finetune_keys(finetune_block: dict[str, t.Any]) -> None:
+    """Fail loudly on the pre-`tuning` schema instead of silently ignoring it.
+
+    These keys used to decide trainability between them, so quietly dropping one would
+    train a different set of parameters than the config asks for. There is no
+    deprecation window; `doc/finetune_tuning_schema_refactor.md` carries the mapping table
+    for converting a config by hand.
+    """
+    found = sorted(set(_LEGACY_FINETUNE_TRAINABILITY_KEYS) & set(finetune_block))
+    if not found:
+        return
+    replacements = "; ".join(f"finetune.{key} -> {_LEGACY_FINETUNE_TRAINABILITY_KEYS[key]}" for key in found)
+    raise ValueError(
+        f"finetune.{{{','.join(found)}}} was replaced by finetune.tuning. {replacements}. "
+        "See doc/finetune_tuning_schema_refactor.md for the conversion table."
+    )
+
+
+def _validate_finetune_moe_regularization_scope(
+    cfg: FinetuneMoeRegularizationConfig,
+    model_cfg: ModelConfig,
+) -> None:
+    moe_cfg = model_cfg.backbone.moe
+    if cfg.enabled and not (moe_cfg is not None and moe_cfg.enabled):
+        raise ValueError("finetune.moe_regularization.enabled requires model.backbone.moe.enabled=true.")
 
 
 def _validate_layer_mix_config(layer_mix_cfg: LayerMixConfig | None, backbone_cfg: BackboneConfig) -> None:
@@ -1380,7 +1562,8 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         raise ValueError("Finetune YAML must include a top-level 'finetune' block.")
     if not isinstance(finetune_block, dict):
         raise ValueError("finetune block must be a mapping.")
-    lora_block = finetune_block.get("lora", {})
+    _reject_legacy_finetune_keys(finetune_block)
+    _reject_extra_fields(finetune_block, FINETUNE_BLOCK_FIELDS, "finetune")
     averaging_cfg = _build_model_averaging_config(data)
     model_cfg = _build_model_config(model_block, require_head=True)
     layer_mix_cfg = _build_layer_mix_config(finetune_block.get("layer_mix"))
@@ -1390,17 +1573,14 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
     task_cfg = _build_task_config(finetune_block.get("task"))
     survival_cfg = _build_survival_config(finetune_block.get("survival"), task_cfg)
     multilabel_cfg = _build_multilabel_config(finetune_block.get("multilabel"), task_cfg)
-    moe_tuning_cfg = _build_finetune_moe_tuning_config(finetune_block.get("moe_tuning"))
+    tuning_cfg = _build_finetune_tuning_config(finetune_block.get("tuning"), model_cfg)
+    moe_regularization_cfg = _build_finetune_moe_regularization_config(finetune_block.get("moe_regularization"))
     _validate_layer_mix_config(layer_mix_cfg, model_cfg.backbone)
-    _validate_finetune_moe_tuning_config(moe_tuning_cfg, model_cfg)
+    _validate_finetune_moe_regularization_scope(moe_regularization_cfg, model_cfg)
     data_cfg = FinetuneDataConfig(**data_block)
-    lora_cfg = LoraConfig(**lora_block)
-    router_targets = [target for target in lora_cfg.target_modules if "router" in target.lower()]
-    if router_targets:
-        raise ValueError("sleep2expert LoRA does not support router target modules.")
     finetune_cfg = FinetuneConfig(
-        freeze_tokenizer=finetune_block.get("freeze_tokenizer", True),
-        lora=lora_cfg,
+        tuning=tuning_cfg,
+        moe_regularization=moe_regularization_cfg,
         layer_mix=layer_mix_cfg,
         loss=loss_cfg,
         sampler=sampler_cfg,
@@ -1408,7 +1588,6 @@ def load_finetune_config(path: str | Path) -> FinetuneConfigBundle:
         survival=survival_cfg,
         multilabel=multilabel_cfg,
         eval_visualizations=eval_visualizations_cfg,
-        moe_tuning=moe_tuning_cfg,
     )
     return FinetuneConfigBundle(model=model_cfg, data=data_cfg, finetune=finetune_cfg, averaging=averaging_cfg)
 
@@ -1419,9 +1598,11 @@ __all__ = [
     "FinetuneConfig",
     "FinetuneLossConfig",
     "FinetuneSamplerConfig",
-    "FinetuneLrScalesConfig",
     "FinetuneMoeRegularizationConfig",
-    "FinetuneMoeTuningConfig",
+    "FinetuneTuningConfig",
+    "FinetuneGroupConfig",
+    "FINETUNE_TUNING_GROUPS",
+    "FINETUNE_TUNING_PRESETS",
     "SurvivalConfig",
     "MultilabelConfig",
     "PretrainConfigBundle",
@@ -1445,7 +1626,6 @@ __all__ = [
     "TemporalAggConfig",
     "ModelAveragingConfig",
     "ProjectionConfig",
-    "LoraConfig",
     "TaskConfig",
     "load_finetune_config",
     "load_pretrain_config",

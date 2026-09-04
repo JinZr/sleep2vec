@@ -124,12 +124,12 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(
             return None
 
     class DummyModel:
-        moe_finetune_status = {}
+        finetune_status = {}
 
-        def moe_finetune_hparams(self):
+        def finetune_hparams(self):
             return {}
 
-        def moe_finetune_param_group_rows(self):
+        def finetune_param_group_rows(self):
             return []
 
     monkeypatch.setattr(finetune, "persist_run_config_and_args", lambda *args, **kwargs: None)

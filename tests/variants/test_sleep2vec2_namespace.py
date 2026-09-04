@@ -123,24 +123,17 @@ def test_sleep2vec2_configs_parse_with_sleep2vec2_loaders():
         validate_model_config(bundle.model)
 
 
-def test_sleep2vec2_finetune_configs_disable_lora():
+def test_sleep2vec2_finetune_configs_do_not_train_lora():
     config_root = REPO_ROOT / "configs" / "sleep2vec2"
-    expected = {
-        "freeze_backbone_and_insert_lora": False,
-        "insert_lora": False,
-        "separate_adapters": False,
-    }
-    offenders: dict[str, dict[str, object]] = {}
+    offenders: dict[str, object] = {}
 
     for path in sorted(config_root.rglob("*.yaml")):
         data = yaml.safe_load(path.read_text())
-        finetune = data.get("finetune")
-        if not isinstance(finetune, dict):
+        if not isinstance(data.get("finetune"), dict):
             continue
-        lora = finetune.get("lora")
-        actual = {key: lora.get(key) if isinstance(lora, dict) else None for key in expected}
-        if actual != expected:
-            offenders[str(path.relative_to(REPO_ROOT))] = actual
+        tuning = load_finetune_config(path).finetune.tuning
+        if tuning.trains("lora"):
+            offenders[str(path.relative_to(REPO_ROOT))] = tuning.preset
 
     assert offenders == {}
 
@@ -153,28 +146,28 @@ def test_sleep2vec2_finetune_config_accepts_lora_flags(tmp_path: Path, target_mo
     source = REPO_ROOT / "configs" / "sleep2vec2" / "ppg_ahi_finetune.yaml"
     data = yaml.safe_load(source.read_text())
     payload = deepcopy(data)
-    payload["finetune"]["lora"].update(
-        {
-            "freeze_backbone_and_insert_lora": True,
-            "insert_lora": True,
+    payload["finetune"]["tuning"] = {
+        "preset": "lora",
+        "lora": {
             "separate_adapters": True,
             "r": 4,
             "alpha": 12,
             "dropout": 0.15,
             "target_modules": target_modules,
             "use_dora": True,
-        }
-    )
+        },
+    }
     path = tmp_path / "lora_enabled.yaml"
     path.write_text(yaml.safe_dump(payload))
 
     bundle = load_finetune_config(path)
 
-    assert bundle.finetune.lora.freeze_backbone_and_insert_lora is True
-    assert bundle.finetune.lora.insert_lora is True
-    assert bundle.finetune.lora.separate_adapters is True
-    assert bundle.finetune.lora.r == 4
-    assert bundle.finetune.lora.alpha == 12
-    assert bundle.finetune.lora.dropout == 0.15
-    assert bundle.finetune.lora.target_modules == target_modules
-    assert bundle.finetune.lora.use_dora is True
+    tuning = bundle.finetune.tuning
+    assert tuning.trains("lora") is True
+    assert tuning.trains("encoder") is False
+    assert tuning.lora.separate_adapters is True
+    assert tuning.lora.r == 4
+    assert tuning.lora.alpha == 12
+    assert tuning.lora.dropout == 0.15
+    assert tuning.lora.target_modules == target_modules
+    assert tuning.lora.use_dora is True

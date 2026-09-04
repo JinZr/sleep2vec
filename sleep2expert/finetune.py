@@ -124,7 +124,7 @@ def _preflight_finetune_run_directory(args, exp_root: Path) -> None:
             raise FileExistsError(f"Another launch already claimed finetune run directory: {exp_root}.") from None
         return
 
-    allowed_files = {"config.yaml", "cli_args.yaml", "moe_finetune_status.json"}
+    allowed_files = {"config.yaml", "cli_args.yaml", "finetune_status.json"}
     deadline = time.monotonic() + 30.0
     while True:
         matching_marker = False
@@ -219,22 +219,23 @@ def supervised(args, config_bundle):
         log_model=False,  # 保留 W&B 标量/图像日志，但不上传 checkpoint artifact
     )
     if is_rank_zero_process():
-        status_path = exp_root / "moe_finetune_status.json"
-        status_path.write_text(json.dumps(model.moe_finetune_status, indent=2, sort_keys=True) + "\n")
-    logger.log_hyperparams(model.moe_finetune_hparams())
+        status_path = exp_root / "finetune_status.json"
+        status_path.write_text(json.dumps(model.finetune_status, indent=2, sort_keys=True) + "\n")
+    logger.log_hyperparams(model.finetune_hparams())
     if is_rank_zero_process():
         logger.experiment.log(
             {
-                "moe_finetune/param_groups": wandb.Table(
+                "finetune/param_groups": wandb.Table(
                     columns=[
                         "group",
                         "total_params",
                         "trainable_params",
                         "total_tensors",
                         "trainable_tensors",
+                        "train",
                         "lr_scale",
                     ],
-                    data=model.moe_finetune_param_group_rows(),
+                    data=model.finetune_param_group_rows(),
                 )
             },
             commit=False,

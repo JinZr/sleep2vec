@@ -7,7 +7,16 @@ import pytest
 import yaml
 
 from sleep2vec.common import apply_finetune_config
-from utils.check_configs import check_config_file
+from utils.check_configs import (
+    DECLARABLE_VARIANTS,
+    SEX_AGE_BASELINE_CONFIG_DIR,
+    SLEEP2STAT_CONFIG_DIR,
+    _is_sex_age_baseline_config,
+    _is_sleep2stat_config,
+    _resolve_config_variant,
+    _sleep2expert_only_finetune_fields,
+    check_config_file,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_FINETUNE_CONFIGS = [
@@ -68,11 +77,9 @@ def _ppg_finetune_payload(*, is_seq: bool, preset_build: dict | None, task_overr
             "n_few_shot": 16,
         },
         "finetune": {
-            "freeze_tokenizer": True,
-            "lora": {
-                "freeze_backbone_and_insert_lora": False,
-                "insert_lora": True,
-                "separate_adapters": False,
+            "tuning": {
+                "preset": "full",
+                "groups": {"tokenizers": {"train": False}},
             },
             "task": {
                 "type": "classification" if is_seq else "regression",
@@ -239,6 +246,45 @@ def test_check_config_file_accepts_out_of_tree_sleep2vec2_config_with_path_hint(
     check_config_file(path)
 
 
+def test_check_config_file_routes_an_out_of_tree_dense_sleep2expert_finetune_config(monkeypatch, tmp_path: Path):
+    """`finetune.moe_regularization` is the only marker a dense expert finetune config carries.
+
+    A dense backbone under a shared preset leaves no `model.backbone.moe` block and no `moe_`
+    preset to route on, and `moe_regularization: {enabled: false}` is valid there. The base
+    loader now rejects the field instead of ignoring it, so a miss is a hard failure on an
+    otherwise valid config.
+    """
+    import sleep2vec.config as base_config
+
+    def fail_base_loader(*args, **kwargs):
+        raise AssertionError("base sleep2vec loader should not validate sleep2expert configs")
+
+    monkeypatch.setattr(base_config, "load_finetune_config", fail_base_loader)
+    source = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "heartbeat_breath_stage5_finetune.yaml"
+    payload = yaml.safe_load(source.read_text())
+    payload["model"]["backbone"].pop("moe")
+    payload["finetune"]["tuning"] = {"preset": "full"}
+    assert payload["finetune"]["moe_regularization"] == {"enabled": False}
+    path = _write_yaml(tmp_path / "dense_expert_finetune.yaml", payload)
+
+    check_config_file(path)
+
+
+def test_every_expert_only_finetune_field_routes_to_sleep2expert(tmp_path: Path):
+    """The marker is derived from the two schemas, so a future expert-only key routes for free.
+
+    `finetune.moe_tuning` was the marker until this schema lifted `moe_regularization` out of
+    it; a hand-listed marker is what let that config lose its only route.
+    """
+    fields = _sleep2expert_only_finetune_fields()
+
+    assert fields == {"moe_regularization"}
+    for field in fields:
+        path = _write_yaml(tmp_path / f"{field}.yaml", {"finetune": {field: {}}})
+        variant = _resolve_config_variant(path, yaml.safe_load(path.read_text()))
+        assert variant.config_module == "sleep2expert.config", field
+
+
 def test_check_config_file_rejects_missing_preset_build_for_ppg_finetune(tmp_path: Path):
     path = tmp_path / "configs" / "ppg_stage3_finetune.yaml"
     _write_yaml(path, _ppg_finetune_payload(is_seq=True, preset_build=None))
@@ -311,3 +357,83 @@ def test_check_config_file_rejects_partial_preset_build_block(tmp_path: Path):
         ValueError, match="must define both preset_build.required_channels and preset_build.min_channels"
     ):
         check_config_file(path)
+
+
+def test_a_declared_variant_wins_over_the_content_probe(tmp_path: Path):
+    """Inference is for configs that declared nothing; a declaration settles it.
+
+    The expert-only content marker routes `finetune.moe_regularization` to
+    `sleep2expert.config`. A plan that declares `variant: sleep2vec` still generates
+    `python -m sleep2vec.finetune`, whose loader rejects that field -- so inferring the
+    expert loader makes validation pass for a run that cannot start.
+    """
+    payload = {"finetune": {"moe_regularization": {}}}
+    path = _write_yaml(tmp_path / "declared.yaml", payload)
+
+    assert _resolve_config_variant(path, payload).config_module == "sleep2expert.config"
+    for variant, module in (
+        ("sleep2vec", "sleep2vec.config"),
+        ("sleep2vec2", "sleep2vec2.config"),
+        ("sleep2expert", "sleep2expert.config"),
+    ):
+        assert _resolve_config_variant(path, payload, variant).config_module == module, variant
+
+
+def test_check_config_file_fails_an_expert_only_field_under_a_declared_base_variant(tmp_path: Path):
+    """The declared loader is the one that has to accept the config, and it does not."""
+    source = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "heartbeat_breath_stage5_finetune.yaml"
+    payload = yaml.safe_load(source.read_text())
+    payload["model"]["backbone"].pop("moe")
+    payload["finetune"]["tuning"] = {"preset": "full"}
+    path = _write_yaml(tmp_path / "declared_base.yaml", payload)
+
+    # Inferred: routes to the expert loader, which accepts it.
+    check_config_file(path)
+
+    with pytest.raises(ValueError, match="moe_regularization"):
+        check_config_file(path, "sleep2vec")
+
+
+def test_validation_command_names_the_declared_variant():
+    """`check_configs` must be told the variant the generated run command uses."""
+    from agent_tools.plan_context import validation_commands
+
+    commands = validation_commands({"task": "finetune", "variant": "sleep2vec", "inputs": {"config": "c.yaml"}})
+    assert any("utils/check_configs.py --variant sleep2vec c.yaml" in command for command in commands), commands
+
+    # `sex_age_baseline` has its own loader that `check_configs` detects from the config itself,
+    # and `--variant` does not name it.
+    baseline = validation_commands({"task": "finetune", "variant": "sex_age_baseline", "inputs": {"config": "c.yaml"}})
+    assert any(command.endswith("utils/check_configs.py c.yaml") for command in baseline), baseline
+
+
+def test_a_declared_variant_is_rejected_for_a_family_it_cannot_name(tmp_path: Path):
+    """`--variant` names one of three loaders; the special families are not among them.
+
+    `check_config_file` dispatches `sleep2stat` and `sex_age_baseline` configs by detecting
+    them, and that dispatch used to run before the declaration was consulted -- so
+    `--variant sleep2vec` on a `sex_age_baseline` config reported success under the baseline
+    loader, which is not the loader `python -m sleep2vec.finetune` would call.
+    """
+    baseline = REPO_ROOT / "configs" / "sex_age_baseline" / "cox.yaml"
+    assert _is_sex_age_baseline_config(baseline, yaml.safe_load(baseline.read_text()))
+
+    stat_payload = {key: {} for key in ("run", "data", "signals", "analyzers", "reducers", "outputs")}
+    stat = _write_yaml(tmp_path / "stat.yaml", stat_payload)
+    assert _is_sleep2stat_config(stat, stat_payload)
+
+    for path, family in ((baseline, "sex_age_baseline"), (stat, "sleep2stat")):
+        for variant in ("sleep2vec", "sleep2vec2", "sleep2expert"):
+            with pytest.raises(ValueError, match=f"is a {family} config"):
+                check_config_file(path, variant)
+
+
+def test_every_declarable_variant_is_a_sleep2vec_family_loader():
+    """The rejection above is only correct while nothing outside the family is declarable.
+
+    Adding `sex_age_baseline` to `--variant` would make that message a lie rather than a
+    guard, so tie the two together instead of restating the list.
+    """
+    assert set(DECLARABLE_VARIANTS) == {"sleep2vec", "sleep2vec2", "sleep2expert"}
+    assert SEX_AGE_BASELINE_CONFIG_DIR not in DECLARABLE_VARIANTS
+    assert SLEEP2STAT_CONFIG_DIR not in DECLARABLE_VARIANTS
