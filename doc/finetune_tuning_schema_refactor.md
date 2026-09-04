@@ -484,6 +484,14 @@ Settled 2026-09-04.
   preset table contains. It reached the status block and the logged hparams, so the run
   reported a policy the schema forbids. The override now normalizes to the neutral scale,
   which puts the two axes back where the `0.0`-means-frozen removal left them.
+- **An override cannot freeze the head.** The head is the one group every preset trains,
+  which `test_every_preset_trains_the_head` pins across all three variants -- but the pin
+  covers the tables, and `groups.head: {train: false}` is a table-level invariant defeated
+  on the way out, the same shape as the scale case above. The runtime invariant did catch
+  it, after the model was built and the data loaded, with `preset '<name>' left no
+  trainable head parameters` -- a message that names the preset for a policy only the
+  override stated. The parser owns the contradiction now; the runtime check stays for
+  configs built in Python rather than parsed.
 - **Training the routers requires a learned router.** Only `router_type: learned` builds
   router parameters; `random`, `hard_modality` and `hard_group` route without any. So
   `moe_conservative_routers`, or `groups.routers: {train: true}`, on one of those three

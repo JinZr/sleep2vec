@@ -1239,6 +1239,14 @@ def _validate_finetune_tuning_config(
     model_cfg: ModelConfig,
     has_moe_block: bool,
 ) -> None:
+    if not cfg.trains("head"):
+        # Every preset trains the head, so only an override reaches here. Without this the run
+        # builds the model, then raises "preset '<name>' left no trainable head parameters" --
+        # naming the preset for a policy the preset did not state.
+        raise ValueError(
+            "finetune.tuning must train the head: a frozen head leaves the classifier at its "
+            "random initialization. Remove the groups.head override."
+        )
     if cfg.trains("encoder") and cfg.trains("lora"):
         raise ValueError(
             "finetune.tuning cannot train the encoder and insert LoRA at the same time: "

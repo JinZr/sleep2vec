@@ -153,6 +153,24 @@ def test_freezing_a_group_drops_the_preset_scale_in_every_variant(variant: str, 
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
+def test_freezing_the_head_is_rejected_at_parse_in_every_variant(variant: str, tmp_path: Path):
+    """`test_every_preset_trains_the_head` pins the tables; an override must not defeat them.
+
+    The run used to build the model and then raise "preset '<name>' left no trainable head
+    parameters", which names the preset for a policy only the override stated -- and does so
+    after the data is loaded. The parser owns the contradiction.
+    """
+    payload = yaml.safe_load((REPO_ROOT / REPRESENTATIVE_CONFIGS[variant]).read_text())
+    preset = payload["finetune"]["tuning"]["preset"]
+    payload["finetune"]["tuning"] = {"preset": preset, "groups": {"head": {"train": False}}}
+    path = tmp_path / "frozen_head.yaml"
+    path.write_text(yaml.safe_dump(payload))
+
+    with pytest.raises(ValueError, match="must train the head"):
+        _config(variant).load_finetune_config(path)
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
 def test_every_variant_rejects_the_same_legacy_keys(variant: str):
     assert set(_config(variant)._LEGACY_FINETUNE_TRAINABILITY_KEYS) >= {"freeze_tokenizer", "lora"}
 
