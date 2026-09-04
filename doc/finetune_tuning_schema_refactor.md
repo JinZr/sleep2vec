@@ -310,9 +310,10 @@ at `sleep2expert/finetune.py:127`. Its schema is shaped by the old keys:
 that exists only when `moe_tuning` is present — otherwise it falls back to a single
 synthetic `"legacy"` group. After the refactor every config has a group table, so
 `moe_tuning_present` is always true, `moe_tuning_mode` becomes `preset`, and the
-`"legacy"` branch disappears. The file is then no longer MoE-specific and all three
-variants emit it, which is why it takes the honest name. The old name is **retired, not
-dual-written** — consistent with the hard-cut decision. Concretely: update the
+`"legacy"` branch disappears. The file is no longer MoE-specific, which is why it takes
+the honest name — but it stays a `sleep2expert` artifact: only that variant ever wrote
+one, and adding an emitter to the other two would be new run output no one asked for.
+The old name is **retired, not dual-written** — consistent with the hard-cut decision. Concretely: update the
 `allowed_files` whitelist. The file carries no version marker: AGENTS.md forbids
 `schema_version`-style markers on new research-facing reports, and the fields it does
 carry (`preset`, the group table, the lr scales) already say what the run did.
@@ -393,7 +394,7 @@ and keeps the fork boundary intact.
 | Adapter reconstruction | `{sleep2vec,sleep2vec2,sleep2expert}/extract_embeddings.py:492` (`_finetune_adapters_enabled` collapses to one flag) |
 | Agent tooling | `agent_tools/domain/finetune_summary.py:159`, `agent_tools/domain/finetune_hparam_profile.py:247` — the `adaptation.strategy` axis becomes three presets on `yaml:/finetune/tuning` instead of a two-flag product on `yaml:/finetune/lora`. The axis replaces the whole block, not just the preset: a swept arm that inherited the source's `groups` overrides would not be the policy its name claims |
 | Config validation | `utils/check_configs.py:110` keys off `"moe_tuning" in finetune_block` |
-| Run artifacts | `sleep2expert/finetune.py:127,222` (rename to `finetune_status.json`, update whitelist); `_build_moe_finetune_status` / `_flatten_moe_status` in `sleep2expert/sleep2vec_finetuning.py:331,389`; the same emitter added to `sleep2vec/` and `sleep2vec2/` |
+| Run artifacts | `sleep2expert/finetune.py:127,222` (rename to `finetune_status.json`, update whitelist); `_build_moe_finetune_status` / `_flatten_moe_status` in `sleep2expert/sleep2vec_finetuning.py:331,389` |
 | Optimizer groups | `sleep2expert/sleep2vec_finetuning.py:2036` `configure_optimizers` reads `_finetune_lr_scales[group]` — the rename to `encoder` lands here too |
 | Documentation | `README.md:426,440,457-468` documents `freeze_tokenizer` / `freeze_backbone_and_insert_lora` / `insert_lora` as the public interface |
 | Configs | 69 finetune YAMLs |
@@ -411,15 +412,14 @@ than silently yielding an empty axis.
    behavior change, no YAML change).
 3. Add the new `finetune.tuning` block and the equivalence gate.
 4. Write the migration tool as `utils/migrate_finetune_tuning.py` (there is no existing
-   migration-script precedent in `utils/`, so this sets one: it must be idempotent,
-   support `--check` for CI, and refuse to run on a dirty tree).
+   migration-script precedent in `utils/`, so this sets one: it must derive the preset
+   from legacy runtime semantics rather than by renaming keys).
 5. Run the migration tool; commit the rewritten YAMLs, the new block, and the deletion
    of the old keys as one hard cut. Update `utils/check_configs.py` and `README.md` in
    the same commit — a config validator that still looks for `moe_tuning` would pass
    every migrated file vacuously.
-6. Rename the status file to `finetune_status.json` (drop the `"legacy"` branch, emit
-   it from all three variants, update the `allowed_files` whitelist and retire the old
-   name).
+6. Rename the status file to `finetune_status.json` in `sleep2expert` (drop the
+   `"legacy"` branch, update the `allowed_files` whitelist and retire the old name).
 7. Update agent tooling axes and pointers; re-freeze any plan pinned to
    `yaml:/finetune/lora`.
 
@@ -452,7 +452,7 @@ Settled 2026-09-04.
   `tokenizers: {train: false}` override, so the freeze is visible per file instead of
   hidden in a preset default.
 - **The status file is renamed `finetune_status.json`**; `moe_finetune_status.json` is
-  retired, not dual-written.
+  retired, not dual-written. It remains `sleep2expert`-only.
 
 ### Settled during implementation
 
@@ -467,16 +467,22 @@ Settled 2026-09-04.
   hyperparameters.
 - **`lr_scale` must be finite.** `nan <= 0.0` is false, so the `> 0` check alone let a
   NaN scale through into the optimizer's learning rate.
-- **The migration tool scans `recipes/` as well as `configs/`.** Finetune configs also
-  ship as recipe fixtures (`recipes/examples/fixtures/tiny_finetune_config.yaml`), and
-  they need the same rewrite.
+- **The migration tool converts one config and prints it.** It first walked `configs/`
+  and `recipes/` (finetune configs also ship as recipe fixtures) rewriting files in
+  place. Once the tree was migrated that mode did nothing on every subsequent run, while
+  still carrying an in-place rewrite, a clean-worktree guard and a `--check` with no
+  caller. What survives the hard cut is the case the error messages actually point at: a
+  config outside this repo, named with `--config`, converted to stdout. The conversion is
+  derived from legacy runtime behaviour rather than from key names, so it wants a human
+  read before it lands.
 - **A config with no legacy keys still gets a `tuning` block.** `finetune.tuning` is
   required now, so "no legacy keys" means "relied on the legacy defaults", which trained
   everything except the tokenizers. Only the `sex_age_baseline` configs are skipped:
   they are a different runtime with no trainability groups at all.
-- **The migration manifest merges instead of replacing.** An entry can only be derived
-  from a config's *legacy* text, which is gone once that config is migrated, so a second
-  run of the tool must not drop the entries the first run recorded.
+- **The migration manifest is frozen test data.** An entry can only be derived from a
+  config's *legacy* text, which is gone once that config is migrated — so nothing can
+  regenerate it, and it lives at `tests/config/finetune_tuning_migration.json` next to
+  the test that replays it rather than in `doc/`, which stores assets.
 - **Two groups have sub-group granularity, and the policy pass has to honor both.**
   `moe_top_experts` trains only the experts of the selected MoE layers, and
   `separate_adapters` trains only the `ch_<channel>` adapters — never the `default`
