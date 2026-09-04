@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from copy import deepcopy
 import importlib
 from itertools import combinations
@@ -22,6 +23,8 @@ from sleep2vec.config import (
     load_pretrain_config,
     validate_model_config,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _write_yaml(tmp_path: Path, payload: dict, name: str = "config.yaml") -> Path:
@@ -1050,3 +1053,44 @@ def test_validate_model_config_rejects_invalid_channel_aggregator():
 
     with pytest.raises(ValueError, match="channel_agg.name must be 'mean', 'concat', or 'gated_scalar'"):
         validate_model_config(model_cfg)
+
+
+VARIANTS_WITH_A_TUNING_SCHEMA = ("sleep2vec", "sleep2vec2", "sleep2expert")
+
+
+def _rejected_finetune_key_paths(variant: str) -> set[str]:
+    config = importlib.import_module(f"{variant}.config")
+    return {f"finetune.{key}" for key in config._LEGACY_FINETUNE_TRAINABILITY_KEYS}
+
+
+def _string_literals(path: Path) -> list[str]:
+    return [
+        node.value
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+
+@pytest.mark.parametrize("variant", VARIANTS_WITH_A_TUNING_SCHEMA)
+def test_no_variant_message_sends_the_reader_back_to_a_rejected_finetune_key(variant: str):
+    """Renaming a config key has to reach the messages that name it, not just the loader.
+
+    `extract_embeddings` told a user whose checkpoint held adapter weights to look at
+    `finetune.lora` for a whole release after the loader started rejecting that key
+    outright, so the only way to act on the message was to author a config that no
+    longer loads. `config.py` is exempt: it owns the rejection table and must name the
+    old keys to map them onto the new ones.
+    """
+    rejected = _rejected_finetune_key_paths(variant)
+    assert "finetune.lora" in rejected
+
+    offenders = [
+        f"{source.relative_to(REPO_ROOT)}: {key}"
+        for source in sorted((REPO_ROOT / variant).rglob("*.py"))
+        if source.name != "config.py"
+        for literal in _string_literals(source)
+        for key in sorted(rejected)
+        if key in literal
+    ]
+
+    assert offenders == []

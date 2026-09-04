@@ -607,6 +607,16 @@ Settled 2026-09-04.
   naming the field as unsupported. The marker is now
   `sleep2expert.FINETUNE_BLOCK_FIELDS - sleep2vec.FINETUNE_BLOCK_FIELDS`, computed at call
   time: the next expert-only finetune key routes without anyone remembering this file.
+- **A renamed key has to reach the messages that name it.** `extract_embeddings` caught a
+  checkpoint holding adapter weights against a config that does not train them and told the
+  reader to look at `finetune.lora` -- a key the loader now rejects outright, so the only
+  way to act on the message was to author a config that no longer loads. All three forks
+  now name the live policy (`finetune.tuning`, its `lora` preset, `groups.lora.train`) and
+  say what a pretrain config does here, since that path reaches the same raise with no
+  `finetune.tuning` to point at. `test_no_variant_message_sends_the_reader_back_to_a_rejected_finetune_key`
+  walks each variant's string literals against `_LEGACY_FINETUNE_TRAINABILITY_KEYS`, so the
+  class closes rather than this one instance; `config.py` is exempt because it owns the
+  rejection table and must name the old keys to map them.
 - **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
   `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
   a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate

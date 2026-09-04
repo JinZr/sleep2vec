@@ -444,7 +444,10 @@ def _load_backbone_checkpoint(
     }
     if _has_adapter_keys(filtered) and not adapters_enabled:
         raise ValueError(
-            "Checkpoint contains adapter weights, but the YAML finetune.lora settings do not enable adapters."
+            "Checkpoint contains adapter weights, but this config does not train them: "
+            "finetune.tuning must train the lora group (preset lora, or groups.lora.train: true). "
+            "A pretrain config carries no finetune.tuning at all, so pass the finetune config "
+            "the checkpoint was trained with."
         )
     load_info = model.load_state_dict(filtered, strict=False)
     unexpected_cls_keys = _cls_state_keys(load_info.unexpected_keys)
