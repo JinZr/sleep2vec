@@ -54,7 +54,6 @@ from sleep2expert.visualization.layer_mix import build_layer_mix_rows, render_la
 from .downstream_model import Sleep2vecDownstreamModel
 from .pretrain_model import Sleep2vecPretrainModel
 
-
 # Groups whose parameters live under `backbone.` without being the encoder. A frozen
 # encoder says nothing about whether these train, so the invariant has to skip them.
 _NON_ENCODER_BACKBONE_GROUPS = {"lora", "tokenizers", "experts", "routers", "projection"}

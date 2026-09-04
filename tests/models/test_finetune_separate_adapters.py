@@ -148,9 +148,7 @@ def test_separate_adapters_leave_the_default_adapter_frozen(monkeypatch, variant
 @pytest.mark.parametrize("variant", VARIANTS)
 def test_the_default_adapter_reaches_no_optimizer_group(monkeypatch, variant: str):
     module = _lora_module(monkeypatch, variant, separate_adapters=True)
-    default_params = {
-        id(param) for name, param in _lora_params(module).items() if ".default." in name
-    }
+    default_params = {id(param) for name, param in _lora_params(module).items() if ".default." in name}
 
     optimizers, _ = module.configure_optimizers()
     optimized = {id(param) for group in optimizers[0].param_groups for param in group["params"]}

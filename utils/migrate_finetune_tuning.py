@@ -25,6 +25,7 @@ Usage:
     python utils/migrate_finetune_tuning.py            # rewrite configs + manifest
     python utils/migrate_finetune_tuning.py --check    # fail if anything is unmigrated
 """
+
 from __future__ import annotations
 
 import argparse

@@ -1195,9 +1195,7 @@ def _build_finetune_tuning_config(raw: t.Any, model_cfg: ModelConfig) -> Finetun
         raise ValueError(f"finetune.tuning.groups has unknown groups: {unknown}.")
     illegal = sorted(set(overrides_raw) & FINETUNE_TUNING_MOE_GROUPS - legal_groups)
     if illegal:
-        raise ValueError(
-            f"finetune.tuning.groups {illegal} require model.backbone.moe.enabled=true."
-        )
+        raise ValueError(f"finetune.tuning.groups {illegal} require model.backbone.moe.enabled=true.")
 
     overrides = {
         name: _build_finetune_group_config(block, f"finetune.tuning.groups.{name}")

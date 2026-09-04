@@ -189,13 +189,16 @@ def _routing_aux(router_probs: torch.Tensor, *, layer_idx: int = 1) -> MoERoutin
 
 
 def test_head_only_freezes_entire_backbone():
-    module = _module("head_only", groups=_groups(
-        encoder=(False, 1.0),
-        tokenizers=(False, 1.0),
-        experts=(False, 1.0),
-        routers=(False, 1.0),
-        projection=(False, 1.0),
-    ))
+    module = _module(
+        "head_only",
+        groups=_groups(
+            encoder=(False, 1.0),
+            tokenizers=(False, 1.0),
+            experts=(False, 1.0),
+            routers=(False, 1.0),
+            projection=(False, 1.0),
+        ),
+    )
 
     assert all(not param.requires_grad for _, param in _named_params(module, "backbone."))
     assert any(param.requires_grad for _, param in _named_params(module, "head."))
@@ -456,9 +459,7 @@ def test_status_snapshot_covers_every_group_under_the_full_preset():
     assert status["lr_scales"] == {group: 1.0 for group in module.tuning_config.groups}
     assert status["moe_regularization"]["enabled"] is False
     assert status["collect_train_moe_aux"] is False
-    assert status["trainable_params"] == sum(
-        group["trainable_params"] for group in status["param_groups"].values()
-    )
+    assert status["trainable_params"] == sum(group["trainable_params"] for group in status["param_groups"].values())
 
 
 def test_shared_step_adds_downstream_moe_zloss_only_when_enabled(monkeypatch):

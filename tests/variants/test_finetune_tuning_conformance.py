@@ -78,9 +78,7 @@ def test_shared_presets_agree_on_the_shared_groups(preset: str):
     """A preset name must mean the same thing in every variant, otherwise a config
     moved between variants would silently change what trains."""
     tables = {variant: _presets(variant)[preset] for variant in VARIANTS}
-    restricted = {
-        variant: {group: table[group] for group in SHARED_GROUPS} for variant, table in tables.items()
-    }
+    restricted = {variant: {group: table[group] for group in SHARED_GROUPS} for variant, table in tables.items()}
 
     assert len(set(map(str, restricted.values()))) == 1, restricted
 
