@@ -417,6 +417,7 @@ def test_hparam_card_skips_sidecar_tables_without_weakening_validation(
 )
 def test_hparam_preflight_card_projects_slurm_topology(direct_controller: bool, controller_label: str):
     config_path = "configs/sleep2vec_dense_finetune_cls.yaml"
+    config_bytes = (REPO_ROOT / config_path).read_bytes()
     card = render_hparam_preflight_card(
         {
             "variant": "sleep2vec",
@@ -434,7 +435,7 @@ def test_hparam_preflight_card_projects_slurm_topology(direct_controller: bool, 
             },
         },
         _snapshot("sleep2vec.finetune"),
-        [({"run_id": "run-000"}, (REPO_ROOT / config_path).read_bytes())],
+        [({"run_id": f"run-{index:03d}"}, config_bytes) for index in range(3)],
     )
 
     assert "- Scheduler: `slurm`" in card
@@ -443,4 +444,7 @@ def test_hparam_preflight_card_projects_slurm_topology(direct_controller: bool, 
         "one Slurm task per Lightning rank" in card
     )
     assert "- Planned task resources: CPUs/task=6, total CPUs=48, memory=64G/allocation, walltime=12:00:00" in card
+    assert (
+        "- Aggregate across 3 planned allocations if active together: " "tasks=24, GPUs=24, CPUs=144, memory=3 × 64G"
+    ) in card
     assert f"- Scheduler controller: {controller_label}" in card
