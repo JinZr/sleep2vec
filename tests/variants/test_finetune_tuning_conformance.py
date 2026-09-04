@@ -220,9 +220,13 @@ def test_the_conversion_table_is_where_the_rejection_messages_say_it_is():
 
     assert "**Converting a legacy finetune config**" in readme
     section = readme.split("**Converting a legacy finetune config**", 1)[1].split("\n---", 1)[0]
-    for legacy_key in ("freeze_tokenizer", "moe_tuning.mode", "lr_scales"):
+    for legacy_key in ("freeze_tokenizer", "moe_tuning.mode", "lr_scales", "moe_tuning.moe_regularization"):
         assert legacy_key in section, f"the conversion table does not mention {legacy_key}"
     assert "tests/config/legacy_finetune_semantics.py" in section
+
+    # A dropped `moe_regularization` row is the one omission the parser cannot catch:
+    # nesting it fails loudly, but leaving it out loads fine with the auxiliary loss off.
+    assert "finetune.moe_regularization" in section
 
 
 @pytest.mark.parametrize("variant", VARIANTS)

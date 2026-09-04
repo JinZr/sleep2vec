@@ -466,16 +466,29 @@ finetune:
         tokenizers: {train: false}
   ```
 - `preset` picks a complete trainability table over the variant's semantic parameter
-  groups; `groups` overrides individual entries on top of it. Shared presets are `full`,
-  `head_only`, `lora`, and `custom` (which requires every group to be spelled out).
-  `sleep2expert` adds `moe_conservative`, `moe_conservative_routers`, and
+  groups; `groups` overrides individual entries on top of it. The materialized
+  `(train, lr_scale)` per group for each preset is `_FINETUNE_TUNING_PRESETS` in the
+  variant's `config.py` — that dict is the definition, not a copy of one. Shared presets
+  are `full`, `head_only`, `lora`, and `custom` (which requires every group to be spelled
+  out). `sleep2expert` adds `moe_conservative`, `moe_conservative_routers`, and
   `moe_top_experts`.
 - Groups are `head`, `encoder`, `tokenizers`, `projection`, `lora`, plus `experts` and
   `routers` on `sleep2expert`. Each entry is `{train: <bool>, lr_scale: <float>}`.
   `lr_scale` must be finite and `> 0`; freezing is expressed only by `train: false`, never
   by a zero learning-rate scale.
+- The `head` group must train. A frozen head leaves the classifier at its random
+  initialization, so `groups.head.train: false` is rejected under every preset, `custom`
+  included.
 - A preset may not train the encoder and LoRA at the same time; LoRA adapts a frozen
   backbone.
+- On `sleep2expert`, training the `routers` group also requires
+  `model.backbone.moe.router_type: learned`. The `random`, `hard_modality` and `hard_group`
+  routers hold no parameters, so `moe_conservative_routers` — or a `routers` override on
+  any other preset — is rejected on those. Every `moe_*` preset likewise requires
+  `model.backbone.moe.enabled: true`.
+- `finetune.tuning.moe.layer_indices` is accepted only under `preset: moe_top_experts`, and
+  must be a subset of `model.backbone.moe.layer_indices`. Omit it and the deepest configured
+  MoE layer is selected; the preset fails at load if the model configures none.
 - `finetune.tuning.lora` carries LoRA hyper-parameters (`r`, `alpha`, `dropout`,
   `target_modules`, `use_dora`, `separate_adapters`). They are read only when the `lora`
   group trains, and they may be present under a preset that does not train it — they are
@@ -511,7 +524,7 @@ rejection messages point at.
 
 | Old state | New |
 | --- | --- |
-| `freeze: false` (no `moe_tuning`) | `preset: full` + explicit `groups.tokenizers.train: false` |
+| `freeze: false` (no `moe_tuning`) | `preset: full`, then apply the `freeze_tokenizer` row |
 | `freeze: true, insert: false` | `preset: head_only` |
 | `freeze: true, insert: true` | `preset: lora` + `tuning.lora` shape |
 | `moe_tuning.mode: head_only` | `preset: head_only` |
@@ -519,17 +532,19 @@ rejection messages point at.
 | `moe_tuning.mode: conservative_full_router_trainable` | `preset: moe_conservative_routers` |
 | `moe_tuning.mode: top_moe_layer_expert_only` | `preset: moe_top_experts` + `moe.layer_indices` |
 | `moe_tuning.mode: custom` | `preset: custom` + explicit `groups` |
-| `freeze_tokenizer: true/false` | `groups.tokenizers.train` |
-| any non-default `lr_scales[g]` | `groups[g].lr_scale` (`lr_scales.backbone` -> `groups.encoder`) |
+| `freeze_tokenizer: true/false` (defaults to `true`) | `groups.tokenizers.train`, inverted |
+| `moe_tuning.moe_regularization` | `finetune.moe_regularization`, a sibling of `tuning` rather than nested |
+| `lr_scales[g]: 0.0` | `groups[g].train: false`, with no `lr_scale` |
+| any other non-default `lr_scales[g]` | `groups[g].lr_scale` (`lr_scales.backbone` -> `groups.encoder`) |
 
 (`freeze` and `insert` above are `finetune.lora.freeze_backbone_and_insert_lora` and
 `finetune.lora.insert_lora`.)
 
 Rule: build the group table from what the legacy keys *did* at runtime, compare it against
-the preset table, use the matching preset name, and fall back to `preset: custom` with an
-explicit `groups` map when nothing matches exactly. Never translate a key by name alone.
-Four defaults are what make this more than a rename, and all four are invisible in a
-config's own text:
+the materialized preset tables in `_FINETUNE_TUNING_PRESETS`, use the matching preset name,
+and fall back to `preset: custom` with an explicit `groups` map when nothing matches
+exactly. Never translate a key by name alone. The defaults are what make this more than a
+rename, and none of them is visible in a config's own text:
 
 - `moe_tuning.lr_scales` defaulted **per mode**, and a `0.0` scale was itself a freeze.
 - `train_moe_layer_indices` defaulted to the deepest MoE layer.
@@ -537,19 +552,23 @@ config's own text:
   `sleep2expert`, so one file with `freeze_backbone_and_insert_lora: true` and no
   `insert_lora` describes two different runs depending on which variant loaded it.
 - `insert_lora: true` under `freeze_backbone_and_insert_lora: false` inserted **nothing**,
-  and froze nothing either: such a config was full finetuning with the tokenizers frozen.
-  It converts to `preset: full` + `groups.tokenizers.train: false`, not to
-  `groups.lora.train: true`. Translating the literal value would turn a full finetune into
-  a frozen-backbone LoRA run and break reproducibility of anything produced from it.
+  and froze nothing either: such a config was full finetuning, with the tokenizers
+  following `freeze_tokenizer` as in any other config. It converts to `preset: full`, not
+  to `groups.lora.train: true`. Translating the literal value would turn a full finetune
+  into a frozen-backbone LoRA run and break reproducibility of anything produced from it.
 
-`tests/config/legacy_finetune_semantics.py` transcribes all four executably and is the
-authoritative statement of what the old keys did.
+`tests/config/legacy_finetune_semantics.py` transcribes every one of them executably and
+is the authoritative statement of what the old keys did.
 
-One legacy combination has no representation in the new schema. `sleep2expert` read
-`freeze_backbone_and_insert_lora` and `moe_tuning` from the same config, so setting both
-evaluates to a table that trains the encoder *and* inserts LoRA — which the new schema
-rejects by design. Such a config is resolved by deciding which of the two policies it
-meant, not converted.
+Whether a config that sets both `freeze_backbone_and_insert_lora` and `moe_tuning` can be
+converted at all depends on the mode — `sleep2expert` read both blocks from the same file.
+Under `head_only` or `top_moe_layer_expert_only` the mode leaves the encoder frozen, so
+the pair evaluates to a frozen encoder with a trainable head and LoRA — that is
+`preset: lora`, and the conversion is determined. Under `conservative_full_router_frozen` or
+`conservative_full_router_trainable` the mode keeps the encoder trainable, so the pair
+evaluates to a table that trains the encoder *and* inserts LoRA, which the new schema
+rejects by design. Only those two are resolved by deciding which policy the config meant,
+rather than converted.
 
 ---
 
