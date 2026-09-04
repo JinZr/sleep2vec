@@ -348,3 +348,51 @@ def test_check_config_file_rejects_partial_preset_build_block(tmp_path: Path):
         ValueError, match="must define both preset_build.required_channels and preset_build.min_channels"
     ):
         check_config_file(path)
+
+
+def test_a_declared_variant_wins_over_the_content_probe(tmp_path: Path):
+    """Inference is for configs that declared nothing; a declaration settles it.
+
+    The expert-only content marker routes `finetune.moe_regularization` to
+    `sleep2expert.config`. A plan that declares `variant: sleep2vec` still generates
+    `python -m sleep2vec.finetune`, whose loader rejects that field -- so inferring the
+    expert loader makes validation pass for a run that cannot start.
+    """
+    payload = {"finetune": {"moe_regularization": {}}}
+    path = _write_yaml(tmp_path / "declared.yaml", payload)
+
+    assert _resolve_config_variant(path, payload).config_module == "sleep2expert.config"
+    for variant, module in (
+        ("sleep2vec", "sleep2vec.config"),
+        ("sleep2vec2", "sleep2vec2.config"),
+        ("sleep2expert", "sleep2expert.config"),
+    ):
+        assert _resolve_config_variant(path, payload, variant).config_module == module, variant
+
+
+def test_check_config_file_fails_an_expert_only_field_under_a_declared_base_variant(tmp_path: Path):
+    """The declared loader is the one that has to accept the config, and it does not."""
+    source = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "heartbeat_breath_stage5_finetune.yaml"
+    payload = yaml.safe_load(source.read_text())
+    payload["model"]["backbone"].pop("moe")
+    payload["finetune"]["tuning"] = {"preset": "full"}
+    path = _write_yaml(tmp_path / "declared_base.yaml", payload)
+
+    # Inferred: routes to the expert loader, which accepts it.
+    check_config_file(path)
+
+    with pytest.raises(ValueError, match="moe_regularization"):
+        check_config_file(path, "sleep2vec")
+
+
+def test_validation_command_names_the_declared_variant():
+    """`check_configs` must be told the variant the generated run command uses."""
+    from agent_tools.plan_context import validation_commands
+
+    commands = validation_commands({"task": "finetune", "variant": "sleep2vec", "inputs": {"config": "c.yaml"}})
+    assert any("utils/check_configs.py --variant sleep2vec c.yaml" in command for command in commands), commands
+
+    # `sex_age_baseline` has its own loader that `check_configs` detects from the config itself,
+    # and `--variant` does not name it.
+    baseline = validation_commands({"task": "finetune", "variant": "sex_age_baseline", "inputs": {"config": "c.yaml"}})
+    assert any(command.endswith("utils/check_configs.py c.yaml") for command in baseline), baseline

@@ -634,6 +634,13 @@ Settled 2026-09-04.
   invisible. Anyone following the README's manual conversion got 10x the legacy router rate.
   `test_each_preset_carries_the_lr_scales_of_the_mode_it_converts` now ties the preset table
   to the legacy transcription directly, for every preset that is a documented conversion.
+- **A declared variant beats the content probe.** Deriving the out-of-tree marker fixed one
+  direction and opened the other: a plan declaring `variant: sleep2vec` whose config carries
+  `finetune.moe_regularization` now routed to `sleep2expert.config`, which accepts the field,
+  while the generated `python -m sleep2vec.finetune` rejects it -- validation green, run dead
+  at config load. `check_configs` takes `--variant` now, and `plan_context` passes the
+  recipe's own variant, so the loader that validates is the loader that runs. Content
+  sniffing stays what it always was: a fallback for configs that declared nothing.
 - **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
   `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
   a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate

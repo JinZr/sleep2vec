@@ -12,7 +12,7 @@ from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
 from .decision_paths import path_context, path_validation
 from .domain.presets import preset_summary
 from .index_csv import index_summary
-from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, coerce_list, resolve_repo_path
+from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, SUPPORTED_VARIANTS, coerce_list, resolve_repo_path
 from .skills import list_skills
 
 
@@ -90,7 +90,14 @@ def validation_commands(recipe: dict) -> list[str]:
     inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
     commands = []
     if inputs.get("config"):
-        commands.append(rendering.render_command(["python", "utils/check_configs.py", inputs["config"]]))
+        # Name the variant the generated run command uses. `check_configs` otherwise infers one
+        # from the config's path and contents, and an out-of-tree config can infer a different
+        # loader than the run will call -- validation passes, the run fails at config load.
+        variant = recipe.get("variant")
+        check = ["python", "utils/check_configs.py"]
+        if variant in SUPPORTED_VARIANTS and variant != "sex_age_baseline":
+            check += ["--variant", variant]
+        commands.append(rendering.render_command([*check, inputs["config"]]))
     commands.append(rendering.render_command(["python", "-m", "agent_tools", "skills", "--validate"]))
     return commands
 

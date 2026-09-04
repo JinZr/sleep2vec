@@ -38,6 +38,9 @@ CONFIG_VARIANTS = {
     "sleep2expert": ConfigVariant("sleep2expert.config", "sleep2expert.preprocess.save_dataset_presets"),
     "sleep2vec2": ConfigVariant("sleep2vec2.config", "sleep2vec2.preprocess.save_dataset_presets"),
 }
+# `CONFIG_VARIANTS` is keyed by the path segment that names a fork, so it has no entry for
+# the base variant. Declaring a variant explicitly has to be able to name it.
+DECLARABLE_VARIANTS = {"sleep2vec": BASE_VARIANT, **CONFIG_VARIANTS}
 SLEEP2STAT_CONFIG_DIR = "sleep2stat"
 SEX_AGE_BASELINE_CONFIG_DIR = "sex_age_baseline"
 
@@ -48,6 +51,15 @@ def parse_args() -> argparse.Namespace:
         "paths",
         nargs="*",
         help="Optional config paths to validate. Defaults to every YAML under configs/.",
+    )
+    parser.add_argument(
+        "--variant",
+        choices=sorted(DECLARABLE_VARIANTS),
+        help=(
+            "Validate against this variant's loader instead of inferring one from the path or "
+            "contents. Pass the variant the run will actually use, so validation cannot pass "
+            "under a loader the run never invokes."
+        ),
     )
     return parser.parse_args()
 
@@ -99,7 +111,18 @@ def _sleep2expert_only_finetune_fields() -> frozenset[str]:
     return frozenset(expert) - frozenset(base)
 
 
-def _resolve_config_variant(path: Path, config_data: dict[str, t.Any] | None = None) -> ConfigVariant:
+def _resolve_config_variant(
+    path: Path, config_data: dict[str, t.Any] | None = None, variant: str | None = None
+) -> ConfigVariant:
+    # A declared variant is the one the run will use, so it settles the question outright.
+    # Everything below is inference for configs that came with no declaration, and inference
+    # that disagrees with the command about to be run is worse than no inference: it validates
+    # a config against a loader nothing will call.
+    if variant is not None:
+        try:
+            return DECLARABLE_VARIANTS[variant]
+        except KeyError:
+            raise ValueError(f"Unknown variant {variant!r}. Expected one of {sorted(DECLARABLE_VARIANTS)}.") from None
     try:
         rel_path = path.resolve().relative_to(CONFIG_ROOT.resolve())
     except ValueError:
@@ -155,8 +178,8 @@ def _is_sex_age_baseline_config(path: Path, config_data: dict[str, t.Any]) -> bo
     return model_block.get("name") == "sex_age_mlp"
 
 
-def _load_config_tools(path: Path, config_data: dict[str, t.Any]) -> ConfigTools:
-    variant = _resolve_config_variant(path, config_data)
+def _load_config_tools(path: Path, config_data: dict[str, t.Any], declared_variant: str | None = None) -> ConfigTools:
+    variant = _resolve_config_variant(path, config_data, declared_variant)
     config_module = import_module(variant.config_module)
     preset_module = import_module(variant.preset_module)
     return ConfigTools(
@@ -252,7 +275,7 @@ def _validate_repo_policy(path: Path, config_data: dict[str, t.Any], tools: Conf
         raise ValueError("single-channel ppg non-seq finetune configs must set preset_build.min_channels to 1.")
 
 
-def check_config_file(path: Path) -> None:
+def check_config_file(path: Path, variant: str | None = None) -> None:
     config_data = _load_config_mapping(path)
     if _is_sleep2stat_config(path, config_data):
         from sleep2stat.config import load_config
@@ -265,7 +288,7 @@ def check_config_file(path: Path) -> None:
         bundle = load_finetune_config(path)
         validate_model_config(bundle.model)
         return
-    tools = _load_config_tools(path, config_data)
+    tools = _load_config_tools(path, config_data, variant)
     _validate_runtime_loader_contract(path, config_data, tools)
     _validate_repo_policy(path, config_data, tools)
     _validate_preset_build_contract(config_data, tools)
@@ -278,7 +301,7 @@ def main() -> int:
 
     for path in config_paths:
         try:
-            check_config_file(path)
+            check_config_file(path, args.variant)
         except Exception as exc:
             failures.append((path, str(exc)))
 
