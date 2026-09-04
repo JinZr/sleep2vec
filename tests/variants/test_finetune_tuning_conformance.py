@@ -126,6 +126,33 @@ def test_no_preset_pairs_a_frozen_group_with_a_learning_rate_scale(variant: str)
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
+def test_freezing_a_group_drops_the_preset_scale_in_every_variant(variant: str, tmp_path: Path):
+    """The invariant above holds for the preset tables; it must survive an override too.
+
+    A `{train: false}` override carries no scale of its own, and the parser filled the gap
+    from the preset -- so freezing `moe_conservative`'s encoder produced `train: false,
+    lr_scale: 0.1`, which the parser rejects when a config spells it out. Only `sleep2expert`
+    ships a preset with a non-neutral scale today; for the other two this guards the day one
+    is added.
+    """
+    payload = yaml.safe_load((REPO_ROOT / REPRESENTATIVE_CONFIGS[variant]).read_text())
+    config = _config(variant)
+    for preset, table in _presets(variant).items():
+        if table is None:
+            continue
+        frozen = {group: {"train": False} for group in table if group != "head"}
+        payload["finetune"]["tuning"] = {"preset": preset, "groups": frozen}
+        path = tmp_path / f"frozen_{preset}.yaml"
+        path.write_text(yaml.safe_dump(payload))
+
+        cfg = config.load_finetune_config(path).finetune.tuning
+
+        for group in frozen:
+            assert cfg.trains(group) is False, f"{variant}:{preset}:{group}"
+            assert cfg.lr_scale(group) == 1.0, f"{variant}:{preset}:{group}"
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
 def test_every_variant_rejects_the_same_legacy_keys(variant: str):
     assert set(_config(variant)._LEGACY_FINETUNE_TRAINABILITY_KEYS) >= {"freeze_tokenizer", "lora"}
 

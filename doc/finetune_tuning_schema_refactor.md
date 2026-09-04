@@ -477,6 +477,13 @@ Settled 2026-09-04.
   hyperparameters.
 - **`lr_scale` must be finite.** `nan <= 0.0` is false, so the `> 0` check alone let a
   NaN scale through into the optimizer's learning rate.
+- **Freezing a group through an override drops the preset's scale.** `{train: false}`
+  carries no scale of its own, and filling that gap from the preset made
+  `moe_conservative` plus `groups.encoder: {train: false}` materialize `train: false,
+  lr_scale: 0.1` -- a pair the parser rejects when a config spells it out, and one no
+  preset table contains. It reached the status block and the logged hparams, so the run
+  reported a policy the schema forbids. The override now normalizes to the neutral scale,
+  which puts the two axes back where the `0.0`-means-frozen removal left them.
 - **The migration script was deleted along with the migration.** It walked `configs/`
   and `recipes/` (finetune configs also ship as recipe fixtures) rewriting files in
   place; once the tree was migrated that did nothing on every subsequent run. Trimmed to
@@ -565,7 +572,9 @@ the paths no shipped config exercised, so the manifest could not have caught the
 must agree on: the shared group names and their relative order, the shared preset names,
 identical meanings for `full`/`head_only`/`lora` over the shared groups, every preset
 covering every group, every preset training the head, no preset pairing a trainable
-encoder with LoRA, and no preset pairing a frozen group with a non-neutral `lr_scale`.
+encoder with LoRA, and no preset pairing a frozen group with a non-neutral `lr_scale` --
+the last of these also replayed through the parser, since a preset table that honours the
+invariant is no use if an override can defeat it on the way out.
 
 Not verified here: anything that imports torch. `torch`, `pytorch_lightning` and `peft`
 are absent from the development environment, so the runtime apply sites

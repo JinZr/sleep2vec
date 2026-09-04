@@ -387,6 +387,25 @@ def test_sleep2expert_finetune_tuning_moe_conservative_preset_parses(tmp_path: P
     assert bundle.finetune.moe_regularization.enabled is False
 
 
+def test_sleep2expert_finetune_tuning_freezing_a_scaled_group_drops_its_scale(tmp_path: Path):
+    """Freezing a group must drop the preset's scale, not inherit it.
+
+    `moe_conservative` scales the encoder by 0.1. An override of `{train: false}` used to
+    keep that 0.1, so `finetune_status` reported `train: false, lr_scale: 0.1` -- the pair
+    the parser rejects when a config writes it out, and one no preset table contains.
+    """
+    payload = _valid_finetune_payload()
+    _tuning(payload, preset="moe_conservative", groups={"encoder": {"train": False}, "experts": {"train": False}})
+    path = _write_config(tmp_path, payload)
+
+    cfg = load_finetune_config(path).finetune.tuning
+
+    assert cfg.trains("encoder") is False
+    assert cfg.lr_scale("encoder") == pytest.approx(1.0)
+    assert cfg.trains("experts") is False
+    assert cfg.lr_scale("experts") == pytest.approx(1.0)
+
+
 def test_sleep2expert_finetune_tuning_head_only_allows_dense_config(tmp_path: Path):
     payload = _valid_finetune_payload()
     payload["model"]["backbone"].pop("moe")

@@ -875,7 +875,12 @@ def _build_finetune_tuning_config(raw: t.Any) -> FinetuneTuningConfig:
     for name in FINETUNE_TUNING_GROUPS:
         if name in overrides:
             train, lr_scale = overrides[name]
-            if lr_scale is None:
+            if not train:
+                # Freezing a group drops the preset's scale with it. Inheriting the scale would
+                # report `train: false, lr_scale: 0.1` -- the pair `_build_finetune_group_config`
+                # refuses when a config states it, and one no preset table contains.
+                lr_scale = 1.0
+            elif lr_scale is None:
                 lr_scale = base[name][1] if base is not None else 1.0
         else:
             train, lr_scale = base[name]
