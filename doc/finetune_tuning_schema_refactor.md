@@ -597,6 +597,16 @@ Settled 2026-09-04.
   on it, and `finetune_balanced` refuses any variant outside `{sleep2vec, sleep2vec2}` with a
   named blocking issue. Only `skills/finetuning/SKILL.md` asked for the block unconditionally,
   which sent the agent hunting for a policy nothing in that variant states.
+- **The out-of-tree variant marker is derived from the two schemas, not listed.**
+  `check_configs` routes a config outside `configs/` by sniffing its content, and the marker
+  was `finetune.moe_tuning` -- which used to *contain* `moe_regularization`. Lifting that
+  field to a sibling of `tuning` left a dense `sleep2expert` finetune config under a shared
+  preset with no marker at all: no `model.backbone.moe`, no `moe_` preset, nothing. Closing
+  the finetune key set turned that miss into a hard failure, because the base loader now
+  rejects `moe_regularization` instead of ignoring it, so a valid config failed validation
+  naming the field as unsupported. The marker is now
+  `sleep2expert.FINETUNE_BLOCK_FIELDS - sleep2vec.FINETUNE_BLOCK_FIELDS`, computed at call
+  time: the next expert-only finetune key routes without anyone remembering this file.
 - **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
   `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
   a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate

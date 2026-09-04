@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 from sleep2vec.common import apply_finetune_config
-from utils.check_configs import check_config_file
+from utils.check_configs import _resolve_config_variant, _sleep2expert_only_finetune_fields, check_config_file
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_FINETUNE_CONFIGS = [
@@ -235,6 +235,45 @@ def test_check_config_file_accepts_out_of_tree_sleep2vec2_config_with_path_hint(
     path.write_text(source.read_text())
 
     check_config_file(path)
+
+
+def test_check_config_file_routes_an_out_of_tree_dense_sleep2expert_finetune_config(monkeypatch, tmp_path: Path):
+    """`finetune.moe_regularization` is the only marker a dense expert finetune config carries.
+
+    A dense backbone under a shared preset leaves no `model.backbone.moe` block and no `moe_`
+    preset to route on, and `moe_regularization: {enabled: false}` is valid there. The base
+    loader now rejects the field instead of ignoring it, so a miss is a hard failure on an
+    otherwise valid config.
+    """
+    import sleep2vec.config as base_config
+
+    def fail_base_loader(*args, **kwargs):
+        raise AssertionError("base sleep2vec loader should not validate sleep2expert configs")
+
+    monkeypatch.setattr(base_config, "load_finetune_config", fail_base_loader)
+    source = REPO_ROOT / "configs" / "sleep2expert" / "moe" / "heartbeat_breath_stage5_finetune.yaml"
+    payload = yaml.safe_load(source.read_text())
+    payload["model"]["backbone"].pop("moe")
+    payload["finetune"]["tuning"] = {"preset": "full"}
+    assert payload["finetune"]["moe_regularization"] == {"enabled": False}
+    path = _write_yaml(tmp_path / "dense_expert_finetune.yaml", payload)
+
+    check_config_file(path)
+
+
+def test_every_expert_only_finetune_field_routes_to_sleep2expert(tmp_path: Path):
+    """The marker is derived from the two schemas, so a future expert-only key routes for free.
+
+    `finetune.moe_tuning` was the marker until this schema lifted `moe_regularization` out of
+    it; a hand-listed marker is what let that config lose its only route.
+    """
+    fields = _sleep2expert_only_finetune_fields()
+
+    assert fields == {"moe_regularization"}
+    for field in fields:
+        path = _write_yaml(tmp_path / f"{field}.yaml", {"finetune": {field: {}}})
+        variant = _resolve_config_variant(path, yaml.safe_load(path.read_text()))
+        assert variant.config_module == "sleep2expert.config", field
 
 
 def test_check_config_file_rejects_missing_preset_build_for_ppg_finetune(tmp_path: Path):

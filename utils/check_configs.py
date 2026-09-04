@@ -84,6 +84,21 @@ def _load_config_mapping(path: Path) -> dict[str, t.Any]:
     return data
 
 
+def _sleep2expert_only_finetune_fields() -> frozenset[str]:
+    """Finetune keys that only `sleep2expert.config` accepts.
+
+    Derived rather than listed: the content marker below exists to route a config the path
+    heuristics missed, and a marker that restates the schema by hand falls out of sync with
+    it. `finetune.moe_tuning` used to be the marker and used to contain
+    `moe_regularization`; lifting that field to a sibling of `tuning` left a valid dense
+    `sleep2expert` config with no marker at all, and the base loader now rejects the field
+    outright instead of ignoring it.
+    """
+    expert = import_module(CONFIG_VARIANTS["sleep2expert"].config_module).FINETUNE_BLOCK_FIELDS
+    base = import_module(BASE_VARIANT.config_module).FINETUNE_BLOCK_FIELDS
+    return frozenset(expert) - frozenset(base)
+
+
 def _resolve_config_variant(path: Path, config_data: dict[str, t.Any] | None = None) -> ConfigVariant:
     try:
         rel_path = path.resolve().relative_to(CONFIG_ROOT.resolve())
@@ -111,7 +126,10 @@ def _resolve_config_variant(path: Path, config_data: dict[str, t.Any] | None = N
     has_moe_tuning = isinstance(tuning_block, dict) and (
         "moe" in tuning_block or str(tuning_block.get("preset", "")).startswith("moe_")
     )
-    if has_moe_backbone or has_moe_tuning:
+    has_expert_only_field = isinstance(finetune_block, dict) and bool(
+        _sleep2expert_only_finetune_fields() & set(finetune_block)
+    )
+    if has_moe_backbone or has_moe_tuning or has_expert_only_field:
         return CONFIG_VARIANTS["sleep2expert"]
     return BASE_VARIANT
 
