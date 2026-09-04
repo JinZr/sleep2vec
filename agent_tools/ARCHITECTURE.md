@@ -176,13 +176,27 @@ Legal edges outside the reverse-edge table:
 
 ## Complexity ceiling
 
-`agent_tools` is gated at mccabe `--max-complexity=25` — a second, scoped
-flake8 invocation in `utils/style_check.sh` and the style_check workflow, not a
-repo-wide `.flake8` setting. The model and training packages are exempt by not
-being in scope rather than by a `per-file-ignores` entry, so nothing outside
-`agent_tools` is silently unchecked.
+`agent_tools` is gated at mccabe complexity 25, owned by
+`utils/complexity_check.py` and run from both `utils/style_check.sh` and the
+style_check workflow. It is not a repo-wide `.flake8` setting: the model and
+training packages are out of scope by not being named, rather than by a
+`per-file-ignores` entry, so nothing outside `agent_tools` is silently
+unchecked. The checker spells the ceiling value; nothing else does.
 
-The 24 functions already above the ceiling carry `# noqa: C901` on their `def`
-line. That list is the debt ledger: shrink it when you touch one of those
-functions, and do not add to it — a new function over 25 branches is a design
-signal, not a lint to suppress.
+Three checks, mirroring the mypy ledger ratchet in `utils/type_check.py`:
+
+1. **The ceiling** — C901 over `agent_tools`.
+2. **The suppression ledger** — the 24 functions already above the ceiling carry
+   `# noqa: C901` on their `def` line. Re-running with noqa disabled proves
+   every suppression still hides a real violation (a stale one must be deleted)
+   and that nothing else is silencing C901, and `SUPPRESSION_CEILING` holds the
+   total. Growing the ledger therefore takes a reviewed diff, not one comment.
+3. **The embedded programs** — `python_program_sources/*.py.src` are fragments
+   assembled by `python_programs.source()` and run through `python -c`. They do
+   not lint standalone (names resolve only once concatenated) and flake8's
+   directory walk never sees them, so each of the 25 registered programs is
+   assembled and checked at the same ceiling. `PROGRAM_LEDGER` grandfathers the
+   two already above it and is checked for staleness the same way.
+
+Both ledgers are shrink-only: a new function or program over 25 branches is a
+design signal, not a lint to suppress.

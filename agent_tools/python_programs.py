@@ -64,6 +64,12 @@ _PROGRAMS = {
 }
 
 
+def registered_programs() -> tuple[str, ...]:
+    """Every program name ``source()`` accepts. The complexity check assembles
+    each one, since flake8's directory walk cannot see ``.py.src`` fragments."""
+    return tuple(_PROGRAMS)
+
+
 def source(name: str) -> str:
     parts = _PROGRAMS[name]
     return "\n\n".join((_SOURCE_ROOT / part).read_bytes().decode("utf-8") for part in parts)
