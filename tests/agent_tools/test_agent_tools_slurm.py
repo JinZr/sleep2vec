@@ -790,7 +790,8 @@ def test_fixed_node_resource_capacity_queries_literal_node_and_projects_limits(m
         return subprocess.CompletedProcess(
             [],
             0,
-            "NodeName=h20-bj-96 CPUTot=128 RealMemory=1500000 Gres=gpu:h20:8,shard:h20:32\n",
+            "NodeName=h20-bj-96 CPUTot=128 RealMemory=1500000 Gres=gpu:h20:8,shard:h20:32 "
+            "Comment=maintenance CPUTot=1 RealMemory=1 Gres=gpu:1\n",
             "",
         )
 

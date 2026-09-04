@@ -863,7 +863,8 @@ def _parse_scontrol_oneline(line: str) -> dict[str, str]:
         if "=" not in token:
             continue
         key, value = token.split("=", 1)
-        fields[key] = value
+        # Slurm appends unquoted Reason/Comment text, whose later key-like words must not replace real fields.
+        fields.setdefault(key, value)
     return fields
 
 
