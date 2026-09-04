@@ -242,6 +242,11 @@ def test_the_conversion_table_is_where_the_rejection_messages_say_it_is():
     # every MoE layer instead of the legacy run's selection.
     assert "moe.layer_indices" in section
 
+    # Neither axis below is in the group table, so a table-only conversion drops both without
+    # any preset mismatch to notice: the layer subset above, and the adapter shape here.
+    assert "finetune.tuning.lora" in section
+    assert "separate_adapters" in section
+
 
 @pytest.mark.parametrize("variant", VARIANTS)
 def test_every_variant_rejects_an_unknown_finetune_block(variant: str, tmp_path: Path):

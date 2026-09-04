@@ -538,6 +538,12 @@ A config **without** `moe_tuning` does convert key by key:
 (`freeze` and `insert` above are `finetune.lora.freeze_backbone_and_insert_lora` and
 `finetune.lora.insert_lora`.)
 
+On a `sleep2expert` config with an MoE backbone, `preset: full` is not quite `freeze: false`.
+It materializes `routers: {train: true}`, which the loader rejects unless
+`model.backbone.moe.router_type: learned`. The legacy run trained them only vacuously — the
+other three router types hold no parameters — so add `groups.routers: {train: false}` and the
+converted config both loads and trains the same set.
+
 A config **with** `moe_tuning` does not. There, trainability and learning-rate scale are
 independent axes, and four separate things decide trainability:
 
@@ -574,6 +580,22 @@ not a reason to fall back to `custom`: `top_moe_layer_expert_only` with
 Sending it to `custom` loses `moe.layer_indices`, which no other preset accepts, and trains
 the experts in every MoE layer rather than the selected ones — a config that loads cleanly
 and trains a larger parameter set than the run it came from.
+
+Two things travel with the table and appear nowhere in it. Check both before deciding that a
+preset matches:
+
+- **Which MoE layers.** `moe_top_experts` trains the experts only in
+  `finetune.tuning.moe.layer_indices`, and no other preset carries that axis. So a table
+  matching it is `moe_top_experts` only when the legacy mode was `top_moe_layer_expert_only`.
+  `custom` never filtered by layer: a `custom` table of a trainable head and experts looks
+  identical and means *every* MoE layer, so it converts to `preset: custom`, or to
+  `moe_top_experts` with `moe.layer_indices` spelling out every layer the model configures.
+  Taking the bare preset there would quietly train one layer's experts instead of all of them.
+- **The LoRA shape.** `r`, `alpha`, `dropout`, `target_modules`, `use_dora` and
+  `separate_adapters` move from `finetune.lora` to `finetune.tuning.lora` whenever the
+  converted config trains the `lora` group — on the `moe_tuning` path as much as the
+  non-MoE one. They are not in the group table, and omitting them silently takes the current
+  defaults, which is a different adapter rather than a different learning rate.
 
 A scale never survives on a frozen group: `lr_scale <= 0` is rejected, and so is any
 `lr_scale` sitting beside `train: false`. So `head_only` with an explicit
@@ -619,11 +641,15 @@ keeps the selected layers' experts trainable, so it is `preset: moe_top_experts`
 `moe.layer_indices` and `groups.lora.train: true` — *not* `preset: lora`, which would
 freeze those experts.
 
-The rest evaluate to a table that trains the encoder *and* inserts LoRA, which the new
-schema rejects by design: both `conservative_*` modes, because they keep the encoder
-trainable, and `custom` whenever its scales train both groups — which the defaults alone
-do, `backbone` at `0.1` and `lora` at `1.0`. Those are not converted but resolved, by
-deciding which policy the config meant.
+What is left unconvertible is one evaluated table, not a list of modes: encoder trainable
+*and* LoRA on, which the new schema rejects by design. Both `conservative_*` modes reach it
+by keeping the encoder trainable, and `custom` reaches it whenever its scales train both —
+which the defaults alone do, `backbone` at `0.1` and `lora` at `1.0`. But the zero-scale rule
+outranks the mode here as everywhere else: `lr_scales.backbone: 0.0` freezes the encoder, and
+the very same file becomes representable as `moe_conservative` — or `moe_conservative_routers`
+— with `groups.encoder: {train: false}` and `groups.lora: {train: true}`. Evaluate the table
+first. Only a table that really trains both needs a decision about which policy the config
+meant, in place of a conversion.
 
 ---
 
