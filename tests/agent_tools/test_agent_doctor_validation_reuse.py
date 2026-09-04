@@ -544,6 +544,11 @@ def test_doctor_publishes_only_canonical_static_ownership_questions(
         "cluster_scheduling_capabilities",
         lambda *_args, **_kwargs: pytest.fail("Blocked doctor reached Slurm capability inspection"),
     )
+    monkeypatch.setattr(
+        managed_scheduler.slurm,
+        "fixed_node_resource_capacity",
+        lambda *_args, **_kwargs: pytest.fail("Blocked doctor reached Slurm capacity inspection"),
+    )
     output_dir = tmp_path / "doctor"
 
     with monkeypatch.context() as guarded:
