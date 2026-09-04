@@ -100,6 +100,11 @@ def finetune_summary_body(
         # Every variant loader requires this block, and agent_tools cannot call those loaders
         # (enforced forks). Without the check, `plan` emits a command that dies at config load.
         blocking_issues.append("finetune.tuning is missing; the config loader requires it.")
+    elif finetune and not (type(tuning.get("preset")) is str and tuning["preset"]):
+        # A block that names no preset states no policy, so it is the same gap as an absent
+        # one -- `finetune.tuning: {}` reaches here as "present". Whether the named preset
+        # exists is the loader's question; this only asks that the config named one.
+        blocking_issues.append("finetune.tuning.preset is missing; the config loader requires it.")
     if finetune and task == {}:
         warnings.append("finetune.task is missing; custom label semantics may be ambiguous.")
     if model_channel_names == ["ppg"] and finetune and "required_channels" not in preset_build:

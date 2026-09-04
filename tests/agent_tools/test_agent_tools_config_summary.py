@@ -97,6 +97,27 @@ def test_config_summary_blocks_a_finetune_config_without_a_tuning_block(tmp_path
     assert "finetune.tuning is missing; the config loader requires it." in summary["blocking_issues"]
 
 
+def test_config_summary_blocks_a_tuning_block_that_names_no_preset(tmp_path: Path):
+    """A present-but-empty block is the same gap as an absent one.
+
+    `finetune.tuning: {}` satisfies `tuning_present`, so the absent-block check above lets it
+    through, but `finetune.tuning.preset` is required by every variant loader and by
+    `finetune_balanced`. Whether the named preset *exists* stays the loader's question.
+    """
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration\nx.npz,train,60\n")
+    payload = config_payload(index)
+    payload["finetune"]["tuning"] = {}
+    config = write_yaml(tmp_path / "empty_tuning.yaml", payload)
+
+    summary = config_summary(config)
+
+    assert summary["finetune"]["tuning_present"] is True
+    blocking = summary["blocking_issues"]
+    assert "finetune.tuning.preset is missing; the config loader requires it." in blocking
+    assert "finetune.tuning is missing; the config loader requires it." not in blocking
+
+
 def test_config_summary_validates_survival_sidecars(tmp_path: Path):
     index = tmp_path / "index.csv"
     index.write_text("path,split,duration,eid\nx.npz,train,60,001\n")

@@ -527,7 +527,14 @@ Settled 2026-09-04.
   is valid -- the variants are enforced forks, so it reads the YAML. Recording
   `tuning_present: false` and no blocking issue let `doctor` and `plan` hand over a
   command that died at config load, the same failure the `backend=npz` and
-  `backend=kaldi` input checks beside it already prevent.
+  `backend=kaldi` input checks beside it already prevent. The check asks two questions
+  only: is there a mapping, and does it name a `preset`. `finetune.tuning: {}` satisfies
+  presence while stating no policy, which is the same gap; `finetune_balanced` already
+  refuses it on the same grounds. Whether the named preset *exists*, and whether the
+  group blocks are well formed, is deliberately left to the loader -- answering it here
+  would make `agent_tools` a fourth copy of a schema each fork owns once, and every
+  finetune plan already carries `python utils/check_configs.py <config>`, which calls
+  the owning loader.
 - **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
   `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
   a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate
