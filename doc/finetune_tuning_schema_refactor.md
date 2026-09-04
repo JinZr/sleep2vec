@@ -663,6 +663,14 @@ Settled 2026-09-04.
   deepest MoE layer. No shipped config exercised either default — which is the point:
   the manifest gate cannot catch a misreading it also generated.
   `tests/config/legacy_finetune_semantics.py` is the only remaining record of either.
+- **A guard the other two forks carry is a guard this one needs.** `sleep2vec2` and
+  `sleep2expert` refuse a Hugging Face RoFormer checkpoint at `load_pretrain_init_weights`;
+  `sleep2vec` accepted the mirror case silently. Its backbone names attention `.attention.self.`
+  and the forks name it `.attention.self_attention.`, so a fork's checkpoint matches the
+  tokenizers, `mask_embed`, `embedding_projection` and `proj_head` around the encoder while
+  every encoder key is unexpected -- a partial match the total-mismatch guard accepts, leaving
+  a randomly initialized encoder behind a successful load. The guard is now symmetric, and a
+  test reads all three sources to assert each variant rejects the layout it cannot read.
 
 ## What was verified
 

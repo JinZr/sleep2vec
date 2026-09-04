@@ -284,3 +284,72 @@ def test_every_variant_rejects_a_lora_checkpoint_the_same_way():
         module = importlib.import_module(f"{variant}.checkpoints")
         assert module._adapter_keys(adapter_state) == list(adapter_state), variant
         assert module._adapter_keys({"encoder.weight": None}) == [], variant
+
+
+class _HFRoformerishModule(nn.Module):
+    """Only the key shape that separates the two RoFormer implementations.
+
+    HF's RoFormer names the attention submodule `self`; the standalone one the two forks ship
+    names it `self_attention`. `mask_embed` stands for everything around the encoder that both
+    layouts share -- which is what makes a cross-variant load partial rather than total.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.encoder = nn.ModuleDict({"layer": nn.ModuleDict({"attention": nn.ModuleDict({"self": nn.Linear(2, 2)})})})
+        self.mask_embed = nn.Linear(2, 2)
+
+
+def test_load_pretrain_init_weights_rejects_a_standalone_roformer_checkpoint(tmp_path: Path):
+    """`sleep2vec2` and `sleep2expert` reject the base layout; the base variant must reject theirs.
+
+    A fork's checkpoint names every attention weight `.attention.self_attention.*`, which this
+    variant's HF backbone does not have, so the whole encoder is dropped -- while `mask_embed`
+    and the tokenizers around it match and load. That is a partial match, so the total-mismatch
+    guard accepts it and the run trains a randomly initialized encoder.
+    """
+    module = _HFRoformerishModule()
+    ckpt_path = tmp_path / "fork_pretrain.ckpt"
+    state_dict = {
+        "model.encoder.layer.attention.self_attention.weight": torch.ones(2, 2),
+        "model.encoder.layer.attention.self_attention.bias": torch.ones(2),
+        # Shared between the layouts, so this one would load and hide the rest.
+        "model.mask_embed.weight": torch.ones(2, 2),
+        "model.mask_embed.bias": torch.ones(2),
+    }
+    torch.save({"state_dict": state_dict}, ckpt_path)
+
+    with pytest.raises(ValueError, match="standalone RoFormer checkpoints"):
+        load_pretrain_init_weights(module, ckpt_path, device="cpu", strict=False)
+
+
+def test_the_hf_roformer_guard_leaves_a_matching_checkpoint_alone(tmp_path: Path):
+    """The guard must not fire on the checkpoints this path exists to load."""
+    module = _HFRoformerishModule()
+    ckpt_path = tmp_path / "own_pretrain.ckpt"
+    state_dict = {f"model.{key}": value for key, value in module.state_dict().items()}
+    torch.save({"state_dict": state_dict}, ckpt_path)
+
+    result = load_pretrain_init_weights(module, ckpt_path, device="cpu", strict=False)
+
+    assert result.unexpected_keys == []
+    assert result.loaded_keys == len(state_dict)
+
+
+def test_every_variant_rejects_the_roformer_layout_it_cannot_read():
+    """Each fork meets the mismatch from its own side, so each needs the opposite marker.
+
+    The two forks carried this guard from the start and the base variant did not, which left
+    exactly one direction of a symmetric problem unguarded.
+    """
+    import importlib
+    import inspect
+
+    rejected_marker = {
+        "sleep2vec": ".attention.self_attention.",
+        "sleep2vec2": ".attention.self.",
+        "sleep2expert": ".attention.self.",
+    }
+    for variant, marker in rejected_marker.items():
+        source = inspect.getsource(importlib.import_module(f"{variant}.checkpoints").load_pretrain_init_weights)
+        assert marker in source, variant

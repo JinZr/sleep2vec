@@ -111,6 +111,22 @@ def load_pretrain_init_weights(
             "encoder weights sit under PEFT's renamed modules. Merge the adapters into the base model "
             f"first, or start from a pretrain checkpoint. Adapter keys: [{preview}]"
         )
+    # The mirror of the guard `sleep2vec2` and `sleep2expert` carry. This variant's backbone is
+    # Hugging Face's RoFormer (`.attention.self.`); the two forks ship a standalone one that
+    # names the same submodule `.attention.self_attention.`. So every encoder key of a fork's
+    # checkpoint is unexpected here, while the tokenizers, `mask_embed`, `embedding_projection`
+    # and `proj_head` around it match and load -- a partial match the total-mismatch guard below
+    # accepts, leaving the encoder at its random initialization with a successful load logged.
+    target_keys = module.state_dict().keys()
+    target_uses_hf_roformer = any(".attention.self." in key for key in target_keys)
+    standalone_roformer_keys = [key for key in filtered_state_dict if ".attention.self_attention." in key]
+    if target_uses_hf_roformer and standalone_roformer_keys:
+        preview = ", ".join(standalone_roformer_keys[:3])
+        raise ValueError(
+            "sleep2vec does not support loading standalone RoFormer checkpoints (sleep2vec2 or "
+            "sleep2expert) into its Hugging Face RoFormer backbone. Train or convert a sleep2vec "
+            f"checkpoint instead. Standalone keys: {preview}"
+        )
     load_info = module.load_state_dict(filtered_state_dict, strict=strict)
     # A subtree matched but the module took nothing from it: this checkpoint holds a different
     # model. `strict=False` is there to tolerate a partial mismatch -- a renamed channel, a
