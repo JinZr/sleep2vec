@@ -400,7 +400,11 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   pretrained backbone is passed to tuning, and positive
   scalar `pos_weight` when it exists. A complete explicit
   `finetune.layer_mix` mapping and an explicit `finetune.tuning` mapping
-  naming a preset are required. Omitted `finetune.tuning.lora`
+  naming a preset are required. Each adaptation arm replaces the whole
+  `finetune.tuning` block rather than its `preset` alone, so the source's
+  `groups` overrides do not carry into a generated arm; a source that carries
+  such overrides therefore contributes its own level alongside the three.
+  Omitted `finetune.tuning.lora`
   hyper-parameters retain canonical variant loader defaults; the exact generated config
   and hashes plus runtime/repository identity preserve provenance. Disabled
   source LayerMix must already use `layer_indices:
@@ -437,7 +441,10 @@ always wins. That request covers the profile's deterministic technical levels
 and default 12-run search budget when experiment, step, config, label,
 selection split/metric/mode, test policy, host, and runtime identity are already
 unambiguous. An authored budget override or expansion needs separate authority.
-Without `inputs.pretrained_backbone_path`, LoRA adaptation stays fixed;
+Without `inputs.pretrained_backbone_path`, adaptation stays fixed at the
+source `finetune.tuning` block, and a source whose effective group table
+freezes the encoder is rejected rather than searched; whether the encoder
+trains is read from that table, not from the preset's name.
 `inputs.ckpt_path` is final-evaluation-only, not a tuning backbone.
 
 The tuning request alone does not authorize publication or launch. Publication

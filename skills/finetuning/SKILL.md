@@ -12,7 +12,7 @@ Requires config YAML, `--label-name`, data backend inputs, pretrained-backbone p
 - `python utils/check_configs.py <config>`
 
 ## Decision checklist
-Confirm `data.finetune_preset_path`, `data.finetune_data_index`, `data.backend`, `pretrained_backbone_path`, LoRA options, task monitor, results CSV, and any explicit `--no-test-after-fit` opt-out.
+Confirm `data.finetune_preset_path`, `data.finetune_data_index`, `data.backend`, `pretrained_backbone_path`, the `finetune.tuning` block that decides what trains (its `preset` and any `groups` overrides, LoRA included), task monitor, results CSV, and any explicit `--no-test-after-fit` opt-out.
 
 ## Stop-and-consult gates
 The agent must stop and ask the user before continuing if any high-impact decision is missing, ambiguous, conflicting, or marked as `ASK_USER`.
