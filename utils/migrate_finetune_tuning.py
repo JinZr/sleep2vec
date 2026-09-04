@@ -409,6 +409,8 @@ def migrate_text(text: str, path: Path) -> tuple[str | None, dict[str, t.Any] | 
             continue
         keep.append(line)
 
+    new_text = "\n".join(keep) + "\n"
+    _assert_converted(new_text, path)
     entry = {
         "path": _display_path(path),
         "config_module": config_module,
@@ -417,7 +419,38 @@ def migrate_text(text: str, path: Path) -> tuple[str | None, dict[str, t.Any] | 
         "expected": target,
         "preset": preset,
     }
-    return "\n".join(keep) + "\n", entry
+    return new_text, entry
+
+
+def _assert_converted(new_text: str, path: Path) -> None:
+    """Check the splice landed instead of trusting that it did.
+
+    The rewrite is line-based so it keeps the file's comments, which means `_child_spans`
+    has to recognise a block mapping. Given a flow-style `finetune: {...}` it finds no
+    children and the insertion point lands after a mapping that is already closed: the
+    block is dropped when that line was last, and produces unparsable YAML when it was not.
+    Both exited zero and printed something that read as converted, which is worse than
+    either failing -- so the tool asserts the postcondition it just claimed.
+    """
+    try:
+        data = yaml.safe_load(new_text)
+    except yaml.YAMLError as error:
+        raise ValueError(
+            "the converted YAML does not parse. A flow-style `finetune: {...}` block is the "
+            "usual cause; rewrite it as a block mapping before migrating."
+        ) from error
+    finetune_block = data.get("finetune") if isinstance(data, dict) else None
+    if not isinstance(finetune_block, dict) or "tuning" not in finetune_block:
+        raise ValueError(
+            "the converted config has no finetune.tuning block. A flow-style `finetune: {...}` "
+            "block is the usual cause; rewrite it as a block mapping before migrating."
+        )
+    survivors = sorted(key for key in ("freeze_tokenizer", "lora", "moe_tuning") if key in finetune_block)
+    if survivors:
+        raise ValueError(
+            f"the converted config still carries finetune.{{{','.join(survivors)}}}, which every "
+            "variant loader rejects."
+        )
 
 
 def _display_path(path: Path) -> str:

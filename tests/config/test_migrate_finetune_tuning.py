@@ -12,6 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -61,3 +63,23 @@ def test_top_moe_layer_expert_only_defaults_to_the_deepest_moe_layer() -> None:
     assert legacy_trainability_table(block, moe_layer_indices=[6, 10])["experts"] == [True, 0.1]
     # With no MoE layers there is nothing to default to, and nothing trains.
     assert legacy_trainability_table(block)["experts"] == [False, 0.1]
+
+
+def test_a_flow_style_finetune_block_fails_instead_of_printing_a_lie(tmp_path: Path) -> None:
+    """The splice is line-based, so it has to be checked rather than trusted.
+
+    `_child_spans` reads a block mapping. A flow-style `finetune: {...}` has no child lines,
+    so the insertion point lands after a mapping that is already closed. Both outcomes used
+    to exit zero: the block was silently dropped when that line was last, and the document
+    was left unparsable when it was not. A config announced as converted and still carrying
+    `freeze_tokenizer` is worse than a failure, because nothing downstream says so.
+    """
+    from utils.migrate_finetune_tuning import migrate_text
+
+    trailing = "finetune: {freeze_tokenizer: true, batch_size: 32}\n"
+    with pytest.raises(ValueError, match="no finetune.tuning block"):
+        migrate_text(trailing, tmp_path / "sleep2vec_finetune.yaml")
+
+    leading = trailing + "model:\n  backbone:\n    hidden_size: 256\n"
+    with pytest.raises(ValueError, match="does not parse"):
+        migrate_text(leading, tmp_path / "sleep2vec_finetune.yaml")
