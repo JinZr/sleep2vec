@@ -73,7 +73,6 @@ def finetune_summary_body(
     channel_agg = head.get("channel_agg") if isinstance(head.get("channel_agg"), dict) else {}
     layer_mix = finetune.get("layer_mix") if isinstance(finetune.get("layer_mix"), dict) else {}
     tuning = finetune.get("tuning") if isinstance(finetune.get("tuning"), dict) else {}
-    tuning_groups = tuning.get("groups") if isinstance(tuning.get("groups"), dict) else {}
     backbone = model.get("backbone") if isinstance(model.get("backbone"), dict) else {}
     averaging = data.get("model_averaging") if isinstance(data.get("model_averaging"), dict) else None
     channels_raw = model.get("channels") if isinstance(model.get("channels"), list) else []
@@ -169,12 +168,6 @@ def finetune_summary_body(
             },
             "layer_mix_present": isinstance(finetune.get("layer_mix"), dict),
             "layer_mix": layer_mix,
-            "tuning": {
-                "preset": tuning.get("preset"),
-                "group_overrides": {
-                    group: block.get("train") for group, block in tuning_groups.items() if isinstance(block, dict)
-                },
-            },
             "model_averaging": {
                 "present": averaging is not None,
                 "name": averaging.get("name") if averaging else None,

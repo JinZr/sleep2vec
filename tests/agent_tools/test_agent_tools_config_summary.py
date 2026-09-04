@@ -25,7 +25,8 @@ def test_config_summary_extracts_channels_task_backend_and_monitor(tmp_path: Pat
     }
     payload["finetune"]["tuning"] = {
         "preset": "lora",
-        "groups": {"tokenizers": {"train": False}},
+        "groups": {"tokenizers": {"train": False}, "encoder": {"lr_scale": 0.1}},
+        "lora": {"r": 4, "use_dora": True},
     }
     payload["model_averaging"] = {"name": "ema", "params": {"enabled": True}}
     config = write_yaml(tmp_path / "config.yaml", payload)
@@ -43,10 +44,12 @@ def test_config_summary_extracts_channels_task_backend_and_monitor(tmp_path: Pat
     assert summary["model"]["backbone_depth"] == 16
     assert summary["model"]["layer_mix_present"] is True
     assert summary["model"]["layer_mix"]["layer_indices"] == [15, 16]
-    assert summary["model"]["tuning"]["preset"] == "lora"
-    assert summary["model"]["tuning"]["group_overrides"] == {"tokenizers": False}
     assert summary["finetune"]["tuning_present"] is True
-    assert summary["finetune"]["tuning"]["preset"] == "lora"
+    # The authored block is reported whole, and only here. `model` used to carry a second copy
+    # holding the preset plus each group's `train` and nothing else, so a reader who trusted it
+    # saw neither the `lr_scale` nor the `lora` shape below.
+    assert summary["finetune"]["tuning"] == payload["finetune"]["tuning"]
+    assert "tuning" not in summary["model"]
     assert summary["model"]["model_averaging"]["present"] is True
     assert summary["finetune"]["task"]["monitor"] == "val_ahi_pearson"
     assert summary["preset_build"]["required_channels"] == ["ppg", "ahi", "stage5"]
