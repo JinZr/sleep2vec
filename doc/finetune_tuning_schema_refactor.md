@@ -215,8 +215,9 @@ single flag.
 
 ## Migration
 
-The mapping is not a textual rename. The migration tool must **evaluate** the old
-config into a group table and then emit the new block:
+The mapping is not a textual rename. Converting a config means **evaluating** the old
+keys into a group table and then writing the new block. This is the table the loader's
+rejection messages point at:
 
 | Old state | New |
 | --- | --- |
@@ -231,18 +232,21 @@ config into a group table and then emit the new block:
 | `freeze_tokenizer: true/false` | `groups.tokenizers.train` |
 | any non-default `lr_scales[g]` | `groups[g].lr_scale` (`lr_scales.backbone` -> `groups.encoder`) |
 
-Rule for the tool: build the group table from the *current* runtime semantics, compare
-it against each preset, emit the matching preset name, and fall back to
+Rule: build the group table from what the legacy keys *did* at runtime, compare it
+against the preset table above, use the matching preset name, and fall back to
 `preset: custom` with an explicit `groups` map when nothing matches exactly. Never
-translate a key by name alone.
+translate a key by name alone. Two defaults make this more than a rename and are easy to
+miss by reading a config's text: `moe_tuning.lr_scales` defaulted per *mode* and a `0.0`
+scale was itself a freeze, and `train_moe_layer_indices` defaulted to the deepest MoE
+layer. Both are transcribed in `tests/config/legacy_finetune_semantics.py`.
 
 ### The one dangerous case
 
 The 30 configs with an inert `insert_lora: true` must migrate to
 `groups.lora.train: false` — their real behavior today. Translating the literal `true`
 would silently enable LoRA in 30 recipes and break reproducibility of every result
-produced from them. The tool should list these files for explicit sign-off, since some
-of them were probably *intended* to use LoRA:
+produced from them. These are the files that needed explicit sign-off, since some of
+them were probably *intended* to use LoRA:
 
 ```
 configs/cls_emb/sleep2vec_dense_finetune_cls.yaml
@@ -285,7 +289,7 @@ The three configs that really use LoRA — `configs/examples/{sex,stage4,stage5}
 No compatibility window. `load_finetune_config` rejects every old key
 (`finetune.lora.freeze_backbone_and_insert_lora`, `finetune.lora.insert_lora`,
 `finetune.freeze_tokenizer`, `finetune.moe_tuning`) with an error naming the replacement
-key and the migration command. All 69 in-tree configs are rewritten in the same commit;
+key and this document. All 69 in-tree configs are rewritten in the same commit;
 the equivalence gate below is what makes that safe.
 
 Consequence to plan for: a config outside this repo, or an hparam plan already frozen
@@ -411,11 +415,10 @@ than silently yielding an empty axis.
 2. Implement the schema per variant, plus the cross-variant conformance test (no
    behavior change, no YAML change).
 3. Add the new `finetune.tuning` block and the equivalence gate.
-4. Write the migration tool as `utils/migrate_finetune_tuning.py` (there is no existing
-   migration-script precedent in `utils/`, so this sets one: it must derive the preset
-   from legacy runtime semantics rather than by renaming keys).
-5. Run the migration tool; commit the rewritten YAMLs, the new block, and the deletion
-   of the old keys as one hard cut. Update `utils/check_configs.py` and `README.md` in
+4. Write a migration script that derives the preset from legacy runtime semantics
+   rather than by renaming keys, and run it over the tree.
+5. Commit the rewritten YAMLs, the new block, and the deletion of the old keys as one
+   hard cut, then delete the script. Update `utils/check_configs.py` and `README.md` in
    the same commit — a config validator that still looks for `moe_tuning` would pass
    every migrated file vacuously.
 6. Rename the status file to `finetune_status.json` in `sleep2expert` (drop the
@@ -467,14 +470,18 @@ Settled 2026-09-04.
   hyperparameters.
 - **`lr_scale` must be finite.** `nan <= 0.0` is false, so the `> 0` check alone let a
   NaN scale through into the optimizer's learning rate.
-- **The migration tool converts one config and prints it.** It first walked `configs/`
+- **The migration script was deleted along with the migration.** It walked `configs/`
   and `recipes/` (finetune configs also ship as recipe fixtures) rewriting files in
-  place. Once the tree was migrated that mode did nothing on every subsequent run, while
-  still carrying an in-place rewrite, a clean-worktree guard and a `--check` with no
-  caller. What survives the hard cut is the case the error messages actually point at: a
-  config outside this repo, named with `--config`, converted to stdout. The conversion is
-  derived from legacy runtime behaviour rather than from key names, so it wants a human
-  read before it lands.
+  place; once the tree was migrated that did nothing on every subsequent run. Trimmed to
+  a single `--config path` that printed one converted config, it kept failing review for
+  its line-based YAML splicing — flow-style `finetune: {...}` blocks, four-space
+  indentation nesting the legacy keys *inside* the `tuning:` block it had just written —
+  defects in a code path with no in-repo caller, guarding a case the mapping table above
+  answers directly. A converter that has to be checked by hand against that table anyway
+  is not carrying its weight in a research framework. The half worth keeping is the
+  legacy semantics, transcribed into `tests/config/legacy_finetune_semantics.py`, which
+  two tests read; the splicer is gone, and a legacy config outside this repo is converted
+  by hand.
 - **A config with no legacy keys still gets a `tuning` block.** `finetune.tuning` is
   required now, so "no legacy keys" means "relied on the legacy defaults", which trained
   everything except the tokenizers. Only the `sex_age_baseline` configs are skipped:
@@ -508,13 +515,14 @@ Settled 2026-09-04.
   unfreeze the encoder under `head_only` and freeze it under `full`. For the same reason
   the `adaptation.strategy` axis replaces the whole `finetune.tuning` block: an arm that
   inherited the source config's `groups` overrides would not be the policy its name claims.
-- **The migration tool replays the legacy *mode* defaults, not one flat table.**
+- **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
   `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
   a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate
   to a policy that trains a backbone the legacy run held frozen. `top_moe_layer_expert_only`
   is the matching case for `train_moe_layer_indices`, which validation defaulted to the
   deepest MoE layer. No shipped config exercised either default — which is the point:
   the manifest gate cannot catch a misreading it also generated.
+  `tests/config/legacy_finetune_semantics.py` is the only remaining record of either.
 
 ## What was verified
 
@@ -529,7 +537,7 @@ reads that file.
 
 That gate has one structural limit: the manifest was generated by the same code it
 checks, so a misreading of the legacy schema would sit on both sides of the comparison.
-`tests/config/test_migrate_finetune_tuning.py` closes the gap where it matters, stating
+`tests/config/test_legacy_finetune_semantics.py` closes the gap where it matters, stating
 the legacy mode-dependent defaults directly rather than deriving them — those are exactly
 the paths no shipped config exercised, so the manifest could not have caught them.
 

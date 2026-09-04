@@ -65,7 +65,7 @@ def _require_tuning_config(finetune_config):
     if tuning is None:
         raise ValueError(
             "Finetuning requires a finetune.tuning block. "
-            "Run `python -m utils.migrate_finetune_tuning --config <path>` if this config predates it."
+            "See doc/finetune_tuning_schema_refactor.md for the conversion table."
         )
     return tuning
 

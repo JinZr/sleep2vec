@@ -150,14 +150,14 @@ def test_every_variant_requires_a_tuning_block(variant: str, tmp_path: Path):
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
-def test_every_variant_points_a_legacy_config_at_the_migration_tool(variant: str, tmp_path: Path):
+def test_every_variant_points_a_legacy_config_at_the_conversion_table(variant: str, tmp_path: Path):
     payload = yaml.safe_load((REPO_ROOT / REPRESENTATIVE_CONFIGS[variant]).read_text())
     payload["finetune"].pop("tuning")
     payload["finetune"]["freeze_tokenizer"] = True
     path = tmp_path / "legacy.yaml"
     path.write_text(yaml.safe_dump(payload))
 
-    with pytest.raises(ValueError, match=re.escape("utils.migrate_finetune_tuning --config")):
+    with pytest.raises(ValueError, match=re.escape("doc/finetune_tuning_schema_refactor.md")):
         _config(variant).load_finetune_config(path)
 
 

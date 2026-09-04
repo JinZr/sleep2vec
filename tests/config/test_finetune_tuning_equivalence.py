@@ -1,10 +1,10 @@
 """Gate the `finetune.tuning` migration against the trainability it replaced.
 
-`utils/migrate_finetune_tuning.py` did not rename keys. It evaluated the legacy
-runtime semantics for every config and emitted the preset that reproduced the
-resulting per-group table. Both are frozen next to this file in
-``finetune_tuning_migration.json``: the legacy configs are gone, so nothing can
-regenerate it, and it is fixture data rather than a rebuildable artifact.
+The migration did not rename keys. It evaluated the legacy runtime semantics for
+every config and picked the preset that reproduced the resulting per-group table.
+Both are frozen next to this file in ``finetune_tuning_migration.json``: the legacy
+configs are gone and so is the script, so nothing can regenerate it, and it is fixture
+data rather than a rebuildable artifact.
 
 This module replays that manifest through the *new* parser and asserts the two agree
 on `(train, lr_scale)` for every group of every config. A preset table edit, a builder
@@ -81,7 +81,7 @@ def test_legacy_table_derivation_is_reproducible() -> None:
     `expected` column has to remain what `legacy_trainability_table` produced, modulo
     the backbone -> encoder rename and the variant's group list.
     """
-    from utils.migrate_finetune_tuning import to_new_groups
+    from tests.config.legacy_finetune_semantics import to_new_groups
 
     for entry in MANIFEST:
         legacy = {group: list(value) for group, value in entry["legacy"].items()}
