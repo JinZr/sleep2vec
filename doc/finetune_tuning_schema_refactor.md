@@ -515,6 +515,12 @@ Settled 2026-09-04.
   unfreeze the encoder under `head_only` and freeze it under `full`. For the same reason
   the `adaptation.strategy` axis replaces the whole `finetune.tuning` block: an arm that
   inherited the source config's `groups` overrides would not be the policy its name claims.
+- **`agent_tools` blocks a plan whose finetune config has no `finetune.tuning`.** The
+  block is required by every loader, and the summary cannot ask a loader whether a config
+  is valid -- the variants are enforced forks, so it reads the YAML. Recording
+  `tuning_present: false` and no blocking issue let `doctor` and `plan` hand over a
+  command that died at config load, the same failure the `backend=npz` and
+  `backend=kaldi` input checks beside it already prevent.
 - **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
   `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
   a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate

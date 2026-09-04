@@ -77,6 +77,26 @@ def test_config_summary_closes_generic_kaldi_runtime_inputs(tmp_path: Path):
     assert "data.backend=kaldi does not support data.finetune_preset_path." in blocking
 
 
+def test_config_summary_blocks_a_finetune_config_without_a_tuning_block(tmp_path: Path):
+    """`plan` must not emit a command the config loader will reject.
+
+    `finetune.tuning` has no default in any variant, and `agent_tools` cannot call those
+    loaders to find out -- the variants are enforced forks. A pre-schema config recorded
+    `tuning_present: false` and nothing else, so the run died at config load with the plan
+    already written.
+    """
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration\nx.npz,train,60\n")
+    payload = config_payload(index)
+    payload["finetune"].pop("tuning")
+    config = write_yaml(tmp_path / "legacy.yaml", payload)
+
+    summary = config_summary(config)
+
+    assert summary["finetune"]["tuning_present"] is False
+    assert "finetune.tuning is missing; the config loader requires it." in summary["blocking_issues"]
+
+
 def test_config_summary_validates_survival_sidecars(tmp_path: Path):
     index = tmp_path / "index.csv"
     index.write_text("path,split,duration,eid\nx.npz,train,60,001\n")

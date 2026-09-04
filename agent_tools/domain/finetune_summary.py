@@ -96,6 +96,10 @@ def finetune_summary_body(
         and not data_block.get("finetune_preset_path")
     ):
         blocking_issues.append("data.backend=npz but both finetune_data_index and finetune_preset_path are missing.")
+    if finetune and not isinstance(finetune.get("tuning"), dict):
+        # Every variant loader requires this block, and agent_tools cannot call those loaders
+        # (enforced forks). Without the check, `plan` emits a command that dies at config load.
+        blocking_issues.append("finetune.tuning is missing; the config loader requires it.")
     if finetune and task == {}:
         warnings.append("finetune.task is missing; custom label semantics may be ambiguous.")
     if model_channel_names == ["ppg"] and finetune and "required_channels" not in preset_build:
