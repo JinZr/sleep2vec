@@ -198,7 +198,7 @@ def test_every_variant_requires_a_tuning_block(variant: str, tmp_path: Path):
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
-def test_every_variant_points_a_legacy_config_at_the_conversion_table(variant: str, tmp_path: Path):
+def test_every_variant_rejects_a_legacy_config_at_load(variant: str, tmp_path: Path):
     payload = yaml.safe_load((REPO_ROOT / REPRESENTATIVE_CONFIGS[variant]).read_text())
     payload["finetune"].pop("tuning")
     payload["finetune"]["freeze_tokenizer"] = True
@@ -209,48 +209,35 @@ def test_every_variant_points_a_legacy_config_at_the_conversion_table(variant: s
         _config(variant).load_finetune_config(path)
 
 
-def test_the_conversion_table_is_where_the_rejection_messages_say_it_is():
+def test_the_schema_is_where_the_rejection_messages_say_it_is():
     """The pointer in those messages is only useful while it resolves.
 
     It previously named a design note that opened with "No code changes yet", which is
     what a reader following the error saw first. Tie the message to the section that
-    actually carries the table, so moving one without the other fails here.
+    actually carries the schema, so moving one without the other fails here.
     """
     readme = (REPO_ROOT / "README.md").read_text()
 
-    assert "**Converting a legacy finetune config**" in readme
-    section = readme.split("**Converting a legacy finetune config**", 1)[1].split("\n---", 1)[0]
-    # Every legacy key that decides trainability or scale. A conversion that silently drops
-    # one of these produces a run with a different parameter set than the config it came from.
-    for legacy_key in (
-        "freeze_tokenizer",
-        "moe_tuning",
-        "lr_scales",
-        "freeze_experts",
-        "freeze_router",
-        "insert_lora",
-    ):
-        assert legacy_key in section, f"the conversion guidance does not mention {legacy_key}"
-    assert "tests/config/legacy_finetune_semantics.py" in section
+    assert "**Trainability (`finetune.tuning`)**" in readme
+    section = readme.split("**Trainability (`finetune.tuning`)**", 1)[1].split("\n---", 1)[0]
 
-    # A dropped `moe_regularization` is the one omission the parser cannot catch: nesting it
-    # fails loudly, but leaving it out loads fine with the auxiliary loss silently off.
-    assert "finetune.moe_regularization" in section
+    # A config is written against this section alone, so every part of the block it has to
+    # spell has to be here: the two keys, the groups, and the presets that name a table.
+    for spelling in ("preset", "groups", "lr_scale", "moe.layer_indices", "finetune.tuning.lora"):
+        assert spelling in section, f"the schema does not mention {spelling}"
 
-    # The other silent one. Only `moe_top_experts` accepts a layer subset, so a conversion
-    # that falls back to `custom` over a differing scale loads fine and trains the experts in
-    # every MoE layer instead of the legacy run's selection.
-    assert "moe.layer_indices" in section
+    # The rules the loader enforces but no schema listing implies. Each one is a config that
+    # parses as well-formed and is then rejected, so a reader who cannot find it here writes
+    # a block that does not load.
+    assert "The `head` group must train." in section
+    assert "may not train the encoder and LoRA at the same time" in section
+    assert "router_type: learned" in section
+    assert "must keep the `experts` group training" in section
 
-    # Neither axis below is in the group table, so a table-only conversion drops both without
-    # any preset mismatch to notice: the layer subset above, and the adapter shape here.
-    assert "finetune.tuning.lora" in section
-    assert "separate_adapters" in section
-
-    # `_build_finetune_group_config` requires `train` in every override. A scale-only shorthand
-    # here produces a converted file that raises at load rather than one that merely runs
-    # differently, so the guidance has to show the full form.
-    assert "{train: true, lr_scale:" in section
+    # Old keys crash rather than convert, and no conversion guidance survives to imply
+    # otherwise -- this section is the whole contract.
+    assert "legacy" not in section.lower()
+    assert "convert" not in section.lower()
 
 
 @pytest.mark.parametrize("variant", VARIANTS)

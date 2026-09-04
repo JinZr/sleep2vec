@@ -241,8 +241,6 @@ jobs:
             tests/config/test_metadata_task_validation.py \
             tests/config/test_config_loading.py \
             tests/config/test_common_finetune_apply.py \
-            tests/config/test_finetune_tuning_equivalence.py \
-            tests/config/test_legacy_finetune_semantics.py \
             tests/variants/test_finetune_tuning_conformance.py \
             tests/variants/test_sleep2expert_moe_config.py \
             tests/config/test_registries_and_builders.py \
