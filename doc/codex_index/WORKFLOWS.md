@@ -107,7 +107,9 @@ The finetune flow is:
 
 1. consult the task skill and resolve high-impact label, split, checkpoint, and
    selection decisions;
-2. load and apply finetune config semantics;
+2. load and apply finetune config semantics — `finetune.tuning` is the single
+   statement of what trains, and its preset plus `groups` overrides decide both
+   `requires_grad` and the optimizer's per-group learning-rate scales;
 3. build package-local train, validation, and test loaders;
 4. compose the pretrained feature path, aggregation, and downstream head;
 5. train, select the configured checkpoint, and evaluate only authorized data;
