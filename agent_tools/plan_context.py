@@ -222,19 +222,8 @@ def context_preset_summary(recipe: dict, cfg: dict | None) -> dict | None:
 
 
 def effective_preset_path(recipe: dict, cfg: dict | None) -> Any:
-    task = recipe.get("task")
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    adapter = get_adapter(task)
-    recipe_field = adapter.preset_path_recipe_field if adapter is not None else None
-    if recipe_field is not None:
-        preset_path = inputs.get(recipe_field)
-        if preset_path not in (None, "", "ASK_USER"):
-            return preset_path
-    if adapter is not None and adapter.uses_finetune_config and cfg:
-        preset_path = (cfg.get("data") or {}).get("finetune_preset_path")
-        if preset_path not in (None, "", "ASK_USER"):
-            return preset_path
-    return None
+    adapter = get_adapter(recipe.get("task"))
+    return adapter.effective_preset_path(recipe, cfg) if adapter is not None else None
 
 
 def expected_context_artifacts(

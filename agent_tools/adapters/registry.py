@@ -44,13 +44,14 @@ def composite_adapter() -> TaskAdapter:
     """The single composite (layered-recipe) adapter. Recipes carrying
     _base_recipe/_local_recipe layers close under its contract."""
     composites = [adapter for adapter in TASK_ADAPTERS.values() if adapter.base_task is not None]
-    assert len(composites) == 1, "exactly one composite task adapter is expected"
+    if len(composites) != 1:
+        raise RuntimeError("exactly one composite task adapter is expected")
     return composites[0]
 
 
-assert all(
-    (adapter.task in VARIANTLESS_TASKS) == (not adapter.requires_variant) for adapter in TASK_ADAPTERS.values()
-), "TaskAdapter.requires_variant must stay in sync with models.VARIANTLESS_TASKS"
-assert all(
-    adapter.base_task is None or adapter.base_task in TASK_ADAPTERS for adapter in TASK_ADAPTERS.values()
-), "TaskAdapter.base_task must reference a registered adapter"
+# Registration invariants raise rather than assert: `python -O` strips asserts,
+# and these guard a silent mis-registration rather than a programming slip.
+if not all((adapter.task in VARIANTLESS_TASKS) == (not adapter.requires_variant) for adapter in TASK_ADAPTERS.values()):
+    raise RuntimeError("TaskAdapter.requires_variant must stay in sync with models.VARIANTLESS_TASKS")
+if not all(adapter.base_task is None or adapter.base_task in TASK_ADAPTERS for adapter in TASK_ADAPTERS.values()):
+    raise RuntimeError("TaskAdapter.base_task must reference a registered adapter")

@@ -25,11 +25,51 @@ import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..decision_models import DecisionIssue, DecisionReport, ResolvedDecision
+from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
+from ..models import coerce_list
+from ..plan_rendering import finetune_loaded_split_values
 
 
 class PlanRegistrationPreflightError(ValueError):
     pass
+
+
+def recipe_inputs(recipe: dict[str, Any]) -> dict[str, Any]:
+    """The recipe's ``inputs`` mapping, or an empty one when absent or malformed."""
+    inputs = recipe.get("inputs")
+    return inputs if isinstance(inputs, dict) else {}
+
+
+def config_summary_issues(recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[DecisionIssue]:
+    """Issues a task raises from its loaded config summary: the config's own
+    blocking issues, plus an explicit recipe/config variant conflict."""
+    if not config_summary:
+        return []
+    issues = [
+        DecisionIssue(
+            DecisionStatus.NEEDS_USER_INPUT,
+            "config",
+            issue,
+            "Please fix the config before the agent generates commands.",
+            {"config_path": config_summary.get("config_path")},
+        )
+        for issue in config_summary.get("blocking_issues", [])
+    ]
+    # Only the structural config-family marker is a routing gate; variant_guess can be path-derived.
+    config_variant = config_summary.get("authoritative_variant")
+    recipe_variant = recipe.get("variant")
+    # An unresolved variant belongs to the consultation gate; only an explicit conflict is invalid.
+    if config_variant is not None and recipe_variant not in (None, "", "ASK_USER") and recipe_variant != config_variant:
+        issues.append(
+            DecisionIssue(
+                DecisionStatus.FAIL,
+                "variant",
+                f"Config family requires variant={config_variant}.",
+                None,
+                {"config_variant": config_variant, "recipe_variant": recipe_variant},
+            )
+        )
+    return issues
 
 
 class TaskAdapter:
@@ -357,11 +397,44 @@ class TaskAdapter:
         """Expected output artifacts for context/plan documents."""
         return []
 
+    def effective_preset_path(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> Any:
+        """The preset this task actually loads: the recipe's declared
+        ``preset_path_recipe_field`` override when concrete, else the config's
+        ``finetune_preset_path``. None when neither is."""
+        if self.preset_path_recipe_field is not None:
+            value = recipe_inputs(recipe).get(self.preset_path_recipe_field)
+            if value not in (None, "", "ASK_USER"):
+                return value
+        if not self.uses_finetune_config:
+            return None
+        value = ((config_summary or {}).get("data") or {}).get("finetune_preset_path")
+        return value if value not in (None, "", "ASK_USER") else None
+
+    def index_summary_split_values(self, recipe: dict[str, Any]) -> list[Any]:
+        """Splits the index summary reports for this task. The default is the
+        finetune family's loaded splits; tasks that name their evaluation split
+        in the recipe override it."""
+        return finetune_loaded_split_values(recipe)
+
     def index_summary_inputs_override(
         self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
     ) -> tuple[list[Any], Any, list[Any]] | None:
         """(index_paths, config, split_values) when this adapter claims the
         recipe/config combination, else None. Claiming is by config shape,
         not task name, so config-probing adapters must be registered before
-        task-keyed ones (registration order is the probing order)."""
-        return None
+        task-keyed ones (registration order is the probing order).
+
+        The default covers the finetune-family config shape shared by finetune,
+        hparam_tune, infer, and evaluate: an effective preset carries its own
+        records, so no index path is reported; otherwise the config's
+        ``finetune_data_index`` applies. Tasks that do not read that config
+        claim nothing.
+        """
+        if not self.uses_finetune_config or recipe.get("task") != self.task:
+            return None
+        inputs = recipe_inputs(recipe)
+        split_values = self.index_summary_split_values(recipe)
+        if self.effective_preset_path(recipe, config_summary) is not None:
+            return [], inputs.get("config"), split_values
+        data = (config_summary or {}).get("data") or {}
+        return coerce_list(data.get("finetune_data_index")), inputs.get("config"), split_values
