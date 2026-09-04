@@ -492,6 +492,13 @@ Settled 2026-09-04.
   trainable head parameters` -- a message that names the preset for a policy only the
   override stated. The parser owns the contradiction now; the runtime check stays for
   configs built in Python rather than parsed.
+- **`moe_top_experts` cannot freeze the experts.** The preset says one thing -- train the
+  experts on the selected layers -- so the override empties it. The runtime invariant did
+  refuse the run, but as `matched no expert parameters for layer_indices=[...]`, which
+  reads as a bad layer list and sends the reader to `model.backbone.moe.layer_indices`.
+  The layers are fine; the group is frozen. Same override-defeats-the-preset family as the
+  head and the scale, and the same fix: refuse it where the config is parsed, and say
+  which key did it.
 - **Training the routers requires a learned router.** Only `router_type: learned` builds
   router parameters; `random`, `hard_modality` and `hard_group` route without any. So
   `moe_conservative_routers`, or `groups.routers: {train: true}`, on one of those three

@@ -140,7 +140,10 @@ def test_freezing_a_group_drops_the_preset_scale_in_every_variant(variant: str, 
     for preset, table in _presets(variant).items():
         if table is None:
             continue
-        frozen = {group: {"train": False} for group in table if group != "head"}
+        # `head` is never freezable, and `moe_top_experts` says nothing once its experts are
+        # frozen -- the parser rejects both, so neither can carry a scale out.
+        keep = {"head"} | ({"experts"} if preset == "moe_top_experts" else set())
+        frozen = {group: {"train": False} for group in table if group not in keep}
         payload["finetune"]["tuning"] = {"preset": preset, "groups": frozen}
         path = tmp_path / f"frozen_{preset}.yaml"
         path.write_text(yaml.safe_dump(payload))

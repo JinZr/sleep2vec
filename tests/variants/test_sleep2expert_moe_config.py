@@ -436,6 +436,20 @@ def test_sleep2expert_moe_conservative_routers_preset_needs_a_learned_router(tmp
         load_finetune_config(path)
 
 
+def test_sleep2expert_moe_top_experts_rejects_freezing_the_experts(tmp_path: Path):
+    """The preset's whole content is "train the experts on these layers".
+
+    Frozen, it reached the runtime invariant as "matched no expert parameters for
+    layer_indices=[...]", which blames the layer list for what the override did.
+    """
+    payload = _valid_finetune_payload()
+    _tuning(payload, preset="moe_top_experts", groups={"experts": {"train": False}})
+    path = _write_config(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="groups.experts sets train: false"):
+        load_finetune_config(path)
+
+
 def test_sleep2expert_finetune_tuning_head_only_allows_dense_config(tmp_path: Path):
     payload = _valid_finetune_payload()
     payload["model"]["backbone"].pop("moe")

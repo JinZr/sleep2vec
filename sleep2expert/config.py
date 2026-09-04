@@ -1284,6 +1284,16 @@ def _validate_finetune_tuning_config(
         )
 
     if cfg.preset == "moe_top_experts":
+        # The preset exists to train the experts on selected layers. With the group frozen the
+        # layer selection has nothing to select, and the runtime invariant reports it as
+        # "matched no expert parameters for layer_indices=[...]" -- which reads as a bad layer
+        # list. Name the frozen group instead.
+        if not cfg.trains("experts"):
+            raise ValueError(
+                "finetune.tuning.preset 'moe_top_experts' trains the experts on the selected "
+                "layers, but groups.experts sets train: false. Remove the override, or pick a "
+                "preset that does not train the experts."
+            )
         moe_layers = list(getattr(moe_cfg, "layer_indices", None) or [])
         if cfg.moe.layer_indices is None:
             if not moe_layers:
