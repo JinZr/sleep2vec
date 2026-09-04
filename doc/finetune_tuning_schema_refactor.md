@@ -641,6 +641,14 @@ Settled 2026-09-04.
   at config load. `check_configs` takes `--variant` now, and `plan_context` passes the
   recipe's own variant, so the loader that validates is the loader that runs. Content
   sniffing stays what it always was: a fallback for configs that declared nothing.
+- **A declaration the dispatcher never reaches is not a declaration.** `--variant` settled
+  the content probe but sat behind `check_config_file`'s two special-family early returns, so
+  `--variant sleep2vec` on a `sex_age_baseline` or `sleep2stat` config still validated under
+  the detected loader and reported success -- the exact failure the flag was added to close,
+  one dispatch layer up. Those two families are not declarable, so a declaration naming one of
+  the three sleep2vec-family loaders alongside such a config is a contradiction, not a
+  preference: the guard now names both halves rather than picking a winner. A test ties the
+  message to `DECLARABLE_VARIANTS`, so making a fourth family declarable fails here first.
 - **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
   `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
   a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate

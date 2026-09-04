@@ -178,6 +178,23 @@ def _is_sex_age_baseline_config(path: Path, config_data: dict[str, t.Any]) -> bo
     return model_block.get("name") == "sex_age_mlp"
 
 
+def _reject_declared_variant_for(variant: str | None, family: str) -> None:
+    """`--variant` can only name a sleep2vec-family loader, so any other family contradicts it.
+
+    Honouring the declaration here would validate a `sleep2stat` or `sex_age_baseline` config
+    through a loader that has never seen its schema; ignoring it would report success under a
+    loader the declared run never calls. Both answers are about the wrong command, so say which
+    two things disagree instead.
+    """
+    if variant is None:
+        return
+    raise ValueError(
+        f"--variant {variant} declares a sleep2vec-family loader, but this config is a {family} "
+        f"config, and {family} is not declarable. Drop --variant to validate it under its own "
+        "loader, or point the declaration at the config that run will load."
+    )
+
+
 def _load_config_tools(path: Path, config_data: dict[str, t.Any], declared_variant: str | None = None) -> ConfigTools:
     variant = _resolve_config_variant(path, config_data, declared_variant)
     config_module = import_module(variant.config_module)
@@ -278,11 +295,13 @@ def _validate_repo_policy(path: Path, config_data: dict[str, t.Any], tools: Conf
 def check_config_file(path: Path, variant: str | None = None) -> None:
     config_data = _load_config_mapping(path)
     if _is_sleep2stat_config(path, config_data):
+        _reject_declared_variant_for(variant, SLEEP2STAT_CONFIG_DIR)
         from sleep2stat.config import load_config
 
         load_config(path)
         return
     if _is_sex_age_baseline_config(path, config_data):
+        _reject_declared_variant_for(variant, SEX_AGE_BASELINE_CONFIG_DIR)
         from sex_age_baseline.config import load_finetune_config, validate_model_config
 
         bundle = load_finetune_config(path)

@@ -7,7 +7,16 @@ import pytest
 import yaml
 
 from sleep2vec.common import apply_finetune_config
-from utils.check_configs import _resolve_config_variant, _sleep2expert_only_finetune_fields, check_config_file
+from utils.check_configs import (
+    DECLARABLE_VARIANTS,
+    SEX_AGE_BASELINE_CONFIG_DIR,
+    SLEEP2STAT_CONFIG_DIR,
+    _is_sex_age_baseline_config,
+    _is_sleep2stat_config,
+    _resolve_config_variant,
+    _sleep2expert_only_finetune_fields,
+    check_config_file,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_FINETUNE_CONFIGS = [
@@ -396,3 +405,35 @@ def test_validation_command_names_the_declared_variant():
     # and `--variant` does not name it.
     baseline = validation_commands({"task": "finetune", "variant": "sex_age_baseline", "inputs": {"config": "c.yaml"}})
     assert any(command.endswith("utils/check_configs.py c.yaml") for command in baseline), baseline
+
+
+def test_a_declared_variant_is_rejected_for_a_family_it_cannot_name(tmp_path: Path):
+    """`--variant` names one of three loaders; the special families are not among them.
+
+    `check_config_file` dispatches `sleep2stat` and `sex_age_baseline` configs by detecting
+    them, and that dispatch used to run before the declaration was consulted -- so
+    `--variant sleep2vec` on a `sex_age_baseline` config reported success under the baseline
+    loader, which is not the loader `python -m sleep2vec.finetune` would call.
+    """
+    baseline = REPO_ROOT / "configs" / "sex_age_baseline" / "cox.yaml"
+    assert _is_sex_age_baseline_config(baseline, yaml.safe_load(baseline.read_text()))
+
+    stat_payload = {key: {} for key in ("run", "data", "signals", "analyzers", "reducers", "outputs")}
+    stat = _write_yaml(tmp_path / "stat.yaml", stat_payload)
+    assert _is_sleep2stat_config(stat, stat_payload)
+
+    for path, family in ((baseline, "sex_age_baseline"), (stat, "sleep2stat")):
+        for variant in ("sleep2vec", "sleep2vec2", "sleep2expert"):
+            with pytest.raises(ValueError, match=f"is a {family} config"):
+                check_config_file(path, variant)
+
+
+def test_every_declarable_variant_is_a_sleep2vec_family_loader():
+    """The rejection above is only correct while nothing outside the family is declarable.
+
+    Adding `sex_age_baseline` to `--variant` would make that message a lie rather than a
+    guard, so tie the two together instead of restating the list.
+    """
+    assert set(DECLARABLE_VARIANTS) == {"sleep2vec", "sleep2vec2", "sleep2expert"}
+    assert SEX_AGE_BASELINE_CONFIG_DIR not in DECLARABLE_VARIANTS
+    assert SLEEP2STAT_CONFIG_DIR not in DECLARABLE_VARIANTS
