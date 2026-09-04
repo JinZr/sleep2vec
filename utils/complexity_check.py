@@ -9,11 +9,12 @@ meaningful, so this runs three checks:
 
 1. **The ceiling.** ``C901`` over ``agent_tools`` at ``MAX_COMPLEXITY``.
 2. **The suppression ledger.** Functions already above the ceiling carry
-   ``# noqa: C901``. Left alone, that list decays two ways: a new over-ceiling
-   function can be waved through with one comment, and a suppression outlives
-   the complexity it was hiding. Caught by re-running with noqa disabled and
-   requiring the live violations and the annotations to be the same lines, and
-   by holding the total to ``SUPPRESSION_CEILING``.
+   ``# noqa: C901``. Left alone, that list decays three ways: a new over-ceiling
+   function can be waved through with one comment, a suppression outlives the
+   complexity it was hiding, and one function can be simplified while another
+   goes over in the same commit -- a swap a bare count cannot see. Caught by
+   re-running with noqa disabled and requiring the live violations to be exactly
+   ``SUPPRESSION_LEDGER``'s functions, on exactly the annotated lines.
 3. **The embedded programs.** ``python_program_sources/*.py.src`` are fragments
    assembled by ``python_programs.source()`` and executed with ``python -c``, so
    flake8's directory walk never sees them and the fragments do not lint
@@ -24,7 +25,12 @@ Both ``utils/style_check.sh`` and the ``style_check`` workflow call this, so a
 clean local run means a clean CI run. It owns the ceiling value: nothing else
 spells the number.
 
-Growth still needs a human to raise ``SUPPRESSION_CEILING`` or extend
+Every probe runs ``--isolated``. Inheriting ``.flake8`` would let one
+``per-file-ignores`` entry or ``exclude`` pattern blind the gate and the ledger
+audit at once, since both read the same configured flake8 -- the file-level
+blindness this check exists to rule out, arriving through the config instead.
+
+Growth still needs a human to extend ``SUPPRESSION_LEDGER`` or
 ``PROGRAM_LEDGER``, which is a reviewed diff rather than a silent comment --
 weaker than the base-revision diff in ``utils/type_check.py``, and deliberately
 so, since that ratchet needs CI to pass a base sha and this check runs in the
@@ -45,20 +51,53 @@ from agent_tools import python_programs  # noqa: E402  (needs the repo root on s
 
 MAX_COMPLEXITY = 25
 PACKAGE = Path("agent_tools")
-#: Functions already above the ceiling, carrying ``# noqa: C901``. Shrink it
-#: when you simplify one of them; do not grow it. A new function over the
-#: ceiling is a design signal, not a lint to suppress.
-SUPPRESSION_CEILING = 24
+#: Functions already above the ceiling, each carrying ``# noqa: C901`` on its
+#: def line. Identities rather than a count, so simplifying one function while
+#: another goes over does not net out to a passing check. Trailing numbers are
+#: the score when grandfathered, for context only -- nothing reads them, so a
+#: function may be improved without a ledger edit until it drops under the
+#: ceiling. Delete entries as you fix them; a new one is a design signal, not a
+#: lint to suppress.
+SUPPRESSION_LEDGER = {
+    ("agent_tools/adapters/embedding_extraction.py", "EmbeddingExtractionAdapter.task_issues"),  # 30
+    ("agent_tools/adaptive_hparam.py", "_adaptive_step"),  # 48
+    ("agent_tools/adaptive_hparam.py", "_init_adaptive_workflow_locked"),  # 26
+    ("agent_tools/domain/index_csv.py", "index_summary"),  # 33
+    ("agent_tools/experiment_io.py", "append_managed_text_at"),  # 28
+    ("agent_tools/experiment_io.py", "conditional_atomic_replace_text_at"),  # 47
+    ("agent_tools/experiment_io.py", "read_managed_output_texts_at"),  # 26
+    ("agent_tools/experiment_io.py", "validate_managed_output_paths"),  # 39
+    ("agent_tools/experiment_pipeline.py", "_run_attempts"),  # 27
+    ("agent_tools/experiment_pipeline.py", "_validate_frozen_pipeline"),  # 29
+    ("agent_tools/experiment_pipeline.py", "_validate_spec"),  # 57
+    ("agent_tools/experiment_sources.py", "_remote_checkpoint_rows"),  # 28
+    ("agent_tools/experiment_tracking.py", "experiment_status_snapshot"),  # 36
+    ("agent_tools/experiments.py", "_managed_workspace"),  # 26
+    ("agent_tools/hparam_selection.py", "resolve_hparam_candidates"),  # 47
+    ("agent_tools/managed_scheduler.py", "_launch_managed_runs"),  # 47
+    ("agent_tools/managed_scheduler.py", "_launch_slurm_runs"),  # 28
+    ("agent_tools/managed_scheduler.py", "observe_slurm_run"),  # 47
+    ("agent_tools/plans.py", "_build_plan"),  # 31
+    ("agent_tools/plans.py", "evaluate_recipe"),  # 40
+    ("agent_tools/research_log.py", "_normalized_research_log_entry"),  # 35
+    ("agent_tools/run_artifacts.py", "read_hparam_plan"),  # 31
+    ("agent_tools/run_artifacts.py", "read_registered_plan"),  # 68
+    ("agent_tools/run_evidence.py", "status_row"),  # 29
+}
 #: Assembled blocks already above the ceiling: ``(program, block) -> scores``.
 #: Spelled here rather than as a ``# noqa`` in the fragment, because a
 #: fragment's line numbers do not survive concatenation -- and because a noqa
 #: there would be the whole gate, there being no second check behind it.
-#: Keyed per block, not per program: exempting a whole assembly would hide a
-#: second over-ceiling block appearing in it, or a fixed one being replaced.
-#: mccabe labels an unnamed block with its line, which moves whenever a
-#: fragment above it grows, so the key drops that number and the scores carry
-#: the identity instead. They must match exactly: a block that got simpler is a
-#: gain to record, and one that got worse is the thing this check is for.
+#: Keyed per block, not per program, so a second over-ceiling block appearing
+#: in a grandfathered assembly is still reported. mccabe labels an unnamed block
+#: with its line, which moves whenever a fragment above it grows, so the key
+#: drops that number and the score carries what identity remains: they must
+#: match exactly, since a block that got simpler is a gain to record and one
+#: that got worse is the thing this check is for. Two same-kind blocks of the
+#: same score in one program are therefore indistinguishable -- swapping one for
+#: the other reads as unchanged. Pinning the location would mean mapping
+#: assembled line numbers back through the fragment offsets ``source()`` owns,
+#: and that swap leaves the debt exactly as the ledger describes it.
 PROGRAM_LEDGER = {
     ("experiment_io.conditional_atomic_replace_text", "TryExcept"): (46,),
     ("experiment_io.validate_managed_output_paths", "Loop"): (30,),
@@ -70,7 +109,17 @@ VIOLATION = re.compile(r"^(?P<path>.+?):(?P<line>\d+):\d+: C901 '(?P<name>.+?)' 
 
 def run_flake8(*arguments: str) -> str:
     result = subprocess.run(
-        [sys.executable, "-m", "flake8", "--select=C901", f"--max-complexity={MAX_COMPLEXITY}", *arguments],
+        # --isolated: read no .flake8, so no per-file-ignores or exclude can
+        # blind this probe and the ledger audit that reads the same flake8.
+        [
+            sys.executable,
+            "-m",
+            "flake8",
+            "--isolated",
+            "--select=C901",
+            f"--max-complexity={MAX_COMPLEXITY}",
+            *arguments,
+        ],
         capture_output=True,
         text=True,
     )
@@ -137,15 +186,21 @@ def check_ledger(reported: dict[tuple[str, int], tuple[str, int]]) -> bool:
             print(f"    {path}:{number}  {live[(path, number)][0]}")
         ok = False
 
-    if len(live) > SUPPRESSION_CEILING:
-        print(f"\nThe suppression ledger may only shrink: {len(live)} entries, ceiling {SUPPRESSION_CEILING}.")
+    identities = {(path, name) for (path, _), (name, _) in live.items()}
+    if added := sorted(identities - SUPPRESSION_LEDGER):
+        print("\nThe suppression ledger may only shrink, and these functions are new to it:")
+        for path, name in added:
+            print(f'    ("{path}", "{name}"),')
         print("Simplify the function instead of grandfathering it.")
         ok = False
-    elif len(live) < SUPPRESSION_CEILING:
-        print(f"\nThe ledger shrank to {len(live)}. Lower SUPPRESSION_CEILING in {__file__} to hold the gain.")
+    if fixed := sorted(SUPPRESSION_LEDGER - identities):
+        print(f"\nThese are under {MAX_COMPLEXITY} now. Delete their SUPPRESSION_LEDGER entries too:")
+        for path, name in fixed:
+            print(f'    ("{path}", "{name}"),')
         ok = False
-    elif ok:
-        print(f"suppression ledger: {len(live)} functions, none stale.")
+
+    if ok:
+        print(f"suppression ledger: {len(SUPPRESSION_LEDGER)} functions, none stale.")
     return ok
 
 
