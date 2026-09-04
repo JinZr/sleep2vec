@@ -617,6 +617,15 @@ Settled 2026-09-04.
   walks each variant's string literals against `_LEGACY_FINETUNE_TRAINABILITY_KEYS`, so the
   class closes rather than this one instance; `config.py` is exempt because it owns the
   rejection table and must name the old keys to map them.
+- **A LoRA finetune checkpoint cannot seed a bare backbone, and now says so.** The
+  README sends pre-schema finetune checkpoints through `--pretrained-backbone-path`, and the
+  total-mismatch guard added earlier in this PR only raises when *every* filtered key is
+  unexpected. A PEFT checkpoint is the case that guard cannot see: PEFT renamed each wrapped
+  module to `<name>.base_layer` and added `lora_A`/`lora_B` beside it, so the encoder weights
+  are all unexpected while `mask_embed`, `embedding_projection` and `proj_head` -- never
+  wrapped -- still load. Enough keys land for the guard to pass, and the run trains on a
+  randomly initialized encoder without a word. All three forks now reject an adapter-bearing
+  state dict before touching the module, naming the two markers they matched on.
 - **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
   `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
   a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate

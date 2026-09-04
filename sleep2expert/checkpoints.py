@@ -66,6 +66,15 @@ def extract_pretrain_init_state_dict(
     )
 
 
+# PEFT wraps a target module as `<name>.base_layer` and adds `<name>.lora_A/lora_B`, so a
+# checkpoint carrying either marker was written after adapters were inserted.
+_ADAPTER_KEY_MARKERS = ("lora_", ".base_layer.")
+
+
+def _adapter_keys(state_dict: t.Mapping[str, t.Any]) -> list[str]:
+    return [key for key in state_dict if any(marker in key for marker in _ADAPTER_KEY_MARKERS)]
+
+
 def backbone_init_prefixes(averaging_name: str | None = None) -> tuple[str, ...]:
     """State-dict prefixes to try when initializing a bare backbone, specific first.
 
@@ -89,6 +98,19 @@ def load_pretrain_init_weights(
 ) -> PretrainInitLoadResult:
     ckpt = load_checkpoint(ckpt_path, device)
     filtered_state_dict, used_prefix = extract_pretrain_init_state_dict(ckpt, prefixes=prefixes)
+    # A LoRA finetune checkpoint cannot initialize a bare backbone: PEFT renamed every wrapped
+    # module, so the encoder weights arrive under names this model does not have and `strict=False`
+    # drops them -- while `mask_embed`, `embedding_projection` and `proj_head` were never wrapped
+    # and still load. That partial match is enough for the total-mismatch guard below to pass, so
+    # the run would train on a randomly initialized encoder and say nothing.
+    adapter_keys = _adapter_keys(filtered_state_dict)
+    if adapter_keys:
+        preview = ", ".join(adapter_keys[:3])
+        raise ValueError(
+            f"Cannot initialize a backbone from {ckpt_path}: it holds LoRA adapter weights, so its "
+            "encoder weights sit under PEFT's renamed modules. Merge the adapters into the base model "
+            f"first, or start from a pretrain checkpoint. Adapter keys: [{preview}]"
+        )
     target_keys = module.state_dict().keys()
     target_uses_standalone_roformer = any(".attention.self_attention." in key for key in target_keys)
     legacy_roformer_keys = [

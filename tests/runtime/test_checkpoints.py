@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 
 from sleep2vec.checkpoints import (
+    _adapter_keys,
     _parse_epoch,
     average_checkpoints,
     backbone_init_prefixes,
@@ -238,3 +239,48 @@ def test_load_pretrain_init_weights_still_allows_a_partial_load(tmp_path: Path):
     result = load_pretrain_init_weights(module, ckpt_path, device="cpu", strict=False)
 
     assert result.unexpected_keys == ["tokenizer_mapping.new.weight"]
+
+
+def test_load_pretrain_init_weights_rejects_a_lora_finetune_checkpoint(tmp_path: Path):
+    """A partial load is exactly what a PEFT checkpoint produces, so the total-mismatch guard misses it.
+
+    PEFT renames `encoder.weight` to `encoder.base_layer.weight` and adds `lora_A`/`lora_B`
+    beside it, but never touches the modules it was not asked to wrap. Loading such a
+    checkpoint into a bare backbone therefore drops every encoder weight and keeps the rest
+    -- enough keys land for `test_..._rejects_a_checkpoint_that_loads_nothing` to pass while
+    the encoder trains from its random initialization. This is the checkpoint the README
+    sends through `--pretrained-backbone-path`, so the miss is on the documented path.
+    """
+    module = _TinyInitModule()
+    ckpt_path = tmp_path / "lora_finetune.ckpt"
+    state_dict = {
+        "model.encoder.base_layer.weight": torch.ones(2, 2),
+        "model.encoder.base_layer.bias": torch.ones(2),
+        "model.encoder.lora_A.default.weight": torch.ones(1, 2),
+        "model.encoder.lora_B.default.weight": torch.ones(2, 1),
+        # Never wrapped, so it still matches the bare module and would load.
+        "model.tokenizer_mapping.legacy.weight": torch.ones(2, 2),
+        "model.tokenizer_mapping.legacy.bias": torch.ones(2),
+    }
+    torch.save({"state_dict": state_dict}, ckpt_path)
+
+    with pytest.raises(ValueError, match="holds LoRA adapter weights"):
+        load_pretrain_init_weights(module, ckpt_path, device="cpu", strict=False)
+
+
+def test_adapter_key_detection_ignores_a_plain_pretrain_state_dict():
+    """The guard must not fire on the checkpoints this path exists to load."""
+    assert _adapter_keys({"encoder.weight": None, "tokenizer_mapping.legacy.bias": None}) == []
+    assert _adapter_keys({"encoder.lora_A.default.weight": None}) == ["encoder.lora_A.default.weight"]
+    assert _adapter_keys({"encoder.base_layer.weight": None}) == ["encoder.base_layer.weight"]
+
+
+def test_every_variant_rejects_a_lora_checkpoint_the_same_way():
+    """Enforced forks each own a copy of the guard; they must agree on what counts as an adapter."""
+    import importlib
+
+    adapter_state = {"encoder.base_layer.weight": None, "encoder.lora_B.default.weight": None}
+    for variant in ("sleep2vec", "sleep2vec2", "sleep2expert"):
+        module = importlib.import_module(f"{variant}.checkpoints")
+        assert module._adapter_keys(adapter_state) == list(adapter_state), variant
+        assert module._adapter_keys({"encoder.weight": None}) == [], variant
