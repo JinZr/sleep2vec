@@ -247,6 +247,11 @@ def test_the_conversion_table_is_where_the_rejection_messages_say_it_is():
     assert "finetune.tuning.lora" in section
     assert "separate_adapters" in section
 
+    # `_build_finetune_group_config` requires `train` in every override. A scale-only shorthand
+    # here produces a converted file that raises at load rather than one that merely runs
+    # differently, so the guidance has to show the full form.
+    assert "{train: true, lr_scale:" in section
+
 
 @pytest.mark.parametrize("variant", VARIANTS)
 def test_every_variant_rejects_an_unknown_finetune_block(variant: str, tmp_path: Path):

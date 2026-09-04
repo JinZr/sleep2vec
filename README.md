@@ -519,6 +519,12 @@ finetune:
   the encoder under `base_model.model.`, and no prefix recovers a plain backbone from that.
   Either way the head is not restored; it trains from scratch. If nothing matches, the load
   raises rather than starting from a random backbone.
+- A frozen hparam plan from before this schema cannot be replayed against a converted config
+  either. Its search axis targets `yaml:/finetune/lora`, a path the converted file no longer
+  has, and applying it raises `YAML override path does not exist`. Re-plan and re-freeze
+  rather than editing the pointer: the current profile emits one `yaml:/finetune/tuning`
+  axis whose levels are whole `tuning` blocks, so a hand-repointed plan would override the
+  block wholesale instead of the one key the old axis moved.
 
 **Converting a legacy finetune config**
 
@@ -538,10 +544,14 @@ A config **without** `moe_tuning` does convert key by key:
 (`freeze` and `insert` above are `finetune.lora.freeze_backbone_and_insert_lora` and
 `finetune.lora.insert_lora`.)
 
-On a `sleep2expert` config with an MoE backbone, `preset: full` is not quite `freeze: false`.
-It materializes `routers: {train: true}`, which the loader rejects unless
-`model.backbone.moe.router_type: learned`. The legacy run trained them only vacuously — the
-other three router types hold no parameters — so add `groups.routers: {train: false}` and the
+On a `sleep2expert` config with an MoE backbone, watch the routers whichever path you are on.
+The legacy tables are router-type blind: `freeze: false` marked the routers trainable, and so
+did `conservative_full_router_trainable` and any `custom` scale above zero. Over a `random`,
+`hard_modality` or `hard_group` router that trained nothing, because those routers hold no
+parameters, and nothing failed. The loader is not blind. `preset: full` materializes
+`routers: {train: true}` and `moe_conservative_routers` materializes
+`routers: {train: true, lr_scale: 0.01}`, and both are rejected unless
+`model.backbone.moe.router_type: learned`. Add `groups.routers: {train: false}` and the
 converted config both loads and trains the same set.
 
 A config **with** `moe_tuning` does not. There, trainability and learning-rate scale are
@@ -570,13 +580,15 @@ Evaluate those into a table, then write it:
 | --- | --- |
 | its *trainability* matches a preset | that `preset` |
 | no preset's trainability matches | `preset: custom` with every group spelled out |
-| a group the table trains | `groups[g].lr_scale`, only if not already the preset's value |
-| a group it freezes | `groups[g].train: false`, and no `lr_scale` |
+| a group the table trains at a different scale | `groups[g]: {train: true, lr_scale: <scale>}` |
+| a group it freezes | `groups[g]: {train: false}`, and no `lr_scale` |
 | `moe_regularization` nested inside `moe_tuning` | `finetune.moe_regularization`, a sibling of `tuning` |
 
 Match on the trainability alone. A scale that differs from the preset's is an override,
 not a reason to fall back to `custom`: `top_moe_layer_expert_only` with
-`lr_scales.experts: 0.2` is still `moe_top_experts` plus `groups.experts.lr_scale: 0.2`.
+`lr_scales.experts: 0.2` is still `moe_top_experts` plus
+`groups.experts: {train: true, lr_scale: 0.2}` — an override always spells `train`, scale or
+no scale, so the scale-only form the shorthand suggests would not load.
 Sending it to `custom` loses `moe.layer_indices`, which no other preset accepts, and trains
 the experts in every MoE layer rather than the selected ones — a config that loads cleanly
 and trains a larger parameter set than the run it came from.
@@ -635,11 +647,24 @@ and converts as though the LoRA keys were absent — `head_only` to `preset: hea
 `top_moe_layer_expert_only` to `preset: moe_top_experts`. Reading the freeze flag alone as
 "LoRA" enables adapters the run never had.
 
-With both on, the mode decides. `head_only` evaluates to a trainable head and LoRA over
-everything else frozen, which is `preset: lora`. `top_moe_layer_expert_only` additionally
-keeps the selected layers' experts trainable, so it is `preset: moe_top_experts` with
-`moe.layer_indices` and `groups.lora.train: true` — *not* `preset: lora`, which would
-freeze those experts.
+With both on, evaluate before mapping — the mode is a starting point and the zero-scale rule
+still outranks it. `head_only` normally evaluates to a trainable head and LoRA over everything
+else frozen, which is `preset: lora`; under `lr_scales.lora: 0.0` the LoRA group is frozen too
+and the same file is `preset: head_only`. `top_moe_layer_expert_only` normally keeps the
+selected layers' experts trainable as well, so it is `preset: moe_top_experts` with
+`moe.layer_indices` and `groups.lora: {train: true}` — *not* `preset: lora`, which would freeze
+those experts; under `lr_scales.experts: 0.0` the experts are frozen and it *is* `preset: lora`.
+
+Whatever the path, check the block you wrote against the rules the loader enforces. Each is
+stated once above, and reaching the end without re-applying them is the ordinary way to
+produce a converted file that does not load:
+
+- every entry under `groups` spells `train`, with or without an `lr_scale`;
+- `head` trains;
+- `encoder` and `lora` do not both train;
+- `routers` trains only under `model.backbone.moe.router_type: learned`;
+- `experts` and `routers` are spelled only on an MoE backbone;
+- `moe.layer_indices` appears only under `preset: moe_top_experts`.
 
 What is left unconvertible is one evaluated table, not a list of modes: encoder trainable
 *and* LoRA on, which the new schema rejects by design. Both `conservative_*` modes reach it
