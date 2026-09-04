@@ -478,7 +478,10 @@ _FINETUNE_TUNING_PRESETS: dict[str, dict[str, tuple[bool, float]] | None] = {
         "encoder": (True, 0.1),
         "tokenizers": (False, 1.0),
         "experts": (True, 0.1),
-        "routers": (True, 0.1),
+        # 0.01, not 0.1: the legacy `conservative_full_router_trainable` mode defaulted the
+        # router scale an order of magnitude below the encoder's, and this preset is the
+        # documented hard-cut conversion for that mode.
+        "routers": (True, 0.01),
         "projection": (False, 1.0),
         "lora": (False, 1.0),
     },

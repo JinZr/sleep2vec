@@ -626,6 +626,14 @@ Settled 2026-09-04.
   wrapped -- still load. Enough keys land for the guard to pass, and the run trains on a
   randomly initialized encoder without a word. All three forks now reject an adapter-bearing
   state dict before touching the module, naming the two markers they matched on.
+- **A preset means what the mode it converts meant.** `moe_conservative_routers` shipped with
+  `routers: 0.1`, but the legacy `conservative_full_router_trainable` defaulted the router
+  scale to `0.01` -- an order of magnitude below the encoder's, deliberately. The equivalence
+  gate replays checked-in configs, and the one config on that preset carries an explicit
+  `routers` override, so no replayed config ever exercised the default and the gap stayed
+  invisible. Anyone following the README's manual conversion got 10x the legacy router rate.
+  `test_each_preset_carries_the_lr_scales_of_the_mode_it_converts` now ties the preset table
+  to the legacy transcription directly, for every preset that is a documented conversion.
 - **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
   `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
   a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate

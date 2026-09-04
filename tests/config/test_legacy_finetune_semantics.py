@@ -61,3 +61,38 @@ def test_top_moe_layer_expert_only_defaults_to_the_deepest_moe_layer() -> None:
     assert legacy_trainability_table(block, moe_layer_indices=[6, 10])["experts"] == [True, 0.1]
     # With no MoE layers there is nothing to default to, and nothing trains.
     assert legacy_trainability_table(block)["experts"] == [False, 0.1]
+
+
+# The legacy mode each preset is the documented hard-cut conversion of, and the group rename
+# that came with the schema (`backbone` became `encoder`).
+PRESET_CONVERSIONS = {
+    "head_only": "head_only",
+    "moe_conservative_routers": "conservative_full_router_trainable",
+    "moe_top_experts": "top_moe_layer_expert_only",
+}
+LEGACY_GROUP_NAMES = {"encoder": "backbone"}
+
+
+def test_each_preset_carries_the_lr_scales_of_the_mode_it_converts() -> None:
+    """The conversion table in the README is only safe if the presets mean what the modes meant.
+
+    `moe_conservative_routers` shipped with `routers: 0.1` while
+    `conservative_full_router_trainable` defaulted it to `0.01`, so anyone following the
+    manual conversion ran routers at ten times the legacy rate. The one checked-in config on
+    that preset carries an explicit `routers` override, which is exactly why the equivalence
+    gate could not see the gap -- it replays configs, and no config exercised the default.
+    """
+    from sleep2expert.config import _FINETUNE_TUNING_PRESETS
+
+    for preset_name, mode in PRESET_CONVERSIONS.items():
+        preset = _FINETUNE_TUNING_PRESETS[preset_name]
+        legacy = legacy_trainability_table({"moe_tuning": {"mode": mode}}, moe_layer_indices=[6, 10])
+        for group, (trains, lr_scale) in preset.items():
+            if group == "lora":
+                continue
+            legacy_trains, legacy_scale = legacy[LEGACY_GROUP_NAMES.get(group, group)]
+            assert trains == legacy_trains, f"{preset_name}.{group} trainability"
+            # A legacy 0.0 scale *was* the freeze switch; the schema says `train: false`
+            # instead and leaves the scale neutral, so only trained groups compare scales.
+            if trains:
+                assert lr_scale == legacy_scale, f"{preset_name}.{group} lr_scale"
