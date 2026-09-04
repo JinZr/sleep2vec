@@ -13,7 +13,7 @@ Nothing in the repository reads the legacy schema any more, so this file is evid
 the migration rather than a code path: it should change only if the transcription is found
 to be wrong about history.
 
-`doc/finetune_tuning_schema_refactor.md` documents the same mapping in prose, for a reader
+The Trainability section of `README.md` documents the same mapping in prose, for a reader
 converting a config by hand.
 """
 

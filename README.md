@@ -492,10 +492,7 @@ finetune:
 - The legacy keys `finetune.freeze_tokenizer`, `finetune.lora.insert_lora`,
   `finetune.lora.freeze_backbone_and_insert_lora`, and `finetune.moe_tuning` are rejected
   at load time. Every checked-in config was converted; a config from outside this repo is
-  converted by hand against the mapping table in
-  `doc/finetune_tuning_schema_refactor.md`. The old keys did not translate by name — the
-  MoE learning-rate defaults varied per `mode` and a `0.0` scale meant "frozen" — so read
-  that table rather than renaming keys.
+  converted by hand against the table below.
 - **Finetune checkpoints written before this schema cannot be resumed with `--ckpt-path`.**
   The optimizer now carries one parameter group per `(semantic group, decay)` pair instead
   of the two it used to, so restoring the saved optimizer state raises a size mismatch.
@@ -505,6 +502,54 @@ finetune:
   the encoder under `base_model.model.`, and no prefix recovers a plain backbone from that.
   Either way the head is not restored; it trains from scratch. If nothing matches, the load
   raises rather than starting from a random backbone.
+
+**Converting a legacy finetune config**
+
+The mapping is not a textual rename. Converting a config means *evaluating* the old keys
+into a group table and then writing the new block. This is the table the loaders'
+rejection messages point at.
+
+| Old state | New |
+| --- | --- |
+| `freeze: false` (no `moe_tuning`) | `preset: full` + explicit `groups.tokenizers.train: false` |
+| `freeze: true, insert: false` | `preset: head_only` |
+| `freeze: true, insert: true` | `preset: lora` + `tuning.lora` shape |
+| `moe_tuning.mode: head_only` | `preset: head_only` |
+| `moe_tuning.mode: conservative_full_router_frozen` | `preset: moe_conservative` |
+| `moe_tuning.mode: conservative_full_router_trainable` | `preset: moe_conservative_routers` |
+| `moe_tuning.mode: top_moe_layer_expert_only` | `preset: moe_top_experts` + `moe.layer_indices` |
+| `moe_tuning.mode: custom` | `preset: custom` + explicit `groups` |
+| `freeze_tokenizer: true/false` | `groups.tokenizers.train` |
+| any non-default `lr_scales[g]` | `groups[g].lr_scale` (`lr_scales.backbone` -> `groups.encoder`) |
+
+(`freeze` and `insert` above are `finetune.lora.freeze_backbone_and_insert_lora` and
+`finetune.lora.insert_lora`.)
+
+Rule: build the group table from what the legacy keys *did* at runtime, compare it against
+the preset table, use the matching preset name, and fall back to `preset: custom` with an
+explicit `groups` map when nothing matches exactly. Never translate a key by name alone.
+Four defaults are what make this more than a rename, and all four are invisible in a
+config's own text:
+
+- `moe_tuning.lr_scales` defaulted **per mode**, and a `0.0` scale was itself a freeze.
+- `train_moe_layer_indices` defaulted to the deepest MoE layer.
+- `insert_lora` defaulted to `true` on `sleep2vec` and `false` on `sleep2vec2` and
+  `sleep2expert`, so one file with `freeze_backbone_and_insert_lora: true` and no
+  `insert_lora` describes two different runs depending on which variant loaded it.
+- `insert_lora: true` under `freeze_backbone_and_insert_lora: false` inserted **nothing**,
+  and froze nothing either: such a config was full finetuning with the tokenizers frozen.
+  It converts to `preset: full` + `groups.tokenizers.train: false`, not to
+  `groups.lora.train: true`. Translating the literal value would turn a full finetune into
+  a frozen-backbone LoRA run and break reproducibility of anything produced from it.
+
+`tests/config/legacy_finetune_semantics.py` transcribes all four executably and is the
+authoritative statement of what the old keys did.
+
+One legacy combination has no representation in the new schema. `sleep2expert` read
+`freeze_backbone_and_insert_lora` and `moe_tuning` from the same config, so setting both
+evaluates to a table that trains the encoder *and* inserts LoRA — which the new schema
+rejects by design. Such a config is resolved by deciding which of the two policies it
+meant, not converted.
 
 ---
 

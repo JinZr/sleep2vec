@@ -205,8 +205,24 @@ def test_every_variant_points_a_legacy_config_at_the_conversion_table(variant: s
     path = tmp_path / "legacy.yaml"
     path.write_text(yaml.safe_dump(payload))
 
-    with pytest.raises(ValueError, match=re.escape("doc/finetune_tuning_schema_refactor.md")):
+    with pytest.raises(ValueError, match=re.escape("Trainability section of README.md")):
         _config(variant).load_finetune_config(path)
+
+
+def test_the_conversion_table_is_where_the_rejection_messages_say_it_is():
+    """The pointer in those messages is only useful while it resolves.
+
+    It previously named a design note that opened with "No code changes yet", which is
+    what a reader following the error saw first. Tie the message to the section that
+    actually carries the table, so moving one without the other fails here.
+    """
+    readme = (REPO_ROOT / "README.md").read_text()
+
+    assert "**Converting a legacy finetune config**" in readme
+    section = readme.split("**Converting a legacy finetune config**", 1)[1].split("\n---", 1)[0]
+    for legacy_key in ("freeze_tokenizer", "moe_tuning.mode", "lr_scales"):
+        assert legacy_key in section, f"the conversion table does not mention {legacy_key}"
+    assert "tests/config/legacy_finetune_semantics.py" in section
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
