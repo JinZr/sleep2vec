@@ -589,6 +589,14 @@ Settled 2026-09-04.
   `tuning.lora` sub-block, so an agent reading `model.tuning` saw a policy the config never
   stated. Nothing in the repo read it, so it is deleted rather than completed: a second
   projection can only fall behind the first again the next time the block grows a key.
+- **`finetune.tuning` is a three-variant contract, and agent guidance says so.** The fourth
+  supported variant, `sex_age_baseline`, has its own `finetune.py` and its own much smaller
+  config module that never reads `tuning` -- neither of its checked-in configs carries the
+  block. `agent_tools` is already correct by construction here: `config_summary` routes that
+  variant to its own provider, so the "finetune.tuning is missing" blocking issue cannot fire
+  on it, and `finetune_balanced` refuses any variant outside `{sleep2vec, sleep2vec2}` with a
+  named blocking issue. Only `skills/finetuning/SKILL.md` asked for the block unconditionally,
+  which sent the agent hunting for a policy nothing in that variant states.
 - **The transcribed legacy semantics replay the *mode* defaults, not one flat table.**
   `_default_finetune_moe_lr_scales(mode)` differed per mode, and a `0.0` scale was itself
   a freeze switch, so a `head_only` config that omitted `lr_scales.backbone` would migrate
