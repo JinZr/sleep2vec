@@ -49,12 +49,19 @@ PACKAGE = Path("agent_tools")
 #: when you simplify one of them; do not grow it. A new function over the
 #: ceiling is a design signal, not a lint to suppress.
 SUPPRESSION_CEILING = 24
-#: Assembled programs already above the ceiling, by registered program name.
-#: Same contract as the annotations above, spelled here because a fragment's
-#: line numbers do not survive concatenation.
+#: Assembled blocks already above the ceiling: ``(program, block) -> scores``.
+#: Spelled here rather than as a ``# noqa`` in the fragment, because a
+#: fragment's line numbers do not survive concatenation -- and because a noqa
+#: there would be the whole gate, there being no second check behind it.
+#: Keyed per block, not per program: exempting a whole assembly would hide a
+#: second over-ceiling block appearing in it, or a fixed one being replaced.
+#: mccabe labels an unnamed block with its line, which moves whenever a
+#: fragment above it grows, so the key drops that number and the scores carry
+#: the identity instead. They must match exactly: a block that got simpler is a
+#: gain to record, and one that got worse is the thing this check is for.
 PROGRAM_LEDGER = {
-    "experiment_io.conditional_atomic_replace_text",
-    "experiment_io.validate_managed_output_paths",
+    ("experiment_io.conditional_atomic_replace_text", "TryExcept"): (46,),
+    ("experiment_io.validate_managed_output_paths", "Loop"): (30,),
 }
 
 SUPPRESSION = re.compile(r"#\s*noqa:\s*C901\b")
@@ -142,6 +149,12 @@ def check_ledger(reported: dict[tuple[str, int], tuple[str, int]]) -> bool:
     return ok
 
 
+def block(label: str) -> str:
+    """An mccabe label without the line number it carries for unnamed blocks."""
+    head, _, tail = label.rpartition(" ")
+    return head if tail.isdigit() else label
+
+
 def check_programs() -> bool:
     """The assembled ``python -c`` programs, which flake8's walk cannot reach."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -150,19 +163,33 @@ def check_programs() -> bool:
             path = Path(tmp) / f"{name.replace('.', '_')}.py"
             path.write_text(python_programs.source(name), encoding="utf-8")
             names[str(path)] = name
-        found = violations(run_flake8(tmp))
+        # noqa disabled: PROGRAM_LEDGER is the only record for these programs,
+        # so an annotation in a fragment would not be a suppression to audit --
+        # it would be the gate itself, switched off.
+        found = violations(run_flake8("--disable-noqa", tmp))
 
-    over = {names[path] for path, _ in found}
+    over: dict[tuple[str, str], list[int]] = {}
+    for (path, _), (label, score) in found.items():
+        over.setdefault((names[path], block(label)), []).append(score)
+    measured = {key: tuple(sorted(scores)) for key, scores in over.items()}
+
     ok = True
-    if new := sorted(over - PROGRAM_LEDGER):
-        print(f"\nAssembled programs over the ceiling: {', '.join(new)}.")
-        print("Split the program, or add it to PROGRAM_LEDGER with the reason it cannot be.")
+    for key in sorted(measured.keys() | PROGRAM_LEDGER.keys()):
+        expected, actual = PROGRAM_LEDGER.get(key), measured.get(key)
+        if expected == actual:
+            continue
+        program, name = key
+        if expected is None:
+            print(f"\n{program}: {name} is over the ceiling at {actual}.")
+            print("Split it, or add it to PROGRAM_LEDGER with the reason it cannot be split.")
+        elif actual is None:
+            print(f"\n{program}: {name} is under {MAX_COMPLEXITY} now. Delete its PROGRAM_LEDGER entry.")
+        else:
+            print(f"\n{program}: {name} was {expected}, is now {actual}. Update its PROGRAM_LEDGER entry.")
         ok = False
-    if fixed := sorted(PROGRAM_LEDGER - over):
-        print(f"\nStale PROGRAM_LEDGER entries -- these are under {MAX_COMPLEXITY} now: {', '.join(fixed)}.")
-        ok = False
+
     if ok:
-        print(f"embedded programs: {len(names)} assembled, {len(over)} grandfathered, none stale.")
+        print(f"embedded programs: {len(names)} assembled, {len(PROGRAM_LEDGER)} grandfathered, none stale.")
     return ok
 
 

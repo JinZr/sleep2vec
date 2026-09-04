@@ -195,8 +195,12 @@ Three checks, mirroring the mypy ledger ratchet in `utils/type_check.py`:
    assembled by `python_programs.source()` and run through `python -c`. They do
    not lint standalone (names resolve only once concatenated) and flake8's
    directory walk never sees them, so each of the 25 registered programs is
-   assembled and checked at the same ceiling. `PROGRAM_LEDGER` grandfathers the
-   two already above it and is checked for staleness the same way.
+   assembled and checked at the same ceiling, with noqa disabled: there is no
+   second check behind this one, so an annotation in a fragment would be the
+   gate switched off rather than a suppression to audit. `PROGRAM_LEDGER`
+   grandfathers the two blocks already above the ceiling, keyed per block and
+   carrying its score, so a second over-ceiling block in a grandfathered
+   program — or a fixed one swapped for a new one — is still caught.
 
 Both ledgers are shrink-only: a new function or program over 25 branches is a
 design signal, not a lint to suppress.
