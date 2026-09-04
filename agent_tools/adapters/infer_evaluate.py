@@ -17,7 +17,7 @@ from ..plan_rendering import (
     render_command,
     variant_module,
 )
-from .base import TaskAdapter
+from .base import TaskAdapter, config_summary_issues, recipe_inputs
 
 _INFER_EVALUATE_TASKS = frozenset({"infer", "evaluate"})
 # Byte-compat guard for sex_age_pretrained_backbone_issue: the pre-adapter
@@ -44,10 +44,6 @@ _INPUT_FIELDS = frozenset(
 _EVALUATION_FIELDS = frozenset({"external_test_locked", "final_test_unlocked"})
 
 
-def _inputs(recipe: dict[str, Any]) -> dict[str, Any]:
-    return recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-
-
 def _recipe_preset_field(recipe: dict[str, Any]) -> str | None:
     # Byte-compat with the pre-adapter kernel: these helpers were keyed on the
     # recipe's own task string, not the dispatch task.
@@ -57,7 +53,7 @@ def _recipe_preset_field(recipe: dict[str, Any]) -> str | None:
 def sex_age_override_dataset_names_issue(task: str, recipe: dict) -> DecisionIssue | None:
     if recipe.get("variant") != "sex_age_baseline" or task not in _INFER_EVALUATE_TASKS:
         return None
-    inputs = _inputs(recipe)
+    inputs = recipe_inputs(recipe)
     value = inputs.get("override_dataset_names")
     if value in (None, "", "ASK_USER"):
         return None
@@ -106,7 +102,7 @@ class InferEvaluateAdapter(TaskAdapter):
         return (str(execution.get("python") or "python"), "-m", variant_module(recipe, "infer"))
 
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
-        inputs = _inputs(recipe)
+        inputs = recipe_inputs(recipe)
         runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
         avg_ckpts = runtime.get("avg_ckpts", 1)
         averages_checkpoints = type(avg_ckpts) is int and avg_ckpts > 1
@@ -130,37 +126,9 @@ class InferEvaluateAdapter(TaskAdapter):
     ) -> list[DecisionIssue]:
         issues: list[DecisionIssue] = []
         evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-        inputs = _inputs(recipe)
+        inputs = recipe_inputs(recipe)
 
-        if config_summary:
-            for issue in config_summary.get("blocking_issues", []):
-                issues.append(
-                    DecisionIssue(
-                        DecisionStatus.NEEDS_USER_INPUT,
-                        "config",
-                        issue,
-                        "Please fix the config before the agent generates commands.",
-                        {"config_path": config_summary.get("config_path")},
-                    )
-                )
-            # Only the structural config-family marker is a routing gate; variant_guess can be path-derived.
-            config_variant = config_summary.get("authoritative_variant")
-            recipe_variant = recipe.get("variant")
-            # An unresolved variant belongs to the consultation gate; only an explicit conflict is invalid.
-            if (
-                config_variant is not None
-                and recipe_variant not in (None, "", "ASK_USER")
-                and recipe_variant != config_variant
-            ):
-                issues.append(
-                    DecisionIssue(
-                        DecisionStatus.FAIL,
-                        "variant",
-                        f"Config family requires variant={config_variant}.",
-                        None,
-                        {"config_variant": config_variant, "recipe_variant": recipe_variant},
-                    )
-                )
+        issues.extend(config_summary_issues(recipe, config_summary))
         if inputs.get("eval_split") == "test":
             if "external_test_locked" not in evaluation or evaluation["external_test_locked"] is True:
                 issues.append(
@@ -220,7 +188,7 @@ class InferEvaluateAdapter(TaskAdapter):
         return issues
 
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
-        inputs = _inputs(recipe)
+        inputs = recipe_inputs(recipe)
         runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
         return [
             render_command(
@@ -240,28 +208,10 @@ class InferEvaluateAdapter(TaskAdapter):
             )
         ]
 
-    def index_summary_inputs_override(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
-    ) -> tuple[list[Any], Any, list[Any]] | None:
-        if recipe.get("task") != self.task:
-            return None
-        inputs = _inputs(recipe)
-        split_values = coerce_list(inputs.get("eval_split"))
-        if self._effective_preset_path(recipe, config_summary) not in (None, ""):
-            return [], inputs.get("config"), split_values
-        data = (config_summary or {}).get("data") or {}
-        return coerce_list(data.get("finetune_data_index")), inputs.get("config"), split_values
-
-    @staticmethod
-    def _effective_preset_path(recipe: dict[str, Any], cfg: dict[str, Any] | None) -> Any:
-        value = _inputs(recipe).get("inference_preset_path")
-        if value not in (None, "", "ASK_USER"):
-            return value
-        if cfg:
-            value = (cfg.get("data") or {}).get("finetune_preset_path")
-            if value not in (None, "", "ASK_USER"):
-                return value
-        return None
+    def index_summary_split_values(self, recipe: dict[str, Any]) -> list[Any]:
+        # infer/evaluate name their split in the recipe rather than loading the
+        # finetune split set.
+        return coerce_list(recipe_inputs(recipe).get("eval_split"))
 
 
 INFER_ADAPTER = InferEvaluateAdapter(

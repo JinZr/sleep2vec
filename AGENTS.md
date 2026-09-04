@@ -1,5 +1,37 @@
 # Repository Guidelines
 
+## Scope: This Is a Lightweight Research Framework
+
+Read this first; it sets the intent behind every policy below.
+
+This is a single-investigator sleep-model research codebase, worked on by one
+author and by agents, running on one workstation plus a Slurm cluster. It is not
+a product, a service, or a multi-tenant system. Its currency is reproducible
+experiments and legible scientific contracts, not engineering generality.
+
+- Build for the case in front of you. Do not add abstraction, indirection, or
+  configuration for a scenario nobody has asked for. A second real caller is the
+  trigger for a shared owner; a hypothetical future one is not.
+- Do not engineer for scale, concurrency, or hostility that does not exist here.
+  No retry/backoff layers, caching tiers, rate limits, worker pools, migration
+  frameworks, or defensive re-validation of values the canonical path already
+  rejects. `runtime_lock` covers the one real race.
+- Prefer deleting over adding and inlining over wrapping. A helper with exactly
+  one caller belongs at that call site.
+- Match the weight of the change to the weight of the problem. A one-line
+  special case is usually the right fix for a one-line problem. Propose it as
+  such instead of escalating to a refactor.
+- If a change adds more scaffolding than behavior -- new modules, base classes,
+  protocols, or option plumbing that outweigh the actual logic -- stop and ask
+  before writing it.
+- Optimize for the reader, not the CPU. Indexes hold thousands of records and an
+  experiment holds dozens of runs; clarity beats micro-optimization here.
+- `agent_tools/` carries deliberate layering because it is the shared control
+  surface that agents drive. That ceremony is a constraint on that package, not
+  a template for the rest of the repo, and not a licence to keep growing it.
+- New code is a liability maintained by one person. Justify it by the experiment
+  it enables, not by the flexibility it offers.
+
 ## Project Structure & Module Organization
 - `sleep2vec/` is the core library and CLI entrypoints (e.g., `pretrain.py`, `finetune.py`, `infer.py`).
 - `configs/` holds YAML recipes that define model/loss/head settings.

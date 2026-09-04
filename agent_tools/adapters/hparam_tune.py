@@ -9,8 +9,7 @@ from typing import Any
 from .. import plan_contract, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
-from ..models import coerce_list
-from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, finetune_loaded_split_values, variant_module
+from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, variant_module
 from .base import PlanRegistrationPreflightError, TaskAdapter
 
 
@@ -343,26 +342,6 @@ class HparamTuneAdapter(TaskAdapter):
                 )
         paths.append(out / "final_external_test.sh")
         return paths
-
-    def index_summary_inputs_override(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
-    ) -> tuple[list[Any], Any, list[Any]] | None:
-        if recipe.get("task") != self.task:
-            return None
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-        split_values = finetune_loaded_split_values(recipe)
-        if self._effective_preset_path(config_summary) not in (None, ""):
-            return [], inputs.get("config"), split_values
-        data = (config_summary or {}).get("data") or {}
-        return coerce_list(data.get("finetune_data_index")), inputs.get("config"), split_values
-
-    @staticmethod
-    def _effective_preset_path(cfg: dict[str, Any] | None) -> Any:
-        if cfg:
-            value = (cfg.get("data") or {}).get("finetune_preset_path")
-            if value not in (None, "", "ASK_USER"):
-                return value
-        return None
 
 
 HPARAM_TUNE_ADAPTER = HparamTuneAdapter()
