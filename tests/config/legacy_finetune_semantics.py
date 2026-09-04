@@ -44,11 +44,20 @@ LEGACY_MODE_SCALES = {
 # The legacy `backbone` group is the new `encoder` group: same parameters, and the
 # semantic classifier already excluded tokenizers/experts/routers/projection from it.
 LEGACY_TO_NEW_GROUP = {"backbone": "encoder"}
+# `LoraConfig.insert_lora` did not default the same way across the forks -- `sleep2vec` had
+# `True`, the two forks `False` -- so an omitted key does not describe one behaviour. A legacy
+# base config with `freeze_backbone_and_insert_lora: true` and no `insert_lora` inserted
+# adapters; the same file under either fork did not. Reading one default for all three
+# transcribes head-only trainability for a run that trained a LoRA group, which is the wrong
+# parameter set for anyone converting such a config by hand.
+LEGACY_INSERT_LORA_DEFAULTS = {"sleep2vec": True, "sleep2vec2": False, "sleep2expert": False}
 
 
 def legacy_trainability_table(
     finetune_block: dict[str, t.Any],
     moe_layer_indices: t.Sequence[int] = (),
+    *,
+    variant: str,
 ) -> dict[str, list[t.Any]]:
     """Return {group: [train, lr_scale]} under the *legacy* runtime semantics.
 
@@ -56,10 +65,20 @@ def legacy_trainability_table(
     `freeze_backbone_and_insert_lora` -> `freeze_tokenizer` sequence that the two
     non-MoE variants run in `Sleep2vecFinetuning.__init__`. `moe_layer_indices` comes
     from `model.backbone.moe`, because one legacy mode defaulted to it.
+
+    `variant` is required rather than defaulted: the one key whose legacy default differed
+    per fork is `insert_lora`, and a default here would silently pick a fork and describe
+    the wrong parameter set -- the failure this argument exists to prevent.
     """
+    try:
+        insert_lora_default = LEGACY_INSERT_LORA_DEFAULTS[variant]
+    except KeyError:
+        raise ValueError(
+            f"No legacy transcription for {variant!r}. Expected one of {sorted(LEGACY_INSERT_LORA_DEFAULTS)}."
+        ) from None
     lora_block = finetune_block.get("lora") or {}
     freeze_backbone = bool(lora_block.get("freeze_backbone_and_insert_lora", False))
-    insert_lora = bool(lora_block.get("insert_lora", False))
+    insert_lora = bool(lora_block.get("insert_lora", insert_lora_default))
     # Adapters exist only when the backbone was frozen *and* insertion was requested;
     # `insert_lora: true` alone was inert, which is why 30 configs set it to no effect.
     adapters_inserted = freeze_backbone and insert_lora

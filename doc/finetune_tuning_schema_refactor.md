@@ -671,6 +671,15 @@ Settled 2026-09-04.
   every encoder key is unexpected -- a partial match the total-mismatch guard accepts, leaving
   a randomly initialized encoder behind a successful load. The guard is now symmetric, and a
   test reads all three sources to assert each variant rejects the layout it cannot read.
+- **The legacy `insert_lora` default was not one default.** `LoraConfig.insert_lora` shipped
+  as `True` on `sleep2vec` and `False` on both forks, so a legacy base config with
+  `freeze_backbone_and_insert_lora: true` and no `insert_lora` inserted adapters while the same
+  file under either fork did not. The transcribed oracle read a single default for all three,
+  which turns a LoRA run into head-only trainability for anyone converting such a config by
+  hand -- and no shipped config exposed it, since all three that set the freeze key also set
+  `insert_lora` explicitly. `legacy_trainability_table` now requires the variant and refuses a
+  name it has no transcription for; a test derives that name set from which `config.py` modules
+  still define the legacy keys.
 
 ## What was verified
 
