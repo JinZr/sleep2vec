@@ -240,6 +240,13 @@ miss by reading a config's text: `moe_tuning.lr_scales` defaulted per *mode* and
 scale was itself a freeze, and `train_moe_layer_indices` defaulted to the deepest MoE
 layer. Both are transcribed in `tests/config/legacy_finetune_semantics.py`.
 
+One legacy combination has no representation in the new schema. `sleep2expert` read
+`freeze_backbone_and_insert_lora` and `moe_tuning` from the same config, so setting both
+evaluates to a table that trains the encoder *and* inserts LoRA -- which the new schema
+rejects by design, because adapter insertion freezes the backbone first. Such a config
+has to be resolved by deciding which of the two policies it meant, not converted. No
+checked-in config combined them.
+
 ### The one dangerous case
 
 The 30 configs with an inert `insert_lora: true` must migrate to
