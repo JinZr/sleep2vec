@@ -587,34 +587,33 @@ def _validate_hparam_selection_files_unchanged(
             raise ValueError(f"The frozen checkpoint test ranking changed during finalization: {path}")
 
 
+def _finalizable_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]:
+    """The managed rows, refusing an experiment that is not ready to finalize.
+    Read twice -- once before the run-manifest snapshot and once after -- so a
+    run that changes during finalization cannot slip past the check."""
+    rows = _managed_rows(root, remote=remote)
+    if not rows:
+        raise ValueError("Experiment has no managed runs to finalize.")
+    unresolved = [row["run_id"] for row in rows if row.get("status") not in TERMINAL_STATUSES]
+    if unresolved:
+        raise ValueError(f"Experiment still has unresolved runs: {unresolved}")
+    missing_stop_reasons = stopped_runs_without_reason(rows)
+    if missing_stop_reasons:
+        run_ids = [f"{row['step_id']} / {row['run_id']}" for row in missing_stop_reasons]
+        raise ValueError(f"Stopped runs are missing required stop_reason: {run_ids}")
+    return rows
+
+
 def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote: str | None = None) -> Path:
     if remote and not Path(report_path).is_absolute():
         raise ValueError("Remote final report path must be absolute.")
     root = _target_root(run_dir, remote)
     run_manifest_path = root / "run_manifest.tsv"
-    rows = _managed_rows(root, remote=remote)
-    if not rows:
-        raise ValueError("Experiment has no managed runs to finalize.")
-    unresolved = [row["run_id"] for row in rows if row.get("status") not in TERMINAL_STATUSES]
-    if unresolved:
-        raise ValueError(f"Experiment still has unresolved runs: {unresolved}")
-    missing_stop_reasons = stopped_runs_without_reason(rows)
-    if missing_stop_reasons:
-        run_ids = [f"{row['step_id']} / {row['run_id']}" for row in missing_stop_reasons]
-        raise ValueError(f"Stopped runs are missing required stop_reason: {run_ids}")
+    rows = _finalizable_rows(root, remote=remote)
     run_manifest_snapshot = exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[
         str(run_manifest_path)
     ]
-    rows = _managed_rows(root, remote=remote)
-    if not rows:
-        raise ValueError("Experiment has no managed runs to finalize.")
-    unresolved = [row["run_id"] for row in rows if row.get("status") not in TERMINAL_STATUSES]
-    if unresolved:
-        raise ValueError(f"Experiment still has unresolved runs: {unresolved}")
-    missing_stop_reasons = stopped_runs_without_reason(rows)
-    if missing_stop_reasons:
-        run_ids = [f"{row['step_id']} / {row['run_id']}" for row in missing_stop_reasons]
-        raise ValueError(f"Stopped runs are missing required stop_reason: {run_ids}")
+    rows = _finalizable_rows(root, remote=remote)
     if (
         exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[str(run_manifest_path)]["sha256"]
         != run_manifest_snapshot["sha256"]
@@ -1064,7 +1063,7 @@ def _managed_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]:
     return rows
 
 
-def _managed_workspace(
+def _managed_workspace(  # noqa: C901
     root: Path,
     *,
     remote: str | None,

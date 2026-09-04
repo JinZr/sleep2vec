@@ -70,7 +70,7 @@ class ProcessIdentityError(RuntimeError):
     pass
 
 
-def status_row(
+def status_row(  # noqa: C901
     run_dir: Path,
     row: dict[str, Any],
     previous: dict[str, Any] | None = None,

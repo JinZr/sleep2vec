@@ -10,4 +10,10 @@ cd "$REPO_ROOT"
 python -m isort .
 python -m black .
 python -m flake8 .
+# agent_tools carries a complexity ceiling the rest of the repo does not: the
+# model/training code is legitimately long-bodied, while agent_tools is control
+# flow whose branch count is the thing worth capping. Scoped as a second
+# invocation rather than a repo-wide setting plus per-directory C901 ignores,
+# which would leave the ignored directories unchecked forever.
+python -m flake8 --max-complexity=25 agent_tools
 python utils/type_check.py

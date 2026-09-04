@@ -69,10 +69,23 @@ _EXECUTION_ROUTE_FIELDS = (
 _SLURM_ACCEPTED_STATUSES = {"queued", "running", "stopping", "completed", "finished", "failed", "stopped"}
 
 
+def _preflight_details(report) -> str:
+    """Every blocking issue in a preflight report, as one message line."""
+    return "; ".join(f"{issue.field}: {issue.message}" for issue in report.blocking_issues())
+
+
+def _require_preflight_pass(report, subject: str) -> None:
+    """Raise with every blocking issue when ``subject``'s preflight did not pass."""
+    if report.exit_code != 0:
+        raise RuntimeError(
+            f"{subject} failed preflight with exit code {report.exit_code}: {_preflight_details(report)}"
+        )
+
+
 class AdaptivePreflightError(RuntimeError):
     def __init__(self, report):
         self.report = report
-        details = "; ".join(f"{issue.field}: {issue.message}" for issue in report.blocking_issues())
+        details = _preflight_details(report)
         super().__init__(f"Round 000 plan failed preflight with exit code {report.exit_code}: {details}")
 
 
@@ -109,7 +122,9 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
         return _init_adaptive_workflow_locked(recipe_path, root, locked_workspace=registration_root)
 
 
-def _init_adaptive_workflow_locked(recipe_path: str | Path, root: Path, *, locked_workspace: Path) -> Path:
+def _init_adaptive_workflow_locked(  # noqa: C901
+    recipe_path: str | Path, root: Path, *, locked_workspace: Path
+) -> Path:
     resolved_recipe_path = resolve_repo_path(recipe_path)
     if resolved_recipe_path is None:
         raise FileNotFoundError("Path is required.")
@@ -446,11 +461,7 @@ def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | No
     recipe, _, source_preflight = preflight_plan(
         recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
     )
-    if source_preflight.exit_code != 0:
-        details = "; ".join(f"{issue.field}: {issue.message}" for issue in source_preflight.blocking_issues())
-        raise RuntimeError(
-            f"Adaptive source recipe failed preflight with exit code {source_preflight.exit_code}: {details}"
-        )
+    _require_preflight_pass(source_preflight, "Adaptive source recipe")
     _validate_adaptive_recipe(recipe)
     recipe = _with_workflow_execution(recipe, workflow)
     strategy = _suggest_strategy(recipe)
@@ -499,11 +510,7 @@ def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | No
         _, _, candidate_preflight = preflight_plan(
             recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
         )
-    if candidate_preflight.exit_code != 0:
-        details = "; ".join(f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues())
-        raise RuntimeError(
-            f"Adaptive suggestion failed preflight with exit code {candidate_preflight.exit_code}: {details}"
-        )
+    _require_preflight_pass(candidate_preflight, "Adaptive suggestion")
     out_dir.mkdir(parents=True, exist_ok=True)
     out.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
     rationale = _suggestion_rationale(next_round, objective, best, suggested["search"]["parameters"])
@@ -1226,7 +1233,7 @@ def adaptive_step(
         return _adaptive_step(root, proposal_path=proposal_path, execute=True)
 
 
-def _adaptive_step(
+def _adaptive_step(  # noqa: C901
     root: Path,
     *,
     proposal_path: str | Path | None,
@@ -1238,11 +1245,7 @@ def _adaptive_step(
     recipe, _, source_preflight = preflight_plan(
         recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
     )
-    if source_preflight.exit_code != 0:
-        details = "; ".join(f"{issue.field}: {issue.message}" for issue in source_preflight.blocking_issues())
-        raise RuntimeError(
-            f"Adaptive source recipe failed preflight with exit code {source_preflight.exit_code}: {details}"
-        )
+    _require_preflight_pass(source_preflight, "Adaptive source recipe")
     _validate_adaptive_recipe(recipe)
     recipe = _with_workflow_execution(recipe, workflow)
     strategy = _suggest_strategy(recipe)
@@ -1279,20 +1282,12 @@ def _adaptive_step(
             next_recipe, _, candidate_preflight = preflight_plan(
                 recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
             )
-        if candidate_preflight.exit_code != 0:
-            details = "; ".join(f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues())
-            raise RuntimeError(
-                f"Agent proposal failed preflight with exit code {candidate_preflight.exit_code}: {details}"
-            )
+        _require_preflight_pass(candidate_preflight, "Agent proposal")
         workflow = _workflow(root)
         recipe, _, current_preflight = preflight_plan(
             recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
         )
-        if current_preflight.exit_code != 0:
-            details = "; ".join(f"{issue.field}: {issue.message}" for issue in current_preflight.blocking_issues())
-            raise RuntimeError(
-                f"Adaptive source recipe failed preflight with exit code {current_preflight.exit_code}: {details}"
-            )
+        _require_preflight_pass(current_preflight, "Adaptive source recipe")
         _validate_adaptive_recipe(recipe)
         recipe = _with_workflow_execution(recipe, workflow)
         workspace = experiment_root(recipe)
@@ -1310,13 +1305,7 @@ def _adaptive_step(
                 next_recipe, _, candidate_preflight = preflight_plan(
                     recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
                 )
-            if candidate_preflight.exit_code != 0:
-                details = "; ".join(
-                    f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues()
-                )
-                raise RuntimeError(
-                    f"Agent proposal failed preflight with exit code {candidate_preflight.exit_code}: {details}"
-                )
+            _require_preflight_pass(candidate_preflight, "Agent proposal")
         proposal_input, _ = _validated_agent_proposal_input(
             root,
             workflow,
@@ -1379,14 +1368,7 @@ def _adaptive_step(
                 next_recipe, _, candidate_preflight = preflight_plan(
                     recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
                 )
-            if candidate_preflight.exit_code != 0:
-                details = "; ".join(
-                    f"{issue.field}: {issue.message}" for issue in candidate_preflight.blocking_issues()
-                )
-                raise RuntimeError(
-                    "Published agent suggestion failed preflight with exit code "
-                    f"{candidate_preflight.exit_code}: {details}"
-                )
+            _require_preflight_pass(candidate_preflight, "Published agent suggestion")
         round_recipe_payload = candidate_payload
         exp_io.validate_managed_output_paths(
             workspace,
@@ -1621,11 +1603,7 @@ def adaptive_loop(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     recipe, _, source_preflight = preflight_plan(
         recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
     )
-    if source_preflight.exit_code != 0:
-        details = "; ".join(f"{issue.field}: {issue.message}" for issue in source_preflight.blocking_issues())
-        raise RuntimeError(
-            f"Adaptive source recipe failed preflight with exit code {source_preflight.exit_code}: {details}"
-        )
+    _require_preflight_pass(source_preflight, "Adaptive source recipe")
     _validate_adaptive_recipe(recipe)
     recipe = _with_workflow_execution(recipe, workflow)
     if _suggest_strategy(recipe) == "agent_proposal":

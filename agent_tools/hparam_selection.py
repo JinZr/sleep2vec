@@ -83,7 +83,7 @@ def select_hparam_candidates(
     return _commit_hparam_selection(selection)
 
 
-def resolve_hparam_candidates(
+def resolve_hparam_candidates(  # noqa: C901
     run_dir: str | Path,
     candidate_rows: list[dict[str, Any]],
     *,

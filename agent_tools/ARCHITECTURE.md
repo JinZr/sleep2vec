@@ -173,3 +173,16 @@ Legal edges outside the reverse-edge table:
 - External importers: 22+ preprocess/util scripts import `agent_tools.progress`;
   `agent_tools.models` is imported outside the package too. Moving either would
   break them, so they stay at the package top level.
+
+## Complexity ceiling
+
+`agent_tools` is gated at mccabe `--max-complexity=25` — a second, scoped
+flake8 invocation in `utils/style_check.sh` and the style_check workflow, not a
+repo-wide `.flake8` setting. The model and training packages are exempt by not
+being in scope rather than by a `per-file-ignores` entry, so nothing outside
+`agent_tools` is silently unchecked.
+
+The 24 functions already above the ceiling carry `# noqa: C901` on their `def`
+line. That list is the debt ledger: shrink it when you touch one of those
+functions, and do not add to it — a new function over 25 branches is a design
+signal, not a lint to suppress.

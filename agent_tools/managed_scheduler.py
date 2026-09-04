@@ -402,7 +402,7 @@ def launch_managed_runs(
         )
 
 
-def _launch_managed_runs(
+def _launch_managed_runs(  # noqa: C901
     workspace: Path,
     owner_dir: Path,
     runs: list[dict[str, Any]],
@@ -810,7 +810,7 @@ def _managed_launch_preflight(
     return snapshot_path, expected_keys, workspace_by_key
 
 
-def _launch_slurm_runs(
+def _launch_slurm_runs(  # noqa: C901
     workspace: Path,
     owner_dir: Path,
     runs: list[dict[str, Any]],
@@ -1316,7 +1316,7 @@ class SlurmMonitorContext:
         return snapshot.get(job_id) if snapshot is not None else None
 
 
-def observe_slurm_run(
+def observe_slurm_run(  # noqa: C901
     owner_dir: str | Path,
     execution: dict[str, Any],
     row: dict[str, Any],

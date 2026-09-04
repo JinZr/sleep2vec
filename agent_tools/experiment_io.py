@@ -216,7 +216,7 @@ def read_managed_files_at(
     return payload
 
 
-def read_managed_output_texts_at(
+def read_managed_output_texts_at(  # noqa: C901
     root: str | Path,
     paths: Sequence[str | Path],
     *,
@@ -360,7 +360,7 @@ def read_rows_at(
     return rows
 
 
-def validate_managed_output_paths(
+def validate_managed_output_paths(  # noqa: C901
     root: str | Path,
     paths: Sequence[str | Path],
     *,
@@ -650,7 +650,7 @@ def _managed_publication_matches(
         return False
 
 
-def append_managed_text_at(path: str | Path, text: str, *, managed_root: str | Path) -> None:
+def append_managed_text_at(path: str | Path, text: str, *, managed_root: str | Path) -> None:  # noqa: C901
     root = Path(str(managed_root))
     target = Path(str(path))
     _validate_raw_managed_path(root, target)
@@ -849,7 +849,7 @@ def _rename_noreplace_at(parent_descriptor: int, source_name: str, target_name: 
     raise OSError(error, os.strerror(error), target_name)
 
 
-def conditional_atomic_replace_text_at(
+def conditional_atomic_replace_text_at(  # noqa: C901
     path: str | Path,
     text: str,
     expected_sha256: str | None,

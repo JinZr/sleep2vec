@@ -292,7 +292,7 @@ def _normalize_runtime_commit(recipe: dict[str, Any]) -> None:
         execution["runtime_commit"] = runtime_commit.lower()
 
 
-def evaluate_recipe(
+def evaluate_recipe(  # noqa: C901
     recipe_path: str | Path,
     user_decisions_path: str | Path | None = None,
     *,
@@ -1245,7 +1245,7 @@ def build_plan(
         return _build_plan(**build_kwargs, locked_root=root, check_locked_root=True)
 
 
-def _build_plan(
+def _build_plan(  # noqa: C901
     *,
     recipe_path: str | Path,
     output_dir: str | Path,
