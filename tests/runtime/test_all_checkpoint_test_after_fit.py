@@ -113,16 +113,16 @@ def _run_supervised(
     events = event_log if event_log is not None else []
 
     class DummyModel:
-        moe_finetune_status = {}
+        finetune_status = {}
 
         def __init__(self):
             self.survival_per_disease_metric_rows = [{"stage": "test"}] if emit_artifacts else []
             self.multilabel_per_disease_metric_rows = [{"stage": "test"}] if emit_artifacts else []
 
-        def moe_finetune_hparams(self):
+        def finetune_hparams(self):
             return {}
 
-        def moe_finetune_param_group_rows(self):
+        def finetune_param_group_rows(self):
             return []
 
     class DummyLogger:
@@ -329,7 +329,7 @@ def test_finetune_nonzero_rank_accepts_current_launch_marker(
     (run_dir / "cli_args.yaml").write_text("current args\n")
     (run_dir / "checkpoints").mkdir()
     if module_name == "sleep2expert.finetune":
-        (run_dir / "moe_finetune_status.json").write_text("{}\n")
+        (run_dir / "finetune_status.json").write_text("{}\n")
 
     monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
 

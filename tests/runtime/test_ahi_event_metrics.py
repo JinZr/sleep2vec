@@ -973,12 +973,12 @@ def test_supervised_separates_periodic_and_best_checkpoint_callbacks(
         finetune: object = None
 
     class _DummyModel:
-        moe_finetune_status = {}
+        finetune_status = {}
 
-        def moe_finetune_hparams(self):
+        def finetune_hparams(self):
             return {}
 
-        def moe_finetune_param_group_rows(self):
+        def finetune_param_group_rows(self):
             return []
 
     class _DummyLogger:
