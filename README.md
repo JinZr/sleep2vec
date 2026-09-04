@@ -518,33 +518,64 @@ finetune:
 
 **Converting a legacy finetune config**
 
-The mapping is not a textual rename. Converting a config means *evaluating* the old keys
-into a group table and then writing the new block. This is the table the loaders'
-rejection messages point at.
+The mapping is not a textual rename, and for a config carrying `moe_tuning` it is not a
+per-key mapping at all. Converting means *evaluating* the old keys into a group table and
+then writing that table out. This is what the loaders' rejection messages point at.
+
+A config **without** `moe_tuning` does convert key by key:
 
 | Old state | New |
 | --- | --- |
-| `freeze: false` (no `moe_tuning`) | `preset: full`, then apply the `freeze_tokenizer` row |
+| `freeze: false` | `preset: full` |
 | `freeze: true, insert: false` | `preset: head_only` |
 | `freeze: true, insert: true` | `preset: lora` + `tuning.lora` shape |
-| `moe_tuning.mode: head_only` | `preset: head_only` |
-| `moe_tuning.mode: conservative_full_router_frozen` | `preset: moe_conservative` |
-| `moe_tuning.mode: conservative_full_router_trainable` | `preset: moe_conservative_routers` |
-| `moe_tuning.mode: top_moe_layer_expert_only` | `preset: moe_top_experts` + `moe.layer_indices` |
-| `moe_tuning.mode: custom` | `preset: custom` + explicit `groups` |
 | `freeze_tokenizer: true/false` (defaults to `true`) | `groups.tokenizers.train`, inverted |
-| `moe_tuning.moe_regularization` | `finetune.moe_regularization`, a sibling of `tuning` rather than nested |
-| `lr_scales[g]: 0.0` | `groups[g].train: false`, with no `lr_scale` |
-| any other non-default `lr_scales[g]` | `groups[g].lr_scale` (`lr_scales.backbone` -> `groups.encoder`) |
 
 (`freeze` and `insert` above are `finetune.lora.freeze_backbone_and_insert_lora` and
 `finetune.lora.insert_lora`.)
 
-Rule: build the group table from what the legacy keys *did* at runtime, compare it against
-the materialized preset tables in `_FINETUNE_TUNING_PRESETS`, use the matching preset name,
-and fall back to `preset: custom` with an explicit `groups` map when nothing matches
-exactly. Never translate a key by name alone. The defaults are what make this more than a
-rename, and none of them is visible in a config's own text:
+A config **with** `moe_tuning` does not. There, trainability and learning-rate scale are
+independent axes, and four separate things decide trainability:
+
+- the mode's own group set — `head_only` trains the head; `conservative_full_router_frozen`
+  the head, encoder and experts; `conservative_full_router_trainable` those plus the
+  routers; `top_moe_layer_expert_only` the head and the experts on the selected layers;
+  `custom` every group with a positive scale;
+- `freeze_experts` and `freeze_router`, which override a positive scale under `custom`;
+- any scale of exactly `0.0`, which freezes its group whatever the mode decided;
+- `freeze_backbone_and_insert_lora` with `insert_lora`, which on this path **freezes
+  nothing** — unlike the non-MoE path it only decides whether the LoRA group is on, and the
+  mode alone still decides every other group.
+
+`freeze_tokenizer` does **not** invert on this path. Every mode already excludes the
+tokenizers and their default scale is `0.0`, so `freeze_tokenizer: false` still leaves
+them frozen.
+
+Evaluate those into a table, then write it:
+
+| Evaluated result | New |
+| --- | --- |
+| the table matches a preset | that `preset` |
+| it matches none | `preset: custom` with every group spelled out |
+| a group the table trains | `groups[g].lr_scale`, only if not already the preset's value |
+| a group it freezes | `groups[g].train: false`, and no `lr_scale` |
+| `moe_regularization` nested inside `moe_tuning` | `finetune.moe_regularization`, a sibling of `tuning` |
+
+A scale never survives on a frozen group: `lr_scale <= 0` is rejected, and so is any
+`lr_scale` sitting beside `train: false`. So `head_only` with an explicit
+`lr_scales.backbone: 0.1` converts to a frozen encoder and that `0.1` is dropped — the
+legacy run did not train the encoder either, the scale simply rode along unused.
+
+As a starting guess the modes line up with `head_only`, `moe_conservative`,
+`moe_conservative_routers` and `moe_top_experts` (the last with `moe.layer_indices`), but
+only when nothing else in the config moved the evaluated table off that preset.
+
+One legacy state has no conversion at all: `lr_scales.head: 0.0` froze the head, and the
+new schema requires the head to train. Such a config needs an intent decision, not a
+mapping.
+
+The defaults are what make this more than a rename, and none of them is visible in a
+config's own text:
 
 - `moe_tuning.lr_scales` defaulted **per mode**, and a `0.0` scale was itself a freeze.
 - `train_moe_layer_indices` defaulted to the deepest MoE layer.
@@ -562,13 +593,14 @@ is the authoritative statement of what the old keys did.
 
 Whether a config that sets both `freeze_backbone_and_insert_lora` and `moe_tuning` can be
 converted at all depends on the mode — `sleep2expert` read both blocks from the same file.
-Under `head_only` or `top_moe_layer_expert_only` the mode leaves the encoder frozen, so
-the pair evaluates to a frozen encoder with a trainable head and LoRA — that is
-`preset: lora`, and the conversion is determined. Under `conservative_full_router_frozen` or
+Under `head_only` the pair evaluates to a trainable head and LoRA over everything else
+frozen, which is `preset: lora`. Under `top_moe_layer_expert_only` it additionally keeps
+the selected layers' experts trainable, so it is `preset: moe_top_experts` with
+`moe.layer_indices` and `groups.lora.train: true` — *not* `preset: lora`, which would
+freeze those experts. Under `conservative_full_router_frozen` or
 `conservative_full_router_trainable` the mode keeps the encoder trainable, so the pair
-evaluates to a table that trains the encoder *and* inserts LoRA, which the new schema
-rejects by design. Only those two are resolved by deciding which policy the config meant,
-rather than converted.
+trains the encoder *and* inserts LoRA, which the new schema rejects by design. Only those
+two are resolved by deciding which policy the config meant, rather than converted.
 
 ---
 
