@@ -237,6 +237,11 @@ def test_the_conversion_table_is_where_the_rejection_messages_say_it_is():
     # fails loudly, but leaving it out loads fine with the auxiliary loss silently off.
     assert "finetune.moe_regularization" in section
 
+    # The other silent one. Only `moe_top_experts` accepts a layer subset, so a conversion
+    # that falls back to `custom` over a differing scale loads fine and trains the experts in
+    # every MoE layer instead of the legacy run's selection.
+    assert "moe.layer_indices" in section
+
 
 @pytest.mark.parametrize("variant", VARIANTS)
 def test_every_variant_rejects_an_unknown_finetune_block(variant: str, tmp_path: Path):

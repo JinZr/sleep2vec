@@ -481,11 +481,15 @@ finetune:
   included.
 - A preset may not train the encoder and LoRA at the same time; LoRA adapts a frozen
   backbone.
-- On `sleep2expert`, training the `routers` group also requires
-  `model.backbone.moe.router_type: learned`. The `random`, `hard_modality` and `hard_group`
-  routers hold no parameters, so `moe_conservative_routers` — or a `routers` override on
-  any other preset — is rejected on those. Every `moe_*` preset likewise requires
-  `model.backbone.moe.enabled: true`.
+- On `sleep2expert` the `experts` and `routers` groups exist only when
+  `model.backbone.moe.enabled: true`. On a dense config, naming either under `groups` is
+  rejected even as `{train: false}`, and `preset: custom` there requires exactly the five
+  non-MoE groups — spelling the MoE two is an error, not harmless redundancy. Every `moe_*`
+  preset likewise requires an enabled MoE backbone.
+- Training the `routers` group also requires `model.backbone.moe.router_type: learned`. The
+  `random`, `hard_modality` and `hard_group` routers hold no parameters, so
+  `moe_conservative_routers` — or a `routers` override on any other preset — is rejected on
+  those.
 - `finetune.tuning.moe.layer_indices` is accepted only under `preset: moe_top_experts`, and
   must be a subset of `model.backbone.moe.layer_indices`. Omit it and the deepest configured
   MoE layer is selected; the preset fails at load if the model configures none.
@@ -547,19 +551,29 @@ independent axes, and four separate things decide trainability:
   nothing** — unlike the non-MoE path it only decides whether the LoRA group is on, and the
   mode alone still decides every other group.
 
-`freeze_tokenizer` does **not** invert on this path. Every mode already excludes the
-tokenizers and their default scale is `0.0`, so `freeze_tokenizer: false` still leaves
-them frozen.
+`freeze_tokenizer` does not simply invert on this path, and `custom` is why. Under the
+four fixed modes it has nothing to invert: none of them lists the tokenizers, and their
+default scale is `0.0`, so `freeze_tokenizer: false` still leaves them frozen. Under
+`custom` it decides them, because there a positive scale is what trains a group —
+`lr_scales.tokenizers: 0.3` with `freeze_tokenizer: false` trained the tokenizers, and
+converts to `groups.tokenizers: {train: true, lr_scale: 0.3}`.
 
 Evaluate those into a table, then write it:
 
 | Evaluated result | New |
 | --- | --- |
-| the table matches a preset | that `preset` |
-| it matches none | `preset: custom` with every group spelled out |
+| its *trainability* matches a preset | that `preset` |
+| no preset's trainability matches | `preset: custom` with every group spelled out |
 | a group the table trains | `groups[g].lr_scale`, only if not already the preset's value |
 | a group it freezes | `groups[g].train: false`, and no `lr_scale` |
 | `moe_regularization` nested inside `moe_tuning` | `finetune.moe_regularization`, a sibling of `tuning` |
+
+Match on the trainability alone. A scale that differs from the preset's is an override,
+not a reason to fall back to `custom`: `top_moe_layer_expert_only` with
+`lr_scales.experts: 0.2` is still `moe_top_experts` plus `groups.experts.lr_scale: 0.2`.
+Sending it to `custom` loses `moe.layer_indices`, which no other preset accepts, and trains
+the experts in every MoE layer rather than the selected ones — a config that loads cleanly
+and trains a larger parameter set than the run it came from.
 
 A scale never survives on a frozen group: `lr_scale <= 0` is rejected, and so is any
 `lr_scale` sitting beside `train: false`. So `head_only` with an explicit
@@ -591,16 +605,25 @@ config's own text:
 `tests/config/legacy_finetune_semantics.py` transcribes every one of them executably and
 is the authoritative statement of what the old keys did.
 
-Whether a config that sets both `freeze_backbone_and_insert_lora` and `moe_tuning` can be
-converted at all depends on the mode — `sleep2expert` read both blocks from the same file.
-Under `head_only` the pair evaluates to a trainable head and LoRA over everything else
-frozen, which is `preset: lora`. Under `top_moe_layer_expert_only` it additionally keeps
-the selected layers' experts trainable, so it is `preset: moe_top_experts` with
+A config that carried `moe_tuning` *and* inserted LoRA is the last case — `sleep2expert`
+read both blocks from the same file. Adapters existed only when
+`freeze_backbone_and_insert_lora` and `insert_lora` were **both** on, and `insert_lora`
+defaults to `false` on this variant: a file carrying only the freeze flag inserted nothing,
+and converts as though the LoRA keys were absent — `head_only` to `preset: head_only`,
+`top_moe_layer_expert_only` to `preset: moe_top_experts`. Reading the freeze flag alone as
+"LoRA" enables adapters the run never had.
+
+With both on, the mode decides. `head_only` evaluates to a trainable head and LoRA over
+everything else frozen, which is `preset: lora`. `top_moe_layer_expert_only` additionally
+keeps the selected layers' experts trainable, so it is `preset: moe_top_experts` with
 `moe.layer_indices` and `groups.lora.train: true` — *not* `preset: lora`, which would
-freeze those experts. Under `conservative_full_router_frozen` or
-`conservative_full_router_trainable` the mode keeps the encoder trainable, so the pair
-trains the encoder *and* inserts LoRA, which the new schema rejects by design. Only those
-two are resolved by deciding which policy the config meant, rather than converted.
+freeze those experts.
+
+The rest evaluate to a table that trains the encoder *and* inserts LoRA, which the new
+schema rejects by design: both `conservative_*` modes, because they keep the encoder
+trainable, and `custom` whenever its scales train both groups — which the defaults alone
+do, `backbone` at `0.1` and `lora` at `1.0`. Those are not converted but resolved, by
+deciding which policy the config meant.
 
 ---
 
