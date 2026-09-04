@@ -477,7 +477,13 @@ finetune:
   hyper-parameters, not a switch.
 - `separate_adapters: true` creates channel-specific adapters named `ch_<channel>`; the
   default LoRA adapter is frozen and only the channel adapters are trainable.
-- Frozen groups are also put in eval mode, so their BatchNorm/dropout stop updating.
+- Eval mode follows the module tree, not the group table. A backbone submodule is forced
+  back to eval only when none of its parameters train, and the backbone as a whole only
+  when none of it trains at all — so `head_only` does stop the backbone's BatchNorm and
+  dropout. Under `lora`, or a MoE preset that trains only the experts, the encoder holds
+  trainable parameters and stays in train mode with its dropout active, even though the
+  `encoder` group is frozen. Frozen weights never update either way; this is only about
+  the stochastic and running-statistics layers around them.
 - The legacy keys `finetune.freeze_tokenizer`, `finetune.lora.insert_lora`,
   `finetune.lora.freeze_backbone_and_insert_lora`, and `finetune.moe_tuning` are rejected
   at load time. Every checked-in config was converted; a config from outside this repo is
