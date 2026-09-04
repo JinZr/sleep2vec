@@ -103,7 +103,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
             return [_fail("config", f"Extraction config failed strict runtime loading: {exc}")]
         return []
 
-    def task_issues(
+    def task_issues(  # noqa: C901
         self,
         recipe: dict[str, Any],
         config_summary: dict[str, Any] | None,

@@ -13,7 +13,7 @@ from ..configs import config_summary
 from ..models import repo_relative, resolve_repo_path
 
 
-def index_summary(
+def index_summary(  # noqa: C901
     index_paths: list[str | Path],
     *,
     config: str | Path | None = None,

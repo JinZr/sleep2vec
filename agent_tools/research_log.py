@@ -58,7 +58,7 @@ def _research_log_timestamp(value: Any, field: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _normalized_research_log_entry(
+def _normalized_research_log_entry(  # noqa: C901
     entry: dict[str, Any],
     *,
     experiment_id: str,

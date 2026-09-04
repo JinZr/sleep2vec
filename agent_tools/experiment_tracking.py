@@ -516,7 +516,7 @@ def monitor_report(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def experiment_status_snapshot(
+def experiment_status_snapshot(  # noqa: C901
     experiment: dict[str, Any],
     registered_steps: list[dict[str, Any]],
     rows: list[dict[str, Any]],

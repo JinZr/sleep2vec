@@ -173,3 +173,44 @@ Legal edges outside the reverse-edge table:
 - External importers: 22+ preprocess/util scripts import `agent_tools.progress`;
   `agent_tools.models` is imported outside the package too. Moving either would
   break them, so they stay at the package top level.
+
+## Complexity ceiling
+
+`agent_tools` is gated at mccabe complexity 25, owned by
+`utils/complexity_check.py` and run from both `utils/style_check.sh` and the
+style_check workflow. It is not a repo-wide `.flake8` setting: the model and
+training packages are out of scope by not being named, rather than by a
+`per-file-ignores` entry, so nothing outside `agent_tools` is silently
+unchecked. The checker spells the ceiling value; nothing else does.
+
+Three checks, mirroring the mypy ledger ratchet in `utils/type_check.py`:
+
+1. **The ceiling** — C901 over `agent_tools`.
+2. **The suppression ledger** — the 24 functions already above the ceiling carry
+   `# noqa: C901` on their `def` line. Re-running with noqa disabled proves
+   every suppression still hides a real violation (a stale one must be deleted),
+   that nothing else is silencing C901, and that the live set is exactly
+   `SUPPRESSION_LEDGER` — identities, not a count, so simplifying one function
+   while another goes over does not net out to a passing check. Growing the
+   ledger therefore takes a reviewed diff, not one comment.
+3. **The embedded programs** — `python_program_sources/*.py.src` are fragments
+   assembled by `python_programs.source()` and run through `python -c`. They do
+   not lint standalone (names resolve only once concatenated) and flake8's
+   directory walk never sees them, so each of the 25 registered programs is
+   assembled and checked at the same ceiling, with noqa disabled: there is no
+   second check behind this one, so an annotation in a fragment would be the
+   gate switched off rather than a suppression to audit. `PROGRAM_LEDGER`
+   grandfathers the two blocks already above the ceiling, keyed per block, so a
+   second over-ceiling block appearing in a grandfathered program is reported.
+   mccabe names an unnamed block after its line, which moves whenever a fragment
+   above it grows, so the key drops that number and the score carries what
+   identity remains: two same-kind blocks of equal score in one program are
+   indistinguishable, and swapping one for the other reads as unchanged. That
+   swap leaves the debt exactly as the ledger describes it.
+
+Every probe runs `--isolated`. Reading `.flake8` would let one
+`per-file-ignores` entry blind both the gate and the ledger audit at once —
+file-level blindness arriving through the config instead of a comment.
+
+Both ledgers are shrink-only: a new function or program over 25 branches is a
+design signal, not a lint to suppress.

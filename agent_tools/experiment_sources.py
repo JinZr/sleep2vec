@@ -133,7 +133,7 @@ def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> list[dict[str, Any]]:
+def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> list[dict[str, Any]]:  # noqa: C901
     if not remote or not runs:
         return []
     available_runs = []

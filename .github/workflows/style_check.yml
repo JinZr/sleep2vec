@@ -77,6 +77,16 @@ jobs:
         run: |
           flake8 . --count --statistics
 
+      # agent_tools only: the complexity ceiling, its suppression ledger, and
+      # the embedded python -c programs flake8's directory walk cannot reach.
+      # The same script backs `bash utils/style_check.sh`, so a clean local run
+      # means a clean CI run.
+      - name: Check agent_tools complexity
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          python utils/complexity_check.py
+
   agent_tools_typecheck:
     runs-on: ${{ matrix.os }}
     strategy:

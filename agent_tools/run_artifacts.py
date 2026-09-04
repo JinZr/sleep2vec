@@ -186,7 +186,7 @@ def is_registered_blocked_plan(
     return True
 
 
-def read_registered_plan(
+def read_registered_plan(  # noqa: C901
     plan_dir: str | Path,
     *,
     workspace: str | Path,
@@ -573,7 +573,7 @@ def _validate_registered_run_parameters(
             raise ValueError(f"Workspace run manifest differs from plan field {field}: {key[0]} / {key[1]}")
 
 
-def read_hparam_plan(
+def read_hparam_plan(  # noqa: C901
     run_dir: Path,
     *,
     semantic_dir: Path | None = None,

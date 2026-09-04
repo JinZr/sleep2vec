@@ -220,7 +220,7 @@ def run_experiment_pipeline(
             raise
 
 
-def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool | None) -> None:
+def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool | None) -> None:  # noqa: C901
     raw_pipeline = spec.get("pipeline")
     kind = raw_pipeline.get("kind") if isinstance(raw_pipeline, dict) else None
     legacy_version = spec.get("schema_version")
@@ -521,7 +521,9 @@ def _freeze_pipeline(root: Path, pipeline_dir: Path, spec_file: Path, source_tex
     append_event(root, "pipeline_frozen", {"pipeline_id": state["pipeline_id"], "spec": str(spec_file)})
 
 
-def _validate_frozen_pipeline(pipeline_dir: Path, source_text: str, spec: dict[str, Any]) -> dict[str, Any]:
+def _validate_frozen_pipeline(  # noqa: C901
+    pipeline_dir: Path, source_text: str, spec: dict[str, Any]
+) -> dict[str, Any]:
     state_path = pipeline_dir / "pipeline.json"
     if not state_path.is_file() or state_path.is_symlink():
         raise ValueError(f"Frozen pipeline state is missing or aliased: {state_path}")
@@ -2154,7 +2156,7 @@ def _write_registered_jobs(path: Path, rows: list[dict[str, Any]]) -> None:
         raise PipelineRegistrationRecoveryError("Pipeline jobs projection must be reconciled on resume.") from exc
 
 
-def _run_attempts(
+def _run_attempts(  # noqa: C901
     root: Path,
     pipeline_dir: Path,
     spec: dict[str, Any],
