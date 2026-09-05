@@ -317,8 +317,8 @@ def evaluate_recipe(  # noqa: C901
     Reads recipe/config/policy inputs and any evidence required by their gates;
     does not publish a workspace or launch runs. check_existing_experiment also
     checks the existing workspace metadata for compatibility. Consultation
-    blockers are returned in the report; loading and unhandled validation/I/O
-    errors propagate rather than becoming a consultation result."""
+    blockers and handled config-loading failures are returned in the report;
+    unhandled loading, validation and I/O errors propagate."""
     recipe = load_recipe_with_base(recipe_path)
     source_recipe = copy.deepcopy(recipe)
     source = resolve_repo_path(recipe_path)
