@@ -1224,7 +1224,7 @@ def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, A
                 **{hash_field: file_sha256(path)},
                 **{selected_at_field: read_json(path).get("created_at")},
             )
-        # A completed experiment is inspection-only; do not backfill its append-only history.
+        # A completed pipeline keeps its existing selection history unchanged during resume validation.
         if state.get("status") != "completed":
             _reconcile_pipeline_event(
                 root,
