@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 from pathlib import Path
 import shlex
@@ -103,11 +104,26 @@ def test_real_preset_consultation_can_generate_a_registered_launchable_plan(tmp_
 def _wait_status(workspace, statuses):
     deadline = time.monotonic() + 10
     while True:
-        row = read_run_manifest(workspace)[0]
+        with managed_scheduler.managed_run_lock(workspace):
+            row = read_run_manifest(workspace)[0]
         if row["status"] in statuses:
             return row
         assert time.monotonic() < deadline, row
         time.sleep(0.05)
+
+
+def test_wait_status_locks_manifest_while_reading(tmp_path, monkeypatch):
+    (tmp_path / "run_manifest.tsv.lock").touch()
+
+    def read_locked_manifest(workspace):
+        with (workspace / "run_manifest.tsv.lock").open("r+") as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return [{"status": "completed"}]
+
+    monkeypatch.setattr(__name__ + ".read_run_manifest", read_locked_manifest)
+
+    assert _wait_status(tmp_path, {"completed"}) == {"status": "completed"}
 
 
 @pytest.mark.parametrize("variant", _PRESET_SCRIPTS)

@@ -31,7 +31,8 @@ def survival_summary(
     if task.get("type") != "survival":
         return None
 
-    raw = finetune.get("survival") if isinstance(finetune.get("survival"), dict) else {}
+    raw_value = finetune.get("survival")
+    raw = raw_value if isinstance(raw_value, dict) else {}
     covariates = raw.get("covariates", [])
     if isinstance(covariates, list):
         covariates = list(covariates)
@@ -105,7 +106,8 @@ def multilabel_summary(
     if task.get("type") != "multilabel_classification":
         return None
 
-    raw = finetune.get("multilabel") if isinstance(finetune.get("multilabel"), dict) else {}
+    raw_value = finetune.get("multilabel")
+    raw = raw_value if isinstance(raw_value, dict) else {}
     path_fields = ("disease_columns_index", "label_index", "has_label_index")
     summary: dict[str, Any] = {
         "key_column": raw.get("key_column"),
