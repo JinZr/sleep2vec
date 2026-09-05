@@ -503,7 +503,7 @@ def test_profile_binding_and_plan_freeze_exact_expansion(tmp_path: Path):
     "authored_search",
     [
         {"method": "grid", "max_runs": 3, "configurations": [{"runtime.lr": 1.0e-6}]},
-        {"profile": "finetune_balanced", "max_runs": 12},
+        {"profile": "finetune_balanced", "method": None, "max_runs": 12},
     ],
     ids=["configurations", "profile"],
 )
@@ -568,7 +568,7 @@ def test_explicit_user_search_replaces_the_authored_search_space(tmp_path: Path,
     "authored_search",
     [
         {"method": "grid", "max_runs": 3, "configurations": [{"runtime.lr": 1.0e-6}]},
-        {"profile": "finetune_balanced", "max_runs": 12},
+        {"profile": "finetune_balanced", "method": None, "max_runs": 12},
     ],
     ids=["configurations", "profile"],
 )

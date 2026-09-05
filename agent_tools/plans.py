@@ -243,7 +243,8 @@ def _materialize_decisions(
             # A concrete decision replaces the authored search-space owner; profiles already imply grid search.
             target = dict(target)
             if "profile" in target:
-                target.setdefault("method", "grid")
+                if target.get("method") is None:
+                    target["method"] = "grid"
                 target.pop("profile")
             target.pop("configurations", None)
         recipe[section] = {**target, key: value}
