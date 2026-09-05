@@ -76,7 +76,7 @@ SUPPRESSION_LEDGER = {
     ("agent_tools/hparam_selection.py", "resolve_hparam_candidates"),  # 47
     ("agent_tools/managed_scheduler.py", "_launch_managed_runs"),  # 46
     ("agent_tools/managed_scheduler.py", "_launch_slurm_runs"),  # 28
-    ("agent_tools/managed_scheduler.py", "observe_slurm_run"),  # 47
+    ("agent_tools/managed_scheduler.py", "observe_slurm_run"),  # 44
     ("agent_tools/plans.py", "_build_plan"),  # 31
     ("agent_tools/plans.py", "evaluate_recipe"),  # 40
     ("agent_tools/research_log.py", "_normalized_research_log_entry"),  # 35

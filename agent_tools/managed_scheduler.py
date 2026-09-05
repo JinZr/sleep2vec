@@ -1163,9 +1163,10 @@ def stop_slurm_run_locked(
         execution["scheduler"] = {"direct_controller": True}
     job_id = str(previous.get("scheduler_job_id") or "")
     cluster = str(previous.get("scheduler_cluster") or "")
-    if pending_stop and not job_id:
-        raise ValueError(f"Pending Slurm stop request is missing scheduler job identity: {run_id}")
     if not job_id:
+        # A retry must reuse its durable job binding rather than discover another job.
+        if pending_stop:
+            raise ValueError(f"Pending Slurm stop request is missing scheduler job identity: {run_id}")
         matches = slurm.active_jobs(
             execution,
             submit_token=str(previous["scheduler_submit_token"]),
@@ -1344,6 +1345,7 @@ def observe_slurm_run(  # noqa: C901
     observation: dict[str, Any] = {**row, "scheduler_observed_at": utc_now()}
     terminal_exit_code: int | None = None
     terminal_identity: slurm.JobIdentity | None = None
+    runtime_commit = ""
     if terminal:
         identity = slurm.sidecar_identity(terminal, token, expected_job_id=job_id or None)
         if cluster and identity.cluster and identity.cluster != cluster:
@@ -1359,24 +1361,8 @@ def observe_slurm_run(  # noqa: C901
             }
         )
         runtime_commit = _slurm_sidecar_runtime_commit(terminal)
-        if runtime_commit:
-            observation["runtime_commit"] = runtime_commit
-        else:
-            allocation = (
-                monitor_context.sidecar(owner, execution, row, "allocation_identity_path")
-                if monitor_context is not None
-                else _read_slurm_json(owner, execution, row["allocation_identity_path"])
-            )
-            if allocation:
-                allocation_identity = slurm.sidecar_identity(allocation, token, expected_job_id=job_id)
-                if cluster and allocation_identity.cluster and allocation_identity.cluster != cluster:
-                    raise ValueError("Slurm allocation sidecar cluster differs from the canonical run.")
-                if identity.cluster and allocation_identity.cluster and allocation_identity.cluster != identity.cluster:
-                    raise ValueError("Slurm allocation sidecar cluster differs from the terminal sidecar.")
-                runtime_commit = _slurm_sidecar_runtime_commit(allocation)
-                if runtime_commit:
-                    observation["runtime_commit"] = runtime_commit
-    else:
+    # A terminal receipt owns lifecycle metadata; allocation only fills missing runtime provenance.
+    if not runtime_commit:
         allocation = (
             monitor_context.sidecar(owner, execution, row, "allocation_identity_path")
             if monitor_context is not None
@@ -1386,13 +1372,21 @@ def observe_slurm_run(  # noqa: C901
             allocation_identity = slurm.sidecar_identity(allocation, token, expected_job_id=job_id or None)
             if cluster and allocation_identity.cluster and allocation_identity.cluster != cluster:
                 raise ValueError("Slurm allocation sidecar cluster differs from the canonical run.")
-            if not job_id:
-                job_id = allocation_identity.job_id
-            observation["scheduler_node"] = allocation.get("node", "")
-            observation["scheduler_started_at"] = allocation.get("started_at", "")
+            if (
+                terminal_identity is not None
+                and terminal_identity.cluster
+                and allocation_identity.cluster
+                and allocation_identity.cluster != terminal_identity.cluster
+            ):
+                raise ValueError("Slurm allocation sidecar cluster differs from the terminal sidecar.")
+            if not terminal:
+                if not job_id:
+                    job_id = allocation_identity.job_id
+                observation["scheduler_node"] = allocation.get("node", "")
+                observation["scheduler_started_at"] = allocation.get("started_at", "")
             runtime_commit = _slurm_sidecar_runtime_commit(allocation)
-            if runtime_commit:
-                observation["runtime_commit"] = runtime_commit
+    if runtime_commit:
+        observation["runtime_commit"] = runtime_commit
     health_error = ""
     try:
         if not job_id:
@@ -1503,29 +1497,22 @@ def observe_slurm_run(  # noqa: C901
             reason = "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported."
             if active.reason:
                 reason = f"{reason} Scheduler reason: {active.reason}"
-        if terminal_exit_code is not None:
-            if category == "cancelled" and stop_requested:
-                status = "stopped"
-            elif category == "completed":
-                status = "completed" if terminal_exit_code == 0 else "failed"
-            elif category in {"failed", "cancelled"}:
-                status = "failed"
-            elif category in {"queued", "running"}:
-                status = "stopping" if stop_requested else category
-            else:
-                status = "unknown_scheduler"
-                reason = reason or "Slurm terminal sidecar is present but scheduler state is not recognized."
-        else:
-            if category == "cancelled" and stop_requested:
-                status = "stopped"
-            else:
-                status = (
-                    "stopping"
-                    if stop_requested and category in {"queued", "running"}
-                    else category if category in {"queued", "running"} else "unknown_scheduler"
-                )
-            if category in {"completed", "failed", "cancelled"} and status != "stopped":
+        if category == "cancelled" and stop_requested:
+            status = "stopped"
+        elif category in {"queued", "running"}:
+            status = "stopping" if stop_requested else category
+        elif terminal_exit_code is None:
+            # A terminal scheduler state alone does not prove the workload's exit status.
+            status = "unknown_scheduler"
+            if category in {"completed", "failed", "cancelled"}:
                 reason = reason or "Terminal scheduler state is missing the matching terminal sidecar."
+        elif category == "completed":
+            status = "completed" if terminal_exit_code == 0 else "failed"
+        elif category in {"failed", "cancelled"}:
+            status = "failed"
+        else:
+            status = "unknown_scheduler"
+            reason = reason or "Slurm terminal sidecar is present but scheduler state is not recognized."
         observation.update(
             {
                 "scheduler_raw_state": active.state,
