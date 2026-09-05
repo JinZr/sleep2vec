@@ -12,6 +12,7 @@ def build_warmup_cosine_scheduler(
     warmup_steps: int | None,
     decay_floor: float = 0.1,
     decay_shape: str = "cosine",
+    decay_ratio: float | None = None,
 ) -> torch.optim.lr_scheduler.LambdaLR:
     floor = float(decay_floor)
     if not 0.0 <= floor <= 1.0:
@@ -25,10 +26,22 @@ def build_warmup_cosine_scheduler(
         warmup = int(warmup_steps)
     warmup = max(0, min(warmup, total_steps))
 
+    decay_start = warmup
+    if decay_ratio is not None:
+        if not 0.0 < decay_ratio <= 1.0:
+            raise ValueError("decay_ratio must be in (0, 1].")
+        decay_steps = int(total_steps * decay_ratio)
+        if decay_steps < 1 or warmup + decay_steps > total_steps:
+            raise ValueError("WSD requires at least one decay step and warmup + decay steps <= total_steps.")
+        decay_start = total_steps - decay_steps
+
     def lr_lambda(step):
         if step < warmup:
             return float(step) / float(max(1, warmup))
-        progress = (step - warmup) / float(max(1, total_steps - warmup))
+        if decay_ratio is not None:
+            progress = min(1.0, max(0.0, (step - decay_start) / float(total_steps - decay_start)))
+        else:
+            progress = (step - warmup) / float(max(1, total_steps - warmup))
         if decay_shape == "linear":
             decay = max(0.0, 1.0 - progress)
         else:
