@@ -277,8 +277,11 @@ options are not yet accepted or rendered by `agent_tools` recipes.
   validation checks after a reduction to assess its effect.
 
 `--lr-decay-floor` defaults to `0.1` and denotes a fraction of each optimizer
-group's initial LR, preserving group LR ratios. WSD and ordinary decay reach
-this floor at the end of their schedule; Plateau uses it as the minimum LR.
+group's initial LR, preserving group LR ratios. WSD uses this floor on the last
+actual optimizer update; Plateau uses it as the minimum LR. Ordinary decay
+preserves its existing indexing: when a post-warmup decay phase exists, the
+terminal floor is installed after the last optimizer update, so that update
+generally uses a higher LR.
 Plateau does not accept an explicit warmup, a linear decay shape, or diagnostics
 mode (which disables validation). Incompatible scheduler options are rejected
 before the run directory is claimed. Plateau consumes each validation metric
