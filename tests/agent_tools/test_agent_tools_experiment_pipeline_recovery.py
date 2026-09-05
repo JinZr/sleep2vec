@@ -272,6 +272,75 @@ def test_pipeline_retry_planned_event_is_reconciled_after_append_failure(tmp_pat
     assert events[0]["attempt"] == 2
 
 
+@pytest.mark.parametrize(
+    "kind,event_type,count_field,selection",
+    [
+        ("external_matrix", "pipeline_checkpoints_frozen", "source_count", {"source_id": "age"}),
+        (
+            "cohort_selection",
+            "pipeline_candidates_frozen",
+            "candidate_count",
+            {"candidate_id": "age-rank-001"},
+        ),
+    ],
+)
+def test_selection_event_is_reconciled_after_committed_hash(
+    tmp_path: Path,
+    monkeypatch,
+    kind: str,
+    event_type: str,
+    count_field: str,
+    selection: dict[str, str],
+):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "pipeline.json").write_text(json.dumps({"status": "ready"}) + "\n")
+    spec = {"pipeline": {"id": "external-v1", "kind": kind}}
+    if kind == "cohort_selection":
+        spec["candidates"] = {"kind": "top_k", "count": 1}
+
+    key = "candidate_id" if kind == "cohort_selection" else "source_id"
+    monkeypatch.setattr(experiment_pipeline, "_select_checkpoint_sources", lambda *_args: [selection])
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_read_frozen_selections",
+        lambda *_args: {selection[key]: selection},
+    )
+    original_append = experiment_pipeline.append_event
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "append_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("event append interrupted")),
+    )
+
+    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
+
+    selection_path = experiment_pipeline._selection_manifest_path(pipeline_dir, spec)
+    state = json.loads((pipeline_dir / "pipeline.json").read_text())
+    assert state[experiment_pipeline._selection_hash_field(spec)] == file_sha256(selection_path)
+    assert state["status"] == "ready"
+
+    monkeypatch.setattr(experiment_pipeline, "append_event", original_append)
+    state["status"] = "completed"
+    (pipeline_dir / "pipeline.json").write_text(json.dumps(state) + "\n")
+    experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
+    assert not (root / "events.jsonl").exists()
+
+    state["status"] = "ready"
+    (pipeline_dir / "pipeline.json").write_text(json.dumps(state) + "\n")
+    experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
+    experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
+
+    events = [
+        event for event in experiment_pipeline.read_experiment_events(root) if event.get("event_type") == event_type
+    ]
+    assert len(events) == 1
+    assert events[0]["pipeline_id"] == "external-v1"
+    assert events[0][count_field] == 1
+
+
 def test_pipeline_registration_recovery_error_does_not_mark_pipeline_failed(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "external-v1"
@@ -2249,6 +2318,13 @@ def test_orphan_checkpoint_selection_is_rederived_before_state_commit(tmp_path: 
         selections = experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
         assert selections == {"age": derived}
         assert json.loads(state_path.read_text())["checkpoint_selection_sha256"] == file_sha256(checkpoints_path)
+        experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
+        events = [
+            event
+            for event in experiment_pipeline.read_experiment_events(root)
+            if event.get("event_type") == "pipeline_checkpoints_frozen"
+        ]
+        assert len(events) == 1
 
 
 def test_completed_pipeline_resume_validates_and_finalizes_without_reexecution(tmp_path: Path, monkeypatch):
@@ -2318,3 +2394,110 @@ def test_completed_pipeline_resume_validates_and_finalizes_without_reexecution(t
     )
     assert result["status"] == "completed"
     assert finalized == []
+
+
+def test_completed_event_append_failure_resumes_before_finalization(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
+    (pipeline_dir / "pipeline.json").write_text(json.dumps({"status": "ready"}) + "\n")
+    spec = _spec(root)
+    job = {"job_id": spec["jobs"][0]["id"], "status": "completed"}
+    attempt = {"status": "completed"}
+    experiment_status = {"value": "active"}
+    order = []
+
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_frozen_pipeline",
+        lambda *_args, **_kwargs: json.loads((pipeline_dir / "pipeline.json").read_text()),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_experiment",
+        lambda *_args, **_kwargs: {"status": experiment_status["value"]},
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_inspect_sources",
+        lambda *_args, **_kwargs: [{"complete": True, "failed_runs": [], "uncertain_runs": []}],
+    )
+    monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: {"age": {}})
+    monkeypatch.setattr(experiment_pipeline, "_load_or_create_initial_attempts", lambda *_args: [attempt])
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_run_attempts",
+        lambda *_args, **_kwargs: {"status": "completed", "jobs": [job]},
+    )
+    monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: [attempt])
+    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(experiment_pipeline, "_logical_job_states", lambda *_args: [job])
+
+    def aggregate(*_args):
+        for name in ("results.csv", "metrics.csv", "summary.md", "final.md"):
+            (pipeline_dir / name).write_text(f"{name}\n")
+        return pipeline_dir / "final.md"
+
+    monkeypatch.setattr(experiment_pipeline, "_aggregate_results", aggregate)
+    original_append = experiment_pipeline.append_event
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "append_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("event append interrupted")),
+    )
+
+    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        experiment_pipeline._execute_pipeline(
+            root,
+            pipeline_dir,
+            spec,
+            poll_seconds=0,
+            finalize_callback=lambda *_args: order.append("finalize"),
+        )
+
+    state = json.loads((pipeline_dir / "pipeline.json").read_text())
+    assert state["status"] == "completed"
+    assert state["result_artifacts"][str(pipeline_dir / "final.md")] == file_sha256(pipeline_dir / "final.md")
+    assert order == []
+
+    def append(root_path, event_type, payload):
+        order.append("event")
+        original_append(root_path, event_type, payload)
+
+    monkeypatch.setattr(experiment_pipeline, "append_event", append)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_inspect_sources",
+        lambda *_args, **_kwargs: pytest.fail("completed pipelines must not recheck training sources"),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_run_attempts",
+        lambda *_args, **_kwargs: pytest.fail("completed pipelines must not rerun external attempts"),
+    )
+    result = experiment_pipeline._execute_pipeline(
+        root,
+        pipeline_dir,
+        spec,
+        poll_seconds=0,
+        finalize_callback=lambda *_args: order.append("finalize"),
+    )
+
+    assert result["status"] == "completed"
+    assert order == ["event", "finalize"]
+    events_before = (root / "events.jsonl").read_bytes()
+
+    experiment_status["value"] = "completed"
+    order.clear()
+    result = experiment_pipeline._execute_pipeline(
+        root,
+        pipeline_dir,
+        spec,
+        poll_seconds=0,
+        finalize_callback=lambda *_args: order.append("finalize"),
+    )
+
+    assert result["status"] == "completed"
+    assert order == []
+    assert (root / "events.jsonl").read_bytes() == events_before

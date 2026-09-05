@@ -780,7 +780,12 @@ def _execute_pipeline(
         result_artifacts={str(path): file_sha256(path) for path in result_paths},
         logical_jobs=result["jobs"],
     )
-    append_event(root, "pipeline_completed", {"pipeline_id": spec["pipeline"]["id"], "report": str(report)})
+    _reconcile_pipeline_event(
+        root,
+        "pipeline_completed",
+        {"pipeline_id": spec["pipeline"]["id"], "report": str(report)},
+        identity_fields=("pipeline_id",),
+    )
     if spec["pipeline"]["finalize"]:
         if finalize_callback is None:
             raise RuntimeError("Pipeline finalization callback is unavailable.")
@@ -833,6 +838,13 @@ def _finalize_completed_pipeline(
     if experiment.get("status") != "completed":
         if finalize_callback is None:
             raise RuntimeError("Pipeline finalization callback is unavailable.")
+        # Reconcile history before the experiment manifest becomes the terminal mutation.
+        _reconcile_pipeline_event(
+            root,
+            "pipeline_completed",
+            {"pipeline_id": spec["pipeline"]["id"], "report": str(report)},
+            identity_fields=("pipeline_id",),
+        )
         finalize_callback(root, report)
     return {
         "status": "completed",
@@ -932,6 +944,12 @@ def _execute_cohort_selection(
         return report_result
 
     _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
+    # Report-only execution can outlive the selection snapshot; re-read its bound manifests before finalization.
+    evidence = pipeline_results.selection_evidence(
+        pipeline_dir / "phases" / "selection",
+        selection_spec,
+        candidates,
+    )
     _validate_cohort_decision(pipeline_dir, spec, candidates, evidence)
     report = pipeline_results.write_cohort_result_summary(
         pipeline_dir,
@@ -957,7 +975,12 @@ def _execute_cohort_selection(
         selection_jobs=selection_result["jobs"],
         report_only_jobs=report_result["jobs"],
     )
-    append_event(root, "pipeline_completed", {"pipeline_id": spec["pipeline"]["id"], "report": str(report)})
+    _reconcile_pipeline_event(
+        root,
+        "pipeline_completed",
+        {"pipeline_id": spec["pipeline"]["id"], "report": str(report)},
+        identity_fields=("pipeline_id",),
+    )
     if spec["pipeline"]["finalize"]:
         if finalize_callback is None:
             raise RuntimeError("Pipeline finalization callback is unavailable.")
@@ -1018,7 +1041,7 @@ def _load_or_freeze_cohort_decision(
     ranking, decision, artifacts_by_field = _cohort_decision_artifacts(pipeline_dir, spec, candidates, evidence)
     for path, text in artifacts_by_field.values():
         if path.exists():
-            if path.is_symlink() or not path.is_file() or path.read_text() != text:
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != text.encode():
                 raise ValueError(f"Frozen cohort-selection decision changed: {path}")
         else:
             _atomic_write_text(path, text)
@@ -1051,7 +1074,12 @@ def _validate_cohort_decision(
     ranking, decision, artifacts_by_field = _cohort_decision_artifacts(pipeline_dir, spec, candidates, evidence)
     state = read_json(pipeline_dir / "pipeline.json")
     for field, (path, text) in artifacts_by_field.items():
-        if path.is_symlink() or not path.is_file() or path.read_text() != text or state.get(field) != file_sha256(path):
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.read_bytes() != text.encode()
+            or state.get(field) != file_sha256(path)
+        ):
             raise ValueError(f"Frozen cohort-selection decision changed: {path}")
     return ranking, decision
 
@@ -1139,6 +1167,13 @@ def _finalize_completed_cohort_selection(
     if experiment.get("status") != "completed":
         if finalize_callback is None:
             raise RuntimeError("Pipeline finalization callback is unavailable.")
+        # Reconcile history before the experiment manifest becomes the terminal mutation.
+        _reconcile_pipeline_event(
+            root,
+            "pipeline_completed",
+            {"pipeline_id": spec["pipeline"]["id"], "report": str(report)},
+            identity_fields=("pipeline_id",),
+        )
         finalize_callback(root, report)
     return {
         "status": "completed",
@@ -1169,6 +1204,9 @@ def _validated_completed_phase(
 def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
     path = _selection_manifest_path(pipeline_dir, spec)
     hash_field = _selection_hash_field(spec)
+    cohort_kind = spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
+    event_type = "pipeline_candidates_frozen" if cohort_kind else "pipeline_checkpoints_frozen"
+    count_field = "candidate_count" if cohort_kind else "source_count"
     if path.exists():
         selections = _read_frozen_selections(path, spec)
         state = read_json(pipeline_dir / "pipeline.json")
@@ -1186,10 +1224,17 @@ def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, A
                 **{hash_field: file_sha256(path)},
                 **{selected_at_field: read_json(path).get("created_at")},
             )
+        # A completed pipeline keeps its existing selection history unchanged during resume validation.
+        if state.get("status") != "completed":
+            _reconcile_pipeline_event(
+                root,
+                event_type,
+                {"pipeline_id": spec["pipeline"]["id"], count_field: len(selections)},
+                identity_fields=("pipeline_id",),
+            )
         return selections
 
     frozen = _select_checkpoint_sources(root, spec)
-    cohort_kind = spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
     payload = {
         "pipeline_id": spec["pipeline"]["id"],
         "created_at": utc_now(),
@@ -1208,13 +1253,11 @@ def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, A
         **{hash_field: file_sha256(path)},
         **{"candidates_selected_at" if cohort_kind else "checkpoint_selected_at": payload["created_at"]},
     )
-    append_event(
+    _reconcile_pipeline_event(
         root,
-        "pipeline_candidates_frozen" if cohort_kind else "pipeline_checkpoints_frozen",
-        {
-            "pipeline_id": spec["pipeline"]["id"],
-            "candidate_count" if cohort_kind else "source_count": len(frozen),
-        },
+        event_type,
+        {"pipeline_id": spec["pipeline"]["id"], count_field: len(frozen)},
+        identity_fields=("pipeline_id",),
     )
     key = "candidate_id" if cohort_kind else "source_id"
     return {str(item[key]): item for item in frozen}
