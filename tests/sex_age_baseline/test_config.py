@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import combinations
 from pathlib import Path
 
 import pytest
@@ -19,9 +20,15 @@ def _cox_payload(tmp_path: Path) -> dict:
         "model": {
             "name": "sex_age_mlp",
             "features": ["age", "sex"],
-            "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4},
-            "sex": {"encoding": "binary", "embedding_dim": 4},
-            "head": {"hidden_dim": 8, "dropout": 0.1, "activation": "elu"},
+            "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4, "initialization": "default"},
+            "sex": {"encoding": "binary", "embedding_dim": 4, "initialization": "default"},
+            "head": {
+                "name": "classification",
+                "hidden_dim": 8,
+                "dropout": 0.1,
+                "act": "elu",
+                "kwargs": {"num_layers": 3},
+            },
         },
         "data": {
             "backend": "npz",
@@ -106,6 +113,80 @@ def test_checked_in_configs_load(path: str):
     assert cfg.data.backend == "npz"
 
 
+@pytest.mark.parametrize("features", [list(c) for n in (1, 2, 3) for c in combinations(("age", "sex", "bmi"), n)])
+@pytest.mark.parametrize("num_layers", [1, 2, 3])
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2"])
+def test_feature_subsets_and_dense_head_match_shared_builder(tmp_path, features, num_layers, variant):
+    import importlib
+    import torch
+    from torch import nn
+
+    from sex_age_baseline.config import validate_model_config
+    from sex_age_baseline.model import SexAgeMLP
+
+    ClassificationHead = importlib.import_module(f"{variant}.downstreams.heads.classification").ClassificationHead
+
+    payload = _cox_payload(tmp_path)
+    model = payload["model"]
+    model["bmi"] = dict(model["age"], scale=40.0)
+    model["features"] = list(reversed(features))
+    for feature in set(("age", "sex", "bmi")) - set(features):
+        del model[feature]
+    model["head"]["kwargs"]["num_layers"] = num_layers
+    cfg = load_config(_write_yaml(tmp_path / "subset.yaml", payload))
+    network = SexAgeMLP(cfg).eval()
+    values = {"age": torch.tensor([40.0, 60.0]), "bmi": torch.tensor([20.0, 30.0]), "sex": torch.tensor([0, 1])}
+    encoded = []
+    for feature in cfg.model.features:
+        value = (
+            values[feature]
+            if feature == "sex"
+            else (values[feature] / getattr(cfg.model, feature).scale).reshape(-1, 1)
+        )
+        encoded.append(network.encoders[feature](value))
+    reference = ClassificationHead(
+        validate_model_config(cfg), 1, 2, agg="mean", hidden_dim=8, dropout=0.1, act=nn.ELU, num_layers=num_layers
+    ).mlp.eval()
+    reference.load_state_dict(network.head.state_dict())
+    torch.testing.assert_close(network(values), reference(torch.cat(encoded, dim=-1)))
+    assert set(network.encoders) == set(features)
+    assert sum(isinstance(m, nn.Linear) for m in network.head) == num_layers
+
+
+def test_zero_encoding_and_window_mode(tmp_path):
+    import torch
+
+    from sex_age_baseline.model import SexAgeMLP
+
+    payload = _cox_payload(tmp_path)
+    payload["data"]["deduplicate_by_key"] = False
+    for feature in payload["model"]["features"]:
+        payload["model"][feature]["initialization"] = "zeros"
+    cfg = load_config(_write_yaml(tmp_path / "zero.yaml", payload))
+    assert not cfg.data.deduplicate_by_key
+    assert all(torch.count_nonzero(p) == 0 for p in SexAgeMLP(cfg).encoders.parameters())
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda m: m["age"].pop("initialization"),
+        lambda m: m["age"].update(scale=float("nan")),
+        lambda m: m["age"].update(initialization="other"),
+        lambda m: m["head"].update(activation="elu"),
+        lambda m: m["head"]["kwargs"].update(num_layers=4),
+        lambda m: m.update(features=[]),
+        lambda m: m.update(features=["age", "age"]),
+        lambda m: m.update(features=["height"]),
+    ],
+)
+def test_explicit_model_contract_rejects_invalid_fields(tmp_path, mutate):
+    payload = _cox_payload(tmp_path)
+    mutate(payload["model"])
+    with pytest.raises(ValueError):
+        load_config(_write_yaml(tmp_path / "invalid.yaml", payload))
+
+
 def test_validates_sidecar_output_dim(tmp_path: Path):
     payload = _cox_payload(tmp_path)
     config = _write_yaml(tmp_path / "cox.yaml", payload)
@@ -116,13 +197,45 @@ def test_validates_sidecar_output_dim(tmp_path: Path):
 
 
 @pytest.mark.parametrize("loss", [{"pos_weight": 2.0}, {"pos_weigth": 2.0}])
-def test_survival_config_rejects_loss_block(tmp_path: Path, loss: dict):
+def test_survival_config_rejects_unsupported_loss_fields(tmp_path: Path, loss: dict):
     payload = _cox_payload(tmp_path)
     payload["finetune"]["loss"] = loss
     config = _write_yaml(tmp_path / "cox-with-loss.yaml", payload)
 
-    with pytest.raises(ValueError, match="finetune.loss is only supported"):
+    with pytest.raises(ValueError, match="Survival finetune.loss supports only eps"):
         load_config(config)
+
+
+@pytest.mark.parametrize("loss,expected", [(None, 1e-9), ({}, 1e-9), ({"eps": 1e-7}, 1e-7)])
+def test_survival_eps_default_and_override(tmp_path, loss, expected):
+    payload = _cox_payload(tmp_path)
+    if loss is not None:
+        payload["finetune"]["loss"] = loss
+    cfg = load_config(_write_yaml(tmp_path / "eps.yaml", payload))
+    assert cfg.finetune.loss.eps == expected
+
+
+@pytest.mark.parametrize("eps", [0, -1, float("nan"), float("inf"), True])
+def test_survival_eps_invalid(tmp_path, eps):
+    payload = _cox_payload(tmp_path)
+    payload["finetune"]["loss"] = {"eps": eps}
+    with pytest.raises(ValueError):
+        load_config(_write_yaml(tmp_path / "eps.yaml", payload))
+
+
+@pytest.mark.parametrize("field,value", [("tuning", {"preset": "head_only"}), ("lr", 0.001), ("epochs", 8)])
+def test_finetune_rejects_unconsumed_training_fields(tmp_path, field, value):
+    payload = _cox_payload(tmp_path)
+    payload["finetune"][field] = value
+    with pytest.raises(ValueError, match="finetune contains unsupported fields"):
+        load_config(_write_yaml(tmp_path / "unconsumed.yaml", payload))
+
+
+def test_model_rejects_runtime_learning_rate(tmp_path):
+    payload = _cox_payload(tmp_path)
+    payload["model"]["lr"] = 0.001
+    with pytest.raises(ValueError, match="unsupported or inactive"):
+        load_config(_write_yaml(tmp_path / "model-lr.yaml", payload))
 
 
 @pytest.mark.parametrize(
