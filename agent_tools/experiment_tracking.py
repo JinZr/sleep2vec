@@ -35,6 +35,7 @@ from .experiment_workspace import (
     validate_frozen_run_update,
     validate_managed_run_rows,
     validate_scheduler_run_identity,
+    validated_run_key,
 )
 from .manifests import utc_now
 
@@ -46,6 +47,34 @@ class HparamSelectionReportSnapshot(TypedDict):
     ranking_path: str
     ranking_text: str | None
     ranking_sha256: str | None
+
+
+class HparamSelectionLifecycle(TypedDict):
+    hparam_steps: list[dict[str, Any]]
+    pending_steps: list[dict[str, Any]]
+    selected_steps: list[dict[str, Any]]
+    expected_report: str | None
+    report_path: str
+    report_valid: bool
+    automatic_report_final: bool
+
+
+class ExperimentStatusDecision(TypedDict):
+    manual_choice_required: bool
+    recommended_next: dict[str, Any] | None
+    other_legal_actions: list[dict[str, Any]]
+    blocked_actions: list[str]
+
+
+class ExperimentStatusSnapshot(TypedDict):
+    experiment: dict[str, Any]
+    lifecycle_source: str
+    live_observation: bool
+    summary: dict[str, Any]
+    steps: list[dict[str, Any]]
+    runs: list[dict[str, Any]]
+    blockers: list[dict[str, Any]]
+    decision: ExperimentStatusDecision
 
 
 _local_checkpoint_rows = experiment_sources._local_checkpoint_rows
@@ -110,7 +139,7 @@ def update_experiment_wandb(root: Path, *, entity: str, project: str, group: str
             exp_io.read_text_at(experiment_path, remote=remote),
             source=f"Managed experiment manifest {experiment_path}",
         )
-        experiment = manifest.get("experiment") if isinstance(manifest, dict) else {}
+        experiment: Any = manifest.get("experiment") if isinstance(manifest, dict) else {}
         rows = [
             {
                 "experiment_id": experiment["id"],
@@ -143,7 +172,7 @@ def wandb_run_observations(run_rows: list[dict[str, Any]], wandb_rows: list[dict
         existing = resolve_external_run_row(run_rows, row)
         if existing is None:
             continue
-        key = managed_run_key(existing)
+        key = validated_run_key(existing)
         incoming_wandb_run_id = str(row.get("wandb_run_id") or "")
         known_wandb_run_id = wandb_run_ids.get(key) or str(existing.get("wandb_run_id") or "")
         if incoming_wandb_run_id and known_wandb_run_id and incoming_wandb_run_id != known_wandb_run_id:
@@ -181,7 +210,7 @@ def managed_metric_rows(run_rows: list[dict[str, Any]], metric_rows: list[dict[s
         run_row = resolve_external_run_row(run_rows, metric_row)
         if run_row is None:
             continue
-        key = managed_run_key(run_row)
+        key = validated_run_key(run_row)
         incoming_wandb_run_id = str(metric_row.get("wandb_run_id") or "")
         known_wandb_run_id = wandb_run_ids.get(key) or str(run_row.get("wandb_run_id") or "")
         if incoming_wandb_run_id and known_wandb_run_id and incoming_wandb_run_id != known_wandb_run_id:
@@ -219,21 +248,21 @@ def checkpoint_rows(root: Path, *, remote: str | None = None) -> list[dict[str, 
     eligible_keys = {managed_run_key(run) for run in eligible_runs}
     runs_by_key = {managed_run_key(run): run for run in runs}
     for row in previous_rows:
-        run = runs_by_key.get(managed_run_key(row))
-        if run is None:
+        owner_run = runs_by_key.get(managed_run_key(row))
+        if owner_run is None:
             raise ValueError(
                 f"Checkpoint manifest row does not belong to an eligible managed run: "
                 f"{row['step_id']} / {row['run_id']}"
             )
-        if managed_run_key(run) not in eligible_keys:
+        if managed_run_key(owner_run) not in eligible_keys:
             raise ValueError(
                 f"Checkpoint manifest row does not belong to an eligible managed run: "
                 f"{row['step_id']} / {row['run_id']}"
             )
-        evidence_host = checkpoint_evidence_host(run, remote)
-        validate_frozen_run_update(run, row, require_checkpoint_ownership=evidence_host is None)
+        evidence_host = checkpoint_evidence_host(owner_run, remote)
+        validate_frozen_run_update(owner_run, row, require_checkpoint_ownership=evidence_host is None)
         if evidence_host:
-            validate_checkpoint_ownership(run, row)
+            validate_checkpoint_ownership(owner_run, row)
     previous_checkpoint_keys = {
         managed_run_key(row) for row in previous_rows if row.get("checkpoint_path") not in (None, "")
     }
@@ -535,7 +564,7 @@ def experiment_status_snapshot(  # noqa: C901
     remote: str | None = None,
     hparam_selection_report: HparamSelectionReportSnapshot | None = None,
     hparam_checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None] | None = None,
-) -> dict[str, Any]:
+) -> ExperimentStatusSnapshot:
     allowed_statuses = TERMINAL_STATUSES | managed_scheduler.ACTIVE_STATUSES | managed_scheduler.LAUNCHABLE_STATUSES
     for row in rows:
         validate_scheduler_run_identity(row)
@@ -613,7 +642,7 @@ def experiment_status_snapshot(  # noqa: C901
                 blocked_actions=["finalize"],
             )
         )
-    decision = {
+    decision: ExperimentStatusDecision = {
         "manual_choice_required": False,
         "recommended_next": None,
         "other_legal_actions": [],
@@ -763,7 +792,9 @@ def experiment_status_snapshot(  # noqa: C901
             else:
                 decision["manual_choice_required"] = True
 
-    blocker_codes_by_key = {(str(row["step_id"]), str(row["run_id"])): [] for row in sorted_rows}
+    blocker_codes_by_key: dict[tuple[str, str], list[str]] = {
+        (str(row["step_id"]), str(row["run_id"])): [] for row in sorted_rows
+    }
     for blocker in blockers:
         for key in blocker_codes_by_key:
             if blocker["step_id"] == key[0] and key[1] in blocker["run_ids"]:
@@ -809,7 +840,7 @@ def hparam_selection_lifecycle(
     root: Path,
     report: HparamSelectionReportSnapshot | None = None,
     checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None] | None = None,
-) -> dict[str, Any]:
+) -> HparamSelectionLifecycle:
     hparam_run_keys = {
         tuple(key)
         for registered in registered_steps
@@ -819,7 +850,7 @@ def hparam_selection_lifecycle(
     }
     # Controller-owned hparam plans may carry selection metadata; non-hparam runs never may.
     misowned_selection = sorted(
-        managed_run_key(row)
+        validated_run_key(row)
         for row in rows
         if managed_run_key(row) not in hparam_run_keys
         and any(row.get(field) not in (None, "") for field in HPARAM_SELECTION_METADATA_FIELDS)
@@ -1048,7 +1079,7 @@ def _validate_test_checkpoint_audits(
         ),
     )
     globally_ranked = artifacts.assign_ranks(candidates, key="score", reverse=reverse)
-    best_by_run = {}
+    best_by_run: dict[tuple[str, str] | None, dict[str, Any]] = {}
     for row in globally_ranked:
         candidate = {**row, "checkpoint_rank": row["rank"]}
         best_by_run.setdefault(managed_run_key(row), candidate)
@@ -1214,7 +1245,7 @@ def validated_hparam_ranking(step: dict[str, Any]) -> list[dict[str, Any]] | Non
     ranked.sort(key=lambda row: row["rank"])
     if [row["rank"] for row in ranked] != list(range(1, len(ranked) + 1)):
         raise ValueError(f"Canonical hparam ranks are incomplete or duplicated for step {step['step_id']}")
-    scores = [artifacts.float_or_none(row["score"]) for row in ranked]
+    scores = [float(row["score"]) for row in ranked]
     reverse = selection["mode"] == "max"
     if any((left < right if reverse else left > right) for left, right in zip(scores, scores[1:])):
         raise ValueError(f"Canonical hparam ranks disagree with selection mode for step {step['step_id']}")
@@ -1249,7 +1280,7 @@ def _finalize_action(root: Path, report_path: str, remote: str | None) -> dict[s
     )
 
 
-def format_experiment_status(snapshot: dict[str, Any]) -> str:
+def format_experiment_status(snapshot: ExperimentStatusSnapshot) -> str:
     experiment = snapshot["experiment"]
     lines = [
         f"# Experiment Status: {experiment['title']}",

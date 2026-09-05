@@ -47,6 +47,7 @@ from agent_tools.experiment_workspace import (
     validate_frozen_run_update,
     validate_managed_run_rows,
     validate_scheduler_run_identity,
+    validated_run_key,
 )
 
 
@@ -490,6 +491,34 @@ def test_merge_run_manifest_rejects_new_run_owned_by_a_different_experiment(tmp_
 )
 def test_managed_run_key_uses_step_and_run_identity(row: dict, expected: tuple[str, str] | None):
     assert managed_run_key(row) == expected
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"step_id": "step-a", "run_id": "run-007"},
+        {"step_id": 12, "run_id": 34},
+    ],
+)
+def test_validated_run_key_matches_identity_owner(row):
+    assert validated_run_key(row) == managed_run_key(row)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {},
+        {"step_id": "step-a"},
+        {"run_id": "run-007"},
+        {"step_id": "", "run_id": "run-007"},
+        {"step_id": "step-a", "run_id": " "},
+        {"step_id": None, "run_id": "run-007"},
+    ],
+)
+def test_validated_run_key_requires_identity(row):
+    assert managed_run_key(row) is None
+    with pytest.raises(ValueError, match="Validated managed row has no run identity"):
+        validated_run_key(row)
 
 
 def test_run_evidence_key_uses_version_only_without_managed_identity():

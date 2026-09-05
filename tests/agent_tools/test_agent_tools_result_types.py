@@ -11,8 +11,12 @@ def test_result_types_reach_callers(tmp_path: Path):
             from pathlib import Path
             from agent_tools import (
                 adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
-                experiment_io, run_artifacts, run_evidence, slurm,
+                experiment_io, experiment_workspace, run_artifacts, run_evidence, slurm,
             )
+
+            strict_key: tuple[str, str] = experiment_workspace.validated_run_key({})
+            optional_key: tuple[str, str] | None = experiment_workspace.managed_run_key({})
+            required_key: tuple[str, str] = experiment_workspace.managed_run_key({})  # type: ignore[assignment]
 
             resources = slurm.normalize_resources({}, 1)
             cpus: int = resources["cpus_per_task"]
@@ -146,7 +150,18 @@ def test_result_types_reach_callers(tmp_path: Path):
                 Path("/workspace"), {}, [], remote=None, require_registered_rows=True,
             )
             steps[0]["plans"][0]["run_key"]  # type: ignore[typeddict-item]
-            experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"))
+            lifecycle = experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"))
+            expected_report: str | None = lifecycle["expected_report"]
+            report_valid: bool = lifecycle["report_valid"]
+            lifecycle["selected_step"]  # type: ignore[typeddict-item]
+            lifecycle["report_valid"] = "yes"  # type: ignore[typeddict-item]
+            required_report: str = lifecycle["expected_report"]  # type: ignore[assignment]
+            status_snapshot = experiment_tracking.experiment_status_snapshot({}, steps, [], root=Path("/workspace"))
+            manual_choice: bool = status_snapshot["decision"]["manual_choice_required"]
+            blocked_actions: list[str] = status_snapshot["decision"]["blocked_actions"]
+            status_snapshot["decisions"]  # type: ignore[typeddict-item]
+            status_snapshot["decision"]["manual_choice_required"] = 1  # type: ignore[typeddict-item]
+            status_snapshot["decision"]["recommended_next"]["command"]  # type: ignore[index]
             experiment_tracking.hparam_selection_lifecycle(
                 [{"manifest": {}, "plans": ["/plan"]}], [], root=Path("/workspace"),  # type: ignore[list-item]
             )

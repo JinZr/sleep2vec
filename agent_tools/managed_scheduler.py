@@ -148,7 +148,7 @@ class LaunchResult:
 @dataclass(frozen=True)
 class SchedulerHooks:
     merge_manifest: Callable[..., list[dict[str, Any]]] = merge_run_manifest
-    append_event: Callable[..., Path] = append_event
+    append_event: Callable[..., None] = append_event
     write_status_report: Callable[..., Path] = write_status_report
     validate_run_update: Callable[..., None] = validate_frozen_run_update
     validated_snapshot: Callable[..., tuple[dict[str, Any] | None, bool]] | None = None
