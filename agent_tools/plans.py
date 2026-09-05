@@ -306,12 +306,13 @@ def evaluate_recipe(  # noqa: C901
     *,
     check_existing_experiment: bool = False,
 ) -> tuple[dict, dict | None, DecisionReport]:
-    """Resolve recipe decisions and return (recipe, config summary, consultation report).
+    """Evaluate recipe decisions and return (recipe, config summary, consultation report).
 
-    Applies authored/user decisions and task defaults before consultation. The
-    config summary may be None when an early gate blocks evaluation; otherwise
-    it can include source bytes and their hash for later freezing. Inspect the
-    report before using either result to publish a plan.
+    Early recipe-contract blockers return before decisions or defaults are
+    materialized. Later stages apply authored/user decisions and task defaults,
+    but a blocked result need not be fully resolved. The config summary may be
+    None; when available, it can include source bytes and their hash for later
+    freezing. Inspect the report before using either result to publish a plan.
 
     Reads recipe/config/policy inputs and any evidence required by their gates;
     does not publish a workspace or launch runs. check_existing_experiment also
@@ -1627,11 +1628,12 @@ def preflight_plan(
     allow_existing_output_artifacts: bool = False,
     allow_adaptive_workflow: bool = False,
 ) -> tuple[dict, dict | None, DecisionReport]:
-    """Check whether a resolved recipe can be published at output_dir, without publishing it.
+    """Check whether a recipe can be published at output_dir, without publishing it.
 
-    Returns (resolved recipe, optional config summary, DecisionReport), extending
-    evaluate_recipe with workspace, freezeability, task and output checks. Reads
-    the inputs and existing artifacts needed for these checks; launches no runs.
+    Returns (recipe, optional config summary, DecisionReport), retaining
+    evaluate_recipe's early-blocked materialization limits and adding workspace,
+    freezeability, task and output checks. Reads the inputs and existing artifacts
+    needed for these checks; launches no runs.
     Expected blockers are reported, while unhandled loading/I/O errors propagate.
 
     allow_unresolved permits a blocked draft, never a runnable unresolved plan.
