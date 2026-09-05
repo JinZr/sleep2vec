@@ -11,7 +11,7 @@ from .runtime import run_inference_and_save
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run age/sex-only baseline inference.")
+    parser = argparse.ArgumentParser(description="Run YAML-selected age/sex/BMI covariate baseline inference.")
     parser.add_argument("--config", type=Path, required=True, help="Sex/age baseline YAML config.")
     parser.add_argument("--ckpt-path", type=str, required=True, help="Sex/age baseline checkpoint path.")
     parser.add_argument("--label-name", type=str, required=True, help="Downstream label namespace for result files.")
@@ -27,31 +27,39 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--batch-size", type=int, default=12, help="Batch size.")
     parser.add_argument("--num-workers", type=int, default=8, help="DataLoader workers.")
-    parser.add_argument("--devices", type=int, nargs="+", default=[0], help="Accepted for recipe parity; unused.")
+    parser.add_argument(
+        "--devices", type=int, nargs="+", default=[0], help="GPU IDs; CPU mode uses this many processes."
+    )
     parser.add_argument(
         "--accelerator", type=str, default="gpu", choices=["cpu", "gpu", "auto"], help="Runtime accelerator hint."
     )
-    parser.add_argument("--device", type=str, default="cuda", help="Torch device string.")
-    parser.add_argument("--precision", type=str, default="bf16-mixed", help="Accepted for recipe parity; unused.")
-    parser.add_argument("--lr", type=float, default=1e-6, help="Accepted for result parity; unused.")
-    parser.add_argument("--weight-decay", type=float, default=1e-5, help="Accepted for result parity; unused.")
+    parser.add_argument(
+        "--device", choices=["cpu", "cuda"], default="cuda", help="Compute device; GPU IDs use --devices."
+    )
+    parser.add_argument("--precision", type=str, default="bf16-mixed", help="Lightning computation precision.")
+    parser.add_argument("--lr", type=float, default=1e-6, help="Training learning-rate metadata recorded in results.")
+    parser.add_argument(
+        "--weight-decay", type=float, default=1e-5, help="Training weight-decay metadata recorded in results."
+    )
     parser.add_argument(
         "--avg-ckpts", type=int, default=1, help="Checkpoint averaging is not supported for this baseline."
     )
-    parser.add_argument("--avg-ckpt-dir", type=Path, default=None, help="Accepted for recipe parity; unused.")
+    parser.add_argument(
+        "--avg-ckpt-dir", type=Path, default=None, help="Unsupported checkpoint averaging directory; must be omitted."
+    )
     parser.add_argument("--seed", type=int, default=4523, help="Random seed.")
     parser.add_argument(
         "--wandb-mode",
         type=str,
         default=None,
         choices=["online", "offline", "disabled"],
-        help="Accepted for recipe parity; unused.",
+        help="Optional W&B metric logging mode; omitted disables W&B logging.",
     )
     return parser.parse_args()
 
 
 def run_inference(args: argparse.Namespace) -> None:
-    if args.avg_ckpts != 1:
+    if args.avg_ckpts != 1 or getattr(args, "avg_ckpt_dir", None) is not None:
         raise ValueError("sex_age_baseline inference does not support checkpoint averaging.")
     if args.accelerator == "cpu" and args.device == "cuda":
         args.device = "cpu"
