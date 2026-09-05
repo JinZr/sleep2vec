@@ -171,7 +171,9 @@ class HparamTuneAdapter(TaskAdapter):
         planned_runs = len(plan_hparam.hparam_combos(recipe))
         resources = slurm.normalize_resources(scheduler, execution.get("gpus_per_run", 1))
         try:
-            capacity = slurm.fixed_node_resource_capacity(execution, resources, planned_runs)
+            capacity: slurm.NodeResourceCapacity = slurm.fixed_node_resource_capacity(
+                execution, resources, planned_runs
+            )
         except (slurm.SlurmCommandError, subprocess.TimeoutExpired, ValueError) as exc:
             capacity = {"status": "unknown", "reason": str(exc), "planned_runs": planned_runs}
             capacity_issue = DecisionIssue(
@@ -179,7 +181,7 @@ class HparamTuneAdapter(TaskAdapter):
                 "execution.scheduler.capacity",
                 f"Slurm fixed-node resource capacity unknown: read-only inspection was unavailable: {exc}",
                 None,
-                capacity,
+                dict(capacity),
             )
         else:
             if capacity["status"] == "unknown":
@@ -188,7 +190,7 @@ class HparamTuneAdapter(TaskAdapter):
                     "execution.scheduler.capacity",
                     f"Slurm fixed-node resource capacity unknown: {capacity['reason']}.",
                     None,
-                    capacity,
+                    dict(capacity),
                 )
             else:
                 per_run = capacity["per_run"]
@@ -207,7 +209,7 @@ class HparamTuneAdapter(TaskAdapter):
                         "execution.scheduler.capacity",
                         f"Fixed node {capacity['node']}: one job cannot fit. {details}",
                         None,
-                        capacity,
+                        dict(capacity),
                     )
                 elif planned_runs > capacity["overall_empty_node_limit"]:
                     capacity_issue = DecisionIssue(
@@ -219,7 +221,7 @@ class HparamTuneAdapter(TaskAdapter):
                             f"if co-resident, require at least {capacity['minimum_waves']} waves. {details}"
                         ),
                         None,
-                        capacity,
+                        dict(capacity),
                     )
                 else:
                     capacity_issue = DecisionIssue(
@@ -230,7 +232,7 @@ class HparamTuneAdapter(TaskAdapter):
                             f"{capacity['node']}. {details}"
                         ),
                         None,
-                        capacity,
+                        dict(capacity),
                     )
         issues = [*report.issues, capability_issue, capacity_issue]
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)

@@ -13,7 +13,7 @@ import socket
 import subprocess
 import tempfile
 import traceback
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from . import manifests, python_programs, transport
 from .runtime_lock import runtime_lock
@@ -28,6 +28,41 @@ class SlurmResources(TypedDict):
     nodelist: str
     direct_controller: bool
     gpus_per_run: int
+
+
+class PerRunResources(TypedDict):
+    gpus: int
+    cpus: int
+    memory: str
+    memory_kib: int
+
+
+class NodeCapacity(TypedDict):
+    gpus: int
+    cpus: int
+    memory_mib: int
+    memory_kib: int
+
+
+class KnownNodeResourceCapacity(TypedDict):
+    status: Literal["known"]
+    node: str
+    planned_runs: int
+    per_run: PerRunResources
+    node_capacity: NodeCapacity
+    limits: dict[str, int]
+    overall_empty_node_limit: int
+    limiting_resources: list[str]
+    minimum_waves: int | None
+
+
+class UnknownNodeResourceCapacity(TypedDict):
+    status: Literal["unknown"]
+    reason: str
+    planned_runs: int
+
+
+NodeResourceCapacity = KnownNodeResourceCapacity | UnknownNodeResourceCapacity
 
 
 @dataclass(frozen=True)
@@ -116,7 +151,7 @@ def fixed_node_resource_capacity(
     planned_runs: int,
     *,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
-) -> dict[str, Any]:
+) -> NodeResourceCapacity:
     node = str(resources.get("nodelist") or "")
     if re.fullmatch(r"[A-Za-z0-9_.-]+", node) is None:
         return {

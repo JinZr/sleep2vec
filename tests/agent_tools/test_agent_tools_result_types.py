@@ -18,6 +18,24 @@ def test_result_types_reach_callers(tmp_path: Path):
             resources["cpus_per_task"] = "4"  # type: ignore[typeddict-item]
             slurm.submit_token({}, {**resources, "cpus_per_task": "4"}, "commit")  # type: ignore[typeddict-item]
 
+            capacity = slurm.fixed_node_resource_capacity({}, resources, 4)
+            planned_runs: int = capacity["planned_runs"]
+            capacity["limits"]  # type: ignore[typeddict-item]
+            if capacity["status"] == "known":
+                cpu_limit: int = capacity["limits"]["cpu"]
+                memory_kib: int = capacity["per_run"]["memory_kib"]
+                node_gpus: int = capacity["node_capacity"]["gpus"]
+                minimum_waves: int | None = capacity["minimum_waves"]
+                required_waves: int = capacity["minimum_waves"]  # type: ignore[assignment]
+                capacity["reason"]  # type: ignore[typeddict-item]
+                capacity["limits"]["cpu"] = "4"  # type: ignore[assignment]
+                capacity["per_run"]["memory_kb"]  # type: ignore[typeddict-item]
+                capacity["per_run"]["memory_kib"] = "1024"  # type: ignore[typeddict-item]
+                capacity["node_capacity"]["gpus"] = "8"  # type: ignore[typeddict-item]
+            else:
+                reason: str = capacity["reason"]
+                capacity["overall_empty_node_limit"]  # type: ignore[typeddict-item]
+
             plan = run_artifacts.read_registered_plan(
                 "/plan", workspace="/workspace", workspace_experiment={},
                 step_manifest={}, workspace_rows=[], expected_recipe_path=None,
