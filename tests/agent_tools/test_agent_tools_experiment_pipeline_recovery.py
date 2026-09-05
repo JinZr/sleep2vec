@@ -323,6 +323,13 @@ def test_selection_event_is_reconciled_after_committed_hash(
     assert state["status"] == "ready"
 
     monkeypatch.setattr(experiment_pipeline, "append_event", original_append)
+    state["status"] = "completed"
+    (pipeline_dir / "pipeline.json").write_text(json.dumps(state) + "\n")
+    experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
+    assert not (root / "events.jsonl").exists()
+
+    state["status"] = "ready"
+    (pipeline_dir / "pipeline.json").write_text(json.dumps(state) + "\n")
     experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
     experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
 
@@ -2311,6 +2318,13 @@ def test_orphan_checkpoint_selection_is_rederived_before_state_commit(tmp_path: 
         selections = experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
         assert selections == {"age": derived}
         assert json.loads(state_path.read_text())["checkpoint_selection_sha256"] == file_sha256(checkpoints_path)
+        experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
+        events = [
+            event
+            for event in experiment_pipeline.read_experiment_events(root)
+            if event.get("event_type") == "pipeline_checkpoints_frozen"
+        ]
+        assert len(events) == 1
 
 
 def test_completed_pipeline_resume_validates_and_finalizes_without_reexecution(tmp_path: Path, monkeypatch):
