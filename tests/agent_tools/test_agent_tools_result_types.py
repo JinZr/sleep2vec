@@ -150,6 +150,35 @@ def test_result_types_reach_callers(tmp_path: Path):
             experiment_tracking.hparam_selection_lifecycle(
                 [{"manifest": {}, "plans": ["/plan"]}], [], root=Path("/workspace"),  # type: ignore[list-item]
             )
+
+            report = experiments._hparam_selection_report(Path("/workspace"), remote=None)
+            report["text"]  # type: ignore[index]
+            if report is not None:
+                report_path: str = report["path"]
+                report_text: str = report["text"]
+                report_sha: str = report["sha256"]
+                ranking_path: str = report["ranking_path"]
+                ranking_text: str | None = report["ranking_text"]
+                ranking_sha: str | None = report["ranking_sha256"]
+                report["ranking_sha265"]  # type: ignore[typeddict-item]
+                report["sha256"] = None  # type: ignore[typeddict-item]
+                required_ranking: str = report["ranking_text"]  # type: ignore[assignment]
+                required_ranking_sha: str = report["ranking_sha256"]  # type: ignore[assignment]
+                experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"), report=report)
+                experiment_tracking.experiment_status_snapshot(
+                    {}, steps, [], root=Path("/workspace"), hparam_selection_report=report,
+                )
+                experiments._validate_hparam_selection_files_unchanged(Path("/workspace"), report, {}, remote=None)
+                experiment_tracking.hparam_selection_lifecycle(
+                    steps, [], root=Path("/workspace"), report={**report, "sha256": None},  # type: ignore[arg-type]
+                )
+                experiment_tracking.experiment_status_snapshot(
+                    {}, steps, [], root=Path("/workspace"),
+                    hparam_selection_report={**report, "ranking_text": 1},  # type: ignore[arg-type]
+                )
+                experiments._validate_hparam_selection_files_unchanged(
+                    Path("/workspace"), {**report, "path": None}, {}, remote=None,  # type: ignore[typeddict-item]
+                )
             """),
         encoding="utf-8",
     )
