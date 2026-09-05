@@ -63,7 +63,6 @@ module = [
     "agent_tools.domain.sidecar_summaries",
     "agent_tools.experiment_pipeline",
     "agent_tools.experiment_tracking",
-    "agent_tools.experiment_workspace",
     "agent_tools.experiments",
     "agent_tools.hparam_postprocess",
     "agent_tools.hparam_runtime",

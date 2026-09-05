@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import threading
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -117,7 +117,7 @@ def experiment_metadata_issues(
     experiment = recipe.get("experiment")
     step = recipe.get("step")
     issues = []
-    contract_evidence = {"preflight_before_workspace": True}
+    contract_evidence: dict[str, bool | str] = {"preflight_before_workspace": True}
     if source_layer is not None:
         contract_evidence["source_layer"] = source_layer
     if not isinstance(experiment, dict):
@@ -255,7 +255,7 @@ def experiment_root(recipe: dict[str, Any]) -> Path | None:
     raw = (recipe.get("experiment") or {}).get("root")
     if raw in (None, "", "ASK_USER"):
         return None
-    return canonical_local_experiment_root(raw, REPO_ROOT)
+    return canonical_local_experiment_root(cast(str | Path, raw), REPO_ROOT)
 
 
 def canonical_local_experiment_root(raw: str | Path, base_dir: str | Path) -> Path:
@@ -295,7 +295,7 @@ def read_managed_yaml_mapping(text: str, *, source: str | Path) -> dict[str, Any
     except yaml.YAMLError as exc:
         raise ValueError(f"{label} is invalid YAML.") from exc
     pending = [(document, False)]
-    active_nodes = set()
+    active_nodes: set[int] = set()
     visited_nodes = set()
     while pending:
         node, leaving = pending.pop()
@@ -496,7 +496,9 @@ def read_registered_steps(
             raise ValueError(f"Managed step directory has an invalid id: {step_id}")
         path = root / "steps" / step_id / "step.yaml"
         files = exp_io.read_managed_files_at(root, [path], remote=remote)
-        manifest = _validated_step_manifest(files[str(path)]["text"], path, step_id)
+        # This managed read uses strict UTF-8 mode, so text cannot be None.
+        text = cast(str, files[str(path)]["text"])
+        manifest = _validated_step_manifest(text, path, step_id)
         if str(manifest["experiment_id"]) != str(experiment_id):
             raise ValueError(f"Managed step belongs to a different experiment: {path}")
         manifests.append(manifest)
@@ -510,7 +512,7 @@ def commit_step_manifest(
     remote: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     root = Path(root)
-    step = incoming.get("step") if isinstance(incoming.get("step"), dict) else {}
+    step = incoming["step"] if isinstance(incoming.get("step"), dict) else {}
     step_id = str(step.get("id") or "")
     if not step_id:
         raise ValueError("Incoming step manifest is missing step.id.")
@@ -552,7 +554,8 @@ def read_run_manifest(root: str | Path, *, remote: str | None = None) -> list[di
     if not exp_io.path_exists_at(path, remote=remote):
         raise FileNotFoundError(f"Managed run manifest is missing: {path}")
     files = exp_io.read_managed_files_at(root, [path], remote=remote)
-    text = files[str(path)]["text"]
+    # This managed read uses strict UTF-8 mode, so text cannot be None.
+    text = cast(str, files[str(path)]["text"])
     return _parse_run_manifest(text, path)
 
 
@@ -679,7 +682,7 @@ def ensure_experiment_workspace(
     recipe["experiment"]["root"] = str(root)
     experiment = _public_mapping(recipe.get("experiment") or {})
     step = _public_mapping(recipe.get("step") or {})
-    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+    adaptive = recipe["adaptive"] if isinstance(recipe.get("adaptive"), dict) else {}
     controller = plan_controller or ("adaptive" if adaptive.get("enabled") is True else "ordinary")
     manifest_path = root / "experiment.yaml"
     manifest_exists = manifest_path.exists()
@@ -762,7 +765,9 @@ def read_experiment_events(root: str | Path) -> list[dict[str, Any]]:
         return []
     snapshot = exp_io.read_managed_files_at(root, [path])[str(path)]
     events = []
-    for line_number, line in enumerate(snapshot["text"].splitlines(), start=1):
+    # This managed read uses strict UTF-8 mode, so text cannot be None.
+    text = cast(str, snapshot["text"])
+    for line_number, line in enumerate(text.splitlines(), start=1):
         try:
             event = json.loads(line)
         except json.JSONDecodeError as exc:
@@ -1064,9 +1069,10 @@ def plan_registration_rows_state(
     if not expected_rows:
         raise ValueError(f"{source} must contain at least one run.")
     validate_managed_run_rows(expected_rows, source=source, cardinality="one_per_run")
-    expected_by_key = {managed_run_key(row): row for row in expected_rows}
+    # Explicit validation and read_run_manifest require non-blank managed identities.
+    expected_by_key = {cast(tuple[str, str], managed_run_key(row)): row for row in expected_rows}
     existing_rows = read_run_manifest(root) if exp_io.path_exists_at(root / "run_manifest.tsv") else []
-    canonical_by_key = {managed_run_key(row): row for row in existing_rows}
+    canonical_by_key = {cast(tuple[str, str], managed_run_key(row)): row for row in existing_rows}
     present_keys = set(expected_by_key) & set(canonical_by_key)
     if present_keys and len(present_keys) != len(expected_by_key):
         missing = ", ".join(f"{step_id} / {run_id}" for step_id, run_id in sorted(set(expected_by_key) - present_keys))
@@ -1225,6 +1231,8 @@ def merge_run_manifest(
             workspace_experiment_id = str(experiment.get("id") or "") if isinstance(experiment, dict) else ""
             if not workspace_experiment_id:
                 raise ValueError(f"Managed experiment manifest is missing experiment.id: {experiment_path}")
+            # The mapping guard and non-empty id check above guarantee a dict here.
+            assert isinstance(experiment, dict)
             if experiment.get("status") == "completed":
                 raise ValueError(f"Experiment is completed and cannot update canonical runs: {root}")
             if not exp_io.path_exists_at(path, remote=remote):
@@ -1233,17 +1241,18 @@ def merge_run_manifest(
             existing = _parse_run_manifest(current_text, path)
             by_id = {managed_run_key(row): dict(row) for row in existing}
             order = [managed_run_key(row) for row in existing]
+            # Incoming rows were validated before the lock, so their managed keys cannot be None.
             new_rows = [row for row in rows if managed_run_key(row) not in by_id]
             if new_rows:
                 for row in new_rows:
                     experiment_id = str(row.get("experiment_id") or "")
                     if not experiment_id.strip() or experiment_id != experiment_id.strip():
-                        key = managed_run_key(row)
+                        key = cast(tuple[str, str], managed_run_key(row))
                         raise ValueError(f"New canonical run must define experiment_id: {key[0]} / {key[1]}")
                 if any(str(row["experiment_id"]) != workspace_experiment_id for row in new_rows):
                     raise ValueError("New canonical run belongs to a different experiment.")
             for row in rows:
-                key = managed_run_key(row)
+                key = cast(tuple[str, str], managed_run_key(row))
                 if key not in by_id:
                     order.append(key)
                 else:
