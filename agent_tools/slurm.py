@@ -30,6 +30,22 @@ class SlurmResources(TypedDict):
     gpus_per_run: int
 
 
+class SlurmSchedulingCapabilities(TypedDict):
+    slurm_version: str
+    priority_type: str
+    scheduler_type: str
+    accounting_storage_type: str
+    preempt_type: str
+    multifactor_priority: bool
+    backfill_enabled: bool
+    accounting_enabled: bool
+    preemption_enabled: bool
+    partition: str
+    partition_state: str
+    partition_max_time: str
+    reservation_count: int
+
+
 class PerRunResources(TypedDict):
     gpus: int
     cpus: int
@@ -686,7 +702,7 @@ def cluster_scheduling_capabilities(
     partition: str,
     *,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
-) -> dict[str, Any]:
+) -> SlurmSchedulingCapabilities:
     outputs: dict[str, str] = {}
     for action, argv in (
         ("version query", ["scontrol", "--version"]),
@@ -714,7 +730,7 @@ def parse_cluster_scheduling_capabilities(
     partition_output: str,
     reservation_output: str,
     partition: str,
-) -> dict[str, Any]:
+) -> SlurmSchedulingCapabilities:
     config = _parse_scontrol_config(config_output)
     partitions = [_parse_scontrol_oneline(line) for line in partition_output.splitlines() if line.strip()]
     selected_partition = next((row for row in partitions if row.get("PartitionName") == partition), {})

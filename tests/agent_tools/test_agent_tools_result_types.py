@@ -36,6 +36,27 @@ def test_result_types_reach_callers(tmp_path: Path):
                 reason: str = capacity["reason"]
                 capacity["overall_empty_node_limit"]  # type: ignore[typeddict-item]
 
+            parsed_capabilities = slurm.parse_cluster_scheduling_capabilities(
+                version_output="", config_output="", partition_output="",
+                reservation_output="", partition="gpu",
+            )
+            version: str = parsed_capabilities["slurm_version"]
+            backfill: bool = parsed_capabilities["backfill_enabled"]
+            reservations: int = parsed_capabilities["reservation_count"]
+            parsed_capabilities["scheduler_typ"]  # type: ignore[typeddict-item]
+            parsed_capabilities["priority_type"] = False  # type: ignore[typeddict-item]
+            parsed_capabilities["backfill_enabled"] = 1  # type: ignore[typeddict-item]
+            parsed_capabilities["reservation_count"] = "1"  # type: ignore[typeddict-item]
+
+            capabilities = slurm.cluster_scheduling_capabilities({}, partition="gpu")
+            partition_state: str = capabilities["partition_state"]
+            accounting: bool = capabilities["accounting_enabled"]
+            visible_reservations: int = capabilities["reservation_count"]
+            capabilities["preemption_enable"]  # type: ignore[typeddict-item]
+            capabilities["partition_max_time"] = 1  # type: ignore[typeddict-item]
+            capabilities["preemption_enabled"] = 1  # type: ignore[typeddict-item]
+            capabilities["reservation_count"] = "1"  # type: ignore[typeddict-item]
+
             plan = run_artifacts.read_registered_plan(
                 "/plan", workspace="/workspace", workspace_experiment={},
                 step_manifest={}, workspace_rows=[], expected_recipe_path=None,
