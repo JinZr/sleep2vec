@@ -22,13 +22,13 @@ from .experiment_workspace import (
     append_event,
     experiment_root,
     has_managed_launch_evidence,
-    managed_run_key,
     merge_run_manifest,
     merge_run_row,
     read_run_manifest,
     scheduler_direct_controller,
     scheduler_type,
     validate_frozen_run_update,
+    validated_run_key,
     write_status_report,
 )
 from .manifests import utc_now, write_rows
@@ -61,7 +61,8 @@ def launch_hparam_runs(
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
     plan = artifacts.read_hparam_plan(run_dir)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
@@ -101,17 +102,18 @@ def run_hparam_queue(
         return launch_hparam_runs(run_dir, dry_run=True)
 
     plan = artifacts.read_hparam_plan(run_dir)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    expected_keys = {managed_run_key(run) for run in plan["runs"]}
+    expected_keys = {validated_run_key(run) for run in plan["runs"]}
     status_path = run_dir / "run_status.tsv"
     exp_io.validate_managed_output_paths(workspace, [status_path])
     while True:
-        rows_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+        rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
         if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
-            write_rows(status_path, [rows_by_key[managed_run_key(run)] for run in plan["runs"]])
+            write_rows(status_path, [rows_by_key[validated_run_key(run)] for run in plan["runs"]])
             return status_path
         missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
         if missing_pid:
@@ -119,7 +121,7 @@ def run_hparam_queue(
             raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
 
         monitor_hparam_runs(run_dir)
-        rows_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+        rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
         if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
             return status_path
         unresolved_scheduler = sorted(
@@ -152,7 +154,7 @@ def run_hparam_queue(
             )
 
         launch_hparam_runs(run_dir, dry_run=False, fail_on_missing_pid_blocker=True)
-        rows_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+        rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
         if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
             return status_path
         missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
@@ -167,7 +169,8 @@ def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tu
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
     plan = artifacts.read_hparam_plan(run_dir)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
@@ -181,11 +184,11 @@ def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tu
             run_dir / EXECUTION_SNAPSHOT_NAME,
         ],
     )
-    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
-    expected_keys = {managed_run_key(run) for run in plan["runs"]}
+    canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
+    expected_keys = {validated_run_key(run) for run in plan["runs"]}
     if not started_keys.issubset(expected_keys):
         raise ValueError("Interrupted launch evidence is outside the current hparam plan.")
-    rows = [canonical_by_key[managed_run_key(run)] for run in plan["runs"]]
+    rows = [canonical_by_key[validated_run_key(run)] for run in plan["runs"]]
     write_rows(run_dir / "launch_manifest.tsv", rows)
     write_rows(run_dir / "run_status.tsv", rows)
     events_path = workspace / "events.jsonl"
@@ -229,7 +232,8 @@ def _launch_hparam_runs(
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
     plan = artifacts.read_hparam_plan(run_dir)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
@@ -248,13 +252,15 @@ def _launch_hparam_runs(
             run_dir / EXECUTION_SNAPSHOT_NAME,
         ],
     )
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
+    runtime_value = recipe.get("runtime")
+    runtime = runtime_value if isinstance(runtime_value, dict) else {}
+    canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
     launchable_runs = [
         run
         for run in plan["runs"]
-        if canonical_by_key[managed_run_key(run)].get("status") in scheduler.LAUNCHABLE_STATUSES
+        if canonical_by_key[validated_run_key(run)].get("status") in scheduler.LAUNCHABLE_STATUSES
     ]
     if launchable_runs:
         # Observation and capacity can only narrow this set; dry-run must validate the same prospective candidates.
@@ -345,8 +351,9 @@ def monitor_hparam_runs(
         raise ValueError("poll_seconds must be positive.")
     root = Path(run_dir)
     plan = artifacts.read_hparam_plan(root)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    expected_keys = {managed_run_key(run) for run in plan["runs"]}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
+    expected_keys = {validated_run_key(run) for run in plan["runs"]}
     status_path = root / "run_status.tsv"
     workspace = experiment_root(recipe)
     if workspace is None:
@@ -363,7 +370,7 @@ def monitor_hparam_runs(
     exp_io.validate_managed_output_paths(workspace, managed_output_paths)
     while True:
         workspace_rows = read_run_manifest(workspace)
-        workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
+        workspace_by_key = {validated_run_key(row): row for row in workspace_rows}
         missing = expected_keys - set(workspace_by_key)
         if missing:
             step_id, run_id = sorted(missing)[0]
@@ -373,13 +380,13 @@ def monitor_hparam_runs(
         monitor_context = scheduler.SlurmMonitorContext(previous_rows.values(), owner_dir=root.absolute())
         rows = []
         for run in plan["runs"]:
-            key = managed_run_key(run)
+            key = validated_run_key(run)
             prior = previous_rows[key]
             if prior.get("target") in (None, ""):
                 rows.append(prior)
                 continue
             if scheduler_type(prior) == "slurm":
-                execution = {"target": prior["target"]}
+                execution: dict[str, Any] = {"target": prior["target"]}
                 if prior["target"] == "ssh":
                     execution["host"] = prior["host"]
                 if scheduler_direct_controller(prior):
@@ -401,11 +408,11 @@ def monitor_hparam_runs(
                 )
         exp_io.validate_managed_output_paths(workspace, managed_output_paths)
         committed = merge_run_manifest(workspace, rows)
-        committed_by_key = {managed_run_key(row): row for row in committed}
-        rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
+        committed_by_key = {validated_run_key(row): row for row in committed}
+        rows = [committed_by_key[validated_run_key(run)] for run in plan["runs"]]
         write_rows(status_path, rows)
         for row in rows:
-            before = previous_rows[managed_run_key(row)].get("status")
+            before = previous_rows[validated_run_key(row)].get("status")
             after = row.get("status")
             if before and after and before != after:
                 append_event(
@@ -422,7 +429,7 @@ def monitor_hparam_runs(
                 if (
                     after == "stopped"
                     and scheduler_type(row) == "slurm"
-                    and previous_rows[managed_run_key(row)].get("stop_requested_at") not in (None, "")
+                    and previous_rows[validated_run_key(row)].get("stop_requested_at") not in (None, "")
                 ):
                     append_event(
                         workspace,
@@ -445,8 +452,9 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         raise ValueError("Stopping a run requires a non-empty reason.")
     root = Path(run_dir)
     plan = artifacts.read_hparam_plan(root)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    expected_keys = {managed_run_key(run) for run in plan["runs"]}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
+    expected_keys = {validated_run_key(run) for run in plan["runs"]}
     manifest_path = root / "launch_manifest.tsv"
     status_path = root / "run_status.tsv"
     workspace = experiment_root(recipe)
@@ -466,7 +474,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     )
     with scheduler.managed_run_lock(workspace):
         workspace_rows = read_run_manifest(workspace)
-        workspace_by_key = {managed_run_key(item): item for item in workspace_rows}
+        workspace_by_key = {validated_run_key(item): item for item in workspace_rows}
         missing = expected_keys - set(workspace_by_key)
         if missing:
             step_id, missing_run_id = sorted(missing)[0]
@@ -476,7 +484,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
             raise ValueError(f"Unknown run_id: {run_id}")
         if len(matched) > 1:
             raise ValueError(f"Ambiguous run_id in hparam plan: {run_id}")
-        key = managed_run_key(matched[0])
+        key = validated_run_key(matched[0])
         previous = workspace_by_key[key]
         backend = scheduler_type(previous)
         if backend == "slurm":
@@ -529,8 +537,10 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                     field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")
                 }
                 if populated_process_fields and populated_process_fields != PROCESS_IDENTITY_FIELDS:
-                    missing = ", ".join(sorted(PROCESS_IDENTITY_FIELDS - populated_process_fields))
-                    raise ValueError(f"Canonical run has partial process identity for {run_id}; missing: {missing}")
+                    missing_process_fields = ", ".join(sorted(PROCESS_IDENTITY_FIELDS - populated_process_fields))
+                    raise ValueError(
+                        f"Canonical run has partial process identity for {run_id}; missing: {missing_process_fields}"
+                    )
                 remote_host = str(host) if target == "ssh" else None
                 exp_io.validate_managed_output_paths(
                     workspace,
@@ -566,8 +576,8 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                     },
                 )
                 committed = merge_run_manifest(workspace, [final], lock_held=True)
-        committed_by_key = {managed_run_key(item): item for item in committed}
-        final_status_rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
+        committed_by_key = {validated_run_key(item): item for item in committed}
+        final_status_rows = [committed_by_key[validated_run_key(run)] for run in plan["runs"]]
         write_rows(status_path, final_status_rows)
         write_rows(manifest_path, final_status_rows)
         if backend != "slurm" or metadata_stop:
@@ -581,8 +591,10 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
 
 
 def _gpu_groups(recipe: dict[str, Any]) -> list[list[Any]]:
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
+    runtime_value = recipe.get("runtime")
+    runtime = runtime_value if isinstance(runtime_value, dict) else {}
     return scheduler.gpu_groups(execution, runtime)
 
 
