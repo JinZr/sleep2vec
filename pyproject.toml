@@ -71,6 +71,4 @@ module = [
     "agent_tools.plan_context",
     "agent_tools.plan_hparam",
     "agent_tools.plans",
-    "agent_tools.run_evidence",
-    "agent_tools.slurm",
 ]
