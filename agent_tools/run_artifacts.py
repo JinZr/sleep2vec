@@ -429,16 +429,17 @@ def read_registered_plan(  # noqa: C901
             bundle_paths.append(final_script)
 
     bundle = exp_io.read_managed_files_at(workspace, list(dict.fromkeys(bundle_paths)), remote=remote)
+    config_path = str(source_config) if adapter.materializes_plan else layout["config"]
+    contract = _compile_registered_plan_contract(
+        adapter,
+        recipe,
+        plan_dir,
+        run_index_offset=run_index_offset,
+        config_bytes=bundle[config_path]["text"].encode(),
+    )
+    expected_runs = contract["runs"]
+    _validate_plan_contract_runs(runs, expected_runs, plan_path)
     if adapter.materializes_plan:
-        contract = _compile_registered_plan_contract(
-            adapter,
-            recipe,
-            plan_dir,
-            run_index_offset=run_index_offset,
-            config_bytes=bundle[str(source_config)]["text"].encode(),
-        )
-        expected_runs = contract["runs"]
-        _validate_plan_contract_runs(runs, expected_runs, plan_path)
         final_path, expected_final_command = plan_contract.validate_final_eval_contract(
             plan, recipe, plan_dir, contract
         )
@@ -458,16 +459,6 @@ def read_registered_plan(  # noqa: C901
         if expected_final_command is not None and bundle[str(final_script)]["text"] != contract["final_script_text"]:
             raise ValueError(f"Registered final external-test script differs from its frozen recipe: {final_script}")
     else:
-        config_bytes = bundle[layout["config"]]["text"].encode()
-        contract = _compile_registered_plan_contract(
-            adapter,
-            recipe,
-            plan_dir,
-            run_index_offset=run_index_offset,
-            config_bytes=config_bytes,
-        )
-        expected_runs = contract["runs"]
-        _validate_plan_contract_runs(runs, expected_runs, plan_path)
         commands = plan.get("commands")
         if (
             not isinstance(commands, list)

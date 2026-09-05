@@ -60,23 +60,28 @@ def test_experiment_status_rejects_tampered_hparam_run_all_script(tmp_path):
         experiments.experiment_status(root)
 
 
-def test_experiment_status_compiles_hparam_once_from_grouped_frozen_files(tmp_path, monkeypatch):
+@pytest.mark.parametrize("task", ["finetune", "hparam_tune"])
+def test_experiment_status_compiles_once_from_grouped_frozen_files(tmp_path, monkeypatch, task):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    plan_dir, _canonical = _add_plan(root, step_id="tune", task="hparam_tune")
-    source_path = plan_dir / "config.source.yaml"
-    source_bytes = source_path.read_bytes()
+    plan_dir, canonical = _add_plan(root, step_id="tune" if task == "hparam_tune" else "train", task=task)
     recipe = json.loads((plan_dir / "plan.json").read_text())["recipe"]
-    expected_paths = {source_path, plan_dir / "run_all.sh"}
-    for layout in plan_hparam.hparam_run_layouts(recipe, plan_dir, 0):
-        run_dir = layout["run_dir"]
-        expected_paths.update(
-            {
-                run_dir / "config.yaml",
-                run_dir / "launch.sh",
-                run_dir / "artifacts.json",
-            }
-        )
+    if task == "hparam_tune":
+        source_path = plan_dir / "config.source.yaml"
+        expected_paths = {source_path, plan_dir / "run_all.sh"}
+        for layout in plan_hparam.hparam_run_layouts(recipe, plan_dir, 0):
+            run_dir = layout["run_dir"]
+            expected_paths.update(
+                {
+                    run_dir / "config.yaml",
+                    run_dir / "launch.sh",
+                    run_dir / "artifacts.json",
+                }
+            )
+    else:
+        source_path = Path(canonical["config"])
+        expected_paths = {source_path, Path(canonical["script"]), Path(canonical["artifacts"]), plan_dir / "run.sh"}
+    source_bytes = source_path.read_bytes()
     before = _workspace_files(root)
     compiled_sources = []
     managed_reads = []
@@ -108,10 +113,11 @@ def test_experiment_status_compiles_hparam_once_from_grouped_frozen_files(tmp_pa
     assert _workspace_files(root) == before
 
 
-def test_experiment_status_does_not_read_hparam_artifact_paths_from_plan(tmp_path, monkeypatch):
+@pytest.mark.parametrize("task", ["finetune", "hparam_tune"])
+def test_experiment_status_does_not_read_artifact_paths_from_plan(tmp_path, monkeypatch, task):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    plan_dir, _canonical = _add_plan(root, step_id="tune", task="hparam_tune")
+    plan_dir, _canonical = _add_plan(root, step_id="tune" if task == "hparam_tune" else "train", task=task)
     outside = tmp_path / "outside.yaml"
     plan_path = plan_dir / "plan.json"
     plan = json.loads(plan_path.read_text())
