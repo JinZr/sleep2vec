@@ -118,6 +118,7 @@ def test_checked_in_configs_load(path: str):
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2"])
 def test_feature_subsets_and_dense_head_match_shared_builder(tmp_path, features, num_layers, variant):
     import importlib
+
     import torch
     from torch import nn
 
