@@ -630,6 +630,13 @@ def evaluate_recipe(  # noqa: C901
 
 
 def write_questions(output_dir: str | Path, report: DecisionReport) -> None:
+    """Write questions.json and questions.md from an existing consultation report.
+
+    Creates the output directory as needed and overwrites these files in order,
+    without checking report status, guarding existing artifacts, or taking a
+    publication lock. Bundle publishers own those checks and synchronization.
+    Serialization and I/O errors propagate; earlier writes are not rolled back.
+    """
     out = Path(output_dir)
     write_json(out / "questions.json", {"questions": questions_payload(report)})
     write_text(out / "questions.md", questions_markdown(report))
@@ -678,6 +685,25 @@ def write_user_decision_template(
     *,
     preserve_existing: bool,
 ) -> tuple[Path, bool] | None:
+    """Publish decisions.yaml from an evaluated recipe and consultation report.
+
+    Returns None without writing when the report is not NEEDS_USER_INPUT or has
+    no template-eligible decisions. Otherwise returns (path, created), where
+    created is True only when this call published a new file. Uses the local
+    recipe's task for layered recipes and does not reevaluate consultation.
+
+    Never overwrites an existing file. preserve_existing=False rejects one;
+    True preserves its bytes only if it is an independent regular file whose
+    decisions cover the generated template and whose present resolved values
+    agree with the report. Missing fields or conflicting concrete values require
+    a fresh output directory and raise ValueError.
+
+    Does not acquire a publication lock; callers coordinating a doctor or blocked
+    plan bundle hold plan_publication_lock around their writes. Creates parent
+    directories and publishes complete template bytes before validating the
+    target. Errors propagate and may leave directories or a newly published
+    template; this function does not roll back the surrounding output bundle.
+    """
     task_owner = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
     payload = user_decision_template(task_owner.get("task"), report, load_consultation_policy())
     if not payload:
@@ -742,6 +768,18 @@ def write_user_decision_template(
 
 
 def prepare_doctor_report(output_dir: str | Path | None, recipe: dict, report: DecisionReport) -> DecisionReport:
+    """Apply task-specific doctor findings to an evaluated recipe/report pair.
+
+    Use the returned report for display, output publication, and exit status:
+    an adapter may return a replacement with additional warnings or blockers.
+    With no adapter, returns the original report. output_dir is currently unused
+    and is not passed to the adapter; this step does not write doctor artifacts.
+
+    Findings are read-only but can require external inspection, including Slurm
+    queries for an otherwise unblocked hparam recipe. Does not publish plans or
+    launch runs. Adapter-handled inspection failures become report issues;
+    unhandled errors propagate. This is not a substitute for preflight_plan.
+    """
     adapter = get_adapter(recipe.get("task"))
     return adapter.prepare_doctor_report(recipe, report) if adapter is not None else report
 
@@ -761,6 +799,25 @@ def write_doctor_outputs(
     recipe: dict,
     report: DecisionReport,
 ) -> tuple[Path, bool] | None:
+    """Write doctor questions and a decision template from a prepared report.
+
+    Returns None without writing if output_dir is None or the report already
+    contains an output_artifacts issue. Otherwise canonicalizes the output path,
+    acquires plan_publication_lock, and rejects conflicting plan artifacts or
+    unsafe doctor output paths with ValueError before writing doctor files.
+
+    Blocking issues cause questions.json and questions.md to be written before
+    write_user_decision_template is called with preserve_existing=True. Returns
+    its (path, created) result or None when no template is eligible; None does
+    not imply that no question files were written. When a template is eligible,
+    existing decisions must pass that helper's compatibility checks. Otherwise
+    existing decisions are left untouched without checking their content.
+
+    Does not evaluate the recipe, run diagnostics, publish a runnable plan, or
+    register workspace ownership. Errors propagate without rolling back earlier
+    writes, so question files may already have changed when template publication
+    fails. The caller retains the consultation report and its exit status.
+    """
     if output_dir is None or _has_output_artifact_issue(report):
         return None
     out = canonical_local_experiment_root(output_dir, Path.cwd())
