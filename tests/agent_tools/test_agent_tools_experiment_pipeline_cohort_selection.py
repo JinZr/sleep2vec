@@ -460,7 +460,7 @@ def test_report_only_phase_is_built_from_the_frozen_winner(tmp_path: Path, monke
     winner = candidates["age-rank-002"]
     phases = []
     states = []
-    finalized = []
+    completion_order = []
 
     def execute_phase(_root, _pipeline_dir, phase_spec, _candidates, **_kwargs):
         if phase_spec["_execution_stage"] == "report_only":
@@ -489,14 +489,18 @@ def test_report_only_phase_is_built_from_the_frozen_winner(tmp_path: Path, monke
     monkeypatch.setattr(experiment_pipeline, "_validate_cohort_decision", lambda *_args: ([], {}))
     monkeypatch.setattr(experiment_pipeline.pipeline_results, "write_cohort_result_summary", write_summary)
     monkeypatch.setattr(experiment_pipeline, "_update_state", lambda *_args, **kwargs: states.append(kwargs))
-    monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_reconcile_pipeline_event",
+        lambda _root, event_type, _payload, **_kwargs: completion_order.append(event_type),
+    )
 
     result = experiment_pipeline._execute_cohort_selection(
         root,
         pipeline_dir,
         spec,
         poll_seconds=0,
-        finalize_callback=lambda *_args: finalized.append(True),
+        finalize_callback=lambda *_args: completion_order.append("finalize"),
     )
 
     assert result["status"] == "completed"
@@ -504,4 +508,4 @@ def test_report_only_phase_is_built_from_the_frozen_winner(tmp_path: Path, monke
     assert {job["candidate_id"] for job in phases[0][1]} == set(candidates)
     assert {job["candidate_id"] for job in phases[1][1]} == {winner["candidate_id"]}
     assert states[-1]["status"] == "completed"
-    assert finalized == [True]
+    assert completion_order == ["pipeline_completed", "finalize"]
