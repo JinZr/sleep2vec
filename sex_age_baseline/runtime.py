@@ -3,7 +3,6 @@ from __future__ import annotations
 from argparse import Namespace
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timezone
 import os
 from pathlib import Path
 import random
@@ -11,10 +10,15 @@ import re
 from typing import Any
 
 import numpy as np
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import Callback, EarlyStopping, ModelCheckpoint
+from pytorch_lightning.loggers import WandbLogger
 import torch
 import torch.nn.functional as F
+from torch.utils.data import DistributedSampler
 
 from sleep2vec.common import persist_run_config_and_args
+from sleep2vec.distributed import is_rank_zero_process
 from sleep2vec.losses.cox import CoxPHLossVectorized
 from sleep2vec.metrics.core import (
     compute_multilabel_classification_metrics,
@@ -32,6 +36,7 @@ from sleep2vec.results import (
     save_survival_per_disease_metrics_csv,
     save_training_run_manifest,
 )
+from sleep2vec.schedulers import build_warmup_cosine_scheduler
 
 from .config import BaselineConfig
 from .data import SexAgeDataset, load_split_dataset, make_dataloader
@@ -44,6 +49,157 @@ class EvaluationResult:
     prediction_rows: list[dict[str, object]]
     survival_per_disease_rows: list[dict[str, object]]
     multilabel_per_disease_rows: list[dict[str, object]]
+
+
+class LastCheckpoint(Callback):
+    def __init__(self, path: Path):
+        self.path = path
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        trainer.save_checkpoint(self.path)
+
+
+class BaselineModule(pl.LightningModule):
+    """Covariate training with the same step-based optimization and subject evaluation contract."""
+
+    def __init__(self, cfg: BaselineConfig, args: Namespace):
+        super().__init__()
+        self.cfg = cfg
+        self.args = args
+        self.model = SexAgeMLP(cfg)
+        self.records = []
+        self.evaluation_result = None
+        self.evaluation_stage = "test"
+
+    def forward(self, features):
+        return self.model(features)
+
+    def train_dataloader(self):
+        # Build after rank setup; drop the global tail instead of padding training identities.
+        sampler = None
+        if self.trainer.world_size > 1:
+            sampler = DistributedSampler(
+                self.train_set,
+                num_replicas=self.trainer.world_size,
+                rank=self.trainer.global_rank,
+                shuffle=True,
+                seed=getattr(self.args, "seed", 4523),
+                drop_last=True,
+            )
+        return make_dataloader(
+            self.train_set,
+            batch_size=self.args.batch_size,
+            num_workers=self.args.num_workers,
+            shuffle=sampler is None,
+            drop_last=True,
+            sampler=sampler,
+        )
+
+    def training_step(self, batch, batch_idx):
+        logits = self(batch["features"])
+        loss = _batch_loss(logits, batch, self.cfg)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, batch_size=logits.shape[0], sync_dist=True)
+        return loss
+
+    def on_validation_epoch_start(self):
+        self.records = []
+
+    def validation_step(self, batch, batch_idx):
+        self.records.append(_evaluation_record(batch, self(batch["features"])))
+
+    def on_validation_epoch_end(self):
+        result = _evaluate_records(self.records, self.cfg, "val", False)
+        monitor = self.cfg.finetune.task.monitor
+        if monitor not in result.metrics:
+            raise ValueError(
+                f"Configured monitor {monitor!r} was not emitted. Available metrics: {sorted(result.metrics)}"
+            )
+        if not np.isfinite(result.metrics[monitor]):
+            raise ValueError(f"No finite best checkpoint can be selected for monitor {monitor!r}.")
+        for name, value in result.metrics.items():
+            self.log(name, value, sync_dist=False)
+        self.evaluation_result = result
+
+    def on_test_epoch_start(self):
+        self.records = []
+
+    def test_step(self, batch, batch_idx):
+        self.records.append(_evaluation_record(batch, self(batch["features"])))
+
+    def on_test_epoch_end(self):
+        self.evaluation_result = _evaluate_records(
+            self.records, self.cfg, self.evaluation_stage, self.cfg.outputs.prediction_csv
+        )
+        for name, value in self.evaluation_result.metrics.items():
+            self.log(name, value, sync_dist=False)
+
+    def configure_optimizers(self):
+        groups = {"decay": [], "no_decay": []}
+        for name, parameter in self.model.named_parameters():
+            if parameter.requires_grad:
+                decay = parameter.ndim >= 2 and "norm" not in name.lower() and "bias" not in name.lower()
+                groups["decay" if decay else "no_decay"].append(parameter)
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": values, "weight_decay": self.args.weight_decay if name == "decay" else 0.0}
+                for name, values in groups.items()
+                if values
+            ],
+            lr=self.args.lr,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+        )
+        scheduler = build_warmup_cosine_scheduler(
+            optimizer,
+            total_steps=self.trainer.estimated_stepping_batches,
+            warmup_steps=getattr(self.args, "warmup_steps", None),
+            decay_shape=getattr(self.args, "lr_decay_shape", "cosine"),
+            decay_floor=getattr(self.args, "lr_decay_floor", 0.1),
+        )
+        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
+
+    def on_save_checkpoint(self, checkpoint):
+        checkpoint["config"] = asdict(self.cfg)
+        checkpoint["label_contract"] = _label_contract(self.cfg)
+        checkpoint["model_contract"] = _model_contract(self.cfg)
+        checkpoint["metrics"] = {name: float(value) for name, value in self.trainer.callback_metrics.items()}
+
+
+def _trainer(args, *, callbacks=(), training=False):
+    if getattr(args, "device", "cuda") not in {"cpu", "cuda"}:
+        raise ValueError("--device must be cpu or cuda; choose GPU IDs with --devices.")
+    accelerator = "cpu" if getattr(args, "device", "cuda") == "cpu" else getattr(args, "accelerator", "gpu")
+    if accelerator == "auto":
+        accelerator = "gpu" if torch.cuda.is_available() else "cpu"
+    devices = getattr(args, "devices", [0])
+    if accelerator == "cpu":
+        devices = len(devices)
+    wandb_mode = getattr(args, "wandb_mode", None)
+    logger = False
+    if wandb_mode in {"online", "offline"}:
+        logger = WandbLogger(project="sex-age-baseline", name=getattr(args, "version", None), mode=wandb_mode)
+    return pl.Trainer(
+        accelerator=accelerator,
+        devices=devices,
+        precision=getattr(args, "precision", "32-true"),
+        strategy="ddp" if (devices if isinstance(devices, int) else len(devices)) > 1 else "auto",
+        max_epochs=args.epochs if training else 1,
+        accumulate_grad_batches=getattr(args, "accumulate_grad_batches", 1),
+        gradient_clip_val=getattr(args, "gradient_clip_val", 0.0),
+        check_val_every_n_epoch=getattr(args, "check_val_every_n_epoch", 1),
+        callbacks=list(callbacks),
+        enable_checkpointing=training,
+        logger=logger,
+        num_sanity_val_steps=0,
+        enable_progress_bar=False,
+    )
+
+
+def _test(trainer, module, loader, cfg, checkpoint_path, stage="test"):
+    load_checkpoint(module.model, checkpoint_path, device=torch.device("cpu"), cfg=cfg)
+    module.evaluation_stage = stage
+    trainer.test(module, dataloaders=loader, verbose=False)
+    return module.evaluation_result
 
 
 def configure_result_args(args: Namespace, cfg: BaselineConfig) -> None:
@@ -71,6 +227,7 @@ def build_version_name(args: Namespace, cfg: BaselineConfig) -> str:
 
 
 def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
+    torch.set_float32_matmul_precision("high")
     if not hasattr(args, "test_all_checkpoints_after_fit"):
         args.test_all_checkpoints_after_fit = False
     if args.test_all_checkpoints_after_fit and not args.test_after_fit:
@@ -91,36 +248,29 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         raise ValueError("--epochs 0 requires --ckpt-path for sex_age_baseline evaluation.")
     _seed_everything(getattr(args, "seed", 4523))
 
-    device = torch.device(args.device)
     run_dir = Path("log-finetune") / args.version
-    if run_dir.is_symlink():
-        raise FileExistsError(f"sex_age_baseline run directory must not be a symlink: {run_dir}.")
-    # Runtime directories are single-use; stale checkpoints must never enter a new run's test evidence.
-    if run_dir.exists() and any(run_dir.iterdir()):
-        raise FileExistsError(
-            f"sex_age_baseline run directory already exists and is not empty: {run_dir}. "
-            "Use a new --version-name or manually clear the existing directory."
-        )
     checkpoint_dir = run_dir / "checkpoints"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    persist_run_config_and_args(args, run_dir)
+    # DDP subprocesses re-enter the CLI; only the original rank creates the single-use root.
+    if is_rank_zero_process():
+        if run_dir.is_symlink():
+            raise FileExistsError(f"sex_age_baseline run directory must not be a symlink: {run_dir}.")
+        if run_dir.exists() and any(run_dir.iterdir()):
+            raise FileExistsError(
+                f"sex_age_baseline run directory already exists and is not empty: {run_dir}. Use a new --version-name."
+            )
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        persist_run_config_and_args(args, run_dir)
 
-    model = SexAgeMLP(cfg).to(device)
+    module = BaselineModule(cfg, args)
+    model = module.model
     if args.ckpt_path:
-        load_checkpoint(model, args.ckpt_path, device=device, cfg=cfg)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        load_checkpoint(model, args.ckpt_path, device=torch.device("cpu"), cfg=cfg)
     loaded_splits = ["train", "val"] if epochs > 0 else []
     if args.test_after_fit:
         loaded_splits.append("test")
     if epochs > 0:
-        train_set = _required_dataset(cfg, "train", loaded_splits=loaded_splits)
+        module.train_set = _required_dataset(cfg, "train", loaded_splits=loaded_splits)
         val_set = _required_dataset(cfg, "val", loaded_splits=loaded_splits)
-        train_loader = make_dataloader(
-            train_set,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            shuffle=True,
-        )
         val_loader = make_dataloader(
             val_set,
             batch_size=args.batch_size,
@@ -128,55 +278,58 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             shuffle=False,
         )
 
-    best_path = checkpoint_dir / "best.ckpt"
-    last_path = checkpoint_dir / "last.ckpt"
-    best_score: float | None = None
-    best_metrics: dict[str, float] = {}
+    best = ModelCheckpoint(
+        dirpath=checkpoint_dir,
+        filename="best",
+        monitor=cfg.finetune.task.monitor,
+        mode=cfg.finetune.task.monitor_mod,
+        save_top_k=1,
+        save_last=False,
+        save_on_train_epoch_end=False,
+        enable_version_counter=False,
+    )
+    periodic = ModelCheckpoint(
+        dirpath=checkpoint_dir,
+        filename="epoch={epoch:02d}",
+        auto_insert_metric_name=False,
+        save_top_k=-1,
+        save_last=False,
+        every_n_epochs=ckpt_every_n_epochs,
+        save_on_train_epoch_end=True,
+    )
+    callbacks = [best, periodic, LastCheckpoint(checkpoint_dir / "last.ckpt")]
     patience = int(getattr(args, "patience", 100))
-    stale_epochs = 0
-    global_step = 0
-
-    for epoch in range(epochs):
-        train_loss, steps = _train_one_epoch(model, train_loader, cfg, optimizer, device, args)
-        global_step += steps
-        val_result = evaluate_model(model, val_loader, cfg, device=device, stage="val")
-        epoch_metrics = {"train_loss": train_loss, **val_result.metrics}
-        save_checkpoint(last_path, model, cfg, epoch=epoch, global_step=global_step, metrics=epoch_metrics)
-        if (epoch + 1) % ckpt_every_n_epochs == 0:
-            save_checkpoint(
-                checkpoint_dir / f"epoch={epoch:02d}.ckpt",
-                model,
-                cfg,
-                epoch=epoch,
-                global_step=global_step,
-                metrics=epoch_metrics,
+    if patience > 0:
+        callbacks.append(
+            EarlyStopping(
+                monitor=cfg.finetune.task.monitor,
+                mode=cfg.finetune.task.monitor_mod,
+                patience=patience,
+                check_on_train_epoch_end=False,
             )
-
-        monitor = cfg.finetune.task.monitor
-        if monitor not in epoch_metrics:
-            available_metrics = ", ".join(sorted(epoch_metrics))
-            raise ValueError(f"Configured monitor {monitor!r} was not emitted. Available metrics: {available_metrics}")
-        monitor_value = epoch_metrics[monitor]
-        if _is_better(monitor_value, best_score, cfg.finetune.task.monitor_mod):
-            best_score = float(monitor_value)
-            best_metrics = dict(epoch_metrics)
-            stale_epochs = 0
-            save_checkpoint(best_path, model, cfg, epoch=epoch, global_step=global_step, metrics=epoch_metrics)
-        else:
-            stale_epochs += 1
-        if patience > 0 and stale_epochs >= patience:
-            break
-
-    if epochs == 0 and args.ckpt_path:
-        best_path = Path(args.ckpt_path)
-    elif epochs > 0 and not best_path.exists():
+        )
+    trainer = _trainer(args, callbacks=callbacks if epochs else (), training=epochs > 0)
+    if epochs:
+        trainer.fit(module, val_dataloaders=val_loader)
+    best_path = (
+        Path(best.best_model_path)
+        if epochs and best.best_model_path
+        else Path(args.ckpt_path or checkpoint_dir / "best.ckpt")
+    )
+    last_path = checkpoint_dir / "last.ckpt"
+    best_score = float(best.best_model_score) if best.best_model_score is not None else None
+    best_metrics = {}
+    if not best_path.is_file() or (epochs and (best_score is None or not np.isfinite(best_score))):
         raise ValueError(
             f"No finite best checkpoint was selected for monitor {cfg.finetune.task.monitor!r}. "
             "Check validation labels and monitor configuration."
         )
+    best_metrics = dict(torch.load(best_path, map_location="cpu", weights_only=False)["metrics"])
 
     manifest_path = run_dir / "run_manifest.json"
     if not args.test_after_fit:
+        if not trainer.is_global_zero:
+            return
         save_training_run_manifest(
             args,
             manifest_path=manifest_path,
@@ -197,7 +350,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     original_ckpt_path = args.ckpt_path
     checkpoint_result_rows = []
     if args.test_all_checkpoints_after_fit:
-        best_checkpoint = load_checkpoint(model, best_path, device=device, cfg=cfg)
+        best_checkpoint = load_checkpoint(model, best_path, device=torch.device("cpu"), cfg=cfg)
         best_epoch = int(best_checkpoint["epoch"])
         resolved_checkpoint_dir = checkpoint_dir.resolve()
         frozen_checkpoint_dir = os.environ.get("_SLEEP2VEC_FROZEN_CHECKPOINT_DIR")
@@ -233,17 +386,9 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
 
         test_result = None
         for epoch, checkpoint_path in periodic_checkpoints:
-            load_checkpoint(model, checkpoint_path, device=device, cfg=cfg)
             args.ckpt_path = str(checkpoint_path)
             args.ckpt_resolved_path = str(checkpoint_path)
-            result = evaluate_model(
-                model,
-                test_loader,
-                cfg,
-                device=device,
-                stage="test",
-                export_predictions=cfg.outputs.prediction_csv,
-            )
+            result = _test(trainer, module, test_loader, cfg, checkpoint_path)
             checkpoint_result_rows.append((result.metrics, str(checkpoint_path)))
             checkpoint_test_results.append(
                 {"checkpoint_path": str(checkpoint_path), "epoch": epoch, "metrics": result.metrics}
@@ -253,19 +398,14 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
 
     else:
         if best_path.exists():
-            load_checkpoint(model, best_path, device=device, cfg=cfg)
             args.ckpt_path = str(best_path)
             args.ckpt_resolved_path = str(best_path)
-        test_result = evaluate_model(
-            model,
-            test_loader,
-            cfg,
-            device=device,
-            stage="test",
-            export_predictions=cfg.outputs.prediction_csv,
-        )
-        save_result_csv(test_result.metrics, str(args.results_csv_path), args)
+        test_result = _test(trainer, module, test_loader, cfg, best_path)
+        if trainer.is_global_zero:
+            save_result_csv(test_result.metrics, str(args.results_csv_path), args)
 
+    if not trainer.is_global_zero:
+        return
     prediction_csv_path = run_dir / "predictions.csv"
     if cfg.outputs.prediction_csv:
         save_prediction_csv(test_result.prediction_rows, str(prediction_csv_path), args)
@@ -302,26 +442,20 @@ def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     cfg = _config_with_inference_preset(args, cfg)
     configure_result_args(args, cfg)
     _seed_everything(getattr(args, "seed", 4523))
-    device = torch.device(args.device)
-    model = SexAgeMLP(cfg).to(device)
-    load_checkpoint(model, args.ckpt_path, device=device, cfg=cfg)
+    module = BaselineModule(cfg, args)
     args.ckpt_resolved_path = str(args.ckpt_path)
-    prepare_inference_result_paths(
-        args,
-        namespace="sex_age_baseline",
-        root=getattr(args, "results_root", DEFAULT_INFERENCE_RESULTS_ROOT),
-    )
     args.task_family = cfg.finetune.task.type
 
     dataset = _required_dataset(cfg, args.eval_split, loaded_splits=[args.eval_split])
     loader = make_dataloader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
-    result = evaluate_model(
-        model,
-        loader,
-        cfg,
-        device=device,
-        stage=args.eval_split,
-        export_predictions=cfg.outputs.prediction_csv,
+    trainer = _trainer(args)
+    result = _test(trainer, module, loader, cfg, args.ckpt_path, args.eval_split)
+    if not trainer.is_global_zero:
+        return
+    prepare_inference_result_paths(
+        args,
+        namespace="sex_age_baseline",
+        root=getattr(args, "results_root", DEFAULT_INFERENCE_RESULTS_ROOT),
     )
     save_result_csv(result.metrics, str(args.inference_metrics_csv_path), args)
     save_result_csv(result.metrics, str(args.inference_overview_csv_path), args)
@@ -361,35 +495,89 @@ def evaluate_model(
     export_predictions: bool = False,
 ) -> EvaluationResult:
     model.eval()
-    keys: list[str] = []
-    logits_list: list[torch.Tensor] = []
-    label_tensors: dict[str, list[torch.Tensor]] = {"has_label": []}
-    task_type = cfg.finetune.task.type
-
+    records = []
     with torch.no_grad():
         for batch in loader:
-            age = batch["age"].to(device)
-            sex = batch["sex"].to(device)
-            logits = model(age, sex).detach().cpu()
-            logits_list.append(logits)
-            keys.extend(str(key) for key in batch["key"])
-            label_tensors["has_label"].append(batch["has_label"].detach().cpu())
-            if task_type == "survival":
-                label_tensors.setdefault("event_time", []).append(batch["event_time"].detach().cpu())
-                label_tensors.setdefault("is_event", []).append(batch["is_event"].detach().cpu())
-            else:
-                label_tensors.setdefault("disease_label", []).append(batch["disease_label"].detach().cpu())
+            features = {name: value.to(device) for name, value in batch["features"].items()}
+            records.append(_evaluation_record(batch, model(features)))
+    return _evaluate_records(records, cfg, stage, export_predictions)
 
-    if not logits_list:
+
+def _evaluation_record(batch, logits):
+    return {
+        "key": list(batch["key"]),
+        "path": list(batch["path"]),
+        "token_start": [int(value) for value in batch["token_start"]],
+        "logits": logits.detach().float().cpu(),
+        **{
+            name: batch[name].detach().cpu()
+            for name in ("has_label", "event_time", "is_event", "disease_label")
+            if name in batch
+        },
+    }
+
+
+def _evaluate_records(records, cfg, stage, export_predictions):
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        gathered = [None] * torch.distributed.get_world_size()
+        torch.distributed.all_gather_object(gathered, records)
+        records = [record for rank_records in gathered for record in rank_records]
+    grouped = {}
+    seen = set()
+    labels = (
+        ["has_label", "event_time", "is_event"]
+        if cfg.finetune.task.type == "survival"
+        else ["has_label", "disease_label"]
+    )
+    for record in records:
+        for i, key in enumerate(record["key"]):
+            identity = (str(key), str(record["path"][i]), int(record["token_start"][i]))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if key not in grouped:
+                grouped[key] = {"preds": [], "identities": [], **{name: record[name][i] for name in labels}}
+            item = grouped[key]
+            for name in labels:
+                if not torch.allclose(item[name], record[name][i], equal_nan=True):
+                    raise ValueError(f"{name} differs across records for key {key!r}.")
+            item["preds"].append(record["logits"][i])
+            item["identities"].append(identity)
+    if not grouped:
         raise ValueError(f"Sex/age baseline split {stage!r} has no rows.")
-    logits = torch.cat(logits_list, dim=0)
-    has_label = torch.cat(label_tensors["has_label"], dim=0)
-    if task_type == "survival":
-        event_time = torch.cat(label_tensors["event_time"], dim=0)
-        is_event = torch.cat(label_tensors["is_event"], dim=0)
-        return _evaluate_survival(cfg, stage, keys, logits, event_time, is_event, has_label, export_predictions)
-    labels = torch.cat(label_tensors["disease_label"], dim=0)
-    return _evaluate_multilabel(cfg, stage, keys, logits, labels, has_label, export_predictions)
+    keys = list(grouped)
+    logits = torch.stack([torch.stack(item["preds"]).mean(0) for item in grouped.values()])
+    tensors = {name: torch.stack([item[name] for item in grouped.values()]) for name in labels}
+    if cfg.finetune.task.type == "survival":
+        result = _evaluate_survival(
+            cfg,
+            stage,
+            keys,
+            logits,
+            tensors["event_time"],
+            tensors["is_event"],
+            tensors["has_label"],
+            export_predictions,
+        )
+    else:
+        result = _evaluate_multilabel(
+            cfg, stage, keys, logits, tensors["disease_label"], tensors["has_label"], export_predictions
+        )
+    for row, item in zip(result.prediction_rows, grouped.values()):
+        row["n_windows"] = len(item["identities"])
+        row["token_starts"] = [identity[2] for identity in item["identities"]]
+        row["paths"] = list(dict.fromkeys(identity[1] for identity in item["identities"]))
+    return result
+
+
+def _batch_loss(logits, batch, cfg):
+    if cfg.finetune.task.type == "survival":
+        return CoxPHLossVectorized(eps=cfg.finetune.loss.eps)(
+            logits, batch["has_label"], batch["event_time"], batch["is_event"]
+        )
+    return masked_multilabel_bce(
+        logits, batch["disease_label"], batch["has_label"], pos_weight=cfg.finetune.loss.pos_weight
+    )
 
 
 def masked_multilabel_bce(
@@ -421,7 +609,7 @@ def save_checkpoint(
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
-            "state_dict": model.state_dict(),
+            "state_dict": {f"model.{name}": value for name, value in model.state_dict().items()},
             "config": asdict(cfg),
             "label_contract": _label_contract(cfg),
             "model_contract": _model_contract(cfg),
@@ -443,27 +631,19 @@ def load_checkpoint(
     checkpoint = torch.load(path, map_location=device, weights_only=False)
     if cfg is not None:
         _validate_checkpoint_contracts(checkpoint, cfg, path)
-    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        state_dict = checkpoint["state_dict"]
-    elif isinstance(checkpoint, dict) and "model" in checkpoint:
-        state_dict = checkpoint["model"]
-    elif isinstance(checkpoint, dict):
-        state_dict = checkpoint
-    else:
-        raise ValueError(f"Unsupported checkpoint format: {path}")
-    model.load_state_dict(state_dict, strict=True)
-    return checkpoint if isinstance(checkpoint, dict) else {}
+    state_dict = checkpoint["state_dict"]
+    if not all(name.startswith("model.") for name in state_dict):
+        raise ValueError(f"Checkpoint is not a covariate Lightning model: {path}")
+    model.load_state_dict({name.removeprefix("model."): value for name, value in state_dict.items()}, strict=True)
+    return checkpoint
 
 
 def _validate_checkpoint_contracts(checkpoint: Any, cfg: BaselineConfig, path: str | Path) -> None:
     if not isinstance(checkpoint, Mapping):
         raise ValueError(f"Checkpoint does not contain a saved sex_age_baseline label contract: {path}")
-    saved_config = checkpoint.get("config")
     saved_contract = checkpoint.get("label_contract")
     if not isinstance(saved_contract, Mapping):
-        if not isinstance(saved_config, Mapping):
-            raise ValueError(f"Checkpoint does not contain a saved sex_age_baseline config: {path}")
-        saved_contract = _label_contract(saved_config)
+        raise ValueError(f"Checkpoint does not contain a saved sex_age_baseline label contract: {path}")
     current_contract = _label_contract(cfg)
     if dict(saved_contract) != current_contract:
         raise ValueError(
@@ -472,9 +652,7 @@ def _validate_checkpoint_contracts(checkpoint: Any, cfg: BaselineConfig, path: s
         )
     saved_model_contract = checkpoint.get("model_contract")
     if not isinstance(saved_model_contract, Mapping):
-        if not isinstance(saved_config, Mapping):
-            raise ValueError(f"Checkpoint does not contain a saved sex_age_baseline config: {path}")
-        saved_model_contract = _model_contract(saved_config)
+        raise ValueError(f"Checkpoint does not contain a saved sex_age_baseline model contract: {path}")
     current_model_contract = _model_contract(cfg)
     if dict(saved_model_contract) != current_model_contract:
         raise ValueError(
@@ -485,24 +663,8 @@ def _validate_checkpoint_contracts(checkpoint: Any, cfg: BaselineConfig, path: s
 
 def _model_contract(cfg: BaselineConfig | Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(cfg, BaselineConfig):
-        return {
-            "name": cfg.model.name,
-            "features": list(cfg.model.features),
-            "age": asdict(cfg.model.age),
-            "sex": asdict(cfg.model.sex),
-            "head": asdict(cfg.model.head),
-        }
-    model = cfg.get("model") if isinstance(cfg.get("model"), Mapping) else {}
-    age = model.get("age") if isinstance(model.get("age"), Mapping) else {}
-    sex = model.get("sex") if isinstance(model.get("sex"), Mapping) else {}
-    head = model.get("head") if isinstance(model.get("head"), Mapping) else {}
-    return {
-        "name": model.get("name"),
-        "features": list(model.get("features") or []),
-        "age": dict(age),
-        "sex": dict(sex),
-        "head": dict(head),
-    }
+        return asdict(cfg.model)
+    return dict(cfg["model"])
 
 
 def _label_contract(cfg: BaselineConfig | Mapping[str, Any]) -> dict[str, Any]:
@@ -547,47 +709,6 @@ def _label_names(task_type: Any, disease_columns_index: Any) -> list[str]:
     raise ValueError(f"Unsupported sex_age_baseline checkpoint task type: {task_type}")
 
 
-def _train_one_epoch(
-    model: SexAgeMLP,
-    loader,
-    cfg: BaselineConfig,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
-    args: Namespace,
-) -> tuple[float, int]:
-    model.train()
-    losses: list[float] = []
-    optimizer.zero_grad(set_to_none=True)
-    accum = max(1, int(getattr(args, "accumulate_grad_batches", 1)))
-    steps = 0
-    for batch_idx, batch in enumerate(loader, start=1):
-        logits = model(batch["age"].to(device), batch["sex"].to(device))
-        if cfg.finetune.task.type == "survival":
-            loss = CoxPHLossVectorized()(
-                logits,
-                batch["has_label"].to(device),
-                batch["event_time"].to(device),
-                batch["is_event"].to(device),
-            )
-        else:
-            loss = masked_multilabel_bce(
-                logits,
-                batch["disease_label"].to(device),
-                batch["has_label"].to(device),
-                pos_weight=cfg.finetune.loss.pos_weight if cfg.finetune.loss else None,
-            )
-        (loss / accum).backward()
-        if batch_idx % accum == 0 or batch_idx == len(loader):
-            clip_val = getattr(args, "gradient_clip_val", None)
-            if clip_val is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), float(clip_val))
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-            steps += 1
-        losses.append(float(loss.detach().cpu()))
-    return float(np.mean(losses)) if losses else float("nan"), steps
-
-
 def _evaluate_survival(
     cfg: BaselineConfig,
     stage: str,
@@ -598,7 +719,7 @@ def _evaluate_survival(
     has_label: torch.Tensor,
     export_predictions: bool,
 ) -> EvaluationResult:
-    loss = CoxPHLossVectorized()(logits, has_label, event_time, is_event)
+    loss = CoxPHLossVectorized(eps=cfg.finetune.loss.eps)(logits, has_label, event_time, is_event)
     disease_names = _survival_disease_names(cfg)
     metric_rows = compute_survival_c_index_by_disease(logits, event_time, is_event, has_label, disease_names)
     for row in metric_rows:
@@ -736,17 +857,6 @@ def _required_dataset(cfg: BaselineConfig, split: str, *, loaded_splits: list[st
     return dataset
 
 
-def _is_better(value: Any, best: float | None, mode: str) -> bool:
-    if value is None:
-        return False
-    value = float(value)
-    if not np.isfinite(value):
-        return False
-    if best is None:
-        return True
-    return value < best if mode == "min" else value > best
-
-
 def _pos_weight_tensor(pos_weight: Any, logits: torch.Tensor) -> torch.Tensor:
     tensor = torch.as_tensor(pos_weight, dtype=logits.dtype, device=logits.device)
     if tensor.ndim == 0:
@@ -762,7 +872,5 @@ def _seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = False
-    return timestamp

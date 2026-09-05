@@ -973,6 +973,8 @@ _ALLOWED_RUNTIME_SEARCH_FIELDS = frozenset(
         "gradient_clip_val",
         "accumulate_grad_batches",
         "warmup_steps",
+        "lr_decay_shape",
+        "lr_decay_floor",
         "patience",
         "check_val_every_n_epoch",
         "ckpt_every_n_epochs",

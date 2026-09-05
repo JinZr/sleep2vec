@@ -23,6 +23,8 @@ _FINETUNE_RUNTIME_DEFAULTS = (
 _FINETUNE_RUNTIME_OPTIONS = (
     ("device", "--device"),
     ("warmup_steps", "--warmup-steps"),
+    ("lr_decay_shape", "--lr-decay-shape"),
+    ("lr_decay_floor", "--lr-decay-floor"),
     ("gradient_clip_val", "--gradient-clip-val"),
     ("accumulate_grad_batches", "--accumulate-grad-batches"),
     ("patience", "--patience"),
@@ -147,8 +149,7 @@ def runtime_cli_args(runtime: dict[str, Any], *, variant: str | None = None) -> 
         args.extend([flag, runtime.get(key, default)])
     for key, flag in _FINETUNE_RUNTIME_OPTIONS:
         append_option(args, flag, runtime.get(key))
-    if variant != "sex_age_baseline":
-        append_option(args, "--wandb-mode", runtime.get("wandb_mode"))
+    append_option(args, "--wandb-mode", runtime.get("wandb_mode"))
     return args
 
 

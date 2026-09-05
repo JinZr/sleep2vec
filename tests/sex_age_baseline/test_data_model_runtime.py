@@ -101,9 +101,15 @@ def _base_payload(index: Path, sidecars: dict[str, str], task_type: str) -> dict
         "model": {
             "name": "sex_age_mlp",
             "features": ["age", "sex"],
-            "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4},
-            "sex": {"encoding": "binary", "embedding_dim": 4},
-            "head": {"hidden_dim": 8, "dropout": 0.0, "activation": "elu"},
+            "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4, "initialization": "default"},
+            "sex": {"encoding": "binary", "embedding_dim": 4, "initialization": "default"},
+            "head": {
+                "name": "classification",
+                "hidden_dim": 8,
+                "dropout": 0.0,
+                "act": "elu",
+                "kwargs": {"num_layers": 2},
+            },
         },
         "data": {
             "backend": "npz",
@@ -299,7 +305,12 @@ def test_metadata_backends_produce_identical_subject_records(tmp_path: Path):
     records = []
     for config in configs:
         cfg = load_config(config, validate_sidecars=True)
-        records.append([(record.key, record.age, record.sex) for record in load_split_dataset(cfg, "train")])
+        records.append(
+            [
+                (record.key, record.features["age"], record.features["sex"])
+                for record in load_split_dataset(cfg, "train")
+            ]
+        )
 
     assert records == [[("001", 50.0, 0)], [("001", 50.0, 0)], [("001", 50.0, 0)]]
 
@@ -330,8 +341,8 @@ def test_kaldi_manifest_split_key_fills_missing_split_column(tmp_path: Path):
     train = load_split_dataset(cfg, "train")
     val = load_split_dataset(cfg, "val")
 
-    assert [(record.key, record.age, record.sex) for record in train] == [("001", 50.0, 0)]
-    assert [(record.key, record.age, record.sex) for record in val] == [("002", 60.0, 1)]
+    assert [(record.key, record.features["age"], record.features["sex"]) for record in train] == [("001", 50.0, 0)]
+    assert [(record.key, record.features["age"], record.features["sex"]) for record in val] == [("002", 60.0, 1)]
 
 
 def test_conflicting_duplicate_metadata_fails(tmp_path: Path):
@@ -401,7 +412,7 @@ def test_missing_metadata_columns_fail_for_non_index_backends(tmp_path: Path, ba
     config = _write_config_for_data(tmp_path, rows, data)
     cfg = load_config(config, validate_sidecars=True)
 
-    with pytest.raises(ValueError, match="missing|required"):
+    with pytest.raises(ValueError, match="missing|required|Invalid selected covariates"):
         load_split_dataset(cfg, "train")
 
 
@@ -409,7 +420,7 @@ def test_invalid_sex_fails(tmp_path: Path):
     config = _write_config(tmp_path, ["001,train,50,unknown"])
     cfg = load_config(config, validate_sidecars=True)
 
-    with pytest.raises(ValueError, match="sex value"):
+    with pytest.raises(ValueError, match="Invalid selected covariates.*sex"):
         load_split_dataset(cfg, "train")
 
 
@@ -420,8 +431,12 @@ def test_unused_split_metadata_values_do_not_block_selected_split(tmp_path: Path
     config = _write_config_for_data(tmp_path, rows, data)
     cfg = load_config(config, validate_sidecars=True)
 
-    assert [(record.key, record.age, record.sex) for record in load_split_dataset(cfg, "train")] == [("001", 50.0, 0)]
-    assert [(record.key, record.age, record.sex) for record in load_split_dataset(cfg, "val")] == [("002", 60.0, 1)]
+    assert [
+        (record.key, record.features["age"], record.features["sex"]) for record in load_split_dataset(cfg, "train")
+    ] == [("001", 50.0, 0)]
+    assert [
+        (record.key, record.features["age"], record.features["sex"]) for record in load_split_dataset(cfg, "val")
+    ] == [("002", 60.0, 1)]
 
     with pytest.raises(ValueError, match="age"):
         load_split_dataset(cfg, "test")
@@ -432,11 +447,11 @@ def test_unused_split_duplicate_metadata_does_not_block_selected_split(tmp_path:
     cfg = load_config(config, validate_sidecars=True)
 
     assert [
-        (record.key, record.age, record.sex)
+        (record.key, record.features["age"], record.features["sex"])
         for record in load_split_dataset(cfg, "train", loaded_splits=["train", "val"])
     ] == [("001", 50.0, 0)]
     assert [
-        (record.key, record.age, record.sex)
+        (record.key, record.features["age"], record.features["sex"])
         for record in load_split_dataset(cfg, "val", loaded_splits=["train", "val"])
     ] == [("002", 60.0, 1)]
 
@@ -470,7 +485,7 @@ def test_model_forward_shape(tmp_path: Path, task_type: str):
     cfg = load_config(config, validate_sidecars=True)
     model = SexAgeMLP(cfg)
 
-    logits = model(torch.tensor([50.0, 60.0]), torch.tensor([0, 1]))
+    logits = model({"age": torch.tensor([50.0, 60.0]), "sex": torch.tensor([0, 1])})
 
     assert tuple(logits.shape) == (2, 2)
 
@@ -580,7 +595,9 @@ def test_train_fails_without_finite_best_checkpoint(tmp_path: Path, monkeypatch)
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(ValueError, match="No finite best checkpoint"):
-        baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="no-finite-best"), cfg)
+        args = _runtime_args(config, tmp_path, version_name="no-finite-best")
+        args.batch_size = 1
+        baseline_runtime.train_and_save(args, cfg)
 
     assert not (tmp_path / "log-finetune" / "no-finite-best" / "checkpoints" / "best.ckpt").exists()
 
@@ -809,7 +826,7 @@ def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_me
     original_save_multilabel = baseline_runtime.save_multilabel_per_disease_metrics_csv
     original_save_matrix = baseline_runtime.save_result_rows_csv
     original_save_manifest = baseline_runtime.save_training_run_manifest
-    original_evaluate = baseline_runtime.evaluate_model
+    original_evaluate = baseline_runtime._test
 
     def evaluate_with_survival_rows(*call_args, **call_kwargs):
         result = original_evaluate(*call_args, **call_kwargs)
@@ -836,7 +853,7 @@ def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_me
         events.append("manifest")
         return original_save_manifest(*call_args, **call_kwargs)
 
-    monkeypatch.setattr(baseline_runtime, "evaluate_model", evaluate_with_survival_rows)
+    monkeypatch.setattr(baseline_runtime, "_test", evaluate_with_survival_rows)
     monkeypatch.setattr(baseline_runtime, "save_prediction_csv", save_prediction)
     monkeypatch.setattr(baseline_runtime, "save_survival_per_disease_metrics_csv", save_survival)
     monkeypatch.setattr(baseline_runtime, "save_multilabel_per_disease_metrics_csv", save_multilabel)
@@ -855,7 +872,12 @@ def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_me
         str(frozen_checkpoint_dir / "epoch=01.ckpt"),
     }
     assert {Path(row["checkpoint_path"]).name for row in checkpoint_results} == {"epoch=00.ckpt", "epoch=01.ckpt"}
-    best_epoch = torch.load(run_dir / "checkpoints" / "best.ckpt", weights_only=False)["epoch"]
+    saved_checkpoint = torch.load(run_dir / "checkpoints" / "best.ckpt", weights_only=False)
+    best_epoch = saved_checkpoint["epoch"]
+    assert len(saved_checkpoint["optimizer_states"]) == 1
+    assert len(saved_checkpoint["lr_schedulers"]) == 1
+    assert saved_checkpoint["optimizer_states"][0]["param_groups"][0]["betas"] == (0.9, 0.95)
+    assert saved_checkpoint["lr_schedulers"][0]["last_epoch"] == saved_checkpoint["global_step"]
     assert checkpoint_results[-1]["epoch"] == best_epoch
     best_result = next(row for row in checkpoint_results if row["epoch"] == best_epoch)
     assert manifest["metrics"] == best_result["metrics"]
@@ -882,17 +904,16 @@ def test_all_checkpoint_test_rejects_missing_validation_best_periodic_checkpoint
     monkeypatch.chdir(tmp_path)
     args = _runtime_args(config, tmp_path, version_name="missing-best-periodic", epochs=2, test_after_fit=True)
     args.test_all_checkpoints_after_fit = True
-    original_save_checkpoint = baseline_runtime.save_checkpoint
+    original_save_checkpoint = baseline_runtime.ModelCheckpoint._save_checkpoint
 
-    def omit_first_periodic(path, *call_args, **call_kwargs):
-        if Path(path).name == "epoch=00.ckpt":
+    def omit_first_periodic(self, trainer, path):
+        if Path(path).name.startswith("epoch="):
             return None
-        return original_save_checkpoint(path, *call_args, **call_kwargs)
+        return original_save_checkpoint(self, trainer, path)
 
-    monkeypatch.setattr(baseline_runtime, "save_checkpoint", omit_first_periodic)
-    monkeypatch.setattr(baseline_runtime, "_is_better", lambda _value, best, _mode: best is None)
+    monkeypatch.setattr(baseline_runtime.ModelCheckpoint, "_save_checkpoint", omit_first_periodic)
 
-    with pytest.raises(ValueError, match="Validation-best epoch checkpoint is missing"):
+    with pytest.raises(ValueError, match="No regular epoch=.*checkpoints"):
         baseline_runtime.train_and_save(args, cfg)
 
 
@@ -915,18 +936,17 @@ def test_all_checkpoint_test_failure_preserves_existing_results_csv(tmp_path: Pa
     args.test_all_checkpoints_after_fit = True
     args.results_csv_path.write_text("experiment_version,test_loss\nold,1.0\n")
     results_before = args.results_csv_path.read_bytes()
-    original_evaluate = baseline_runtime.evaluate_model
+    original_evaluate = baseline_runtime._test
     test_calls = 0
 
     def fail_second_test(*call_args, **call_kwargs):
         nonlocal test_calls
-        if call_kwargs.get("stage") == "test":
-            test_calls += 1
-            if test_calls == 2:
-                raise RuntimeError("second checkpoint test failed")
+        test_calls += 1
+        if test_calls == 2:
+            raise RuntimeError("second checkpoint test failed")
         return original_evaluate(*call_args, **call_kwargs)
 
-    monkeypatch.setattr(baseline_runtime, "evaluate_model", fail_second_test)
+    monkeypatch.setattr(baseline_runtime, "_test", fail_second_test)
 
     with pytest.raises(RuntimeError, match="second checkpoint test failed"):
         baseline_runtime.train_and_save(args, cfg)
@@ -972,14 +992,14 @@ def test_all_checkpoint_artifact_failure_preserves_existing_results_csv(
         raise RuntimeError("required artifact failed")
 
     if emit_survival_rows:
-        original_evaluate = baseline_runtime.evaluate_model
+        original_evaluate = baseline_runtime._test
 
         def evaluate_with_survival_rows(*call_args, **call_kwargs):
             result = original_evaluate(*call_args, **call_kwargs)
             result.survival_per_disease_rows = [{"disease": "unit"}]
             return result
 
-        monkeypatch.setattr(baseline_runtime, "evaluate_model", evaluate_with_survival_rows)
+        monkeypatch.setattr(baseline_runtime, "_test", evaluate_with_survival_rows)
     monkeypatch.setattr(baseline_runtime, artifact_writer, fail_artifact)
 
     with pytest.raises(RuntimeError, match="required artifact failed"):
@@ -1068,14 +1088,15 @@ def test_inference_runtime_passes_custom_results_root(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr(baseline_runtime, "configure_result_args", lambda *args: None)
     monkeypatch.setattr(baseline_runtime, "_seed_everything", lambda *args: None)
-    monkeypatch.setattr(baseline_runtime, "SexAgeMLP", lambda cfg: _DummyModel())
+    monkeypatch.setattr(baseline_runtime, "BaselineModule", lambda cfg, args: _DummyModel())
+    monkeypatch.setattr(baseline_runtime, "_trainer", lambda args: Namespace(is_global_zero=True))
     monkeypatch.setattr(baseline_runtime, "load_checkpoint", lambda *args, **kwargs: None)
     monkeypatch.setattr(baseline_runtime, "prepare_inference_result_paths", _prepare_paths)
     monkeypatch.setattr(baseline_runtime, "_required_dataset", lambda *args, **kwargs: "dataset")
     monkeypatch.setattr(baseline_runtime, "make_dataloader", lambda *args, **kwargs: "loader")
     monkeypatch.setattr(
         baseline_runtime,
-        "evaluate_model",
+        "_test",
         lambda *args, **kwargs: baseline_runtime.EvaluationResult(
             metrics={"test_mae": 1.0},
             prediction_rows=[],
@@ -1089,3 +1110,68 @@ def test_inference_runtime_passes_custom_results_root(tmp_path: Path, monkeypatc
     baseline_runtime.run_inference_and_save(args, cfg)
 
     assert captured == {"namespace": "sex_age_baseline", "root": results_root}
+
+
+def test_validation_and_checkpoint_cadence_preserve_actual_last_state(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        ["001,train,50,0", "002,train,60,1", "003,val,55,0", "004,val,65,1"],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    args = _runtime_args(config, tmp_path, version_name="cadence", epochs=3)
+    args.check_val_every_n_epoch = 2
+    args.ckpt_every_n_epochs = 2
+    baseline_runtime.train_and_save(args, cfg)
+    root = tmp_path / "log-finetune" / "cadence" / "checkpoints"
+    assert [path.name for path in root.glob("epoch=*.ckpt")] == ["epoch=01.ckpt"]
+    assert torch.load(root / "best.ckpt", weights_only=False)["epoch"] == 1
+    assert torch.load(root / "last.ckpt", weights_only=False)["epoch"] == 2
+
+
+def test_trainer_forwards_runtime_settings_and_resolves_auto_cpu(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(baseline_runtime.pl, "Trainer", lambda **kwargs: kwargs)
+    args = Namespace(
+        device="cuda",
+        accelerator="auto",
+        devices=[0, 1],
+        precision="32-true",
+        epochs=4,
+        accumulate_grad_batches=3,
+        gradient_clip_val=0.5,
+        check_val_every_n_epoch=2,
+    )
+    settings = baseline_runtime._trainer(args, training=True)
+    assert settings["accelerator"] == "cpu"
+    assert settings["devices"] == 2
+    assert settings["strategy"] == "ddp"
+    assert settings["precision"] == "32-true"
+    assert settings["max_epochs"] == 4
+    assert settings["accumulate_grad_batches"] == 3
+    assert settings["gradient_clip_val"] == 0.5
+    assert settings["check_val_every_n_epoch"] == 2
+
+
+def test_accumulation_uses_actual_optimizer_step_budget(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        ["001,train,50,0", "002,train,60,1", "003,val,55,0", "004,val,65,1"],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    args = _runtime_args(config, tmp_path, version_name="accumulation", epochs=2)
+    args.batch_size = 1
+    args.accumulate_grad_batches = 2
+    args.warmup_steps = 0
+    args.lr_decay_shape = "linear"
+    args.lr_decay_floor = 0.2
+    baseline_runtime.train_and_save(args, cfg)
+    checkpoint = torch.load(
+        tmp_path / "log-finetune" / "accumulation" / "checkpoints" / "last.ckpt", weights_only=False
+    )
+    assert checkpoint["global_step"] == 2
+    assert checkpoint["lr_schedulers"][0]["last_epoch"] == 2
+    assert checkpoint["optimizer_states"][0]["param_groups"][0]["lr"] == pytest.approx(args.lr * 0.2)

@@ -22,8 +22,9 @@ from .config import BaselineConfig
 @dataclass(frozen=True)
 class BaselineRecord:
     key: str
-    age: float
-    sex: int
+    features: dict[str, float | int]
+    path: str = ""
+    token_start: int = 0
     event_time: np.ndarray | None = None
     is_event: np.ndarray | None = None
     disease_label: np.ndarray | None = None
@@ -57,8 +58,9 @@ def load_split_dataset(
         records = [
             BaselineRecord(
                 key=row["_baseline_key"],
-                age=row["_baseline_age"],
-                sex=row["_baseline_sex"],
+                features={name: row[f"_baseline_{name}"] for name in cfg.model.features},
+                path=row["_baseline_path"],
+                token_start=row["_baseline_token_start"],
                 event_time=labels.event_time[_require_label_key(row["_baseline_key"], labels.event_time, split)],
                 is_event=labels.is_event[row["_baseline_key"]],
                 has_label=labels.has_label[row["_baseline_key"]],
@@ -72,8 +74,9 @@ def load_split_dataset(
     records = [
         BaselineRecord(
             key=row["_baseline_key"],
-            age=row["_baseline_age"],
-            sex=row["_baseline_sex"],
+            features={name: row[f"_baseline_{name}"] for name in cfg.model.features},
+            path=row["_baseline_path"],
+            token_start=row["_baseline_token_start"],
             disease_label=labels.disease_label[_require_label_key(row["_baseline_key"], labels.disease_label, split)],
             has_label=labels.has_label[row["_baseline_key"]],
         )
@@ -88,11 +91,15 @@ def make_dataloader(
     batch_size: int,
     num_workers: int,
     shuffle: bool,
+    drop_last: bool = False,
+    sampler=None,
 ) -> DataLoader:
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        sampler=sampler,
+        drop_last=drop_last,
         num_workers=num_workers,
         collate_fn=_collate_records,
     )
@@ -114,7 +121,7 @@ def _load_metadata_frame(
     else:
         raise ValueError(f"Unsupported sex_age_baseline data backend: {cfg.data.backend}")
 
-    required_columns = {cfg.data.key_column, cfg.data.split_column, "age", "sex"}
+    required_columns = {cfg.data.key_column, cfg.data.split_column, *cfg.model.features}
     missing = sorted(required_columns - set(frame.columns))
     if missing:
         raise ValueError(f"Sex/age baseline metadata is missing required columns: {missing}")
@@ -129,10 +136,37 @@ def _load_metadata_frame(
 
     frame["_baseline_key"] = [normalize_key(value, cfg.data.key_column) for value in frame[cfg.data.key_column]]
     frame["_baseline_split"] = [_parse_split(value, cfg.data.split_column) for value in frame[cfg.data.split_column]]
-    frame["_baseline_age"] = [_parse_age(value) for value in frame["age"]]
-    frame["_baseline_sex"] = [_parse_sex(value) for value in frame["sex"]]
-    _validate_duplicate_metadata(frame)
-    return frame.drop_duplicates("_baseline_key", keep="first")
+    invalid = {}
+    for name in cfg.model.features:
+        values = []
+        failures = 0
+        for value in frame[name]:
+            try:
+                values.append(_parse_sex(value) if name == "sex" else _parse_continuous(value, name))
+            except (ValueError, TypeError):
+                failures += 1
+                values.append(None)
+        frame[f"_baseline_{name}"] = values
+        if failures:
+            invalid[name] = failures
+    if invalid:
+        raise ValueError(f"Invalid selected covariates in split {split!r} ({len(frame)} rows): {invalid}")
+    _validate_duplicate_metadata(frame, cfg.model.features)
+    if cfg.data.deduplicate_by_key:
+        frame = frame.drop_duplicates("_baseline_key", keep="first").copy()
+        frame["_baseline_path"] = ""
+        frame["_baseline_token_start"] = 0
+    else:
+        if not {"path", "token_start"}.issubset(frame.columns):
+            raise ValueError("Window mode requires explicit path and token_start metadata.")
+        if frame["path"].isna().any() or (frame["path"].astype(str).str.strip() == "").any():
+            raise ValueError("Window mode requires a non-empty path for every sample.")
+        starts = pd.to_numeric(frame["token_start"], errors="raise")
+        if not np.isfinite(starts).all() or (starts < 0).any() or (starts % 1 != 0).any():
+            raise ValueError("Window token_start must be a finite non-negative integer.")
+        frame["_baseline_path"] = frame["path"].astype(str)
+        frame["_baseline_token_start"] = starts.astype(int)
+    return frame
 
 
 def _load_rows_from_npz_index(cfg: BaselineConfig) -> pd.DataFrame:
@@ -151,8 +185,9 @@ def _load_rows_from_npz_preset(cfg: BaselineConfig) -> pd.DataFrame:
             {
                 cfg.data.key_column: metadata.get(cfg.data.key_column),
                 cfg.data.split_column: metadata.get(cfg.data.split_column),
-                "age": metadata.get("age"),
-                "sex": metadata.get("sex"),
+                **{name: metadata.get(name) for name in cfg.model.features},
+                "path": getattr(sample, "path", None),
+                "token_start": getattr(sample, "start", None),
             }
         )
     return pd.DataFrame(rows)
@@ -219,16 +254,16 @@ def _parse_split(value: Any, column: str) -> str:
     return split
 
 
-def _parse_age(value: Any) -> float:
+def _parse_continuous(value: Any, name: str) -> float:
     if pd.isna(value):
-        raise ValueError("Index age column contains a missing value.")
+        raise ValueError(f"Index {name} column contains a missing value.")
     try:
-        age = float(value)
+        number = float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"Index age value is not numeric: {value!r}") from exc
-    if not math.isfinite(age) or age < 0:
-        raise ValueError(f"Index age value must be finite and non-negative: {value!r}")
-    return age
+        raise ValueError(f"Index {name} value is not numeric: {value!r}") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"Index {name} value must be finite: {value!r}")
+    return number
 
 
 def _parse_sex(value: Any) -> int:
@@ -238,17 +273,15 @@ def _parse_sex(value: Any) -> int:
     return int(encoded)
 
 
-def _validate_duplicate_metadata(frame: pd.DataFrame) -> None:
+def _validate_duplicate_metadata(frame: pd.DataFrame, features: list[str]) -> None:
     for key, group in frame.groupby("_baseline_key", sort=False):
         splits = set(group["_baseline_split"].tolist())
         if len(splits) != 1:
             raise ValueError(f"Duplicate key {key!r} has conflicting split values.")
-        sexes = set(int(value) for value in group["_baseline_sex"].tolist())
-        if len(sexes) != 1:
-            raise ValueError(f"Duplicate key {key!r} has conflicting sex values.")
-        ages = np.asarray(group["_baseline_age"].tolist(), dtype=np.float64)
-        if not np.allclose(ages, ages[0], rtol=0.0, atol=1e-6):
-            raise ValueError(f"Duplicate key {key!r} has conflicting age values.")
+        for name in features:
+            values = np.asarray(group[f"_baseline_{name}"].tolist(), dtype=np.float64)
+            if not np.allclose(values, values[0], rtol=0.0, atol=1e-6):
+                raise ValueError(f"Duplicate key {key!r} has conflicting {name} values.")
 
 
 def _require_label_key(key: str, labels: dict[str, np.ndarray], split: str) -> str:
@@ -260,8 +293,14 @@ def _require_label_key(key: str, labels: dict[str, np.ndarray], split: str) -> s
 def _collate_records(records: list[BaselineRecord]) -> dict[str, Any]:
     batch: dict[str, Any] = {
         "key": [record.key for record in records],
-        "age": torch.tensor([record.age for record in records], dtype=torch.float32),
-        "sex": torch.tensor([record.sex for record in records], dtype=torch.long),
+        "path": [record.path for record in records],
+        "token_start": torch.tensor([record.token_start for record in records], dtype=torch.long),
+        "features": {
+            name: torch.tensor(
+                [record.features[name] for record in records], dtype=torch.long if name == "sex" else torch.float32
+            )
+            for name in records[0].features
+        },
     }
     first = records[0]
     if first.event_time is not None:

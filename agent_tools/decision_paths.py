@@ -247,16 +247,6 @@ def managed_runtime_resource_issues(
             )
         else:
             gpus_per_run = raw_gpus_per_run
-    if is_slurm and variant == "sex_age_baseline" and gpus_per_run is not None and gpus_per_run > 1:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.gpus_per_run",
-                "sex_age_baseline does not support multi-GPU Slurm execution.",
-                None,
-                {"gpus_per_run": gpus_per_run, "variant": variant, "preflight_before_workspace": True},
-            )
-        )
     if is_slurm and isinstance(scheduler, dict) and not (set(scheduler) - slurm.RESOURCE_FIELDS):
         try:
             slurm.normalize_resources(scheduler, gpus_per_run if gpus_per_run is not None else 1)
