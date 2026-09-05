@@ -377,10 +377,25 @@ def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path:
             "status": "finished" if previous["run_id"] == first_run["run_id"] else previous["status"],
         },
     )
+
+    def start_process(_execution, command):
+        rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
+        assert rows[first_run["run_id"]]["status"] == "finished"
+        events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+        assert any(
+            event["event_type"] == "run_status_changed"
+            and event["run_id"] == first_run["run_id"]
+            and event["to"] == "finished"
+            for event in events
+        )
+        assert "- finished: 1" in (tmp_path / "reports" / "status.md").read_text()
+        started.append(command)
+        return "launch_failed"
+
     monkeypatch.setattr(
         hparam_runtime,
         "_start_process",
-        lambda _execution, command: started.append(command) or "launch_failed",
+        start_process,
     )
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("queue should make progress"))
 
