@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import Any, Iterator, cast
+from typing import Any, Iterator, TypedDict, cast
 
 import yaml
 
@@ -50,6 +50,27 @@ REGISTERED_PLAN_IDENTITY_FIELDS = (
     "checkpoint_dir",
     *sorted(SCHEDULER_PLAN_IDENTITY_FIELDS),
 )
+
+
+class RegisteredPlanSelection(TypedDict):
+    metric: str
+    mode: str
+    split: str
+
+
+class RegisteredPlanSummary(TypedDict):
+    path: str
+    task: str
+    run_keys: list[tuple[str, str]]
+    launch_script: str
+    selection: RegisteredPlanSelection | None
+    recipe: dict[str, Any]
+    runs: list[dict[str, Any]]
+
+
+class RegisteredPlanStep(TypedDict):
+    manifest: dict[str, Any]
+    plans: list[RegisteredPlanSummary]
 
 
 def _json_object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -196,7 +217,7 @@ def read_registered_plan(  # noqa: C901
     expected_recipe_path: str | None,
     remote: str | None = None,
     run_index_offset: int = 0,
-) -> dict[str, Any]:
+) -> RegisteredPlanSummary:
     """Validate a registered plan against caller-supplied workspace state and return a summary.
 
     workspace_experiment, step_manifest and workspace_rows are the caller's
@@ -333,7 +354,7 @@ def read_registered_plan(  # noqa: C901
     if not adapter.materializes_plan:
         expected_runs = [layout]
         _validate_plan_contract_runs(runs, expected_runs, plan_path)
-    plan_keys = [managed_run_key(run) for run in runs]
+    plan_keys = [(str(run["step_id"]), str(run["run_id"])) for run in runs]
     if len(plan_keys) != len(set(plan_keys)):
         raise ValueError(f"Registered plan contains duplicate managed run keys: {plan_path}")
     canonical_by_key = {managed_run_key(row): row for row in workspace_rows}
@@ -493,7 +514,7 @@ def read_registered_plan(  # noqa: C901
 
     if expected_recipe_path is not None and recipe.get("_recipe_path", "") != expected_recipe_path:
         raise ValueError(f"Registered plan recipe path differs from its managed step: {plan_dir}")
-    selection = None
+    selection: RegisteredPlanSelection | None = None
     if task == "hparam_tune":
         evaluation = recipe["evaluation_policy"] if isinstance(recipe.get("evaluation_policy"), dict) else {}
         selection = {

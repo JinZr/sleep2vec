@@ -47,7 +47,7 @@ from .experiment_workspace import (
 from .manifests import read_json, utc_now
 
 
-def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:
+def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
     # The locator is untrusted; all execution fields below come from the registered frozen plan.
     initial = read_json(plan_dir / "plan.json")
     recipe = initial.get("recipe") if isinstance(initial, dict) else None
@@ -274,7 +274,7 @@ def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
     return workspace / "run_manifest.tsv"
 
 
-def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:
+def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
     # The initial document only locates the workspace; execution uses the strict registered-plan reader below.
     initial = read_json(plan_dir / "plan.json")
     recipe = initial.get("recipe") if isinstance(initial, dict) else None
@@ -940,7 +940,7 @@ def _registered_plan_steps(
     *,
     remote: str | None,
     require_registered_rows: bool,
-) -> list[dict[str, Any]]:
+) -> list[artifacts.RegisteredPlanStep]:
     step_manifests = read_registered_steps(root, experiment_id=str(experiment["id"]), remote=remote)
     legacy_run_identity_fields = {"experiment_id", "step_id", "run_id", "run_name", "version"}
     managed_plan_fields = (FROZEN_RUN_FIELDS - legacy_run_identity_fields) | tracking.HPARAM_SELECTION_METADATA_FIELDS
@@ -971,11 +971,11 @@ def _registered_plan_steps(
             if owner != step_id:
                 raise ValueError(f"Registered plan belongs to more than one managed step: {plan_path}")
 
-    registered_steps = []
+    registered_steps: list[artifacts.RegisteredPlanStep] = []
     for manifest in step_manifests:
         step_id = str(manifest["step"]["id"])
         step_rows = [row for row in rows if str(row["step_id"]) == step_id]
-        plans = []
+        plans: list[artifacts.RegisteredPlanSummary] = []
         plan_keys = []
         run_index_offset = 0
         for plan_path in manifest["plans"]:
@@ -1027,7 +1027,7 @@ def _hparam_selection_report(root: Path, *, remote: str | None) -> dict[str, Any
 
 def _hparam_checkpoint_audits(
     root: Path,
-    registered_steps: list[dict[str, Any]],
+    registered_steps: list[artifacts.RegisteredPlanStep],
     *,
     remote: str | None,
 ) -> dict[str, dict[str, Any] | None]:
@@ -1036,7 +1036,7 @@ def _hparam_checkpoint_audits(
             Path(plan["path"]) / "checkpoint_test_ranking.csv"
             for registered in registered_steps
             for plan in registered["plans"]
-            if plan.get("task") == "hparam_tune" and (plan.get("selection") or {}).get("split") == "test"
+            if plan["task"] == "hparam_tune" and plan["selection"] is not None and plan["selection"]["split"] == "test"
         }
     )
     if not checkpoint_audit_paths:
