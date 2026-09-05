@@ -45,5 +45,4 @@ ignore_missing_imports = true
 ignore_errors = true
 module = [
     "agent_tools.adaptive_hparam",
-    "agent_tools.plan_hparam",
 ]
