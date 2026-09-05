@@ -22,7 +22,7 @@ def load_config_summary_for_recipe(
     config_bytes: bytes | None = None,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
 ) -> dict | None:
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
     config = inputs.get("config")
     if not config:
         return None
@@ -55,7 +55,7 @@ def skips_local_path_validation(recipe: dict, raw_paths: list[Any] | None = None
 
 
 def _runtime_path_base(recipe: dict) -> Path:
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    execution = recipe["execution"] if isinstance(recipe.get("execution"), dict) else {}
     workdir = execution.get("workdir")
     if workdir not in (None, "") and Path(str(workdir)).is_absolute():
         return Path(str(workdir))
@@ -65,12 +65,12 @@ def _runtime_path_base(recipe: dict) -> Path:
 def survival_validation_paths(config_data: dict | None) -> list[Any]:
     if not isinstance(config_data, dict):
         return []
-    data = config_data.get("data") if isinstance(config_data.get("data"), dict) else {}
+    data = config_data["data"] if isinstance(config_data.get("data"), dict) else {}
     finetune = (
-        config_data.get(CONFIG_FINETUNE_SECTION) if isinstance(config_data.get(CONFIG_FINETUNE_SECTION), dict) else {}
+        config_data[CONFIG_FINETUNE_SECTION] if isinstance(config_data.get(CONFIG_FINETUNE_SECTION), dict) else {}
     )
-    survival = finetune.get("survival") if isinstance(finetune.get("survival"), dict) else {}
-    multilabel = finetune.get("multilabel") if isinstance(finetune.get("multilabel"), dict) else {}
+    survival = finetune["survival"] if isinstance(finetune.get("survival"), dict) else {}
+    multilabel = finetune["multilabel"] if isinstance(finetune.get("multilabel"), dict) else {}
     paths = [data.get("finetune_data_index"), data.get("finetune_preset_path")]
     paths.extend(data.get(field) for field in ("kaldi_data_root", "kaldi_manifest"))
     paths.extend(
@@ -87,7 +87,7 @@ def validation_commands(recipe: dict) -> list[str]:
         override = adapter.validation_commands(recipe)
         if override is not None:
             return override
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
     commands = []
     if inputs.get("config"):
         # Name the variant the generated run command uses. `check_configs` otherwise infers one
@@ -175,7 +175,7 @@ def context_index_summary(
 
 
 def index_summary_inputs(recipe: dict, cfg: dict | None) -> tuple[list[Any], Any, list[Any]]:
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
     config = inputs.get("config")
     for adapter in all_adapters():
         override = adapter.index_summary_inputs_override(recipe, cfg)
@@ -229,7 +229,7 @@ def effective_preset_path(recipe: dict, cfg: dict | None) -> Any:
 def expected_context_artifacts(
     recipe: dict, cfg: dict | None, out: Path, report: DecisionReport
 ) -> list[dict[str, str]]:
-    artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
+    artifacts = recipe["artifacts"] if isinstance(recipe.get("artifacts"), dict) else {}
     expected = [
         {"name": name, "path": str(path)}
         for name, path in artifacts.items()

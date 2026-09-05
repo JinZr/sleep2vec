@@ -68,7 +68,6 @@ module = [
     "agent_tools.hparam_runtime",
     "agent_tools.hparam_selection",
     "agent_tools.managed_scheduler",
-    "agent_tools.plan_context",
     "agent_tools.plan_hparam",
     "agent_tools.plans",
     "agent_tools.run_evidence",
