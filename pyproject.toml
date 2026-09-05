@@ -51,7 +51,6 @@ module = [
     "agent_tools.adapters.sleep2stat",
     "agent_tools.adaptive_hparam",
     "agent_tools.decision_hparam",
-    "agent_tools.decision_paths",
     "agent_tools.domain.finetune_hparam_profile",
     "agent_tools.domain.finetune_summary",
     "agent_tools.domain.index_csv",
