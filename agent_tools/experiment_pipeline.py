@@ -1018,7 +1018,7 @@ def _load_or_freeze_cohort_decision(
     ranking, decision, artifacts_by_field = _cohort_decision_artifacts(pipeline_dir, spec, candidates, evidence)
     for path, text in artifacts_by_field.values():
         if path.exists():
-            if path.is_symlink() or not path.is_file() or path.read_text() != text:
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != text.encode():
                 raise ValueError(f"Frozen cohort-selection decision changed: {path}")
         else:
             _atomic_write_text(path, text)
@@ -1051,7 +1051,12 @@ def _validate_cohort_decision(
     ranking, decision, artifacts_by_field = _cohort_decision_artifacts(pipeline_dir, spec, candidates, evidence)
     state = read_json(pipeline_dir / "pipeline.json")
     for field, (path, text) in artifacts_by_field.items():
-        if path.is_symlink() or not path.is_file() or path.read_text() != text or state.get(field) != file_sha256(path):
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.read_bytes() != text.encode()
+            or state.get(field) != file_sha256(path)
+        ):
             raise ValueError(f"Frozen cohort-selection decision changed: {path}")
     return ranking, decision
 
