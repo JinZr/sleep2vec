@@ -52,8 +52,11 @@ def launch_hparam_runs(
     runs, launch eligible work within capacity and record lifecycle evidence.
 
     fail_on_missing_pid_blocker makes an unresolved process-identity blocker an
-    execution error for queue callers. Contract, observation and launch errors
-    propagate; already recorded launches are not rolled back on later failure."""
+    execution error for queue callers. Contract and observation errors propagate.
+    A normal direct-launch nonzero exit is committed as launch_failed and returns
+    normally, so the returned path does not imply a successful launch; inspect the
+    canonical run status. Other launch exceptions propagate, and already recorded
+    launches are not rolled back on later failure."""
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
