@@ -618,7 +618,8 @@ def test_sex_age_baseline_slurm_multi_gpu_plan(tmp_path: Path):
     assert "--devices 0 1" in scripts[0].read_text()
 
 
-def test_covariate_baseline_bmi_only_and_decay_plan(tmp_path: Path):
+@pytest.mark.parametrize("wandb_mode", ["disabled", "offline"])
+def test_covariate_baseline_bmi_only_and_decay_plan(tmp_path: Path, wandb_mode):
     config = _write_survival_config(tmp_path)
     payload = yaml.safe_load(config.read_text())
     payload["model"]["features"] = ["bmi"]
@@ -630,7 +631,7 @@ def test_covariate_baseline_bmi_only_and_decay_plan(tmp_path: Path):
     recipe = _finetune_recipe(tmp_path, config)
     recipe_payload = yaml.safe_load(recipe.read_text())
     recipe_payload["runtime"].update(
-        {"warmup_steps": 2, "lr_decay_shape": "linear", "lr_decay_floor": 0.2, "wandb_mode": "disabled"}
+        {"warmup_steps": 2, "lr_decay_shape": "linear", "lr_decay_floor": 0.2, "wandb_mode": wandb_mode}
     )
     _write_yaml(recipe, recipe_payload)
     report = build_plan(recipe_path=recipe, output_dir=tmp_path / "bmi-plan")
@@ -639,7 +640,7 @@ def test_covariate_baseline_bmi_only_and_decay_plan(tmp_path: Path):
     assert "--warmup-steps 2" in commands
     assert "--lr-decay-shape linear" in commands
     assert "--lr-decay-floor 0.2" in commands
-    assert "--wandb-mode disabled" in commands
+    assert f"--wandb-mode {wandb_mode}" in commands
     summary = config_summary(config)
     assert summary["model"]["features"] == ["bmi"]
     assert summary["model"]["encodings"] == {"bmi": payload["model"]["bmi"]}
