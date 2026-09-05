@@ -403,6 +403,22 @@ def test_infer_slurm_reader_recompiles_coherently_edited_scheduler(tmp_path: Pat
         _read_registered_infer_plan(plan_dir)
 
 
+def test_infer_slurm_reader_rejects_run_payload_drift(tmp_path: Path, _runtime_commit, _runtime_probe):
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
+    (run,) = plan["runs"]
+    run_path = Path(run["run_dir"]) / "run.json"
+    run_payload = json.loads(run_path.read_text())
+    run_payload["unexpected"] = True
+    run_path.write_text(json.dumps(run_payload, indent=2, sort_keys=True) + "\n")
+    manifest_path = plan_dir.parent / "run_manifest.tsv"
+    before = manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="run payload differs from its frozen plan"):
+        _read_registered_infer_plan(plan_dir)
+
+    assert manifest_path.read_bytes() == before
+
+
 @pytest.mark.parametrize(
     "identity_case",
     ["matching", "missing-allocation", "missing-job", "wrong-job", "wrong-token", "wrong-cluster", "wrong-run"],

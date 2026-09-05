@@ -60,6 +60,71 @@ def test_experiment_status_rejects_tampered_hparam_run_all_script(tmp_path):
         experiments.experiment_status(root)
 
 
+@pytest.mark.parametrize("task", ["finetune", "hparam_tune"])
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ("failed_status", "Registered plan must have status PASS"),
+        ("missing_recipe", "Registered plan is missing its recipe"),
+        ("empty_runs", "Registered plan must define a non-empty runs list of mappings"),
+    ],
+)
+def test_experiment_status_rejects_invalid_registered_plan_envelope(tmp_path, task, mutation, error):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="tune" if task == "hparam_tune" else "train", task=task)
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    if mutation == "failed_status":
+        plan["status"] = "FAIL"
+    elif mutation == "missing_recipe":
+        del plan["recipe"]
+    else:
+        plan["runs"] = []
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match=error):
+        experiments.experiment_status(root)
+
+    assert _workspace_files(root) == before
+
+
+@pytest.mark.parametrize("task", ["finetune", "hparam_tune"])
+def test_experiment_status_rejects_unexpected_final_external_test_script(tmp_path, task):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="tune" if task == "hparam_tune" else "train", task=task)
+    (plan_dir / "final_external_test.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="unexpected final external-test script"):
+        experiments.experiment_status(root)
+
+    assert _workspace_files(root) == before
+
+
+def test_experiment_status_rejects_pipeline_identity_on_ordinary_run(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    _plan_dir, canonical = _add_plan(root, step_id="train")
+    canonical.update(
+        {
+            "pipeline_id": "pipeline-unit",
+            "job_id": "job-unit",
+            "attempt": "1",
+            "result_root": str(root / "pipeline-results" / "job-unit" / "attempt-001"),
+        }
+    )
+    write_rows(root / "run_manifest.tsv", [canonical])
+    before = _workspace_files(root)
+
+    with pytest.raises(ValueError, match="pipeline identity conflicts with its managed step"):
+        experiments.experiment_status(root)
+
+    assert _workspace_files(root) == before
+
+
 @pytest.mark.parametrize("allow_unresolved", [False, True])
 def test_experiment_status_skips_registered_blocked_plan_after_successful_retry(tmp_path, allow_unresolved):
     root = tmp_path / "experiment"

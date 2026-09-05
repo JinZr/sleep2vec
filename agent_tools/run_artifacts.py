@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import Any, Iterator
+from typing import Any, Iterator, cast
 
 import yaml
 
@@ -77,10 +77,10 @@ def _read_plan_documents(
     if strict_control_bundle:
         if workspace is None:
             raise ValueError("Strict registered-plan reads require a workspace root.")
-        files = exp_io.read_managed_files_at(
-            workspace,
-            [plan_path, resolved_recipe_path],
-            remote=remote,
+        # Strict reads reject invalid UTF-8; only the opt-in permissive reader returns None text.
+        files = cast(
+            dict[str, dict[str, str]],
+            exp_io.read_managed_files_at(workspace, [plan_path, resolved_recipe_path], remote=remote),
         )
         try:
             plan = json.loads(
@@ -171,7 +171,7 @@ def is_registered_blocked_plan(
             raise ValueError(
                 f"Registered blocked plan contains PASS planning artifacts: {', '.join(map(str, residue))}"
             )
-    blocked_files = [plan_dir / "questions.json", plan_dir / "questions.md", blocked_path]
+    blocked_files: list[str | Path] = [plan_dir / "questions.json", plan_dir / "questions.md", blocked_path]
     if user_decisions_path in blocked_entries:
         blocked_files.append(user_decisions_path)
     draft_path = plan_dir / "plan.draft.json"
@@ -217,7 +217,7 @@ def read_registered_plan(  # noqa: C901
     if plan.get("status") != "PASS":
         raise ValueError(f"Registered plan must have status PASS: {plan_path}")
 
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else None
+    recipe = plan["recipe"] if isinstance(plan.get("recipe"), dict) else None
     if recipe is None:
         raise ValueError(f"Registered plan is missing its recipe: {plan_path}")
     task = recipe.get("task")
@@ -333,6 +333,7 @@ def read_registered_plan(  # noqa: C901
     canonical_by_key = {managed_run_key(row): row for row in workspace_rows}
     for run in runs:
         key = managed_run_key(run)
+        assert key is not None  # validate_run_rows already requires both managed identity fields.
         canonical = canonical_by_key.get(key)
         if canonical is None:
             raise ValueError(f"Workspace run_manifest.tsv is missing registered plan run: {key[0]} / {key[1]}")
@@ -392,10 +393,10 @@ def read_registered_plan(  # noqa: C901
     if expected_final_command is not None:
         bundle_paths.append(final_script)
 
-    bundle = exp_io.read_managed_files_at(
-        workspace,
-        list(dict.fromkeys(bundle_paths)),
-        remote=remote,
+    # This is a strict text read, so the captured text and SHA-256 values are strings.
+    bundle = cast(
+        dict[str, dict[str, str]],
+        exp_io.read_managed_files_at(workspace, list(dict.fromkeys(bundle_paths)), remote=remote),
     )
     if adapter.materializes_plan:
         contract = _compile_registered_plan_contract(
@@ -470,7 +471,7 @@ def read_registered_plan(  # noqa: C901
         raise ValueError(f"Registered plan recipe path differs from its managed step: {plan_dir}")
     selection = None
     if task == "hparam_tune":
-        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+        evaluation = recipe["evaluation_policy"] if isinstance(recipe.get("evaluation_policy"), dict) else {}
         selection = {
             "metric": str(evaluation.get("selection_metric") or ""),
             "mode": str(evaluation.get("selection_mode") or ""),
@@ -552,7 +553,7 @@ def _validate_registered_run_parameters(
     plan_parameters = managed_run_parameters(plan_run)
     canonical_parameters = managed_run_parameters(canonical_run)
     declared_parameters = set()
-    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    search = recipe["search"] if isinstance(recipe.get("search"), dict) else {}
     parameters = search.get("parameters")
     if isinstance(parameters, dict):
         declared_parameters = {str(field) for field in parameters}
@@ -566,6 +567,7 @@ def _validate_registered_run_parameters(
         if canonical_parameters[field] not in (None, "")
     }
     key = managed_run_key(plan_run)
+    assert key is not None  # Both callers validate the complete plan run list first.
     if missing_parameters or missing_declared or nonempty_extra_parameters:
         raise ValueError(f"Workspace run parameters differ from plan: {key[0]} / {key[1]}")
     for field, value in plan_parameters.items():
@@ -592,7 +594,7 @@ def read_hparam_plan(  # noqa: C901
     if not isinstance(runs, list) or not runs:
         raise ValueError(f"Hparam plan must define a non-empty runs list: {plan_path}")
     validate_run_rows(runs, source=str(plan_path), require_artifact_paths=True)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe = plan["recipe"] if isinstance(plan.get("recipe"), dict) else {}
     metadata_issues = experiment_metadata_issues(recipe)
     if metadata_issues:
         raise ValueError(
@@ -626,6 +628,7 @@ def read_hparam_plan(  # noqa: C901
         ):
             raise ValueError(f"Hparam plan experiment metadata differs from the managed workspace: {workspace}")
         step_manifest = read_step_manifest(workspace, step_id)
+        assert step_manifest is not None  # Missing steps raise unless allow_missing is explicitly enabled.
         expected_step_manifest = merge_step_manifest(
             step_manifest,
             {
@@ -644,9 +647,9 @@ def read_hparam_plan(  # noqa: C901
             raise ValueError(f"Hparam plan is not registered by its managed step: {run_dir}")
         workspace_rows = read_run_manifest(workspace)
         workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
-        missing_keys = [managed_run_key(run) for run in runs if managed_run_key(run) not in workspace_by_key]
-        if missing_keys:
-            missing = ", ".join(f"{step} / {run_id}" for step, run_id in missing_keys)
+        missing_runs = [run for run in runs if managed_run_key(run) not in workspace_by_key]
+        if missing_runs:
+            missing = ", ".join(f"{run['step_id']} / {run['run_id']}" for run in missing_runs)
             raise ValueError(f"Workspace run_manifest.tsv is missing plan runs: {missing}")
         for run in runs:
             workspace_row = workspace_by_key[managed_run_key(run)]
@@ -681,9 +684,9 @@ def read_hparam_plan(  # noqa: C901
                     f"Workspace run manifest differs from plan field log_path: {run['step_id']} / {run['run_id']}"
                 )
             _validate_registered_run_parameters(recipe, run, workspace_row)
-    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+    search = recipe["search"] if isinstance(recipe.get("search"), dict) else {}
+    execution = recipe["execution"] if isinstance(recipe.get("execution"), dict) else {}
+    adaptive = recipe["adaptive"] if isinstance(recipe.get("adaptive"), dict) else {}
     workdir = execution.get("workdir")
     if workdir not in (None, "") and not Path(str(workdir)).is_absolute():
         raise ValueError("execution.workdir must be an absolute path when set.")
@@ -847,7 +850,7 @@ def plan_tree_sha256(root: Path, *, top_level_entries: frozenset[str] | None = N
 
 
 def _validate_adaptive_workflow_commit(run_dir: Path, recipe: dict[str, Any], plan: dict[str, Any]) -> None:
-    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+    adaptive = recipe["adaptive"] if isinstance(recipe.get("adaptive"), dict) else {}
     if adaptive.get("enabled") is not True:
         return
     if run_dir.is_symlink():
@@ -868,8 +871,9 @@ def _validate_adaptive_workflow_commit(run_dir: Path, recipe: dict[str, Any], pl
     else:
         initial_plan_path = initial_round / "plan.json"
         snapshot = exp_io.read_managed_files_at(workflow_root, [initial_plan_path])[str(initial_plan_path)]
-        initial_plan = json.loads(snapshot["text"], object_pairs_hook=_json_object_without_duplicate_keys)
-    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+        # The default strict reader has already rejected undecodable text.
+        initial_plan = json.loads(cast(str, snapshot["text"]), object_pairs_hook=_json_object_without_duplicate_keys)
+    initial_recipe = initial_plan["recipe"] if isinstance(initial_plan.get("recipe"), dict) else {}
     plan_event = {
         "step_id": (initial_recipe.get("step") or {}).get("id"),
         "plan_dir": str(initial_round),
@@ -881,6 +885,7 @@ def _validate_adaptive_workflow_commit(run_dir: Path, recipe: dict[str, Any], pl
         "round_dir": str(initial_round),
     }
     workspace = experiment_root(recipe)
+    assert workspace is not None  # read_hparam_plan validated this binding before checking the adaptive commit.
     events = read_experiment_events(workspace)
     plan_related = [
         (index, event)
@@ -917,6 +922,7 @@ def iter_registered_hparam_plans(
     selection_split: Any,
 ) -> Iterator[tuple[Path, dict[str, Any]]]:
     step_manifest = read_step_manifest(workspace, step_id)
+    assert step_manifest is not None  # The default reader raises for a missing managed step.
     for registered_plan_dir in step_manifest["plans"]:
         registered_root = Path(str(registered_plan_dir))
         registered_plan_path = registered_root / "plan.json"
@@ -926,7 +932,7 @@ def iter_registered_hparam_plans(
         if not registered_plan_path.exists():
             raise FileNotFoundError(f"Registered plan is missing plan.json: {registered_plan_path}")
         registered_plan = read_json(registered_plan_path)
-        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
+        registered_recipe = registered_plan["recipe"] if isinstance(registered_plan.get("recipe"), dict) else {}
         resolved_recipe = read_managed_yaml_mapping(
             resolved_recipe_path.read_text(),
             source=f"Frozen registered recipe {resolved_recipe_path}",
@@ -936,12 +942,12 @@ def iter_registered_hparam_plans(
         if resolved_recipe.get("task") != "hparam_tune":
             continue
         registered_plan = read_hparam_plan(registered_root)
-        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
-        registered_step = registered_recipe.get("step") if isinstance(registered_recipe.get("step"), dict) else {}
+        registered_recipe = registered_plan["recipe"] if isinstance(registered_plan.get("recipe"), dict) else {}
+        registered_step = registered_recipe["step"] if isinstance(registered_recipe.get("step"), dict) else {}
         if str(registered_step.get("id") or "") != step_id:
             raise ValueError(f"Registered hparam plan belongs to a different step: {registered_root}")
         registered_evaluation = (
-            registered_recipe.get("evaluation_policy")
+            registered_recipe["evaluation_policy"]
             if isinstance(registered_recipe.get("evaluation_policy"), dict)
             else {}
         )
@@ -1026,7 +1032,7 @@ def find_run_manifest(run: dict[str, Any]) -> Path | None:
 
 
 def metric_value(manifest: dict[str, Any], metric: str) -> float | str:
-    metrics = manifest.get("metrics") if isinstance(manifest.get("metrics"), dict) else {}
+    metrics = manifest["metrics"] if isinstance(manifest.get("metrics"), dict) else {}
     if metric in metrics:
         return metrics[metric]
     if manifest.get("monitor") == metric and manifest.get("best_model_score") is not None:
