@@ -30,13 +30,11 @@ warn_unused_ignores = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-# The only third-party packages agent_tools imports at module scope, and
-# neither ships type stubs. Suppression is scoped to exactly these so that an
-# unresolvable agent_tools-local import -- a typo, or a module renamed without
-# updating its call sites -- stays a hard error instead of being silently
-# ignored. Domain-facing runtime packages stay out of the lightweight
-# type-check environment; wandb is lazy, but mypy still resolves that import.
-module = ["yaml.*", "pandas.*", "wandb.*"]
+# Third-party dependencies intentionally absent or untyped in the lightweight
+# type-check environment. Suppression is scoped to exactly these so that an
+# unresolvable agent_tools-local import stays a hard error. wandb and torch are
+# lazy runtime imports, but mypy still resolves them while checking their callers.
+module = ["yaml.*", "pandas.*", "wandb.*", "torch.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

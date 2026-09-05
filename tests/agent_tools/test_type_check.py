@@ -77,6 +77,18 @@ def test_ledger_counts_only_ignore_errors_overrides():
     assert type_check.ledger_of(LEDGERED) == {"agent_tools.plans", "agent_tools.slurm"}
 
 
+def test_missing_import_allowlist_is_limited_to_known_third_party_dependencies():
+    document = type_check.tomllib.loads((Path(type_check.__file__).parents[1] / "pyproject.toml").read_text())
+    allowlists = [
+        override["module"]
+        for override in document["tool"]["mypy"]["overrides"]
+        if override.get("ignore_missing_imports")
+    ]
+
+    assert allowlists == [["yaml.*", "pandas.*", "wandb.*", "torch.*"]]
+    assert all(not module.startswith("agent_tools") for module in allowlists[0])
+
+
 def test_ledger_of_reports_a_revision_without_mypy_config():
     # None is the bootstrap signal, distinct from an empty ledger.
     assert type_check.ledger_of("[tool.black]\nline-length = 120\n") is None
