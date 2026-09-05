@@ -903,8 +903,8 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict
     jobs or refresh canonical run statuses: live_observation is False.
 
     The mapping contains experiment identity, lifecycle_source, summary, steps,
-    runs, blockers and a decision describing permitted next actions. Lifecycle
-    blockers appear in that snapshot; invalid workspace/plan contracts and
+    runs, blockers and advisory next actions, which do not authorize execution.
+    Lifecycle blockers appear in that snapshot; invalid workspace/plan contracts and
     unhandled read errors raise. No reports or manifests are written."""
     root = _target_root(run_dir, remote)
     experiment, rows = _managed_workspace(
