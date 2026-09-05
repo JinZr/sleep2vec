@@ -124,6 +124,8 @@ class HparamTuneAdapter(TaskAdapter):
         )
 
     def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
+        from .. import plan_hparam
+
         execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
         scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
         if scheduler.get("type") != "slurm" or report.blocking_issues():
@@ -131,7 +133,7 @@ class HparamTuneAdapter(TaskAdapter):
         try:
             capabilities = slurm.cluster_scheduling_capabilities(execution, str(scheduler["partition"]))
         except (slurm.SlurmCommandError, subprocess.TimeoutExpired, ValueError) as exc:
-            issue = DecisionIssue(
+            capability_issue = DecisionIssue(
                 DecisionStatus.WARN,
                 "execution.scheduler.capabilities",
                 f"Read-only Slurm capability inspection was unavailable: {exc}",
@@ -158,14 +160,78 @@ class HparamTuneAdapter(TaskAdapter):
                 )
             else:
                 message += "Cluster policy determines ordering; no user-side setting can guarantee first priority."
-            issue = DecisionIssue(
+            capability_issue = DecisionIssue(
                 DecisionStatus.WARN,
                 "execution.scheduler.capabilities",
                 message,
                 None,
                 capabilities,
             )
-        issues = [*report.issues, issue]
+        planned_runs = len(plan_hparam.hparam_combos(recipe))
+        resources = slurm.normalize_resources(scheduler, execution.get("gpus_per_run", 1))
+        try:
+            capacity = slurm.fixed_node_resource_capacity(execution, resources, planned_runs)
+        except (slurm.SlurmCommandError, subprocess.TimeoutExpired, ValueError) as exc:
+            capacity = {"status": "unknown", "reason": str(exc), "planned_runs": planned_runs}
+            capacity_issue = DecisionIssue(
+                DecisionStatus.WARN,
+                "execution.scheduler.capacity",
+                f"Slurm fixed-node resource capacity unknown: read-only inspection was unavailable: {exc}",
+                None,
+                capacity,
+            )
+        else:
+            if capacity["status"] == "unknown":
+                capacity_issue = DecisionIssue(
+                    DecisionStatus.WARN,
+                    "execution.scheduler.capacity",
+                    f"Slurm fixed-node resource capacity unknown: {capacity['reason']}.",
+                    None,
+                    capacity,
+                )
+            else:
+                per_run = capacity["per_run"]
+                limits = capacity["limits"]
+                limiting = ", ".join(capacity["limiting_resources"])
+                resource_word = "resource" if len(capacity["limiting_resources"]) == 1 else "resources"
+                details = (
+                    f"Per run: {per_run['gpus']} GPUs, {per_run['cpus']} CPUs, {per_run['memory']}. "
+                    "Empty-node theoretical limits if co-resident: "
+                    f"GPU={limits['gpu']}, CPU={limits['cpu']}, memory={limits['memory']}, "
+                    f"overall={capacity['overall_empty_node_limit']}; limiting {resource_word}: {limiting}."
+                )
+                if capacity["overall_empty_node_limit"] == 0:
+                    capacity_issue = DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "execution.scheduler.capacity",
+                        f"Fixed node {capacity['node']}: one job cannot fit. {details}",
+                        None,
+                        capacity,
+                    )
+                elif planned_runs > capacity["overall_empty_node_limit"]:
+                    capacity_issue = DecisionIssue(
+                        DecisionStatus.WARN,
+                        "execution.scheduler.capacity",
+                        (
+                            f"Fixed node {capacity['node']} has an empty-node theoretical limit of "
+                            f"{capacity['overall_empty_node_limit']} run(s); {planned_runs} planned run(s), "
+                            f"if co-resident, require at least {capacity['minimum_waves']} waves. {details}"
+                        ),
+                        None,
+                        capacity,
+                    )
+                else:
+                    capacity_issue = DecisionIssue(
+                        DecisionStatus.PASS,
+                        "execution.scheduler.capacity",
+                        (
+                            f"All {planned_runs} planned run(s) fit if co-resident on otherwise empty fixed node "
+                            f"{capacity['node']}. {details}"
+                        ),
+                        None,
+                        capacity,
+                    )
+        issues = [*report.issues, capability_issue, capacity_issue]
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
 
     def doctor_runtime_card(self, recipe: dict[str, Any]) -> str | None:

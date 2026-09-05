@@ -128,10 +128,15 @@ and allocation identities are distinct; see the
 [execution identity legend](experiment_workspace.md#execution-identity-legend).
 
 Slurm task diagnostics may inspect version, priority, backfill, accounting,
-partition, and reservation capabilities through read-only `scontrol` queries.
-This time-stamped advice does not change the frozen scheduler request or make
-unavailable accounting a registration blocker. `nice=0` is the highest
-unprivileged nice setting; no user-side option guarantees first priority.
+partition, reservation, and one literal fixed node's configured CPU, memory,
+and GPU capacity through read-only `scontrol` queries. Fixed-node capacity is
+an empty-node theoretical limit, not current availability: one run that cannot
+fit is a failure, while a larger co-resident batch or unavailable capacity
+evidence is a warning. Blank, comma-separated, and bracket-expression
+`nodelist` values leave capacity unknown. This time-stamped advice does not
+change the frozen scheduler request or make unavailable accounting or capacity
+a registration blocker. `nice=0` is the highest unprivileged nice setting; no
+user-side option guarantees first priority.
 
 Within one `doctor` or `plan` consultation, index checks reuse the accepted
 config summary and subject keys from successful, complete local survival or
@@ -542,6 +547,12 @@ The optional `execution` block configures the managed launcher.
   to each task, so the total CPU request is `N * cpus_per_task`; `memory` is
   the allocation's whole-node memory limit. `sex_age_baseline` rejects N > 1
   because that runtime does not implement DDP.
+  Registration preflight reports both each job's resources and the aggregate
+  request across all actually planned allocations if active together. This
+  deterministic plan report uses the frozen run count and does not query live
+  node capacity; live fixed-node feasibility remains a `doctor` diagnostic.
+  Neither report changes scheduler resources or `adaptive.round_size`, and
+  Slurm launch still submits every frozen leaf job for scheduler queuing.
   Slurm recipes reject `gpu_pool`, `max_concurrent`, `conda_env`, locally
   authored `runtime.devices`, unknown scheduler fields, and arbitrary sbatch
   arguments. They also reject `SLURM_*`, `RANK`, `LOCAL_RANK`, `WORLD_SIZE`,

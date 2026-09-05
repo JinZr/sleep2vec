@@ -770,6 +770,236 @@ def test_follow_up_commands_reject_invalid_cluster_before_execution(monkeypatch)
         slurm.active_jobs({"target": "local"}, cluster="wuji;scancel 3880")
 
 
+def test_fixed_node_resource_capacity_queries_literal_node_and_projects_limits(monkeypatch):
+    execution = {"target": "ssh", "host": "baichuan3"}
+    resources = slurm.normalize_resources(
+        {
+            "type": "slurm",
+            "partition": "gpu",
+            "cpus_per_task": 20,
+            "memory": "512G",
+            "walltime": "1-00:00:00",
+            "nodelist": "h20-bj-96",
+        },
+        2,
+    )
+    calls = []
+
+    def fake_run_command(execution, argv, *, timeout):
+        calls.append((execution, argv, timeout))
+        return subprocess.CompletedProcess(
+            [],
+            0,
+            "NodeName=h20-bj-96 CPUTot=128 RealMemory=1500000 Gres=gpu:h20:8,shard:h20:32 "
+            "Comment=maintenance CPUTot=1 RealMemory=1 Gres=gpu:1\n",
+            "",
+        )
+
+    monkeypatch.setattr(slurm, "run_command", fake_run_command)
+
+    capacity = slurm.fixed_node_resource_capacity(execution, resources, 4, timeout=7)
+
+    assert capacity == {
+        "status": "known",
+        "node": "h20-bj-96",
+        "planned_runs": 4,
+        "per_run": {
+            "gpus": 2,
+            "cpus": 40,
+            "memory": "512G",
+            "memory_kib": 536870912,
+        },
+        "node_capacity": {
+            "gpus": 8,
+            "cpus": 128,
+            "memory_mib": 1500000,
+            "memory_kib": 1536000000,
+        },
+        "limits": {"cpu": 3, "memory": 2, "gpu": 4},
+        "overall_empty_node_limit": 2,
+        "limiting_resources": ["memory"],
+        "minimum_waves": 2,
+    }
+    assert calls == [
+        (
+            execution,
+            ["scontrol", "show", "node", "h20-bj-96", "-o"],
+            7,
+        )
+    ]
+
+
+def test_fixed_node_resource_capacity_sums_gpu_gres_and_ignores_non_gpu_gres(monkeypatch):
+    resources = slurm.normalize_resources(
+        {
+            "type": "slurm",
+            "partition": "gpu",
+            "cpus_per_task": 1,
+            "memory": "1G",
+            "walltime": "01:00:00",
+            "nodelist": "mixed-gpu-node",
+        },
+        2,
+    )
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [],
+            0,
+            "NodeName=mixed-gpu-node CPUTot=64 RealMemory=1000000 " "Gres=gpu:h20:4,gpu:a100:2,shard:h20:32\n",
+            "",
+        ),
+    )
+
+    capacity = slurm.fixed_node_resource_capacity({"target": "local"}, resources, 1)
+
+    assert capacity["node_capacity"]["gpus"] == 6
+    assert capacity["limits"]["gpu"] == 3
+
+
+@pytest.mark.parametrize(
+    ("memory", "memory_kib", "memory_limit"),
+    [
+        ("1K", 1, 1_073_741_824),
+        ("1M", 1024, 1_048_576),
+        ("1G", 1024**2, 1024),
+        ("1T", 1024**3, 1),
+        ("1P", 1024**4, 0),
+    ],
+)
+def test_fixed_node_resource_capacity_converts_supported_memory_units(
+    monkeypatch,
+    memory: str,
+    memory_kib: int,
+    memory_limit: int,
+):
+    resources = slurm.normalize_resources(
+        {
+            "type": "slurm",
+            "partition": "gpu",
+            "cpus_per_task": 1,
+            "memory": memory,
+            "walltime": "01:00:00",
+            "nodelist": "memory-node",
+        },
+        1,
+    )
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [],
+            0,
+            "NodeName=memory-node CPUTot=1 RealMemory=1048576 Gres=gpu:1\n",
+            "",
+        ),
+    )
+
+    capacity = slurm.fixed_node_resource_capacity({"target": "local"}, resources, 1)
+
+    assert capacity["per_run"]["memory_kib"] == memory_kib
+    assert capacity["limits"]["memory"] == memory_limit
+
+
+@pytest.mark.parametrize("nodelist", ["", "h20-bj-[94,96]", "h20-bj-94,h20-bj-96"])
+def test_fixed_node_resource_capacity_is_unknown_without_one_literal_node(monkeypatch, nodelist: str):
+    resources = slurm.normalize_resources(
+        {
+            "type": "slurm",
+            "partition": "gpu",
+            "cpus_per_task": 20,
+            "memory": "512G",
+            "walltime": "1-00:00:00",
+            "nodelist": nodelist,
+        },
+        2,
+    )
+    monkeypatch.setattr(slurm, "run_command", lambda *_args, **_kwargs: pytest.fail("must not query Slurm"))
+
+    assert slurm.fixed_node_resource_capacity({"target": "local"}, resources, 4) == {
+        "status": "unknown",
+        "reason": "fixed-node capacity requires one literal execution.scheduler.nodelist",
+        "planned_runs": 4,
+    }
+
+
+@pytest.mark.parametrize(
+    ("output", "message"),
+    [
+        ("", "exactly one row"),
+        (
+            "NodeName=h20-bj-96 CPUTot=128 RealMemory=1500000 Gres=gpu:h20:8\n"
+            "NodeName=h20-bj-97 CPUTot=128 RealMemory=1500000 Gres=gpu:h20:8\n",
+            "exactly one row",
+        ),
+        (
+            "NodeName=h20-bj-97 CPUTot=128 RealMemory=1500000 Gres=gpu:h20:8\n",
+            "while querying",
+        ),
+        ("NodeName=h20-bj-96 CPUTot=128 Gres=gpu:h20:8\n", "CPUTot or RealMemory"),
+        (
+            "NodeName=h20-bj-96 CPUTot=128 RealMemory=many Gres=gpu:h20:8\n",
+            "CPUTot or RealMemory",
+        ),
+        (
+            "NodeName=h20-bj-96 CPUTot=128 RealMemory=1500000\n",
+            "configured GPU capacity",
+        ),
+        (
+            "NodeName=h20-bj-96 CPUTot=128 RealMemory=1500000 Gres=gpu:h20:many\n",
+            "malformed GPU capacity",
+        ),
+    ],
+    ids=["empty", "multiple", "mismatched", "incomplete", "malformed-memory", "missing-gres", "malformed-gpu"],
+)
+def test_fixed_node_resource_capacity_rejects_invalid_node_rows(monkeypatch, output: str, message: str):
+    resources = slurm.normalize_resources(
+        {
+            "type": "slurm",
+            "partition": "gpu",
+            "cpus_per_task": 20,
+            "memory": "512G",
+            "walltime": "1-00:00:00",
+            "nodelist": "h20-bj-96",
+        },
+        2,
+    )
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, output, ""),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        slurm.fixed_node_resource_capacity({"target": "local"}, resources, 4)
+
+
+def test_fixed_node_resource_capacity_preserves_command_failure(monkeypatch):
+    resources = slurm.normalize_resources(
+        {
+            "type": "slurm",
+            "partition": "gpu",
+            "cpus_per_task": 20,
+            "memory": "512G",
+            "walltime": "1-00:00:00",
+            "nodelist": "h20-bj-96",
+        },
+        2,
+    )
+    monkeypatch.setattr(
+        slurm,
+        "run_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", "invalid node"),
+    )
+
+    with pytest.raises(slurm.SlurmCommandError, match="fixed-node resource capacity query") as exc_info:
+        slurm.fixed_node_resource_capacity({"target": "local"}, resources, 4)
+
+    assert exc_info.value.returncode == 1
+    assert exc_info.value.stderr == "invalid node"
+
+
 def test_cluster_scheduling_capabilities_use_read_only_scontrol_queries(monkeypatch):
     outputs = {
         "scontrol --version": "slurm 20.11.9\n",

@@ -1072,14 +1072,19 @@ def render_hparam_preflight_card(
     if scheduler_type == "slurm":
         resources = slurm.normalize_resources(scheduler, execution.get("gpus_per_run", 1))
         tasks = resources["gpus_per_run"]
+        planned_jobs = len(run_configs)
+        cpus_per_job = tasks * resources["cpus_per_task"]
         controller = "direct controller" if resources["direct_controller"] else "bound cluster"
         topology_lines.extend(
             [
                 f"- Planned allocation topology: nodes/run=1, tasks/run={tasks}, GPUs/run={tasks}, "
                 "one Slurm task per Lightning rank",
                 f"- Planned task resources: CPUs/task={resources['cpus_per_task']}, "
-                f"total CPUs={tasks * resources['cpus_per_task']}, memory={resources['memory']}/allocation, "
+                f"total CPUs={cpus_per_job}, memory={resources['memory']}/allocation, "
                 f"walltime={resources['walltime']}",
+                f"- Aggregate across {planned_jobs} planned allocations if active together: "
+                f"tasks={planned_jobs * tasks}, GPUs={planned_jobs * tasks}, CPUs={planned_jobs * cpus_per_job}, "
+                f"memory={planned_jobs} × {resources['memory']}",
                 f"- Scheduler controller: {controller}",
             ]
         )

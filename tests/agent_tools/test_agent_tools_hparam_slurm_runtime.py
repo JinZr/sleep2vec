@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -443,14 +444,24 @@ def test_slurm_doctor_reports_live_capabilities_without_mutating_scheduler(tmp_p
         }
 
     monkeypatch.setattr(slurm, "cluster_scheduling_capabilities", capabilities)
+    monkeypatch.setattr(slurm, "run_command", lambda *_args, **_kwargs: pytest.fail("must not query a node"))
 
     doctor = plans.prepare_doctor_report(None, recipe, report)
 
     capability_issue = next(issue for issue in doctor.issues if issue.field == "execution.scheduler.capabilities")
+    capacity_issue = next(issue for issue in doctor.issues if issue.field == "execution.scheduler.capacity")
     assert capability_issue.status.value == "WARN"
     assert "priority/basic" in capability_issue.message
     assert "no setting can guarantee first priority" in capability_issue.message
     assert capability_issue.evidence["backfill_enabled"] is True
+    assert capacity_issue.status.value == "WARN"
+    assert capacity_issue.evidence == {
+        "status": "unknown",
+        "reason": "fixed-node capacity requires one literal execution.scheduler.nodelist",
+        "planned_runs": 1,
+    }
+    assert "capacity unknown" in capacity_issue.message
+    assert doctor.exit_code == 0
     assert calls == [("local", "gpu")]
     assert recipe["execution"]["scheduler"] == configured_scheduler
 
@@ -480,6 +491,114 @@ def test_slurm_doctor_reports_unavailable_capabilities_as_warning(tmp_path: Path
     assert capability_issue.status.value == "WARN"
     assert "inspection was unavailable" in capability_issue.message
     assert recipe["execution"]["scheduler"] == configured_scheduler
+
+
+@pytest.mark.parametrize(
+    ("capacity_kind", "max_runs", "overall_limit", "expected_status"),
+    [
+        ("known", 2, 2, "PASS"),
+        ("known", 4, 2, "WARN"),
+        ("known", 1, 0, "FAIL"),
+        ("malformed", 2, None, "WARN"),
+    ],
+)
+def test_slurm_doctor_reports_fixed_node_capacity_from_max_runs_without_mutating_recipe(
+    tmp_path: Path,
+    monkeypatch,
+    capacity_kind: str,
+    max_runs: int,
+    overall_limit: int | None,
+    expected_status: str,
+):
+    recipe_path = _hparam_recipe(tmp_path)
+    payload = yaml.safe_load(recipe_path.read_text())
+    payload["search"]["max_runs"] = max_runs
+    payload["search"]["parameters"]["runtime.lr"] = [1e-6 * (index + 1) for index in range(max_runs + 1)]
+    payload["execution"].update(
+        {
+            "gpus_per_run": 2,
+            "scheduler": {
+                "type": "slurm",
+                "partition": "gpu",
+                "cpus_per_task": 20,
+                "memory": "512G",
+                "walltime": "01:00:00",
+                "nodelist": "h20-bj-96",
+            },
+        }
+    )
+    recipe_path.write_text(yaml.safe_dump(payload, sort_keys=False))
+    recipe, _cfg, report = plans.evaluate_recipe(recipe_path)
+    assert report.exit_code == 0
+    before = copy.deepcopy(recipe)
+    calls = []
+
+    monkeypatch.setattr(
+        slurm,
+        "cluster_scheduling_capabilities",
+        lambda _execution, _partition: {
+            "slurm_version": "slurm 20.11.9",
+            "priority_type": "priority/basic",
+            "scheduler_type": "sched/backfill",
+            "accounting_storage_type": "accounting_storage/none",
+            "preempt_type": "preempt/none",
+            "multifactor_priority": False,
+            "backfill_enabled": True,
+            "accounting_enabled": False,
+            "preemption_enabled": False,
+            "partition": "gpu",
+            "partition_state": "UP",
+            "partition_max_time": "2-00:00:00",
+            "reservation_count": 0,
+        },
+    )
+
+    def capacity(execution, resources, planned_runs, *, timeout=slurm.transport.SSH_TIMEOUT_SECONDS):
+        calls.append((execution, resources, planned_runs, timeout))
+        if capacity_kind == "malformed":
+            raise ValueError("scontrol node output lacks valid CPUTot or RealMemory capacity.")
+        assert overall_limit is not None
+        limits = {"cpu": 3, "memory": 2, "gpu": 4} if overall_limit else {"cpu": 0, "memory": 2, "gpu": 4}
+        return {
+            "status": "known",
+            "node": "h20-bj-96",
+            "planned_runs": planned_runs,
+            "per_run": {"gpus": 2, "cpus": 40, "memory": "512G", "memory_kib": 512 * 1024**2},
+            "node_capacity": {
+                "gpus": 8,
+                "cpus": 128,
+                "memory_mib": 1_500_000,
+                "memory_kib": 1_500_000 * 1024,
+            },
+            "limits": limits,
+            "overall_empty_node_limit": overall_limit,
+            "limiting_resources": ["memory"] if overall_limit else ["cpu"],
+            "minimum_waves": ((planned_runs + overall_limit - 1) // overall_limit if overall_limit else None),
+        }
+
+    monkeypatch.setattr(slurm, "fixed_node_resource_capacity", capacity)
+
+    doctor = plans.prepare_doctor_report(None, recipe, report)
+
+    capacity_issue = next(issue for issue in doctor.issues if issue.field == "execution.scheduler.capacity")
+    assert capacity_issue.status.value == expected_status
+    assert doctor.exit_code == (1 if expected_status == "FAIL" else 0)
+    assert capacity_issue.evidence["planned_runs"] == max_runs
+    assert len(calls) == 1
+    assert calls[0][1] == slurm.normalize_resources(payload["execution"]["scheduler"], 2)
+    assert calls[0][2] == max_runs
+    assert recipe == before
+    if capacity_kind == "malformed":
+        assert "inspection was unavailable" in capacity_issue.message
+    elif overall_limit == 0:
+        assert "one job cannot fit" in capacity_issue.message
+    elif max_runs > overall_limit:
+        assert "Per run: 2 GPUs, 40 CPUs, 512G." in capacity_issue.message
+        assert "GPU=4, CPU=3, memory=2, overall=2" in capacity_issue.message
+        assert "limiting resource: memory" in capacity_issue.message
+        assert "require at least 2 waves" in capacity_issue.message
+    else:
+        assert "All 2 planned run(s) fit" in capacity_issue.message
 
 
 @pytest.mark.parametrize(
