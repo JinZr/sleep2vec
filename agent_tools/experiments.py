@@ -567,7 +567,7 @@ def _validate_hparam_checkpoints(
 
 def _validate_hparam_selection_files_unchanged(
     root: Path,
-    selection_report: dict[str, Any],
+    selection_report: tracking.HparamSelectionReportSnapshot,
     checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None],
     *,
     remote: str | None,
@@ -1006,7 +1006,7 @@ def _registered_plan_steps(
     return registered_steps
 
 
-def _hparam_selection_report(root: Path, *, remote: str | None) -> dict[str, Any] | None:
+def _hparam_selection_report(root: Path, *, remote: str | None) -> tracking.HparamSelectionReportSnapshot | None:
     path = root / "reports" / "hparam_selection.md"
     ranking_path = root / "reports" / "ranking.csv"
     exp_io.validate_managed_output_paths(root, [path, ranking_path], remote=remote)

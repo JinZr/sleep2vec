@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import shlex
 import stat
-from typing import Any
+from typing import Any, TypedDict
 
 from . import (
     experiment_io as exp_io,
@@ -37,6 +37,16 @@ from .experiment_workspace import (
     validate_scheduler_run_identity,
 )
 from .manifests import utc_now
+
+
+class HparamSelectionReportSnapshot(TypedDict):
+    path: str
+    text: str
+    sha256: str
+    ranking_path: str
+    ranking_text: str | None
+    ranking_sha256: str | None
+
 
 _local_checkpoint_rows = experiment_sources._local_checkpoint_rows
 _metric_scope = experiment_sources._metric_scope
@@ -523,7 +533,7 @@ def experiment_status_snapshot(  # noqa: C901
     *,
     root: Path,
     remote: str | None = None,
-    hparam_selection_report: dict[str, Any] | None = None,
+    hparam_selection_report: HparamSelectionReportSnapshot | None = None,
     hparam_checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None] | None = None,
 ) -> dict[str, Any]:
     allowed_statuses = TERMINAL_STATUSES | managed_scheduler.ACTIVE_STATUSES | managed_scheduler.LAUNCHABLE_STATUSES
@@ -797,7 +807,7 @@ def hparam_selection_lifecycle(
     rows: list[dict[str, Any]],
     *,
     root: Path,
-    report: dict[str, Any] | None = None,
+    report: HparamSelectionReportSnapshot | None = None,
     checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None] | None = None,
 ) -> dict[str, Any]:
     hparam_run_keys = {
