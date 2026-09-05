@@ -11,7 +11,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             from pathlib import Path
             from agent_tools import (
                 adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
-                run_artifacts, run_evidence, slurm,
+                experiment_io, run_artifacts, run_evidence, slurm,
             )
 
             resources = slurm.normalize_resources({}, 1)
@@ -106,6 +106,28 @@ def test_result_types_reach_callers(tmp_path: Path):
                 read_identity["process_start_tokens"]  # type: ignore[typeddict-item]
                 if "runtime_commit" in read_identity:
                     runtime_commit: str = read_identity["runtime_commit"]
+
+            default_files = experiment_io.read_managed_files_at("/workspace", ["/workspace/file"])
+            default_text: str = default_files["/workspace/file"]["text"]
+            default_sha: str = default_files["/workspace/file"]["sha256"]
+            default_files["/workspace/file"]["sha265"]  # type: ignore[typeddict-item]
+            default_files["/workspace/file"]["text"] = None  # type: ignore[typeddict-item]
+            strict_files = experiment_io.read_managed_files_at("/workspace", [], allow_invalid_utf8=False)
+            strict_text: str = strict_files["file"]["text"]
+            strict_sha: str = strict_files["file"]["sha256"]
+            strict_files["file"]["sha256"] = None  # type: ignore[typeddict-item]
+            permissive_files = experiment_io.read_managed_files_at("/workspace", [], allow_invalid_utf8=True)
+            optional_text: str | None = permissive_files["file"]["text"]
+            permissive_sha: str = permissive_files["file"]["sha256"]
+            required_text: str = permissive_files["file"]["text"]  # type: ignore[assignment]
+            permissive_files["file"]["sha256"] = None  # type: ignore[arg-type]
+
+            def check_dynamic_file_read(allow_invalid: bool) -> None:
+                files = experiment_io.read_managed_files_at("/workspace", [], allow_invalid_utf8=allow_invalid)
+                dynamic_text: str | None = files["file"]["text"]
+                dynamic_sha: str = files["file"]["sha256"]
+                dynamic_required: str = files["file"]["text"]  # type: ignore[assignment]
+                files["file"]["sha256"] = 1  # type: ignore[arg-type]
 
             plan = run_artifacts.read_registered_plan(
                 "/plan", workspace="/workspace", workspace_experiment={},

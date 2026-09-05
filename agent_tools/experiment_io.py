@@ -15,7 +15,7 @@ import secrets
 import stat
 import subprocess
 import time
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal, TypedDict, overload
 
 from . import transport
 from .manifests import read_rows, utc_now, validate_managed_header, write_rows, write_text
@@ -138,6 +138,38 @@ def list_managed_subdirectories_at(
     return sorted(names)
 
 
+class ManagedFileSnapshot(TypedDict):
+    text: str
+    sha256: str
+
+
+class PermissiveManagedFileSnapshot(TypedDict):
+    text: str | None
+    sha256: str
+
+
+@overload
+def read_managed_files_at(
+    root: str | Path,
+    paths: list[str | Path],
+    *,
+    remote: str | None = None,
+    exact_directory_entries: bool = False,
+    allow_invalid_utf8: Literal[False] = False,
+) -> dict[str, ManagedFileSnapshot]: ...
+
+
+@overload
+def read_managed_files_at(
+    root: str | Path,
+    paths: list[str | Path],
+    *,
+    remote: str | None = None,
+    exact_directory_entries: bool = False,
+    allow_invalid_utf8: bool,
+) -> dict[str, ManagedFileSnapshot] | dict[str, PermissiveManagedFileSnapshot]: ...
+
+
 def read_managed_files_at(
     root: str | Path,
     paths: list[str | Path],
@@ -145,7 +177,7 @@ def read_managed_files_at(
     remote: str | None = None,
     exact_directory_entries: bool = False,
     allow_invalid_utf8: bool = False,
-) -> dict[str, dict[str, str | None]]:
+) -> dict[str, ManagedFileSnapshot] | dict[str, PermissiveManagedFileSnapshot]:
     root = Path(root)
     targets = [Path(path) for path in paths]
     for target in targets:
@@ -169,7 +201,7 @@ def read_managed_files_at(
     if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
         raise ValueError(f"Managed workspace root is missing or aliased: {root}")
     seen_inodes = set()
-    payload = {}
+    payload: dict[str, PermissiveManagedFileSnapshot] = {}
     for target in targets:
         relative = target.relative_to(root)
         current = root

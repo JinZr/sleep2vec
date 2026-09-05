@@ -1974,7 +1974,7 @@ def _validate_initial_support_snapshots(
     root: Path,
     workflow: dict[str, Any],
     expected_readme: str,
-    snapshots: dict[str, dict[str, str | None]],
+    snapshots: dict[str, exp_io.ManagedFileSnapshot],
 ) -> None:
     registry_path = root / "adaptive" / "run_registry.tsv"
     readme_path = root / "adaptive" / "README.md"

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import Any, Iterator, TypedDict, cast
+from typing import Any, Iterator, TypedDict
 
 import yaml
 
@@ -98,11 +98,7 @@ def _read_plan_documents(
     if strict_control_bundle:
         if workspace is None:
             raise ValueError("Strict registered-plan reads require a workspace root.")
-        # Strict reads reject invalid UTF-8; only the opt-in permissive reader returns None text.
-        files = cast(
-            dict[str, dict[str, str]],
-            exp_io.read_managed_files_at(workspace, [plan_path, resolved_recipe_path], remote=remote),
-        )
+        files = exp_io.read_managed_files_at(workspace, [plan_path, resolved_recipe_path], remote=remote)
         try:
             plan = json.loads(
                 files[str(plan_path)]["text"],
@@ -432,11 +428,7 @@ def read_registered_plan(  # noqa: C901
         if expected_final_command is not None:
             bundle_paths.append(final_script)
 
-    # This is a strict text read, so the captured text and SHA-256 values are strings.
-    bundle = cast(
-        dict[str, dict[str, str]],
-        exp_io.read_managed_files_at(workspace, list(dict.fromkeys(bundle_paths)), remote=remote),
-    )
+    bundle = exp_io.read_managed_files_at(workspace, list(dict.fromkeys(bundle_paths)), remote=remote)
     if adapter.materializes_plan:
         contract = _compile_registered_plan_contract(
             adapter,
@@ -929,7 +921,7 @@ def _validate_adaptive_workflow_commit(run_dir: Path, recipe: dict[str, Any], pl
         initial_plan_path = initial_round / "plan.json"
         snapshot = exp_io.read_managed_files_at(workflow_root, [initial_plan_path])[str(initial_plan_path)]
         # The default strict reader has already rejected undecodable text.
-        initial_plan = json.loads(cast(str, snapshot["text"]), object_pairs_hook=_json_object_without_duplicate_keys)
+        initial_plan = json.loads(snapshot["text"], object_pairs_hook=_json_object_without_duplicate_keys)
     initial_recipe = initial_plan["recipe"] if isinstance(initial_plan.get("recipe"), dict) else {}
     plan_event = {
         "step_id": (initial_recipe.get("step") or {}).get("id"),
