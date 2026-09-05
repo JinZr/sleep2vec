@@ -88,6 +88,22 @@ def status_row(  # noqa: C901
     script_commits_terminal_status: bool,
     health: bool = False,
 ) -> dict[str, Any]:
+    """Observe a direct run and return a row merged with caller-supplied history.
+
+    Reads local/SSH process identity, logs and runtime artifacts; health adds
+    progress, I/O and GPU probes. Does not persist the returned row or launch or
+    stop work. previous supplies prior lifecycle and evidence fields, not a
+    snapshot refreshed here; merge_run_row applies the lifecycle merge rules.
+
+    Missing/invalid managed identity and uncertain probes take different paths:
+    ProcessIdentityError records process_identity_error, while remote uncertainty
+    can produce unknown_remote. Unavailable remote artifact observations retain
+    prior artifact fields. Neither a discovered manifest nor health establishes
+    completion. When an observed active process disappears without a script-owned
+    terminal commit, the script-owned path reports failed; monitor-owned runs use
+    log evidence to determine finished versus failed. Unhandled artifact, parsing
+    and I/O errors propagate.
+    """
     previous = previous or {}
     process_identity = None
     committed_process_identity = None
@@ -234,6 +250,16 @@ def status_row(  # noqa: C901
 
 
 def runtime_artifacts(row: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]] | None:
+    """Observe a runtime manifest and checkpoint inventory on the row's host.
+
+    Returns (manifest path or empty string, parsed mapping, checkpoint basenames).
+    Missing artifacts are represented inside that tuple, not by None. SSH probe
+    exit codes 124 and 255 return None to signal unavailable observation; other
+    failed probes or malformed responses raise RuntimeError. Local reads use
+    find_run_manifest and checkpoint_names, whose validation errors propagate.
+    Reads without updating state; callers decide whether to retain prior evidence
+    and must separately validate runtime identity and completion.
+    """
     if is_remote_row(row):
         result = run_row_command(
             row,
@@ -323,6 +349,15 @@ def read_process_identity(
     *,
     expected_script: str | Path | None = None,
 ) -> ProcessIdentity | None:
+    """Read managed PID/group/start-token identity from a local or remote file.
+
+    Returns None when no path is supplied or the file is missing. Legacy scalar
+    PIDs and malformed identity payloads raise ProcessIdentityError; file access,
+    empty-file and remote command failures can raise RuntimeError. expected_script
+    additionally checks the live PID's command when supplied. Reading identity
+    alone does not establish that its process group is still running or matches
+    canonical row fields; process_identity_running performs those checks.
+    """
     text = _read_pid_text(path, row)
     if text is None:
         return None
@@ -422,6 +457,14 @@ def _parse_process_identity(text: str, path: Any) -> ProcessIdentity:
 
 
 def process_identity_running(row: dict[str, Any], identity: ProcessIdentity) -> bool | None:
+    """Probe a managed process group after checking populated canonical identity.
+
+    True/False reports the probe's group_running value; None means the command
+    failed, not that the group exited. Canonical mismatches, malformed successful
+    responses and an observed leader with a different identity raise
+    ProcessIdentityError. A missing leader can still leave a running group.
+    Executes a local/SSH read-only probe without changing lifecycle state.
+    """
     _require_matching_process_identity(row, identity)
     result = run_row_command(
         row,
@@ -522,6 +565,16 @@ def log_has_failure(
     *,
     require_exit_code: bool = False,
 ) -> bool | None:
+    """Interpret a log tail as failure evidence without changing runtime state.
+
+    Reads the last 100 lines locally or through the remote log probe. A valid
+    final monitor exit-code marker takes precedence over error text; Slurm's
+    rank-zero label is stripped for that marker. require_exit_code treats a
+    missing/invalid final marker, including an absent log, as failure. Otherwise
+    falls back to known error strings, so False alone does not prove success.
+    Unavailable remote reads return None; a remotely missing file is an empty
+    log. Unhandled local I/O and transport exceptions propagate.
+    """
     if not path:
         return require_exit_code
     if is_remote_row(row):
@@ -791,6 +844,16 @@ def classify_health(
     checkpoint_count: int | None,
     previous_checkpoint_count: int | None,
 ) -> str:
+    """Classify supplied observations without probing or changing lifecycle state.
+
+    Unknown running state takes precedence and returns unknown_remote, even for
+    local callers. Otherwise failed/finished statuses are retained and a false
+    running_state returns the supplied status. Live activity is checked in order: GPU,
+    positive I/O deltas, fresh progress, a log younger than 300 seconds, then
+    checkpoint growth. Missing GPU/checkpoint observations yield health_unknown
+    when no activity matched; possibly_stalled is a heuristic, not a failure or
+    instruction to stop/restart the run.
+    """
     if status == "unknown_remote" or running_state is None:
         return "unknown_remote"
     if status == "failed":
