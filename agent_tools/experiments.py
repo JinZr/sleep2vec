@@ -616,9 +616,10 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     reports/final.md and a preparation event, then commits experiment.yaml with
     report hash bindings. Returns the canonical final report path. The manifest
     is the terminal commit: a later failure can leave a published report without
-    completed status. Invalid prerequisites raise ValueError; detected concurrent
-    changes raise RuntimeError and other I/O errors propagate. Does not launch
-    runs or refresh their observed statuses."""
+    completed status. Invalid prerequisites and changed hparam evidence raise
+    ValueError; run-manifest changes detected during finalization raise RuntimeError,
+    and other I/O errors propagate. Does not launch runs or refresh their observed
+    statuses."""
     if remote and not Path(report_path).is_absolute():
         raise ValueError("Remote final report path must be absolute.")
     root = _target_root(run_dir, remote)
