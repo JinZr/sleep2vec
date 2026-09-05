@@ -1049,7 +1049,8 @@ def test_hparam_plan_uses_logical_devices_for_scheduled_gpu_groups(
     assert f"--devices {expected_devices} --precision" in command
 
 
-def test_slurm_sex_age_baseline_rejects_multi_gpu_without_changing_direct_execution():
+@pytest.mark.parametrize("gpus_per_run", [1, 2, 4])
+def test_sex_age_baseline_accepts_slurm_and_direct_multi_gpu(gpus_per_run):
     scheduler = {
         "type": "slurm",
         "partition": "gpu",
@@ -1059,20 +1060,17 @@ def test_slurm_sex_age_baseline_rejects_multi_gpu_without_changing_direct_execut
     }
 
     slurm_issues = decision_hparam._hparam_execution_issues(
-        {"gpus_per_run": 2, "scheduler": scheduler},
+        {"gpus_per_run": gpus_per_run, "scheduler": scheduler},
         {},
         variant="sex_age_baseline",
     )
     direct_issues = decision_hparam._hparam_execution_issues(
-        {"gpu_pool": [0, 1], "gpus_per_run": 2},
+        {"gpu_pool": list(range(gpus_per_run)), "gpus_per_run": gpus_per_run},
         {},
         variant="sex_age_baseline",
     )
 
-    failures = [issue for issue in slurm_issues if issue.status.value == "FAIL"]
-    assert len(failures) == 1
-    assert failures[0].field == "execution.gpus_per_run"
-    assert "does not support multi-GPU Slurm execution" in failures[0].message
+    assert not [issue for issue in slurm_issues if issue.status.value == "FAIL"]
     assert not [issue for issue in direct_issues if issue.status.value == "FAIL"]
 
 
