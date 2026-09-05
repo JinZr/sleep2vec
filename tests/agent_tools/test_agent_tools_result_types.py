@@ -146,7 +146,18 @@ def test_result_types_reach_callers(tmp_path: Path):
                 Path("/workspace"), {}, [], remote=None, require_registered_rows=True,
             )
             steps[0]["plans"][0]["run_key"]  # type: ignore[typeddict-item]
-            experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"))
+            lifecycle = experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"))
+            expected_report: str | None = lifecycle["expected_report"]
+            report_valid: bool = lifecycle["report_valid"]
+            lifecycle["selected_step"]  # type: ignore[typeddict-item]
+            lifecycle["report_valid"] = "yes"  # type: ignore[typeddict-item]
+            required_report: str = lifecycle["expected_report"]  # type: ignore[assignment]
+            status_snapshot = experiment_tracking.experiment_status_snapshot({}, steps, [], root=Path("/workspace"))
+            manual_choice: bool = status_snapshot["decision"]["manual_choice_required"]
+            blocked_actions: list[str] = status_snapshot["decision"]["blocked_actions"]
+            status_snapshot["decisions"]  # type: ignore[typeddict-item]
+            status_snapshot["decision"]["manual_choice_required"] = 1  # type: ignore[typeddict-item]
+            status_snapshot["decision"]["recommended_next"]["command"]  # type: ignore[index]
             experiment_tracking.hparam_selection_lifecycle(
                 [{"manifest": {}, "plans": ["/plan"]}], [], root=Path("/workspace"),  # type: ignore[list-item]
             )

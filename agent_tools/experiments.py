@@ -87,7 +87,7 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
         if locked_workspace != workspace:
             raise ValueError("Preset plan workspace changed before launch.")
         run = plan["runs"][0]
-        key = managed_run_key(run)
+        key = (str(run["step_id"]), str(run["run_id"]))
         previous = {managed_run_key(row): row for row in rows}[key]
         if previous["status"] not in managed_scheduler.LAUNCHABLE_STATUSES:
             return managed_scheduler.LaunchResult(rows, [previous], frozenset(), {}, {})
@@ -202,7 +202,7 @@ def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
             ],
         )
         run = plan["runs"][0]
-        key = managed_run_key(run)
+        key = (str(run["step_id"]), str(run["run_id"]))
         previous = {managed_run_key(row): row for row in rows}[key]
         if previous["status"] in TERMINAL_STATUSES:
             raise ValueError(f"Run is already terminal and cannot be stopped: {key[1]} ({previous['status']})")
@@ -322,7 +322,7 @@ def launch_infer_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_s
             )
         except Exception as exc:
             if not dry_run:
-                key = managed_run_key(plan["runs"][0])
+                key = (str(plan["runs"][0]["step_id"]), str(plan["runs"][0]["run_id"]))
                 previous = {managed_run_key(row): row for row in read_run_manifest(workspace)}[key]
                 # A lost receipt or post-submit failure must never become a definitely-unsubmitted failure.
                 if previous["status"] in managed_scheduler.LAUNCHABLE_STATUSES and not has_managed_launch_evidence(
@@ -369,7 +369,7 @@ def stop_infer_run(plan_dir: str | Path, *, reason: str) -> Path:
                 workspace / "reports" / "status.md",
             ],
         )
-        key = managed_run_key(plan["runs"][0])
+        key = (str(plan["runs"][0]["step_id"]), str(plan["runs"][0]["run_id"]))
         _committed, metadata_stop = managed_scheduler.stop_slurm_run_locked(
             workspace,
             rows,
@@ -551,10 +551,12 @@ def _validate_hparam_checkpoints(
     remote: str | None,
 ) -> None:
     canonical_by_key = {managed_run_key(row): row for row in rows}
-    checkpoint_rows_by_path = {}
+    checkpoint_rows_by_path: dict[tuple[str, str, str], dict[str, Any]] = {}
     for step in selected_steps:
         for row in [*step["ranked"], *step.get("checkpoint_audit_rows", [])]:
-            checkpoint_rows_by_path.setdefault((*managed_run_key(row), str(row["checkpoint_path"])), row)
+            checkpoint_rows_by_path.setdefault(
+                (str(row["step_id"]), str(row["run_id"]), str(row["checkpoint_path"])), row
+            )
     checkpoint_rows = list(checkpoint_rows_by_path.values())
     tracking.validate_checkpoint_evidence_rows(rows, checkpoint_rows, remote=remote)
     for row in checkpoint_rows:
@@ -676,17 +678,17 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     )
     if hparam["pending_steps"]:
         raise ValueError("Successful hparam runs must be selected before experiment finalization.")
-    if hparam["selected_steps"] and not hparam["report_valid"]:
+    selected_report = selection_report if hparam["selected_steps"] else None
+    if hparam["selected_steps"] and (selected_report is None or not hparam["report_valid"]):
         raise ValueError("The hparam selection report is missing or differs from canonical selection evidence.")
-    selection_report_path = Path(hparam["report_path"]) if hparam["selected_steps"] else None
-    if selection_report_path is not None:
-        _validate_hparam_selection_files_unchanged(root, selection_report, checkpoint_audits, remote=remote)
+    if selected_report is not None:
+        _validate_hparam_selection_files_unchanged(root, selected_report, checkpoint_audits, remote=remote)
     report_path_is_selection = str(Path(report_path)) == hparam["report_path"]
-    if hparam["selected_steps"]:
+    if selected_report is not None:
         if hparam["automatic_report_final"]:
             if not report_path_is_selection:
                 raise ValueError(f"Successful hparam experiments must finalize from {hparam['report_path']}")
-            report_text = str(selection_report["text"])
+            report_text = str(selected_report["text"])
         elif report_path_is_selection:
             raise ValueError("The hparam selection report cannot replace the required combined experiment report.")
     elif hparam["hparam_steps"] and report_path_is_selection:
@@ -741,11 +743,11 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
             "final_report_sha256": report_sha256,
         }
     )
-    if hparam["selected_steps"]:
-        manifest["experiment"]["selection_report_sha256"] = selection_report["sha256"]
+    if selected_report is not None:
+        manifest["experiment"]["selection_report_sha256"] = selected_report["sha256"]
     exp_io.append_event_at(root, "experiment_finalization_prepared", {"report": str(target)}, remote=remote)
-    if selection_report_path is not None:
-        _validate_hparam_selection_files_unchanged(root, selection_report, checkpoint_audits, remote=remote)
+    if selected_report is not None:
+        _validate_hparam_selection_files_unchanged(root, selected_report, checkpoint_audits, remote=remote)
     if hparam["selected_steps"]:
         _validate_hparam_checkpoints(rows, hparam["selected_steps"], remote=remote)
     # The experiment manifest is the terminal commit, so publish it only after the report is durable.
@@ -896,7 +898,7 @@ def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> dic
     return {"run_dir": str(root), "runs": committed, "report": str(report_path)}
 
 
-def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict[str, Any]:
+def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> tracking.ExperimentStatusSnapshot:
     """Return a read-only lifecycle snapshot from the managed workspace's recorded state.
 
     Validates registered plan bindings and available selection/report/checkpoint
@@ -963,7 +965,7 @@ def _registered_plan_steps(
     if orphaned_steps:
         raise ValueError(f"run_manifest.tsv references unregistered steps: {', '.join(orphaned_steps)}")
 
-    plan_owners = {}
+    plan_owners: dict[str, str] = {}
     for manifest in step_manifests:
         step_id = str(manifest["step"]["id"])
         for plan_path in manifest["plans"]:
@@ -976,7 +978,7 @@ def _registered_plan_steps(
         step_id = str(manifest["step"]["id"])
         step_rows = [row for row in rows if str(row["step_id"]) == step_id]
         plans: list[artifacts.RegisteredPlanSummary] = []
-        plan_keys = []
+        plan_keys: list[tuple[str, str]] = []
         run_index_offset = 0
         for plan_path in manifest["plans"]:
             if artifacts.is_registered_blocked_plan(plan_path, workspace=root, remote=remote):
@@ -994,7 +996,7 @@ def _registered_plan_steps(
                 run_index_offset=run_index_offset,
             )
             plans.append(plan)
-            plan_keys.extend(tuple(key) for key in plan["run_keys"])
+            plan_keys.extend(plan["run_keys"])
             run_index_offset += len(plan["run_keys"])
         if len(plan_keys) != len(set(plan_keys)):
             raise ValueError(f"Managed step registers duplicate run keys across plans: {step_id}")
@@ -1012,7 +1014,7 @@ def _hparam_selection_report(root: Path, *, remote: str | None) -> tracking.Hpar
     exp_io.validate_managed_output_paths(root, [path, ranking_path], remote=remote)
     if not exp_io.path_exists_at(path, remote=remote):
         return None
-    read_paths = [path]
+    read_paths: list[str | Path] = [path]
     if exp_io.path_exists_at(ranking_path, remote=remote):
         read_paths.append(ranking_path)
     files = exp_io.read_managed_files_at(root, read_paths, remote=remote)
@@ -1043,7 +1045,7 @@ def _hparam_checkpoint_audits(
     if not checkpoint_audit_paths:
         return {}
     exp_io.validate_managed_output_paths(root, checkpoint_audit_paths, remote=remote)
-    existing = [path for path in checkpoint_audit_paths if exp_io.path_exists_at(path, remote=remote)]
+    existing: list[str | Path] = [path for path in checkpoint_audit_paths if exp_io.path_exists_at(path, remote=remote)]
     files = exp_io.read_managed_files_at(root, existing, remote=remote)
     return {str(path): files.get(str(path)) for path in checkpoint_audit_paths}
 
@@ -1115,11 +1117,15 @@ def _managed_workspace(  # noqa: C901
     manifest = read_managed_yaml_mapping(experiment_text, source=f"Managed experiment manifest {manifest_path}")
     if set(manifest) != {"experiment"}:
         raise ValueError("experiment.yaml must contain only the experiment owner mapping.")
-    experiment = manifest.get("experiment")
-    validated_experiment = experiment
-    completed_bindings: list[Path] = []
-    if allow_completed and isinstance(experiment, dict) and ("status" in experiment or "completed_at" in experiment):
-        terminal_fields = set(experiment) - {"id", "title", "objective", "root", "baseline"}
+    raw_experiment = manifest.get("experiment")
+    validated_experiment = raw_experiment
+    completed_bindings: list[str | Path] = []
+    if (
+        allow_completed
+        and isinstance(raw_experiment, dict)
+        and ("status" in raw_experiment or "completed_at" in raw_experiment)
+    ):
+        terminal_fields = set(raw_experiment) - {"id", "title", "objective", "root", "baseline"}
         allowed_terminal_fields = (
             {"status", "completed_at"},
             {"status", "completed_at", "final_report", "final_report_sha256"},
@@ -1133,8 +1139,8 @@ def _managed_workspace(  # noqa: C901
         )
         if terminal_fields not in allowed_terminal_fields:
             raise ValueError("Completed experiment metadata has incomplete or unexpected terminal fields.")
-        completed_at = experiment.get("completed_at")
-        if experiment.get("status") != "completed" or not isinstance(completed_at, str):
+        completed_at = raw_experiment.get("completed_at")
+        if raw_experiment.get("status") != "completed" or not isinstance(completed_at, str):
             raise ValueError("Completed experiment metadata is invalid.")
         try:
             completed_time = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
@@ -1142,19 +1148,19 @@ def _managed_workspace(  # noqa: C901
             raise ValueError("Completed experiment completed_at must be an ISO timestamp.") from exc
         if completed_time.tzinfo is None or completed_time.utcoffset() != timezone.utc.utcoffset(completed_time):
             raise ValueError("Completed experiment completed_at must be in UTC.")
-        if "final_report" in experiment:
+        if "final_report" in raw_experiment:
             final_report = root / "reports" / "final.md"
-            if experiment["final_report"] != str(final_report) or not SHA256_RE.fullmatch(
-                str(experiment["final_report_sha256"])
+            if raw_experiment["final_report"] != str(final_report) or not SHA256_RE.fullmatch(
+                str(raw_experiment["final_report_sha256"])
             ):
                 raise ValueError("Completed experiment final report binding is invalid.")
             completed_bindings.append(final_report)
-            selection_sha256 = experiment.get("selection_report_sha256")
+            selection_sha256 = raw_experiment.get("selection_report_sha256")
             if selection_sha256 is not None:
                 if not SHA256_RE.fullmatch(str(selection_sha256)):
                     raise ValueError("Completed experiment selection report binding is invalid.")
                 completed_bindings.append(root / "reports" / "hparam_selection.md")
-        validated_experiment = {field: value for field, value in experiment.items() if field not in terminal_fields}
+        validated_experiment = {field: value for field, value in raw_experiment.items() if field not in terminal_fields}
     issues = experiment_metadata_issues(
         {
             "experiment": validated_experiment,
@@ -1163,6 +1169,7 @@ def _managed_workspace(  # noqa: C901
     )
     if issues:
         raise ValueError("; ".join(issue["message"] for issue in issues))
+    experiment: dict[str, Any] = manifest["experiment"]
     if str(experiment["root"]) != str(root):
         raise ValueError(f"experiment.root differs from the target workspace: {root}")
 
