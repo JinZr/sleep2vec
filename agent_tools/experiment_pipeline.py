@@ -1180,6 +1180,9 @@ def _validated_completed_phase(
 def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
     path = _selection_manifest_path(pipeline_dir, spec)
     hash_field = _selection_hash_field(spec)
+    cohort_kind = spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
+    event_type = "pipeline_candidates_frozen" if cohort_kind else "pipeline_checkpoints_frozen"
+    count_field = "candidate_count" if cohort_kind else "source_count"
     if path.exists():
         selections = _read_frozen_selections(path, spec)
         state = read_json(pipeline_dir / "pipeline.json")
@@ -1197,10 +1200,17 @@ def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, A
                 **{hash_field: file_sha256(path)},
                 **{selected_at_field: read_json(path).get("created_at")},
             )
+        # A completed experiment is inspection-only; do not backfill its append-only history.
+        if state.get("status") != "completed":
+            _reconcile_pipeline_event(
+                root,
+                event_type,
+                {"pipeline_id": spec["pipeline"]["id"], count_field: len(selections)},
+                identity_fields=("pipeline_id",),
+            )
         return selections
 
     frozen = _select_checkpoint_sources(root, spec)
-    cohort_kind = spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
     payload = {
         "pipeline_id": spec["pipeline"]["id"],
         "created_at": utc_now(),
@@ -1219,13 +1229,11 @@ def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, A
         **{hash_field: file_sha256(path)},
         **{"candidates_selected_at" if cohort_kind else "checkpoint_selected_at": payload["created_at"]},
     )
-    append_event(
+    _reconcile_pipeline_event(
         root,
-        "pipeline_candidates_frozen" if cohort_kind else "pipeline_checkpoints_frozen",
-        {
-            "pipeline_id": spec["pipeline"]["id"],
-            "candidate_count" if cohort_kind else "source_count": len(frozen),
-        },
+        event_type,
+        {"pipeline_id": spec["pipeline"]["id"], count_field: len(frozen)},
+        identity_fields=("pipeline_id",),
     )
     key = "candidate_id" if cohort_kind else "source_id"
     return {str(item[key]): item for item in frozen}
