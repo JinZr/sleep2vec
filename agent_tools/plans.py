@@ -641,6 +641,15 @@ _LOCAL_PLAN_LOCKS_GUARD = threading.Lock()
 
 @contextmanager
 def plan_publication_lock(out: Path):
+    """Block until the publication lock for the canonical output path is held.
+
+    Coordinates threads and cooperating processes for the same output path,
+    using a per-user lock file under /tmp rather than inside the plan directory.
+    Controllers must keep publication and the associated ownership registration
+    inside this context; acquiring it does not publish or register anything.
+    The lock is released on context exit, including when the body raises.
+    Path-validation and lock I/O errors propagate.
+    """
     canonical_out = canonical_local_experiment_root(out, Path.cwd())
     lock_root = Path("/tmp").resolve() / f"agent-tools-plan-locks-{os.getuid()}"
     lock_root.mkdir(mode=0o700, exist_ok=True)
@@ -1536,6 +1545,27 @@ def publish_staged_plan_locked(
     out_preexisted: bool,
     replace_unowned_plan: bool = False,
 ) -> None:
+    """Move a staged plan into its published location under a caller-held lock.
+
+    The caller must hold plan_publication_lock(out), prepare and validate the
+    staged files in write_out for their intended location at out, and determine
+    out_preexisted under that lock. This function checks the published envelope,
+    but does not register workspace ownership or run rows; the caller owns those
+    steps and their failure handling.
+
+    A new destination receives the entire staging directory. For an existing
+    destination, plan-level files are replaced and run directories are appended
+    without collisions, with plan.json published last. replace_unowned_plan
+    permits replacing the existing runs tree when staging contains runs; the
+    caller must first establish that the old plan is unowned. Successful
+    publication consumes write_out.
+
+    If envelope validation fails after publishing a new directory, that directory
+    remains in place. Failures during the existing-directory replacement attempt
+    to restore moved entries before propagating; rollback and final cleanup can
+    also fail. This is not an all-or-nothing workspace transaction. Validation
+    and filesystem errors propagate.
+    """
     out.parent.mkdir(parents=True, exist_ok=True)
     if not out_preexisted:
         write_out.replace(out)
