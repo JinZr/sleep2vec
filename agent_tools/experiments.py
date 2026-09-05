@@ -40,6 +40,7 @@ from .experiment_workspace import (
     validate_existing_experiment_manifest,
     validate_frozen_run_update,
     validate_managed_run_rows,
+    validated_run_key,
     verify_run_snapshot,
     write_initial_experiment_manifest,
     write_status_report,
@@ -87,7 +88,7 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
         if locked_workspace != workspace:
             raise ValueError("Preset plan workspace changed before launch.")
         run = plan["runs"][0]
-        key = (str(run["step_id"]), str(run["run_id"]))
+        key = validated_run_key(run)
         previous = {managed_run_key(row): row for row in rows}[key]
         if previous["status"] not in managed_scheduler.LAUNCHABLE_STATUSES:
             return managed_scheduler.LaunchResult(rows, [previous], frozenset(), {}, {})
@@ -202,7 +203,7 @@ def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
             ],
         )
         run = plan["runs"][0]
-        key = (str(run["step_id"]), str(run["run_id"]))
+        key = validated_run_key(run)
         previous = {managed_run_key(row): row for row in rows}[key]
         if previous["status"] in TERMINAL_STATUSES:
             raise ValueError(f"Run is already terminal and cannot be stopped: {key[1]} ({previous['status']})")
@@ -322,7 +323,7 @@ def launch_infer_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_s
             )
         except Exception as exc:
             if not dry_run:
-                key = (str(plan["runs"][0]["step_id"]), str(plan["runs"][0]["run_id"]))
+                key = validated_run_key(plan["runs"][0])
                 previous = {managed_run_key(row): row for row in read_run_manifest(workspace)}[key]
                 # A lost receipt or post-submit failure must never become a definitely-unsubmitted failure.
                 if previous["status"] in managed_scheduler.LAUNCHABLE_STATUSES and not has_managed_launch_evidence(
@@ -369,7 +370,7 @@ def stop_infer_run(plan_dir: str | Path, *, reason: str) -> Path:
                 workspace / "reports" / "status.md",
             ],
         )
-        key = (str(plan["runs"][0]["step_id"]), str(plan["runs"][0]["run_id"]))
+        key = validated_run_key(plan["runs"][0])
         _committed, metadata_stop = managed_scheduler.stop_slurm_run_locked(
             workspace,
             rows,
@@ -554,9 +555,7 @@ def _validate_hparam_checkpoints(
     checkpoint_rows_by_path: dict[tuple[str, str, str], dict[str, Any]] = {}
     for step in selected_steps:
         for row in [*step["ranked"], *step.get("checkpoint_audit_rows", [])]:
-            checkpoint_rows_by_path.setdefault(
-                (str(row["step_id"]), str(row["run_id"]), str(row["checkpoint_path"])), row
-            )
+            checkpoint_rows_by_path.setdefault((*validated_run_key(row), str(row["checkpoint_path"])), row)
     checkpoint_rows = list(checkpoint_rows_by_path.values())
     tracking.validate_checkpoint_evidence_rows(rows, checkpoint_rows, remote=remote)
     for row in checkpoint_rows:

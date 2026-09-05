@@ -808,6 +808,14 @@ def managed_run_key(row: dict[str, Any]) -> tuple[str, str] | None:
     return step_id, run_id
 
 
+def validated_run_key(row: dict[str, Any]) -> tuple[str, str]:
+    """Read identity from an already validated managed row; this does not validate the whole row."""
+    key = managed_run_key(row)
+    if key is None:
+        raise ValueError("Validated managed row has no run identity.")
+    return key
+
+
 def stopped_runs_without_reason(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [row for row in rows if row.get("status") == "stopped" and not str(row.get("stop_reason") or "").strip()]
 

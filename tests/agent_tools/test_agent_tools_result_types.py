@@ -11,8 +11,12 @@ def test_result_types_reach_callers(tmp_path: Path):
             from pathlib import Path
             from agent_tools import (
                 adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
-                experiment_io, run_artifacts, run_evidence, slurm,
+                experiment_io, experiment_workspace, run_artifacts, run_evidence, slurm,
             )
+
+            strict_key: tuple[str, str] = experiment_workspace.validated_run_key({})
+            optional_key: tuple[str, str] | None = experiment_workspace.managed_run_key({})
+            required_key: tuple[str, str] = experiment_workspace.managed_run_key({})  # type: ignore[assignment]
 
             resources = slurm.normalize_resources({}, 1)
             cpus: int = resources["cpus_per_task"]

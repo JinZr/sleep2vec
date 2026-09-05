@@ -14,7 +14,7 @@ import pandas as pd
 import yaml
 
 from . import experiment_io as exp_io, python_programs, run_artifacts as artifacts
-from .experiment_workspace import canonical_local_experiment_root
+from .experiment_workspace import canonical_local_experiment_root, validated_run_key
 from .hparam_selection import resolve_hparam_candidates
 from .manifests import read_rows, write_rows, write_text
 from .models import REPO_ROOT, module_for_variant
@@ -66,7 +66,7 @@ def generate_external_eval(
     commands = []
     manifest_rows = []
     for row, target_config, checkpoint_path in zip(rows, config_paths, checkpoint_paths, strict=True):
-        owner_plan = owner_plans[(str(row["step_id"]), str(row["run_id"]))]
+        owner_plan = owner_plans[validated_run_key(row)]
         recipe_value = owner_plan.get("recipe")
         recipe = recipe_value if isinstance(recipe_value, dict) else {}
         inputs_value = recipe.get("inputs")
@@ -125,7 +125,7 @@ def generate_external_eval(
         commands.append(script_command)
         manifest_rows.append({**row, "external_config": str(target_config), "external_command": command})
     write_rows(manifest_path, manifest_rows)
-    first_owner = owner_plans[(str(rows[0]["step_id"]), str(rows[0]["run_id"]))]
+    first_owner = owner_plans[validated_run_key(rows[0])]
     first_recipe_value = first_owner.get("recipe")
     first_recipe = first_recipe_value if isinstance(first_recipe_value, dict) else {}
     first_execution_value = first_recipe.get("execution")
@@ -188,7 +188,7 @@ def export_hparam_logits(
         checkpoint_path = _first_value(row, ["checkpoint_path", "fixed_checkpoint_path", "ckpt_path"])
         if not checkpoint_path:
             raise ValueError(f"Selected row is missing checkpoint_path: {_candidate_id(row)}")
-        owner_plan = owner_plans[(str(row["step_id"]), str(row["run_id"]))]
+        owner_plan = owner_plans[validated_run_key(row)]
         recipe_value = owner_plan.get("recipe")
         recipe = recipe_value if isinstance(recipe_value, dict) else {}
         inputs_value = recipe.get("inputs")
@@ -455,7 +455,7 @@ def _require_local_postprocess_execution(
     operation: str,
 ) -> None:
     for row in rows:
-        owner_plan = owner_plans[(str(row["step_id"]), str(row["run_id"]))]
+        owner_plan = owner_plans[validated_run_key(row)]
         recipe_value = owner_plan.get("recipe")
         recipe = recipe_value if isinstance(recipe_value, dict) else {}
         execution_value = recipe.get("execution")
@@ -551,7 +551,7 @@ def _execute_logit_exports(
 ) -> None:
     splits = ["val"] if skip_test else ["val", "test"]
     for row in rows:
-        owner_plan = owner_plans[(str(row["step_id"]), str(row["run_id"]))]
+        owner_plan = owner_plans[validated_run_key(row)]
         recipe_value = owner_plan.get("recipe")
         recipe = recipe_value if isinstance(recipe_value, dict) else {}
         for split in splits:

@@ -31,6 +31,7 @@ from .experiment_workspace import (
     validate_existing_experiment_manifest,
     validate_frozen_run_update,
     validate_managed_run_rows,
+    validated_run_key,
 )
 from .manifests import read_json, read_rows, write_rows
 
@@ -122,7 +123,7 @@ def resolve_hparam_candidates(  # noqa: C901
     step = step_value if isinstance(step_value, dict) else {}
     step_id = str(step.get("id") or "")
     workspace_rows = read_run_manifest(workspace)
-    workspace_by_key = {(str(run["step_id"]), str(run["run_id"])): run for run in workspace_rows}
+    workspace_by_key = {validated_run_key(run): run for run in workspace_rows}
 
     owner_runs_by_key = {}
     owner_plans_by_key = {}
@@ -134,7 +135,7 @@ def resolve_hparam_candidates(  # noqa: C901
         selection_split=selection_split,
     ):
         for run in owner_plan["runs"]:
-            key = (str(run["step_id"]), str(run["run_id"]))
+            key = validated_run_key(run)
             if key in owner_runs_by_key:
                 raise ValueError(f"Managed run is owned by multiple registered hparam plans: {key[0]} / {key[1]}")
             owner_runs_by_key[key] = run
@@ -151,7 +152,7 @@ def resolve_hparam_candidates(  # noqa: C901
     selectors_by_key = {}
     matched_current_step = False
     for row in candidate_rows:
-        key = (str(row["step_id"]), str(row["run_id"]))
+        key = validated_run_key(row)
         managed = workspace_by_key.get(key)
         if managed is None:
             if str(row.get("step_id") or "") == step_id:
@@ -218,7 +219,7 @@ def resolve_hparam_candidates(  # noqa: C901
         }
     )
     ranking_rows = tracking.hparam_ranking_projection(canonical_ranked) if canonical_ranked is not None else []
-    ranking_by_key = {(str(row["step_id"]), str(row["run_id"])): row for row in ranking_rows}
+    ranking_by_key = {validated_run_key(row): row for row in ranking_rows}
     if selection_split == "test" and not ranking_by_key:
         raise ValueError("Test-selected candidate resolution requires canonical hparam selection.")
     if ranking_by_key:
@@ -226,9 +227,7 @@ def resolve_hparam_candidates(  # noqa: C901
         frozen_ranking = read_rows(ranking_path, require_managed_identity=True)
         validate_managed_run_rows(frozen_ranking, source=str(ranking_path), cardinality="one_per_run")
         frozen_by_key = {
-            (str(row["step_id"]), str(row["run_id"])): row
-            for row in frozen_ranking
-            if str(row.get("step_id") or "") == step_id
+            validated_run_key(row): row for row in frozen_ranking if str(row.get("step_id") or "") == step_id
         }
         if set(frozen_by_key) != set(ranking_by_key):
             raise ValueError(f"Frozen hparam ranking candidates differ from canonical selection: {step_id}")
@@ -303,7 +302,7 @@ def resolve_hparam_candidates(  # noqa: C901
     if selection_split == "test" and ranking_by_key:
         # Physical I/O follows selection so an unused lower-rank checkpoint cannot block top-k postprocessing.
         for row in selected:
-            key = (str(row["step_id"]), str(row["run_id"]))
+            key = validated_run_key(row)
             canonical = workspace_by_key[key]
             checkpoint_path = str(canonical.get("checkpoint_path") or "")
             checkpoint_sha256 = str(canonical.get("checkpoint_sha256") or "")
@@ -420,7 +419,7 @@ def _preflight_hparam_selection(
         if selected_split == "test":
             existing_test_selections.append((selected_step_id, selected_metric, selected_mode, registered))
         existing_report_run_keys.update(
-            (str(run["step_id"]), str(run["run_id"]))
+            validated_run_key(run)
             for _registered_root, registered_plan in registered
             for run in registered_plan["runs"]
         )

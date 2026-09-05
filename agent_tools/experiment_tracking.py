@@ -35,6 +35,7 @@ from .experiment_workspace import (
     validate_frozen_run_update,
     validate_managed_run_rows,
     validate_scheduler_run_identity,
+    validated_run_key,
 )
 from .manifests import utc_now
 
@@ -171,7 +172,7 @@ def wandb_run_observations(run_rows: list[dict[str, Any]], wandb_rows: list[dict
         existing = resolve_external_run_row(run_rows, row)
         if existing is None:
             continue
-        key = (str(existing["step_id"]), str(existing["run_id"]))
+        key = validated_run_key(existing)
         incoming_wandb_run_id = str(row.get("wandb_run_id") or "")
         known_wandb_run_id = wandb_run_ids.get(key) or str(existing.get("wandb_run_id") or "")
         if incoming_wandb_run_id and known_wandb_run_id and incoming_wandb_run_id != known_wandb_run_id:
@@ -209,7 +210,7 @@ def managed_metric_rows(run_rows: list[dict[str, Any]], metric_rows: list[dict[s
         run_row = resolve_external_run_row(run_rows, metric_row)
         if run_row is None:
             continue
-        key = (str(run_row["step_id"]), str(run_row["run_id"]))
+        key = validated_run_key(run_row)
         incoming_wandb_run_id = str(metric_row.get("wandb_run_id") or "")
         known_wandb_run_id = wandb_run_ids.get(key) or str(run_row.get("wandb_run_id") or "")
         if incoming_wandb_run_id and known_wandb_run_id and incoming_wandb_run_id != known_wandb_run_id:
@@ -849,7 +850,7 @@ def hparam_selection_lifecycle(
     }
     # Controller-owned hparam plans may carry selection metadata; non-hparam runs never may.
     misowned_selection = sorted(
-        (str(row["step_id"]), str(row["run_id"]))
+        validated_run_key(row)
         for row in rows
         if managed_run_key(row) not in hparam_run_keys
         and any(row.get(field) not in (None, "") for field in HPARAM_SELECTION_METADATA_FIELDS)
