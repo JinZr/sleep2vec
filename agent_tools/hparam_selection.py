@@ -108,18 +108,21 @@ def resolve_hparam_candidates(  # noqa: C901
     validate_managed_run_rows(candidate_rows, source="selected candidates", cardinality="one_per_run")
     root = Path(run_dir)
     plan = artifacts.read_hparam_plan(root)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
+    evaluation_value = recipe.get("evaluation_policy")
+    evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     selection_metric = str(evaluation.get("selection_metric") or "")
     selection_mode = str(evaluation.get("selection_mode") or "")
     selection_split = str(evaluation.get("selection_split") or "")
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Selected candidates require a managed experiment workspace.")
-    step = recipe.get("step") if isinstance(recipe.get("step"), dict) else {}
+    step_value = recipe.get("step")
+    step = step_value if isinstance(step_value, dict) else {}
     step_id = str(step.get("id") or "")
     workspace_rows = read_run_manifest(workspace)
-    workspace_by_key = {managed_run_key(run): run for run in workspace_rows}
+    workspace_by_key = {(str(run["step_id"]), str(run["run_id"])): run for run in workspace_rows}
 
     owner_runs_by_key = {}
     owner_plans_by_key = {}
@@ -131,7 +134,7 @@ def resolve_hparam_candidates(  # noqa: C901
         selection_split=selection_split,
     ):
         for run in owner_plan["runs"]:
-            key = managed_run_key(run)
+            key = (str(run["step_id"]), str(run["run_id"]))
             if key in owner_runs_by_key:
                 raise ValueError(f"Managed run is owned by multiple registered hparam plans: {key[0]} / {key[1]}")
             owner_runs_by_key[key] = run
@@ -148,7 +151,7 @@ def resolve_hparam_candidates(  # noqa: C901
     selectors_by_key = {}
     matched_current_step = False
     for row in candidate_rows:
-        key = managed_run_key(row)
+        key = (str(row["step_id"]), str(row["run_id"]))
         managed = workspace_by_key.get(key)
         if managed is None:
             if str(row.get("step_id") or "") == step_id:
@@ -215,7 +218,7 @@ def resolve_hparam_candidates(  # noqa: C901
         }
     )
     ranking_rows = tracking.hparam_ranking_projection(canonical_ranked) if canonical_ranked is not None else []
-    ranking_by_key = {managed_run_key(row): row for row in ranking_rows}
+    ranking_by_key = {(str(row["step_id"]), str(row["run_id"])): row for row in ranking_rows}
     if selection_split == "test" and not ranking_by_key:
         raise ValueError("Test-selected candidate resolution requires canonical hparam selection.")
     if ranking_by_key:
@@ -223,7 +226,9 @@ def resolve_hparam_candidates(  # noqa: C901
         frozen_ranking = read_rows(ranking_path, require_managed_identity=True)
         validate_managed_run_rows(frozen_ranking, source=str(ranking_path), cardinality="one_per_run")
         frozen_by_key = {
-            managed_run_key(row): row for row in frozen_ranking if str(row.get("step_id") or "") == step_id
+            (str(row["step_id"]), str(row["run_id"])): row
+            for row in frozen_ranking
+            if str(row.get("step_id") or "") == step_id
         }
         if set(frozen_by_key) != set(ranking_by_key):
             raise ValueError(f"Frozen hparam ranking candidates differ from canonical selection: {step_id}")
@@ -271,7 +276,7 @@ def resolve_hparam_candidates(  # noqa: C901
         seen_ranks = set()
         for key, (derived, run) in selectors_by_key.items():
             row = {**derived, **run, "status": workspace_by_key[key].get("status", "")}
-            rank = row.get("rank")
+            rank: Any = row.get("rank")
             try:
                 numeric_rank = float(rank)
             except (TypeError, ValueError):
@@ -298,15 +303,15 @@ def resolve_hparam_candidates(  # noqa: C901
     if selection_split == "test" and ranking_by_key:
         # Physical I/O follows selection so an unused lower-rank checkpoint cannot block top-k postprocessing.
         for row in selected:
-            key = managed_run_key(row)
+            key = (str(row["step_id"]), str(row["run_id"]))
             canonical = workspace_by_key[key]
             checkpoint_path = str(canonical.get("checkpoint_path") or "")
             checkpoint_sha256 = str(canonical.get("checkpoint_sha256") or "")
             evidence_row = {**owner_runs_by_key[key], **canonical}
-            owner_recipe = (
-                owner_plans_by_key[key].get("recipe") if isinstance(owner_plans_by_key[key].get("recipe"), dict) else {}
-            )
-            execution = owner_recipe.get("execution") if isinstance(owner_recipe.get("execution"), dict) else {}
+            owner_recipe_value = owner_plans_by_key[key].get("recipe")
+            owner_recipe = owner_recipe_value if isinstance(owner_recipe_value, dict) else {}
+            execution_value = owner_recipe.get("execution")
+            execution = execution_value if isinstance(execution_value, dict) else {}
             for field in ("target", "host"):
                 if evidence_row.get(field) in (None, ""):
                     evidence_row[field] = execution.get(field, "")
@@ -333,8 +338,10 @@ def _preflight_hparam_selection(
     root = Path(run_dir)
     plan = artifacts.read_hparam_plan(root)
     plan_run_keys = {managed_run_key(run) for run in plan["runs"]}
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
+    evaluation_value = recipe.get("evaluation_policy")
+    evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     frozen_metric = evaluation.get("selection_metric")
     frozen_mode = evaluation.get("selection_mode")
     selection_split = str(evaluation.get("selection_split") or "")
@@ -379,7 +386,7 @@ def _preflight_hparam_selection(
             and any(row.get(field) not in (None, "") for field in tracking.HPARAM_SELECTION_METADATA_FIELDS)
         }
     )
-    existing_report_run_keys = set()
+    existing_report_run_keys: set[tuple[str, str]] = set()
     existing_test_selections = []
     for selected_step_id in existing_selected_step_ids:
         policy_rows = [
@@ -413,7 +420,9 @@ def _preflight_hparam_selection(
         if selected_split == "test":
             existing_test_selections.append((selected_step_id, selected_metric, selected_mode, registered))
         existing_report_run_keys.update(
-            managed_run_key(run) for _registered_root, registered_plan in registered for run in registered_plan["runs"]
+            (str(run["step_id"]), str(run["run_id"]))
+            for _registered_root, registered_plan in registered
+            for run in registered_plan["runs"]
         )
     existing_report_steps = _selection_report_steps([canonical_by_key[key] for key in sorted(existing_report_run_keys)])
     exp_io.validate_managed_output_paths(
@@ -441,8 +450,10 @@ def _preflight_hparam_selection(
         )
     )
     for registered_root, registered_plan in current_registered:
-        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
-        execution = registered_recipe.get("execution") if isinstance(registered_recipe.get("execution"), dict) else {}
+        registered_recipe_value = registered_plan.get("recipe")
+        registered_recipe = registered_recipe_value if isinstance(registered_recipe_value, dict) else {}
+        execution_value = registered_recipe.get("execution")
+        execution = execution_value if isinstance(execution_value, dict) else {}
         for run in registered_plan["runs"]:
             key = managed_run_key(run)
             step_runs.append(run)
@@ -626,8 +637,8 @@ def _rank_hparam_selection_candidates(
                     f"{run['step_id']} / {run['run_id']}"
                 )
             manifest_path = ""
-            manifest = {}
-            checkpoint_names = []
+            manifest: dict[str, Any] = {}
+            checkpoint_names: list[str] = []
         else:
             manifest_path, manifest, checkpoint_names = observed_artifacts
         if inputs.selection_split == "test":
@@ -678,7 +689,7 @@ def _rank_hparam_selection_candidates(
             key=lambda row: (
                 str(row.get("step_id") or ""),
                 str(row.get("run_id") or ""),
-                int(row.get("epoch")),
+                int(row["epoch"]),
                 str(row.get("checkpoint_path") or ""),
             )
         )
@@ -720,7 +731,7 @@ def _rank_hparam_selection_candidates(
             if plan_has_selection:
                 raise ValueError("Frozen checkpoint test ranking referenced by candidate_selected event is missing.")
             checkpoint_audits_to_write.append((audit_path, expected_audit))
-        candidates_by_run = {}
+        candidates_by_run: dict[tuple[str, str] | None, list[dict[str, Any]]] = {}
         for row in ranked:
             candidates_by_run.setdefault(managed_run_key(row), []).append(row)
         best_by_run = {}
@@ -986,8 +997,10 @@ def _validate_test_selection_events(
     owner_by_key = {}
     runs_by_key = {}
     for registered_root, registered_plan in registered:
-        registered_recipe = registered_plan.get("recipe") if isinstance(registered_plan.get("recipe"), dict) else {}
-        execution = registered_recipe.get("execution") if isinstance(registered_recipe.get("execution"), dict) else {}
+        registered_recipe_value = registered_plan.get("recipe")
+        registered_recipe = registered_recipe_value if isinstance(registered_recipe_value, dict) else {}
+        execution_value = registered_recipe.get("execution")
+        execution = execution_value if isinstance(execution_value, dict) else {}
         for run in registered_plan["runs"]:
             key = managed_run_key(run)
             canonical = canonical_by_key.get(key)
@@ -1010,21 +1023,21 @@ def _validate_test_selection_events(
     for event in events:
         key = (step_id, str(event.get("selected_run_id") or ""))
         selected_run = runs_by_key.get(key)
-        registered_root = owner_by_key.get(key)
+        event_plan_root = owner_by_key.get(key)
         selected_path = str(event.get("selected_checkpoint_path") or "")
         selected_sha256 = str(event.get("selected_checkpoint_sha256") or "")
-        if not selected_path or not selected_sha256 or selected_run is None or registered_root is None:
+        if not selected_path or not selected_sha256 or selected_run is None or event_plan_root is None:
             raise ValueError(f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}")
         if evidence.checkpoint_file_sha256(selected_run, selected_path) != selected_sha256:
             raise ValueError(f"Frozen checkpoint SHA-256 differs from candidate_selected event: {selected_path}")
-        checkpoint_ranking = registered_root / "checkpoint_test_ranking.csv"
+        checkpoint_ranking = event_plan_root / "checkpoint_test_ranking.csv"
         if str(event.get("checkpoint_ranking") or "") != str(checkpoint_ranking):
             raise ValueError(
                 "Frozen checkpoint test ranking referenced by candidate_selected event is missing or differs."
             )
         if str(event.get("ranking") or "") != str(shared_ranking):
             raise ValueError("Frozen hparam ranking referenced by candidate_selected event is missing or differs.")
-        event_bindings.append((key, selected_path, selected_sha256, registered_root))
+        event_bindings.append((key, selected_path, selected_sha256, event_plan_root))
 
     audits = {}
     for registered_root, registered_plan in registered:
@@ -1109,8 +1122,8 @@ def _registered_test_checkpoint_ranking(
                     f"{run['step_id']} / {run['run_id']}"
                 )
             manifest_path = ""
-            manifest = {}
-            checkpoint_names = []
+            manifest: dict[str, Any] = {}
+            checkpoint_names: list[str] = []
         else:
             manifest_path, manifest, checkpoint_names = observed_artifacts
         test_rows = _checkpoint_test_result_rows(
@@ -1129,7 +1142,7 @@ def _registered_test_checkpoint_ranking(
         key=lambda row: (
             str(row.get("step_id") or ""),
             str(row.get("run_id") or ""),
-            int(row.get("epoch")),
+            int(row["epoch"]),
             str(row.get("checkpoint_path") or ""),
         )
     )
@@ -1224,7 +1237,8 @@ def _candidate_selected_events(workspace: Path) -> Iterator[dict[str, Any]]:
 def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_k: int | None = None) -> Path:
     root = Path(run_dir)
     plan = artifacts.read_hparam_plan(root)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
@@ -1266,9 +1280,9 @@ def _checkpoint_scan_rows(
     if manifest_path:
         runtime_dir = Path(str(run["runtime_dir"]))
         checkpoint_dir = Path(str(run["checkpoint_dir"]))
-        for epoch, score in _history_metric_rows(runtime_dir, metric):
-            checkpoint = artifacts.checkpoint_for_epoch_in_dir(checkpoint_dir, epoch)
-            if checkpoint:
+        for epoch, history_score in _history_metric_rows(runtime_dir, metric):
+            history_checkpoint = artifacts.checkpoint_for_epoch_in_dir(checkpoint_dir, epoch)
+            if history_checkpoint:
                 rows.append(
                     {
                         "step_id": run["step_id"],
@@ -1276,9 +1290,9 @@ def _checkpoint_scan_rows(
                         "version": run["version"],
                         "config": run.get("config"),
                         "metric": metric,
-                        "score": score,
+                        "score": history_score,
                         "epoch": epoch,
-                        "checkpoint_path": str(checkpoint),
+                        "checkpoint_path": str(history_checkpoint),
                         "run_manifest": str(manifest_path),
                         "source": "history",
                         **managed_run_parameters(run),
