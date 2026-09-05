@@ -309,6 +309,30 @@ def test_hparam_select_uses_fixed_epoch_checkpoint_not_best_alias(tmp_path: Path
     assert canonical["selection_report_sha256"] == selected["selection_report_sha256"]
 
 
+@pytest.mark.parametrize(
+    ("metric", "mode"),
+    [("val_loss", None), (None, "min")],
+    ids=["metric", "mode"],
+)
+def test_hparam_select_rejects_explicit_selection_contract_drift_without_writing(
+    tmp_path: Path,
+    metric: str | None,
+    mode: str | None,
+):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    prepare_hparam_plan_fixture(recipe, plan_dir)
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(
+        ValueError,
+        match=r"^hparam-select must use the selection metric and mode frozen in the recipe\.$",
+    ):
+        hparam_selection.select_hparam_candidates(plan_dir, metric=metric, mode=mode)
+
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 def test_resolve_hparam_candidates_uses_canonical_rank_and_skips_terminal_failures(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, max_runs=3)
     plan_dir = tmp_path / "plan"
