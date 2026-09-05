@@ -809,8 +809,9 @@ def write_doctor_outputs(
     Blocking issues cause questions.json and questions.md to be written before
     write_user_decision_template is called with preserve_existing=True. Returns
     its (path, created) result or None when no template is eligible; None does
-    not imply that no question files were written. Existing decisions are kept
-    only under that helper's compatibility checks.
+    not imply that no question files were written. When a template is eligible,
+    existing decisions must pass that helper's compatibility checks. Otherwise
+    existing decisions are left untouched without checking their content.
 
     Does not evaluate the recipe, run diagnostics, publish a runnable plan, or
     register workspace ownership. Errors propagate without rolling back earlier
