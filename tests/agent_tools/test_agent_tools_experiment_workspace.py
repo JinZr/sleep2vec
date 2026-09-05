@@ -1981,6 +1981,8 @@ def test_only_experiment_workspace_reads_or_writes_the_canonical_run_manifest():
                 if not isinstance(node, (ast.Assign, ast.AnnAssign)):
                     continue
                 value = node.value
+                if value is None:
+                    continue
                 if not any(
                     isinstance(part, ast.Constant) and part.value == "run_manifest.tsv" for part in ast.walk(value)
                 ):
