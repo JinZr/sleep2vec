@@ -299,6 +299,64 @@ def test_slurm_monitor_reads_allocation_only_for_absent_terminal_mapping(
 
 
 @pytest.mark.parametrize(
+    ("scheduler_node", "expected_node"),
+    [("", "terminal-node"), ("scheduler-node", "scheduler-node")],
+)
+def test_slurm_monitor_uses_allocation_commit_without_overwriting_terminal_evidence(
+    tmp_path: Path, monkeypatch, scheduler_node: str, expected_node: str
+):
+    plan_dir, plan = _write_slurm_plan(tmp_path)
+    row = {
+        **plan["runs"][0],
+        "target": "local",
+        "scheduler_job_id": "3880",
+        "scheduler_cluster": "wuji-h20",
+        "status": "running",
+    }
+    token = row["scheduler_submit_token"]
+    Path(row["scheduler_result_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": token,
+                "node": "terminal-node",
+                "started_at": "2026-08-21T00:01:00Z",
+                "ended_at": "2026-08-21T00:02:00Z",
+                "exit_code": 0,
+            }
+        )
+    )
+    Path(row["allocation_identity_path"]).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scheduler_job_id": "3880",
+                "scheduler_cluster": "wuji-h20",
+                "scheduler_submit_token": token,
+                "node": "allocation-node",
+                "started_at": "2026-08-21T00:00:00Z",
+                "runtime_commit": "a" * 40,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        slurm,
+        "active_jobs",
+        lambda *_args, **_kwargs: [slurm.JobObservation("3880", "COMPLETED", "", scheduler_node, token, "0:0")],
+    )
+
+    observed = managed_scheduler.observe_slurm_run(plan_dir, {"target": "local"}, row)
+
+    assert observed["status"] == "completed"
+    assert observed["scheduler_exit_code"] == 0
+    assert observed["scheduler_started_at"] == "2026-08-21T00:01:00Z"
+    assert observed["scheduler_node"] == expected_node
+    assert observed["runtime_commit"] == "a" * 40
+
+
+@pytest.mark.parametrize(
     ("scheduler_state", "sidecar_exit_code", "expected_status"),
     [
         ("RUNNING", 0, "running"),
