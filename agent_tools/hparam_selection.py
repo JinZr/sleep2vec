@@ -1227,9 +1227,11 @@ def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_
     Checks existing ranking rows against canonical run identities and frozen
     fields before scanning. For runs with a runtime manifest, prefers usable
     history scores paired with physical epoch checkpoints; if none yield rows,
-    tries a manifest score and resolved checkpoint instead. Missing usable
-    evidence contributes no row; invalid artifacts and unhandled read errors
-    propagate.
+    tries a manifest score and resolved checkpoint instead. Missing evidence,
+    unusable scores/epochs and unresolved or unusable checkpoint candidates are
+    excluded rather than necessarily raising. A successful empty or partial
+    ranking does not certify all inputs as valid. Malformed runtime manifests,
+    history JSON parse failures and unhandled read errors propagate.
 
     Uses the supplied metric/mode rather than binding them to the selection
     policy: 'max' sorts descending, other modes ascending. top_k slices the
