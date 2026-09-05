@@ -2036,11 +2036,58 @@ class Sleep2vecFinetuning(pl.LightningModule):
             eps=1e-8,
         )
 
+        scheduler_name = getattr(self.args, "lr_scheduler", "decay")
+        decay_ratio = getattr(self.args, "lr_decay_ratio", None)
+        plateau_factor = getattr(self.args, "lr_plateau_factor", None)
+        plateau_patience = getattr(self.args, "lr_plateau_patience", None)
+        if scheduler_name not in {"decay", "wsd", "plateau"}:
+            raise ValueError("lr_scheduler must be 'decay', 'wsd', or 'plateau'.")
+        if scheduler_name == "wsd" and decay_ratio is None:
+            raise ValueError("WSD requires lr_decay_ratio.")
+        if scheduler_name != "wsd" and decay_ratio is not None:
+            raise ValueError("lr_decay_ratio is only supported by WSD.")
+        if scheduler_name != "plateau" and (plateau_factor is not None or plateau_patience is not None):
+            raise ValueError("lr_plateau_factor and lr_plateau_patience are only supported by plateau.")
+        if scheduler_name == "plateau":
+            if getattr(self.args, "warmup_steps", None) is not None:
+                raise ValueError("Plateau does not support warmup_steps.")
+            if getattr(self.args, "lr_decay_shape", "cosine") != "cosine":
+                raise ValueError("Plateau does not support lr_decay_shape.")
+            if not self.args.monitor.startswith("val_"):
+                raise ValueError("Plateau requires a validation monitor starting with 'val_'.")
+            floor = float(getattr(self.args, "lr_decay_floor", 0.1))
+            if not 0.0 <= floor <= 1.0:
+                raise ValueError("lr_decay_floor must be in [0, 1].")
+            factor = 0.1 if plateau_factor is None else plateau_factor
+            patience = 10 if plateau_patience is None else plateau_patience
+            if not 0.0 < factor < 1.0:
+                raise ValueError("lr_plateau_factor must be in (0, 1).")
+            if patience < 0:
+                raise ValueError("lr_plateau_patience must be nonnegative.")
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode=self.args.monitor_mod,
+                factor=factor,
+                patience=patience,
+                min_lr=[group["lr"] * floor for group in optimizer.param_groups],
+                eps=0.0,
+            )
+            return [optimizer], [
+                {
+                    "scheduler": scheduler,
+                    "monitor": self.args.monitor,
+                    "interval": "epoch",
+                    "frequency": self.args.check_val_every_n_epoch,
+                    "strict": True,
+                }
+            ]
+
         scheduler = build_warmup_cosine_scheduler(
             optimizer,
             total_steps=self.trainer.estimated_stepping_batches,
             warmup_steps=getattr(self.args, "warmup_steps", None),
             decay_floor=getattr(self.args, "lr_decay_floor", 0.1),
             decay_shape=getattr(self.args, "lr_decay_shape", "cosine"),
+            decay_ratio=decay_ratio,
         )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]

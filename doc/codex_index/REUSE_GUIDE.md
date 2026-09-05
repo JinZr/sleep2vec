@@ -108,6 +108,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 ### Runtime or artifacts
 
 - Keep trainer, callback, phase, W&B, and test orchestration in the relevant entrypoint and Lightning module.
+- Keep step-based LR curves in each variant's `schedulers.py`; finetune's `configure_optimizers` owns scheduler selection and validation-monitor cadence for Plateau. WSD adds a stable phase to the existing warmup/decay path, while parameter-group LR ratios and checkpoint continuation remain runtime contracts.
 - Use checkpoint helpers for initialization, aliases, selection, and averaging.
 - Use result owners for output directories, CSV schemas, prediction ids, and manifests.
 - Use inference `--results-root` to isolate a managed attempt; consume its unique terminal manifest instead of scanning shared default outputs.
