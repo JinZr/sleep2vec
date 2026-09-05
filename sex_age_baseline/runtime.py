@@ -91,7 +91,7 @@ class BaselineModule(pl.LightningModule):
             batch_size=self.args.batch_size,
             num_workers=self.args.num_workers,
             shuffle=sampler is None,
-            drop_last=True,
+            drop_last=sampler is not None,
             sampler=sampler,
         )
 

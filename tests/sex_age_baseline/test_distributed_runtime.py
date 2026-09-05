@@ -80,6 +80,45 @@ class _Trace(pl.Callback):
         self.lrs.append(trainer.optimizers[0].param_groups[0]["lr"])
 
 
+@pytest.mark.parametrize("batch_size,expected_sizes", [(2, [2, 2, 1]), (8, [5])])
+def test_single_device_training_keeps_incomplete_batch(tmp_path, batch_size, expected_sizes):
+    module = BaselineModule(
+        _config(tmp_path),
+        Namespace(
+            lr=0.001,
+            weight_decay=0.01,
+            warmup_steps=0,
+            lr_decay_shape="linear",
+            lr_decay_floor=0.1,
+            batch_size=batch_size,
+            num_workers=0,
+        ),
+    )
+    module.train_set = _dataset()
+    trace = _Trace()
+    trainer = pl.Trainer(
+        accelerator="cpu",
+        devices=1,
+        max_epochs=2,
+        logger=False,
+        enable_checkpointing=False,
+        callbacks=[trace],
+        default_root_dir=str(tmp_path),
+        enable_progress_bar=False,
+        limit_val_batches=0,
+        num_sanity_val_steps=0,
+    )
+    trainer.fit(module)
+    assert trainer.global_step == len(expected_sizes) * 2
+    assert [len(batch) for batch in trace.batches] == expected_sizes * 2
+    expected = {(record.key, record.token_start) for record in module.train_set.records}
+    for epoch in range(2):
+        batches = trace.batches[epoch * len(expected_sizes) : (epoch + 1) * len(expected_sizes)]
+        identities = [identity for batch in batches for identity in batch]
+        assert len(identities) == len(expected)
+        assert set(identities) == expected
+
+
 def _worker(root):
     root = Path(root)
     torch.set_num_threads(1)
