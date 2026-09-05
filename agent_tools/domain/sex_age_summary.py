@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -95,11 +96,8 @@ def sex_age_baseline_config_summary(
         "model": {
             "name": cfg.model.name,
             "features": list(cfg.model.features),
-            "head_details": {
-                "hidden_dim": cfg.model.head.hidden_dim,
-                "dropout": cfg.model.head.dropout,
-                "activation": cfg.model.head.activation,
-            },
+            "encodings": {name: asdict(getattr(cfg.model, name)) for name in cfg.model.features},
+            "head_details": asdict(cfg.model.head),
         },
         "data": {
             "backend": cfg.data.backend,
@@ -112,6 +110,7 @@ def sex_age_baseline_config_summary(
             "split_column": cfg.data.split_column,
             "key_column": cfg.data.key_column,
             "deduplicate_by_key": cfg.data.deduplicate_by_key,
+            "sample_unit": "participant" if cfg.data.deduplicate_by_key else "window",
         },
         CONFIG_FINETUNE_SECTION: finetune_summary,
         "preset_build": {},

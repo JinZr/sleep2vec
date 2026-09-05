@@ -100,6 +100,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Keep AHI event metrics and threshold fitting in the package-local `metrics/ahi.py`; finetuning owns only stage reduction and distributed coordination.
 - Keep arousal event matching, window merging, threshold fitting, and ArI summaries in the package-local `metrics/arousal.py`; finetuning owns only stage reduction and distributed coordination.
 - Keep survival and multilabel sidecar parsing in `data.survival` and `data.multilabel`.
+- Covariate-only models use `sex_age_baseline`'s metadata loader and Lightning runtime; reuse the production `ClassificationHead` dense builders and `sleep2vec.schedulers` rather than copying their math.
 - Aggregate repeated windows by the configured subject key for subject-level loss/metrics.
 - Keep prediction rows traceable to path/window and disease-column order.
 - Apply shared contract changes deliberately to root, `sleep2vec2`, and `sleep2expert`.

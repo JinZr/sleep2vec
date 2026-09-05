@@ -68,8 +68,8 @@ def index_summary(  # noqa: C901
         required_names: tuple[str, ...] = (
             data_summary.get("key_column") or "eid",
             split_column,
-            "age",
-            "sex",
+            *((cfg.get("model") or {}).get("features") or []),
+            *(("path", "token_start") if data_summary.get("deduplicate_by_key") is False else ()),
         )
     else:
         required_names = ("path", "split", "duration")
@@ -160,9 +160,17 @@ def index_summary(  # noqa: C901
                 df,
                 key_column=str(data_summary.get("key_column") or "eid"),
                 split_column=split_column,
+                features=(cfg.get("model") or {}).get("features", []),
             )
         )
         blocking_issues.extend(_sex_age_requested_split_issues(df, split_values, split_column=split_column))
+        if data_summary.get("deduplicate_by_key") is False:
+            if "path" in df and _blank_values(df["path"]).any():
+                blocking_issues.append("Window mode requires a non-empty path for every sample.")
+            if "token_start" in df:
+                starts = pd.to_numeric(df["token_start"], errors="coerce")
+                if (~starts.map(math.isfinite) | (starts < 0) | (starts % 1 != 0)).any():
+                    blocking_issues.append("Window token_start must be a finite non-negative integer.")
     survival_key = _key_summary(df, survival_key_column, sidecar_keys=survival_sidecar_keys)
     if survival_key is not None and not survival_key["exists"]:
         blocking_issues.append(f"Index CSV missing required survival key column: {survival_key_column}")
@@ -275,14 +283,17 @@ def _sex_age_preset_frames(
             {
                 key_column: metadata.get(key_column),
                 split_column: metadata.get(split_column),
-                "age": metadata.get("age"),
-                "sex": metadata.get("sex"),
+                **{name: metadata.get(name) for name in ((cfg or {}).get("model") or {}).get("features", [])},
+                "path": getattr(sample, "path", None),
+                "token_start": getattr(sample, "start", None),
             }
         )
     return [pd.DataFrame(rows)], [resolved], [], []
 
 
-def _sex_age_metadata_value_issues(df: pd.DataFrame, *, key_column: str, split_column: str) -> list[str]:
+def _sex_age_metadata_value_issues(
+    df: pd.DataFrame, *, key_column: str, split_column: str, features: list[str]
+) -> list[str]:
     issues: list[str] = []
     for column, label in ((key_column, "key"), (split_column, "split")):
         if column not in df.columns:
@@ -293,16 +304,20 @@ def _sex_age_metadata_value_issues(df: pd.DataFrame, *, key_column: str, split_c
                 f"Index CSV contains empty sex-age {label} values in column {column}: {int(missing.sum())} rows"
             )
 
-    if "age" in df.columns:
-        missing = _blank_values(df["age"])
-        age = pd.to_numeric(df["age"], errors="coerce")
-        invalid = (~missing) & (~age.map(math.isfinite) | (age < 0))
+    for feature in (name for name in features if name in {"age", "bmi"} and name in df.columns):
+        missing = _blank_values(df[feature])
+        values = pd.to_numeric(df[feature], errors="coerce")
+        invalid = (~missing) & ~values.map(math.isfinite)
         if missing.any():
-            issues.append(f"Index CSV contains empty sex-age age values in column age: {int(missing.sum())} rows")
+            issues.append(
+                f"Index CSV contains empty sex-age {feature} values in column {feature}: {int(missing.sum())} rows"
+            )
         if invalid.any():
-            issues.append(f"Index CSV contains invalid sex-age age values in column age: {int(invalid.sum())} rows")
+            issues.append(
+                f"Index CSV contains invalid sex-age {feature} values in column {feature}: {int(invalid.sum())} rows"
+            )
 
-    if "sex" in df.columns:
+    if "sex" in features and "sex" in df.columns:
         missing = _blank_values(df["sex"])
         invalid = (~missing) & df["sex"].map(lambda value: not _is_valid_sex_value(value))
         if missing.any():

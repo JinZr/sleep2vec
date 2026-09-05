@@ -346,8 +346,8 @@ must already be available on the execution host; planning does not upload a
 runtime or input bundle.
 
 `gpus_per_run: N` freezes allocation-local `runtime.devices: [0, ..., N-1]`.
-Conflicting devices or CPU execution settings are rejected;
-`sex_age_baseline` supports only one GPU. Checkpoint choice, averaging, split,
+Conflicting devices or CPU execution settings are rejected.
+`sex_age_baseline` supports multi-GPU DDP. Checkpoint choice, averaging, split,
 and external-test authorization retain their existing consultation rules.
 
 The registered plan contains one run, a top-level manager `run.sh`, a frozen
@@ -545,8 +545,8 @@ The optional `execution` block configures the managed launcher.
   `runtime.devices=[0, ..., N-1]`. The allocation wrapper starts one foreground
   `srun` step containing exactly N tasks, one per GPU. `cpus_per_task` applies
   to each task, so the total CPU request is `N * cpus_per_task`; `memory` is
-  the allocation's whole-node memory limit. `sex_age_baseline` rejects N > 1
-  because that runtime does not implement DDP.
+  the allocation's whole-node memory limit. `sex_age_baseline` uses the same
+  allocation-local device contract for DDP training and inference.
   Registration preflight reports both each job's resources and the aggregate
   request across all actually planned allocations if active together. This
   deterministic plan report uses the frozen run count and does not query live
