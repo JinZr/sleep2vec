@@ -24,6 +24,24 @@ from agent_tools import decision_hparam, hparam_runtime, managed_scheduler, run_
 from agent_tools.experiment_workspace import merge_run_manifest
 
 
+def test_launch_without_canonical_status_keeps_snapshot_preflight_error(tmp_path: Path, monkeypatch):
+    rows = _write_runtime_rows(tmp_path, [{"run_id": "pending", "status": "pending", "gpus": "0"}])
+    planned = json.loads((tmp_path / "plan.json").read_text())["runs"]
+    for row in rows:
+        row.pop("status")
+    monkeypatch.setattr(managed_scheduler, "read_run_manifest", lambda _root: rows)
+    with pytest.raises(ValueError, match="Cannot establish an execution snapshot"):
+        managed_scheduler.launch_managed_runs(
+            tmp_path,
+            tmp_path,
+            planned,
+            {"target": "local"},
+            {},
+            dry_run=False,
+        )
+    assert not (tmp_path / managed_scheduler.EXECUTION_SNAPSHOT_NAME).exists()
+
+
 def test_slurm_sidecar_runtime_commit_rejects_sha256_object_id():
     with pytest.raises(ValueError, match="full lowercase 40-character"):
         managed_scheduler._slurm_sidecar_runtime_commit({"runtime_commit": "c" * 64})

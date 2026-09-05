@@ -12,7 +12,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -27,13 +27,13 @@ from .experiment_workspace import (
     append_event,
     file_sha256,
     has_managed_launch_evidence,
-    managed_run_key,
     merge_run_manifest,
     merge_run_row,
     read_run_manifest,
     scheduler_direct_controller,
     scheduler_type,
     validate_frozen_run_update,
+    validated_run_key,
     write_status_report,
 )
 from .manifests import read_json, utc_now
@@ -110,7 +110,7 @@ class CapacityState:
     ) -> tuple[int, dict[str, Any], int | None] | None:
         eligible: list[tuple[int, int, dict[str, Any], int | None]] = []
         for index, row in candidates:
-            frozen_group_index = self.assigned_group_by_key.get(managed_run_key(row))
+            frozen_group_index = self.assigned_group_by_key.get(validated_run_key(row))
             if frozen_group_index is not None:
                 group_indexes: Iterable[int | None] = [frozen_group_index]
             elif self.gpu_groups:
@@ -145,13 +145,16 @@ class LaunchResult:
     external_status_changes: dict[RunKey, tuple[Any, Any]]
 
 
+ExecutionSnapshotResult = tuple[dict[str, Any], bool] | tuple[None, Literal[False]]
+
+
 @dataclass(frozen=True)
 class SchedulerHooks:
     merge_manifest: Callable[..., list[dict[str, Any]]] = merge_run_manifest
     append_event: Callable[..., None] = append_event
     write_status_report: Callable[..., Path] = write_status_report
     validate_run_update: Callable[..., None] = validate_frozen_run_update
-    validated_snapshot: Callable[..., tuple[dict[str, Any] | None, bool]] | None = None
+    validated_snapshot: Callable[..., ExecutionSnapshotResult] | None = None
     build_command: Callable[..., str] | None = None
     start_process: Callable[..., str] | None = None
 
@@ -318,18 +321,18 @@ def capacity_state(
                 group_loads[group_index] += 1
     assigned_group_by_key: dict[RunKey, int] = {}
     for key, previous in expected_rows.items():
-        assigned = ",".join(part.strip() for part in str(previous.get("gpus") or "").split(",") if part.strip())
-        if not assigned:
+        assigned_gpus = ",".join(part.strip() for part in str(previous.get("gpus") or "").split(",") if part.strip())
+        if not assigned_gpus:
             if previous.get("status") in ACTIVE_STATUSES:
                 for group_index in range(len(groups)):
                     group_loads[group_index] += 1
             continue
-        group_index = group_by_value.get(assigned)
-        if group_index is None:
-            raise ValueError(f"Frozen GPUs are not one configured GPU group for {key[0]} / {key[1]}: {assigned}")
-        assigned_group_by_key[key] = group_index
+        assigned_group_index = group_by_value.get(assigned_gpus)
+        if assigned_group_index is None:
+            raise ValueError(f"Frozen GPUs are not one configured GPU group for {key[0]} / {key[1]}: {assigned_gpus}")
+        assigned_group_by_key[key] = assigned_group_index
         if previous.get("status") in ACTIVE_STATUSES:
-            group_loads[group_index] += 1
+            group_loads[assigned_group_index] += 1
     return CapacityState(
         gpu_groups=groups,
         group_loads=group_loads,
@@ -439,14 +442,15 @@ def _launch_managed_runs(  # noqa: C901
             projection_writer=projection_writer,
             hooks=hooks,
         )
-    planned_by_key = {managed_run_key(run): run for run in runs}
+    planned_by_key = {validated_run_key(run): run for run in runs}
     snapshot_path, expected_keys, workspace_by_key = _managed_launch_preflight(workspace, owner_dir, runs)
     if (
         not dry_run
         and not snapshot_path.exists()
         and any(
-            workspace_by_key[managed_run_key(run)].get("target") not in (None, "")
-            or workspace_by_key[managed_run_key(run)].get("status") not in LAUNCHABLE_STATUSES
+            workspace_by_key[validated_run_key(run)].get("target") not in (None, "")
+            or (previous_status := workspace_by_key[validated_run_key(run)].get("status")) is None
+            or previous_status not in LAUNCHABLE_STATUSES
             for run in runs
         )
     ):
@@ -486,7 +490,7 @@ def _launch_managed_runs(  # noqa: C901
             [workspace_by_key[key] for key in external_status_changes],
             lock_held=True,
         )
-        workspace_by_key = {managed_run_key(row): row for row in committed}
+        workspace_by_key = {validated_run_key(row): row for row in committed}
         for key, (before, after) in external_status_changes.items():
             hooks.append_event(
                 workspace,
@@ -515,7 +519,7 @@ def _launch_managed_runs(  # noqa: C901
     launch_identity_by_key: dict[RunKey, dict[str, Any]] = {}
     rows: list[dict[str, Any]] = []
     for run in runs:
-        key = managed_run_key(run)
+        key = validated_run_key(run)
         previous = refreshed[key]
         script = Path(str(run["script"]))
         semantic_run_dir = Path(str(run.get("run_dir") or script.parent))
@@ -571,7 +575,7 @@ def _launch_managed_runs(  # noqa: C901
 
     launchable = [(index, row) for index, row in enumerate(rows) if row["status"] in LAUNCHABLE_STATUSES]
     run_output_paths = [
-        Path(str(launch_identity_by_key[managed_run_key(row)][field]))
+        Path(str(launch_identity_by_key[validated_run_key(row)][field]))
         for row in rows
         for field in ("log_path", "pid_path")
     ]
@@ -601,14 +605,15 @@ def _launch_managed_runs(  # noqa: C901
             remote_host = str(execution["host"]) if target == "ssh" else None
             exp_io.validate_managed_output_paths(runtime_root, runtime_roots, remote=remote_host)
             validated_snapshot = hooks.validated_snapshot or validated_execution_snapshot
-            execution_snapshot, write_execution_snapshot = validated_snapshot(
+            snapshot_result = validated_snapshot(
                 owner_dir,
                 execution,
                 runs,
                 workspace_by_key,
             )
-            if write_execution_snapshot:
-                write_execution_snapshot_file(snapshot_path, execution_snapshot)
+            execution_snapshot = snapshot_result[0]
+            if snapshot_result[1]:
+                write_execution_snapshot_file(snapshot_path, snapshot_result[0])
     if target != "ssh":
         for row in rows:
             Path(str(row["run_dir"])).mkdir(parents=True, exist_ok=True)
@@ -627,7 +632,7 @@ def _launch_managed_runs(  # noqa: C901
                 else None
             )
             gpus = list(capacity.gpu_groups[group_index]) if group_index is not None else []
-            identity = dict(launch_identity_by_key[managed_run_key(row)])
+            identity = dict(launch_identity_by_key[validated_run_key(row)])
             identity["gpus"] = ",".join(str(item) for item in gpus)
             identity["command"] = build_command(
                 execution,
@@ -638,7 +643,7 @@ def _launch_managed_runs(  # noqa: C901
             )
             row.update(identity)
             hooks.validate_run_update(
-                workspace_by_key[managed_run_key(row)],
+                workspace_by_key[validated_run_key(row)],
                 row,
                 allow_execution_identity_fill=True,
             )
@@ -655,9 +660,9 @@ def _launch_managed_runs(  # noqa: C901
             ]
             if row.get("target") in (None, ""):
                 gpus = list(capacity.gpu_groups[group_index]) if group_index is not None else []
-                identity = dict(launch_identity_by_key[managed_run_key(row)])
+                identity = dict(launch_identity_by_key[validated_run_key(row)])
                 identity["gpus"] = ",".join(str(item) for item in gpus)
-                planned = planned_by_key[managed_run_key(row)]
+                planned = planned_by_key[validated_run_key(row)]
                 checkpoint_path = planned.get("checkpoint")
                 checkpoint_sha256 = planned.get("checkpoint_sha256")
                 launch_kwargs: dict[str, Any] = {}
@@ -688,13 +693,13 @@ def _launch_managed_runs(  # noqa: C901
                     identity["planned_runtime_commit"] = str(execution["runtime_commit"])
                 row.update(identity)
                 hooks.validate_run_update(
-                    workspace_by_key[managed_run_key(row)],
+                    workspace_by_key[validated_run_key(row)],
                     row,
                     allow_execution_identity_fill=True,
                 )
-            key = managed_run_key(row)
+            key = validated_run_key(row)
             committed = hooks.merge_manifest(workspace, [row], lock_held=True)
-            committed_by_key = {managed_run_key(item): item for item in committed}
+            committed_by_key = {validated_run_key(item): item for item in committed}
             row.clear()
             row.update(committed_by_key[key])
             if row["status"] not in LAUNCHABLE_STATUSES:
@@ -709,7 +714,7 @@ def _launch_managed_runs(  # noqa: C901
                 if process_identity is not None:
                     row.update(process_identity)
             committed = hooks.merge_manifest(workspace, [row], lock_held=True)
-            committed_by_key = {managed_run_key(item): item for item in committed}
+            committed_by_key = {validated_run_key(item): item for item in committed}
             row.clear()
             row.update(committed_by_key[key])
             if row["status"] == "launched":
@@ -722,17 +727,17 @@ def _launch_managed_runs(  # noqa: C901
     commit_rows = []
     for row in rows:
         committed_row = dict(row)
-        if dry_run and workspace_by_key[managed_run_key(row)].get("target") in (None, ""):
+        if dry_run and workspace_by_key[validated_run_key(row)].get("target") in (None, ""):
             committed_row.update({field: "" for field in EXECUTION_IDENTITY_FIELDS})
         commit_rows.append(committed_row)
     committed = hooks.merge_manifest(workspace, commit_rows, lock_held=True)
-    committed_by_key = {managed_run_key(row): row for row in committed}
-    committed_rows = [committed_by_key[managed_run_key(run)] for run in runs]
+    committed_by_key = {validated_run_key(row): row for row in committed}
+    committed_rows = [committed_by_key[validated_run_key(run)] for run in runs]
     if dry_run:
-        preview_by_key = {managed_run_key(row): row for row in rows}
+        preview_by_key = {validated_run_key(row): row for row in rows}
         launch_rows = []
         for committed_row in committed_rows:
-            preview = preview_by_key[managed_run_key(committed_row)]
+            preview = preview_by_key[validated_run_key(committed_row)]
             if committed_row.get("target") in (None, ""):
                 launch_rows.append(
                     {
@@ -754,7 +759,7 @@ def _launch_managed_runs(  # noqa: C901
     if projection_writer is not None:
         projection_writer(result)
     for row in committed_rows:
-        key = managed_run_key(row)
+        key = validated_run_key(row)
         if key in observed.changes:
             before, after = observed.changes[key]
             hooks.append_event(
@@ -808,8 +813,8 @@ def _managed_launch_preflight(
     experiment = experiment_manifest.get("experiment") if isinstance(experiment_manifest, dict) else None
     if isinstance(experiment, dict) and experiment.get("status") == "completed":
         raise ValueError(f"Experiment is completed and cannot launch runs: {workspace}")
-    expected_keys = {managed_run_key(run) for run in runs}
-    workspace_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    expected_keys = {validated_run_key(run) for run in runs}
+    workspace_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
     return snapshot_path, expected_keys, workspace_by_key
 
 
@@ -854,7 +859,7 @@ def _launch_slurm_runs(  # noqa: C901
         *SCHEDULER_PLAN_IDENTITY_FIELDS,
     }
     for run in runs:
-        previous = workspace_by_key[managed_run_key(run)]
+        previous = workspace_by_key[validated_run_key(run)]
         hooks.validate_run_update(
             previous,
             {field: run[field] for field in planned_fields if field in run},
@@ -866,7 +871,7 @@ def _launch_slurm_runs(  # noqa: C901
         observed_rows = []
         previous_statuses = {}
         for run in runs:
-            key = managed_run_key(run)
+            key = validated_run_key(run)
             previous = workspace_by_key[key]
             previous_statuses[key] = previous.get("status")
             observed = (
@@ -876,7 +881,7 @@ def _launch_slurm_runs(  # noqa: C901
             )
             observed_rows.append(observed)
         committed = hooks.merge_manifest(workspace, observed_rows, lock_held=True)
-        workspace_by_key = {managed_run_key(row): row for row in committed}
+        workspace_by_key = {validated_run_key(row): row for row in committed}
         status_changes = {
             key: (before, workspace_by_key[key].get("status"))
             for key, before in previous_statuses.items()
@@ -885,7 +890,7 @@ def _launch_slurm_runs(  # noqa: C901
 
     preview_rows = []
     for run in runs:
-        key = managed_run_key(run)
+        key = validated_run_key(run)
         previous = workspace_by_key[key]
         identity = _slurm_execution_identity(execution, run)
         if dry_run and previous.get("target") in (None, ""):
@@ -893,7 +898,12 @@ def _launch_slurm_runs(  # noqa: C901
         else:
             preview_rows.append(previous)
 
-    launchable = [run for run in runs if workspace_by_key[managed_run_key(run)].get("status") in LAUNCHABLE_STATUSES]
+    launchable = [
+        run
+        for run in runs
+        if (previous_status := workspace_by_key[validated_run_key(run)].get("status")) is not None
+        and previous_status in LAUNCHABLE_STATUSES
+    ]
     execution_snapshot_sha256 = ""
     if launchable and not dry_run:
         remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
@@ -920,30 +930,30 @@ def _launch_slurm_runs(  # noqa: C901
             if hashlib.sha256(script_text.encode()).hexdigest() != run["scheduler_script_sha256"]:
                 raise ValueError(f"Frozen Slurm script changed before submission: {run['scheduler_script']}")
         validated_snapshot = hooks.validated_snapshot or validated_execution_snapshot
-        execution_snapshot, write_execution_snapshot = validated_snapshot(
+        snapshot_result = validated_snapshot(
             owner_dir,
             execution,
             runs,
             workspace_by_key,
         )
-        if write_execution_snapshot:
-            write_execution_snapshot_file(snapshot_path, execution_snapshot)
+        if snapshot_result[1]:
+            write_execution_snapshot_file(snapshot_path, snapshot_result[0])
         execution_snapshot_sha256 = file_sha256(snapshot_path)
         snapshot_rows = [
             {
-                **workspace_by_key[managed_run_key(run)],
+                **workspace_by_key[validated_run_key(run)],
                 "execution_snapshot_sha256": execution_snapshot_sha256,
             }
             for run in runs
         ]
         committed = hooks.merge_manifest(workspace, snapshot_rows, lock_held=True)
-        workspace_by_key = {managed_run_key(row): row for row in committed}
+        workspace_by_key = {validated_run_key(row): row for row in committed}
 
     started_keys: set[RunKey] = set()
     uncertain_error: RuntimeError | None = None
     if not dry_run:
         for run in launchable:
-            key = managed_run_key(run)
+            key = validated_run_key(run)
             previous = workspace_by_key[key]
             cluster = slurm.controller_cluster(execution, timeout=LAUNCH_TIMEOUT_SECONDS)
             submitting = {
@@ -954,23 +964,24 @@ def _launch_slurm_runs(  # noqa: C901
                 "scheduler_observed_at": utc_now(),
             }
             committed = hooks.merge_manifest(workspace, [submitting], lock_held=True)
-            workspace_by_key = {managed_run_key(row): row for row in committed}
+            workspace_by_key = {validated_run_key(row): row for row in committed}
             submitting = workspace_by_key[key]
             if submitting.get("status") != "submitting":
                 continue
             try:
-                identity = slurm.submit(
+                submitted_identity = slurm.submit(
                     execution,
                     str(run["scheduler_script"]),
                     str(run["scheduler_submit_token"]),
                     execution_snapshot_sha256=execution_snapshot_sha256,
                     timeout=LAUNCH_TIMEOUT_SECONDS,
                 )
-                submitted = _submitted_slurm_row(submitting, identity, raw_state="SUBMITTED")
-                if identity.cluster and identity.cluster != submitting["scheduler_cluster"]:
+                submitted = _submitted_slurm_row(submitting, submitted_identity, raw_state="SUBMITTED")
+                if submitted_identity.cluster and submitted_identity.cluster != submitting["scheduler_cluster"]:
                     reason = (
-                        f"{SUBMISSION_CLUSTER_MISMATCH}: submitted job {identity.job_id} returned cluster "
-                        f"{identity.cluster!r}, differing from frozen controller {submitting['scheduler_cluster']!r}."
+                        f"{SUBMISSION_CLUSTER_MISMATCH}: submitted job {submitted_identity.job_id} returned cluster "
+                        f"{submitted_identity.cluster!r}, differing from frozen controller "
+                        f"{submitting['scheduler_cluster']!r}."
                     )
                     submitted.update(
                         status="unknown_scheduler",
@@ -987,19 +998,19 @@ def _launch_slurm_runs(  # noqa: C901
                         "scheduler_observed_at": utc_now(),
                     }
                     committed = hooks.merge_manifest(workspace, [failed], lock_held=True)
-                    workspace_by_key = {managed_run_key(row): row for row in committed}
+                    workspace_by_key = {validated_run_key(row): row for row in committed}
                     continue
                 submitted, uncertain_error = _reconcile_slurm_submission(owner_dir, execution, submitting, exc)
             except (subprocess.TimeoutExpired, ValueError) as exc:
                 submitted, uncertain_error = _reconcile_slurm_submission(owner_dir, execution, submitting, exc)
             committed = hooks.merge_manifest(workspace, [submitted], lock_held=True)
-            workspace_by_key = {managed_run_key(row): row for row in committed}
+            workspace_by_key = {validated_run_key(row): row for row in committed}
             if workspace_by_key[key].get("scheduler_job_id") not in (None, ""):
                 started_keys.add(key)
             if uncertain_error is not None:
                 break
 
-    committed_rows = [workspace_by_key[managed_run_key(run)] for run in runs]
+    committed_rows = [workspace_by_key[validated_run_key(run)] for run in runs]
     launch_rows = preview_rows if dry_run else committed_rows
     result = LaunchResult(
         committed_rows=committed_rows,
@@ -1102,24 +1113,24 @@ def _reconcile_slurm_submission(
         unresolved = {**row, "scheduler_reason": detail, "scheduler_observed_at": utc_now()}
         return unresolved, RuntimeError(f"Slurm submission outcome is uncertain: {detail}")
     if len(matches) == 1:
-        observed = matches[0]
-        category = slurm.state_category(observed.state)
+        job_observation = matches[0]
+        category = slurm.state_category(job_observation.state)
         status = category if category in {"queued", "running"} else "unknown_scheduler"
-        reason = observed.reason
-        if slurm.normalize_state(observed.state) == "REVOKED":
+        reason = job_observation.reason
+        if slurm.normalize_state(job_observation.state) == "REVOKED":
             reason = "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported."
-            if observed.reason:
-                reason = f"{reason} Scheduler reason: {observed.reason}"
+            if job_observation.reason:
+                reason = f"{reason} Scheduler reason: {job_observation.reason}"
         return (
             {
                 **_submitted_slurm_row(
                     row,
-                    slurm.JobIdentity(observed.job_id, str(row.get("scheduler_cluster") or "")),
-                    raw_state=observed.state,
+                    slurm.JobIdentity(job_observation.job_id, str(row.get("scheduler_cluster") or "")),
+                    raw_state=job_observation.state,
                     status=status,
                 ),
                 "scheduler_reason": reason,
-                "scheduler_node": observed.node_list,
+                "scheduler_node": job_observation.node_list,
             },
             None,
         )
@@ -1138,7 +1149,7 @@ def stop_slurm_run_locked(
     now: Callable[[], str],
 ) -> tuple[list[dict[str, Any]], bool]:
     # The caller holds managed_run_lock and supplies its freshly read, validated canonical rows.
-    previous = next(row for row in workspace_rows if managed_run_key(row) == key)
+    previous = next(row for row in workspace_rows if validated_run_key(row) == key)
     run_id = key[1]
     if previous.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
         raise ValueError(f"Slurm stop is blocked by {SUBMISSION_CLUSTER_MISMATCH}: {run_id}")
@@ -1246,7 +1257,7 @@ class SlurmMonitorContext:
     def sidecar(self, owner_dir: Path, execution: dict[str, Any], row: dict[str, Any], field: str) -> dict[str, Any]:
         path = str(row[field])
         route = self._file_route(row)
-        group = self.file_groups.get(route, ())
+        group = self.file_groups.get(route, ()) if route is not None else ()
         row_paths = (str(row.get("scheduler_result_path") or ""), str(row.get("allocation_identity_path") or ""))
         target = execution.get("target", "local")
         host = str(execution.get("host") or "").strip() if target == "ssh" else ""
@@ -1301,6 +1312,8 @@ class SlurmMonitorContext:
 
     def active_job(self, execution: dict[str, Any], row: dict[str, Any]) -> slurm.JobObservation | None:
         route = self._route(row)
+        if route is None:
+            return None
         job_ids = self.groups.get(route, ())
         job_id = str(row.get("scheduler_job_id") or "")
         if job_id not in job_ids:
@@ -1316,8 +1329,8 @@ class SlurmMonitorContext:
                 self.snapshots[route] = None
             else:
                 self.snapshots[route] = snapshot
-        snapshot = self.snapshots[route]
-        return snapshot.get(job_id) if snapshot is not None else None
+        cached_snapshot = self.snapshots[route]
+        return cached_snapshot.get(job_id) if cached_snapshot is not None else None
 
 
 def observe_slurm_run(  # noqa: C901
@@ -1354,7 +1367,8 @@ def observe_slurm_run(  # noqa: C901
     cluster = canonical_cluster
     execution_target = str(execution.get("target", "local") or "local")
     execution_host = str(execution.get("host") or "").strip()
-    execution_scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+    scheduler_value = execution.get("scheduler")
+    execution_scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
     canonical_direct_controller = str(row.get("scheduler_direct_controller") or "") == "true"
     routing_identity_matches = (
         execution_target == row.get("target")
@@ -1662,7 +1676,7 @@ def validated_execution_snapshot(
             raise ValueError(f"Frozen execution snapshot changed: {', '.join(changed)}")
         return actual, False
     for run in runs:
-        row = workspace_by_key[managed_run_key(run)]
+        row = workspace_by_key[validated_run_key(run)]
         if row.get("target") not in (None, "") or row.get("status") not in LAUNCHABLE_STATUSES:
             raise ValueError(
                 f"Cannot establish an execution snapshot after a {plan_label} run has started; create a new plan."
@@ -1872,7 +1886,7 @@ def build_launch_command(
         ]
         if (checkpoint_path is None) != (checkpoint_sha256 is None) or checkpoint_sha256 == "":
             raise ValueError("Verified launch requires both frozen checkpoint path and hash.")
-        if checkpoint_path is not None:
+        if checkpoint_path is not None and checkpoint_sha256 is not None:
             artifacts.append({"path": str(checkpoint_path), "sha256": checkpoint_sha256})
         if execution_snapshot is not None:
             if planned_command is None:

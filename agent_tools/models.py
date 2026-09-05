@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, TypeGuard
 
 import yaml
 
@@ -17,7 +17,7 @@ CONFIG_FINETUNE_SECTION = "finetune"
 _FULL_GIT_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}")
 
 
-def is_full_git_object_id(value: Any) -> bool:
+def is_full_git_object_id(value: Any) -> TypeGuard[str]:
     return isinstance(value, str) and _FULL_GIT_OBJECT_ID_RE.fullmatch(value) is not None
 
 
