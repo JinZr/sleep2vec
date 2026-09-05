@@ -65,7 +65,7 @@ def index_summary(  # noqa: C901
     df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
     df = _filter_splits(df, split_values, split_column=split_column)
     if cfg and cfg.get("authoritative_variant") == "sex_age_baseline":
-        required_names = (
+        required_names: tuple[str, ...] = (
             data_summary.get("key_column") or "eid",
             split_column,
             "age",
@@ -141,11 +141,11 @@ def index_summary(  # noqa: C901
 
     path_check = {"checked": 0, "existing": 0, "missing_examples": []}
     if sample_path_check and "path" in df.columns:
-        examples = [Path(str(path)) for path in df["path"].dropna().head(sample_path_check)]
+        example_paths = [Path(str(path)) for path in df["path"].dropna().head(sample_path_check)]
         path_check = {
-            "checked": len(examples),
-            "existing": sum(path.exists() for path in examples),
-            "missing_examples": [str(path) for path in examples if not path.exists()][:5],
+            "checked": len(example_paths),
+            "existing": sum(path.exists() for path in example_paths),
+            "missing_examples": [str(path) for path in example_paths if not path.exists()][:5],
         }
 
     warnings: list[str] = []
@@ -164,22 +164,22 @@ def index_summary(  # noqa: C901
         )
         blocking_issues.extend(_sex_age_requested_split_issues(df, split_values, split_column=split_column))
     survival_key = _key_summary(df, survival_key_column, sidecar_keys=survival_sidecar_keys)
-    if survival_key_column and not survival_key["exists"]:
+    if survival_key is not None and not survival_key["exists"]:
         blocking_issues.append(f"Index CSV missing required survival key column: {survival_key_column}")
-    if survival_key_column and survival_key["missing_rows"]:
+    if survival_key is not None and survival_key["missing_rows"]:
         blocking_issues.append(f"Index CSV contains empty survival key values in column: {survival_key_column}")
-    if survival_key_column and survival_key["missing_from_sidecars"]:
+    if survival_key is not None and survival_key["missing_from_sidecars"]:
         examples = ", ".join(survival_key["missing_from_sidecars_examples"])
         blocking_issues.append(
             f"Index CSV contains survival key values missing from sidecars in column {survival_key_column}: "
             f"{survival_key['missing_from_sidecars']} missing (examples: {examples})"
         )
     multilabel_key = _key_summary(df, multilabel_key_column, sidecar_keys=multilabel_sidecar_keys)
-    if multilabel_key_column and not multilabel_key["exists"]:
+    if multilabel_key is not None and not multilabel_key["exists"]:
         blocking_issues.append(f"Index CSV missing required multilabel key column: {multilabel_key_column}")
-    if multilabel_key_column and multilabel_key["missing_rows"]:
+    if multilabel_key is not None and multilabel_key["missing_rows"]:
         blocking_issues.append(f"Index CSV contains empty multilabel key values in column: {multilabel_key_column}")
-    if multilabel_key_column and multilabel_key["missing_from_sidecars"]:
+    if multilabel_key is not None and multilabel_key["missing_from_sidecars"]:
         examples = ", ".join(multilabel_key["missing_from_sidecars_examples"])
         blocking_issues.append(
             f"Index CSV contains multilabel key values missing from sidecars in column {multilabel_key_column}: "
@@ -359,7 +359,7 @@ def _kaldi_manifest_frames(
         issues.append(f"Kaldi data root not found: {data.get('kaldi_data_root')}")
     if manifest_path is None or not manifest_path.exists():
         issues.append(f"Kaldi manifest not found: {data.get('kaldi_manifest')}")
-    if issues:
+    if root is None or manifest_path is None or issues:
         return [], [], [], issues
 
     try:

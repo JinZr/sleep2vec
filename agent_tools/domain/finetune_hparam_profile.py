@@ -3,7 +3,7 @@ from __future__ import annotations
 from itertools import combinations, product
 import json
 import math
-from typing import Any
+from typing import Any, TypeGuard
 
 from ..decision_models import DecisionIssue, DecisionStatus
 from ..plan_rendering import DEFAULT_FINETUNE_LR, DEFAULT_FINETUNE_WEIGHT_DECAY
@@ -19,7 +19,8 @@ def compile_finetune_balanced_profile(
     recipe: dict[str, Any],
     config_summary: dict[str, Any] | None,
 ) -> tuple[dict[str, Any] | None, list[DecisionIssue]]:
-    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    search_value = recipe.get("search")
+    search = search_value if isinstance(search_value, dict) else {}
     if search.get("profile") != PROFILE_ID:
         return None, [
             _issue(
@@ -45,7 +46,8 @@ def compile_finetune_balanced_profile(
                 {"method": search.get("method")},
             )
         ]
-    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+    adaptive_value = recipe.get("adaptive")
+    adaptive = adaptive_value if isinstance(adaptive_value, dict) else {}
     if adaptive.get("enabled") is True:
         return None, [
             _issue(
@@ -55,7 +57,8 @@ def compile_finetune_balanced_profile(
             )
         ]
     variant = recipe.get("variant")
-    label = (recipe.get("inputs") or {}).get("label_name") if isinstance(recipe.get("inputs"), dict) else None
+    inputs = recipe.get("inputs")
+    label = (inputs or {}).get("label_name") if isinstance(inputs, dict) else None
     if variant not in _SUPPORTED_VARIANTS or label not in _SUPPORTED_LABELS:
         return None, [
             _issue(
@@ -108,7 +111,8 @@ def compile_finetune_balanced_profile(
 
 
 def finetune_balanced_profile_audit(search: dict[str, Any]) -> dict[str, Any]:
-    configurations = search.get("configurations") if isinstance(search.get("configurations"), list) else []
+    configurations_value = search.get("configurations")
+    configurations = configurations_value if isinstance(configurations_value, list) else []
     keys = sorted({str(key) for point in configurations if isinstance(point, dict) for key in point})
     family_keys = {
         "optimization.lr": [key for key in keys if key == "runtime.lr"],
@@ -153,9 +157,12 @@ def finetune_balanced_profile_audit(search: dict[str, Any]) -> dict[str, Any]:
 
 
 def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> list[dict[str, Any]]:
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    model = config_summary.get("model") if isinstance(config_summary.get("model"), dict) else {}
-    finetune = config_summary.get("finetune") if isinstance(config_summary.get("finetune"), dict) else {}
+    runtime_value = recipe.get("runtime")
+    runtime = runtime_value if isinstance(runtime_value, dict) else {}
+    model_value = config_summary.get("model")
+    model = model_value if isinstance(model_value, dict) else {}
+    finetune_value = config_summary.get("finetune")
+    finetune = finetune_value if isinstance(finetune_value, dict) else {}
 
     lr = _finite_number(runtime.get("lr", DEFAULT_FINETUNE_LR), "runtime.lr", positive=True)
     weight_decay = _finite_number(
@@ -226,9 +233,11 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
             )
     axes.append(_axis("model.layer_mix", "yaml:/finetune/layer_mix", _stable_unique(layer_levels)))
 
-    head = model.get("head_details") if isinstance(model.get("head_details"), dict) else {}
+    head_value = model.get("head_details")
+    head = head_value if isinstance(head_value, dict) else {}
     head_dropout = _finite_dropout(head.get("dropout"), "model.head.dropout")
-    head_kwargs = head.get("kwargs") if isinstance(head.get("kwargs"), dict) else {}
+    head_kwargs_value = head.get("kwargs")
+    head_kwargs = head_kwargs_value if isinstance(head_kwargs_value, dict) else {}
     dropout_keys = ["yaml:/model/head/dropout"]
     source_dropout = {"yaml:/model/head/dropout": head_dropout}
     for field in ("attn_dropout", "temporal_dropout"):
@@ -247,7 +256,8 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
     preset = tuning.get("preset")
     if type(preset) is not str or not preset:
         raise ValueError("finetune_balanced requires an explicit finetune.tuning.preset.")
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs_value = recipe.get("inputs")
+    inputs = inputs_value if isinstance(inputs_value, dict) else {}
     has_trained_backbone = inputs.get("pretrained_backbone_path") not in (None, "")
     # What matters is which parameters receive gradient, not what the preset is called: a
     # `head_only` config that unfreezes the encoder through `groups` does train a backbone,
@@ -268,7 +278,8 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
         tuning_levels.extend(_canonical({"preset": name, **lora_shape}) for name in ("full", "head_only", "lora"))
     axes.append(_axis("adaptation.strategy", "yaml:/finetune/tuning", _stable_unique(tuning_levels)))
 
-    loss = finetune.get("loss") if isinstance(finetune.get("loss"), dict) else {}
+    loss_value = finetune.get("loss")
+    loss = loss_value if isinstance(loss_value, dict) else {}
     pos_weight = loss.get("pos_weight")
     if _is_finite_number(pos_weight) and float(pos_weight) > 0:
         value = float(pos_weight)
@@ -315,7 +326,7 @@ def _candidate_coverage(
     indexes: tuple[int, ...],
 ) -> tuple[set[tuple[int, int]], set[tuple[tuple[int, int], tuple[int, int]]]]:
     levels = {(axis_index, level_index) for axis_index, level_index in enumerate(indexes)}
-    return levels, {tuple(pair) for pair in combinations(sorted(levels), 2)}
+    return levels, {(left, right) for left, right in combinations(sorted(levels), 2)}
 
 
 def _record_coverage(
@@ -356,8 +367,10 @@ _ENCODER_TRAINING_PRESETS = {"full"}
 
 
 def _trains_encoder(tuning: dict[str, Any]) -> bool:
-    groups = tuning.get("groups") if isinstance(tuning.get("groups"), dict) else {}
-    override = groups.get("encoder") if isinstance(groups.get("encoder"), dict) else {}
+    groups_value = tuning.get("groups")
+    groups = groups_value if isinstance(groups_value, dict) else {}
+    override_value = groups.get("encoder")
+    override = override_value if isinstance(override_value, dict) else {}
     if "train" in override:
         return bool(override["train"])
     return tuning.get("preset") in _ENCODER_TRAINING_PRESETS
@@ -395,7 +408,7 @@ def _finite_dropout(value: Any, field: str) -> float:
     return number
 
 
-def _is_finite_number(value: Any) -> bool:
+def _is_finite_number(value: Any) -> TypeGuard[int | float]:
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(float(value))
 
 
