@@ -60,6 +60,78 @@ def test_experiment_status_rejects_tampered_hparam_run_all_script(tmp_path):
         experiments.experiment_status(root)
 
 
+def test_experiment_status_compiles_hparam_once_from_grouped_frozen_files(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="tune", task="hparam_tune")
+    source_path = plan_dir / "config.source.yaml"
+    source_bytes = source_path.read_bytes()
+    recipe = json.loads((plan_dir / "plan.json").read_text())["recipe"]
+    expected_paths = {source_path, plan_dir / "run_all.sh"}
+    for layout in plan_hparam.hparam_run_layouts(recipe, plan_dir, 0):
+        run_dir = layout["run_dir"]
+        expected_paths.update(
+            {
+                run_dir / "config.yaml",
+                run_dir / "launch.sh",
+                run_dir / "artifacts.json",
+            }
+        )
+    before = _workspace_files(root)
+    compiled_sources = []
+    managed_reads = []
+    compile_contract = run_artifacts._compile_registered_plan_contract
+    read_managed_files = experiment_io.read_managed_files_at
+
+    def capture_compile(adapter, recipe, output_dir, *, run_index_offset, config_bytes):
+        compiled_sources.append(config_bytes)
+        return compile_contract(
+            adapter,
+            recipe,
+            output_dir,
+            run_index_offset=run_index_offset,
+            config_bytes=config_bytes,
+        )
+
+    def capture_read(managed_root, paths, **kwargs):
+        managed_reads.append(tuple(Path(path) for path in paths))
+        return read_managed_files(managed_root, paths, **kwargs)
+
+    monkeypatch.setattr(run_artifacts, "_compile_registered_plan_contract", capture_compile)
+    monkeypatch.setattr(experiment_io, "read_managed_files_at", capture_read)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert compiled_sources == [source_bytes]
+    assert [set(paths) for paths in managed_reads if source_path in paths] == [expected_paths]
+    assert _workspace_files(root) == before
+
+
+def test_experiment_status_does_not_read_hparam_artifact_paths_from_plan(tmp_path, monkeypatch):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _canonical = _add_plan(root, step_id="tune", task="hparam_tune")
+    outside = tmp_path / "outside.yaml"
+    plan_path = plan_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["runs"][0]["config"] = str(outside)
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    rows = _read_manifest_rows(root)
+    rows[0]["config"] = str(outside)
+    write_rows(root / "run_manifest.tsv", rows)
+    read_managed_files = experiment_io.read_managed_files_at
+
+    def reject_plan_path(managed_root, paths, **kwargs):
+        assert outside not in {Path(path) for path in paths}
+        return read_managed_files(managed_root, paths, **kwargs)
+
+    monkeypatch.setattr(experiment_io, "read_managed_files_at", reject_plan_path)
+
+    with pytest.raises(ValueError, match="canonical expected runs field config"):
+        experiments.experiment_status(root)
+
+
 @pytest.mark.parametrize("task", ["finetune", "hparam_tune"])
 @pytest.mark.parametrize(
     ("mutation", "error"),

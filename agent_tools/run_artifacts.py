@@ -11,7 +11,7 @@ from typing import Any, Iterator, cast
 
 import yaml
 
-from . import decision_rules as task_rules, experiment_io as exp_io, plan_contract
+from . import decision_rules as task_rules, experiment_io as exp_io, plan_contract, plan_hparam
 from .adapters import get_adapter
 from .decision_models import USER_DECISIONS_FILENAME
 from .experiment_workspace import (
@@ -301,16 +301,9 @@ def read_registered_plan(  # noqa: C901
         raise ValueError(f"Registered plan step metadata differs from its managed step: {plan_dir}")
 
     if adapter.materializes_plan:
-        contract = _compile_registered_plan_contract(
-            adapter,
-            recipe,
-            plan_dir,
-            run_index_offset=run_index_offset,
-            config_bytes=b"",
-        )
+        hparam_layouts = plan_hparam.hparam_run_layouts(recipe, plan_dir, run_index_offset)
     else:
         layout = plan_contract.generic_run_contract(recipe, plan_dir, run_index_offset, adapter)
-        contract = None
 
     plan_controller = step_manifest["plan_controller"]
     adaptive_enabled = isinstance(recipe.get("adaptive"), dict) and recipe["adaptive"].get("enabled") is True
@@ -325,8 +318,9 @@ def read_registered_plan(  # noqa: C901
         require_artifact_paths=True,
         allow_empty_runtime_paths=task not in {"finetune", "hparam_tune"},
     )
-    expected_runs = contract["runs"] if contract is not None else [layout]
-    _validate_plan_contract_runs(runs, expected_runs, plan_path)
+    if not adapter.materializes_plan:
+        expected_runs = [layout]
+        _validate_plan_contract_runs(runs, expected_runs, plan_path)
     plan_keys = [managed_run_key(run) for run in runs]
     if len(plan_keys) != len(set(plan_keys)):
         raise ValueError(f"Registered plan contains duplicate managed run keys: {plan_path}")
@@ -365,33 +359,45 @@ def read_registered_plan(  # noqa: C901
         _validate_registered_run_parameters(recipe, run, canonical)
 
     bundle_paths = []
-    for run, expected_run in zip(runs, expected_runs):
-        for path_field in ("config", "script", "scheduler_script"):
-            path = expected_run.get(path_field)
-            if path not in (None, ""):
-                bundle_paths.append(Path(str(path)))
-        bundle_paths.append(Path(str(expected_run["artifacts"])))
-        if not adapter.materializes_plan and expected_run.get("scheduler_type") == "slurm":
-            bundle_paths.append(Path(expected_run["run_dir"]) / "run.json")
     source_config = plan_dir / "config.source.yaml"
     if adapter.materializes_plan:
+        execution = recipe["execution"] if isinstance(recipe.get("execution"), dict) else {}
+        scheduler = execution["scheduler"] if isinstance(execution.get("scheduler"), dict) else {}
+        # Derive protected paths before compiling content so the source and generated files share one captured read.
+        for hparam_layout in hparam_layouts:
+            run_dir = hparam_layout["run_dir"]
+            bundle_paths.extend([run_dir / "config.yaml", run_dir / "launch.sh", run_dir / "artifacts.json"])
+            if scheduler.get("type") == "slurm":
+                bundle_paths.append(run_dir / "job.sbatch")
         bundle_paths.append(source_config)
+    else:
+        for run, expected_run in zip(runs, expected_runs):
+            for path_field in ("config", "script", "scheduler_script"):
+                path = expected_run.get(path_field)
+                if path not in (None, ""):
+                    bundle_paths.append(Path(str(path)))
+            bundle_paths.append(Path(str(expected_run["artifacts"])))
+            if expected_run.get("scheduler_type") == "slurm":
+                bundle_paths.append(Path(expected_run["run_dir"]) / "run.json")
 
     launch_script = plan_dir / ("run_all.sh" if adapter.materializes_plan else "run.sh")
     bundle_paths.append(launch_script)
-    final_path, expected_final_command = plan_contract.validate_final_eval_contract(
-        plan, recipe, plan_dir, contract or {}
-    )
-    if final_path is not None:
-        bundle_paths.append(final_path)
-
     final_script = plan_dir / "final_external_test.sh"
     final_script_present = exp_io.path_exists_at(final_script, remote=remote)
-    if (expected_final_command is not None) != final_script_present:
-        requirement = "missing" if expected_final_command is not None else "unexpected"
-        raise ValueError(f"Registered plan has {requirement} final external-test script: {final_script}")
-    if expected_final_command is not None:
-        bundle_paths.append(final_script)
+    if adapter.materializes_plan:
+        if "final_eval_config" in plan:
+            bundle_paths.append(plan_dir / plan_contract.FROZEN_FINAL_EVAL_CONFIG_NAME)
+        if final_script_present:
+            bundle_paths.append(final_script)
+    else:
+        final_path, expected_final_command = plan_contract.validate_final_eval_contract(plan, recipe, plan_dir, {})
+        if final_path is not None:
+            bundle_paths.append(final_path)
+        if (expected_final_command is not None) != final_script_present:
+            requirement = "missing" if expected_final_command is not None else "unexpected"
+            raise ValueError(f"Registered plan has {requirement} final external-test script: {final_script}")
+        if expected_final_command is not None:
+            bundle_paths.append(final_script)
 
     # This is a strict text read, so the captured text and SHA-256 values are strings.
     bundle = cast(
@@ -408,6 +414,12 @@ def read_registered_plan(  # noqa: C901
         )
         expected_runs = contract["runs"]
         _validate_plan_contract_runs(runs, expected_runs, plan_path)
+        final_path, expected_final_command = plan_contract.validate_final_eval_contract(
+            plan, recipe, plan_dir, contract
+        )
+        if (expected_final_command is not None) != final_script_present:
+            requirement = "missing" if expected_final_command is not None else "unexpected"
+            raise ValueError(f"Registered plan has {requirement} final external-test script: {final_script}")
         if bundle[str(launch_script)]["text"] != contract["launch_script_text"]:
             raise ValueError(f"Registered plan launch script differs from its frozen recipe: {launch_script}")
         for run, run_files in zip(runs, contract["run_files"]):

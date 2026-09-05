@@ -54,7 +54,7 @@ PACKAGE = Path("agent_tools")
 #: Functions already above the ceiling, each carrying ``# noqa: C901`` on its
 #: def line. Identities rather than a count, so simplifying one function while
 #: another goes over does not net out to a passing check. Trailing numbers are
-#: the score when grandfathered, for context only -- nothing reads them, so a
+#: the last recorded score, for context only -- nothing reads them, so a
 #: function may be improved without a ledger edit until it drops under the
 #: ceiling. Delete entries as you fix them; a new one is a design signal, not a
 #: lint to suppress.
@@ -81,7 +81,7 @@ SUPPRESSION_LEDGER = {
     ("agent_tools/plans.py", "evaluate_recipe"),  # 40
     ("agent_tools/research_log.py", "_normalized_research_log_entry"),  # 35
     ("agent_tools/run_artifacts.py", "read_hparam_plan"),  # 31
-    ("agent_tools/run_artifacts.py", "read_registered_plan"),  # 68
+    ("agent_tools/run_artifacts.py", "read_registered_plan"),  # 75
     ("agent_tools/run_evidence.py", "status_row"),  # 29
 }
 #: Assembled blocks already above the ceiling: ``(program, block) -> scores``.
