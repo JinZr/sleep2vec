@@ -92,11 +92,13 @@ def make_dataloader(
     num_workers: int,
     shuffle: bool,
     drop_last: bool = False,
+    sampler=None,
 ) -> DataLoader:
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        sampler=sampler,
         drop_last=drop_last,
         num_workers=num_workers,
         collate_fn=_collate_records,

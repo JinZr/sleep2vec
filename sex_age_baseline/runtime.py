@@ -15,6 +15,7 @@ from pytorch_lightning.callbacks import Callback, EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 import torch
 import torch.nn.functional as F
+from torch.utils.data import DistributedSampler
 
 from sleep2vec.common import persist_run_config_and_args
 from sleep2vec.distributed import is_rank_zero_process
@@ -72,6 +73,27 @@ class BaselineModule(pl.LightningModule):
 
     def forward(self, features):
         return self.model(features)
+
+    def train_dataloader(self):
+        # Build after rank setup; drop the global tail instead of padding training identities.
+        sampler = None
+        if self.trainer.world_size > 1:
+            sampler = DistributedSampler(
+                self.train_set,
+                num_replicas=self.trainer.world_size,
+                rank=self.trainer.global_rank,
+                shuffle=True,
+                seed=getattr(self.args, "seed", 4523),
+                drop_last=True,
+            )
+        return make_dataloader(
+            self.train_set,
+            batch_size=self.args.batch_size,
+            num_workers=self.args.num_workers,
+            shuffle=sampler is None,
+            drop_last=True,
+            sampler=sampler,
+        )
 
     def training_step(self, batch, batch_idx):
         logits = self(batch["features"])
@@ -247,15 +269,8 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     if args.test_after_fit:
         loaded_splits.append("test")
     if epochs > 0:
-        train_set = _required_dataset(cfg, "train", loaded_splits=loaded_splits)
+        module.train_set = _required_dataset(cfg, "train", loaded_splits=loaded_splits)
         val_set = _required_dataset(cfg, "val", loaded_splits=loaded_splits)
-        train_loader = make_dataloader(
-            train_set,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            shuffle=True,
-            drop_last=True,
-        )
         val_loader = make_dataloader(
             val_set,
             batch_size=args.batch_size,
@@ -295,7 +310,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         )
     trainer = _trainer(args, callbacks=callbacks if epochs else (), training=epochs > 0)
     if epochs:
-        trainer.fit(module, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        trainer.fit(module, val_dataloaders=val_loader)
     best_path = (
         Path(best.best_model_path)
         if epochs and best.best_model_path

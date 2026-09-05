@@ -45,6 +45,10 @@ Each enabled block explicitly chooses `zeros` or PyTorch `default`
 initialization. To use BMI only, set `features: [bmi]` and remove `age` and `sex`.
 Do not retain inactive encoding blocks.
 
+`head.act: relu` requires `initialization: default` for every active encoder:
+the production head applies activation before its first Linear, so ReLU would
+block all gradients to a zero-initialized encoder. This combination is rejected.
+
 The `classification` dense head supports one, two or three layers and reuses
 the production head's activation/Linear/dropout ordering. Cox outputs raw
 log-risk; multilabel outputs logits. Sidecar labels, masks and task mathematics
@@ -78,7 +82,8 @@ Model/data/task semantics belong to the model YAML. Recipe `runtime` and the
 CLI own epochs, batch size, learning rate, devices, precision, accumulation,
 clipping, validation cadence and checkpoint cadence. Lightning executes these
 settings for both single-device and DDP runs; only rank zero writes outputs.
-Training drops the incomplete final local batch, matching the original loader;
+Distributed training drops the sampler tail before forming local batches,
+then drops incomplete local batches, so no padding copies contribute to loss;
 validation and test retain all samples before distributed-padding deduplication.
 AdamW uses betas `(0.9, 0.95)`, epsilon `1e-8`, and production decay/no-decay
 grouping. `warmup_steps`, `lr_decay_shape: cosine|linear`, and `lr_decay_floor`

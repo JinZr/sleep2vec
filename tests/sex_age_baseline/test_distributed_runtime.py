@@ -85,8 +85,23 @@ def _worker(root):
     torch.set_num_threads(1)
     pl.seed_everything(42)
     cfg = _config(root)
-    args = Namespace(lr=0.001, weight_decay=0.01, warmup_steps=1, lr_decay_shape="linear", lr_decay_floor=0.1)
+    args = Namespace(
+        lr=0.001,
+        weight_decay=0.01,
+        warmup_steps=1,
+        lr_decay_shape="linear",
+        lr_decay_floor=0.1,
+        batch_size=2,
+        num_workers=0,
+        seed=42,
+    )
     module = BaselineModule(cfg, args)
+    dataset = _dataset()
+    module.train_set = SexAgeDataset(
+        dataset.records + [replace(dataset.records[-1], key=str(key), path=f"record-{key}") for key in (4, 5)],
+        task_type="survival",
+        label_names=["disease"],
+    )
     trace = _Trace()
     trainer = pl.Trainer(
         accelerator="cpu",
@@ -101,7 +116,7 @@ def _worker(root):
         num_sanity_val_steps=0,
     )
     loader = make_dataloader(_dataset(), batch_size=2, num_workers=0, shuffle=False)
-    trainer.fit(module, train_dataloaders=loader, val_dataloaders=loader)
+    trainer.fit(module, val_dataloaders=loader)
     trainer.test(module, dataloaders=loader, verbose=False)
     result = module.evaluation_result
     payload = {
@@ -129,18 +144,19 @@ def test_two_cpu_rank_training_and_padding_aggregation(tmp_path):
     ranks = [json.loads((tmp_path / f"rank-{rank}.json").read_text()) for rank in range(2)]
     assert ranks[0]["metrics"] == ranks[1]["metrics"]
     for rank in ranks:
-        assert rank["steps"] == 4  # ceil(5 / 2 ranks / batch2) * 2 epochs
-        assert [len(batch) for batch in rank["batches"]] == [2, 1, 2, 1]
-        assert rank["lrs"] == pytest.approx([0, 0.001, 0.0007, 0.0004])
+        assert rank["steps"] == 2  # floor(floor(7 / 2 ranks) / batch2) * 2 epochs
+        assert [len(batch) for batch in rank["batches"]] == [2, 2]
+        assert rank["lrs"] == pytest.approx([0, 0.001])
         rows = rank["predictions"]
         assert len(rows) == 4
         assert {row["survival_key"]: row["n_windows"] for row in rows} == {"0": 2, "1": 1, "2": 1, "3": 1}
     for epoch in range(2):
-        actual = [
-            tuple(pair) for rank in ranks for batch in rank["batches"][epoch * 2 : epoch * 2 + 2] for pair in batch
-        ]
-        assert len(actual) == 6  # one distributed sampler padding slot
-        assert set(actual) == {("0", 0), ("0", 10), ("1", 0), ("2", 0), ("3", 0)}
+        actual = [tuple(pair) for rank in ranks for batch in rank["batches"][epoch : epoch + 1] for pair in batch]
+        assert len(actual) == len(set(actual)) == 4
+        identities = [("0", 0), ("0", 10), ("1", 0), ("2", 0), ("3", 0), ("4", 0), ("5", 0)]
+        generator = torch.Generator().manual_seed(42 + epoch)
+        expected = torch.randperm(7, generator=generator).tolist()[:4]
+        assert set(actual) == {identities[index] for index in expected}
 
 
 def test_cox_loss_uses_rank_local_batch(tmp_path):
@@ -212,7 +228,7 @@ def test_two_rank_training_and_independent_inference_cli(tmp_path, task):
     index = pd.read_csv(tmp_path / "index.csv")
     index["path"] = index.eid.map(lambda eid: f"absent-signal-{eid}.npz")
     index["token_start"] = 0
-    repeated = index.groupby("split", sort=False).head(1).copy()
+    repeated = index.groupby("split", sort=False).head(3).copy()
     repeated["token_start"] = 10
     pd.concat([index, repeated], ignore_index=True).to_csv(tmp_path / "index.csv", index=False)
     env = dict(os.environ, OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
@@ -274,7 +290,7 @@ def test_two_rank_training_and_independent_inference_cli(tmp_path, task):
     assert state["optimizer_states"] and state["lr_schedulers"]
     assert state["model_contract"]["features"] == ["age", "sex"]
     last = torch.load(run_dir / "checkpoints" / "last.ckpt", map_location="cpu", weights_only=False)
-    assert last["global_step"] == 2  # 3 sampler slots per rank, training drops the batch-size-one tail.
+    assert last["global_step"] == 2  # No padded copy: 7 windows -> 3 per rank -> one full batch each.
     inference_root = tmp_path / "inference"
     inference = subprocess.run(
         [
