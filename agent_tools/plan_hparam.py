@@ -83,11 +83,13 @@ def final_test_checkpoint_issues(
     *,
     unlock_final_test: bool,
 ) -> list[DecisionIssue]:
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    evaluation_value = recipe.get("evaluation_policy")
+    evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     if not unlock_final_test and not final_script_allowed(recipe, evaluation, unlock_final_test):
         return []
     issues: list[DecisionIssue] = []
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    runtime_value = recipe.get("runtime")
+    runtime = runtime_value if isinstance(runtime_value, dict) else {}
     avg_ckpts = runtime.get("avg_ckpts", 1)
     ckpt_path = resolved_ckpt_path(recipe)
     if ckpt_path in (None, "", "ASK_USER") or str(ckpt_path).startswith("<"):
@@ -235,9 +237,11 @@ def validate_finetune_config_bytes(recipe: dict, config_bytes: bytes) -> None:
         snapshot.flush()
         bundle = config_module.load_finetune_config(Path(snapshot.name))
         config_module.validate_model_config(bundle.model)
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        inputs_value = recipe.get("inputs")
+        inputs = inputs_value if isinstance(inputs_value, dict) else {}
         label_name = inputs.get("label_name")
-        search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+        search_value = recipe.get("search")
+        search = search_value if isinstance(search_value, dict) else {}
         if (
             search.get("profile") == "finetune_balanced"
             and recipe.get("variant") != "sex_age_baseline"
@@ -275,7 +279,8 @@ def read_final_eval_config_bytes(recipe: dict, config_path: Any) -> bytes:
                 "remote final_eval_config_path requires execution.path_validation=ssh; "
                 f"{validation} cannot capture exact bytes"
             )
-        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        execution_value = recipe.get("execution")
+        execution = execution_value if isinstance(execution_value, dict) else {}
         host = execution.get("host")
         if not host:
             raise ValueError("execution.host is required to freeze a remote final_eval_config_path")
@@ -323,8 +328,10 @@ def final_eval_config_drift_issue(recipe: dict) -> DecisionIssue | None:
 
 
 def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[DecisionIssue]:
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    inputs_value = recipe.get("inputs")
+    inputs = inputs_value if isinstance(inputs_value, dict) else {}
+    evaluation_value = recipe.get("evaluation_policy")
+    evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     selection_metric = evaluation.get("selection_metric")
     selection_split = evaluation.get("selection_split")
     if "selection_metric" in evaluation and selection_metric in (None, ""):
@@ -344,7 +351,8 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
         base_config = yaml.safe_load(config_bytes)
         if not isinstance(base_config, dict):
             raise ValueError(f"YAML must be a mapping: {config_path}")
-        base_data = base_config.get("data") if isinstance(base_config.get("data"), dict) else {}
+        base_data_value = base_config.get("data")
+        base_data = base_data_value if isinstance(base_data_value, dict) else {}
         data_backend = inputs.get("data_backend")
         if data_backend in (None, ""):
             data_backend = base_data.get("backend") or "npz"
@@ -372,9 +380,12 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
             if run_config_bytes not in validated_configs:
                 validate_finetune_config_bytes(recipe, run_config_bytes)
                 validated_configs.add(run_config_bytes)
-            data = run_config.get("data") if isinstance(run_config.get("data"), dict) else {}
-            finetune = run_config.get("finetune") if isinstance(run_config.get("finetune"), dict) else {}
-            task = finetune.get("task") if isinstance(finetune.get("task"), dict) else {}
+            data_value = run_config.get("data")
+            data = data_value if isinstance(data_value, dict) else {}
+            finetune_value = run_config.get("finetune")
+            finetune = finetune_value if isinstance(finetune_value, dict) else {}
+            task_value = finetune.get("task")
+            task = task_value if isinstance(task_value, dict) else {}
             config_contract = {
                 "data_backend": (
                     data_backend,
@@ -427,12 +438,14 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
 
 
 def resolved_ckpt_path(recipe: dict) -> Any:
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs_value = recipe.get("inputs")
+    inputs = inputs_value if isinstance(inputs_value, dict) else {}
     return inputs.get("ckpt_path")
 
 
 def resolved_final_eval_config_path(recipe: dict, fallback: Any) -> Any:
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs_value = recipe.get("inputs")
+    inputs = inputs_value if isinstance(inputs_value, dict) else {}
     return inputs.get("final_eval_config_path", fallback)
 
 
@@ -442,13 +455,17 @@ def has_explicit_final_eval_config(recipe: dict) -> bool:
 
 
 def has_yaml_search_overrides(recipe: dict) -> bool:
-    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
-    parameters = search.get("parameters") if isinstance(search.get("parameters"), dict) else {}
+    search_value = recipe.get("search")
+    search = search_value if isinstance(search_value, dict) else {}
+    parameters_value = search.get("parameters")
+    parameters = parameters_value if isinstance(parameters_value, dict) else {}
     if any(isinstance(key, str) and key.startswith("yaml:/") for key in parameters):
         return True
-    configurations = search.get("configurations") if isinstance(search.get("configurations"), list) else []
+    configurations_value = search.get("configurations")
+    configurations = configurations_value if isinstance(configurations_value, list) else []
     try:
-        max_runs = int(search.get("max_runs"))
+        max_runs_value = search.get("max_runs")
+        max_runs = int(max_runs_value) if max_runs_value is not None else None
     except (TypeError, ValueError):
         max_runs = None  # malformed budgets are the contract layer's report, not ours
     if max_runs is not None:
@@ -470,7 +487,8 @@ def hparam_combos(recipe: dict) -> list[dict[str, Any]]:
         params = search.get("parameters") or {}
         keys = sorted(params)
         combos = [dict(zip(keys, values)) for values in product(*(params[key] for key in keys))]
-    max_runs = int(search.get("max_runs")) if search.get("max_runs") not in (None, "") else len(combos)
+    max_runs_value = search.get("max_runs")
+    max_runs = int(max_runs_value) if max_runs_value is not None and max_runs_value != "" else len(combos)
     return combos[:max_runs]
 
 
@@ -482,14 +500,16 @@ def compile_hparam_run_contracts(
     source_config_bytes: bytes | None = None,
 ) -> list[dict[str, Any]]:
     plan_context = plan_contract.frozen_plan_context(recipe)
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
     if execution.get("python") in (None, "", "ASK_USER") or execution.get("runtime_commit") in (
         None,
         "",
         "ASK_USER",
     ):
         raise ValueError("Frozen hparam plan lacks execution.python or execution.runtime_commit; create a new plan.")
-    scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+    scheduler_value = execution.get("scheduler")
+    scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
     scheduler_type = str(scheduler.get("type") or "direct")
     if scheduler_type not in {"direct", "slurm"}:
         raise ValueError("execution.scheduler.type must be direct or slurm.")
@@ -499,7 +519,8 @@ def compile_hparam_run_contracts(
     run_cwd = Path(str(execution.get("workdir") or plan_context["repo_root"]))
     if not run_cwd.is_absolute():
         raise ValueError("execution.workdir must be an absolute path when set.")
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs_value = recipe.get("inputs")
+    inputs = inputs_value if isinstance(inputs_value, dict) else {}
     base_config = None
     if source_config_bytes is not None:
         source_sha256 = hashlib.sha256(source_config_bytes).hexdigest()
@@ -515,9 +536,12 @@ def compile_hparam_run_contracts(
         if not isinstance(base_config, dict):
             raise ValueError("Frozen hparam source config must be a mapping.")
     run_inputs = {key: value for key, value in inputs.items() if key != "ckpt_path"}
-    runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    runtime_defaults_value = recipe.get("runtime")
+    runtime_defaults = runtime_defaults_value if isinstance(runtime_defaults_value, dict) else {}
+    artifacts_value = recipe.get("artifacts")
+    artifacts = artifacts_value if isinstance(artifacts_value, dict) else {}
+    evaluation_value = recipe.get("evaluation_policy")
+    evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     test_after_fit = evaluation["test_after_fit"]
     selection_split = str(evaluation.get("selection_split") or "")
     contracts = []
@@ -527,7 +551,7 @@ def compile_hparam_run_contracts(
         run_dir = layout["run_dir"]
         runtime_overrides = {key.split(".", 1)[1]: value for key, value in combo.items() if key.startswith("runtime.")}
         runtime = {**runtime_defaults, **runtime_overrides}
-        if scheduler_type == "slurm":
+        if slurm_resources is not None:
             runtime["devices"] = list(range(slurm_resources["gpus_per_run"]))
         elif execution.get("gpu_pool") or "gpus_per_run" in execution:
             gpus_per_run = (
@@ -575,7 +599,7 @@ def compile_hparam_run_contracts(
             "checkpoint_dir": str(runtime_dir / "checkpoints"),
             **combo,
         }
-        if scheduler_type == "slurm":
+        if slurm_resources is not None:
             row.update(
                 {
                     "scheduler_direct_controller": str(slurm_resources["direct_controller"]).lower(),
@@ -586,7 +610,7 @@ def compile_hparam_run_contracts(
                     "terminal_status_owner": "scheduler_sidecar",
                 }
             )
-        contract = {"row": row}
+        contract: dict[str, Any] = {"row": row}
         if base_config is not None:
             run_config = copy.deepcopy(base_config)
             apply_search_overrides(run_config, combo)
@@ -616,7 +640,7 @@ def compile_hparam_run_contracts(
                 }
             )
             contract.update({"config_bytes": config_bytes, "script_text": script_text})
-            if scheduler_type == "slurm":
+            if slurm_resources is not None:
                 token = slurm.submit_token(row, slurm_resources, execution["runtime_commit"])
                 scheduler_script_text = slurm.render_batch_script(
                     run=row,
@@ -655,12 +679,16 @@ def hparam_run_layouts(recipe: dict[str, Any], out: Path, run_index_offset: int)
 
 
 def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | None:
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    evaluation_value = recipe.get("evaluation_policy")
+    evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     if not final_script_allowed(recipe, evaluation, False):
         return None
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
+    inputs_value = recipe.get("inputs")
+    inputs = inputs_value if isinstance(inputs_value, dict) else {}
+    runtime_value = recipe.get("runtime")
+    runtime = runtime_value if isinstance(runtime_value, dict) else {}
     config_path = (
         out / FROZEN_FINAL_EVAL_CONFIG_NAME if has_explicit_final_eval_config(recipe) else out / "config.source.yaml"
     )
@@ -685,8 +713,10 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
 
 def render_hparam_final_script(recipe: dict[str, Any], command: str) -> str:
     plan_context = plan_contract.frozen_plan_context(recipe)
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
+    evaluation_value = recipe.get("evaluation_policy")
+    evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     return (
         "\n".join(
             rendering.hparam_script_lines(
@@ -749,7 +779,8 @@ def json_pointer_parts(pointer: str) -> list[str]:
 
 def freeze_hparam_execution(recipe: dict) -> dict:
     recipe = copy.deepcopy(recipe)
-    execution = dict(recipe.get("execution")) if isinstance(recipe.get("execution"), dict) else {}
+    execution_value = recipe.get("execution")
+    execution = dict(execution_value) if isinstance(execution_value, dict) else {}
     manager_runtime = (
         str(execution.get("target", "local") or "local") == "local"
         and execution.get("workdir") in (None, "", str(REPO_ROOT))
@@ -785,7 +816,8 @@ def freeze_hparam_execution(recipe: dict) -> dict:
 
 def compile_hparam_run_all_script(recipe: dict[str, Any], out: Path) -> str:
     plan_context = plan_contract.frozen_plan_context(recipe)
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    evaluation_value = recipe.get("evaluation_policy")
+    evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     return (
         "\n".join(
             rendering.hparam_script_lines(
@@ -840,11 +872,13 @@ def write_hparam_plan(
     scheduler_type = str(scheduler.get("type") or "direct")
     if scheduler_type not in {"direct", "slurm"}:
         raise ValueError("execution.scheduler.type must be direct or slurm.")
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs_value = recipe.get("inputs")
+    inputs = inputs_value if isinstance(inputs_value, dict) else {}
     evaluation = recipe.get("evaluation_policy") or {}
     final_allowed = final_script_allowed(recipe, evaluation, False)
     frozen_final_eval_config = out / FROZEN_FINAL_EVAL_CONFIG_NAME
     write_frozen_final_eval_config = physical_out / FROZEN_FINAL_EVAL_CONFIG_NAME
+    bound_final_config = None
     final_config_snapshot = final_eval_config_snapshot(recipe)
     if final_allowed and has_explicit_final_eval_config(recipe):
         if final_config_snapshot is None:
@@ -855,6 +889,7 @@ def write_hparam_plan(
             raise ValueError("Bound final evaluation config is incomplete.")
         if hashlib.sha256(final_config_bytes).hexdigest() != final_config_sha256:
             raise ValueError("Final evaluation config bytes do not match their bound SHA-256.")
+        bound_final_config = (final_config_snapshot, final_config_bytes, final_config_sha256)
     if not inputs.get("config"):
         raise FileNotFoundError("Config path is required.")
     if hashlib.sha256(source_config_bytes).hexdigest() != source_config_sha256:
@@ -868,7 +903,8 @@ def write_hparam_plan(
         source_config_path,
         source_config_sha256,
     )
-    if final_allowed and has_explicit_final_eval_config(recipe):
+    if bound_final_config is not None:
+        final_config_snapshot, final_config_bytes, final_config_sha256 = bound_final_config
         plan_contract.bind_frozen_input_snapshot(
             recipe,
             "inputs.final_eval_config_path",
@@ -886,8 +922,8 @@ def write_hparam_plan(
     write_frozen_source_config = physical_out / "config.source.yaml"
     physical_out.mkdir(parents=True, exist_ok=True)
     write_frozen_source_config.write_bytes(source_config_bytes)
-    if final_allowed and has_explicit_final_eval_config(recipe):
-        write_frozen_final_eval_config.write_bytes(final_config_bytes)
+    if bound_final_config is not None:
+        write_frozen_final_eval_config.write_bytes(bound_final_config[1])
     elif write_frozen_final_eval_config.exists():
         write_frozen_final_eval_config.unlink()
     runs = []
@@ -999,11 +1035,11 @@ def write_hparam_plan(
         "recipe": plan_recipe,
         "resolved_recipe_sha256": file_sha256(physical_out / "recipe.resolved.yaml"),
     }
-    if final_allowed and has_explicit_final_eval_config(recipe):
+    if bound_final_config is not None:
         plan_payload["final_eval_config"] = {
             "path": str(frozen_final_eval_config),
             "sha256": file_sha256(write_frozen_final_eval_config),
-            "source_path": final_config_snapshot["source_path"],
+            "source_path": bound_final_config[0]["source_path"],
         }
     # plan.json is the terminal physical-plan manifest and is written only after
     # every frozen file in the bundle is complete.
@@ -1065,8 +1101,10 @@ def render_hparam_preflight_card(
     target = str(snapshot["target"])
     if snapshot.get("host"):
         target += f":{snapshot['host']}"
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
+    scheduler_value = execution.get("scheduler")
+    scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
     scheduler_type = str(scheduler.get("type") or "direct")
     topology_lines = [f"- Scheduler: `{scheduler_type}`"]
     if scheduler_type == "slurm":
@@ -1113,10 +1151,10 @@ def render_hparam_preflight_card(
         "|---|---|---|---|---|---|",
     ]
     for route, run_ids in routes.items():
-        route_variant, module, config_loader, architecture, channels = route
+        route_variant, module, config_loader, architecture, route_channels = route
         lines.append(
             f"| {route_variant} | {module} | {config_loader} | {architecture} | "
-            f"{', '.join(channels) if channels else 'none'} | {', '.join(run_ids)} |"
+            f"{', '.join(route_channels) if route_channels else 'none'} | {', '.join(run_ids)} |"
         )
     return "\n".join(lines)
 
@@ -1132,7 +1170,8 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
         require_workspace_state=False,
         require_adaptive_commit=False,
     )
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     run_configs = [
         (
             run,
@@ -1143,7 +1182,8 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
     validate_hparam_run_configs(recipe, run_configs)
     _hparam_registration_state(plan)
     validate_hparam_output_paths(plan_dir, plan)
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
     validation_runs = []
     for run in plan["runs"]:
         validation_run = dict(run)
@@ -1204,7 +1244,8 @@ def commit_hparam_plan(
         )
         if "execution_snapshot" not in plan:
             raise ValueError(f"Hparam plan lacks registration preflight evidence: {plan_dir}")
-        recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+        recipe_value = plan.get("recipe")
+        recipe = recipe_value if isinstance(recipe_value, dict) else {}
         ensure_experiment_workspace(
             recipe,
             plan_dir,
@@ -1219,7 +1260,8 @@ def commit_hparam_plan(
                 [(run, Path(str(run["config"])).read_bytes()) for run in plan["runs"]],
             )
             validate_hparam_output_paths(plan_dir, plan)
-            execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+            execution_value = recipe.get("execution")
+            execution = execution_value if isinstance(execution_value, dict) else {}
             managed_scheduler.validated_execution_snapshot(
                 plan_dir,
                 execution,
@@ -1253,21 +1295,25 @@ def validate_hparam_output_paths(
     runs: list[dict[str, Any]] | None = None,
 ) -> None:
     plan_dir = Path(out)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    declared_artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
+    declared_artifacts_value = recipe.get("artifacts")
+    declared_artifacts = declared_artifacts_value if isinstance(declared_artifacts_value, dict) else {}
     paths = [plan_dir / "plan.json"]
     for run in plan["runs"] if runs is None else runs:
         paths.extend([Path(str(run["runtime_dir"])), Path(str(run["checkpoint_dir"]))])
     paths.append(
         plan_output_path(plan_dir, declared_artifacts.get("results_csv_path"), "results/agent_hparam_results.csv")
     )
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
     remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
     exp_io.validate_managed_output_paths(Path("/"), paths, remote=remote)
 
 
 def _hparam_registration_state(plan: dict[str, Any]) -> tuple[Path, list[dict[str, Any]]]:
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     root = experiment_root(recipe)
     if root is None:
         raise ValueError("experiment.root is required.")
@@ -1277,7 +1323,8 @@ def _hparam_registration_state(plan: dict[str, Any]) -> tuple[Path, list[dict[st
 
 
 def hparam_manifest_rows(plan: dict[str, Any]) -> list[dict[str, Any]]:
-    runs = plan.get("runs") if isinstance(plan.get("runs"), list) else []
+    runs_value = plan.get("runs")
+    runs = runs_value if isinstance(runs_value, list) else []
     rows = []
     for run in runs:
         row = {
