@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 from pathlib import Path
@@ -29,6 +29,7 @@ class BaselineRecord:
     is_event: np.ndarray | None = None
     disease_label: np.ndarray | None = None
     has_label: np.ndarray | None = None
+    sample_index: int = 0
 
 
 class SexAgeDataset(Dataset):
@@ -41,7 +42,7 @@ class SexAgeDataset(Dataset):
         return len(self.records)
 
     def __getitem__(self, index: int) -> BaselineRecord:
-        return self.records[index]
+        return replace(self.records[index], sample_index=index)
 
 
 def load_split_dataset(
@@ -295,6 +296,7 @@ def _collate_records(records: list[BaselineRecord]) -> dict[str, Any]:
         "key": [record.key for record in records],
         "path": [record.path for record in records],
         "token_start": torch.tensor([record.token_start for record in records], dtype=torch.long),
+        "sample_index": torch.tensor([record.sample_index for record in records], dtype=torch.long),
         "features": {
             name: torch.tensor(
                 [record.features[name] for record in records], dtype=torch.long if name == "sex" else torch.float32

@@ -552,9 +552,8 @@ def compile_hparam_run_contracts(
             *rendering.runtime_cli_args(runtime, variant=str(recipe.get("variant"))),
             *rendering.finetune_input_cli_args(run_inputs, variant=str(recipe.get("variant"))),
         ]
-        if recipe.get("variant") != "sex_age_baseline":
-            rendering.append_option(command_parts, "--wandb-project", execution.get("wandb_project"))
-            rendering.append_option(command_parts, "--wandb-group", execution.get("wandb_group"))
+        rendering.append_option(command_parts, "--wandb-project", execution.get("wandb_project"))
+        rendering.append_option(command_parts, "--wandb-group", execution.get("wandb_group"))
         command_parts.append("--test-after-fit" if test_after_fit else "--no-test-after-fit")
         if selection_split == "test":
             command_parts.append("--test-all-checkpoints-after-fit")

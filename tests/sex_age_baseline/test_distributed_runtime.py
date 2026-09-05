@@ -154,7 +154,12 @@ def _worker(root):
         enable_progress_bar=False,
         num_sanity_val_steps=0,
     )
-    loader = make_dataloader(_dataset(), batch_size=2, num_workers=0, shuffle=False)
+    evaluation_set = SexAgeDataset(
+        dataset.records + [dataset.records[0], dataset.records[0]],
+        task_type="survival",
+        label_names=["disease"],
+    )
+    loader = make_dataloader(evaluation_set, batch_size=2, num_workers=0, shuffle=False)
     trainer.fit(module, val_dataloaders=loader)
     trainer.test(module, dataloaders=loader, verbose=False)
     result = module.evaluation_result
@@ -188,7 +193,8 @@ def test_two_cpu_rank_training_and_padding_aggregation(tmp_path):
         assert rank["lrs"] == pytest.approx([0, 0.001])
         rows = rank["predictions"]
         assert len(rows) == 4
-        assert {row["survival_key"]: row["n_windows"] for row in rows} == {"0": 2, "1": 1, "2": 1, "3": 1}
+        assert {row["survival_key"]: row["n_windows"] for row in rows} == {"0": 4, "1": 1, "2": 1, "3": 1}
+        assert {row["survival_key"]: row["path"] for row in rows} == {str(key): f"record-{key}" for key in range(4)}
     for epoch in range(2):
         actual = [tuple(pair) for rank in ranks for batch in rank["batches"][epoch : epoch + 1] for pair in batch]
         assert len(actual) == len(set(actual)) == 4
@@ -213,15 +219,20 @@ def test_cox_loss_uses_rank_local_batch(tmp_path):
     assert not torch.isclose(observed, _batch_loss(logits, batch, cfg))
 
 
-def test_subject_logrisk_mean_after_window_dedup(tmp_path):
+def test_subject_logrisk_mean_preserves_authored_duplicates_and_removes_padding(tmp_path):
     (tmp_path / "columns.txt").write_text("disease\n")
     cfg = _config(tmp_path)
-    batch = next(iter(make_dataloader(_dataset(), batch_size=5, num_workers=0, shuffle=False)))
-    record = _evaluation_record(batch, torch.tensor([[0.0], [4.0], [1.0], [2.0], [3.0]]))
+    dataset = _dataset()
+    dataset.records.append(dataset.records[0])
+    batch = next(iter(make_dataloader(dataset, batch_size=6, num_workers=0, shuffle=False)))
+    assert batch["sample_index"].tolist() == list(range(6))
+    record = _evaluation_record(batch, torch.tensor([[0.0], [4.0], [1.0], [2.0], [3.0], [0.0]]))
     result = _evaluate_records([record, record], cfg, "test", True)
     by_key = {row["survival_key"]: row for row in result.prediction_rows}
-    assert by_key["0"]["log_risk"] == [2.0]
-    assert by_key["0"]["n_windows"] == 2
+    assert by_key["0"]["log_risk"] == pytest.approx([4 / 3])
+    assert by_key["0"]["n_windows"] == 3
+    assert by_key["0"]["token_starts"] == [0, 10, 0]
+    assert by_key["0"]["path"] == "record-0"
     assert len(by_key) == 4
 
 
@@ -237,18 +248,22 @@ def test_multilabel_averages_logits_before_sigmoid(tmp_path):
         ),
     )
     record = {
-        "key": ["1", "1", "2"],
-        "path": ["a", "a", "b"],
-        "token_start": [0, 10, 0],
-        "logits": torch.tensor([[0.0], [4.0], [-1.0]]),
-        "disease_label": torch.tensor([[1.0], [1.0], [0.0]]),
-        "has_label": torch.ones(3, 1),
+        "key": ["1", "1", "1", "2"],
+        "path": ["z", "a", "a", "b"],
+        "token_start": [10, 0, 0, 0],
+        "sample_index": [2, 0, 1, 3],
+        "logits": torch.tensor([[6.0], [0.0], [0.0], [-1.0]]),
+        "disease_label": torch.tensor([[1.0], [1.0], [1.0], [0.0]]),
+        "has_label": torch.ones(4, 1),
     }
     result = _evaluate_records([record, record], cfg, "test", True)
     rows = {row["multilabel_key"]: row for row in result.prediction_rows}
     assert rows["1"]["logit"] == [2.0]
     assert rows["1"]["probability"] == pytest.approx([torch.sigmoid(torch.tensor(2.0)).item()])
-    assert rows["1"]["n_windows"] == 2
+    assert rows["1"]["n_windows"] == 3
+    assert rows["1"]["path"] == "a"
+    assert rows["1"]["paths"] == ["a", "z"]
+    assert rows["1"]["token_starts"] == [0, 0, 10]
     assert len(rows) == 2
 
 

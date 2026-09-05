@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import pickle
+import shlex
 import subprocess
+import sys
 
 import pytest
 import yaml
@@ -646,6 +648,30 @@ def test_covariate_baseline_bmi_only_and_decay_plan(tmp_path: Path, wandb_mode):
     assert summary["model"]["encodings"] == {"bmi": payload["model"]["bmi"]}
     assert summary["model"]["head_details"]["kwargs"] == {"num_layers": 2}
     assert summary["data"]["sample_unit"] == "participant"
+
+
+def test_covariate_hparam_preserves_wandb_routing(tmp_path: Path, monkeypatch):
+    from sex_age_baseline.finetune import parse_args
+
+    recipe = _hparam_recipe(
+        tmp_path,
+        _write_survival_config(tmp_path),
+        execution={"wandb_project": "frozen-project", "wandb_group": "frozen-group"},
+    )
+    base = tmp_path / "finetune.yaml"
+    payload = yaml.safe_load(base.read_text())
+    payload["runtime"]["wandb_mode"] = "offline"
+    _write_yaml(base, payload)
+    output = tmp_path / "wandb-plan"
+    report = build_plan(recipe_path=recipe, output_dir=output)
+    assert report.exit_code == 0, report.issues
+    plan = json.loads((output / "plan.json").read_text())
+    command = shlex.split(plan["runs"][0]["command"])
+    monkeypatch.setattr(sys, "argv", ["finetune", *command[3:]])
+    args = parse_args()
+    assert args.wandb_project == "frozen-project"
+    assert args.wandb_group == "frozen-group"
+    assert args.wandb_mode == "offline"
 
 
 def test_covariate_baseline_window_plan_rejects_missing_identity(tmp_path: Path):

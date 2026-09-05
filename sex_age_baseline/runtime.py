@@ -177,7 +177,12 @@ def _trainer(args, *, callbacks=(), training=False):
     wandb_mode = getattr(args, "wandb_mode", None)
     logger = False
     if wandb_mode in {"online", "offline"}:
-        logger = WandbLogger(project="sex-age-baseline", name=getattr(args, "version", None), mode=wandb_mode)
+        logger = WandbLogger(
+            project=getattr(args, "wandb_project", "sex-age-baseline"),
+            group=getattr(args, "wandb_group", None),
+            name=getattr(args, "version", None),
+            mode=wandb_mode,
+        )
     return pl.Trainer(
         accelerator=accelerator,
         devices=devices,
@@ -508,6 +513,7 @@ def _evaluation_record(batch, logits):
         "key": list(batch["key"]),
         "path": list(batch["path"]),
         "token_start": [int(value) for value in batch["token_start"]],
+        "sample_index": [int(value) for value in batch["sample_index"]],
         "logits": logits.detach().float().cpu(),
         **{
             name: batch[name].detach().cpu()
@@ -529,20 +535,21 @@ def _evaluate_records(records, cfg, stage, export_predictions):
         if cfg.finetune.task.type == "survival"
         else ["has_label", "disease_label"]
     )
-    for record in records:
-        for i, key in enumerate(record["key"]):
-            identity = (str(key), str(record["path"][i]), int(record["token_start"][i]))
-            if identity in seen:
-                continue
-            seen.add(identity)
-            if key not in grouped:
-                grouped[key] = {"preds": [], "identities": [], **{name: record[name][i] for name in labels}}
-            item = grouped[key]
-            for name in labels:
-                if not torch.allclose(item[name], record[name][i], equal_nan=True):
-                    raise ValueError(f"{name} differs across records for key {key!r}.")
-            item["preds"].append(record["logits"][i])
-            item["identities"].append(identity)
+    samples = [(sample_index, record, i) for record in records for i, sample_index in enumerate(record["sample_index"])]
+    for sample_index, record, i in sorted(samples, key=lambda sample: sample[0]):
+        if sample_index in seen:
+            continue
+        seen.add(sample_index)
+        key = record["key"][i]
+        identity = (str(key), str(record["path"][i]), int(record["token_start"][i]))
+        if key not in grouped:
+            grouped[key] = {"preds": [], "identities": [], **{name: record[name][i] for name in labels}}
+        item = grouped[key]
+        for name in labels:
+            if not torch.allclose(item[name], record[name][i], equal_nan=True):
+                raise ValueError(f"{name} differs across records for key {key!r}.")
+        item["preds"].append(record["logits"][i])
+        item["identities"].append(identity)
     if not grouped:
         raise ValueError(f"Sex/age baseline split {stage!r} has no rows.")
     keys = list(grouped)
@@ -567,6 +574,7 @@ def _evaluate_records(records, cfg, stage, export_predictions):
         row["n_windows"] = len(item["identities"])
         row["token_starts"] = [identity[2] for identity in item["identities"]]
         row["paths"] = list(dict.fromkeys(identity[1] for identity in item["identities"]))
+        row["path"] = item["identities"][0][1] or row["path"]
     return result
 
 

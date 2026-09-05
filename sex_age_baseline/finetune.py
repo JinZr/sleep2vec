@@ -34,6 +34,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version-name", type=str, default=None, help="Run name for logs and checkpoints.")
     parser.add_argument("--results-csv-path", type=Path, required=True, help="Aggregated metrics CSV path.")
     parser.add_argument("--seed", type=int, default=4523, help="Random seed.")
+    parser.add_argument("--wandb-project", default="sex-age-baseline", help="W&B project for metric logging.")
+    parser.add_argument("--wandb-group", default=None, help="W&B group for metric logging.")
     parser.add_argument(
         "--wandb-mode",
         choices=["online", "offline", "disabled"],

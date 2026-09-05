@@ -1154,6 +1154,28 @@ def test_trainer_forwards_runtime_settings_and_resolves_auto_cpu(monkeypatch):
     assert settings["check_val_every_n_epoch"] == 2
 
 
+@pytest.mark.parametrize("mode", ["online", "offline", "disabled"])
+def test_trainer_preserves_wandb_routing(monkeypatch, mode):
+    calls = []
+    monkeypatch.setattr(baseline_runtime, "WandbLogger", lambda **kwargs: calls.append(kwargs) or kwargs)
+    monkeypatch.setattr(baseline_runtime.pl, "Trainer", lambda **kwargs: kwargs)
+    args = Namespace(
+        device="cpu",
+        devices=[0],
+        wandb_mode=mode,
+        wandb_project="frozen-project",
+        wandb_group="frozen-group",
+        version="run-name",
+    )
+    settings = baseline_runtime._trainer(args)
+    if mode == "disabled":
+        assert calls == []
+        assert settings["logger"] is False
+    else:
+        assert calls == [{"project": "frozen-project", "group": "frozen-group", "name": "run-name", "mode": mode}]
+        assert settings["logger"] == calls[0]
+
+
 def test_accumulation_uses_actual_optimizer_step_budget(tmp_path: Path, monkeypatch):
     config = _write_config(
         tmp_path,
