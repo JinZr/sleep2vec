@@ -501,7 +501,7 @@ def read_registered_steps(
         path = root / "steps" / step_id / "step.yaml"
         files = exp_io.read_managed_files_at(root, [path], remote=remote)
         # This managed read uses strict UTF-8 mode, so text cannot be None.
-        text = cast(str, files[str(path)]["text"])
+        text = files[str(path)]["text"]
         manifest = _validated_step_manifest(text, path, step_id)
         if str(manifest["experiment_id"]) != str(experiment_id):
             raise ValueError(f"Managed step belongs to a different experiment: {path}")
@@ -559,7 +559,7 @@ def read_run_manifest(root: str | Path, *, remote: str | None = None) -> list[di
         raise FileNotFoundError(f"Managed run manifest is missing: {path}")
     files = exp_io.read_managed_files_at(root, [path], remote=remote)
     # This managed read uses strict UTF-8 mode, so text cannot be None.
-    text = cast(str, files[str(path)]["text"])
+    text = files[str(path)]["text"]
     return _parse_run_manifest(text, path)
 
 
@@ -770,7 +770,7 @@ def read_experiment_events(root: str | Path) -> list[dict[str, Any]]:
     snapshot = exp_io.read_managed_files_at(root, [path])[str(path)]
     events = []
     # This managed read uses strict UTF-8 mode, so text cannot be None.
-    text = cast(str, snapshot["text"])
+    text = snapshot["text"]
     for line_number, line in enumerate(text.splitlines(), start=1):
         try:
             event = json.loads(line)

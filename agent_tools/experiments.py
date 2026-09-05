@@ -568,7 +568,7 @@ def _validate_hparam_checkpoints(
 def _validate_hparam_selection_files_unchanged(
     root: Path,
     selection_report: dict[str, Any],
-    checkpoint_audits: dict[str, dict[str, Any] | None],
+    checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None],
     *,
     remote: str | None,
 ) -> None:
@@ -1016,12 +1016,13 @@ def _hparam_selection_report(root: Path, *, remote: str | None) -> dict[str, Any
     if exp_io.path_exists_at(ranking_path, remote=remote):
         read_paths.append(ranking_path)
     files = exp_io.read_managed_files_at(root, read_paths, remote=remote)
+    ranking = files.get(str(ranking_path))
     return {
         "path": str(path),
         **files[str(path)],
         "ranking_path": str(ranking_path),
-        "ranking_text": files.get(str(ranking_path), {}).get("text"),
-        "ranking_sha256": files.get(str(ranking_path), {}).get("sha256"),
+        "ranking_text": ranking["text"] if ranking is not None else None,
+        "ranking_sha256": ranking["sha256"] if ranking is not None else None,
     }
 
 
@@ -1030,7 +1031,7 @@ def _hparam_checkpoint_audits(
     registered_steps: list[artifacts.RegisteredPlanStep],
     *,
     remote: str | None,
-) -> dict[str, dict[str, Any] | None]:
+) -> dict[str, exp_io.ManagedFileSnapshot | None]:
     checkpoint_audit_paths = sorted(
         {
             Path(plan["path"]) / "checkpoint_test_ranking.csv"

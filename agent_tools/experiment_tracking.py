@@ -524,7 +524,7 @@ def experiment_status_snapshot(  # noqa: C901
     root: Path,
     remote: str | None = None,
     hparam_selection_report: dict[str, Any] | None = None,
-    hparam_checkpoint_audits: dict[str, dict[str, Any] | None] | None = None,
+    hparam_checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None] | None = None,
 ) -> dict[str, Any]:
     allowed_statuses = TERMINAL_STATUSES | managed_scheduler.ACTIVE_STATUSES | managed_scheduler.LAUNCHABLE_STATUSES
     for row in rows:
@@ -798,7 +798,7 @@ def hparam_selection_lifecycle(
     *,
     root: Path,
     report: dict[str, Any] | None = None,
-    checkpoint_audits: dict[str, dict[str, Any] | None] | None = None,
+    checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None] | None = None,
 ) -> dict[str, Any]:
     hparam_run_keys = {
         tuple(key)
@@ -929,7 +929,7 @@ def hparam_selection_lifecycle(
 
 def _validate_test_checkpoint_audits(
     step: dict[str, Any],
-    audit_files: dict[str, dict[str, Any] | None] | None,
+    audit_files: dict[str, exp_io.ManagedFileSnapshot | None] | None,
 ) -> None:
     if step["selection"]["split"] != "test":
         return
