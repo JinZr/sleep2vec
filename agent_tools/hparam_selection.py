@@ -79,6 +79,19 @@ def select_hparam_candidates(
     metric: str | None = None,
     mode: str | None = None,
 ) -> Path:
+    """Select from terminal registered hparam runs and return workspace reports/ranking.csv.
+
+    Requires an active experiment and terminal runs across the current step's
+    registered plans. metric/mode may be omitted or match the frozen policy;
+    selection_split always comes from that policy. Reads successful-run evidence
+    locally or remotely, ranking saved checkpoint test results for test selection.
+
+    Writes ranking/audit tables, canonical selection fields, the selection report
+    and its hash bindings, and a deduplicated selection event. Reentry validates
+    and preserves frozen selection evidence rather than freely reranking it;
+    inconsistent bindings fail. No training or evaluation is launched. Invalid
+    prerequisites raise ValueError and unhandled evidence/I/O errors propagate;
+    publication spans multiple writes and is not an all-or-nothing transaction."""
     selection = _build_hparam_selection(run_dir, metric=metric, mode=mode)
     return _commit_hparam_selection(selection)
 

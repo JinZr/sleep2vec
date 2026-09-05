@@ -43,6 +43,20 @@ def launch_hparam_runs(
     dry_run: bool = True,
     fail_on_missing_pid_blocker: bool = False,
 ) -> Path:
+    """Attempt one scheduling pass for a registered hparam plan and return launch_manifest.tsv.
+
+    Validates frozen inputs and serializes the pass with the workspace run lock.
+    dry_run=True previews scheduling without starting processes or submitting
+    jobs, but still writes launch/status projections and may merge manifest
+    rows; it is not a read-only operation. Execution can observe local/remote
+    runs, launch eligible work within capacity and record lifecycle evidence.
+
+    fail_on_missing_pid_blocker makes an unresolved process-identity blocker an
+    execution error for queue callers. Handled observation or launch failures can
+    be recorded as statuses such as unknown_scheduler or launch_failed and return
+    normally. Inspect canonical run status: the returned path does not imply a
+    successful launch. Unhandled exceptions propagate; already recorded launches
+    are not rolled back on later failure."""
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
@@ -66,6 +80,18 @@ def run_hparam_queue(
     dry_run: bool = True,
     poll_seconds: float = 60,
 ) -> Path:
+    """Advance a registered hparam queue and return its status-table path.
+
+    With dry_run=True, performs one launch preview and returns launch_manifest.tsv,
+    including that preview's projection writes. With dry_run=False, repeatedly
+    monitors and launches eligible runs, writing canonical state and projections,
+    until every run in this plan is terminal; returns run_status.tsv then.
+    Terminal includes failed/stopped runs and does not imply selection succeeded.
+
+    poll_seconds must be finite and positive. Missing process identity and
+    unresolved scheduler/launch outcomes can raise instead of advancing the
+    queue; other validation and runtime errors propagate. This function launches
+    work only in execution mode and does not select or finalize the experiment."""
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("poll_seconds must be positive.")
     run_dir = Path(plan_dir).expanduser()
@@ -304,6 +330,17 @@ def monitor_hparam_runs(
     health: bool = False,
     poll_seconds: float = 60,
 ) -> Path:
+    """Observe a registered hparam plan, commit status updates and return run_status.tsv.
+
+    Reads local/remote execution evidence and merges observations into the
+    canonical run manifest, refreshing projections/reports and recording status
+    transitions. Never starts pending runs. health requests additional health
+    evidence from the observers.
+
+    The Python default once=True performs one round; once=False polls until all
+    plan runs are terminal, including failures/stops. poll_seconds must be finite
+    and positive even for one round. Missing canonical runs, invalid frozen
+    inputs and unhandled observation/I/O errors raise; earlier writes can remain."""
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("poll_seconds must be positive.")
     root = Path(run_dir)
