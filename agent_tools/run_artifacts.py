@@ -145,6 +145,17 @@ def is_registered_blocked_plan(
     workspace: str | Path,
     remote: str | None = None,
 ) -> bool:
+    """Recognize a blocked control bundle at a caller-supplied registered path.
+
+    Requires absolute paths without '..', with plan_dir inside workspace; reads
+    locally or on remote without changing artifacts. True means the expected
+    blocked files are readable and the directory layout passes the bundle checks,
+    not that this function looked up registration or validated question contents.
+    False does not establish a valid PASS plan: missing blocked markers or a
+    resolved recipe without plan.json also return False. plan.json coexisting
+    with blocked markers raises, as do unsafe bundles and checked layout
+    conflicts. Read failures propagate. Use the full reader for runnable plans.
+    """
     plan_dir = Path(plan_dir)
     workspace = Path(workspace)
     # Reject corrupt registrations before probing paths outside the canonical workspace.
@@ -856,6 +867,17 @@ def _validate_hparam_execution_snapshot(
 
 
 def plan_tree_sha256(root: Path, *, top_level_entries: frozenset[str] | None = None) -> str:
+    """Hash a local plan tree's relative paths, permission modes, types and bytes.
+
+    Includes file sizes and directory entries, but not the root's own name/mode
+    or timestamps. top_level_entries restricts traversal to caller-supplied
+    top-level names and their descendants; absent selected entries are skipped.
+    The default covers all descendants. Rejects a missing or symlink root and
+    encountered entries other than regular files/directories with ValueError.
+    Reads without locking or taking a snapshot; callers own synchronization and
+    the comparison scope. Filesystem errors propagate. A matching digest alone
+    does not validate plan semantics or workspace registration.
+    """
     if root.is_symlink() or not root.is_dir():
         raise ValueError(f"Managed plan is missing or aliased: {root}")
     digest = hashlib.sha256()
@@ -961,6 +983,16 @@ def iter_registered_hparam_plans(
     selection_mode: Any,
     selection_split: Any,
 ) -> Iterator[tuple[Path, dict[str, Any]]]:
+    """Yield validated local hparam plans in the managed step's registered order.
+
+    Reads the step manifest when iterated, skips recognized blocked bundles and
+    plans whose frozen task is not hparam_tune, and validates hparam plans via
+    read_hparam_plan with its default workspace/adaptive checks. Each yielded
+    (directory, full plan mapping) must match step_id and all three supplied
+    selection values exactly. Missing/corrupt artifacts and mismatches raise
+    during iteration rather than being skipped; earlier yields remain possible.
+    Does not discover unregistered directories or refresh job/lifecycle state.
+    """
     step_manifest = read_step_manifest(workspace, step_id)
     assert step_manifest is not None  # The default reader raises for a missing managed step.
     for registered_plan_dir in step_manifest["plans"]:
@@ -1008,6 +1040,17 @@ def validate_run_rows(
     require_artifact_paths: bool = False,
     allow_empty_runtime_paths: bool = False,
 ) -> None:
+    """Check in-memory run identity, required metadata and unique version names.
+
+    Applies the managed one-per-run row contract, including absolute-path checks
+    for populated managed path fields, without changing rows; source labels
+    errors. require_artifact_paths additionally requires artifact/hash fields
+    and checks artifact paths, but does not read files or verify hashes. With that
+    option, allow_empty_runtime_paths permits both runtime_dir and checkpoint_dir
+    to be empty, provided both keys exist and neither is populated alone.
+    Violations raise ValueError; success returns None and does not establish
+    registration or runtime completion.
+    """
     validate_managed_run_rows(rows, source=source, cardinality="one_per_run")
     versions = set()
     for index, row in enumerate(rows):
@@ -1050,6 +1093,15 @@ def validate_run_rows(
 
 
 def find_run_manifest(run: dict[str, Any]) -> Path | None:
+    """Locate and parse-check runtime_dir/run_manifest.json on the local host.
+
+    Returns None for an absent/empty runtime_dir value or a missing manifest.
+    Rejects symlink runtime directories/manifests, non-directory parents and
+    non-regular or multiply linked manifests. An unreadable/unparseable manifest
+    or a non-object JSON payload raises ValueError. Returns the path, not the
+    parsed mapping; it does not validate run identity, metrics or success, and
+    does not update lifecycle state. Other filesystem errors can propagate.
+    """
     if not run.get("runtime_dir"):
         return None
     runtime_dir = Path(str(run["runtime_dir"]))
@@ -1072,6 +1124,13 @@ def find_run_manifest(run: dict[str, Any]) -> Path | None:
 
 
 def metric_value(manifest: dict[str, Any], metric: str) -> float | str:
+    """Extract a metric without coercing or validating the stored value.
+
+    An existing metrics[metric] entry wins, even if empty or None. Otherwise uses
+    best_model_score only when monitor matches metric and the score is not None;
+    returns an empty string if neither source applies. Callers own numeric and
+    finiteness checks; this lookup does not establish valid evaluation evidence.
+    """
     metrics = manifest["metrics"] if isinstance(manifest.get("metrics"), dict) else {}
     if metric in metrics:
         return metrics[metric]
@@ -1081,6 +1140,20 @@ def metric_value(manifest: dict[str, Any], metric: str) -> float | str:
 
 
 def fixed_checkpoint_path(manifest: dict[str, Any], checkpoint_dir: Path) -> str:
+    """Resolve manifest checkpoint hints to a local file under checkpoint_dir.
+
+    Uses best_model_path before checkpoint_path, interpreting its basename in
+    the supplied directory. Prefers epoch= files over best-epoch= aliases, uses
+    a valid manifest epoch to resolve conflicts, and can retain a physical
+    best-epoch= file when its epoch matches and no fixed file was found. Epoch
+    searches choose the first matching name in sorted order.
+
+    Returns an empty string for an unusable directory, invalid authored epoch,
+    or unresolved hint. Selected files must be non-symlink files resolving
+    directly inside the directory. Reads filesystem metadata, not checkpoint
+    contents; a result does not verify weights or ownership. I/O errors may
+    propagate, and no artifacts are rewritten.
+    """
     if checkpoint_dir.is_symlink() or not checkpoint_dir.is_dir():
         return ""
     resolved_dir = checkpoint_dir.resolve()
@@ -1134,6 +1207,18 @@ def fixed_checkpoint_path(manifest: dict[str, Any], checkpoint_dir: Path) -> str
 def fixed_checkpoint_path_from_names(
     manifest: dict[str, Any], checkpoint_dir: str | Path, checkpoint_names: list[str]
 ) -> str:
+    """Resolve checkpoint hints using a supplied inventory, without filesystem I/O.
+
+    checkpoint_names must contain basenames from the caller's inventory. Uses
+    best_model_path before checkpoint_path, prefers an inventoried epoch= name,
+    and requires agreement with a supplied valid manifest epoch. A matching
+    best-epoch= name is eligible when the fixed name is unavailable; otherwise
+    epoch fallback chooses the first matching fixed name in sorted order.
+    Returns an empty string for an absent/empty checkpoint_dir value, invalid
+    authored epoch or unresolved hint. The path only reflects the inventory:
+    callers own its freshness and checks of file existence, aliases, contents
+    and ownership.
+    """
     if checkpoint_dir in (None, ""):
         return ""
     checkpoint_dir = Path(str(checkpoint_dir))
@@ -1176,6 +1261,13 @@ def fixed_checkpoint_path_from_names(
 
 
 def checkpoint_names(run: dict[str, Any]) -> list[str]:
+    """List sorted local *.ckpt basenames, excluding symlinks and non-files.
+
+    Returns [] when checkpoint_dir is absent, a symlink or not a directory.
+    Reads only the immediate directory and does not inspect checkpoint contents
+    or prove run completion. Filesystem errors may propagate; the inventory is
+    an observation without locking, not a frozen artifact snapshot.
+    """
     if not run.get("checkpoint_dir"):
         return []
     ckpt_dir = Path(str(run["checkpoint_dir"]))
