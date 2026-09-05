@@ -239,6 +239,13 @@ def _materialize_decisions(
                     )
                 )
                 continue
+        if field == "hparam_search_space":
+            # A concrete decision replaces the authored search-space owner; profiles already imply grid search.
+            target = dict(target)
+            if "profile" in target:
+                target.setdefault("method", "grid")
+                target.pop("profile")
+            target.pop("configurations", None)
         recipe[section] = {**target, key: value}
     if user_supplied:
         recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}

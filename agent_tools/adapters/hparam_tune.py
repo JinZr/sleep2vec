@@ -70,7 +70,8 @@ class HparamTuneAdapter(TaskAdapter):
         if isinstance(source.get("_local_recipe"), dict):
             source = source["_local_recipe"]
         authored_search = source.get("search") if isinstance(source.get("search"), dict) else {}
-        if "profile" not in authored_search:
+        effective_search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+        if "profile" not in authored_search or "profile" not in effective_search:
             return []
         from ..domain.finetune_hparam_profile import compile_finetune_balanced_profile
 
