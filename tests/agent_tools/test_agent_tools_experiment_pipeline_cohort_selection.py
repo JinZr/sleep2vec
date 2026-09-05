@@ -326,6 +326,15 @@ def test_frozen_winner_is_hash_bound_and_tamper_evident(tmp_path: Path, monkeypa
     state = json.loads((pipeline_dir / "pipeline.json").read_text())
     assert decision["winner"]["candidate_id"] == "age-rank-001"
     assert state["cohort_winner_sha256"] == file_sha256(pipeline_dir / "cohort_selection_winner.json")
+    assert b"\r\n" in (pipeline_dir / "cohort_selection_ranking.csv").read_bytes()
+    _ranking, reloaded = experiment_pipeline._load_or_freeze_cohort_decision(
+        tmp_path,
+        pipeline_dir,
+        spec,
+        candidates,
+        evidence,
+    )
+    assert reloaded == decision
     _ranking, validated = experiment_pipeline._validate_cohort_decision(
         pipeline_dir,
         spec,
@@ -509,3 +518,80 @@ def test_report_only_phase_is_built_from_the_frozen_winner(tmp_path: Path, monke
     assert {job["candidate_id"] for job in phases[1][1]} == {winner["candidate_id"]}
     assert states[-1]["status"] == "completed"
     assert completion_order == ["pipeline_completed", "finalize"]
+
+
+def test_completed_cohort_pipeline_reconciles_completion_event_before_finalization(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "cohort-gate"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "spec.source.yaml").write_text("pipeline: frozen\n")
+    report = pipeline_dir / "final.md"
+    report.write_text("completed\n")
+    state = {
+        "status": "completed",
+        "final_report": str(report),
+        "result_artifacts": {str(report): file_sha256(report)},
+    }
+    (pipeline_dir / "pipeline.json").write_text(json.dumps(state) + "\n")
+    spec = _spec(root)
+    candidates = _candidates(tmp_path)
+    winner = candidates["age-rank-001"]
+    experiment_status = {"value": "active"}
+    finalized = []
+
+    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: state)
+    monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: candidates)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validated_completed_phase",
+        lambda _root, _phase_dir, phase_spec, _candidates: [
+            {"job_id": job["id"], "status": "completed"} for job in phase_spec["jobs"]
+        ],
+    )
+    monkeypatch.setattr(experiment_pipeline.pipeline_results, "selection_evidence", lambda *_args: [])
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_cohort_decision",
+        lambda *_args: ([], {"winner": winner}),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_experiment",
+        lambda *_args, **_kwargs: {"status": experiment_status["value"]},
+    )
+
+    def finalize(_root, _report):
+        events = [
+            event
+            for event in experiment_pipeline.read_experiment_events(root)
+            if event.get("event_type") == "pipeline_completed"
+        ]
+        assert len(events) == 1
+        assert events[0]["pipeline_id"] == "cohort-gate"
+        assert events[0]["report"] == str(report)
+        finalized.append(True)
+        experiment_status["value"] = "completed"
+
+    result = experiment_pipeline._execute_pipeline(
+        root,
+        pipeline_dir,
+        spec,
+        poll_seconds=0,
+        finalize_callback=finalize,
+    )
+
+    assert result["status"] == "completed"
+    assert finalized == [True]
+    events_before = (root / "events.jsonl").read_bytes()
+
+    result = experiment_pipeline._execute_pipeline(
+        root,
+        pipeline_dir,
+        spec,
+        poll_seconds=0,
+        finalize_callback=finalize,
+    )
+
+    assert result["status"] == "completed"
+    assert finalized == [True]
+    assert (root / "events.jsonl").read_bytes() == events_before
