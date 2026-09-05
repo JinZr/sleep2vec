@@ -330,21 +330,16 @@ class TaskAdapter:
         if input_snapshots:
             run["input_snapshots"] = input_snapshots
         commands = plan_contract.generic_commands(recipe, run, self, config_bytes)
+        script_text = plan_contract.generic_script_text(recipe, run, self, commands, input_snapshots)
         contract = {
             "runs": [run],
             "commands": commands,
-            "script_text": plan_contract.generic_script_text(
-                recipe,
-                run,
-                self,
-                commands,
-                input_snapshots,
-            ),
+            "script_text": script_text,
         }
         if run.get("scheduler_type") == "slurm":
             execution = recipe["execution"]
             resources = slurm.normalize_resources(execution["scheduler"], execution.get("gpus_per_run", 1))
-            run.update(command=commands[0], script_sha256=hashlib.sha256(contract["script_text"].encode()).hexdigest())
+            run.update(command=commands[0], script_sha256=hashlib.sha256(script_text.encode()).hexdigest())
             token = slurm.submit_token(run, resources, execution["runtime_commit"])
             scheduler_text = slurm.render_batch_script(
                 run=run,
