@@ -326,6 +326,13 @@ def test_frozen_winner_is_hash_bound_and_tamper_evident(tmp_path: Path, monkeypa
     state = json.loads((pipeline_dir / "pipeline.json").read_text())
     assert decision["winner"]["candidate_id"] == "age-rank-001"
     assert state["cohort_winner_sha256"] == file_sha256(pipeline_dir / "cohort_selection_winner.json")
+    _ranking, validated = experiment_pipeline._validate_cohort_decision(
+        pipeline_dir,
+        spec,
+        candidates,
+        evidence,
+    )
+    assert validated == decision
 
     (pipeline_dir / "cohort_selection_winner.json").write_text("{}\n")
     with pytest.raises(ValueError, match="decision changed"):
@@ -335,6 +342,70 @@ def test_frozen_winner_is_hash_bound_and_tamper_evident(tmp_path: Path, monkeypa
             candidates,
             evidence,
         )
+
+
+def test_selection_evidence_is_reread_after_report_only_execution(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "cohort-gate"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "spec.source.yaml").write_text("pipeline: frozen\n")
+    (pipeline_dir / "pipeline.json").write_text("{}\n")
+    spec = _spec(root)
+    candidates = _candidates(tmp_path)
+    manifests = {
+        row["candidate_id"]: Path(row["result_manifest"])
+        for row in _evidence(tmp_path, {"age-rank-001": 4.9, "age-rank-002": 4.1})
+    }
+    finalized = []
+    evidence_reads = []
+
+    def current_evidence(*_args):
+        evidence_reads.append(True)
+        rows = []
+        for candidate_id, manifest_path in manifests.items():
+            manifest = json.loads(manifest_path.read_text())
+            rows.append(
+                {
+                    "candidate_id": candidate_id,
+                    "job_template_id": "selection-internal",
+                    "cohort": "internal_holdout",
+                    "metrics": manifest["metrics"],
+                    "result_manifest": str(manifest_path),
+                    "result_manifest_sha256": file_sha256(manifest_path),
+                }
+            )
+        return rows
+
+    def execute_phase(_root, _pipeline_dir, phase_spec, _candidates, **_kwargs):
+        if phase_spec["_execution_stage"] == "report_only":
+            manifests["age-rank-001"].write_text(json.dumps({"metrics": {"mae": 5.9}}) + "\n")
+        return {
+            "status": "completed",
+            "jobs": [{"job_id": job["id"], "status": "completed"} for job in phase_spec["jobs"]],
+        }
+
+    monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: candidates)
+    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
+    monkeypatch.setattr(experiment_pipeline, "_execute_cohort_phase", execute_phase)
+    monkeypatch.setattr(experiment_pipeline.pipeline_results, "selection_evidence", current_evidence)
+    monkeypatch.setattr(
+        experiment_pipeline.pipeline_results,
+        "write_cohort_result_summary",
+        lambda *_args: pytest.fail("changed selection evidence must block final reporting"),
+    )
+
+    with pytest.raises(ValueError, match="Frozen cohort-selection decision changed"):
+        experiment_pipeline._execute_cohort_selection(
+            root,
+            pipeline_dir,
+            spec,
+            poll_seconds=0,
+            finalize_callback=lambda *_args: finalized.append(True),
+        )
+
+    assert finalized == []
+    assert len(evidence_reads) == 2
+    assert json.loads((pipeline_dir / "pipeline.json").read_text()).get("status") != "completed"
 
 
 def test_no_winner_stops_before_report_only_materialization(tmp_path: Path, monkeypatch):
