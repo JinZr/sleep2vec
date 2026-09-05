@@ -8,7 +8,9 @@ from .sidecar_summaries import looks_like_placeholder_path, multilabel_summary, 
 
 
 def _looks_like_sex_age_baseline_config_data(data: dict[str, Any]) -> bool:
-    model = data.get("model") if isinstance(data.get("model"), dict) else {}
+    model = data.get("model")
+    if not isinstance(model, dict):
+        model = {}
     return model.get("name") == "sex_age_mlp"
 
 
@@ -45,8 +47,12 @@ def sex_age_baseline_config_summary(
             "blocking_issues": [str(exc)],
         }
 
-    raw_finetune = data.get(CONFIG_FINETUNE_SECTION) if isinstance(data.get(CONFIG_FINETUNE_SECTION), dict) else {}
-    raw_task = raw_finetune.get("task") if isinstance(raw_finetune.get("task"), dict) else {}
+    raw_finetune = data.get(CONFIG_FINETUNE_SECTION)
+    if not isinstance(raw_finetune, dict):
+        raw_finetune = {}
+    raw_task = raw_finetune.get("task")
+    if not isinstance(raw_task, dict):
+        raw_task = {}
     survival = survival_summary(
         raw_finetune,
         raw_task,
@@ -65,6 +71,7 @@ def sex_age_baseline_config_summary(
     finetune_preset_path = cfg.data.finetune_preset_path
     kaldi_data_root = cfg.data.kaldi_data_root
     kaldi_manifest = cfg.data.kaldi_manifest
+    raw_loss = raw_finetune.get("loss")
     finetune_summary = {
         "task": {
             "type": cfg.finetune.task.type,
@@ -73,7 +80,7 @@ def sex_age_baseline_config_summary(
             "monitor": cfg.finetune.task.monitor,
             "monitor_mod": cfg.finetune.task.monitor_mod,
         },
-        "loss": raw_finetune.get("loss") if isinstance(raw_finetune.get("loss"), dict) else {},
+        "loss": raw_loss if isinstance(raw_loss, dict) else {},
     }
     if survival is not None:
         finetune_summary["survival"] = survival

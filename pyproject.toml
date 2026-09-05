@@ -54,7 +54,6 @@ module = [
     "agent_tools.domain.finetune_hparam_profile",
     "agent_tools.domain.finetune_summary",
     "agent_tools.domain.index_csv",
-    "agent_tools.domain.sex_age_summary",
     "agent_tools.domain.sidecar_summaries",
     "agent_tools.experiment_tracking",
     "agent_tools.experiments",
