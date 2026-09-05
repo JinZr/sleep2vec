@@ -306,6 +306,18 @@ def evaluate_recipe(  # noqa: C901
     *,
     check_existing_experiment: bool = False,
 ) -> tuple[dict, dict | None, DecisionReport]:
+    """Resolve recipe decisions and return (recipe, config summary, consultation report).
+
+    Applies authored/user decisions and task defaults before consultation. The
+    config summary may be None when an early gate blocks evaluation; otherwise
+    it can include source bytes and their hash for later freezing. Inspect the
+    report before using either result to publish a plan.
+
+    Reads recipe/config/policy inputs and any evidence required by their gates;
+    does not publish a workspace or launch runs. check_existing_experiment also
+    checks the existing workspace metadata for compatibility. Consultation
+    blockers are returned in the report; loading and unhandled validation/I/O
+    errors propagate rather than becoming a consultation result."""
     recipe = load_recipe_with_base(recipe_path)
     source_recipe = copy.deepcopy(recipe)
     source = resolve_repo_path(recipe_path)
@@ -1225,6 +1237,24 @@ def build_plan(
     run_index_offset: int | None = None,
     validate_only: bool = False,
 ) -> DecisionReport:
+    """Validate and publish a frozen plan, returning its DecisionReport without launching runs.
+
+    Normally registers the plan and run rows in the experiment workspace. A
+    blocked report can publish questions/decisions and, with allow_unresolved,
+    a non-runnable draft; early blockers can return without publishing anything.
+    Expected recipe and config-hash arguments bind publication to prior inputs.
+
+    staging_dir is a new directory inside experiment.root holding files whose
+    logical paths refer to output_dir. defer_commit requires it and leaves a
+    successful build staged, skipping this wrapper's registration lock and the
+    normal final publication/registration; the caller owns that commit protocol.
+    validate_only supports materialized hparam plans: it checks a scratch build
+    without publishing a runnable plan, but can create scratch and lock files.
+
+    Adaptive/controller and run-index arguments support coordinated publication.
+    Consultation and handled precommit failures return a non-passing report;
+    other exceptions propagate. A failure does not promise rollback of every
+    workspace artifact. See doc/agent_contracts/ for the publication contracts."""
     build_kwargs = {
         "recipe_path": recipe_path,
         "output_dir": output_dir,
@@ -1597,6 +1627,19 @@ def preflight_plan(
     allow_existing_output_artifacts: bool = False,
     allow_adaptive_workflow: bool = False,
 ) -> tuple[dict, dict | None, DecisionReport]:
+    """Check whether a resolved recipe can be published at output_dir, without publishing it.
+
+    Returns (resolved recipe, optional config summary, DecisionReport), extending
+    evaluate_recipe with workspace, freezeability, task and output checks. Reads
+    the inputs and existing artifacts needed for these checks; launches no runs.
+    Expected blockers are reported, while unhandled loading/I/O errors propagate.
+
+    allow_unresolved permits a blocked draft, never a runnable unresolved plan.
+    unlock_final_test is checked against the frozen evaluation policy, not a
+    substitute for it. allow_existing_output_artifacts relaxes the publication
+    artifact guard for staged callers; allow_adaptive_workflow is for the
+    adaptive controller. A passing report does not reserve the output: build_plan
+    rechecks publication under its locks."""
     recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path, check_existing_experiment=True)
     # Static blockers, including NEEDS_USER_INPUT, must not restart reads through the later freeze checks.
     if cfg is None and any(

@@ -197,6 +197,18 @@ def read_registered_plan(  # noqa: C901
     remote: str | None = None,
     run_index_offset: int = 0,
 ) -> dict[str, Any]:
+    """Validate a registered plan against caller-supplied workspace state and return a summary.
+
+    workspace_experiment, step_manifest and workspace_rows are the caller's
+    canonical snapshots; this function checks the plan against them rather than
+    refreshing those snapshots. expected_recipe_path, when set, must match the
+    frozen recipe identity; run_index_offset controls reconstruction of run IDs.
+
+    Reads the control bundle and frozen files locally or on remote, checking
+    registration, recipe/command consistency, run bindings and hashes. Returns
+    path, task, run_keys, launch_script, selection, recipe and runs, rather than
+    the original plan.json mapping. Does not update lifecycle state or launch
+    runs. Contract violations raise ValueError; read/parse failures propagate."""
     plan_dir = Path(plan_dir)
     workspace = Path(workspace)
     registered_paths = [str(path) for path in step_manifest.get("plans") or []]
@@ -594,6 +606,18 @@ def read_hparam_plan(  # noqa: C901
     require_workspace_state: bool = True,
     require_adaptive_commit: bool = True,
 ) -> dict[str, Any]:
+    """Read and validate a local hparam plan, returning the full plan.json mapping.
+
+    Checks frozen recipe/config/script bindings and, by default, registered
+    workspace rows and the adaptive workflow commit. semantic_dir supplies the
+    intended published location when run_dir contains staged physical files;
+    frozen paths remain expressed in that semantic location.
+
+    require_workspace_state=False skips existing workspace registration checks
+    for unpublished builds; require_adaptive_commit=False skips the adaptive
+    commit check. Neither disables validation of the frozen plan itself. Reads
+    artifacts only, without observing jobs or updating state. Invalid contracts
+    raise ValueError; file and parsing failures propagate."""
     physical_dir = run_dir
     plan_dir = semantic_dir or physical_dir
     plan_path = physical_dir / "plan.json"

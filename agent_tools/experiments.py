@@ -605,6 +605,20 @@ def _finalizable_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]
 
 
 def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote: str | None = None) -> Path:
+    """Publish a final report and commit the managed experiment as completed.
+
+    Requires nonempty terminal run state, reasons for stopped runs, materialized
+    canonical steps and the applicable hparam selection/report/checkpoint
+    evidence. Failed runs are allowed when the required failure or combined
+    report is supplied; completion does not mean every run succeeded.
+
+    Reads report_path locally or on remote (where it must be absolute), writes
+    reports/final.md and a preparation event, then commits experiment.yaml with
+    report hash bindings. Returns the canonical final report path. The manifest
+    is the terminal commit: a later failure can leave a published report without
+    completed status. Invalid prerequisites raise ValueError; detected concurrent
+    changes raise RuntimeError and other I/O errors propagate. Does not launch
+    runs or refresh their observed statuses."""
     if remote and not Path(report_path).is_absolute():
         raise ValueError("Remote final report path must be absolute.")
     root = _target_root(run_dir, remote)
@@ -843,6 +857,17 @@ def index_checkpoints(run_dir: str | Path, *, remote: str | None = None) -> Path
 
 
 def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> dict[str, Any]:
+    """Observe managed runs once and commit their current status without launching work.
+
+    Requires an active, valid managed workspace. Reads local/remote process,
+    scheduler and artifact evidence, merges observations into run_manifest.tsv
+    and its projections, then writes reports/monitor.md. Returns run_dir, the
+    committed runs and the report path; these are committed observations rather
+    than an experiment_status lifecycle decision.
+
+    remote selects the workspace host. Invalid ownership/state and unhandled
+    observation or write errors propagate; a report-write failure can occur
+    after the canonical manifest has already been updated."""
     root = _target_root(run_dir, remote)
     previous_rows = _managed_rows(root, remote=remote)
     report_path = root / "reports" / "monitor.md"
@@ -871,6 +896,16 @@ def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> dic
 
 
 def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> dict[str, Any]:
+    """Return a read-only lifecycle snapshot from the managed workspace's recorded state.
+
+    Validates registered plan bindings and available selection/report/checkpoint
+    evidence locally or on remote, including completed workspaces. Does not poll
+    jobs or refresh canonical run statuses: live_observation is False.
+
+    The mapping contains experiment identity, lifecycle_source, summary, steps,
+    runs, blockers and a decision describing permitted next actions. Lifecycle
+    blockers appear in that snapshot; invalid workspace/plan contracts and
+    unhandled read errors raise. No reports or manifests are written."""
     root = _target_root(run_dir, remote)
     experiment, rows = _managed_workspace(
         root,
