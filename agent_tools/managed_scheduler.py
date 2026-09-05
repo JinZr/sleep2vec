@@ -192,6 +192,15 @@ def observe_run(
     health: bool = False,
     default_script_commits_terminal_status: bool = False,
 ) -> dict[str, Any]:
+    """Return a direct-run observation merged with previous (or row) evidence.
+
+    Passes the row's observation fields to status_row and derives terminal-status
+    ownership from prior metadata, using the supplied default only as fallback.
+    health enables additional probes. Reads local/remote evidence but does not
+    commit manifests, launch or stop runs; the caller persists the returned row.
+    This entrypoint does not dispatch Slurm rows to observe_slurm_run. Unhandled
+    observer errors propagate.
+    """
     prior = previous or row
     observation = {field: row[field] for field in evidence.RUN_EVIDENCE_FIELDS if field in row}
     observation.update(
@@ -1319,6 +1328,22 @@ def observe_slurm_run(  # noqa: C901
     health: bool = False,
     monitor_context: SlurmMonitorContext | None = None,
 ) -> dict[str, Any]:
+    """Observe a bound Slurm run and return evidence for the caller to commit.
+
+    Uses owner_dir for managed sidecars and execution for scheduler routing;
+    row supplies the frozen submit token, route and any bound job/cluster ID.
+    monitor_context can reuse observations within a monitoring round. Reads
+    sidecars, scheduler/controller/accounting state and runtime artifacts; health
+    adds diagnostics. Does not submit, cancel or persist lifecycle updates.
+
+    Scheduler terminal state normally requires a matching terminal sidecar to
+    determine completion. An observed cancellation with a recorded stop request
+    can establish stopped; a narrowly bound accounting-disabled fallback uses
+    the terminal sidecar after the controller forgets the job. Unresolved discovery stays submitting,
+    while missing evidence or handled query failures for a bound job produce
+    unknown_scheduler. This does not make every read failure recoverable:
+    sidecar/identity validation and unhandled artifact or I/O errors propagate.
+    """
     if row.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
         return _slurm_artifact_observation({**row, "scheduler_observed_at": utc_now()}, health=health)
     owner = Path(owner_dir)
