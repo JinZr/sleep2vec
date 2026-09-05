@@ -1035,6 +1035,64 @@ def test_agent_proposal_rejects_forged_self_consistent_snapshot_and_issuance(tmp
     assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").exists()
 
 
+@pytest.mark.parametrize("selection_split", ["val", "test"])
+def test_agent_proposal_rejects_terminal_result_drift_after_snapshot(tmp_path: Path, selection_split: str):
+    if selection_split == "test":
+        recipe = _test_selected_adaptive_recipe(tmp_path)
+    else:
+        recipe = _agent_recipe(tmp_path)
+        payload = yaml.safe_load(recipe.read_text())
+        payload["adaptive"]["objective_metric"] = "val_ahi_pearson"
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    if selection_split == "test":
+        run, _checkpoints = _write_checkpoint_test_manifest(
+            workflow_dir,
+            scores={1: 0.8, 2: 0.9},
+            top_level_score=0.99,
+        )
+    else:
+        _write_fake_manifest(workflow_dir)
+        run = json.loads((workflow_dir / "adaptive" / "rounds" / "round_000" / "plan.json").read_text())["runs"][0]
+    _mark_round_terminal(workflow_dir, tmp_path)
+    input_path = adaptive_hparam.adaptive_step(workflow_dir)
+    assert input_path is not None
+    proposal_path = _write_agent_submission(input_path)
+    assert adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path) == proposal_path
+
+    runtime_manifest = Path(run["runtime_dir"]) / "run_manifest.json"
+    manifest = json.loads(runtime_manifest.read_text())
+    if selection_split == "test":
+        manifest["checkpoint_test_results"][1]["metrics"]["test_auroc"] = 0.1
+    else:
+        manifest["metrics"]["val_ahi_pearson"] = 0.6
+    runtime_manifest.write_text(json.dumps(manifest))
+    managed_paths = [
+        tmp_path / "events.jsonl",
+        tmp_path / "run_manifest.tsv",
+        workflow_dir / "adaptive" / "workflow.json",
+        workflow_dir / "adaptive" / "run_registry.tsv",
+        workflow_dir / "adaptive" / "digests" / "round_000.csv",
+        workflow_dir / "adaptive" / "incumbents.tsv",
+        input_path,
+        proposal_path,
+        runtime_manifest,
+    ]
+    evidence_before = {path: path.read_bytes() for path in managed_paths}
+
+    with pytest.raises(
+        ValueError,
+        match=r"^Agent proposal input does not match the current authoritative snapshot\.$",
+    ):
+        adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path)
+
+    assert {path: path.read_bytes() for path in managed_paths} == evidence_before
+    assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
+    assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").exists()
+    assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.md").exists()
+    assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
+
+
 @pytest.mark.parametrize("execute", [False, True])
 def test_agent_proposal_rejects_source_config_drift_after_snapshot(tmp_path: Path, execute: bool):
     recipe = _agent_recipe(tmp_path)
