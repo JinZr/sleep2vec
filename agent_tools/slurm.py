@@ -13,10 +13,21 @@ import socket
 import subprocess
 import tempfile
 import traceback
-from typing import Any
+from typing import Any, TypedDict
 
 from . import manifests, python_programs, transport
 from .runtime_lock import runtime_lock
+
+
+class SlurmResources(TypedDict):
+    partition: str
+    cpus_per_task: int
+    memory: str
+    walltime: str
+    nice: int
+    nodelist: str
+    direct_controller: bool
+    gpus_per_run: int
 
 
 @dataclass(frozen=True)
@@ -58,7 +69,7 @@ RESOURCE_FIELDS = {
 _DISTRIBUTED_ENV_FIELDS = {"RANK", "LOCAL_RANK", "WORLD_SIZE"}
 
 
-def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> dict[str, Any]:
+def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> SlurmResources:
     unknown = sorted(set(scheduler) - RESOURCE_FIELDS)
     if unknown:
         raise ValueError(f"Unknown execution.scheduler field: {', '.join(unknown)}")
@@ -101,7 +112,7 @@ def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> dict[st
 
 def fixed_node_resource_capacity(
     execution: dict[str, Any],
-    resources: dict[str, Any],
+    resources: SlurmResources,
     planned_runs: int,
     *,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
@@ -192,7 +203,7 @@ def fixed_node_resource_capacity(
     }
 
 
-def submit_token(run: dict[str, Any], resources: dict[str, Any], runtime_commit: str) -> str:
+def submit_token(run: dict[str, Any], resources: SlurmResources, runtime_commit: str) -> str:
     payload = {
         "experiment_id": run["experiment_id"],
         "step_id": run["step_id"],
@@ -211,7 +222,7 @@ def render_batch_script(
     *,
     run: dict[str, Any],
     execution: dict[str, Any],
-    resources: dict[str, Any],
+    resources: SlurmResources,
     token: str,
     result_path: str | Path,
     allocation_identity_path: str | Path,

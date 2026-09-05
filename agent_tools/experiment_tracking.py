@@ -518,7 +518,7 @@ def monitor_report(rows: list[dict[str, Any]]) -> str:
 
 def experiment_status_snapshot(  # noqa: C901
     experiment: dict[str, Any],
-    registered_steps: list[dict[str, Any]],
+    registered_steps: list[artifacts.RegisteredPlanStep],
     rows: list[dict[str, Any]],
     *,
     root: Path,
@@ -793,7 +793,7 @@ def experiment_status_snapshot(  # noqa: C901
 
 
 def hparam_selection_lifecycle(
-    registered_steps: list[dict[str, Any]],
+    registered_steps: list[artifacts.RegisteredPlanStep],
     rows: list[dict[str, Any]],
     *,
     root: Path,
@@ -838,7 +838,7 @@ def hparam_selection_lifecycle(
         if not selection.get("metric") or selection.get("mode") not in {"min", "max"} or not selection.get("split"):
             raise ValueError(f"Registered hparam plan has an incomplete selection policy: {step_id}")
         plan_keys = {tuple(key) for plan in plans for key in plan["run_keys"]}
-        step = {
+        step: dict[str, Any] = {
             "step_id": step_id,
             "plan_path": min(str(plan["path"]) for plan in plans),
             "plans": plans,
@@ -1358,7 +1358,7 @@ def format_experiment_status(snapshot: dict[str, Any]) -> str:
 
 
 def _plan_advice(
-    registered_steps: list[dict[str, Any]],
+    registered_steps: list[artifacts.RegisteredPlanStep],
     rows: list[dict[str, Any]],
     *,
     remote: str | None = None,
@@ -1382,7 +1382,7 @@ def _plan_advice(
                         _status_blocker(
                             code,
                             message,
-                            rows=[rows_by_key[tuple(key)] for key in plan["run_keys"]],
+                            rows=[rows_by_key[key] for key in plan["run_keys"]],
                             blocked_actions=blocked_actions,
                         )
                     )
@@ -1408,7 +1408,7 @@ def _plan_advice(
             )
             continue
         for plan in sorted(registered["plans"], key=lambda item: str(item["path"])):
-            plan_rows = [rows_by_key[tuple(key)] for key in plan["run_keys"]]
+            plan_rows = [rows_by_key[key] for key in plan["run_keys"]]
             if not any(row["status"] in managed_scheduler.LAUNCHABLE_STATUSES for row in plan_rows):
                 continue
             if plan["task"] == "hparam_tune":
