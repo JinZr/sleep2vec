@@ -932,6 +932,12 @@ def _execute_cohort_selection(
         return report_result
 
     _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
+    # Report-only execution can outlive the selection snapshot; re-read its bound manifests before finalization.
+    evidence = pipeline_results.selection_evidence(
+        pipeline_dir / "phases" / "selection",
+        selection_spec,
+        candidates,
+    )
     _validate_cohort_decision(pipeline_dir, spec, candidates, evidence)
     report = pipeline_results.write_cohort_result_summary(
         pipeline_dir,
