@@ -499,6 +499,112 @@ def test_profile_binding_and_plan_freeze_exact_expansion(tmp_path: Path):
     assert "adaptation.strategy" not in markdown
 
 
+@pytest.mark.parametrize(
+    "authored_search",
+    [
+        {"method": "grid", "max_runs": 3, "configurations": [{"runtime.lr": 1.0e-6}]},
+        {"profile": "finetune_balanced", "method": None, "max_runs": 12},
+    ],
+    ids=["configurations", "profile"],
+)
+def test_explicit_user_search_replaces_the_authored_search_space(tmp_path: Path, authored_search: dict):
+    recipe_path, workspace = _profile_recipe(tmp_path)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    recipe["search"] = authored_search
+    recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
+    recipe_bytes = recipe_path.read_bytes()
+
+    control, _summary, control_report = plans.evaluate_recipe(recipe_path)
+
+    assert control_report.exit_code == 0
+    if "profile" in authored_search:
+        assert control["search"]["profile"] == "finetune_balanced"
+        assert len(control["search"]["configurations"]) == 12
+    else:
+        assert control["search"] == authored_search
+    assert recipe_path.read_bytes() == recipe_bytes
+
+    decisions_path = tmp_path / "decisions.yaml"
+    decisions_path.write_text(
+        yaml.safe_dump(
+            {
+                "decisions": {
+                    "hparam_search_space": {
+                        "value": {"runtime.lr": [2.0e-6]},
+                        "source": "explicit_user",
+                    },
+                }
+            },
+            sort_keys=False,
+        )
+    )
+    decision_bytes = decisions_path.read_bytes()
+    expected_search = {
+        "method": "grid",
+        "max_runs": authored_search["max_runs"],
+        "parameters": {"runtime.lr": [2.0e-6]},
+    }
+
+    effective, _summary, doctor = plans.evaluate_recipe(recipe_path, decisions_path)
+
+    assert doctor.exit_code == 0
+    assert effective["search"] == expected_search
+
+    plan_dir = workspace / "plans" / "user-search"
+    report = plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir, user_decisions_path=decisions_path)
+
+    assert report.exit_code == 0
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
+    assert plan["recipe"]["search"] == expected_search
+    assert resolved["search"] == expected_search
+    assert len(plan["runs"]) == 1
+    assert plan["runs"][0]["runtime.lr"] == 2.0e-6
+    assert recipe_path.read_bytes() == recipe_bytes
+    assert decisions_path.read_bytes() == decision_bytes
+
+
+@pytest.mark.parametrize(
+    "authored_search",
+    [
+        {"method": "grid", "max_runs": 3, "configurations": [{"runtime.lr": 1.0e-6}]},
+        {"profile": "finetune_balanced", "method": None, "max_runs": 12},
+    ],
+    ids=["configurations", "profile"],
+)
+def test_unresolved_user_search_preserves_the_authored_search_space(tmp_path: Path, authored_search: dict):
+    recipe_path, workspace = _profile_recipe(tmp_path)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    recipe["search"] = authored_search
+    recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
+    recipe_bytes = recipe_path.read_bytes()
+    control, _summary, control_report = plans.evaluate_recipe(recipe_path)
+    decisions_path = tmp_path / "decisions.yaml"
+    decisions_path.write_text(
+        yaml.safe_dump(
+            {"decisions": {"hparam_search_space": {"value": "ASK_USER", "source": "explicit_user"}}},
+            sort_keys=False,
+        )
+    )
+    decision_bytes = decisions_path.read_bytes()
+
+    effective, _summary, doctor = plans.evaluate_recipe(recipe_path, decisions_path)
+
+    assert control_report.exit_code == 0
+    assert doctor.exit_code == 2
+    assert effective["search"] == control["search"]
+
+    plan_dir = workspace / "plans" / "unresolved-search"
+    report = plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir, user_decisions_path=decisions_path)
+
+    assert report.exit_code == 2
+    assert not (plan_dir / "plan.json").exists()
+    assert not (plan_dir / "runs").exists()
+    assert not (plan_dir / "run_all.sh").exists()
+    assert recipe_path.read_bytes() == recipe_bytes
+    assert decisions_path.read_bytes() == decision_bytes
+
+
 @pytest.mark.parametrize("max_runs", [3, 33])
 def test_invalid_profile_budget_fails_before_workspace_mutation(tmp_path: Path, max_runs: int):
     recipe_path, workspace = _profile_recipe(tmp_path, max_runs=max_runs)
