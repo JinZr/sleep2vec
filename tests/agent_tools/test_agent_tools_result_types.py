@@ -9,7 +9,9 @@ def test_result_types_reach_callers(tmp_path: Path):
     probe.write_text(
         textwrap.dedent("""\
             from pathlib import Path
-            from agent_tools import experiment_tracking, experiments, run_artifacts, slurm
+            from agent_tools import (
+                adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments, run_artifacts, slurm,
+            )
 
             resources = slurm.normalize_resources({}, 1)
             cpus: int = resources["cpus_per_task"]
@@ -56,6 +58,30 @@ def test_result_types_reach_callers(tmp_path: Path):
             capabilities["partition_max_time"] = 1  # type: ignore[typeddict-item]
             capabilities["preemption_enabled"] = 1  # type: ignore[typeddict-item]
             capabilities["reservation_count"] = "1"  # type: ignore[typeddict-item]
+
+            checkpoint_rows = checkpoint_test_results.validate_checkpoint_test_results(
+                [], "metric", {}, step_id="tune", run_id="run-001",
+            )
+            checkpoint_path: str = checkpoint_rows[0]["checkpoint_path"]
+            checkpoint_epoch: int = checkpoint_rows[0]["epoch"]
+            checkpoint_score: float = checkpoint_rows[0]["score"]
+            checkpoint_rows[0]["checkpoint_paths"]  # type: ignore[typeddict-item]
+            checkpoint_rows[0]["score"] = "0.5"  # type: ignore[typeddict-item]
+            checkpoint_rows[0]["epoch"] = 1.5  # type: ignore[typeddict-item]
+            objective_result = adaptive_hparam._test_checkpoint_objective({}, {}, "/checkpoints", [])
+            objective_result["score"]  # type: ignore[index]
+            if objective_result is not None:
+                objective_score: float = objective_result["score"]
+                objective_result["checkpoint_paths"]  # type: ignore[typeddict-item]
+
+            class RankingRow(checkpoint_test_results.CheckpointTestResult):
+                checkpoint_sha256: str
+
+            ranking_rows: list[RankingRow] = []
+            winner = checkpoint_test_results.best_checkpoint_test_result(ranking_rows, "max")
+            winner_hash: str = winner["checkpoint_sha256"]
+            winner["checkpoint_sha256"] = 1  # type: ignore[typeddict-item]
+            winner["checkpoint_sha"]  # type: ignore[typeddict-item]
 
             plan = run_artifacts.read_registered_plan(
                 "/plan", workspace="/workspace", workspace_experiment={},
