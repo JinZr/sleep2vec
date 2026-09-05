@@ -351,7 +351,7 @@ def evaluate_consultation_gates(
             requires_multilabel_sidecars=task_adapter.requires_multilabel_sidecars if task_adapter else None,
             preset_path_recipe_field=task_adapter.preset_path_recipe_field if task_adapter else None,
             validates_dataset_paths=task_adapter.validates_dataset_paths if task_adapter else False,
-            uses_finetune_config=task_adapter.uses_finetune_config if task_adapter else None,
+            uses_finetune_config=task_adapter.uses_finetune_config if task_adapter else False,
         )
     )
     if task_adapter is not None:
@@ -401,7 +401,7 @@ def _resolve_decision(
     if field in cli_args and cli_args[field] not in (None, ""):
         return ResolvedDecision(field, cli_args[field], "explicit_cli", "high", {"cli": cli_args[field]})
 
-    recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
+    recipe_decisions = recipe["decisions"] if isinstance(recipe.get("decisions"), dict) else {}
     if field in recipe_decisions:
         return _decision_from_mapping(field, recipe_decisions[field], "explicit_recipe")
 
@@ -449,7 +449,7 @@ def _recipe_field_value(field: str, recipe: dict) -> Any:
         return recipe.get("task", _MISSING)
     value: Any = _MISSING
     for section, key in spec.read_path:
-        owner = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
+        owner = recipe[section] if isinstance(recipe.get(section), dict) else {}
         if key in owner:  # present-but-falsy values (e.g. overwrite=False) count as a hit
             value = owner[key]
             break
@@ -505,7 +505,7 @@ def _base_task_issues(
     base_recipe = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else None
     if not base_recipe:
         return []
-    local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    local_recipe = recipe["_local_recipe"] if isinstance(recipe.get("_local_recipe"), dict) else recipe
     base_gate = {key: value for key, value in recipe.items() if not key.startswith("_")}
     base_gate["task"] = base_task
     if isinstance(base_gate.get("runtime"), dict):
@@ -516,7 +516,7 @@ def _base_task_issues(
             field: value for field, value in base_gate["runtime"].items() if field in base_runtime_fields
         }
 
-    local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
+    local_decisions = local_recipe["decisions"] if isinstance(local_recipe.get("decisions"), dict) else {}
     base_decisions = dict(base_recipe.get("decisions") or {})
     base_decision_fields = _decision_fields_for_task(base_task, policy)
     for decision_field, value in local_decisions.items():
