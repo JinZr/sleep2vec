@@ -166,7 +166,7 @@ class HparamTuneAdapter(TaskAdapter):
                 "execution.scheduler.capabilities",
                 message,
                 None,
-                capabilities,
+                dict(capabilities),
             )
         planned_runs = len(plan_hparam.hparam_combos(recipe))
         resources = slurm.normalize_resources(scheduler, execution.get("gpus_per_run", 1))
