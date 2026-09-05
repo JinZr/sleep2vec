@@ -486,7 +486,11 @@ def test_agent_proposal_requires_explicit_control_fields(field: str, unresolved:
 
     assert issue.status == DecisionStatus.NEEDS_USER_INPUT
     assert issue.question
-    assert issue.evidence["preflight_before_workspace"] is True
+    assert issue.evidence == {
+        "value": adaptive.get(field),
+        "source_layer": "effective",
+        "preflight_before_workspace": True,
+    }
 
 
 def test_agent_proposal_treats_blank_objective_metric_as_unresolved():
@@ -505,7 +509,11 @@ def test_agent_proposal_treats_blank_objective_metric_as_unresolved():
 
     assert issue.status == DecisionStatus.NEEDS_USER_INPUT
     assert issue.question
-    assert issue.evidence["preflight_before_workspace"] is True
+    assert issue.evidence == {
+        "value": "   ",
+        "source_layer": "effective",
+        "preflight_before_workspace": True,
+    }
 
 
 @pytest.mark.parametrize(
@@ -534,7 +542,11 @@ def test_agent_proposal_rejects_non_string_objective_metric(objective_metric):
 
     assert issue.status == DecisionStatus.FAIL
     assert issue.question is None
-    assert issue.evidence["preflight_before_workspace"] is True
+    assert issue.evidence == {
+        "value": objective_metric,
+        "source_layer": "effective",
+        "preflight_before_workspace": True,
+    }
 
 
 @pytest.mark.parametrize(

@@ -112,7 +112,8 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
                     source_layer,
                 )
             )
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
     if "scheduler" in execution:
         scheduler = execution["scheduler"]
         if not isinstance(scheduler, dict):
@@ -171,7 +172,8 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
                     source_layer,
                 )
             )
-    suggest = adaptive.get("suggest") if isinstance(adaptive.get("suggest"), dict) else {}
+    suggest_value = adaptive.get("suggest")
+    suggest = suggest_value if isinstance(suggest_value, dict) else {}
     strategy = suggest.get("strategy", DEFAULT_ADAPTIVE_SUGGEST_STRATEGY)
     if not isinstance(strategy, str) or strategy not in {"best_neighborhood", "agent_proposal"}:
         issues.append(
@@ -208,7 +210,12 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
                     )
                 )
                 continue
-            if field in adaptive and value not in (None, "") and (field != "objective_metric" or value.strip()):
+            if (
+                field in adaptive
+                and value is not None
+                and value != ""
+                and (field != "objective_metric" or value.strip())
+            ):
                 continue
             field_path = f"adaptive.{field}"
             issues.append(
@@ -269,11 +276,12 @@ def _hparam_config_issues(
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
     issues = []
-    local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
-    local_evaluation = (
-        local_recipe.get("evaluation_policy") if isinstance(local_recipe.get("evaluation_policy"), dict) else {}
-    )
-    local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
+    local_recipe_value = recipe.get("_local_recipe")
+    local_recipe = local_recipe_value if isinstance(local_recipe_value, dict) else recipe
+    local_evaluation_value = local_recipe.get("evaluation_policy")
+    local_evaluation = local_evaluation_value if isinstance(local_evaluation_value, dict) else {}
+    local_decisions_value = local_recipe.get("decisions")
+    local_decisions = local_decisions_value if isinstance(local_decisions_value, dict) else {}
     if config_summary:
         for issue in config_summary.get("blocking_issues", []):
             issues.append(
@@ -286,7 +294,8 @@ def _hparam_config_issues(
                 )
             )
     if config_summary is None:
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        inputs_value = recipe.get("inputs")
+        inputs = inputs_value if isinstance(inputs_value, dict) else {}
         config = inputs.get("config")
         if config:
             issues.append(
@@ -413,15 +422,20 @@ def _hparam_evaluation_issues(
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
     issues = []
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
-    local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
-    local_evaluation = (
-        local_recipe.get("evaluation_policy") if isinstance(local_recipe.get("evaluation_policy"), dict) else {}
-    )
-    local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
+    evaluation_value = recipe.get("evaluation_policy")
+    evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
+    search_value = recipe.get("search")
+    search = search_value if isinstance(search_value, dict) else {}
+    runtime_value = recipe.get("runtime")
+    runtime = runtime_value if isinstance(runtime_value, dict) else {}
+    adaptive_value = recipe.get("adaptive")
+    adaptive = adaptive_value if isinstance(adaptive_value, dict) else {}
+    local_recipe_value = recipe.get("_local_recipe")
+    local_recipe = local_recipe_value if isinstance(local_recipe_value, dict) else recipe
+    local_evaluation_value = local_recipe.get("evaluation_policy")
+    local_evaluation = local_evaluation_value if isinstance(local_evaluation_value, dict) else {}
+    local_decisions_value = local_recipe.get("decisions")
+    local_decisions = local_decisions_value if isinstance(local_decisions_value, dict) else {}
     user_external_lock = decisions.get("external_test_locked")
     has_external_lock = (
         "external_test_locked" in local_evaluation
@@ -579,13 +593,19 @@ def hparam_tune_issues(
     decisions: dict[str, ResolvedDecision],
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
-    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    search_value = recipe.get("search")
+    search = search_value if isinstance(search_value, dict) else {}
     profile_mode = "profile" in search
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
-    local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
-    local_runtime = local_recipe.get("runtime") if isinstance(local_recipe.get("runtime"), dict) else {}
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
+    runtime_value = recipe.get("runtime")
+    runtime = runtime_value if isinstance(runtime_value, dict) else {}
+    adaptive_value = recipe.get("adaptive")
+    adaptive = adaptive_value if isinstance(adaptive_value, dict) else {}
+    local_recipe_value = recipe.get("_local_recipe")
+    local_recipe = local_recipe_value if isinstance(local_recipe_value, dict) else recipe
+    local_runtime_value = local_recipe.get("runtime")
+    local_runtime = local_runtime_value if isinstance(local_runtime_value, dict) else {}
 
     issues = hparam_recipe_contract_issues(recipe, source_layer="effective")
     issues.extend(_hparam_config_issues(recipe, config_summary, decisions, high_impact))
@@ -850,7 +870,8 @@ def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
                     {field: adaptive.get(field)},
                 )
             )
-    replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
+    replacement_value = adaptive.get("replacement")
+    replacement = replacement_value if isinstance(replacement_value, dict) else {}
     for field in ("enabled", "allow_running_stop"):
         if field in replacement and type(replacement[field]) is not bool:
             issues.append(
