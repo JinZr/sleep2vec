@@ -28,9 +28,9 @@ def execution_contract_issues(
     if not isinstance(execution, dict):
         return [_execution_contract_issue("execution", "execution must be a mapping.", execution, source_layer)]
     allowed_fields = _EXECUTION_FIELDS | (_RUNTIME_IDENTITY_FIELDS if supports_runtime_identity else set())
-    scheduler = execution.get("scheduler")
-    is_slurm = supports_slurm and isinstance(scheduler, dict) and scheduler.get("type") == "slurm"
-    is_direct = supports_direct and isinstance(scheduler, dict) and scheduler.get("type") == "direct"
+    scheduler = execution["scheduler"] if isinstance(execution.get("scheduler"), dict) else {}
+    is_slurm = supports_slurm and scheduler.get("type") == "slurm"
+    is_direct = supports_direct and scheduler.get("type") == "direct"
     if is_slurm:
         allowed_fields |= {"scheduler", "gpus_per_run", "env"}
     if is_direct:
@@ -79,7 +79,7 @@ def execution_contract_issues(
                         source_layer,
                     )
                 )
-        runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        runtime = recipe["runtime"] if isinstance(recipe.get("runtime"), dict) else {}
         issues.extend(
             issue
             for issue in managed_runtime_resource_issues(
@@ -409,7 +409,7 @@ def _effective_preset_path(
     *,
     uses_finetune_config: bool = False,
 ) -> tuple[str, Any]:
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
     if recipe_field is not None:
         value = inputs.get(recipe_field)
         if value not in (None, "", "ASK_USER"):
@@ -596,7 +596,7 @@ def path_issues(
     uses_finetune_config: bool = False,
 ) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
     required_paths: list[tuple[str, Any, bool]] = []
     if inputs.get("config") not in (None, "", "ASK_USER"):
         required_paths.append(("config", inputs.get("config"), False))
@@ -784,8 +784,8 @@ def validate_input_path(
 
 
 def inference_checkpoint_averaging_issue(recipe: dict, ckpt_path: Any) -> DecisionIssue | None:
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+    inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
+    runtime = recipe["runtime"] if isinstance(recipe.get("runtime"), dict) else {}
     avg_ckpts_value = runtime.get("avg_ckpts", 1)
     avg_ckpts = avg_ckpts_value if type(avg_ckpts_value) is int and avg_ckpts_value > 0 else 1
     if recipe.get("variant") == "sex_age_baseline" and avg_ckpts != 1:
@@ -829,7 +829,7 @@ def inference_checkpoint_averaging_issue(recipe: dict, ckpt_path: Any) -> Decisi
 def sex_age_pretrained_backbone_issue(recipe: dict) -> DecisionIssue | None:
     if recipe.get("variant") != "sex_age_baseline":
         return None
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
     value = inputs.get("pretrained_backbone_path")
     if value in (None, "", "ASK_USER"):
         return None
@@ -867,7 +867,7 @@ def path_validation(recipe: dict, context: str) -> str:
 
 
 def _execution(recipe: dict) -> dict[str, Any]:
-    return recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    return recipe["execution"] if isinstance(recipe.get("execution"), dict) else {}
 
 
 _sh = transport.sh
