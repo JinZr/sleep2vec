@@ -46,7 +46,6 @@ ignore_errors = true
 module = [
     "agent_tools.adaptive_hparam",
     "agent_tools.decision_hparam",
-    "agent_tools.hparam_runtime",
     "agent_tools.managed_scheduler",
     "agent_tools.plan_hparam",
     "agent_tools.plans",
