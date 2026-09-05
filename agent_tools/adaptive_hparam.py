@@ -47,6 +47,7 @@ from .experiment_workspace import (
     validate_frozen_run_update,
     validate_managed_run_rows,
     validate_step_registration,
+    validated_run_key,
 )
 from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, stop_hparam_run
 from .manifests import read_json, read_rows, utc_now, validate_managed_header, write_rows, write_text
@@ -97,11 +98,12 @@ def _is_accepted_start(row: dict[str, Any]) -> bool:
 
 
 def _accepted_start_keys(rows: list[dict[str, Any]]) -> set[tuple[str, str]]:
-    return {managed_run_key(row) for row in rows if _is_accepted_start(row)}
+    return {validated_run_key(row) for row in rows if _is_accepted_start(row)}
 
 
 def _validate_adaptive_step_registration(workspace: Path, round_dir: Path, plan: dict[str, Any]) -> None:
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     validate_step_registration(
         workspace,
         {
@@ -266,7 +268,7 @@ def _init_adaptive_workflow_locked(  # noqa: C901
                     preflight_validated=not registered_keys,
                 )
                 _ensure_initial_registry(root, round_dir, committed_plan)
-            else:
+            elif staging_dir is not None:
                 staged_plan_sha256 = artifacts.plan_tree_sha256(staging_dir)
                 placeholder_backup = _publish_staged_round_locked(staging_dir, round_dir)
                 try:
@@ -337,7 +339,8 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
     if (workflow_root / "adaptive" / "workflow.json").exists():
         _workflow(workflow_root)
     plan = artifacts.read_hparam_plan(round_dir)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
@@ -370,8 +373,10 @@ def _digest_rows(
     objective: dict[str, str],
 ) -> list[dict[str, Any]]:
     plan = artifacts.read_hparam_plan(round_dir)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
+    evaluation_value = recipe.get("evaluation_policy")
+    evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     selection_split = str(evaluation.get("selection_split") or "")
     plan_keys = {managed_run_key(run) for run in plan.get("runs", [])}
     status_rows = {
@@ -391,8 +396,8 @@ def _digest_rows(
                     f"Completed adaptive run has unavailable runtime artifact evidence: {run['step_id']} / {run_id}"
                 )
             manifest_path = str(status.get("run_manifest") or "")
-            manifest = {}
-            checkpoint_names = []
+            manifest: dict[str, Any] = {}
+            checkpoint_names: list[str] = []
         else:
             manifest_path, manifest, checkpoint_names = observed_artifacts
         checkpoint_dir = str(artifact_row.get("checkpoint_dir") or "")
@@ -493,7 +498,8 @@ def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | No
         _append_event(root, "suggest_blocked", {"round": next_round, "reason": "no_scored_runs"})
         raise ValueError(f"No digest rows with finite {objective['metric']} are available for suggestion.")
     best = ranked[0]
-    source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    source_value = recipe.get("_local_recipe")
+    source = source_value if isinstance(source_value, dict) else recipe
     suggested = copy.deepcopy(source)
     suggested_root = experiment_root(suggested)
     if suggested_root is not None:
@@ -537,7 +543,8 @@ def _proposal_digest_rows(root: Path, workspace: Path) -> list[dict[str, str]]:
     source_round = _latest_round_index(root)
     round_dir = _round_dir(root, source_round)
     plan = artifacts.read_hparam_plan(round_dir)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     rows = _digest_rows(round_dir, source_round, workspace, _objective(root, recipe))
     fieldnames = sorted({key for row in rows for key in row})
     return [{key: "" if row.get(key) is None else str(row.get(key)) for key in fieldnames} for row in rows]
@@ -583,7 +590,8 @@ def _agent_proposal_input_payload(
     remaining_runs = int(adaptive.get("max_runs_total") or 10**9) - len(registered)
     if remaining_rounds <= 0 or remaining_runs <= 0:
         raise ValueError("Adaptive budget is exhausted; no agent proposal can be requested.")
-    suggest = adaptive.get("suggest") if isinstance(adaptive.get("suggest"), dict) else {}
+    suggest_value = adaptive.get("suggest")
+    suggest = suggest_value if isinstance(suggest_value, dict) else {}
     parameters = (recipe.get("search") or {}).get("parameters") or {}
     return {
         "source_round": source_round,
@@ -835,7 +843,8 @@ def _load_agent_proposal(
 
 def _applied_agent_proposal(root: Path, workspace: Path, proposal_path: str | Path) -> Path | None:
     initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
-    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    initial_recipe_value = initial_plan.get("recipe")
+    initial_recipe = initial_recipe_value if isinstance(initial_recipe_value, dict) else {}
     if _suggest_strategy(initial_recipe) != "agent_proposal":
         return None
 
@@ -916,7 +925,8 @@ def _applied_agent_proposal(root: Path, workspace: Path, proposal_path: str | Pa
 def _agent_suggestion_payload(
     recipe: dict[str, Any], workflow: dict[str, Any], target_round: int, validated: dict[str, Any]
 ) -> dict[str, Any]:
-    source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    source_value = recipe.get("_local_recipe")
+    source = source_value if isinstance(source_value, dict) else recipe
     suggested = copy.deepcopy(source)
     suggested_root = experiment_root(suggested)
     if suggested_root is not None:
@@ -1114,10 +1124,10 @@ def _launch_initial_replacement(
     before_launch = state.started_keys
     _launch_with_recovery(root, workspace, state, round_dir, attempt_run_id=None, before_launch=before_launch)
     canonical_rows = read_run_manifest(workspace)
-    next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
+    next_round_rows = [row for row in canonical_rows if validated_run_key(row) in state.next_plan_keys]
     refreshed_started_keys = _accepted_start_keys(next_round_rows)
     newly_launch_failed = {
-        managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
+        validated_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
     } - state.launch_failed_keys
     state.retirement_credit = len(refreshed_started_keys - before_launch)
     state.started_keys = refreshed_started_keys
@@ -1145,19 +1155,19 @@ def _drain_bad_runs(
     bad_index = 0
     while bad_index < len(ordered_bad_run_keys):
         canonical_rows = read_run_manifest(workspace)
-        next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
+        next_round_rows = [row for row in canonical_rows if validated_run_key(row) in state.next_plan_keys]
         pending = any(row.get("status") in {"planned", "pending"} for row in next_round_rows)
         if state.retirement_credit <= 0 and not pending:
             break
         run_key = ordered_bad_run_keys[bad_index]
-        before_stop = dict({managed_run_key(row): row for row in canonical_rows}[run_key])
+        before_stop = dict({validated_run_key(row): row for row in canonical_rows}[run_key])
         if scheduler_type(before_stop) == "slurm" and state.retirement_credit <= 0:
             break
         bad_index += 1
         try:
             stopped = _stop_bad_running_runs(root, round_dir, recipe, run_keys={run_key})
         except Exception as exc:
-            canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+            canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
             if canonical_by_key[run_key].get("status") == "stopped" and run_key not in state.stopped_run_keys:
                 state.stopped_run_keys.append(run_key)
             raise RuntimeError(
@@ -1166,7 +1176,7 @@ def _drain_bad_runs(
                 + _preserved_tail(state.stopped_run_keys, state.superseded_current_keys, state.next_dir)
             ) from exc
         if not stopped:
-            canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+            canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
             after_stop = canonical_by_key[run_key]
             if (
                 before_stop.get("stop_requested_at") in (None, "")
@@ -1182,17 +1192,19 @@ def _drain_bad_runs(
         state.stopped_run_keys.extend(stopped)
         state.retirement_credit -= len(stopped)
         canonical_rows = read_run_manifest(workspace)
-        next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
+        next_round_rows = [row for row in canonical_rows if validated_run_key(row) in state.next_plan_keys]
         if not any(row.get("status") in {"planned", "pending"} for row in next_round_rows):
             continue
         before_launch = state.started_keys
-        before_launch_failed = {managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"}
+        before_launch_failed = {
+            validated_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
+        }
         _launch_with_recovery(root, workspace, state, round_dir, attempt_run_id=run_key[1], before_launch=before_launch)
         canonical_rows = read_run_manifest(workspace)
-        next_round_rows = [row for row in canonical_rows if managed_run_key(row) in state.next_plan_keys]
+        next_round_rows = [row for row in canonical_rows if validated_run_key(row) in state.next_plan_keys]
         state.started_keys = _accepted_start_keys(next_round_rows)
         newly_launch_failed = {
-            managed_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
+            validated_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
         } - before_launch_failed
         newly_started = state.started_keys - before_launch
         if newly_started and not state.round_committed:
@@ -1271,7 +1283,7 @@ def _adaptive_step(  # noqa: C901
             return None
         return suggest_next_round(root, digest_path=digest)
 
-    if strategy == "agent_proposal":
+    if proposal_path is not None:
         proposal_file, input_path, validated, proposal_sha256, input_sha256 = _load_agent_proposal(
             root, workflow, recipe, workspace, proposal_path
         )
@@ -1322,7 +1334,7 @@ def _adaptive_step(  # noqa: C901
 
         next_run_count = _hparam_count(next_recipe)
         next_max_runs = (next_recipe.get("search") or {}).get("max_runs")
-        if next_max_runs not in (None, ""):
+        if next_max_runs is not None and next_max_runs != "":
             next_run_count = min(next_run_count, int(next_max_runs))
         if _budget_exhausted(root, recipe, prospective_runs=next_run_count):
             raise ValueError("Agent proposal no longer fits the remaining adaptive budget.")
@@ -1432,7 +1444,7 @@ def _adaptive_step(  # noqa: C901
             raise RuntimeError(f"Round {next_round:03d} plan failed preflight with exit code {preflight.exit_code}.")
         next_run_count = _hparam_count(next_recipe)
         next_max_runs = (next_recipe.get("search") or {}).get("max_runs")
-        if next_max_runs not in (None, ""):
+        if next_max_runs is not None and next_max_runs != "":
             next_run_count = min(next_run_count, int(next_max_runs))
         # Retiring current runs is allowed only when the complete replacement round fits the remaining budget.
         budget_exhausted = execute and _budget_exhausted(root, recipe, prospective_runs=next_run_count)
@@ -1533,28 +1545,30 @@ def _adaptive_step(  # noqa: C901
             if cleanup_staging and staging_dir.exists() and not staging_dir.is_symlink():
                 shutil.rmtree(staging_dir)
             raise
-        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-        scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+        execution_value = recipe.get("execution")
+        execution = execution_value if isinstance(execution_value, dict) else {}
+        scheduler_value = execution.get("scheduler")
+        scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
         if scheduler.get("type") == "slurm":
             monitor_hparam_runs(round_dir)
         current_plan = artifacts.read_hparam_plan(round_dir)
         bad_run_keys = _bad_running_run_keys(root, round_dir, recipe)
         ordered_bad_run_keys = [
-            managed_run_key(run) for run in current_plan["runs"] if managed_run_key(run) in bad_run_keys
+            validated_run_key(run) for run in current_plan["runs"] if validated_run_key(run) in bad_run_keys
         ]
-        next_plan_keys = {managed_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
+        next_plan_keys = {validated_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
         canonical_rows = read_run_manifest(workspace)
         state = _ReplacementState(
             next_round=next_round,
             next_dir=next_dir,
             next_plan_keys=next_plan_keys,
             started_keys=_accepted_start_keys(
-                [row for row in canonical_rows if managed_run_key(row) in next_plan_keys]
+                [row for row in canonical_rows if validated_run_key(row) in next_plan_keys]
             ),
             launch_failed_keys={
-                managed_run_key(row)
+                validated_run_key(row)
                 for row in canonical_rows
-                if managed_run_key(row) in next_plan_keys and row.get("status") == "launch_failed"
+                if validated_run_key(row) in next_plan_keys and row.get("status") == "launch_failed"
             },
         )
         next_round_rows = _launch_initial_replacement(root, workspace, state, round_dir)
@@ -1638,7 +1652,8 @@ def _validate_adaptive_recipe(recipe: dict[str, Any]) -> None:
     # Both strategies derive their search space from parameters (envelopes for
     # agent_proposal, neighborhood mutation for best_neighborhood); explicit
     # configuration points are only valid in derived round recipes.
-    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+    search_value = recipe.get("search")
+    search = search_value if isinstance(search_value, dict) else {}
     if "configurations" in search:
         raise ValueError("Adaptive source recipes must declare search.parameters, not search.configurations.")
     if not search.get("parameters"):
@@ -1646,7 +1661,8 @@ def _validate_adaptive_recipe(recipe: dict[str, Any]) -> None:
 
 
 def _adaptive(recipe: dict[str, Any]) -> dict[str, Any]:
-    return recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+    adaptive = recipe.get("adaptive")
+    return adaptive if isinstance(adaptive, dict) else {}
 
 
 def _append_event(root: Path, event_type: str, payload: dict[str, Any]) -> None:
@@ -1659,7 +1675,8 @@ def _append_event(root: Path, event_type: str, payload: dict[str, Any]) -> None:
 
 def _workflow_workspace(root: Path) -> Path:
     initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
-    recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    recipe_value = initial_plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
@@ -1717,13 +1734,17 @@ def _validate_workflow_payload(
     round_index = _latest_round_index(root) if require_adaptive_commit else 0
     round_dir = _round_dir(root, round_index)
     plan = artifacts.read_hparam_plan(round_dir, require_adaptive_commit=require_adaptive_commit)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    plan_execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
+    plan_execution_value = recipe.get("execution")
+    plan_execution = plan_execution_value if isinstance(plan_execution_value, dict) else {}
     if any(plan_execution.get(field) != execution_identity[field] for field in _FROZEN_EXECUTION_IDENTITY_FIELDS):
         raise ValueError(f"Adaptive workflow execution identity differs from the current round plan: {round_dir}")
     initial_plan = plan if round_index == 0 else artifacts.read_hparam_plan(_round_dir(root, 0))
-    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
-    initial_execution = initial_recipe.get("execution") if isinstance(initial_recipe.get("execution"), dict) else {}
+    initial_recipe_value = initial_plan.get("recipe")
+    initial_recipe = initial_recipe_value if isinstance(initial_recipe_value, dict) else {}
+    initial_execution_value = initial_recipe.get("execution")
+    initial_execution = initial_execution_value if isinstance(initial_execution_value, dict) else {}
     if any(initial_execution.get(field) != execution_identity[field] for field in _EXECUTION_IDENTITY_FIELDS):
         raise ValueError(f"Adaptive workflow baseline execution identity differs from round 000: {path}")
     frozen_route = _execution_route(initial_execution)
@@ -1754,11 +1775,11 @@ def _validate_round_registry(
     registry_rows: list[dict[str, Any]],
 ) -> None:
     round_dir = _round_dir(root, round_index)
-    registry_by_key = {managed_run_key(row): row for row in registry_rows}
+    registry_by_key = {validated_run_key(row): row for row in registry_rows}
     plan_runs = plan.get("runs", [])
-    plan_keys = {managed_run_key(run) for run in plan_runs}
+    plan_keys = {validated_run_key(run) for run in plan_runs}
     for run in plan_runs:
-        key = managed_run_key(run)
+        key = validated_run_key(run)
         registered = registry_by_key.get(key)
         if registered is None:
             raise ValueError(f"Adaptive registry is missing the current plan run: {key[0]} / {key[1]}")
@@ -1767,7 +1788,9 @@ def _validate_round_registry(
         ):
             raise ValueError(f"Adaptive registry round binding differs for run: {key[0]} / {key[1]}")
         validate_frozen_run_update(run, registered)
-    registered_keys = {managed_run_key(row) for row in registry_rows if str(row.get("round") or "") == str(round_index)}
+    registered_keys = {
+        validated_run_key(row) for row in registry_rows if str(row.get("round") or "") == str(round_index)
+    }
     if registered_keys != plan_keys:
         raise ValueError(f"Adaptive registry has runs outside the current plan: {round_dir}")
 
@@ -1798,7 +1821,8 @@ def _validate_initial_round(
         require_workspace_state=False,
         require_adaptive_commit=False,
     )
-    plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    plan_recipe_value = plan.get("recipe")
+    plan_recipe = plan_recipe_value if isinstance(plan_recipe_value, dict) else {}
     if str(plan_recipe.get("_recipe_path") or "") != str(round_recipe):
         raise ValueError(f"Hparam plan is not bound to its frozen adaptive round recipe: {round_dir}")
     for run in plan["runs"]:
@@ -2109,7 +2133,8 @@ def _validate_initial_event_order(
 
 
 def _plan_event(round_dir: Path, plan: dict[str, Any]) -> dict[str, Any]:
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     return {
         "step_id": (recipe.get("step") or {}).get("id"),
         "plan_dir": str(round_dir),
@@ -2191,10 +2216,12 @@ def _write_round_recipe(
 def _materialized_round_recipe(
     recipe: dict[str, Any], source_recipe_path: str | Path, round_index: int
 ) -> dict[str, Any]:
-    source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    source_value = recipe.get("_local_recipe")
+    source = source_value if isinstance(source_value, dict) else recipe
     copied = _strip_internal_recipe_keys(copy.deepcopy(source))
     if isinstance(recipe.get("execution"), dict):
-        execution = dict(copied.get("execution")) if isinstance(copied.get("execution"), dict) else {}
+        execution_value = copied.get("execution")
+        execution = dict(execution_value) if isinstance(execution_value, dict) else {}
         execution.update({field: recipe["execution"][field] for field in _EXECUTION_IDENTITY_FIELDS})
         copied["execution"] = execution
     copied_root = experiment_root(copied)
@@ -2226,14 +2253,16 @@ def _strip_internal_recipe_keys(recipe: dict[str, Any]) -> dict[str, Any]:
 def _proposal_recipe_sha256(recipe: dict[str, Any], workflow: dict[str, Any]) -> str:
     payload = _strip_internal_recipe_keys(copy.deepcopy(recipe))
     execution = payload.get("execution") if isinstance(payload.get("execution"), dict) else None
-    baseline = workflow.get("execution_identity") if isinstance(workflow.get("execution_identity"), dict) else {}
+    baseline_value = workflow.get("execution_identity")
+    baseline = baseline_value if isinstance(baseline_value, dict) else {}
     if execution is not None and baseline.get("runtime_commit") not in (None, ""):
         execution["runtime_commit"] = baseline["runtime_commit"]
     return adaptive_proposals.canonical_sha256(payload)
 
 
 def _execution_route(execution: dict[str, Any]) -> dict[str, str]:
-    scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+    scheduler_value = execution.get("scheduler")
+    scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
     scheduler_type = str(scheduler.get("type") or "direct")
     slurm_scheduler = scheduler if scheduler_type == "slurm" else {}
     return {
@@ -2253,34 +2282,43 @@ def _workflow_execution_route(workflow: dict[str, Any]) -> dict[str, str]:
     if not root.is_absolute():
         raise ValueError("Adaptive workflow lacks a frozen execution route.")
     initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
-    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
-    initial_execution = initial_recipe.get("execution") if isinstance(initial_recipe.get("execution"), dict) else {}
+    initial_recipe_value = initial_plan.get("recipe")
+    initial_recipe = initial_recipe_value if isinstance(initial_recipe_value, dict) else {}
+    initial_execution_value = initial_recipe.get("execution")
+    initial_execution = initial_execution_value if isinstance(initial_execution_value, dict) else {}
     return _execution_route(initial_execution)
 
 
 def _validate_workflow_scientific_contract(recipe: dict[str, Any], workflow: dict[str, Any]) -> None:
     root = Path(str(workflow.get("root") or ""))
     initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
-    initial_recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    initial_recipe_value = initial_plan.get("recipe")
+    initial_recipe = initial_recipe_value if isinstance(initial_recipe_value, dict) else {}
     fields = ("task", "variant", "step", "inputs", "evaluation_policy")
     changed = [field for field in fields if recipe.get(field) != initial_recipe.get(field)]
-    search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
-    initial_search = initial_recipe.get("search") if isinstance(initial_recipe.get("search"), dict) else {}
+    search_value = recipe.get("search")
+    search = search_value if isinstance(search_value, dict) else {}
+    initial_search_value = initial_recipe.get("search")
+    initial_search = initial_search_value if isinstance(initial_search_value, dict) else {}
     searched_runtime_fields = {
         field.removeprefix("runtime.")
         for field in initial_search.get("parameters", {})
         if isinstance(field, str) and field.startswith("runtime.")
     }
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    initial_runtime = initial_recipe.get("runtime") if isinstance(initial_recipe.get("runtime"), dict) else {}
+    runtime_value = recipe.get("runtime")
+    runtime = runtime_value if isinstance(runtime_value, dict) else {}
+    initial_runtime_value = initial_recipe.get("runtime")
+    initial_runtime = initial_runtime_value if isinstance(initial_runtime_value, dict) else {}
     adaptive = _adaptive(recipe)
     initial_adaptive = _adaptive(initial_recipe)
-    suggest = adaptive.get("suggest") if isinstance(adaptive.get("suggest"), dict) else {}
-    initial_suggest = initial_adaptive.get("suggest") if isinstance(initial_adaptive.get("suggest"), dict) else {}
-    replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
-    initial_replacement = (
-        initial_adaptive.get("replacement") if isinstance(initial_adaptive.get("replacement"), dict) else {}
-    )
+    suggest_value = adaptive.get("suggest")
+    suggest = suggest_value if isinstance(suggest_value, dict) else {}
+    initial_suggest_value = initial_adaptive.get("suggest")
+    initial_suggest = initial_suggest_value if isinstance(initial_suggest_value, dict) else {}
+    replacement_value = adaptive.get("replacement")
+    replacement = replacement_value if isinstance(replacement_value, dict) else {}
+    initial_replacement_value = initial_adaptive.get("replacement")
+    initial_replacement = initial_replacement_value if isinstance(initial_replacement_value, dict) else {}
     replacement_defaults = {
         "enabled": True,
         "allow_running_stop": False,
@@ -2333,7 +2371,8 @@ def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -
         if str(adaptive.get(field) or default) != str(workflow.get(field) or default):
             raise ValueError(f"Adaptive source adaptive.{field} differs from the frozen workflow.")
     _validate_workflow_scientific_contract(recipe, workflow)
-    current = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    current_value = recipe.get("execution")
+    current = current_value if isinstance(current_value, dict) else {}
     frozen_route = _workflow_execution_route(workflow)
     current_route = _execution_route(current)
     for field in _EXECUTION_ROUTE_FIELDS:
@@ -2433,7 +2472,7 @@ def _reconcile_interrupted_launch(
     unresolved = set()
     reconciled = set()
     for row in canonical_rows:
-        key = managed_run_key(row)
+        key = validated_run_key(row)
         if key not in plan_keys:
             continue
         if scheduler_type(row) == "slurm":
@@ -2442,7 +2481,7 @@ def _reconcile_interrupted_launch(
                 continue
             if row.get("status") not in {"submitting", "unknown_scheduler"}:
                 continue
-            execution = {"target": row["target"]}
+            execution: dict[str, Any] = {"target": row["target"]}
             if row["target"] == "ssh":
                 execution["host"] = row["host"]
             if scheduler_direct_controller(row):
@@ -2493,12 +2532,12 @@ def _uncommitted_launch_attempts(
 ) -> tuple[list[tuple[int, str]], list[tuple[int, dict[str, Any]]]]:
     committed_rounds = _committed_round_indexes(root)
     registry = read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True)
-    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
     registered_by_round: dict[int, set[tuple[str, str]]] = {}
     for registered in registry:
         round_index = int(registered["round"])
         if round_index not in committed_rounds:
-            registered_by_round.setdefault(round_index, set()).add(managed_run_key(registered))
+            registered_by_round.setdefault(round_index, set()).add(validated_run_key(registered))
     round_dirs = {
         int(path.name.removeprefix("round_")): path
         for path in (root / "adaptive" / "rounds").glob("round_*")
@@ -2522,7 +2561,7 @@ def _uncommitted_launch_attempts(
                 require_adaptive_commit=False,
             )
         )
-        plan_keys = {managed_run_key(run) for run in plan.get("runs", [])}
+        plan_keys = {validated_run_key(run) for run in plan.get("runs", [])}
         if registered_keys and registered_keys != plan_keys:
             raise ValueError(f"Adaptive registry differs from the frozen round: {round_dir}")
         if not registered_keys:
@@ -2611,7 +2650,8 @@ def _committed_round_indexes(root: Path) -> set[int]:
     registry = read_rows(registry_path, require_managed_identity=True)
     registered_rounds = {int(row["round"]) for row in registry}
     initial_plan = artifacts.read_hparam_plan(_round_dir(root, 0))
-    recipe = initial_plan.get("recipe") if isinstance(initial_plan.get("recipe"), dict) else {}
+    recipe_value = initial_plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
     if workspace is None:
         return committed
@@ -2640,7 +2680,8 @@ def _next_round_index(root: Path) -> int:
 
 
 def _manifest_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
-    metrics = manifest.get("metrics") if isinstance(manifest.get("metrics"), dict) else {}
+    metrics_value = manifest.get("metrics")
+    metrics = metrics_value if isinstance(metrics_value, dict) else {}
     row = {key: value for key, value in metrics.items() if isinstance(key, str) and key != "status"}
     for key in ("best_model_score", "epoch", "monitor", "monitor_mode"):
         if manifest.get(key) is not None:
@@ -2701,7 +2742,7 @@ def _write_incumbent(root: Path, rows: list[dict[str, Any]], objective: dict[str
         return
     best = ranked[0]
     path = root / "adaptive" / "incumbents.tsv"
-    incumbents = read_rows(path) if path.exists() else []
+    incumbents: list[dict[str, Any]] = list(read_rows(path)) if path.exists() else []
     incumbents.append(
         {
             "round": round_index,
@@ -2811,7 +2852,8 @@ def _suggestion_rationale(
 
 def _supersede_pending_runs(root: Path, round_dir: Path) -> list[tuple[str, str]]:
     plan = artifacts.read_hparam_plan(round_dir)
-    recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    recipe_value = plan.get("recipe")
+    recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
@@ -2827,10 +2869,10 @@ def _supersede_pending_runs(root: Path, round_dir: Path) -> list[tuple[str, str]
         targets.append(launch_path)
     exp_io.validate_managed_output_paths(workspace, targets)
     canonical_rows = read_run_manifest(workspace)
-    canonical_by_key = {managed_run_key(row): row for row in canonical_rows}
+    canonical_by_key = {validated_run_key(row): row for row in canonical_rows}
     transitions = []
     for run in plan["runs"]:
-        row = canonical_by_key[managed_run_key(run)]
+        row = canonical_by_key[validated_run_key(run)]
         if row.get("status") in {"planned", "pending"}:
             transitions.append(row)
     if transitions:
@@ -2840,13 +2882,13 @@ def _supersede_pending_runs(root: Path, round_dir: Path) -> list[tuple[str, str]
         )
     else:
         committed = canonical_rows
-    committed_by_key = {managed_run_key(row): row for row in committed}
-    round_rows = [committed_by_key[managed_run_key(run)] for run in plan["runs"]]
+    committed_by_key = {validated_run_key(row): row for row in committed}
+    round_rows = [committed_by_key[validated_run_key(run)] for run in plan["runs"]]
     write_rows(round_dir / "run_status.tsv", round_rows)
     if launch_path.exists():
         write_rows(launch_path, round_rows)
     for row in transitions:
-        if committed_by_key[managed_run_key(row)].get("status") != "superseded":
+        if committed_by_key[validated_run_key(row)].get("status") != "superseded":
             continue
         _append_event(
             root,
@@ -2854,29 +2896,34 @@ def _supersede_pending_runs(root: Path, round_dir: Path) -> list[tuple[str, str]
             {"round_dir": str(round_dir), "run_id": row["run_id"], "status": row["status"]},
         )
     return [
-        managed_run_key(row) for row in transitions if committed_by_key[managed_run_key(row)]["status"] == "superseded"
+        validated_run_key(row)
+        for row in transitions
+        if committed_by_key[validated_run_key(row)]["status"] == "superseded"
     ]
 
 
 def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -> set[tuple[str, str]]:
     adaptive = _adaptive(recipe)
-    replacement = adaptive.get("replacement") if isinstance(adaptive.get("replacement"), dict) else {}
+    replacement_value = adaptive.get("replacement")
+    replacement = replacement_value if isinstance(replacement_value, dict) else {}
     if replacement.get("enabled", True) is not True or replacement.get("allow_running_stop", False) is not True:
         return set()
     objective = _objective(root, recipe)
     incumbent = _latest_incumbent_score(root)
     margin = float(replacement.get("kill_margin") or 0.0)
     plan = artifacts.read_hparam_plan(round_dir)
-    plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
-    evaluation = plan_recipe.get("evaluation_policy") if isinstance(plan_recipe.get("evaluation_policy"), dict) else {}
+    plan_recipe_value = plan.get("recipe")
+    plan_recipe = plan_recipe_value if isinstance(plan_recipe_value, dict) else {}
+    evaluation_value = plan_recipe.get("evaluation_policy")
+    evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     selection_split = str(evaluation.get("selection_split") or "")
     workspace = experiment_root(plan_recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    plan_keys = {managed_run_key(run) for run in plan["runs"]}
+    plan_keys = {validated_run_key(run) for run in plan["runs"]}
     bad_keys = set()
     for row in read_run_manifest(workspace):
-        key = managed_run_key(row)
+        key = validated_run_key(row)
         if key not in plan_keys:
             continue
         if row.get("status") != "running":
@@ -2885,7 +2932,7 @@ def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -
             continue
         should_stop = evidence.log_has_failure(row.get("log_path"), row)
         uses_checkpoint_test_objective = selection_split == "test" and objective["metric"].startswith("test_")
-        data = {}
+        data: dict[str, Any] = {}
         if not should_stop and not uses_checkpoint_test_objective:
             observed_artifacts = evidence.runtime_artifacts(row)
             if observed_artifacts is not None:
@@ -2898,7 +2945,8 @@ def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -
         if (
             not should_stop
             and incumbent is not None
-            and score not in ("", None)
+            and score is not None
+            and score != ""
             and _grace_satisfied(row, data, replacement)
         ):
             try:
@@ -2922,7 +2970,8 @@ def _stop_bad_running_runs(
     if not keys:
         return []
     plan = artifacts.read_hparam_plan(round_dir)
-    plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    plan_recipe_value = plan.get("recipe")
+    plan_recipe = plan_recipe_value if isinstance(plan_recipe_value, dict) else {}
     workspace = experiment_root(plan_recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
