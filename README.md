@@ -267,7 +267,8 @@ options are not yet accepted or rendered by `agent_tools` recipes.
   final decay, rounded down to whole updates. The decay must contain at least
   one update, and warmup plus decay must fit within the total update budget.
   The remaining updates form the constant stage. The final decay uses the
-  existing `--lr-decay-shape cosine|linear`.
+  existing `--lr-decay-shape cosine|linear`. The last actual optimizer update
+  uses the floor, including when the decay phase is only one update long.
 - `plateau` uses `ReduceLROnPlateau` with the task's validation monitor and
   direction. It starts at the configured LR without warmup and checks the
   metric at the configured epoch validation frequency. `--lr-plateau-factor`
@@ -278,7 +279,10 @@ options are not yet accepted or rendered by `agent_tools` recipes.
 `--lr-decay-floor` defaults to `0.1` and denotes a fraction of each optimizer
 group's initial LR, preserving group LR ratios. WSD and ordinary decay reach
 this floor at the end of their schedule; Plateau uses it as the minimum LR.
-Plateau does not accept an explicit warmup or a linear decay shape.
+Plateau does not accept an explicit warmup, a linear decay shape, or diagnostics
+mode (which disables validation). Incompatible scheduler options are rejected
+before the run directory is claimed. Plateau consumes each validation metric
+after aggregation and before checkpoint saving, without a second epoch-end update.
 Resume with the same schedule settings and total training budget so that
 restored optimizer/scheduler state continues the original schedule.
 

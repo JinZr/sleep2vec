@@ -21,6 +21,25 @@ def scheduler_model(request):
 
     class SchedulerModel(pl.LightningModule):
         configure_optimizers = owner.configure_optimizers
+        on_validation_epoch_end = owner.on_validation_epoch_end
+
+        def lr_scheduler_step(self, scheduler, metric):
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                owner.lr_scheduler_step(self, scheduler, metric)
+            else:
+                super().lr_scheduler_step(scheduler, metric)
+
+        def _log_layer_mix_weights(self, **kwargs):
+            pass
+
+        def _get_eval_model(self):
+            return self.model
+
+        def _finalize_epoch(self, stage):
+            score = 1.0
+            if self.improving and self.current_epoch >= 3:
+                score = 0.5 if self.args.monitor_mod == "min" else 2.0
+            self.log("val_score", score, on_epoch=True)
 
         def __init__(self, mode="min", improving=False):
             super().__init__()
@@ -46,10 +65,7 @@ def scheduler_model(request):
             return self.model(batch[0]).square().mean()
 
         def validation_step(self, batch, batch_idx):
-            score = 1.0
-            if self.improving and self.current_epoch >= 3:
-                score = 0.5 if self.args.monitor_mod == "min" else 2.0
-            self.log("val_score", score, on_epoch=True)
+            pass
 
         def on_train_epoch_start(self):
             self.epoch_lrs.append([group["lr"] for group in self.optimizers().param_groups])
@@ -137,3 +153,50 @@ def test_scheduler_rejects_incompatible_runtime_options(scheduler_model, overrid
         setattr(model.args, name, value)
     with pytest.raises(ValueError, match=message):
         model.configure_optimizers()
+
+
+@pytest.mark.parametrize("save_epoch", [1, 3])
+def test_plateau_validation_checkpoint_resume_matches_uninterrupted(scheduler_model, tmp_path, save_epoch):
+    pl, model_class = scheduler_model
+    checkpoint = pl.callbacks.ModelCheckpoint(
+        dirpath=tmp_path,
+        filename="{epoch}",
+        save_top_k=-1,
+        save_on_train_epoch_end=False,
+    )
+    full = model_class()
+    trainer = pl.Trainer(
+        accelerator="cpu",
+        devices=1,
+        max_epochs=6,
+        logger=False,
+        callbacks=[checkpoint],
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        num_sanity_val_steps=1,
+        check_val_every_n_epoch=2,
+    )
+    loader = DataLoader(TensorDataset(torch.ones(1, 1)), batch_size=1)
+    trainer.fit(full, train_dataloaders=loader, val_dataloaders=loader)
+    checkpoint_path = tmp_path / f"epoch={save_epoch}.ckpt"
+    saved = torch.load(checkpoint_path, weights_only=False)
+    assert saved["lr_schedulers"][0]["last_epoch"] == (save_epoch + 1) // 2
+    expected_lr = 1.0 if save_epoch == 1 else 0.5
+    assert saved["optimizer_states"][0]["param_groups"][1]["lr"] == pytest.approx(expected_lr)
+    restored = model_class()
+    resumed_trainer = _fit(pl, restored, 6, str(checkpoint_path))
+    assert restored.epoch_lrs == full.epoch_lrs[save_epoch + 1 :]
+    assert resumed_trainer.lr_scheduler_configs[0].scheduler.state_dict() == (
+        trainer.lr_scheduler_configs[0].scheduler.state_dict()
+    )
+
+
+def test_standalone_validation_does_not_step_plateau(scheduler_model):
+    pl, model_class = scheduler_model
+    model = model_class()
+    trainer = _fit(pl, model, 4)
+    scheduler = trainer.lr_scheduler_configs[0].scheduler
+    state = scheduler.state_dict().copy()
+    loader = DataLoader(TensorDataset(torch.ones(1, 1)), batch_size=1)
+    trainer.validate(model, dataloaders=loader)
+    assert scheduler.state_dict() == state

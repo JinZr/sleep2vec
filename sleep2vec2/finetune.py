@@ -34,6 +34,7 @@ from sleep2vec2.results import (
     save_survival_per_disease_metrics_csv,
     save_training_run_manifest,
 )
+from sleep2vec2.schedulers import validate_finetune_scheduler_args
 from sleep2vec2.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2vec2.utils import get_finetune_dataloaders
 
@@ -166,6 +167,7 @@ def _preflight_finetune_run_directory(args, exp_root: Path) -> None:
 
 
 def supervised(args, config_bundle):
+    validate_finetune_scheduler_args(args)
     # Programmatic callers may build Namespace without CLI defaults.
     if not hasattr(args, "accumulate_grad_batches"):
         args.accumulate_grad_batches = 1

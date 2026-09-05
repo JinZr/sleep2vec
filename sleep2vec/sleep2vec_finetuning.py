@@ -39,7 +39,7 @@ from sleep2vec.metrics.core import (
     compute_multilabel_metrics_by_disease,
     compute_survival_c_index_by_disease,
 )
-from sleep2vec.schedulers import build_warmup_cosine_scheduler
+from sleep2vec.schedulers import build_warmup_cosine_scheduler, validate_finetune_scheduler_args
 from sleep2vec.sleep2vec_inference import (
     build_ahi_prediction_rows,
     build_arousal_prediction_rows,
@@ -216,6 +216,17 @@ class Sleep2vecFinetuning(pl.LightningModule):
     def on_validation_epoch_end(self):
         self._log_layer_mix_weights(stage="val", model=self._get_eval_model())
         self._finalize_epoch(stage="val")
+        if (
+            getattr(self.args, "lr_scheduler", "decay") == "plateau"
+            and self.trainer.state.fn == "fit"
+            and not self.trainer.sanity_checking
+        ):
+            # Consume this validation result before ModelCheckpoint saves optimizer and scheduler state.
+            self.lr_schedulers().step(self.trainer.callback_metrics[self.args.monitor])
+
+    def lr_scheduler_step(self, scheduler, metric):
+        if not isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            super().lr_scheduler_step(scheduler, metric)
 
     def on_test_epoch_end(self):
         self._finalize_epoch(stage="test")
@@ -1845,34 +1856,15 @@ class Sleep2vecFinetuning(pl.LightningModule):
             eps=1e-8,
         )
 
+        validate_finetune_scheduler_args(self.args)
         scheduler_name = getattr(self.args, "lr_scheduler", "decay")
         decay_ratio = getattr(self.args, "lr_decay_ratio", None)
-        plateau_factor = getattr(self.args, "lr_plateau_factor", None)
-        plateau_patience = getattr(self.args, "lr_plateau_patience", None)
-        if scheduler_name not in {"decay", "wsd", "plateau"}:
-            raise ValueError("lr_scheduler must be 'decay', 'wsd', or 'plateau'.")
-        if scheduler_name == "wsd" and decay_ratio is None:
-            raise ValueError("WSD requires lr_decay_ratio.")
-        if scheduler_name != "wsd" and decay_ratio is not None:
-            raise ValueError("lr_decay_ratio is only supported by WSD.")
-        if scheduler_name != "plateau" and (plateau_factor is not None or plateau_patience is not None):
-            raise ValueError("lr_plateau_factor and lr_plateau_patience are only supported by plateau.")
         if scheduler_name == "plateau":
-            if getattr(self.args, "warmup_steps", None) is not None:
-                raise ValueError("Plateau does not support warmup_steps.")
-            if getattr(self.args, "lr_decay_shape", "cosine") != "cosine":
-                raise ValueError("Plateau does not support lr_decay_shape.")
-            if not self.args.monitor.startswith("val_"):
-                raise ValueError("Plateau requires a validation monitor starting with 'val_'.")
             floor = float(getattr(self.args, "lr_decay_floor", 0.1))
-            if not 0.0 <= floor <= 1.0:
-                raise ValueError("lr_decay_floor must be in [0, 1].")
+            plateau_factor = getattr(self.args, "lr_plateau_factor", None)
+            plateau_patience = getattr(self.args, "lr_plateau_patience", None)
             factor = 0.1 if plateau_factor is None else plateau_factor
             patience = 10 if plateau_patience is None else plateau_patience
-            if not 0.0 < factor < 1.0:
-                raise ValueError("lr_plateau_factor must be in (0, 1).")
-            if patience < 0:
-                raise ValueError("lr_plateau_patience must be nonnegative.")
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer,
                 mode=self.args.monitor_mod,
