@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 import copy
 import csv
 import hashlib
@@ -77,7 +77,8 @@ def _recipe_contract_issues(recipe: dict, user_decisions: dict, policy: dict) ->
     has_layers = isinstance(recipe.get("_base_recipe"), dict) and isinstance(recipe.get("_local_recipe"), dict)
     task_owner = recipe["_local_recipe"] if has_layers else recipe
     recipe_task = task_owner.get("task")
-    recipe_decisions = task_owner.get("decisions") if isinstance(task_owner.get("decisions"), dict) else {}
+    recipe_decisions_value = task_owner.get("decisions")
+    recipe_decisions = recipe_decisions_value if isinstance(recipe_decisions_value, dict) else {}
     effective_task = recipe_task
     if effective_task in (None, "", "ASK_USER"):
         task_decision = user_decisions.get("task") if "task" in user_decisions else recipe_decisions.get("task")
@@ -135,7 +136,7 @@ def _recipe_contract_issues(recipe: dict, user_decisions: dict, policy: dict) ->
 
 def _source_recipe_contract_issues(
     recipe: dict,
-    task: str,
+    task: str | None,
     policy: dict,
     source_layer: str,
 ) -> list[DecisionIssue]:
@@ -183,7 +184,8 @@ def _materialize_decisions(
 
     if "task" in decision_values:
         task = decision_values["task"]
-        task_owner = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+        task_owner_value = recipe.get("_local_recipe")
+        task_owner = task_owner_value if isinstance(task_owner_value, dict) else recipe
         recipe_task = task_owner.get("task")
         if task not in (None, "", "ASK_USER"):
             if recipe_task in (None, "", "ASK_USER"):
@@ -221,7 +223,8 @@ def _materialize_decisions(
                 )
             )
             continue
-        target = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
+        target_value = recipe.get(section)
+        target = target_value if isinstance(target_value, dict) else {}
         if field == "train_val_test_policy" and not user_supplied:
             existing_value = target.get(key)
             if existing_value not in (None, "", "ASK_USER") and existing_value != value:
@@ -249,7 +252,8 @@ def _materialize_decisions(
             target.pop("configurations", None)
         recipe[section] = {**target, key: value}
     if user_supplied:
-        recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
+        recipe_decisions_value = recipe.get("decisions")
+        recipe_decisions = recipe_decisions_value if isinstance(recipe_decisions_value, dict) else {}
         recipe["decisions"] = {**recipe_decisions, **decisions}
         evaluation_policy = recipe.get("evaluation_policy")
         selection_split = evaluation_policy.get("selection_split") if isinstance(evaluation_policy, dict) else None
@@ -270,14 +274,19 @@ def _materialize_decisions(
 
 def _materialize_task_defaults(recipe: dict, policy: dict, user_decisions: dict) -> None:
     task_defaults = (policy.get("task_defaults") or {}).get(recipe.get("task"), {})
-    decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
-    local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
-    local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
+    decisions_value = recipe.get("decisions")
+    decisions = decisions_value if isinstance(decisions_value, dict) else {}
+    local_recipe_value = recipe.get("_local_recipe")
+    local_recipe = local_recipe_value if isinstance(local_recipe_value, dict) else recipe
+    local_decisions_value = local_recipe.get("decisions")
+    local_decisions = local_decisions_value if isinstance(local_decisions_value, dict) else {}
     targets = _resolve_write_targets(recipe.get("task"))
     for field, decision in task_defaults.items():
         section, key = targets[field]
-        target = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
-        local_target = local_recipe.get(section) if isinstance(local_recipe.get(section), dict) else {}
+        target_value = recipe.get(section)
+        target = target_value if isinstance(target_value, dict) else {}
+        local_target_value = local_recipe.get(section)
+        local_target = local_target_value if isinstance(local_target_value, dict) else {}
         resolved_decision = decisions.get(field)
         if (
             field in user_decisions
@@ -337,10 +346,13 @@ def evaluate_recipe(  # noqa: C901
                 decisions=resolved_user_decisions(user_decisions),
             ),
         )
-    recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
-    local_recipe = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else None
+    recipe_decisions_value = recipe.get("decisions")
+    recipe_decisions = recipe_decisions_value if isinstance(recipe_decisions_value, dict) else {}
+    local_recipe_value = recipe.get("_local_recipe")
+    local_recipe = local_recipe_value if isinstance(local_recipe_value, dict) else None
     if local_recipe is not None:
-        local_decisions = local_recipe.get("decisions") if isinstance(local_recipe.get("decisions"), dict) else {}
+        local_decisions_value = local_recipe.get("decisions")
+        local_decisions = local_decisions_value if isinstance(local_decisions_value, dict) else {}
         recipe_decisions = dict(recipe_decisions)
         if "task" in local_decisions:
             recipe_decisions["task"] = local_decisions["task"]
@@ -425,7 +437,8 @@ def evaluate_recipe(  # noqa: C901
                     ),
                 )
 
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs_value = recipe.get("inputs")
+    inputs = inputs_value if isinstance(inputs_value, dict) else {}
     source_config = inputs.get("config")
     source_config_path = resolve_repo_path(source_config)
     source_config_bytes = None
@@ -537,8 +550,10 @@ def evaluate_recipe(  # noqa: C901
         and cfg.get("is_finetune") is True
         and not cfg.get("blocking_issues")
     ):
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+        inputs_value = recipe.get("inputs")
+        inputs = inputs_value if isinstance(inputs_value, dict) else {}
+        evaluation_value = recipe.get("evaluation_policy")
+        evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
         decision_values = {
             "data_backend": inputs.get("data_backend"),
             "selection_metric": evaluation.get("selection_metric"),
@@ -571,12 +586,14 @@ def evaluate_recipe(  # noqa: C901
     selected_config_value = (
         raw_config_decision.get("value") if isinstance(raw_config_decision, dict) else raw_config_decision
     )
-    selected_config = (
-        recipe_adapter is not None
+    selected_config_adapter = (
+        recipe_adapter
+        if recipe_adapter is not None
         and (recipe_adapter.uses_finetune_config or recipe_adapter.accepts_pretrain_config)
         and "config" in user_decisions
+        else None
     )
-    if selected_config and selected_config_value in (None, "", "ASK_USER"):
+    if selected_config_adapter is not None and selected_config_value in (None, "", "ASK_USER"):
         report = _append_issues(
             report,
             [
@@ -592,18 +609,20 @@ def evaluate_recipe(  # noqa: C901
                 )
             ],
         )
-    elif selected_config:
+    elif selected_config_adapter is not None:
         blocking_config_issues = (
-            cfg.get("blocking_issues", []) if cfg is not None and not recipe_adapter.accepts_pretrain_config else []
+            cfg.get("blocking_issues", [])
+            if cfg is not None and not selected_config_adapter.accepts_pretrain_config
+            else []
         )
         config_kind_valid = cfg is not None and (
             cfg.get("is_finetune") is True
-            or (recipe_adapter.accepts_pretrain_config and cfg.get("is_pretrain") is True)
+            or (selected_config_adapter.accepts_pretrain_config and cfg.get("is_pretrain") is True)
         )
         if config_error or not config_kind_valid or blocking_config_issues:
             message = config_error or (
                 "Selected config must be a readable pretrain or finetune model config without blocking issues."
-                if recipe_adapter.accepts_pretrain_config
+                if selected_config_adapter.accepts_pretrain_config
                 else "Selected config must be a readable finetune model config without blocking issues."
             )
             report = _append_issues(
@@ -704,7 +723,8 @@ def write_user_decision_template(
     target. Errors propagate and may leave directories or a newly published
     template; this function does not roll back the surrounding output bundle.
     """
-    task_owner = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+    task_owner_value = recipe.get("_local_recipe")
+    task_owner = task_owner_value if isinstance(task_owner_value, dict) else recipe
     payload = user_decision_template(task_owner.get("task"), report, load_consultation_policy())
     if not payload:
         return None
@@ -855,7 +875,7 @@ def build_context(
     variant: str | None = None,
     user_decisions_path: str | Path | None = None,
 ) -> DecisionReport:
-    recipe = {
+    recipe: dict[str, Any] = {
         "name": Path(str(output_dir)).name,
         "task": task,
         "variant": variant,
@@ -874,7 +894,8 @@ def build_context(
     )
     if contract_issues:
         return DecisionReport(status=merge_status(contract_issues), issues=contract_issues, decisions={})
-    recipe_decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
+    recipe_decisions_value = recipe.get("decisions")
+    recipe_decisions = recipe_decisions_value if isinstance(recipe_decisions_value, dict) else {}
     materialization_issues = _materialize_decisions(recipe, recipe_decisions)
     materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))
     _materialize_task_defaults(recipe, policy, user_decisions)
@@ -977,15 +998,17 @@ def _validate_bound_recipe(
     expected_base_recipe: dict[str, Any] | None,
     registered_recipe_path: str | Path | None,
     source_config_sha256: str | None,
-) -> tuple[bytes | None, str | None]:
+) -> tuple[bytes, str] | None:
     if expected_recipe is not None:
-        recipe_source = recipe.get("_local_recipe") if isinstance(recipe.get("_local_recipe"), dict) else recipe
+        recipe_source_value = recipe.get("_local_recipe")
+        recipe_source = recipe_source_value if isinstance(recipe_source_value, dict) else recipe
         actual_recipe = {key: value for key, value in recipe_source.items() if not str(key).startswith("_")}
         actual_recipe_json = json.dumps(actual_recipe, sort_keys=True, separators=(",", ":"), allow_nan=False)
         expected_recipe_json = json.dumps(expected_recipe, sort_keys=True, separators=(",", ":"), allow_nan=False)
         if actual_recipe_json != expected_recipe_json:
             raise ValueError("Plan recipe does not match the bound adaptive recipe.")
-        base_source = recipe.get("_base_recipe") if isinstance(recipe.get("_base_recipe"), dict) else None
+        base_source_value = recipe.get("_base_recipe")
+        base_source = base_source_value if isinstance(base_source_value, dict) else None
         actual_base_recipe = (
             {key: value for key, value in base_source.items() if not str(key).startswith("_")}
             if base_source is not None
@@ -1019,7 +1042,8 @@ def _validate_bound_recipe(
             raise ValueError("Validated source config bytes do not match their SHA-256.")
         if source_config_sha256 is not None and source_config_sha256 != validated_config_sha256:
             raise ValueError("Source config does not match the externally bound SHA-256.")
-    return validated_config_bytes, validated_config_sha256
+        return validated_config_bytes, validated_config_sha256
+    return None
 
 
 def _materialize_adapter_plan(
@@ -1322,32 +1346,36 @@ def build_plan(
     Consultation and handled precommit failures return a non-passing report;
     other exceptions propagate. A failure does not promise rollback of every
     workspace artifact. See doc/agent_contracts/ for the publication contracts."""
-    build_kwargs = {
-        "recipe_path": recipe_path,
-        "output_dir": output_dir,
-        "user_decisions_path": user_decisions_path,
-        "allow_unresolved": allow_unresolved,
-        "unlock_final_test": unlock_final_test,
-        "source_config_sha256": source_config_sha256,
-        "expected_recipe": expected_recipe,
-        "expected_base_recipe": expected_base_recipe,
-        "staging_dir": staging_dir,
-        "defer_commit": defer_commit,
-        "registered_recipe_path": registered_recipe_path,
-        "allow_adaptive_workflow": allow_adaptive_workflow,
-        "plan_controller": plan_controller,
-        "run_index_offset": run_index_offset,
-        "validate_only": validate_only,
-    }
+    build_lock: AbstractContextManager
     if defer_commit:
-        return _build_plan(**build_kwargs, locked_root=None, check_locked_root=False)
-    if validate_only:
-        with plan_publication_lock(Path(output_dir)):
-            return _build_plan(**build_kwargs, locked_root=None, check_locked_root=False)
-    root = experiment_root(load_recipe_with_base(recipe_path))
-    registration_lock = plan_registration_lock(root) if root is not None else nullcontext()
-    with registration_lock:
-        return _build_plan(**build_kwargs, locked_root=root, check_locked_root=True)
+        root = None
+        build_lock = nullcontext()
+    elif validate_only:
+        root = None
+        build_lock = plan_publication_lock(Path(output_dir))
+    else:
+        root = experiment_root(load_recipe_with_base(recipe_path))
+        build_lock = plan_registration_lock(root) if root is not None else nullcontext()
+    with build_lock:
+        return _build_plan(
+            recipe_path=recipe_path,
+            output_dir=output_dir,
+            user_decisions_path=user_decisions_path,
+            allow_unresolved=allow_unresolved,
+            unlock_final_test=unlock_final_test,
+            source_config_sha256=source_config_sha256,
+            expected_recipe=expected_recipe,
+            expected_base_recipe=expected_base_recipe,
+            staging_dir=staging_dir,
+            defer_commit=defer_commit,
+            registered_recipe_path=registered_recipe_path,
+            allow_adaptive_workflow=allow_adaptive_workflow,
+            plan_controller=plan_controller,
+            run_index_offset=run_index_offset,
+            validate_only=validate_only,
+            locked_root=root,
+            check_locked_root=not (defer_commit or validate_only),
+        )
 
 
 def _build_plan(  # noqa: C901
@@ -1382,7 +1410,7 @@ def _build_plan(  # noqa: C901
     )
     if check_locked_root and experiment_root(recipe) != locked_root:
         raise ValueError("Experiment root changed while acquiring the plan registration lock.")
-    validated_config_bytes, validated_config_sha256 = _validate_bound_recipe(
+    bound_config = _validate_bound_recipe(
         recipe,
         cfg,
         report,
@@ -1392,8 +1420,7 @@ def _build_plan(  # noqa: C901
         registered_recipe_path=registered_recipe_path,
         source_config_sha256=source_config_sha256,
     )
-    task = recipe.get("task")
-    plan_adapter = get_adapter(task)
+    plan_adapter = get_adapter(recipe.get("task"))
     if _has_output_artifact_issue(report):
         return report
     if validate_only and not (plan_adapter is not None and plan_adapter.materializes_plan):
@@ -1409,7 +1436,7 @@ def _build_plan(  # noqa: C901
                 )
             ],
         )
-    if report.exit_code != 0:
+    if report.exit_code != 0 or bound_config is None:
         if validate_only:
             return report
         preflight_failed_before_workspace = bool(experiment_metadata_issues(recipe)) or any(
@@ -1457,6 +1484,8 @@ def _build_plan(  # noqa: C901
             ensure_experiment_workspace(recipe, out, plan_controller=plan_controller)
         return report
 
+    validated_config_bytes, validated_config_sha256 = bound_config
+    task: str = recipe["task"]
     root = experiment_root(recipe)
     if root is None:
         raise ValueError("experiment.root is required.")
@@ -1735,7 +1764,8 @@ def preflight_plan(
         issue.evidence.get("preflight_before_workspace") is True for issue in report.blocking_issues()
     ):
         return recipe, cfg, report
-    adaptive = recipe.get("adaptive") if isinstance(recipe.get("adaptive"), dict) else {}
+    adaptive_value = recipe.get("adaptive")
+    adaptive = adaptive_value if isinstance(adaptive_value, dict) else {}
     if adaptive.get("enabled") is True and not allow_adaptive_workflow:
         report = _append_issues(
             report,
@@ -1767,14 +1797,17 @@ def preflight_plan(
                 report,
                 [DecisionIssue(DecisionStatus.FAIL, "experiment.root", workspace_issue, None, {})],
             )
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    inputs_value = recipe.get("inputs")
+    inputs = inputs_value if isinstance(inputs_value, dict) else {}
     source_config = inputs.get("config")
     if source_config not in (None, "", "ASK_USER"):
         source_path = resolve_repo_path(source_config)
         try:
-            config_is_freezable = source_path is not None and source_path.is_file()
-            if config_is_freezable:
+            if source_path is not None and source_path.is_file():
                 source_path.read_text()
+                config_is_freezable = True
+            else:
+                config_is_freezable = False
         except (OSError, UnicodeError):
             config_is_freezable = False
         if not config_is_freezable:
@@ -1949,13 +1982,15 @@ def _has_output_artifact_issue(report: DecisionReport) -> bool:
 
 def _overwrite_policy(recipe: dict) -> Any:
     section, key = _resolve_write_targets(recipe.get("task"))["overwrite_policy"]
-    owner = recipe.get(section) if isinstance(recipe.get(section), dict) else {}
+    owner_value = recipe.get(section)
+    owner = owner_value if isinstance(owner_value, dict) else {}
     return owner.get(key)
 
 
 def _registered_plan_owners(recipe: dict[str, Any], out: Path) -> list[dict[str, Any]]:
     root = experiment_root(recipe)
-    experiment = recipe.get("experiment") if isinstance(recipe.get("experiment"), dict) else {}
+    experiment_value = recipe.get("experiment")
+    experiment = experiment_value if isinstance(experiment_value, dict) else {}
     experiment_id = str(experiment.get("id") or "")
     if root is None or not experiment_id or not exp_io.path_exists_at(root / "steps"):
         return []
@@ -2161,7 +2196,7 @@ def _guard_existing_outputs(
         status = DecisionStatus.NEEDS_USER_INPUT
         message = "Output artifacts already exist and overwrite policy is not explicit."
         question = "Is overwriting existing agent-generated output files allowed for this task?"
-    evidence = {"existing_paths": existing}
+    evidence: dict[str, Any] = {"existing_paths": existing}
     if require_fresh is None:
         evidence["user_decision_field"] = "overwrite_policy"
     return _append_issues(
