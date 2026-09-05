@@ -11,7 +11,7 @@ import signal
 import stat
 import subprocess
 import time
-from typing import Any
+from typing import Any, BinaryIO, TypeGuard, cast
 
 from . import run_artifacts as artifacts, transport
 from .experiment_io import REMOTE_MISSING_RETURN_CODE
@@ -578,12 +578,14 @@ def _local_log_tail(path: Path, lines: int) -> str:
             or not info.st_size
         ):
             return "\n".join(source.read().splitlines()[-lines:])
-        end = source.buffer.seek(0, os.SEEK_END)
+        # Path.open uses a buffered binary reader underneath this text stream.
+        buffer = cast(BinaryIO, source.buffer)
+        end = buffer.seek(0, os.SEEK_END)
         window = 65536
         while True:
             start = max(0, end - window)
-            source.buffer.seek(start)
-            parts = source.buffer.read(end - start).decode("utf-8", errors="replace").splitlines()
+            buffer.seek(start)
+            parts = buffer.read(end - start).decode("utf-8", errors="replace").splitlines()
             # A nonzero window may start inside a UTF-8 character or line separator; discard that first line.
             if start == 0 or len(parts) > lines:
                 return "\n".join(parts[-lines:])
@@ -846,5 +848,5 @@ def run_row_command(row: dict[str, Any], command: str) -> subprocess.CompletedPr
     return transport.run_shell(host, command, timeout=SSH_TIMEOUT_SECONDS, swallow_timeout=True)
 
 
-def is_remote_row(row: dict[str, Any] | None) -> bool:
+def is_remote_row(row: dict[str, Any] | None) -> TypeGuard[dict[str, Any]]:
     return bool(row and row.get("target") == "ssh" and row.get("host"))

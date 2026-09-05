@@ -538,7 +538,7 @@ def active_jobs(
         argv.append(f"--clusters={cluster_name}")
     batch = job_id is not None and not isinstance(job_id, str)
     if job_id is not None:
-        requested_ids = tuple(job_id) if batch else (job_id,)
+        requested_ids = (job_id,) if isinstance(job_id, str) else tuple(job_id)
         if not requested_ids:
             raise ValueError("An active-job query requires at least one Slurm job id.")
         argv.extend(["--jobs", ",".join(_job_id(value) for value in requested_ids)])
@@ -715,7 +715,7 @@ def cancel(
 
 def _follow_up_cluster_name(execution: dict[str, Any], cluster: str | None) -> str:
     cluster_name = _cluster_name(cluster)
-    scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+    scheduler = execution["scheduler"] if isinstance(execution.get("scheduler"), dict) else {}
     return "" if scheduler.get("direct_controller") is True else cluster_name
 
 
