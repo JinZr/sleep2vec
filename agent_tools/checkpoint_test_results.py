@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, TypeVar
 
 from . import run_artifacts as artifacts
+
+
+class CheckpointTestResult(TypedDict):
+    checkpoint_path: str
+    epoch: int
+    score: float
+
+
+_CheckpointRow = TypeVar("_CheckpointRow", bound=Mapping[str, Any])
 
 
 def expected_epoch_checkpoints(
@@ -36,8 +46,8 @@ def validate_checkpoint_test_results(
     *,
     step_id: str,
     run_id: str,
-) -> list[dict[str, Any]]:
-    rows = []
+) -> list[CheckpointTestResult]:
+    rows: list[CheckpointTestResult] = []
     seen_paths = set()
     seen_epochs = set()
     for index, result in enumerate(results):
@@ -71,14 +81,14 @@ def validate_checkpoint_test_results(
             raise ValueError(
                 f"checkpoint_test_results is missing a finite {metric}: " f"{step_id} / {run_id} / {checkpoint_path}"
             )
-        rows.append({"checkpoint_path": checkpoint_path, "epoch": epoch, "score": score})
+        rows.append({"checkpoint_path": checkpoint_path, "epoch": expected_epochs[checkpoint_path], "score": score})
     missing_paths = sorted(set(expected_epochs) - seen_paths)
     if missing_paths:
         raise ValueError(f"checkpoint_test_results is incomplete for {step_id} / {run_id}: " + ", ".join(missing_paths))
     return rows
 
 
-def best_checkpoint_test_result(rows: list[dict[str, Any]], mode: str) -> dict[str, Any]:
+def best_checkpoint_test_result(rows: list[_CheckpointRow], mode: str) -> _CheckpointRow:
     ordered = sorted(rows, key=lambda row: (int(row["epoch"]), str(row["checkpoint_path"])))
     # Stable score sorting keeps the earlier epoch/path first when scores tie.
     ordered.sort(key=lambda row: float(row["score"]), reverse=mode == "max")

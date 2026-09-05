@@ -86,6 +86,20 @@ def test_best_checkpoint_test_result_uses_score_then_epoch_path(mode, expected_e
     assert rows[0]["epoch"] == 2
 
 
+@pytest.mark.parametrize("mode", ["max", "min"])
+def test_best_checkpoint_test_result_preserves_selected_row_and_extra_fields(mode):
+    rows = [
+        {"checkpoint_path": "/run-b/epoch=1.ckpt", "epoch": 1, "score": 0.5, "checkpoint_sha256": "b" * 64},
+        {"checkpoint_path": "/run-a/epoch=1.ckpt", "epoch": 1, "score": 0.5, "checkpoint_sha256": "a" * 64},
+    ]
+
+    selected = checkpoint_test_results.best_checkpoint_test_result(rows, mode)
+
+    assert selected is rows[1]
+    assert selected["checkpoint_sha256"] == "a" * 64
+    assert rows[0]["checkpoint_path"] == "/run-b/epoch=1.ckpt"
+
+
 def test_hparam_selection_keeps_evidence_and_hash_order(monkeypatch):
     calls = []
     original_expected = checkpoint_test_results.expected_epoch_checkpoints

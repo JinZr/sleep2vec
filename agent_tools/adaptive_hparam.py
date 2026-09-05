@@ -2653,7 +2653,7 @@ def _test_checkpoint_objective(
     objective: dict[str, str],
     checkpoint_dir: str,
     checkpoint_names: list[str],
-) -> dict[str, Any] | None:
+) -> checkpoint_test_results.CheckpointTestResult | None:
     results = manifest.get("checkpoint_test_results")
     if manifest.get("test_all_checkpoints_after_fit") is not True or not isinstance(results, list):
         return None
