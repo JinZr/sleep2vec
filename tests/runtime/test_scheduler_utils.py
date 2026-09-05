@@ -174,3 +174,21 @@ def test_wsd_final_optimizer_update_uses_floor(module_name, shape, decay_ratio):
     assert update_sizes[2:decay_start] == pytest.approx([1.0] * (decay_start - 2))
     assert all(0.2 <= size < 1.0 for size in update_sizes[decay_start:-1])
     assert update_sizes[-1] == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("module_name", SCHEDULER_MODULES)
+@pytest.mark.parametrize("ratio,expected_decay_steps", [(0.29, 29), (0.295, 29)])
+def test_wsd_decimal_ratio_sets_exact_decay_update_count(module_name, ratio, expected_decay_steps):
+    module = importlib.import_module(module_name)
+    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.zeros(()))], lr=1.0)
+    scheduler = module.build_warmup_cosine_scheduler(
+        optimizer, total_steps=100, warmup_steps=0, decay_ratio=ratio, decay_floor=0.2
+    )
+    update_lrs = []
+    for _ in range(100):
+        update_lrs.append(optimizer.param_groups[0]["lr"])
+        optimizer.step()
+        scheduler.step()
+    assert update_lrs[: 100 - expected_decay_steps] == pytest.approx([1.0] * (100 - expected_decay_steps))
+    assert sum(lr < 1.0 for lr in update_lrs) == expected_decay_steps
+    assert update_lrs[-1] == pytest.approx(0.2)

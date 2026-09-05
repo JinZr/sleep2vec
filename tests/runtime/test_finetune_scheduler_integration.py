@@ -200,3 +200,46 @@ def test_standalone_validation_does_not_step_plateau(scheduler_model):
     loader = DataLoader(TensorDataset(torch.ones(1, 1)), batch_size=1)
     trainer.validate(model, dataloaders=loader)
     assert scheduler.state_dict() == state
+
+
+def test_plateau_train_epoch_checkpoints_resume_after_validation(scheduler_model, tmp_path):
+    pl, model_class = scheduler_model
+    full = model_class()
+    full_trainer = _fit(pl, full, 6)
+    partial = model_class()
+    checkpoint = pl.callbacks.ModelCheckpoint(
+        dirpath=tmp_path,
+        filename="{epoch}",
+        save_top_k=-1,
+        save_last=True,
+        every_n_epochs=1,
+        save_on_train_epoch_end=True,
+    )
+    trainer = pl.Trainer(
+        accelerator="cpu",
+        devices=1,
+        max_epochs=4,
+        logger=False,
+        callbacks=[checkpoint],
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        num_sanity_val_steps=1,
+        check_val_every_n_epoch=2,
+    )
+    loader = DataLoader(TensorDataset(torch.ones(1, 1)), batch_size=1)
+    trainer.fit(partial, train_dataloaders=loader, val_dataloaders=loader)
+    for filename, completed_epochs, validation_count, head_lr in [
+        ("epoch=2.ckpt", 3, 1, 1.0),
+        ("epoch=3.ckpt", 4, 2, 0.5),
+        ("last.ckpt", 4, 2, 0.5),
+    ]:
+        checkpoint_path = tmp_path / filename
+        saved = torch.load(checkpoint_path, weights_only=False)
+        assert saved["lr_schedulers"][0]["last_epoch"] == validation_count
+        assert saved["optimizer_states"][0]["param_groups"][1]["lr"] == pytest.approx(head_lr)
+        restored = model_class()
+        resumed_trainer = _fit(pl, restored, 6, str(checkpoint_path))
+        assert restored.epoch_lrs == full.epoch_lrs[completed_epochs:]
+        assert resumed_trainer.lr_scheduler_configs[0].scheduler.state_dict() == (
+            full_trainer.lr_scheduler_configs[0].scheduler.state_dict()
+        )

@@ -806,6 +806,9 @@ def test_training_manifest_serializes_checkpoint_test_results(package_name: str,
         ({"lr_scheduler": "plateau", "monitor": "test_loss"}, "requires a validation monitor"),
         ({"lr_scheduler": "plateau", "warmup_steps": 5}, "does not support warmup_steps"),
         ({"lr_scheduler": "plateau", "print_diagnostics": True}, "diagnostics"),
+        ({"lr_scheduler": "decay", "lr_decay_floor": -0.1}, "lr_decay_floor"),
+        ({"lr_scheduler": "wsd", "lr_decay_ratio": 0.2, "lr_decay_floor": 1.1}, "lr_decay_floor"),
+        ({"lr_scheduler": "plateau", "lr_decay_floor": -0.1}, "lr_decay_floor"),
     ],
 )
 def test_invalid_scheduler_fails_before_run_preflight(module_name, monkeypatch, options, message):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fractions import Fraction
 import math
 
 import torch
@@ -30,7 +31,7 @@ def build_warmup_cosine_scheduler(
     if decay_ratio is not None:
         if not 0.0 < decay_ratio <= 1.0:
             raise ValueError("decay_ratio must be in (0, 1].")
-        decay_steps = int(total_steps * decay_ratio)
+        decay_steps = int(total_steps * Fraction(str(decay_ratio)))
         if decay_steps < 1 or warmup + decay_steps > total_steps:
             raise ValueError("WSD requires at least one decay step and warmup + decay steps <= total_steps.")
         decay_start = total_steps - decay_steps
@@ -54,6 +55,9 @@ def build_warmup_cosine_scheduler(
 
 def validate_finetune_scheduler_args(args) -> None:
     scheduler_name = getattr(args, "lr_scheduler", "decay")
+    floor = float(getattr(args, "lr_decay_floor", 0.1))
+    if not 0.0 <= floor <= 1.0:
+        raise ValueError("lr_decay_floor must be in [0, 1].")
     decay_ratio = getattr(args, "lr_decay_ratio", None)
     plateau_factor = getattr(args, "lr_plateau_factor", None)
     plateau_patience = getattr(args, "lr_plateau_patience", None)
@@ -76,9 +80,6 @@ def validate_finetune_scheduler_args(args) -> None:
             raise ValueError("Plateau does not support lr_decay_shape.")
         if not args.monitor.startswith("val_"):
             raise ValueError("Plateau requires a validation monitor starting with 'val_'.")
-        floor = float(getattr(args, "lr_decay_floor", 0.1))
-        if not 0.0 <= floor <= 1.0:
-            raise ValueError("lr_decay_floor must be in [0, 1].")
         factor = 0.1 if plateau_factor is None else plateau_factor
         patience = 10 if plateau_patience is None else plateau_patience
         if not 0.0 < factor < 1.0:
