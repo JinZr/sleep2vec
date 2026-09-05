@@ -203,14 +203,14 @@ def generic_script_text(
     input_snapshots: list[dict[str, str]],
 ) -> str:
     context = frozen_plan_context(recipe)
-    execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+    execution = recipe["execution"] if isinstance(recipe.get("execution"), dict) else {}
     runtime_identity = (
         execution
         if adapter.supports_runtime_identity
         and all(field in execution for field in ("python", "runtime_commit", "workdir"))
         else {}
     )
-    experiment = recipe.get("experiment") if isinstance(recipe.get("experiment"), dict) else {}
+    experiment = recipe["experiment"] if isinstance(recipe.get("experiment"), dict) else {}
     allocation_guard = None
     if run.get("scheduler_type") == "slurm":
         expected_run = {
@@ -286,7 +286,7 @@ def validate_final_eval_contract(
                 f"Registered final_eval_config differs from its frozen recipe digest: {plan_dir / 'plan.json'}"
             )
         final_path = plan_dir / FROZEN_FINAL_EVAL_CONFIG_NAME
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
         if descriptor["path"] != str(final_path) or descriptor["source_path"] != str(
             inputs.get("final_eval_config_path") or ""
         ):
