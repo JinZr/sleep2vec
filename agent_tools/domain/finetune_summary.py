@@ -145,7 +145,7 @@ def finetune_summary_body(
     if multilabel is not None:
         finetune_summary["multilabel"] = multilabel
 
-    summary = {
+    summary: dict[str, Any] = {
         "config_path": repo_relative(resolved),
         "variant_guess": guess_variant(resolved),
         "is_finetune": is_finetune,
