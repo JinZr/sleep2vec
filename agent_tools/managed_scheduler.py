@@ -452,25 +452,25 @@ def _launch_managed_runs(  # noqa: C901
         default_script_commits_terminal_status=default_script_commits_terminal_status,
     )
     refreshed = observed.rows_by_key
-    external_status_changes: dict[RunKey, tuple[Any, Any]] = {}
     groups = gpu_groups(execution, runtime)
+    external_keys = []
     if groups:
-        for key, row in list(workspace_by_key.items()):
-            if (
-                key in expected_keys
-                or row.get("status") not in ACTIVE_STATUSES
-                or not shares_capacity(execution, groups, row)
-            ):
-                continue
-            observable = all(
+        external_keys = [
+            key
+            for key, row in workspace_by_key.items()
+            if key not in expected_keys
+            and row.get("status") in ACTIVE_STATUSES
+            and shares_capacity(execution, groups, row)
+            and all(
                 row.get(field) not in (None, "")
                 for field in ("target", "workdir", "pid_path", "log_path", "command", "script")
-            ) and (row.get("target") != "ssh" or row.get("host") not in (None, ""))
-            if not dry_run and observable:
-                observed_row = observe_run(owner_dir, row, row)
-                if observed_row.get("status") != row.get("status"):
-                    external_status_changes[key] = (row.get("status"), observed_row.get("status"))
-                    workspace_by_key[key] = observed_row
+            )
+            and (row.get("target") != "ssh" or row.get("host") not in (None, ""))
+        ]
+    external_observed = observe_runs(owner_dir, workspace_by_key, external_keys, dry_run=dry_run)
+    external_status_changes = external_observed.changes
+    for key in external_status_changes:
+        workspace_by_key[key] = external_observed.rows_by_key[key]
     if external_status_changes:
         committed = hooks.merge_manifest(
             workspace,
@@ -560,6 +560,7 @@ def _launch_managed_runs(  # noqa: C901
         hooks.validate_run_update(previous, planned_semantics, allow_execution_identity_fill=True)
         hooks.validate_run_update(previous, row, allow_execution_identity_fill=True)
 
+    launchable = [(index, row) for index, row in enumerate(rows) if row["status"] in LAUNCHABLE_STATUSES]
     run_output_paths = [
         Path(str(launch_identity_by_key[managed_run_key(row)][field]))
         for row in rows
@@ -573,14 +574,13 @@ def _launch_managed_runs(  # noqa: C901
 
     execution_snapshot = None
     if not dry_run and missing_pid_blocker is None:
-        launchable = [row for row in rows if row["status"] in LAUNCHABLE_STATUSES]
         has_launch_candidate = False
         if capacity.slots > 0:
-            has_launch_candidate = capacity.next_allocation(list(enumerate(launchable))) is not None
+            has_launch_candidate = capacity.next_allocation(launchable) is not None
         if has_launch_candidate:
             runtime_roots = [
                 Path(str(row[field]))
-                for row in launchable
+                for _index, row in launchable
                 for field in runtime_output_fields
                 if row.get(field) not in (None, "")
             ]
@@ -636,7 +636,6 @@ def _launch_managed_runs(  # noqa: C901
             if group_index is not None:
                 preview_loads[group_index] += 1
     else:
-        launchable = [(index, row) for index, row in enumerate(rows) if row["status"] in LAUNCHABLE_STATUSES]
         while missing_pid_blocker is None and launchable and capacity.slots > 0:
             allocation = capacity.next_allocation(launchable)
             if allocation is None:
@@ -652,22 +651,18 @@ def _launch_managed_runs(  # noqa: C901
                 planned = planned_by_key[managed_run_key(row)]
                 checkpoint_path = planned.get("checkpoint")
                 checkpoint_sha256 = planned.get("checkpoint_sha256")
-                checkpoint_args = (
-                    {
-                        "checkpoint_path": Path(str(checkpoint_path)) if checkpoint_path not in (None, "") else None,
-                        "checkpoint_sha256": (str(checkpoint_sha256) if checkpoint_sha256 not in (None, "") else None),
-                    }
-                    if checkpoint_path not in (None, "") or checkpoint_sha256 not in (None, "")
-                    else {}
-                )
-                runtime_verification_args = (
-                    {
-                        "planned_command": str(planned["command"]),
-                        "run_id": str(planned["run_id"]),
-                    }
-                    if execution_snapshot is not None
-                    else {}
-                )
+                launch_kwargs: dict[str, Any] = {}
+                # Keep these verification arguments absent when the frozen plan does not bind them.
+                if checkpoint_path not in (None, "") or checkpoint_sha256 not in (None, ""):
+                    launch_kwargs["checkpoint_path"] = (
+                        Path(str(checkpoint_path)) if checkpoint_path not in (None, "") else None
+                    )
+                    launch_kwargs["checkpoint_sha256"] = (
+                        str(checkpoint_sha256) if checkpoint_sha256 not in (None, "") else None
+                    )
+                if execution_snapshot is not None:
+                    launch_kwargs["planned_command"] = str(planned["command"])
+                    launch_kwargs["run_id"] = str(planned["run_id"])
                 identity["command"] = build_command(
                     execution,
                     Path(str(row["script"])),
@@ -678,8 +673,7 @@ def _launch_managed_runs(  # noqa: C901
                     config_path=Path(str(row["config"])),
                     script_sha256=str(row["script_sha256"]),
                     config_sha256=str(row["config_sha256"]),
-                    **runtime_verification_args,
-                    **checkpoint_args,
+                    **launch_kwargs,
                 )
                 if execution.get("runtime_commit") not in (None, ""):
                     identity["planned_runtime_commit"] = str(execution["runtime_commit"])
