@@ -14,7 +14,7 @@ import pandas as pd
 import yaml
 
 from . import experiment_io as exp_io, python_programs, run_artifacts as artifacts
-from .experiment_workspace import canonical_local_experiment_root, managed_run_key
+from .experiment_workspace import canonical_local_experiment_root
 from .hparam_selection import resolve_hparam_candidates
 from .manifests import read_rows, write_rows, write_text
 from .models import REPO_ROOT, module_for_variant
@@ -66,10 +66,13 @@ def generate_external_eval(
     commands = []
     manifest_rows = []
     for row, target_config, checkpoint_path in zip(rows, config_paths, checkpoint_paths, strict=True):
-        owner_plan = owner_plans[managed_run_key(row)]
-        recipe = owner_plan.get("recipe") if isinstance(owner_plan.get("recipe"), dict) else {}
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-        runtime_defaults = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        owner_plan = owner_plans[(str(row["step_id"]), str(row["run_id"]))]
+        recipe_value = owner_plan.get("recipe")
+        recipe = recipe_value if isinstance(recipe_value, dict) else {}
+        inputs_value = recipe.get("inputs")
+        inputs = inputs_value if isinstance(inputs_value, dict) else {}
+        runtime_defaults_value = recipe.get("runtime")
+        runtime_defaults = runtime_defaults_value if isinstance(runtime_defaults_value, dict) else {}
         variant = str(recipe.get("variant"))
         source_config = Path(str(row["config"]))
         _copy_config_with_data_paths(
@@ -112,7 +115,8 @@ def generate_external_eval(
                 ]
             )
             command = f"{hash_command} && {command}"
-        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        execution_value = recipe.get("execution")
+        execution = execution_value if isinstance(execution_value, dict) else {}
         run_cwd = Path(str(execution.get("workdir") or REPO_ROOT))
         command_root = shlex.quote(str(run_cwd))
         script_command = (
@@ -121,9 +125,11 @@ def generate_external_eval(
         commands.append(script_command)
         manifest_rows.append({**row, "external_config": str(target_config), "external_command": command})
     write_rows(manifest_path, manifest_rows)
-    first_owner = owner_plans[managed_run_key(rows[0])]
-    first_recipe = first_owner.get("recipe") if isinstance(first_owner.get("recipe"), dict) else {}
-    first_execution = first_recipe.get("execution") if isinstance(first_recipe.get("execution"), dict) else {}
+    first_owner = owner_plans[(str(rows[0]["step_id"]), str(rows[0]["run_id"]))]
+    first_recipe_value = first_owner.get("recipe")
+    first_recipe = first_recipe_value if isinstance(first_recipe_value, dict) else {}
+    first_execution_value = first_recipe.get("execution")
+    first_execution = first_execution_value if isinstance(first_execution_value, dict) else {}
     run_cwd = Path(str(first_execution.get("workdir") or REPO_ROOT))
     write_text(
         script_path,
@@ -182,9 +188,11 @@ def export_hparam_logits(
         checkpoint_path = _first_value(row, ["checkpoint_path", "fixed_checkpoint_path", "ckpt_path"])
         if not checkpoint_path:
             raise ValueError(f"Selected row is missing checkpoint_path: {_candidate_id(row)}")
-        owner_plan = owner_plans[managed_run_key(row)]
-        recipe = owner_plan.get("recipe") if isinstance(owner_plan.get("recipe"), dict) else {}
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        owner_plan = owner_plans[(str(row["step_id"]), str(row["run_id"]))]
+        recipe_value = owner_plan.get("recipe")
+        recipe = recipe_value if isinstance(recipe_value, dict) else {}
+        inputs_value = recipe.get("inputs")
+        inputs = inputs_value if isinstance(inputs_value, dict) else {}
         resolved_label = label_name or inputs.get("label_name")
         if not resolved_label:
             raise ValueError(
@@ -447,9 +455,11 @@ def _require_local_postprocess_execution(
     operation: str,
 ) -> None:
     for row in rows:
-        owner_plan = owner_plans[managed_run_key(row)]
-        recipe = owner_plan.get("recipe") if isinstance(owner_plan.get("recipe"), dict) else {}
-        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        owner_plan = owner_plans[(str(row["step_id"]), str(row["run_id"]))]
+        recipe_value = owner_plan.get("recipe")
+        recipe = recipe_value if isinstance(recipe_value, dict) else {}
+        execution_value = recipe.get("execution")
+        execution = execution_value if isinstance(execution_value, dict) else {}
         # Generated configs and collected outputs are manager-local; pretending remote paths are shared is unsafe.
         if execution.get("target", "local") == "ssh":
             raise ValueError(f"{operation} does not support SSH execution targets; no outputs were written.")
@@ -541,8 +551,9 @@ def _execute_logit_exports(
 ) -> None:
     splits = ["val"] if skip_test else ["val", "test"]
     for row in rows:
-        owner_plan = owner_plans[managed_run_key(row)]
-        recipe = owner_plan.get("recipe") if isinstance(owner_plan.get("recipe"), dict) else {}
+        owner_plan = owner_plans[(str(row["step_id"]), str(row["run_id"]))]
+        recipe_value = owner_plan.get("recipe")
+        recipe = recipe_value if isinstance(recipe_value, dict) else {}
         for split in splits:
             _run_logit_export(
                 recipe,
