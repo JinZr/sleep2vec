@@ -21,8 +21,10 @@ def sleep2stat_config_run_dir(cfg: dict | None) -> str | None:
 
 
 def sleep2stat_runtime_args(recipe: dict[str, Any]) -> list[Any]:
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    runtime_value = recipe.get("runtime")
+    runtime = runtime_value if isinstance(runtime_value, dict) else {}
+    inputs_value = recipe.get("inputs")
+    inputs = inputs_value if isinstance(inputs_value, dict) else {}
     args: list[Any] = []
     append_list_option(args, "--split", inputs.get("split"))
     append_option(args, "--device", runtime.get("device"))
@@ -34,8 +36,10 @@ def sleep2stat_runtime_args(recipe: dict[str, Any]) -> list[Any]:
 
 
 def sleep2stat_record_check_args(recipe: dict[str, Any]) -> list[Any]:
-    runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-    inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+    runtime_value = recipe.get("runtime")
+    runtime = runtime_value if isinstance(runtime_value, dict) else {}
+    inputs_value = recipe.get("inputs")
+    inputs = inputs_value if isinstance(inputs_value, dict) else {}
     args: list[Any] = ["--check-records"]
     append_list_option(args, "--split", inputs.get("split"))
     append_option(args, "--limit-records", runtime.get("limit_records"))
@@ -124,20 +128,20 @@ def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
                 )
             if looks_like_placeholder_path(item.ckpt_path):
                 agent_risk_issues.append(f"Analyzer {item.name} ckpt_path is missing or placeholder: {item.ckpt_path}")
-    for item in cfg.reducers:
+    for reducer in cfg.reducers:
         reducers.append(
             {
-                "name": item.name,
-                "type": item.type,
-                "enabled": item.enabled,
-                "source": item.source,
-                "left": item.left,
-                "right": item.right,
-                "age_prediction": item.age_prediction,
-                "sex_prediction": item.sex_prediction,
-                "metadata_age_column": item.metadata_age_column,
-                "metadata_sex_column": item.metadata_sex_column,
-                "options": dict(item.options),
+                "name": reducer.name,
+                "type": reducer.type,
+                "enabled": reducer.enabled,
+                "source": reducer.source,
+                "left": reducer.left,
+                "right": reducer.right,
+                "age_prediction": reducer.age_prediction,
+                "sex_prediction": reducer.sex_prediction,
+                "metadata_age_column": reducer.metadata_age_column,
+                "metadata_sex_column": reducer.metadata_sex_column,
+                "options": dict(reducer.options),
             }
         )
 
@@ -224,8 +228,10 @@ class Sleep2statAdapter(TaskAdapter):
         high_impact: dict[str, dict[str, Any]],
     ) -> list[DecisionIssue]:
         issues: list[DecisionIssue] = []
-        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        evaluation_value = recipe.get("evaluation_policy")
+        evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
+        inputs_value = recipe.get("inputs")
+        inputs = inputs_value if isinstance(inputs_value, dict) else {}
 
         if not inputs.get("config"):
             issues.append(needs_issue("config", "sleep2stat requires inputs.config.", high_impact))
@@ -254,7 +260,9 @@ class Sleep2statAdapter(TaskAdapter):
         sleep2stat = config_summary.get("sleep2stat") or {}
         cfg_run = sleep2stat.get("run") or {}
         cfg_data = sleep2stat.get("data") or {}
-        recipe_run_dir = (recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}).get("run_dir")
+        artifacts_value = recipe.get("artifacts")
+        artifacts = artifacts_value if isinstance(artifacts_value, dict) else {}
+        recipe_run_dir = artifacts.get("run_dir")
         config_run_dir = cfg_run.get("output_dir")
         if recipe_run_dir and config_run_dir and str(recipe_run_dir) != str(config_run_dir):
             issues.append(
@@ -350,8 +358,10 @@ class Sleep2statAdapter(TaskAdapter):
         return issues
 
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-        runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        inputs_value = recipe.get("inputs")
+        inputs = inputs_value if isinstance(inputs_value, dict) else {}
+        runtime_value = recipe.get("runtime")
+        runtime = runtime_value if isinstance(runtime_value, dict) else {}
         config = inputs.get("config")
         run_dir = sleep2stat_config_run_dir(config_summary)
         if not run_dir:
@@ -407,7 +417,8 @@ class Sleep2statAdapter(TaskAdapter):
         return self.commands(recipe, summary)
 
     def validation_commands(self, recipe: dict[str, Any]) -> list[str] | None:
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        inputs_value = recipe.get("inputs")
+        inputs = inputs_value if isinstance(inputs_value, dict) else {}
         commands = []
         if inputs.get("config"):
             commands.append(

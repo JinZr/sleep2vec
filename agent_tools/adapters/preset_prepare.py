@@ -102,12 +102,18 @@ class PresetPrepareAdapter(TaskAdapter):
         if not preset_build:
             return issues
 
-        preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
-        decisions = recipe.get("decisions") if isinstance(recipe.get("decisions"), dict) else {}
-        source_preset = source_recipe.get("preset") if isinstance((source_recipe or {}).get("preset"), dict) else {}
-        source_decisions = (
-            source_recipe.get("decisions") if isinstance((source_recipe or {}).get("decisions"), dict) else {}
-        )
+        preset = recipe.get("preset")
+        if not isinstance(preset, dict):
+            preset = {}
+        decisions = recipe.get("decisions")
+        if not isinstance(decisions, dict):
+            decisions = {}
+        source_preset = (source_recipe or {}).get("preset")
+        if not isinstance(source_preset, dict):
+            source_preset = {}
+        source_decisions = (source_recipe or {}).get("decisions")
+        if not isinstance(source_decisions, dict):
+            source_decisions = {}
         for decision_field, preset_field, config_field in (
             ("required_channels", "channels", "required_channels"),
             ("min_channels", "min_channels", "min_channels"),
@@ -149,7 +155,9 @@ class PresetPrepareAdapter(TaskAdapter):
         return issues
 
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
+        inputs = recipe.get("inputs")
+        if not isinstance(inputs, dict):
+            inputs = {}
         return [("index", path) for path in inputs.get("index") or []]
 
     def task_issues(
@@ -160,8 +168,12 @@ class PresetPrepareAdapter(TaskAdapter):
         high_impact: dict[str, dict[str, Any]],
     ) -> list[DecisionIssue]:
         issues: list[DecisionIssue] = []
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-        preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
+        inputs = recipe.get("inputs")
+        if not isinstance(inputs, dict):
+            inputs = {}
+        preset = recipe.get("preset")
+        if not isinstance(preset, dict):
+            preset = {}
 
         for input_field, value in {
             "index": inputs.get("index"),
@@ -225,8 +237,12 @@ class PresetPrepareAdapter(TaskAdapter):
         return issues
 
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-        preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
+        inputs = recipe.get("inputs")
+        if not isinstance(inputs, dict):
+            inputs = {}
+        preset = recipe.get("preset")
+        if not isinstance(preset, dict):
+            preset = {}
         return [
             render_command(
                 [
@@ -251,8 +267,12 @@ class PresetPrepareAdapter(TaskAdapter):
     ) -> tuple[list[Any], Any, list[Any]] | None:
         if recipe.get("task") != self.task:
             return None
-        inputs = recipe.get("inputs") if isinstance(recipe.get("inputs"), dict) else {}
-        preset = recipe.get("preset") if isinstance(recipe.get("preset"), dict) else {}
+        inputs = recipe.get("inputs")
+        if not isinstance(inputs, dict):
+            inputs = {}
+        preset = recipe.get("preset")
+        if not isinstance(preset, dict):
+            preset = {}
         return coerce_list(inputs.get("index")), inputs.get("config"), coerce_list(preset.get("split"))
 
 

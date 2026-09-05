@@ -45,14 +45,18 @@ class HparamTuneAdapter(TaskAdapter):
         return FINETUNE_RUNTIME_FIELDS | INFER_RUNTIME_FIELDS
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
-        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        execution = recipe.get("execution")
+        if not isinstance(execution, dict):
+            execution = {}
         return (str(execution.get("python") or "python"), "-m", variant_module(recipe, "finetune"))
 
     def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
         return hparam_recipe_contract_issues(recipe, source_layer=source_layer)
 
     def recipe_input_issues(self, recipe: dict[str, Any]) -> list[DecisionIssue]:
-        search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+        search = recipe.get("search")
+        if not isinstance(search, dict):
+            search = {}
         return [
             issue
             for issue in hparam_search_issues(search, profile_mode="profile" in search, high_impact={})
@@ -69,8 +73,12 @@ class HparamTuneAdapter(TaskAdapter):
         source = source_recipe or recipe
         if isinstance(source.get("_local_recipe"), dict):
             source = source["_local_recipe"]
-        authored_search = source.get("search") if isinstance(source.get("search"), dict) else {}
-        effective_search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+        authored_search = source.get("search")
+        if not isinstance(authored_search, dict):
+            authored_search = {}
+        effective_search = recipe.get("search")
+        if not isinstance(effective_search, dict):
+            effective_search = {}
         if "profile" not in authored_search or "profile" not in effective_search:
             return []
         from ..domain.finetune_hparam_profile import compile_finetune_balanced_profile
@@ -127,8 +135,12 @@ class HparamTuneAdapter(TaskAdapter):
     def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
         from .. import plan_hparam
 
-        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
-        scheduler = execution.get("scheduler") if isinstance(execution.get("scheduler"), dict) else {}
+        execution = recipe.get("execution")
+        if not isinstance(execution, dict):
+            execution = {}
+        scheduler = execution.get("scheduler")
+        if not isinstance(scheduler, dict):
+            scheduler = {}
         if scheduler.get("type") != "slurm" or report.blocking_issues():
             return report
         try:
@@ -240,7 +252,9 @@ class HparamTuneAdapter(TaskAdapter):
     def doctor_runtime_card(self, recipe: dict[str, Any]) -> str | None:
         from .. import managed_scheduler
 
-        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        execution = recipe.get("execution")
+        if not isinstance(execution, dict):
+            execution = {}
         python = str(execution.get("python") or sys.executable)
         program = (
             "import importlib.metadata, json, socket, sys; "
@@ -289,7 +303,9 @@ class HparamTuneAdapter(TaskAdapter):
         from .. import plan_hparam
         from ..domain.finetune_hparam_profile import finetune_balanced_profile_audit
 
-        search = recipe.get("search") if isinstance(recipe.get("search"), dict) else {}
+        search = recipe.get("search")
+        if not isinstance(search, dict):
+            search = {}
         profile_audit = (
             finetune_balanced_profile_audit(search) if search.get("profile") == "finetune_balanced" else None
         )

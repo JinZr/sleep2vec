@@ -44,10 +44,6 @@ ignore_missing_imports = true
 # surface extra errors from third-party stubs that CI does not install.
 ignore_errors = true
 module = [
-    "agent_tools.adapters.finetune",
-    "agent_tools.adapters.hparam_tune",
-    "agent_tools.adapters.preset_prepare",
-    "agent_tools.adapters.sleep2stat",
     "agent_tools.adaptive_hparam",
     "agent_tools.decision_hparam",
     "agent_tools.domain.finetune_hparam_profile",
