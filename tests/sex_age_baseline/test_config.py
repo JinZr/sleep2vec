@@ -168,6 +168,57 @@ def test_zero_encoding_and_window_mode(tmp_path):
     assert all(torch.count_nonzero(p) == 0 for p in SexAgeMLP(cfg).encoders.parameters())
 
 
+@pytest.mark.parametrize("zero_feature", ["age", "sex", "bmi"])
+@pytest.mark.parametrize("num_layers", [1, 2, 3])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_relu_rejects_any_selected_zero_encoder(tmp_path, zero_feature, num_layers, mixed):
+    payload = _cox_payload(tmp_path)
+    model = payload["model"]
+    model["bmi"] = dict(model["age"], scale=40.0)
+    model["features"] = ["age", "sex", "bmi"] if mixed else [zero_feature]
+    for feature in set(("age", "sex", "bmi")) - set(model["features"]):
+        del model[feature]
+    model[zero_feature]["initialization"] = "zeros"
+    model["head"]["act"] = "relu"
+    model["head"]["kwargs"]["num_layers"] = num_layers
+
+    with pytest.raises(ValueError, match=f"blocks gradients.*{zero_feature}"):
+        load_config(_write_yaml(tmp_path / "relu_zero.yaml", payload))
+
+
+@pytest.mark.parametrize(
+    "act,initialization", [("relu", "default"), ("elu", "zeros"), ("gelu", "zeros"), ("silu", "zeros")]
+)
+@pytest.mark.parametrize("num_layers", [1, 2, 3])
+def test_compatible_initialization_activation_encoders_receive_gradients(tmp_path, act, initialization, num_layers):
+    import torch
+
+    from sex_age_baseline.model import SexAgeMLP
+
+    payload = _cox_payload(tmp_path)
+    model = payload["model"]
+    model["features"] = ["age", "sex", "bmi"]
+    model["bmi"] = dict(model["age"], scale=40.0)
+    for feature in model["features"]:
+        model[feature]["initialization"] = initialization
+    model["head"].update(act=act, dropout=0.0)
+    model["head"]["kwargs"]["num_layers"] = num_layers
+    network = SexAgeMLP(load_config(_write_yaml(tmp_path / "compatible.yaml", payload)))
+    with torch.no_grad():
+        for parameter in network.head.parameters():
+            parameter.fill_(0.1)
+        if initialization == "default":
+            for parameter in network.encoders.parameters():
+                parameter.fill_(0.1)
+    network(
+        {"age": torch.tensor([40.0, 60.0]), "sex": torch.tensor([0, 1]), "bmi": torch.tensor([20.0, 30.0])}
+    ).sum().backward()
+    assert all(
+        parameter.grad is not None and torch.count_nonzero(parameter.grad)
+        for parameter in network.encoders.parameters()
+    )
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

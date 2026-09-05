@@ -168,6 +168,12 @@ def _build_model(raw: dict[str, Any]) -> ModelConfig:
     bmi = _build_age(_mapping(raw, "bmi")) if "bmi" in features else None
     sex = _build_sex(_mapping(raw, "sex")) if "sex" in features else None
     head = _build_head(_mapping(raw, "head"))
+    zero_features = [feature for feature in features if raw[feature]["initialization"] == "zeros"]
+    if head.act == "relu" and zero_features:
+        raise ValueError(
+            f"model.head.act=relu blocks gradients to zero-initialized encoders: {zero_features}. "
+            "Use initialization=default or a different head activation."
+        )
     return ModelConfig(name=name, features=features, age=age, sex=sex, bmi=bmi, head=head)
 
 
