@@ -1089,6 +1089,7 @@ def test_agent_proposal_rejects_terminal_result_drift_after_snapshot(tmp_path: P
     assert {path: path.read_bytes() for path in managed_paths} == evidence_before
     assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
     assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").exists()
+    assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.md").exists()
     assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
 
 
