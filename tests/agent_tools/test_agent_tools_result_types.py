@@ -11,8 +11,26 @@ def test_result_types_reach_callers(tmp_path: Path):
             from pathlib import Path
             from agent_tools import (
                 adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
-                experiment_io, experiment_workspace, run_artifacts, run_evidence, slurm,
+                experiment_io, experiment_workspace, managed_scheduler, models, run_artifacts, run_evidence, slurm,
             )
+
+            from typing import Any, Literal
+
+            def snapshot_result(should_write: bool) -> tuple[dict[str, Any], bool]:
+                return {}, should_write
+
+            managed_scheduler.SchedulerHooks(validated_snapshot=lambda *args: snapshot_result(True))
+            managed_scheduler.SchedulerHooks(validated_snapshot=lambda *args: (None, False))
+            invalid_snapshot: managed_scheduler.ExecutionSnapshotResult = (None, True)  # type: ignore[assignment]
+
+            def missing_snapshot_write() -> tuple[None, Literal[True]]:
+                return None, True
+
+            managed_scheduler.SchedulerHooks(validated_snapshot=missing_snapshot_write)  # type: ignore[arg-type]
+
+            def check_commit(value: object) -> None:
+                if models.is_full_git_object_id(value):
+                    commit: str = value
 
             strict_key: tuple[str, str] = experiment_workspace.validated_run_key({})
             optional_key: tuple[str, str] | None = experiment_workspace.managed_run_key({})
