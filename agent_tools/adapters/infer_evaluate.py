@@ -98,12 +98,16 @@ class InferEvaluateAdapter(TaskAdapter):
         return []
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
-        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        execution = recipe.get("execution")
+        if not isinstance(execution, dict):
+            execution = {}
         return (str(execution.get("python") or "python"), "-m", variant_module(recipe, "infer"))
 
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         inputs = recipe_inputs(recipe)
-        runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        runtime = recipe.get("runtime")
+        if not isinstance(runtime, dict):
+            runtime = {}
         avg_ckpts = runtime.get("avg_ckpts", 1)
         averages_checkpoints = type(avg_ckpts) is int and avg_ckpts > 1
         required: list[tuple[str, Any]] = []
@@ -125,7 +129,9 @@ class InferEvaluateAdapter(TaskAdapter):
         high_impact: dict[str, dict[str, Any]],
     ) -> list[DecisionIssue]:
         issues: list[DecisionIssue] = []
-        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+        evaluation = recipe.get("evaluation_policy")
+        if not isinstance(evaluation, dict):
+            evaluation = {}
         inputs = recipe_inputs(recipe)
 
         issues.extend(config_summary_issues(recipe, config_summary))
@@ -189,7 +195,9 @@ class InferEvaluateAdapter(TaskAdapter):
 
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
         inputs = recipe_inputs(recipe)
-        runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
+        runtime = recipe.get("runtime")
+        if not isinstance(runtime, dict):
+            runtime = {}
         return [
             render_command(
                 [
