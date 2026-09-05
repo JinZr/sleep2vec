@@ -60,7 +60,9 @@ class FinetuneAdapter(TaskAdapter):
         high_impact: dict[str, dict[str, Any]],
     ) -> list[DecisionIssue]:
         issues: list[DecisionIssue] = []
-        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+        evaluation = recipe.get("evaluation_policy")
+        if not isinstance(evaluation, dict):
+            evaluation = {}
 
         issues.extend(config_summary_issues(recipe, config_summary))
         test_after_fit = decisions["test_after_fit"].value
@@ -137,7 +139,9 @@ class FinetuneAdapter(TaskAdapter):
         unlock_final_test: bool,
         output_dir: Path | None = None,
     ) -> list[DecisionIssue]:
-        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+        evaluation = recipe.get("evaluation_policy")
+        if not isinstance(evaluation, dict):
+            evaluation = {}
         if evaluation.get("selection_split") != "test":
             return []
         return [
@@ -159,9 +163,15 @@ class FinetuneAdapter(TaskAdapter):
 
     def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
         inputs = recipe_inputs(recipe)
-        runtime = recipe.get("runtime") if isinstance(recipe.get("runtime"), dict) else {}
-        artifacts = recipe.get("artifacts") if isinstance(recipe.get("artifacts"), dict) else {}
-        evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+        runtime = recipe.get("runtime")
+        if not isinstance(runtime, dict):
+            runtime = {}
+        artifacts = recipe.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+        evaluation = recipe.get("evaluation_policy")
+        if not isinstance(evaluation, dict):
+            evaluation = {}
         test_after_fit = evaluation["test_after_fit"]
         pieces = [
             *self.frozen_command_prefix(recipe),
@@ -186,7 +196,9 @@ class FinetuneAdapter(TaskAdapter):
         return [render_command(pieces)]
 
     def managed_runtime_dir(self, recipe: dict[str, Any], version: str) -> Path | None:
-        execution = recipe.get("execution") if isinstance(recipe.get("execution"), dict) else {}
+        execution = recipe.get("execution")
+        if not isinstance(execution, dict):
+            execution = {}
         return Path(str(execution.get("workdir") or REPO_ROOT)) / "log-finetune" / version
 
 
