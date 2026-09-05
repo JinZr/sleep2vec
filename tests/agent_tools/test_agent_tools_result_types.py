@@ -10,7 +10,8 @@ def test_result_types_reach_callers(tmp_path: Path):
         textwrap.dedent("""\
             from pathlib import Path
             from agent_tools import (
-                adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments, run_artifacts, slurm,
+                adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
+                run_artifacts, run_evidence, slurm,
             )
 
             resources = slurm.normalize_resources({}, 1)
@@ -82,6 +83,29 @@ def test_result_types_reach_callers(tmp_path: Path):
             winner_hash: str = winner["checkpoint_sha256"]
             winner["checkpoint_sha256"] = 1  # type: ignore[typeddict-item]
             winner["checkpoint_sha"]  # type: ignore[typeddict-item]
+
+            identity = run_evidence._parse_process_identity("{}", "/identity.json")
+            pid: int = identity["pid"]
+            process_group: int = identity["process_group_id"]
+            start_token: str = identity["process_start_token"]
+            identity["process_start_tokens"]  # type: ignore[typeddict-item]
+            identity["pid"] = "12"  # type: ignore[typeddict-item]
+            identity["runtime_commit"] = 1  # type: ignore[typeddict-item]
+            minimal_identity: run_evidence.ProcessIdentity = {
+                "pid": 12, "process_group_id": 12, "process_start_token": "token",
+            }
+            incomplete_identity: run_evidence.ProcessIdentity = {"pid": 12}  # type: ignore[typeddict-item]
+            running: bool | None = run_evidence.process_identity_running({}, minimal_identity)
+            run_evidence.stop_process_group({}, minimal_identity)
+            run_evidence.process_identity_running({}, {**minimal_identity, "pid": "12"})  # type: ignore[typeddict-item]
+            run_evidence.stop_process_group({}, {"pid": 12})  # type: ignore[typeddict-item]
+            read_identity = run_evidence.read_process_identity("/identity.json")
+            read_identity["pid"]  # type: ignore[index]
+            if read_identity is not None:
+                read_pid: int = read_identity["pid"]
+                read_identity["process_start_tokens"]  # type: ignore[typeddict-item]
+                if "runtime_commit" in read_identity:
+                    runtime_commit: str = read_identity["runtime_commit"]
 
             plan = run_artifacts.read_registered_plan(
                 "/plan", workspace="/workspace", workspace_experiment={},

@@ -1034,7 +1034,7 @@ def _slurm_execution_identity(
         execution_snapshot_sha256,
     )
     command = f"ssh {transport.sh(execution['host'])} {transport.sh(inner)}" if target == "ssh" else inner
-    identity = {
+    identity: dict[str, Any] = {
         "target": target,
         "host": execution.get("host", ""),
         "workdir": execution.get("workdir") or str(REPO_ROOT),

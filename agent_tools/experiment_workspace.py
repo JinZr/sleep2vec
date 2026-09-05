@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import threading
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import yaml
 
@@ -23,7 +23,11 @@ SUCCESS_STATUSES = frozenset({"completed", "finished"})
 LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
 SUBMISSION_CLUSTER_MISMATCH = "SUBMISSION_CLUSTER_MISMATCH"
 MONITOR_EXIT_CODE_PREFIX = "AGENT_TOOLS_EXIT_CODE="
-PROCESS_IDENTITY_FIELDS = {"pid", "process_group_id", "process_start_token"}
+PROCESS_IDENTITY_FIELDS: set[Literal["pid", "process_group_id", "process_start_token"]] = {
+    "pid",
+    "process_group_id",
+    "process_start_token",
+}
 SCHEDULER_PLAN_IDENTITY_FIELDS = {
     "scheduler_type",
     "scheduler_direct_controller",

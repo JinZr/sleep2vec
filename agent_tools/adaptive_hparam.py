@@ -2549,7 +2549,7 @@ def _uncommitted_launch_attempts(
                 elif status in {"planned", "pending"}:
                     abandoned.append((round_index, row))
                 continue
-            pid = row.get("pid")
+            pid: int | str | None = row.get("pid")
             if row.get("target") not in (None, ""):
                 try:
                     process_identity = evidence.read_process_identity(row.get("pid_path"), row)

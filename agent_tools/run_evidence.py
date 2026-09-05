@@ -11,7 +11,7 @@ import signal
 import stat
 import subprocess
 import time
-from typing import Any, BinaryIO, TypeGuard, cast
+from typing import Any, BinaryIO, TypedDict, TypeGuard, cast
 
 from . import run_artifacts as artifacts, transport
 from .experiment_io import REMOTE_MISSING_RETURN_CODE
@@ -64,6 +64,16 @@ RUN_EVIDENCE_FIELDS = {
     "progress_age_seconds",
 }
 RUN_STATUS_FIELDS = RUN_EVIDENCE_FIELDS | {"status"}
+
+
+class _RequiredProcessIdentity(TypedDict):
+    pid: int
+    process_group_id: int
+    process_start_token: str
+
+
+class ProcessIdentity(_RequiredProcessIdentity, total=False):
+    runtime_commit: str
 
 
 class ProcessIdentityError(RuntimeError):
@@ -206,7 +216,10 @@ def status_row(  # noqa: C901
         **row,
         **(committed_process_identity or {}),
         "status": observed_status,
-        "pid": (committed_process_identity or {}).get("pid") or previous.get("pid") or row.get("pid") or "",
+        "pid": (committed_process_identity["pid"] if committed_process_identity else None)
+        or previous.get("pid")
+        or row.get("pid")
+        or "",
         "log_tail": log_tail(row.get("log_path"), row),
         "run_manifest": str(manifest or ""),
         "checkpoints": ";".join(checkpoints),
@@ -309,7 +322,7 @@ def read_process_identity(
     row: dict[str, Any] | None = None,
     *,
     expected_script: str | Path | None = None,
-) -> dict[str, Any] | None:
+) -> ProcessIdentity | None:
     text = _read_pid_text(path, row)
     if text is None:
         return None
@@ -379,7 +392,7 @@ def _read_pid_text(path: Any, row: dict[str, Any] | None) -> str | None:
     return text
 
 
-def _parse_process_identity(text: str, path: Any) -> dict[str, Any]:
+def _parse_process_identity(text: str, path: Any) -> ProcessIdentity:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -399,7 +412,7 @@ def _parse_process_identity(text: str, path: Any) -> dict[str, Any]:
         or not token
     ):
         raise ProcessIdentityError(f"PID file has invalid process group identity: {path}")
-    identity = {"pid": pid, "process_group_id": pgid, "process_start_token": token}
+    identity: ProcessIdentity = {"pid": pid, "process_group_id": pgid, "process_start_token": token}
     if "runtime_commit" in payload:
         runtime_commit = payload["runtime_commit"]
         if not is_full_git_object_id(runtime_commit):
@@ -408,7 +421,7 @@ def _parse_process_identity(text: str, path: Any) -> dict[str, Any]:
     return identity
 
 
-def process_identity_running(row: dict[str, Any], identity: dict[str, Any]) -> bool | None:
+def process_identity_running(row: dict[str, Any], identity: ProcessIdentity) -> bool | None:
     _require_matching_process_identity(row, identity)
     result = run_row_command(
         row,
@@ -437,7 +450,7 @@ def process_identity_running(row: dict[str, Any], identity: dict[str, Any]) -> b
     return payload["group_running"]
 
 
-def _require_matching_process_identity(row: dict[str, Any], identity: dict[str, Any]) -> None:
+def _require_matching_process_identity(row: dict[str, Any], identity: ProcessIdentity) -> None:
     for field in PROCESS_IDENTITY_FIELDS:
         expected = row.get(field)
         if expected not in (None, "") and str(expected) != str(identity[field]):
@@ -461,7 +474,7 @@ def process_running(row: dict[str, Any], pid: int | None) -> bool | None:
     return True
 
 
-def stop_process_group(row: dict[str, Any], identity: dict[str, Any], *, timeout: float = 5.0) -> None:
+def stop_process_group(row: dict[str, Any], identity: ProcessIdentity, *, timeout: float = 5.0) -> None:
     _require_matching_process_identity(row, identity)
     pid = identity["pid"]
     pgid = identity["process_group_id"]
