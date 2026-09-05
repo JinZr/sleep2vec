@@ -21,7 +21,8 @@ def guess_variant(config_path: str | Path) -> str:
 
 
 def _channel_summary(item: dict[str, Any]) -> dict[str, Any]:
-    tokenizer = item.get("tokenizer") if isinstance(item.get("tokenizer"), dict) else {}
+    tokenizer_value = item.get("tokenizer")
+    tokenizer = tokenizer_value if isinstance(tokenizer_value, dict) else {}
     return {
         "name": item.get("name"),
         "input_dim": item.get("input_dim"),
@@ -41,14 +42,18 @@ def finetune_summary_body(
     if resolved is None:
         raise FileNotFoundError("Config path is required.")
     data = load_yaml(resolved)
-    model = data.get("model") if isinstance(data.get("model"), dict) else {}
-    data_block = data.get("data") if isinstance(data.get("data"), dict) else {}
+    model_value = data.get("model")
+    model = model_value if isinstance(model_value, dict) else {}
+    data_block_value = data.get("data")
+    data_block = data_block_value if isinstance(data_block_value, dict) else {}
     # A `finetune:` block that is present but empty is still a finetune config, so the checks
     # below ask this rather than `if finetune` -- `{}` is falsy and would skip every one of
     # them while the summary still reports `is_finetune: true`.
-    is_finetune = isinstance(data.get(CONFIG_FINETUNE_SECTION), dict)
-    finetune = data.get(CONFIG_FINETUNE_SECTION) if is_finetune else {}
-    task = finetune.get("task") if isinstance(finetune.get("task"), dict) else {}
+    raw_finetune = data.get(CONFIG_FINETUNE_SECTION)
+    is_finetune = isinstance(raw_finetune, dict)
+    finetune = raw_finetune if isinstance(raw_finetune, dict) else {}
+    task_value = finetune.get("task")
+    task = task_value if isinstance(task_value, dict) else {}
     survival = survival_summary(
         finetune,
         task,
@@ -63,19 +68,29 @@ def finetune_summary_body(
         local_path_base=local_path_base,
         validated_sidecar_keys=validated_sidecar_keys,
     )
-    preset_build = data.get("preset_build") if isinstance(data.get("preset_build"), dict) else {}
-    head = model.get("head") if isinstance(model.get("head"), dict) else {}
-    raw_head_kwargs = head.get("kwargs") if isinstance(head.get("kwargs"), dict) else {}
+    preset_build_value = data.get("preset_build")
+    preset_build = preset_build_value if isinstance(preset_build_value, dict) else {}
+    head_value = model.get("head")
+    head = head_value if isinstance(head_value, dict) else {}
+    raw_head_kwargs_value = head.get("kwargs")
+    raw_head_kwargs = raw_head_kwargs_value if isinstance(raw_head_kwargs_value, dict) else {}
     head_kwargs = {
         field: raw_head_kwargs[field] for field in ("attn_dropout", "temporal_dropout") if field in raw_head_kwargs
     }
-    temporal_agg = head.get("temporal_agg") if isinstance(head.get("temporal_agg"), dict) else {}
-    channel_agg = head.get("channel_agg") if isinstance(head.get("channel_agg"), dict) else {}
-    layer_mix = finetune.get("layer_mix") if isinstance(finetune.get("layer_mix"), dict) else {}
-    tuning = finetune.get("tuning") if isinstance(finetune.get("tuning"), dict) else {}
-    backbone = model.get("backbone") if isinstance(model.get("backbone"), dict) else {}
-    averaging = data.get("model_averaging") if isinstance(data.get("model_averaging"), dict) else None
-    channels_raw = model.get("channels") if isinstance(model.get("channels"), list) else []
+    temporal_agg_value = head.get("temporal_agg")
+    temporal_agg = temporal_agg_value if isinstance(temporal_agg_value, dict) else {}
+    channel_agg_value = head.get("channel_agg")
+    channel_agg = channel_agg_value if isinstance(channel_agg_value, dict) else {}
+    layer_mix_value = finetune.get("layer_mix")
+    layer_mix = layer_mix_value if isinstance(layer_mix_value, dict) else {}
+    tuning_value = finetune.get("tuning")
+    tuning = tuning_value if isinstance(tuning_value, dict) else {}
+    backbone_value = model.get("backbone")
+    backbone = backbone_value if isinstance(backbone_value, dict) else {}
+    averaging_value = data.get("model_averaging")
+    averaging = averaging_value if isinstance(averaging_value, dict) else None
+    channels_raw_value = model.get("channels")
+    channels_raw = channels_raw_value if isinstance(channels_raw_value, list) else []
     channels = [_channel_summary(item) for item in channels_raw if isinstance(item, dict)]
     model_channel_names = [item["name"] for item in channels if item.get("name")]
     data_channel_names = data_block.get("data_channel_names") or model_channel_names
