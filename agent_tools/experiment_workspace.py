@@ -1199,6 +1199,25 @@ def validate_checkpoint_ownership(
 def merge_run_manifest(
     root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None, lock_held: bool = False
 ) -> list[dict[str, Any]]:
+    """Merge incoming rows into canonical state and refresh run-matrix projections.
+
+    Requires an existing run_manifest.tsv and experiment.yaml with an experiment
+    ID and a status other than completed. Rereads canonical rows, validates frozen
+    fields and scheduler identity, and applies merge_run_row lifecycle rules.
+    Existing order is retained and new identities are appended; new runs must
+    name this experiment. Returns all committed rows, not just the input updates.
+
+    Local calls acquire run_manifest.tsv.lock unless lock_held=True, which means
+    the caller already owns that lock. remote selects SSH reads and conditional
+    writes; lock_held does not bypass their conflict checks. Remote projection
+    refresh may observe a newer concurrent commit and return that newer row set.
+
+    Writes canonical state plus run_matrix.csv and reports/run_matrix.md; does
+    not observe jobs, launch work or append lifecycle events. Validation, exhausted
+    conflict attempts and unhandled I/O errors raise. Projection failure can
+    occur after the canonical commit, so this is not an all-or-nothing bundle
+    update and an exception does not prove the input changes were uncommitted.
+    """
     root = Path(root)
     path = root / "run_manifest.tsv"
     lock_path = path.with_name(path.name + ".lock")

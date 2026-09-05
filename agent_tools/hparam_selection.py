@@ -1235,6 +1235,25 @@ def _candidate_selected_events(workspace: Path) -> Iterator[dict[str, Any]]:
 
 
 def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_k: int | None = None) -> Path:
+    """Rebuild local checkpoint_ranking.csv for a validated registered hparam plan.
+
+    Checks existing ranking rows against canonical run identities and frozen
+    fields before scanning. For runs with a runtime manifest, prefers usable
+    history scores paired with physical epoch checkpoints; if none yield rows,
+    tries a manifest score and resolved checkpoint instead. Missing evidence,
+    unusable scores/epochs and unresolved or unusable checkpoint candidates are
+    excluded rather than necessarily raising. A successful empty or partial
+    ranking does not certify all inputs as valid. Malformed runtime manifests,
+    history JSON parse failures and unhandled read errors propagate.
+
+    Uses the supplied metric/mode rather than binding them to the selection
+    policy: 'max' sorts descending, other modes ascending. top_k slices the
+    sorted checkpoint rows before assigning ranks. Overwrites the ranking and
+    returns its path, writing a step_id,run_id header when empty. Does not require
+    terminal runs, refresh their state or commit the formal selection performed
+    by select_hparam_candidates. Scanning/validation errors precede output writes;
+    a write failure may leave a partial ranking.
+    """
     root = Path(run_dir)
     plan = artifacts.read_hparam_plan(root)
     recipe_value = plan.get("recipe")

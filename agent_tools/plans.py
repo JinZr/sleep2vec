@@ -1847,6 +1847,23 @@ def preflight_plan(
 
 
 def collect_runs(root: str | Path, metric: str | None, output: str | Path) -> None:
+    """Write a local CSV summary of the canonical run_manifest.tsv rows at root.
+
+    Reads only registered runtime paths, without discovering runs or refreshing
+    lifecycle state. Each row combines recorded metadata with runtime manifest
+    fields and a local W&B summary. For metric, an existing runtime metrics entry
+    wins over the W&B value, even if null; W&B fields also use a wandb. prefix.
+    W&B summary loading failures yield no summary, while invalid runtime
+    manifests and unhandled input errors propagate.
+
+    Expands '~' in output and anchors relative outputs to the current directory.
+    Rejects unsafe output paths and aliases of the canonical manifest. After
+    collecting inputs, creates parents and overwrites the CSV; an empty manifest
+    produces a version-only header. Returns None. This export does not validate
+    successful completion, select candidates or update canonical status. Input
+    collection failures leave the output untouched; write failures may leave a
+    partial CSV.
+    """
     rows: list[dict[str, Any]] = []
     root_path = Path(root)
     output_path = Path(output).expanduser()
