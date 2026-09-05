@@ -10,7 +10,7 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import yaml
 
@@ -153,8 +153,8 @@ def run_experiment_pipeline(
     exp_io.validate_managed_output_paths(root, [pipeline_dir / "pipeline.json", lock_path])
     for source_id, source in spec["checkpoint_sources"].items():
         source_plan = artifacts.read_hparam_plan(Path(source["plan"]))
-        source_recipe = source_plan.get("recipe") if isinstance(source_plan.get("recipe"), dict) else {}
-        source_execution = source_recipe.get("execution") if isinstance(source_recipe.get("execution"), dict) else {}
+        source_recipe = source_plan["recipe"] if isinstance(source_plan.get("recipe"), dict) else {}
+        source_execution = source_recipe["execution"] if isinstance(source_recipe.get("execution"), dict) else {}
         # Managed pipeline schemas read source artifacts on the manager and have no SSH staging boundary.
         if str(source_execution.get("target") or "local") == "ssh":
             raise ValueError(
@@ -477,7 +477,7 @@ def _validate_experiment(root: Path, spec: dict[str, Any], *, allow_completed: b
         raise ValueError("experiment.yaml is missing experiment metadata.")
     if experiment.get("id") != spec["pipeline"]["experiment_id"]:
         raise ValueError("Pipeline experiment id differs from experiment.yaml.")
-    if canonical_local_experiment_root(experiment.get("root"), Path.cwd()) != root:
+    if canonical_local_experiment_root(cast(str | Path, experiment.get("root")), Path.cwd()) != root:
         raise ValueError("Pipeline run directory differs from experiment.yaml root.")
     if experiment.get("status") == "completed" and not allow_completed:
         raise ValueError("Experiment is already completed.")
@@ -1547,7 +1547,7 @@ def _load_or_create_initial_attempts(
 
 def _reconcile_pipeline_jobs_planned_event(root: Path, spec: dict[str, Any]) -> None:
     payload = {"pipeline_id": spec["pipeline"]["id"], "job_count": len(spec["jobs"])}
-    identity_fields = ("pipeline_id",)
+    identity_fields: tuple[str, ...] = ("pipeline_id",)
     if spec.get("_execution_stage"):
         payload["phase"] = spec["_execution_stage"]
         identity_fields = ("pipeline_id", "phase")
@@ -1560,7 +1560,7 @@ def _reconcile_pipeline_retry_planned_event(root: Path, spec: dict[str, Any], at
         "job_id": str(attempt["job_id"]),
         "attempt": int(attempt["attempt"]),
     }
-    identity_fields = ("pipeline_id", "job_id", "attempt")
+    identity_fields: tuple[str, ...] = ("pipeline_id", "job_id", "attempt")
     if spec.get("_execution_stage"):
         payload["phase"] = spec["_execution_stage"]
         identity_fields = ("pipeline_id", "phase", "job_id", "attempt")
@@ -1748,7 +1748,7 @@ def _materialize_attempt_locked(
     )
     if staging_dir is not None and registration_state == "present":
         raise ValueError(f"Canonical external attempt exists before plan publication: {plan_dir}")
-    plan_recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+    plan_recipe = plan["recipe"] if isinstance(plan.get("recipe"), dict) else {}
     step_payload = {
         "step": plan_recipe["step"],
         "experiment_id": plan_recipe["experiment"]["id"],
@@ -2049,7 +2049,8 @@ def _validate_attempt_rows(
     jobs = {job["id"]: job for job in spec["jobs"]}
     seen_attempts = set()
     for row in rows:
-        key = managed_run_key(row)
+        # Canonical and registered attempt readers require both managed identity fields.
+        key = cast(tuple[str, str], managed_run_key(row))
         run = canonical.get(key)
         if run is None:
             raise ValueError(f"Pipeline attempt is missing from run_manifest.tsv: {key[0]} / {key[1]}")
@@ -2238,13 +2239,14 @@ def _run_attempts(  # noqa: C901
             groups.append((pipeline_dir / "retry_schedulers" / row["job_id"], _planned_runs([row])))
 
         missing_pid_blocker = None
+        # Validated attempt rows and the canonical manifest have managed identities.
         for owner_dir, runs in groups:
             owner_dir.mkdir(parents=True, exist_ok=True)
             snapshot_path = owner_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
             if snapshot_path.exists():
-                canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
+                canonical = {cast(tuple[str, str], managed_run_key(row)): row for row in read_run_manifest(root)}
                 if any(
-                    (canonical[managed_run_key(run)].get("status") or "planned")
+                    (canonical[cast(tuple[str, str], managed_run_key(run))].get("status") or "planned")
                     in managed_scheduler.LAUNCHABLE_STATUSES
                     for run in runs
                 ):
@@ -2266,9 +2268,9 @@ def _run_attempts(  # noqa: C901
                 missing_pid_blocker = exc
                 break
 
-        canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
+        canonical = {cast(tuple[str, str], managed_run_key(row)): row for row in read_run_manifest(root)}
         if any(
-            canonical[managed_run_key(row)].get("status") in SUCCESS_STATUSES
+            canonical[cast(tuple[str, str], managed_run_key(row))].get("status") in SUCCESS_STATUSES
             and str(row.get("verified") or "").lower() != "true"
             for row in attempts
         ):
@@ -2279,7 +2281,7 @@ def _run_attempts(  # noqa: C901
             )
         changed = False
         for row in attempts:
-            key = managed_run_key(row)
+            key = cast(tuple[str, str], managed_run_key(row))
             run = canonical[key]
             status = str(run.get("status") or "")
             if row.get("status") != status:
@@ -2309,7 +2311,7 @@ def _run_attempts(  # noqa: C901
 
         logical = _logical_job_states(spec, attempts)
         if missing_pid_blocker is None and any(job["status"] == "running" for job in logical):
-            expected_keys = {managed_run_key(row) for row in attempts}
+            expected_keys = {cast(tuple[str, str], managed_run_key(row)) for row in attempts}
             capacity = managed_scheduler.capacity_state(
                 execution,
                 runtime,
@@ -2588,7 +2590,7 @@ def _required_slug(payload: dict[str, Any], field: str, label: str) -> str:
 
 
 def _assert_source_semantics(source_id: str, source: dict[str, Any], recipe: dict[str, Any]) -> None:
-    evaluation = recipe.get("evaluation_policy") if isinstance(recipe.get("evaluation_policy"), dict) else {}
+    evaluation = recipe["evaluation_policy"] if isinstance(recipe.get("evaluation_policy"), dict) else {}
     if evaluation.get("selection_metric") != source["selection_metric"]:
         raise ValueError(f"Checkpoint source {source_id} selection metric differs from its plan.")
     if evaluation.get("selection_mode") != source["selection_mode"]:
