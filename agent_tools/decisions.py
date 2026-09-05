@@ -111,6 +111,20 @@ def user_decision_template(
     report: DecisionReport,
     policy: dict,
 ) -> dict[str, Any]:
+    """Build a decisions mapping for user backfill without writing any files.
+
+    Returns {} unless report.status is NEEDS_USER_INPUT and at least one such
+    issue maps to a decision allowed by the supplied task/policy. An issue's
+    user_decision_field evidence overrides its field name; repeated fields use
+    the first eligible issue. A FAIL report does not produce a partial template.
+
+    When a template is needed, preserves task-allowed explicit_user decisions
+    and their meaning/question/rationale metadata. Requested fields without an
+    existing explicit user entry receive ASK_USER; missing questions use the
+    issue question or message. Other resolved sources are not promoted to user
+    decisions. Returns {"decisions": ...} without mutating the report or resolving
+    its blockers; callers must obtain any missing values and reevaluate them.
+    """
     if report.status != DecisionStatus.NEEDS_USER_INPUT:
         return {}
 

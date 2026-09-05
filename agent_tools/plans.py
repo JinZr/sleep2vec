@@ -630,6 +630,13 @@ def evaluate_recipe(  # noqa: C901
 
 
 def write_questions(output_dir: str | Path, report: DecisionReport) -> None:
+    """Write questions.json and questions.md from an existing consultation report.
+
+    Creates the output directory as needed and overwrites these files in order,
+    without checking report status, guarding existing artifacts, or taking a
+    publication lock. Bundle publishers own those checks and synchronization.
+    Serialization and I/O errors propagate; earlier writes are not rolled back.
+    """
     out = Path(output_dir)
     write_json(out / "questions.json", {"questions": questions_payload(report)})
     write_text(out / "questions.md", questions_markdown(report))
@@ -761,6 +768,18 @@ def write_user_decision_template(
 
 
 def prepare_doctor_report(output_dir: str | Path | None, recipe: dict, report: DecisionReport) -> DecisionReport:
+    """Apply task-specific doctor findings to an evaluated recipe/report pair.
+
+    Use the returned report for display, output publication, and exit status:
+    an adapter may return a replacement with additional warnings or blockers.
+    With no adapter, returns the original report. output_dir is currently unused
+    and is not passed to the adapter; this step does not write doctor artifacts.
+
+    Findings are read-only but can require external inspection, including Slurm
+    queries for an otherwise unblocked hparam recipe. Does not publish plans or
+    launch runs. Adapter-handled inspection failures become report issues;
+    unhandled errors propagate. This is not a substitute for preflight_plan.
+    """
     adapter = get_adapter(recipe.get("task"))
     return adapter.prepare_doctor_report(recipe, report) if adapter is not None else report
 
