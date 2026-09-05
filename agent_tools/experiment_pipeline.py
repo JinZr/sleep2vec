@@ -780,7 +780,12 @@ def _execute_pipeline(
         result_artifacts={str(path): file_sha256(path) for path in result_paths},
         logical_jobs=result["jobs"],
     )
-    append_event(root, "pipeline_completed", {"pipeline_id": spec["pipeline"]["id"], "report": str(report)})
+    _reconcile_pipeline_event(
+        root,
+        "pipeline_completed",
+        {"pipeline_id": spec["pipeline"]["id"], "report": str(report)},
+        identity_fields=("pipeline_id",),
+    )
     if spec["pipeline"]["finalize"]:
         if finalize_callback is None:
             raise RuntimeError("Pipeline finalization callback is unavailable.")
@@ -833,6 +838,13 @@ def _finalize_completed_pipeline(
     if experiment.get("status") != "completed":
         if finalize_callback is None:
             raise RuntimeError("Pipeline finalization callback is unavailable.")
+        # Reconcile history before the experiment manifest becomes the terminal mutation.
+        _reconcile_pipeline_event(
+            root,
+            "pipeline_completed",
+            {"pipeline_id": spec["pipeline"]["id"], "report": str(report)},
+            identity_fields=("pipeline_id",),
+        )
         finalize_callback(root, report)
     return {
         "status": "completed",
@@ -963,7 +975,12 @@ def _execute_cohort_selection(
         selection_jobs=selection_result["jobs"],
         report_only_jobs=report_result["jobs"],
     )
-    append_event(root, "pipeline_completed", {"pipeline_id": spec["pipeline"]["id"], "report": str(report)})
+    _reconcile_pipeline_event(
+        root,
+        "pipeline_completed",
+        {"pipeline_id": spec["pipeline"]["id"], "report": str(report)},
+        identity_fields=("pipeline_id",),
+    )
     if spec["pipeline"]["finalize"]:
         if finalize_callback is None:
             raise RuntimeError("Pipeline finalization callback is unavailable.")
@@ -1150,6 +1167,13 @@ def _finalize_completed_cohort_selection(
     if experiment.get("status") != "completed":
         if finalize_callback is None:
             raise RuntimeError("Pipeline finalization callback is unavailable.")
+        # Reconcile history before the experiment manifest becomes the terminal mutation.
+        _reconcile_pipeline_event(
+            root,
+            "pipeline_completed",
+            {"pipeline_id": spec["pipeline"]["id"], "report": str(report)},
+            identity_fields=("pipeline_id",),
+        )
         finalize_callback(root, report)
     return {
         "status": "completed",
