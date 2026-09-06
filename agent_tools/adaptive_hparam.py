@@ -1009,6 +1009,48 @@ def _agent_suggestion_rationale(validated: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+@dataclass(frozen=True)
+class _AcceptedProposalArtifacts:
+    accepted_path: Path
+    accepted_bytes: bytes
+    suggestion_path: Path
+    suggestion_bytes: bytes
+    rationale_path: Path
+    rationale_bytes: bytes
+
+
+def _recover_published_agent_suggestion(
+    candidate_payload: dict[str, Any],
+    *,
+    suggestion: Path,
+    workspace: Path,
+    next_dir: Path,
+) -> dict[str, Any]:
+    if os.path.lexists(suggestion):
+        try:
+            published = exp_io.read_managed_files_at(workspace, [suggestion], allow_invalid_utf8=True)[str(suggestion)]
+            published_payload = yaml.safe_load(published["text"])
+        except (ValueError, yaml.YAMLError) as exc:
+            raise ValueError(f"Existing adaptive suggestion is invalid: {suggestion}") from exc
+        published_execution = published_payload.get("execution") if isinstance(published_payload, dict) else None
+        published_runtime_commit = (
+            published_execution.get("runtime_commit") if isinstance(published_execution, dict) else None
+        )
+        if not is_full_git_object_id(published_runtime_commit):
+            raise ValueError(f"Existing adaptive suggestion has an invalid runtime commit: {suggestion}")
+        recovered_payload = copy.deepcopy(candidate_payload)
+        recovered_execution = recovered_payload.get("execution")
+        if not isinstance(recovered_execution, dict):
+            raise ValueError("Agent proposal candidate lacks execution identity.")
+        recovered_execution["runtime_commit"] = published_runtime_commit
+        recovered_bytes = yaml.safe_dump(recovered_payload, sort_keys=False).encode()
+        if published_payload != recovered_payload or published["sha256"] != hashlib.sha256(recovered_bytes).hexdigest():
+            raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {suggestion}")
+        candidate_payload = recovered_payload
+        _preflight_candidate(recovered_bytes, next_dir, "Published agent suggestion")
+    return candidate_payload
+
+
 def _write_exact_bytes(path: Path, content: bytes, *, managed_root: Path) -> None:
     expected_sha256 = hashlib.sha256(content).hexdigest()
     if os.path.lexists(path):
@@ -1346,6 +1388,7 @@ def _adaptive_step(  # noqa: C901
     bound_config_sha256: str | None = None
     round_recipe_payload: dict[str, Any] | None = None
     agent_proposal_event: dict[str, Any] | None = None
+    accepted: _AcceptedProposalArtifacts | None = None
 
     if strategy == "agent_proposal" and proposal_path is None:
         digest = digest_hparam_run(round_dir)
@@ -1406,33 +1449,9 @@ def _adaptive_step(  # noqa: C901
         suggestion_dir = root / "adaptive" / "suggestions"
         suggestion = suggestion_dir / f"round_{next_round:03d}.yaml"
         rationale_path = suggestion_dir / f"round_{next_round:03d}.md"
-        if os.path.lexists(suggestion):
-            try:
-                published = exp_io.read_managed_files_at(workspace, [suggestion], allow_invalid_utf8=True)[
-                    str(suggestion)
-                ]
-                published_payload = yaml.safe_load(published["text"])
-            except (ValueError, yaml.YAMLError) as exc:
-                raise ValueError(f"Existing adaptive suggestion is invalid: {suggestion}") from exc
-            published_execution = published_payload.get("execution") if isinstance(published_payload, dict) else None
-            published_runtime_commit = (
-                published_execution.get("runtime_commit") if isinstance(published_execution, dict) else None
-            )
-            if not is_full_git_object_id(published_runtime_commit):
-                raise ValueError(f"Existing adaptive suggestion has an invalid runtime commit: {suggestion}")
-            recovered_payload = copy.deepcopy(candidate_payload)
-            recovered_execution = recovered_payload.get("execution")
-            if not isinstance(recovered_execution, dict):
-                raise ValueError("Agent proposal candidate lacks execution identity.")
-            recovered_execution["runtime_commit"] = published_runtime_commit
-            recovered_bytes = yaml.safe_dump(recovered_payload, sort_keys=False).encode()
-            if (
-                published_payload != recovered_payload
-                or published["sha256"] != hashlib.sha256(recovered_bytes).hexdigest()
-            ):
-                raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {suggestion}")
-            candidate_payload = recovered_payload
-            _preflight_candidate(recovered_bytes, next_dir, "Published agent suggestion")
+        candidate_payload = _recover_published_agent_suggestion(
+            candidate_payload, suggestion=suggestion, workspace=workspace, next_dir=next_dir
+        )
         round_recipe_payload = candidate_payload
         exp_io.validate_managed_output_paths(
             workspace,
@@ -1460,10 +1479,18 @@ def _adaptive_step(  # noqa: C901
         accepted_bytes = (json.dumps(accepted_payload, indent=2, sort_keys=True) + "\n").encode()
         suggestion_bytes = yaml.safe_dump(candidate_payload, sort_keys=False).encode()
         rationale_bytes = _agent_suggestion_rationale(validated).encode()
+        accepted = _AcceptedProposalArtifacts(
+            accepted_path=accepted_path,
+            accepted_bytes=accepted_bytes,
+            suggestion_path=suggestion,
+            suggestion_bytes=suggestion_bytes,
+            rationale_path=rationale_path,
+            rationale_bytes=rationale_bytes,
+        )
         _write_exact_bytes(bound_config_path, bound_config_bytes, managed_root=workspace)
-        _write_exact_bytes(accepted_path, accepted_bytes, managed_root=workspace)
-        _write_exact_bytes(suggestion, suggestion_bytes, managed_root=workspace)
-        _write_exact_bytes(rationale_path, rationale_bytes, managed_root=workspace)
+        _write_exact_bytes(accepted.accepted_path, accepted.accepted_bytes, managed_root=workspace)
+        _write_exact_bytes(accepted.suggestion_path, accepted.suggestion_bytes, managed_root=workspace)
+        _write_exact_bytes(accepted.rationale_path, accepted.rationale_bytes, managed_root=workspace)
         agent_proposal_event = {
             "round": next_round,
             "request_id": validated["request_id"],
@@ -1510,10 +1537,10 @@ def _adaptive_step(  # noqa: C901
             return suggestion
     if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
         raise ValueError("Agent proposal frozen source config changed before round materialization.")
-    if bound_config_path is not None:
-        _write_exact_bytes(accepted_path, accepted_bytes, managed_root=workspace)
-        _write_exact_bytes(suggestion, suggestion_bytes, managed_root=workspace)
-        _write_exact_bytes(rationale_path, rationale_bytes, managed_root=workspace)
+    if accepted is not None:
+        _write_exact_bytes(accepted.accepted_path, accepted.accepted_bytes, managed_root=workspace)
+        _write_exact_bytes(accepted.suggestion_path, accepted.suggestion_bytes, managed_root=workspace)
+        _write_exact_bytes(accepted.rationale_path, accepted.rationale_bytes, managed_root=workspace)
     recipe_payload = round_recipe_payload if round_recipe_payload is not None else load_recipe_with_base(suggestion)
     recipe_source = workflow["recipe_path"] if round_recipe_payload is not None else suggestion
     expected_recipe = (
