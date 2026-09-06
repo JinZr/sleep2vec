@@ -137,9 +137,20 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
         return _init_adaptive_workflow_locked(recipe_path, root, locked_workspace=registration_root)
 
 
-def _init_adaptive_workflow_locked(  # noqa: C901
-    recipe_path: str | Path, root: Path, *, locked_workspace: Path
-) -> Path:
+@dataclass(frozen=True)
+class _InitialRoundInputs:
+    recipe_path: Path
+    recipe: dict[str, Any]
+    adaptive_dir: Path
+    round_dir: Path
+    workflow_path: Path
+    workspace: Path
+    source_config_bytes: bytes
+    source_config_sha256: str
+    round_recipe_payload: dict[str, Any]
+
+
+def _prepare_initial_round(recipe_path: str | Path, root: Path, *, locked_workspace: Path) -> _InitialRoundInputs:
     resolved_recipe_path = resolve_repo_path(recipe_path)
     if resolved_recipe_path is None:
         raise FileNotFoundError("Path is required.")
@@ -182,6 +193,30 @@ def _init_adaptive_workflow_locked(  # noqa: C901
         ],
     )
     round_recipe_payload = _materialized_round_recipe(recipe, recipe_path, 0)
+    return _InitialRoundInputs(
+        recipe_path=recipe_path,
+        recipe=recipe,
+        adaptive_dir=adaptive_dir,
+        round_dir=round_dir,
+        workflow_path=workflow_path,
+        workspace=workspace,
+        source_config_bytes=source_config_bytes,
+        source_config_sha256=source_config_sha256,
+        round_recipe_payload=round_recipe_payload,
+    )
+
+
+def _init_adaptive_workflow_locked(recipe_path: str | Path, root: Path, *, locked_workspace: Path) -> Path:
+    inputs = _prepare_initial_round(recipe_path, root, locked_workspace=locked_workspace)
+    recipe_path = inputs.recipe_path
+    recipe = inputs.recipe
+    adaptive_dir = inputs.adaptive_dir
+    round_dir = inputs.round_dir
+    workflow_path = inputs.workflow_path
+    workspace = inputs.workspace
+    source_config_bytes = inputs.source_config_bytes
+    source_config_sha256 = inputs.source_config_sha256
+    round_recipe_payload = inputs.round_recipe_payload
     workflow = {
         "recipe_path": str(recipe_path),
         "execution_identity": {field: recipe["execution"][field] for field in _EXECUTION_IDENTITY_FIELDS},

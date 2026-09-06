@@ -61,7 +61,6 @@ PACKAGE = Path("agent_tools")
 SUPPRESSION_LEDGER = {
     ("agent_tools/adapters/embedding_extraction.py", "EmbeddingExtractionAdapter.task_issues"),  # 30
     ("agent_tools/adaptive_hparam.py", "_adaptive_step"),  # 48
-    ("agent_tools/adaptive_hparam.py", "_init_adaptive_workflow_locked"),  # 26
     ("agent_tools/domain/index_csv.py", "index_summary"),  # 33
     ("agent_tools/experiment_io.py", "append_managed_text_at"),  # 28
     ("agent_tools/experiment_io.py", "conditional_atomic_replace_text_at"),  # 47
