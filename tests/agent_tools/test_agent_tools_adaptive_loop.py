@@ -757,7 +757,8 @@ def test_adaptive_step_checks_prospective_round_size_against_run_budget(tmp_path
     assert events[-1]["event_type"] == "adaptive_budget_exhausted"
 
 
-def test_adaptive_loop_stops_when_step_cannot_create_a_budgeted_round(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("execute", [False, True])
+def test_adaptive_loop_stops_when_step_cannot_create_a_budgeted_round(tmp_path: Path, monkeypatch, execute):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
@@ -774,10 +775,10 @@ def test_adaptive_loop_stops_when_step_cannot_create_a_budgeted_round(tmp_path: 
         lambda _seconds: (_ for _ in ()).throw(AssertionError("loop should stop before polling")),
     )
 
-    result = adaptive_hparam.adaptive_loop(workflow_dir, execute=True)
+    result = adaptive_hparam.adaptive_loop(workflow_dir, execute=execute)
 
     assert result == suggestion
-    assert calls == [(workflow_dir, True)]
+    assert calls == [(workflow_dir, execute)]
 
 
 def test_adaptive_loop_materializes_source_before_budget_check(tmp_path: Path, monkeypatch):

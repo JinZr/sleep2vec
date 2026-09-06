@@ -1661,7 +1661,10 @@ def adaptive_loop(workflow_dir: str | Path, *, execute: bool = False) -> Path:
     last = root
     while not _budget_exhausted(root, recipe):
         previous_round = _latest_round_index(root)
-        last = adaptive_step(root, execute=execute)
+        step = adaptive_step(root, execute=execute)
+        # Only agent_proposal can return None, and this loop rejects that strategy.
+        assert step is not None
+        last = step
         if not execute:
             break
         if _latest_round_index(root) == previous_round:
