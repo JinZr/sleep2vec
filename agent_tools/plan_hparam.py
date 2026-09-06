@@ -9,7 +9,7 @@ import subprocess
 import sys
 from tempfile import NamedTemporaryFile
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, TypedDict
 
 import yaml
 
@@ -52,6 +52,12 @@ from .repo import repo_summary
 
 FROZEN_FINAL_EVAL_CONFIG_NAME = plan_contract.FROZEN_FINAL_EVAL_CONFIG_NAME
 _FINAL_EVAL_CONFIG_SNAPSHOT = "_final_eval_config_snapshot"
+
+
+class HparamRunLayout(TypedDict):
+    identity: dict[str, str]
+    parameters: dict[str, Any]
+    run_dir: Path
 
 
 class HparamRegistrationPreflightError(ValueError):
@@ -664,8 +670,8 @@ def compile_hparam_run_contracts(
     return contracts
 
 
-def hparam_run_layouts(recipe: dict[str, Any], out: Path, run_index_offset: int) -> list[dict[str, Any]]:
-    layouts = []
+def hparam_run_layouts(recipe: dict[str, Any], out: Path, run_index_offset: int) -> list[HparamRunLayout]:
+    layouts: list[HparamRunLayout] = []
     for index, combo in enumerate(hparam_combos(recipe), start=run_index_offset):
         identity = run_identity(recipe, index, combo)
         layouts.append(
