@@ -93,3 +93,102 @@ def test_linear_decay_stays_at_floor_after_total_steps(module_name: str):
     )
 
     assert lr_lambda(150) == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("module_name", SCHEDULER_MODULES)
+@pytest.mark.parametrize("shape", ["linear", "cosine"])
+def test_wsd_phase_boundaries_and_floor(module_name, shape):
+    module = importlib.import_module(module_name)
+    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(()))], lr=1.0)
+    scheduler = module.build_warmup_cosine_scheduler(
+        optimizer, total_steps=100, warmup_steps=10, decay_ratio=0.2, decay_floor=0.2, decay_shape=shape
+    )
+    curve = scheduler.lr_lambdas[0]
+    for step, expected in [(0, 0.0), (5, 0.5), (10, 1.0), (50, 1.0), (79, 1.0), (89, 0.6), (99, 0.2), (120, 0.2)]:
+        assert curve(step) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("module_name", SCHEDULER_MODULES)
+@pytest.mark.parametrize("warmup,ratio", [(0, 0.0), (0, 1.1), (0, 0.001), (20, 0.9)])
+def test_wsd_rejects_impossible_phase_lengths(module_name, warmup, ratio):
+    module = importlib.import_module(module_name)
+    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(()))], lr=1.0)
+    with pytest.raises(ValueError):
+        module.build_warmup_cosine_scheduler(optimizer, total_steps=100, warmup_steps=warmup, decay_ratio=ratio)
+
+
+@pytest.mark.parametrize("module_name", SCHEDULER_MODULES)
+def test_wsd_preserves_group_ratio_and_restores_continuation(module_name):
+    module = importlib.import_module(module_name)
+
+    def make_pair():
+        optimizer = torch.optim.SGD(
+            [
+                {"params": [torch.nn.Parameter(torch.ones(()))], "lr": 0.1},
+                {"params": [torch.nn.Parameter(torch.ones(()))], "lr": 1.0},
+            ]
+        )
+        scheduler = module.build_warmup_cosine_scheduler(optimizer, total_steps=20, warmup_steps=2, decay_ratio=0.5)
+        return optimizer, scheduler
+
+    optimizer, scheduler = make_pair()
+    for _ in range(13):
+        optimizer.step()
+        scheduler.step()
+    restored_optimizer, restored_scheduler = make_pair()
+    restored_scheduler.load_state_dict(scheduler.state_dict())
+    restored_optimizer.load_state_dict(optimizer.state_dict())
+    for _ in range(9):
+        optimizer.step()
+        scheduler.step()
+        restored_optimizer.step()
+        restored_scheduler.step()
+        assert restored_scheduler.get_last_lr() == pytest.approx(scheduler.get_last_lr())
+        assert scheduler.get_last_lr()[0] / scheduler.get_last_lr()[1] == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("module_name", SCHEDULER_MODULES)
+@pytest.mark.parametrize("shape", ["linear", "cosine"])
+@pytest.mark.parametrize("decay_ratio", [0.2, 0.05])
+def test_wsd_final_optimizer_update_uses_floor(module_name, shape, decay_ratio):
+    module = importlib.import_module(module_name)
+    parameter = torch.nn.Parameter(torch.zeros((), dtype=torch.float64))
+    optimizer = torch.optim.SGD([parameter], lr=1.0)
+    scheduler = module.build_warmup_cosine_scheduler(
+        optimizer,
+        total_steps=20,
+        warmup_steps=2,
+        decay_ratio=decay_ratio,
+        decay_floor=0.2,
+        decay_shape=shape,
+    )
+    update_sizes = []
+    for _ in range(20):
+        before = parameter.item()
+        parameter.grad = torch.ones_like(parameter)
+        optimizer.step()
+        update_sizes.append(before - parameter.item())
+        scheduler.step()
+    assert update_sizes[:2] == pytest.approx([0.0, 0.5])
+    decay_start = 20 - int(20 * decay_ratio)
+    assert update_sizes[2:decay_start] == pytest.approx([1.0] * (decay_start - 2))
+    assert all(0.2 <= size < 1.0 for size in update_sizes[decay_start:-1])
+    assert update_sizes[-1] == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("module_name", SCHEDULER_MODULES)
+@pytest.mark.parametrize("ratio,expected_decay_steps", [(0.29, 29), (0.295, 29)])
+def test_wsd_decimal_ratio_sets_exact_decay_update_count(module_name, ratio, expected_decay_steps):
+    module = importlib.import_module(module_name)
+    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.zeros(()))], lr=1.0)
+    scheduler = module.build_warmup_cosine_scheduler(
+        optimizer, total_steps=100, warmup_steps=0, decay_ratio=ratio, decay_floor=0.2
+    )
+    update_lrs = []
+    for _ in range(100):
+        update_lrs.append(optimizer.param_groups[0]["lr"])
+        optimizer.step()
+        scheduler.step()
+    assert update_lrs[: 100 - expected_decay_steps] == pytest.approx([1.0] * (100 - expected_decay_steps))
+    assert sum(lr < 1.0 for lr in update_lrs) == expected_decay_steps
+    assert update_lrs[-1] == pytest.approx(0.2)

@@ -253,6 +253,42 @@ finetune:
 - `finetune.loss.pos_weight` is for multilabel classification only; for built-in `ahi`, a scalar expands across the 30 BCE outputs.
 - `finetune.sampler.weighted_random` affects only the train loader for binary non-sequence classification labels, such as `sex` or a custom binary metadata target.
 
+### Finetune learning-rate schedules
+
+The `sleep2vec`, `sleep2vec2`, and `sleep2expert` finetune entrypoints accept
+`--lr-scheduler decay|wsd|plateau`. These are training CLI options; the new
+options are not yet accepted or rendered by `agent_tools` recipes.
+
+- `decay` preserves the default linear warmup followed by cosine decay.
+  `--lr-decay-shape linear` selects linear decay instead. The default warmup is
+  3% of total optimizer updates; `--warmup-steps` overrides it.
+- `wsd` adds a constant peak-LR stage between warmup and decay. It requires
+  `--lr-decay-ratio`: the fraction of total optimizer updates reserved for the
+  final decay, rounded down to whole updates. The decay must contain at least
+  one update, and warmup plus decay must fit within the total update budget.
+  The remaining updates form the constant stage. The final decay uses the
+  existing `--lr-decay-shape cosine|linear`. The last actual optimizer update
+  uses the floor, including when the decay phase is only one update long.
+- `plateau` uses `ReduceLROnPlateau` with the task's validation monitor and
+  direction. It starts at the configured LR without warmup and checks the
+  metric at the configured epoch validation frequency. `--lr-plateau-factor`
+  defaults to `0.1`; `--lr-plateau-patience` defaults to `10` unsuccessful
+  validation checks. Early-stopping patience is separate: allow enough
+  validation checks after a reduction to assess its effect.
+
+`--lr-decay-floor` defaults to `0.1` and denotes a fraction of each optimizer
+group's initial LR, preserving group LR ratios. WSD uses this floor on the last
+actual optimizer update; Plateau uses it as the minimum LR. Ordinary decay
+preserves its existing indexing: when a post-warmup decay phase exists, the
+terminal floor is installed after the last optimizer update, so that update
+generally uses a higher LR.
+Plateau does not accept an explicit warmup, a linear decay shape, or diagnostics
+mode (which disables validation). Incompatible scheduler options are rejected
+before the run directory is claimed. Plateau consumes each validation metric
+after aggregation and before checkpoint saving, without a second epoch-end update.
+Resume with the same schedule settings and total training budget so that
+restored optimizer/scheduler state continues the original schedule.
+
 ### Finetune — regression
 ```bash
 python -m sleep2vec.finetune \

@@ -35,6 +35,7 @@ from sleep2expert.results import (
     save_survival_per_disease_metrics_csv,
     save_training_run_manifest,
 )
+from sleep2expert.schedulers import validate_finetune_scheduler_args
 from sleep2expert.sleep2vec_finetuning import Sleep2vecFinetuning
 from sleep2expert.utils import get_finetune_dataloaders
 
@@ -167,6 +168,7 @@ def _preflight_finetune_run_directory(args, exp_root: Path) -> None:
 
 
 def supervised(args, config_bundle):
+    validate_finetune_scheduler_args(args)
     # Programmatic callers may build Namespace without CLI defaults.
     if not hasattr(args, "accumulate_grad_batches"):
         args.accumulate_grad_batches = 1
@@ -556,6 +558,30 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=30, help="number of fine-tuning epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="learning rate for AdamW")
     parser.add_argument(
+        "--lr-scheduler",
+        choices=["decay", "wsd", "plateau"],
+        default="decay",
+        help="LR schedule: warmup/decay (default), warmup/stable/decay, or validation-driven plateau.",
+    )
+    parser.add_argument(
+        "--lr-decay-ratio",
+        type=float,
+        default=None,
+        help="WSD only: required fraction of total optimizer steps spent in the final decay phase.",
+    )
+    parser.add_argument(
+        "--lr-plateau-factor",
+        type=float,
+        default=None,
+        help="Plateau only: LR multiplier after a plateau (default: 0.1).",
+    )
+    parser.add_argument(
+        "--lr-plateau-patience",
+        type=int,
+        default=None,
+        help="Plateau only: tolerated validation checks without improvement before reducing LR (default: 10).",
+    )
+    parser.add_argument(
         "--warmup-steps",
         type=int,
         default=None,
@@ -565,7 +591,7 @@ if __name__ == "__main__":
         "--lr-decay-floor",
         type=float,
         default=0.1,
-        help="Final LR ratio for the post-warmup decay schedule.",
+        help="Final LR ratio for decay/WSD, or minimum ratio per parameter group for plateau.",
     )
     parser.add_argument(
         "--lr-decay-shape",

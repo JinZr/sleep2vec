@@ -40,7 +40,7 @@ from sleep2expert.metrics.core import (
     compute_multilabel_metrics_by_disease,
     compute_survival_c_index_by_disease,
 )
-from sleep2expert.schedulers import build_warmup_cosine_scheduler
+from sleep2expert.schedulers import build_warmup_cosine_scheduler, validate_finetune_scheduler_args
 from sleep2expert.sleep2vec_inference import (
     build_ahi_prediction_rows,
     build_arousal_prediction_rows,
@@ -431,6 +431,17 @@ class Sleep2vecFinetuning(pl.LightningModule):
     def on_validation_epoch_end(self):
         self._log_layer_mix_weights(stage="val", model=self._get_eval_model())
         self._finalize_epoch(stage="val")
+        if (
+            getattr(self.args, "lr_scheduler", "decay") == "plateau"
+            and self.trainer.state.fn == "fit"
+            and not self.trainer.sanity_checking
+        ):
+            # Consume this validation result before ModelCheckpoint saves optimizer and scheduler state.
+            self.lr_schedulers().step(self.trainer.callback_metrics[self.args.monitor])
+
+    def lr_scheduler_step(self, scheduler, metric):
+        if not isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            super().lr_scheduler_step(scheduler, metric)
 
     def on_test_epoch_end(self):
         self._finalize_epoch(stage="test")
@@ -2036,11 +2047,39 @@ class Sleep2vecFinetuning(pl.LightningModule):
             eps=1e-8,
         )
 
+        validate_finetune_scheduler_args(self.args)
+        scheduler_name = getattr(self.args, "lr_scheduler", "decay")
+        decay_ratio = getattr(self.args, "lr_decay_ratio", None)
+        if scheduler_name == "plateau":
+            floor = float(getattr(self.args, "lr_decay_floor", 0.1))
+            plateau_factor = getattr(self.args, "lr_plateau_factor", None)
+            plateau_patience = getattr(self.args, "lr_plateau_patience", None)
+            factor = 0.1 if plateau_factor is None else plateau_factor
+            patience = 10 if plateau_patience is None else plateau_patience
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode=self.args.monitor_mod,
+                factor=factor,
+                patience=patience,
+                min_lr=[group["lr"] * floor for group in optimizer.param_groups],
+                eps=0.0,
+            )
+            return [optimizer], [
+                {
+                    "scheduler": scheduler,
+                    "monitor": self.args.monitor,
+                    "interval": "epoch",
+                    "frequency": self.args.check_val_every_n_epoch,
+                    "strict": True,
+                }
+            ]
+
         scheduler = build_warmup_cosine_scheduler(
             optimizer,
             total_steps=self.trainer.estimated_stepping_batches,
             warmup_steps=getattr(self.args, "warmup_steps", None),
             decay_floor=getattr(self.args, "lr_decay_floor", 0.1),
             decay_shape=getattr(self.args, "lr_decay_shape", "cosine"),
+            decay_ratio=decay_ratio,
         )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]

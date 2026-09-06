@@ -796,3 +796,27 @@ def test_training_manifest_serializes_checkpoint_test_results(package_name: str,
     assert payload["checkpoint_test_results"] == [
         {"checkpoint_path": str(checkpoint), "epoch": 0, "metrics": {"test_score": 0.5}}
     ]
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+@pytest.mark.parametrize(
+    "options,message",
+    [
+        ({"lr_scheduler": "wsd"}, "WSD requires lr_decay_ratio"),
+        ({"lr_scheduler": "plateau", "monitor": "test_loss"}, "requires a validation monitor"),
+        ({"lr_scheduler": "plateau", "warmup_steps": 5}, "does not support warmup_steps"),
+        ({"lr_scheduler": "plateau", "print_diagnostics": True}, "diagnostics"),
+        ({"lr_scheduler": "decay", "lr_decay_floor": -0.1}, "lr_decay_floor"),
+        ({"lr_scheduler": "wsd", "lr_decay_ratio": 0.2, "lr_decay_floor": 1.1}, "lr_decay_floor"),
+        ({"lr_scheduler": "plateau", "lr_decay_floor": -0.1}, "lr_decay_floor"),
+    ],
+)
+def test_invalid_scheduler_fails_before_run_preflight(module_name, monkeypatch, options, message):
+    finetune_mod = _load_finetune_module(module_name, monkeypatch)
+    args = argparse.Namespace(monitor="val_loss", monitor_mod="min")
+    vars(args).update(options)
+    preflight = []
+    monkeypatch.setattr(finetune_mod, "_preflight_finetune_run_directory", lambda *_: preflight.append(True))
+    with pytest.raises(ValueError, match=message):
+        finetune_mod.supervised(args, SimpleNamespace())
+    assert preflight == []
