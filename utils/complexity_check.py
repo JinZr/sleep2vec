@@ -68,7 +68,6 @@ SUPPRESSION_LEDGER = {
     ("agent_tools/experiment_pipeline.py", "_run_attempts"),  # 27
     ("agent_tools/experiment_pipeline.py", "_validate_frozen_pipeline"),  # 29
     ("agent_tools/experiment_pipeline.py", "_validate_spec"),  # 57
-    ("agent_tools/experiment_tracking.py", "experiment_status_snapshot"),  # 36
     ("agent_tools/experiments.py", "_managed_workspace"),  # 26
     ("agent_tools/hparam_selection.py", "resolve_hparam_candidates"),  # 47
     ("agent_tools/managed_scheduler.py", "_launch_managed_runs"),  # 46
