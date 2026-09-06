@@ -555,93 +555,19 @@ def monitor_report(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def experiment_status_snapshot(  # noqa: C901
-    experiment: dict[str, Any],
-    registered_steps: list[artifacts.RegisteredPlanStep],
-    rows: list[dict[str, Any]],
+def _experiment_lifecycle_decision(
     *,
+    completed: bool,
+    rows: list[dict[str, Any]],
+    sorted_rows: list[dict[str, Any]],
+    plan_blockers: list[dict[str, Any]],
+    missing_stop_reason_rows: list[dict[str, Any]],
+    hparam: HparamSelectionLifecycle,
+    candidates: list[dict[str, Any]],
+    blockers: list[dict[str, Any]],
     root: Path,
-    remote: str | None = None,
-    hparam_selection_report: HparamSelectionReportSnapshot | None = None,
-    hparam_checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None] | None = None,
-) -> ExperimentStatusSnapshot:
-    allowed_statuses = TERMINAL_STATUSES | managed_scheduler.ACTIVE_STATUSES | managed_scheduler.LAUNCHABLE_STATUSES
-    for row in rows:
-        validate_scheduler_run_identity(row)
-        status = row.get("status")
-        if status not in allowed_statuses:
-            raise ValueError(
-                f"run_manifest.tsv contains an unsupported status: {row.get('step_id')} / "
-                f"{row.get('run_id')}: {status}"
-            )
-    sorted_rows = sorted(rows, key=lambda row: (str(row["step_id"]), str(row["run_id"])))
-    plan_blockers, candidates = _plan_advice(registered_steps, sorted_rows, remote=remote)
-    hparam = hparam_selection_lifecycle(
-        registered_steps,
-        sorted_rows,
-        root=root,
-        report=hparam_selection_report,
-        checkpoint_audits=hparam_checkpoint_audits,
-    )
-    missing_stop_reason_rows = stopped_runs_without_reason(sorted_rows)
-    completed = experiment.get("status") == "completed"
-    if completed:
-        if not rows or any(row["status"] not in TERMINAL_STATUSES for row in rows):
-            raise ValueError("Completed experiment metadata conflicts with canonical run lifecycle state.")
-        if missing_stop_reason_rows:
-            raise ValueError("Completed experiment metadata conflicts with stopped runs missing stop_reason.")
-        if plan_blockers:
-            raise ValueError(
-                "Completed experiment metadata cannot be verified for adaptive or pipeline plans, or for "
-                "unmaterialized registered steps."
-            )
-        has_terminal_report_binding = experiment.get("final_report_sha256") not in (None, "")
-        # A modern terminal binding makes disappearing selection evidence corruption, not legacy state.
-        incomplete_steps = (
-            hparam["pending_steps"]
-            if has_terminal_report_binding
-            else [step for step in hparam["pending_steps"] if not step.get("legacy_selection")]
-        )
-        if incomplete_steps or (hparam["selected_steps"] and not hparam["report_valid"]):
-            raise ValueError("Completed experiment metadata conflicts with incomplete hparam selection evidence.")
-        if hparam["selected_steps"] and not has_terminal_report_binding:
-            raise ValueError("Completed hparam experiment metadata is missing terminal report bindings.")
-        if has_terminal_report_binding:
-            terminal_selection_sha256 = experiment.get("selection_report_sha256")
-            current_selection_sha256 = (
-                hparam_selection_report.get("sha256") if hparam_selection_report is not None else None
-            )
-            if hparam["selected_steps"] and terminal_selection_sha256 != current_selection_sha256:
-                raise ValueError("Completed experiment metadata conflicts with its hparam selection report binding.")
-            if not hparam["selected_steps"] and terminal_selection_sha256 not in (None, ""):
-                raise ValueError("Completed experiment metadata has an unexpected hparam selection report binding.")
-    row_payloads = [_status_run_payload(row) for row in sorted_rows]
-    step_payloads = []
-    for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
-        manifest = registered["manifest"]
-        step_id = str(manifest["step"]["id"])
-        step_rows = [row for row in sorted_rows if str(row["step_id"]) == step_id]
-        step_payloads.append(
-            {
-                "id": step_id,
-                "phase": str(manifest["step"]["phase"]),
-                "purpose": str(manifest["step"]["purpose"]),
-                "plan_controller": str(manifest["plan_controller"]),
-                "plans": sorted(plan["path"] for plan in registered["plans"]),
-                "status_counts": _status_counts(step_rows),
-            }
-        )
-
-    blockers = list(plan_blockers)
-    for step_id in sorted({str(row["step_id"]) for row in missing_stop_reason_rows}):
-        blockers.append(
-            _status_blocker(
-                "missing_stop_reason",
-                "Stopped canonical runs require a non-empty recorded stop_reason before finalization.",
-                rows=[row for row in missing_stop_reason_rows if str(row["step_id"]) == step_id],
-                blocked_actions=["finalize"],
-            )
-        )
+    remote: str | None,
+) -> tuple[str, ExperimentStatusDecision]:
     decision: ExperimentStatusDecision = {
         "manual_choice_required": False,
         "recommended_next": None,
@@ -791,6 +717,108 @@ def experiment_status_snapshot(  # noqa: C901
                 decision["other_legal_actions"] = candidates
             else:
                 decision["manual_choice_required"] = True
+    return state, decision
+
+
+def experiment_status_snapshot(
+    experiment: dict[str, Any],
+    registered_steps: list[artifacts.RegisteredPlanStep],
+    rows: list[dict[str, Any]],
+    *,
+    root: Path,
+    remote: str | None = None,
+    hparam_selection_report: HparamSelectionReportSnapshot | None = None,
+    hparam_checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None] | None = None,
+) -> ExperimentStatusSnapshot:
+    allowed_statuses = TERMINAL_STATUSES | managed_scheduler.ACTIVE_STATUSES | managed_scheduler.LAUNCHABLE_STATUSES
+    for row in rows:
+        validate_scheduler_run_identity(row)
+        status = row.get("status")
+        if status not in allowed_statuses:
+            raise ValueError(
+                f"run_manifest.tsv contains an unsupported status: {row.get('step_id')} / "
+                f"{row.get('run_id')}: {status}"
+            )
+    sorted_rows = sorted(rows, key=lambda row: (str(row["step_id"]), str(row["run_id"])))
+    plan_blockers, candidates = _plan_advice(registered_steps, sorted_rows, remote=remote)
+    hparam = hparam_selection_lifecycle(
+        registered_steps,
+        sorted_rows,
+        root=root,
+        report=hparam_selection_report,
+        checkpoint_audits=hparam_checkpoint_audits,
+    )
+    missing_stop_reason_rows = stopped_runs_without_reason(sorted_rows)
+    completed = experiment.get("status") == "completed"
+    if completed:
+        if not rows or any(row["status"] not in TERMINAL_STATUSES for row in rows):
+            raise ValueError("Completed experiment metadata conflicts with canonical run lifecycle state.")
+        if missing_stop_reason_rows:
+            raise ValueError("Completed experiment metadata conflicts with stopped runs missing stop_reason.")
+        if plan_blockers:
+            raise ValueError(
+                "Completed experiment metadata cannot be verified for adaptive or pipeline plans, or for "
+                "unmaterialized registered steps."
+            )
+        has_terminal_report_binding = experiment.get("final_report_sha256") not in (None, "")
+        # A modern terminal binding makes disappearing selection evidence corruption, not legacy state.
+        incomplete_steps = (
+            hparam["pending_steps"]
+            if has_terminal_report_binding
+            else [step for step in hparam["pending_steps"] if not step.get("legacy_selection")]
+        )
+        if incomplete_steps or (hparam["selected_steps"] and not hparam["report_valid"]):
+            raise ValueError("Completed experiment metadata conflicts with incomplete hparam selection evidence.")
+        if hparam["selected_steps"] and not has_terminal_report_binding:
+            raise ValueError("Completed hparam experiment metadata is missing terminal report bindings.")
+        if has_terminal_report_binding:
+            terminal_selection_sha256 = experiment.get("selection_report_sha256")
+            current_selection_sha256 = (
+                hparam_selection_report.get("sha256") if hparam_selection_report is not None else None
+            )
+            if hparam["selected_steps"] and terminal_selection_sha256 != current_selection_sha256:
+                raise ValueError("Completed experiment metadata conflicts with its hparam selection report binding.")
+            if not hparam["selected_steps"] and terminal_selection_sha256 not in (None, ""):
+                raise ValueError("Completed experiment metadata has an unexpected hparam selection report binding.")
+    row_payloads = [_status_run_payload(row) for row in sorted_rows]
+    step_payloads = []
+    for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
+        manifest = registered["manifest"]
+        step_id = str(manifest["step"]["id"])
+        step_rows = [row for row in sorted_rows if str(row["step_id"]) == step_id]
+        step_payloads.append(
+            {
+                "id": step_id,
+                "phase": str(manifest["step"]["phase"]),
+                "purpose": str(manifest["step"]["purpose"]),
+                "plan_controller": str(manifest["plan_controller"]),
+                "plans": sorted(plan["path"] for plan in registered["plans"]),
+                "status_counts": _status_counts(step_rows),
+            }
+        )
+
+    blockers = list(plan_blockers)
+    for step_id in sorted({str(row["step_id"]) for row in missing_stop_reason_rows}):
+        blockers.append(
+            _status_blocker(
+                "missing_stop_reason",
+                "Stopped canonical runs require a non-empty recorded stop_reason before finalization.",
+                rows=[row for row in missing_stop_reason_rows if str(row["step_id"]) == step_id],
+                blocked_actions=["finalize"],
+            )
+        )
+    state, decision = _experiment_lifecycle_decision(
+        completed=completed,
+        rows=rows,
+        sorted_rows=sorted_rows,
+        plan_blockers=plan_blockers,
+        missing_stop_reason_rows=missing_stop_reason_rows,
+        hparam=hparam,
+        candidates=candidates,
+        blockers=blockers,
+        root=root,
+        remote=remote,
+    )
 
     blocker_codes_by_key: dict[tuple[str, str], list[str]] = {
         (str(row["step_id"]), str(row["run_id"])): [] for row in sorted_rows

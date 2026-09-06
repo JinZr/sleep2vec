@@ -220,6 +220,30 @@ def test_experiment_status_advances_ordinary_hparam_selection_and_report(tmp_pat
     assert ready["decision"]["recommended_next"]["argv"][-2:] == ["--report", str(report_path)]
 
 
+def test_experiment_status_requires_choice_for_multiple_pending_hparam_selections(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dirs = [
+        _add_plan(root, step_id=step_id, task="hparam_tune", status="completed")[0] for step_id in ("tune-a", "tune-b")
+    ]
+    before = _workspace_files(root)
+
+    snapshot = experiments.experiment_status(root)
+
+    assert _workspace_files(root) == before
+    assert snapshot["summary"]["state"] == "ready_to_select"
+    assert snapshot["decision"]["manual_choice_required"] is True
+    assert snapshot["decision"]["recommended_next"] is None
+    assert [action["argv"] for action in snapshot["decision"]["other_legal_actions"]] == [
+        ["python", "-m", "agent_tools", "hparam-select", "--run-dir", str(plan_dir)] for plan_dir in plan_dirs
+    ]
+    assert snapshot["decision"]["blocked_actions"] == ["finalize"]
+    assert [(blocker["code"], blocker["step_id"]) for blocker in snapshot["blockers"]] == [
+        ("hparam_selection_required", "tune-a"),
+        ("hparam_selection_required", "tune-b"),
+    ]
+
+
 def test_experiment_status_requires_combined_report_for_mixed_ordinary_steps(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
