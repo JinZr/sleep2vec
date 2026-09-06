@@ -97,8 +97,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Setup Python ${{ matrix.python-version }}
         uses: actions/setup-python@v7
@@ -117,13 +115,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-agent-tools.txt
 
-      # mypy plus both directions of the ledger's shrink-only contract. The same
-      # script backs `bash utils/style_check.sh`, so a clean local run means a
-      # clean CI run; only the additions check differs, needing a base revision.
+      # The same no-suppression check and mypy invocation back the local style check.
       - name: Type-check agent_tools
         shell: bash
         working-directory: ${{ github.workspace }}
-        env:
-          LEDGER_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           python utils/type_check.py

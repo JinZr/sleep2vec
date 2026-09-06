@@ -61,7 +61,7 @@ bash utils/style_check.sh
 ```
 
 ## Coding Style & Naming Conventions
-- Python formatting is enforced by Black (line length 120), isort (Black profile), and Flake8. `agent_tools` is additionally type-checked by mypy; its scope, settings, and grandfathered debt ledger live in `[tool.mypy]` in `pyproject.toml`, and the ledger may only shrink.
+- Python formatting is enforced by Black (line length 120), isort (Black profile), and Flake8. All `agent_tools` modules are additionally type-checked by mypy; its scope and settings live in `[tool.mypy]` in `pyproject.toml`. `utils/type_check.py` rejects global and per-module `ignore_errors` settings; fix type errors rather than suppressing a module. The existing third-party `ignore_missing_imports` allowlist remains separate.
 - Use 4-space indentation; follow snake_case for functions/variables/modules and PascalCase for classes.
 - For small special-case handling changes, patch the canonical code path in place instead of adding a helper or wrapper; when the exception is not obvious, leave a brief comment noting the intention.
 - Keep architecture and loss choices in YAML under `configs/`; training hyperparameters stay on the CLI.
