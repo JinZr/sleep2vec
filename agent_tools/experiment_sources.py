@@ -133,7 +133,47 @@ def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> list[dict[str, Any]]:  # noqa: C901
+def _parse_remote_checkpoint_rows(
+    stdout: str, available_runs: list[dict[str, Any]], *, remote: str
+) -> list[dict[str, Any]]:
+    runs_by_checkpoint_dir = {str(run["checkpoint_dir"]): run for run in available_runs}
+    rows = {}
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        if "\t" not in line:
+            raise RuntimeError(f"SSH checkpoint scan returned malformed output on {remote}: {line}")
+        path_text, mtime = line.split("\t", 1)
+        if not path_text or not mtime:
+            raise RuntimeError(f"SSH checkpoint scan returned malformed output on {remote}: {line}")
+        try:
+            parsed_mtime = float(mtime)
+        except ValueError as exc:
+            raise RuntimeError(f"SSH checkpoint scan returned malformed output on {remote}: {line}") from exc
+        if not math.isfinite(parsed_mtime):
+            raise RuntimeError(f"SSH checkpoint scan returned malformed output on {remote}: {line}")
+        name = path_text.rsplit("/", 1)[-1]
+        owner_run = runs_by_checkpoint_dir.get(path_text.rsplit("/", 1)[0])
+        if owner_run is None:
+            raise RuntimeError(f"SSH checkpoint scan returned an undeclared checkpoint path on {remote}: {path_text}")
+        rows[path_text] = {
+            **{
+                field: owner_run.get(field, "")
+                for field in ("experiment_id", "step_id", "run_id", "run_name", "version")
+            },
+            "checkpoint_path": path_text,
+            "epoch": _checkpoint_epoch(name),
+            "global_step": _checkpoint_step(name),
+            "mtime": mtime,
+            "metric": "",
+            "value": "",
+            "is_best_by_val": str(name.startswith("best-")).lower(),
+            "is_last": str(name == "last.ckpt").lower(),
+        }
+    return list(rows.values())
+
+
+def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> list[dict[str, Any]]:
     if not remote or not runs:
         return []
     available_runs = []
@@ -176,41 +216,7 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"SSH checkpoint scan failed on {remote}: {detail}")
-    runs_by_checkpoint_dir = {str(run["checkpoint_dir"]): run for run in available_runs}
-    rows = {}
-    for line in result.stdout.splitlines():
-        if not line.strip():
-            continue
-        if "\t" not in line:
-            raise RuntimeError(f"SSH checkpoint scan returned malformed output on {remote}: {line}")
-        path_text, mtime = line.split("\t", 1)
-        if not path_text or not mtime:
-            raise RuntimeError(f"SSH checkpoint scan returned malformed output on {remote}: {line}")
-        try:
-            parsed_mtime = float(mtime)
-        except ValueError as exc:
-            raise RuntimeError(f"SSH checkpoint scan returned malformed output on {remote}: {line}") from exc
-        if not math.isfinite(parsed_mtime):
-            raise RuntimeError(f"SSH checkpoint scan returned malformed output on {remote}: {line}")
-        name = path_text.rsplit("/", 1)[-1]
-        owner_run = runs_by_checkpoint_dir.get(path_text.rsplit("/", 1)[0])
-        if owner_run is None:
-            raise RuntimeError(f"SSH checkpoint scan returned an undeclared checkpoint path on {remote}: {path_text}")
-        rows[path_text] = {
-            **{
-                field: owner_run.get(field, "")
-                for field in ("experiment_id", "step_id", "run_id", "run_name", "version")
-            },
-            "checkpoint_path": path_text,
-            "epoch": _checkpoint_epoch(name),
-            "global_step": _checkpoint_step(name),
-            "mtime": mtime,
-            "metric": "",
-            "value": "",
-            "is_best_by_val": str(name.startswith("best-")).lower(),
-            "is_last": str(name == "last.ckpt").lower(),
-        }
-    checkpoint_rows = list(rows.values())
+    checkpoint_rows = _parse_remote_checkpoint_rows(result.stdout, available_runs, remote=remote)
     validate_checkpoint_evidence_rows(available_runs, checkpoint_rows, remote=remote)
     for run in available_runs:
         manifest_path = str(run["runtime_dir"]).rstrip("/") + "/run_manifest.json"
