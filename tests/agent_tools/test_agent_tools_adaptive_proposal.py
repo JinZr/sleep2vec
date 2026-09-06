@@ -1788,6 +1788,18 @@ def test_agent_proposal_rejects_envelope_valid_joint_config_before_acceptance(
     assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
 
 
+@pytest.mark.parametrize("floor", [0, 0.0, 0.8, 1, 1.0])
+def test_best_neighborhood_bounds_decay_floor(floor):
+    recipe = {"search": {"parameters": {"runtime.lr_decay_floor": [floor]}}}
+    suggested = adaptive_hparam._suggest_parameters(recipe, [{"runtime.lr_decay_floor": floor}])
+    values = suggested["runtime.lr_decay_floor"]
+    assert floor in values
+    assert len(values) == len(set(values))
+    assert all(0 <= value <= 1 for value in values)
+    if floor == 0.8:
+        assert values == [0.4, 0.8, 1.0]
+
+
 def test_explicit_best_neighborhood_uses_existing_numeric_neighbors(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 import pickle
@@ -593,6 +594,45 @@ def test_sex_age_baseline_hparam_test_selection_requires_checkpoint_opportunity(
     assert "--wandb-mode" not in script
 
 
+@pytest.mark.parametrize("task", ["infer", "evaluate", "hparam_tune"])
+@pytest.mark.parametrize("avg_ckpts", [None, 1])
+def test_baseline_plan_rejects_standalone_averaging_directory(tmp_path: Path, task, avg_ckpts):
+    config = _write_survival_config(tmp_path)
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("placeholder")
+    recipe = _hparam_recipe(tmp_path, config) if task == "hparam_tune" else _infer_recipe(tmp_path, config, ckpt)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["task"] = task
+    payload["decisions"]["task"]["value"] = task
+    payload.setdefault("inputs", {})["ckpt_path"] = str(ckpt)
+    payload["runtime"] = {"avg_ckpt_dir": str(tmp_path)}
+    if avg_ckpts is not None:
+        payload["runtime"]["avg_ckpts"] = avg_ckpts
+    _write_yaml(recipe, payload)
+    output = tmp_path / "rejected-plan"
+    report = build_plan(recipe_path=recipe, output_dir=output, unlock_final_test=task == "hparam_tune")
+    assert report.exit_code != 0
+    assert any(issue.field == "runtime.avg_ckpt_dir" and issue.status.value == "FAIL" for issue in report.issues)
+    assert not (output / "plan.json").exists()
+    assert not (output / "run.sh").exists()
+
+
+@pytest.mark.parametrize("device", ["cuda", "cuda:0"])
+def test_baseline_slurm_device_contract(device):
+    from agent_tools.decision_paths import execution_contract_issues
+
+    recipe = {
+        "variant": "sex_age_baseline",
+        "runtime": {"device": device},
+        "execution": {"scheduler": {"type": "slurm"}},
+    }
+    issues = execution_contract_issues(
+        recipe, source_layer="recipe", supports_runtime_identity=True, supports_slurm=True
+    )
+    device_issues = [issue for issue in issues if issue.field == "runtime.device"]
+    assert bool(device_issues) == (device == "cuda:0")
+
+
 def test_sex_age_baseline_slurm_multi_gpu_plan(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     recipe = _hparam_recipe(
@@ -651,12 +691,22 @@ def test_covariate_baseline_bmi_only_and_decay_plan(tmp_path: Path, wandb_mode):
 
 
 def test_covariate_hparam_preserves_wandb_routing(tmp_path: Path, monkeypatch):
+    from agent_tools.experiment_workspace import merge_run_manifest
+    from agent_tools.hparam_postprocess import generate_external_eval
+    from agent_tools.plan_hparam import compile_hparam_final_command
     from sex_age_baseline.finetune import parse_args
+    from sex_age_baseline.infer import parse_args as parse_infer_args
 
     recipe = _hparam_recipe(
         tmp_path,
         _write_survival_config(tmp_path),
-        execution={"wandb_project": "frozen-project", "wandb_group": "frozen-group"},
+        execution={
+            "wandb_project": "frozen-project",
+            "wandb_group": "frozen-group",
+            "workdir": str(tmp_path),
+            "python": sys.executable,
+            "runtime_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        },
     )
     base = tmp_path / "finetune.yaml"
     payload = yaml.safe_load(base.read_text())
@@ -672,6 +722,33 @@ def test_covariate_hparam_preserves_wandb_routing(tmp_path: Path, monkeypatch):
     assert args.wandb_project == "frozen-project"
     assert args.wandb_group == "frozen-group"
     assert args.wandb_mode == "offline"
+
+    run = plan["runs"][0]
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=0.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("fixture checkpoint")
+    merge_run_manifest(
+        Path(plan["recipe"]["experiment"]["root"]),
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "completed"}],
+    )
+    selected = tmp_path / "selected.csv"
+    selected.write_text("step_id,run_id,rank,checkpoint_path\n" f"{run['step_id']},{run['run_id']},1,{checkpoint}\n")
+    generate_external_eval(output, selected, unlock_final_test=True)
+    with (output / "external_eval_manifest.tsv").open() as manifest:
+        external_command = next(csv.DictReader(manifest, delimiter="\t"))["external_command"]
+    final_recipe = plan["recipe"]
+    final_recipe["inputs"]["ckpt_path"] = str(checkpoint)
+    final_recipe["evaluation_policy"]["final_test_unlocked"] = True
+    final_recipe["evaluation_policy"]["external_test_locked"] = False
+    final_command = compile_hparam_final_command(final_recipe, output)
+    assert final_command is not None
+    for rendered in (external_command, final_command):
+        parts = shlex.split(rendered)
+        monkeypatch.setattr(sys, "argv", ["infer", *parts[parts.index("sex_age_baseline.infer") + 1 :]])
+        infer_args = parse_infer_args()
+        assert infer_args.wandb_project == "frozen-project"
+        assert infer_args.wandb_group == "frozen-group"
+        assert infer_args.wandb_mode == "offline"
 
 
 def test_covariate_baseline_window_plan_rejects_missing_identity(tmp_path: Path):

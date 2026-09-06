@@ -107,12 +107,13 @@ def execution_contract_issues(
                     source_layer,
                 )
             )
-        for field, allowed in (("accelerator", {"gpu", "auto"}), ("device", {"cuda", "cuda:0"})):
+        devices = {"cuda"} if recipe.get("variant") == "sex_age_baseline" else {"cuda", "cuda:0"}
+        for field, allowed in (("accelerator", {"gpu", "auto"}), ("device", devices)):
             if field in runtime and runtime[field] not in allowed:
                 issues.append(
                     _execution_contract_issue(
                         f"runtime.{field}",
-                        f"Slurm runtime.{field} must use GPU execution.",
+                        f"Slurm runtime.{field} must use GPU execution: {sorted(allowed)}.",
                         runtime[field],
                         source_layer,
                     )
@@ -785,6 +786,14 @@ def inference_checkpoint_averaging_issue(recipe: dict, ckpt_path: Any) -> Decisi
             "sex_age_baseline inference does not support checkpoint averaging.",
             None,
             {"avg_ckpts": runtime.get("avg_ckpts")},
+        )
+    if recipe.get("variant") == "sex_age_baseline" and runtime.get("avg_ckpt_dir") is not None:
+        return DecisionIssue(
+            DecisionStatus.FAIL,
+            "runtime.avg_ckpt_dir",
+            "sex_age_baseline inference does not support checkpoint averaging directories.",
+            None,
+            {"avg_ckpt_dir": runtime["avg_ckpt_dir"]},
         )
     if avg_ckpts <= 1:
         return None

@@ -529,7 +529,7 @@ def compile_hparam_run_contracts(
         runtime = {**runtime_defaults, **runtime_overrides}
         if scheduler_type == "slurm":
             runtime["devices"] = list(range(slurm_resources["gpus_per_run"]))
-        elif execution.get("gpu_pool") or "gpus_per_run" in execution:
+        elif execution.get("gpu_pool") or runtime_defaults.get("devices") or "gpus_per_run" in execution:
             gpus_per_run = (
                 int(execution["gpus_per_run"])
                 if "gpus_per_run" in execution
@@ -663,6 +663,10 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
     config_path = (
         out / FROZEN_FINAL_EVAL_CONFIG_NAME if has_explicit_final_eval_config(recipe) else out / "config.source.yaml"
     )
+    logging_args: list[Any] = []
+    if recipe.get("variant") == "sex_age_baseline":
+        rendering.append_option(logging_args, "--wandb-project", execution.get("wandb_project"))
+        rendering.append_option(logging_args, "--wandb-group", execution.get("wandb_group"))
     return rendering.render_command(
         [
             execution["python"],
@@ -677,6 +681,7 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
             "--eval-split",
             "test",
             *rendering.infer_runtime_cli_args(runtime),
+            *logging_args,
             *rendering.infer_input_cli_args(inputs, variant=str(recipe.get("variant"))),
         ]
     )

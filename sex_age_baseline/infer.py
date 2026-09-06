@@ -48,6 +48,8 @@ def parse_args() -> argparse.Namespace:
         "--avg-ckpt-dir", type=Path, default=None, help="Unsupported checkpoint averaging directory; must be omitted."
     )
     parser.add_argument("--seed", type=int, default=4523, help="Random seed.")
+    parser.add_argument("--wandb-project", default="sex-age-baseline", help="W&B project for metric logging.")
+    parser.add_argument("--wandb-group", default=None, help="W&B group for metric logging.")
     parser.add_argument(
         "--wandb-mode",
         type=str,

@@ -1026,6 +1026,8 @@ def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission
         ({"gpu_pool": [6, 7], "gpus_per_run": 2}, [0], "0 1"),
         ({"gpu_pool": [6, 7], "gpus_per_run": 1}, [0, 1], "0"),
         ({"gpus_per_run": 1}, [6, 7], "0"),
+        ({}, [2], "0"),
+        ({}, [2, 3], "0 1"),
     ],
 )
 def test_hparam_plan_uses_logical_devices_for_scheduled_gpu_groups(
