@@ -13,7 +13,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from . import experiment_io as exp_io, python_programs, run_artifacts as artifacts
+from . import experiment_io as exp_io, plan_contract, python_programs, run_artifacts as artifacts
 from .experiment_workspace import canonical_local_experiment_root, validated_run_key
 from .hparam_selection import resolve_hparam_candidates
 from .manifests import read_rows, write_rows, write_text
@@ -457,7 +457,7 @@ def ensemble_hparam_outputs(
 
 def _require_local_postprocess_execution(
     rows: list[dict[str, Any]],
-    owner_plans: dict[tuple[str, str], dict[str, Any]],
+    owner_plans: dict[tuple[str, str], plan_contract.HparamPlan],
     operation: str,
 ) -> None:
     for row in rows:
@@ -544,7 +544,7 @@ def _infer_command(
 
 def _execute_logit_exports(
     rows: list[dict[str, Any]],
-    owner_plans: dict[tuple[str, str], dict[str, Any]],
+    owner_plans: dict[tuple[str, str], plan_contract.HparamPlan],
     *,
     batch_size: int,
     num_workers: int,

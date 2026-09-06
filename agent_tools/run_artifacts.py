@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import Any, Iterator, TypedDict
+from typing import Any, Iterator, TypedDict, cast
 
 import yaml
 
@@ -621,7 +621,7 @@ def read_hparam_plan(  # noqa: C901
     semantic_dir: Path | None = None,
     require_workspace_state: bool = True,
     require_adaptive_commit: bool = True,
-) -> dict[str, Any]:
+) -> plan_contract.HparamPlan:
     """Read and validate a local hparam plan, returning the full plan.json mapping.
 
     Checks frozen recipe/config/script bindings and, by default, registered
@@ -779,7 +779,8 @@ def read_hparam_plan(  # noqa: C901
         _validate_hparam_execution_snapshot(plan, physical_dir, plan_dir)
     if require_adaptive_commit:
         _validate_adaptive_workflow_commit(plan_dir, recipe, plan)
-    return plan
+    # The checks above establish recipe, run rows, and the resolved recipe digest without replacing the mapping.
+    return cast(plan_contract.HparamPlan, plan)
 
 
 def _validate_local_hparam_plan_contract(
@@ -983,7 +984,7 @@ def iter_registered_hparam_plans(
     selection_metric: Any,
     selection_mode: Any,
     selection_split: Any,
-) -> Iterator[tuple[Path, dict[str, Any]]]:
+) -> Iterator[tuple[Path, plan_contract.HparamPlan]]:
     """Yield validated local hparam plans in the managed step's registered order.
 
     Reads the step manifest when iterated, skips recognized blocked bundles and
@@ -1004,8 +1005,8 @@ def iter_registered_hparam_plans(
             continue
         if not registered_plan_path.exists():
             raise FileNotFoundError(f"Registered plan is missing plan.json: {registered_plan_path}")
-        registered_plan = read_json(registered_plan_path)
-        registered_recipe = registered_plan["recipe"] if isinstance(registered_plan.get("recipe"), dict) else {}
+        raw_plan = read_json(registered_plan_path)
+        registered_recipe = raw_plan["recipe"] if isinstance(raw_plan.get("recipe"), dict) else {}
         resolved_recipe = read_managed_yaml_mapping(
             resolved_recipe_path.read_text(),
             source=f"Frozen registered recipe {resolved_recipe_path}",

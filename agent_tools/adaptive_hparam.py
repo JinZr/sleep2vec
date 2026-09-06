@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import copy
 import csv
 from dataclasses import dataclass, field as dataclass_field
@@ -23,6 +24,7 @@ from . import (
     experiment_io as exp_io,
     hparam_runtime,
     managed_scheduler,
+    plan_contract,
     plan_hparam,
     run_artifacts as artifacts,
     run_evidence as evidence,
@@ -101,7 +103,7 @@ def _accepted_start_keys(rows: list[dict[str, Any]]) -> set[tuple[str, str]]:
     return {validated_run_key(row) for row in rows if _is_accepted_start(row)}
 
 
-def _validate_adaptive_step_registration(workspace: Path, round_dir: Path, plan: dict[str, Any]) -> None:
+def _validate_adaptive_step_registration(workspace: Path, round_dir: Path, plan: Mapping[str, Any]) -> None:
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     validate_step_registration(
@@ -215,6 +217,7 @@ def _init_adaptive_workflow_locked(  # noqa: C901
                 return root
             round_exists = os.path.lexists(round_dir)
             registered_keys = set()
+            plan: Mapping[str, Any]
             if round_exists:
                 plan = _validate_initial_round(round_dir, round_recipe_payload, source_config_bytes)
                 expected_keys = {managed_run_key(run) for run in plan["runs"]}
@@ -1798,7 +1801,7 @@ def _validate_workflow_payload(
 def _validate_round_registry(
     root: Path,
     round_index: int,
-    plan: dict[str, Any],
+    plan: Mapping[str, Any],
     registry_rows: list[dict[str, Any]],
 ) -> None:
     round_dir = _round_dir(root, round_index)
@@ -1826,7 +1829,7 @@ def _validate_initial_round(
     round_dir: Path,
     expected_recipe: dict[str, Any],
     source_config_bytes: bytes,
-) -> dict[str, Any]:
+) -> plan_contract.HparamPlan:
     if round_dir.is_symlink() or not round_dir.is_dir():
         raise ValueError(f"Adaptive round 000 is missing or aliased: {round_dir}")
     round_recipe = round_dir / "round_recipe.yaml"
@@ -2159,7 +2162,7 @@ def _validate_initial_event_order(
         raise ValueError("Adaptive initialization events are out of order.")
 
 
-def _plan_event(round_dir: Path, plan: dict[str, Any]) -> dict[str, Any]:
+def _plan_event(round_dir: Path, plan: Mapping[str, Any]) -> dict[str, Any]:
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     return {
@@ -2169,7 +2172,7 @@ def _plan_event(round_dir: Path, plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _reconcile_plan_event(workspace: Path, round_dir: Path, plan: dict[str, Any]) -> None:
+def _reconcile_plan_event(workspace: Path, round_dir: Path, plan: Mapping[str, Any]) -> None:
     _reconcile_event(
         workspace,
         "plan_created",
@@ -2178,7 +2181,7 @@ def _reconcile_plan_event(workspace: Path, round_dir: Path, plan: dict[str, Any]
     )
 
 
-def _ensure_initial_registry(root: Path, round_dir: Path, plan: dict[str, Any]) -> None:
+def _ensure_initial_registry(root: Path, round_dir: Path, plan: Mapping[str, Any]) -> None:
     registry_path = root / "adaptive" / "run_registry.tsv"
     registered_at = utc_now()
     rows = [

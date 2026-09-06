@@ -11,7 +11,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             from pathlib import Path
             from agent_tools import (
                 adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
-                experiment_io, experiment_workspace, hparam_runtime, managed_scheduler, models,
+                experiment_io, experiment_workspace, hparam_runtime, hparam_selection, managed_scheduler, models,
                 plan_contract, plan_hparam, run_artifacts, run_evidence, slurm,
             )
 
@@ -95,6 +95,23 @@ def test_result_types_reach_callers(tmp_path: Path):
                 executing_step: Path = adaptive_hparam.adaptive_step(
                     "/workflow", proposal_path=proposal, execute=True,
                 )
+
+            for hparam_plan in (
+                run_artifacts.read_hparam_plan(Path("/plan")),
+                plan_hparam.commit_hparam_plan(Path("/plan")),
+                next(run_artifacts.iter_registered_hparam_plans(
+                    Path("/workspace"), "step", selection_metric="score", selection_mode="max", selection_split="val",
+                ))[1],
+                next(iter(hparam_selection.resolve_hparam_candidates(Path("/plan"), [])[1].values())),
+            ):
+                plan_recipe: dict[str, Any] = hparam_plan["recipe"]
+                plan_runs: list[dict[str, Any]] = hparam_plan["runs"]
+                resolved_digest: str = hparam_plan["resolved_recipe_sha256"]
+                hparam_plan["recipe"] = []  # type: ignore[typeddict-item]
+                hparam_plan["runs"] = {}  # type: ignore[typeddict-item]
+                hparam_plan["resolved_recipe_sha256"] = 1  # type: ignore[typeddict-item]
+                hparam_plan["resolved_recipe_hash"]  # type: ignore[typeddict-item]
+                del hparam_plan["recipe"]  # type: ignore[misc]
 
             def check_commit(value: object) -> None:
                 if models.is_full_git_object_id(value):
