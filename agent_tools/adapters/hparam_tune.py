@@ -9,7 +9,7 @@ from typing import Any
 from .. import plan_contract, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
-from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, variant_module
+from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, FINETUNE_SCHEDULER_FIELDS, INFER_RUNTIME_FIELDS, variant_module
 from .base import PlanRegistrationPreflightError, TaskAdapter
 
 
@@ -42,7 +42,12 @@ class HparamTuneAdapter(TaskAdapter):
     }
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
-        return FINETUNE_RUNTIME_FIELDS | INFER_RUNTIME_FIELDS
+        fields = FINETUNE_RUNTIME_FIELDS | INFER_RUNTIME_FIELDS
+        return (
+            fields - (FINETUNE_SCHEDULER_FIELDS - {"lr_decay_shape", "lr_decay_floor"})
+            if variant == "sex_age_baseline"
+            else fields
+        )
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         execution = recipe.get("execution")

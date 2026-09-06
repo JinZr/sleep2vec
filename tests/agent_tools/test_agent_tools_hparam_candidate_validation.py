@@ -452,3 +452,13 @@ def test_slurm_observation_and_merge_cannot_add_launchable_runs(tmp_path: Path, 
         assert merge_run_row(prior, observed)["status"] not in managed_scheduler.LAUNCHABLE_STATUSES
         for regression in managed_scheduler.LAUNCHABLE_STATUSES:
             assert merge_run_row(prior, {"status": regression})["status"] == status
+
+
+def test_frozen_candidate_scheduler_validation_uses_flat_parameters_before_config_dedup(tmp_path):
+    config_bytes = yaml.safe_dump(config_payload(tmp_path / "index.csv")).encode()
+    recipe = {"variant": "sleep2vec", "runtime": {"lr_scheduler": "wsd", "lr_decay_ratio": 0.3}}
+    valid = {"run_id": "run-000", "runtime.lr_scheduler": "decay", "runtime.lr_decay_ratio": None}
+    plan_hparam.validate_hparam_run_configs(recipe, [(valid, config_bytes)])
+    invalid = {"run_id": "run-001", "runtime.lr_scheduler": "decay", "runtime.lr_decay_ratio": 0.3}
+    with pytest.raises(ValueError, match="only supported by WSD"):
+        plan_hparam.validate_hparam_run_configs(recipe, [(valid, config_bytes), (invalid, config_bytes)])

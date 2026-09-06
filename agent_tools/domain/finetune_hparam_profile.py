@@ -59,25 +59,32 @@ def compile_finetune_balanced_profile(
     variant = recipe.get("variant")
     inputs = recipe.get("inputs")
     label = (inputs or {}).get("label_name") if isinstance(inputs, dict) else None
-    if variant not in _SUPPORTED_VARIANTS or label not in _SUPPORTED_LABELS:
-        return None, [
-            _issue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "No unique finetune_balanced profile is registered for this variant and label.",
-                {
-                    "variant": variant,
-                    "label_name": label,
-                    "supported_variants": sorted(_SUPPORTED_VARIANTS),
-                    "supported_labels": sorted(_SUPPORTED_LABELS),
-                },
-            )
-        ]
     if not isinstance(config_summary, dict):
         return None, [
             _issue(
                 DecisionStatus.NEEDS_USER_INPUT,
                 "finetune_balanced requires one readable resolved finetune config.",
                 {},
+            )
+        ]
+    finetune = config_summary.get("finetune") or {}
+    task = finetune.get("task") or {}
+    task_type = task.get("type")
+    if variant not in _SUPPORTED_VARIANTS or (
+        label not in _SUPPORTED_LABELS and task_type not in {"survival", "multilabel_classification"}
+    ):
+        return None, [
+            _issue(
+                DecisionStatus.NEEDS_USER_INPUT,
+                "No unique finetune_balanced profile is registered for this variant and resolved task.",
+                {
+                    "variant": variant,
+                    "label_name": label,
+                    "task_type": task_type,
+                    "supported_variants": sorted(_SUPPORTED_VARIANTS),
+                    "supported_labels": sorted(_SUPPORTED_LABELS),
+                    "supported_custom_task_types": ["multilabel_classification", "survival"],
+                },
             )
         ]
 
@@ -117,6 +124,12 @@ def finetune_balanced_profile_audit(search: dict[str, Any]) -> dict[str, Any]:
     family_keys = {
         "optimization.lr": [key for key in keys if key == "runtime.lr"],
         "optimization.weight_decay": [key for key in keys if key == "runtime.weight_decay"],
+        "optimization.schedule": [
+            key
+            for key in keys
+            if key.startswith("runtime.lr_")
+            or key in {"runtime.epochs", "runtime.warmup_steps", "runtime.check_val_every_n_epoch"}
+        ],
         "model.layer_mix": [key for key in keys if key == "yaml:/finetune/layer_mix"],
         "regularization.dropout": [
             key
@@ -132,7 +145,38 @@ def finetune_balanced_profile_audit(search: dict[str, Any]) -> dict[str, Any]:
         "loss.pos_weight": [key for key in keys if key == "yaml:/finetune/loss/pos_weight"],
     }
     families = []
+    fixed_schedule_parameters = []
+    applicable_schedulers = {
+        "runtime.warmup_steps": {"decay", "wsd"},
+        "runtime.lr_decay_shape": {"decay", "wsd"},
+        "runtime.lr_decay_ratio": {"wsd"},
+        "runtime.lr_plateau_factor": {"plateau"},
+        "runtime.lr_plateau_patience": {"plateau"},
+    }
     for family_id, selected_keys in family_keys.items():
+        if not selected_keys:
+            continue
+        varying_keys = []
+        for key in selected_keys:
+            values = _stable_unique(
+                [
+                    point[key]
+                    for point in configurations
+                    if key not in applicable_schedulers
+                    or point.get("runtime.lr_scheduler") in applicable_schedulers[key]
+                ]
+            )
+            if len(values) > 1:
+                varying_keys.append(key)
+            elif family_id == "optimization.schedule" and values:
+                fixed_schedule_parameters.append(
+                    {
+                        "key": key,
+                        "value": values[0],
+                        "reason": "Fixed within applicable scheduler candidates to keep the joint search bounded.",
+                    }
+                )
+        selected_keys = varying_keys
         if not selected_keys:
             continue
         levels = {
@@ -153,6 +197,17 @@ def finetune_balanced_profile_audit(search: dict[str, Any]) -> dict[str, Any]:
         "budget": search.get("max_runs"),
         "candidate_count": len(configurations),
         "searched_families": families,
+        "fixed_schedule_parameters": fixed_schedule_parameters,
+        "schedule_policy": {
+            "design": "Joint schedule candidates; individual effects are not isolated by the run budget.",
+            "warmup": (
+                "Decay/WSD null uses 3% of optimizer steps; Plateau has no warmup. "
+                "Explicit step ratios need runtime counts. Shortened WSD candidates disable warmup."
+            ),
+            "plateau": "Validation-driven reductions use the frozen monitor and direction.",
+            "validation": "Shortened candidates cap the validation interval at their epoch count.",
+            "fixed": "Batch size, gradient accumulation and early-stopping patience remain source settings.",
+        },
     }
 
 
@@ -183,6 +238,76 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
             weight_decay_levels,
         ),
     ]
+
+    epochs = runtime.get("epochs")
+    epochs = 30 if epochs is None else epochs
+    if type(epochs) is not int or epochs < 1:
+        raise ValueError("finetune_balanced requires runtime.epochs to be a positive integer.")
+    scheduler = runtime.get("lr_scheduler")
+    scheduler = "decay" if scheduler is None else scheduler
+    floor = runtime.get("lr_decay_floor")
+    floor = 0.1 if floor is None else floor
+    shape = runtime.get("lr_decay_shape")
+    shape = "cosine" if shape is None else shape
+    validation_interval = runtime.get("check_val_every_n_epoch")
+    validation_interval = 1 if validation_interval is None else validation_interval
+    shortened_epochs = max(1, (epochs + 1) // 2)
+    baseline_schedule = {
+        "runtime.epochs": epochs,
+        "runtime.check_val_every_n_epoch": validation_interval,
+        "runtime.lr_scheduler": scheduler,
+        "runtime.warmup_steps": runtime.get("warmup_steps"),
+        "runtime.lr_decay_floor": floor,
+        "runtime.lr_decay_shape": shape,
+        "runtime.lr_decay_ratio": runtime.get("lr_decay_ratio"),
+        "runtime.lr_plateau_factor": runtime.get("lr_plateau_factor"),
+        "runtime.lr_plateau_patience": runtime.get("lr_plateau_patience"),
+    }
+    if scheduler == "plateau":
+        if baseline_schedule["runtime.lr_plateau_factor"] is None:
+            baseline_schedule["runtime.lr_plateau_factor"] = 0.1
+        if baseline_schedule["runtime.lr_plateau_patience"] is None:
+            baseline_schedule["runtime.lr_plateau_patience"] = 10
+    decay_schedule = {
+        **baseline_schedule,
+        "runtime.lr_scheduler": "decay",
+        "runtime.lr_decay_ratio": None,
+        "runtime.lr_plateau_factor": None,
+        "runtime.lr_plateau_patience": None,
+    }
+    schedule_levels = [
+        baseline_schedule,
+        {
+            **baseline_schedule,
+            "runtime.epochs": shortened_epochs,
+            "runtime.warmup_steps": 0 if scheduler == "wsd" else baseline_schedule["runtime.warmup_steps"],
+            "runtime.check_val_every_n_epoch": min(validation_interval, shortened_epochs),
+        },
+        {**baseline_schedule, "runtime.epochs": epochs * 2},
+        {**decay_schedule, "runtime.warmup_steps": 0},
+        {**decay_schedule, "runtime.warmup_steps": None},
+        {**decay_schedule, "runtime.lr_decay_floor": 0.01},
+        {**decay_schedule, "runtime.lr_decay_floor": 1.0},
+        {**decay_schedule, "runtime.lr_decay_shape": "linear" if shape == "cosine" else "cosine"},
+        *[
+            {
+                **decay_schedule,
+                "runtime.lr_scheduler": "wsd",
+                "runtime.warmup_steps": None,
+                "runtime.lr_decay_ratio": ratio,
+            }
+            for ratio in (0.2, 0.5)
+        ],
+        {
+            **decay_schedule,
+            "runtime.lr_scheduler": "plateau",
+            "runtime.warmup_steps": None,
+            "runtime.lr_decay_shape": "cosine",
+            "runtime.lr_plateau_factor": 0.1,
+            "runtime.lr_plateau_patience": 2,
+        },
+    ]
+    axes.append({"id": "optimization.schedule", "levels": _stable_unique(schedule_levels)})
 
     depth = model.get("backbone_depth")
     if type(depth) is not int or depth < 1:

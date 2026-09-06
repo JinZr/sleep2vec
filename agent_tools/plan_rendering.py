@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from importlib import import_module
 import json
 from pathlib import Path
 import shlex
+from types import SimpleNamespace
 from typing import Any
 
 from . import python_programs
@@ -20,11 +22,18 @@ _FINETUNE_RUNTIME_DEFAULTS = (
     ("lr", "--lr", DEFAULT_FINETUNE_LR),
     ("weight_decay", "--weight-decay", DEFAULT_FINETUNE_WEIGHT_DECAY),
 )
+FINETUNE_SCHEDULER_FIELDS = frozenset(
+    {"lr_scheduler", "lr_decay_shape", "lr_decay_floor", "lr_decay_ratio", "lr_plateau_factor", "lr_plateau_patience"}
+)
 _FINETUNE_RUNTIME_OPTIONS = (
-    ("device", "--device"),
-    ("warmup_steps", "--warmup-steps"),
+    ("lr_scheduler", "--lr-scheduler"),
     ("lr_decay_shape", "--lr-decay-shape"),
     ("lr_decay_floor", "--lr-decay-floor"),
+    ("lr_decay_ratio", "--lr-decay-ratio"),
+    ("lr_plateau_factor", "--lr-plateau-factor"),
+    ("lr_plateau_patience", "--lr-plateau-patience"),
+    ("device", "--device"),
+    ("warmup_steps", "--warmup-steps"),
     ("gradient_clip_val", "--gradient-clip-val"),
     ("accumulate_grad_batches", "--accumulate-grad-batches"),
     ("patience", "--patience"),
@@ -138,6 +147,26 @@ def finetune_loaded_split_values(recipe: dict, *, load_test: bool | None = None)
     if load_test is True:
         splits.append("test")
     return splits
+
+
+def validate_finetune_runtime(recipe: dict[str, Any], runtime: dict[str, Any], task: dict[str, Any]) -> None:
+    if not FINETUNE_SCHEDULER_FIELDS.intersection(runtime):
+        return
+    if recipe.get("variant") == "sex_age_baseline" and (
+        FINETUNE_SCHEDULER_FIELDS - {"lr_decay_shape", "lr_decay_floor"}
+    ).intersection(runtime):
+        raise ValueError("Scheduler selection, WSD and Plateau fields are not supported by sex_age_baseline.")
+    args = SimpleNamespace(**{key: value for key, value in runtime.items() if value is not None})
+    if getattr(args, "lr_scheduler", "decay") == "plateau":
+        args.label_name = recipe.get("inputs", {}).get("label_name")
+        config_module = import_module(variant_module(recipe, "config"))
+        common_module = import_module(variant_module(recipe, "common"))
+        task_config = config_module.TaskConfig(**task) if task.get("type") else None
+        common_module.apply_task_flags(args, task_config)
+    scheduler_module = import_module(
+        "sleep2vec.schedulers" if recipe.get("variant") == "sex_age_baseline" else variant_module(recipe, "schedulers")
+    )
+    scheduler_module.validate_finetune_scheduler_args(args)
 
 
 def runtime_cli_args(runtime: dict[str, Any], *, variant: str | None = None) -> list[Any]:

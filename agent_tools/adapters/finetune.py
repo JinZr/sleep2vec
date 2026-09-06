@@ -8,9 +8,11 @@ from ..decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbo
 from ..models import REPO_ROOT, recipe_name
 from ..plan_rendering import (
     FINETUNE_RUNTIME_FIELDS,
+    FINETUNE_SCHEDULER_FIELDS,
     finetune_input_cli_args,
     render_command,
     runtime_cli_args,
+    validate_finetune_runtime,
     variant_module,
 )
 from .base import TaskAdapter, config_summary_issues, recipe_inputs
@@ -33,7 +35,10 @@ class FinetuneAdapter(TaskAdapter):
     enforces_required_channels = True
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
-        return FINETUNE_RUNTIME_FIELDS
+        fields = FINETUNE_RUNTIME_FIELDS
+        if variant == "sex_age_baseline":
+            fields = fields - (FINETUNE_SCHEDULER_FIELDS - {"lr_decay_shape", "lr_decay_floor"})
+        return fields
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         return ("python", "-m", variant_module(recipe, "finetune"))
@@ -62,6 +67,15 @@ class FinetuneAdapter(TaskAdapter):
             evaluation = {}
 
         issues.extend(config_summary_issues(recipe, config_summary))
+        if config_summary:
+            try:
+                validate_finetune_runtime(
+                    recipe, recipe.get("runtime") or {}, config_summary.get("finetune", {}).get("task") or {}
+                )
+            except (TypeError, ValueError) as exc:
+                issues.append(
+                    DecisionIssue(DecisionStatus.FAIL, "runtime", str(exc), None, {"preflight_before_workspace": True})
+                )
         test_after_fit = decisions["test_after_fit"].value
         if type(test_after_fit) is not bool:
             issues.append(

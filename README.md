@@ -256,8 +256,16 @@ finetune:
 ### Finetune learning-rate schedules
 
 The `sleep2vec`, `sleep2vec2`, and `sleep2expert` finetune entrypoints accept
-`--lr-scheduler decay|wsd|plateau`. These are training CLI options; the new
-options are not yet accepted or rendered by `agent_tools` recipes.
+`--lr-scheduler decay|wsd|plateau`. Managed `finetune` and `hparam_tune`
+recipes use the corresponding `runtime.lr_scheduler`, `runtime.lr_decay_floor`,
+`runtime.lr_decay_shape`, `runtime.lr_decay_ratio`, `runtime.lr_plateau_factor`,
+and `runtime.lr_plateau_patience` fields. Explicit searches can vary these
+fields; use joint `search.configurations` when switching scheduler families so
+that WSD/Plateau-only options are cleared with `null` in other families.
+`sex_age_baseline` supports `runtime.lr_decay_floor` and `runtime.lr_decay_shape`
+in managed recipes and explicit searches. It does not support
+`runtime.lr_scheduler`, `runtime.lr_decay_ratio`, `runtime.lr_plateau_factor`,
+or `runtime.lr_plateau_patience`.
 
 - `decay` preserves the default linear warmup followed by cosine decay.
   `--lr-decay-shape linear` selects linear decay instead. The default warmup is

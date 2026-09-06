@@ -807,6 +807,11 @@ def test_covariate_baseline_explicit_scheduler_search_renders_each_arm(tmp_path:
     scripts = [path.read_text() for path in (plan / "runs").glob("run-*--*/launch.sh")]
     assert len(scripts) == 2
     assert all("--lr-decay-floor 0.2" in script for script in scripts)
+    from agent_tools.plan_rendering import runtime_cli_args
+
+    argv = runtime_cli_args({"lr_decay_floor": 0.2, "lr_decay_shape": "linear"}, variant="sex_age_baseline")
+    assert argv.count("--lr-decay-floor") == 1
+    assert argv.count("--lr-decay-shape") == 1
     assert sum("--lr-decay-shape cosine" in script for script in scripts) == 1
     assert sum("--lr-decay-shape linear" in script for script in scripts) == 1
 
@@ -1215,3 +1220,34 @@ def test_sex_age_baseline_infer_plan_renders_standalone_module(tmp_path: Path):
     assert "python -m sex_age_baseline.infer" in script
     assert "--pretrained-backbone-path" not in script
     assert "--inference-preset-path" not in script
+
+
+@pytest.mark.parametrize("task", ["finetune", "hparam_tune"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("lr_scheduler", "decay"),
+        ("lr_decay_ratio", 0.2),
+        ("lr_plateau_factor", 0.5),
+        ("lr_plateau_patience", 2),
+    ],
+)
+def test_sex_age_baseline_rejects_unconsumed_scheduler_fields(tmp_path: Path, task, field, value):
+    config = _write_survival_config(tmp_path)
+    recipe = _finetune_recipe(tmp_path, config) if task == "finetune" else _hparam_recipe(tmp_path, config)
+    payload = yaml.safe_load(recipe.read_text())
+    if task == "finetune":
+        payload.setdefault("runtime", {})[field] = value
+    else:
+        payload["search"]["parameters"] = {f"runtime.{field}": [value]}
+    _write_yaml(recipe, payload)
+    output_dir = tmp_path / "invalid-scheduler"
+
+    report = build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert report.exit_code == 1
+    assert any(
+        "scheduler" in issue.message.lower() or field in issue.message or field in issue.field
+        for issue in report.issues
+    )
+    assert not output_dir.exists()

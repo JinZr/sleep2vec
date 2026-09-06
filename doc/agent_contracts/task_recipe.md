@@ -391,16 +391,29 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
 - Both shapes use the same key rules and apply `[:max_runs]` prefix truncation
   after expansion. Reordering parameter mapping keys does not change run ids
   or the selected grid prefix.
+- For `sleep2vec`, `sleep2vec2`, and `sleep2expert`, managed finetune runtime
+  fields and explicit search keys include `lr_scheduler`, `lr_decay_floor`,
+  `lr_decay_shape`, `lr_decay_ratio`, `lr_plateau_factor`, and
+  `lr_plateau_patience` under `runtime`. They retain the training CLI meanings:
+  `decay|wsd|plateau`, a per-group relative floor, `cosine|linear`, a WSD-only
+  final decay fraction, and Plateau-only factor/patience. Use complete joint
+  configurations with `null` resets for inapplicable fields when switching
+  scheduler families. Candidate validation checks each effective combination
+  before publishing a runnable plan; WSD's exact phase lengths additionally
+  require the training runtime's optimizer-update count. `sex_age_baseline`
+  supports `lr_decay_shape` and `lr_decay_floor`; scheduler selection, WSD
+  ratio and Plateau fields do not apply to that variant.
 - `search.profile: finetune_balanced` is the alternative authored intent for
   `sleep2vec` and `sleep2vec2` finetuning labels `ahi`, `arousal`, `stage4`,
-  `age`, and `sex`. It is mutually exclusive with authored `parameters` or
+  `age`, and `sex`, plus custom labels whose resolved `finetune.task.type`
+  is `survival` or `multilabel_classification`. It is mutually exclusive with authored `parameters` or
   `configurations`. The hparam adapter resolves config facts and materializes
   `method: grid`, a default `max_runs: 12`, and deterministic complete joint
   configurations before consultation. An explicit budget override must be in
   `[4, 32]` and cover every generated level.
 - The profile compiler, owned by
   `agent_tools/domain/finetune_hparam_profile.py`, searches bounded technical
-  levels for learning rate, weight decay, the full LayerMix block,
+  levels for learning rate, weight decay, joint training length/LR schedules, the full LayerMix block,
   supported dropout fields, full/head-only/LoRA adaptation arms when a
   pretrained backbone is passed to tuning, and positive
   scalar `pos_weight` when it exists. A complete explicit
@@ -416,15 +429,33 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   null` and `shared_across_modalities: false`; single-channel source LayerMix
   must also disable sharing. Multi-channel enabled levels cover both shared
   and unshared atomic mappings without spending budget on inert duplicates. It keeps
-  batch size, epochs, patience, aggregation, EMA, pretrained checkpoint,
+  batch size, gradient accumulation, early-stopping patience, aggregation, EMA, pretrained checkpoint,
   channels, and class weights frozen. Its first point exactly matches the
-  source runtime and all active source config mappings. A zero source weight
+  effective source runtime and all active source config mappings. Omitted
+  runtime defaults are materialized; scheduler-specific `null` values clear
+  inapplicable fields when switching families. A zero source weight
   decay uses profile-owned `1e-5` and `1e-4` positive anchors so the family is
-  genuinely searched. The remaining points
-  include normalized LayerMix off, synchronized dropout, and full/head-only/
-  LoRA arms when eligible before greedily covering missing levels and then
-  missing pairs with stable tie breaking instead of truncating a Cartesian
-  prefix.
+  genuinely searched. Remaining points greedily cover missing levels and then
+  missing pairs across the eligible schedule, LayerMix, dropout and adaptation
+  families with stable tie breaking instead of truncating a Cartesian prefix.
+- The profile treats the following schedule settings as complete joint levels:
+  the source schedule; the same schedule with `ceil(epochs / 2)` (at least 1)
+  or `2 * epochs`; ordinary decay with warmup `0` or `null`, floor `0.01` or
+  `1.0`, or the alternate cosine/linear shape; WSD with default warmup and
+  decay ratio `0.2` or `0.5`; and Plateau with factor `0.1`, patience `2`, and
+  no warmup. Other fields retain their source settings except incompatible
+  scheduler options, which are cleared. The shortened level disables
+  warmup for WSD and caps `check_val_every_n_epoch` at its epoch count so
+  scheduled validation still occurs. Other levels retain the source validation
+  interval (default `1`). Duplicate levels are removed.
+  Omitted epochs resolve to `30`. `null` warmup means 3% of total optimizer
+  updates for decay/WSD; Plateau has no warmup. A source explicit warmup
+  step count remains fixed in candidates that retain it, so its fraction may
+  change with epochs. Exact warmup fractions require runtime update counts.
+  The run budget must cover every distinct joint schedule level; the default
+  remains 12. Coverage does not isolate the effect of each schedule field or
+  exhaust all combinations with the other families. The audit records this
+  limitation and the fixed batch/accumulation/early-stopping settings.
 - The authored profile remains the only generation intent. The resolved
   recipe and plan freeze its exact configurations, config digest, runtime/repo
   identity, budget, searched-family coverage, metric, and split. Reports may
