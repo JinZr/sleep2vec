@@ -58,7 +58,53 @@ def _research_log_timestamp(value: Any, field: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _normalized_research_log_entry(  # noqa: C901
+def _normalized_research_log_scope(
+    entry: dict[str, Any],
+    *,
+    experiment_id: str,
+    managed_rows: list[dict[str, Any]],
+    root: Path,
+    remote: str | None,
+    read_step_manifest,
+    managed_run_key,
+) -> dict[str, Any]:
+    scope = entry.get("scope")
+    normalized_scope: dict[str, Any] = {}
+    if "scope" in entry:
+        if not isinstance(scope, dict) or not scope:
+            raise ValueError("Research log entry scope must be a non-empty mapping.")
+        unexpected_scope = sorted(set(scope) - {"step_id", "run_ids"})
+        if unexpected_scope:
+            raise ValueError(f"Unexpected research log entry scope fields: {', '.join(unexpected_scope)}")
+        if "step_id" not in scope:
+            raise ValueError("Research log entry scope.run_ids requires scope.step_id.")
+        step_id = _research_log_single_line(scope["step_id"], "scope.step_id")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", step_id):
+            raise ValueError(
+                "Research log entry scope.step_id must use lowercase letters, digits, hyphens, and underscores."
+            )
+        step_manifest = read_step_manifest(root, step_id, remote=remote)
+        if step_manifest["experiment_id"] != experiment_id:
+            raise ValueError("Research log entry scope.step_id belongs to a different experiment.")
+        normalized_scope["step_id"] = step_id
+        if "run_ids" in scope:
+            run_ids = scope["run_ids"]
+            if not isinstance(run_ids, list) or not run_ids:
+                raise ValueError("Research log entry scope.run_ids must be a non-empty list.")
+            normalized_run_ids = [
+                _research_log_single_line(run_id, f"scope.run_ids[{index}]") for index, run_id in enumerate(run_ids)
+            ]
+            if len(normalized_run_ids) != len(set(normalized_run_ids)):
+                raise ValueError("Research log entry scope.run_ids must not contain duplicates.")
+            managed_keys = {managed_run_key(row) for row in managed_rows}
+            missing_runs = [run_id for run_id in normalized_run_ids if (step_id, run_id) not in managed_keys]
+            if missing_runs:
+                raise ValueError(f"Research log entry scope references unknown managed runs: {', '.join(missing_runs)}")
+            normalized_scope["run_ids"] = normalized_run_ids
+    return normalized_scope
+
+
+def _normalized_research_log_entry(
     entry: dict[str, Any],
     *,
     experiment_id: str,
@@ -129,39 +175,15 @@ def _normalized_research_log_entry(  # noqa: C901
             normalized_item["sha256"] = digest
         normalized_evidence.append(normalized_item)
 
-    scope = entry.get("scope")
-    normalized_scope: dict[str, Any] = {}
-    if "scope" in entry:
-        if not isinstance(scope, dict) or not scope:
-            raise ValueError("Research log entry scope must be a non-empty mapping.")
-        unexpected_scope = sorted(set(scope) - {"step_id", "run_ids"})
-        if unexpected_scope:
-            raise ValueError(f"Unexpected research log entry scope fields: {', '.join(unexpected_scope)}")
-        if "step_id" not in scope:
-            raise ValueError("Research log entry scope.run_ids requires scope.step_id.")
-        step_id = _research_log_single_line(scope["step_id"], "scope.step_id")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", step_id):
-            raise ValueError(
-                "Research log entry scope.step_id must use lowercase letters, digits, hyphens, and underscores."
-            )
-        step_manifest = read_step_manifest(root, step_id, remote=remote)
-        if step_manifest["experiment_id"] != experiment_id:
-            raise ValueError("Research log entry scope.step_id belongs to a different experiment.")
-        normalized_scope["step_id"] = step_id
-        if "run_ids" in scope:
-            run_ids = scope["run_ids"]
-            if not isinstance(run_ids, list) or not run_ids:
-                raise ValueError("Research log entry scope.run_ids must be a non-empty list.")
-            normalized_run_ids = [
-                _research_log_single_line(run_id, f"scope.run_ids[{index}]") for index, run_id in enumerate(run_ids)
-            ]
-            if len(normalized_run_ids) != len(set(normalized_run_ids)):
-                raise ValueError("Research log entry scope.run_ids must not contain duplicates.")
-            managed_keys = {managed_run_key(row) for row in managed_rows}
-            missing_runs = [run_id for run_id in normalized_run_ids if (step_id, run_id) not in managed_keys]
-            if missing_runs:
-                raise ValueError(f"Research log entry scope references unknown managed runs: {', '.join(missing_runs)}")
-            normalized_scope["run_ids"] = normalized_run_ids
+    normalized_scope = _normalized_research_log_scope(
+        entry,
+        experiment_id=experiment_id,
+        managed_rows=managed_rows,
+        root=root,
+        remote=remote,
+        read_step_manifest=read_step_manifest,
+        managed_run_key=managed_run_key,
+    )
 
     supersedes = entry.get("supersedes")
     normalized_supersedes = []
