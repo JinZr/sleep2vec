@@ -305,7 +305,7 @@ def _validated_execution_snapshot(
     execution: dict[str, Any],
     runs: list[dict[str, Any]],
     workspace_by_key: dict[tuple[str, str], dict[str, Any]],
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[scheduler.ExecutionSnapshot, bool]:
     return scheduler.validated_execution_snapshot(
         run_dir,
         execution,
@@ -316,7 +316,7 @@ def _validated_execution_snapshot(
     )
 
 
-def _inspect_execution_target(execution: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, Any]:
+def _inspect_execution_target(execution: dict[str, Any], runs: list[dict[str, Any]]) -> scheduler.ExecutionSnapshot:
     return scheduler.inspect_execution_target(
         execution,
         runs,
@@ -605,7 +605,7 @@ def _launch_command(
     pid_path: str | Path,
     gpus: list[Any],
     *,
-    execution_snapshot: dict[str, Any] | None = None,
+    execution_snapshot: scheduler.ExecutionSnapshot | None = None,
     config_path: Path | None = None,
     script_sha256: str | None = None,
     config_sha256: str | None = None,

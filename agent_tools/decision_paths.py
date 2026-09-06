@@ -107,12 +107,13 @@ def execution_contract_issues(
                     source_layer,
                 )
             )
-        for field, allowed in (("accelerator", {"gpu", "auto"}), ("device", {"cuda", "cuda:0"})):
+        devices = {"cuda"} if recipe.get("variant") == "sex_age_baseline" else {"cuda", "cuda:0"}
+        for field, allowed in (("accelerator", {"gpu", "auto"}), ("device", devices)):
             if field in runtime and runtime[field] not in allowed:
                 issues.append(
                     _execution_contract_issue(
                         f"runtime.{field}",
-                        f"Slurm runtime.{field} must use GPU execution.",
+                        f"Slurm runtime.{field} must use GPU execution: {sorted(allowed)}.",
                         runtime[field],
                         source_layer,
                     )
@@ -247,16 +248,6 @@ def managed_runtime_resource_issues(
             )
         else:
             gpus_per_run = raw_gpus_per_run
-    if is_slurm and variant == "sex_age_baseline" and gpus_per_run is not None and gpus_per_run > 1:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.gpus_per_run",
-                "sex_age_baseline does not support multi-GPU Slurm execution.",
-                None,
-                {"gpus_per_run": gpus_per_run, "variant": variant, "preflight_before_workspace": True},
-            )
-        )
     if is_slurm and isinstance(scheduler, dict) and not (set(scheduler) - slurm.RESOURCE_FIELDS):
         try:
             slurm.normalize_resources(scheduler, gpus_per_run if gpus_per_run is not None else 1)
@@ -795,6 +786,14 @@ def inference_checkpoint_averaging_issue(recipe: dict, ckpt_path: Any) -> Decisi
             "sex_age_baseline inference does not support checkpoint averaging.",
             None,
             {"avg_ckpts": runtime.get("avg_ckpts")},
+        )
+    if recipe.get("variant") == "sex_age_baseline" and runtime.get("avg_ckpt_dir") is not None:
+        return DecisionIssue(
+            DecisionStatus.FAIL,
+            "runtime.avg_ckpt_dir",
+            "sex_age_baseline inference does not support checkpoint averaging directories.",
+            None,
+            {"avg_ckpt_dir": runtime["avg_ckpt_dir"]},
         )
     if avg_ckpts <= 1:
         return None

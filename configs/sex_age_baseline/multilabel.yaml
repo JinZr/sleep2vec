@@ -5,13 +5,18 @@ model:
     transform: divide
     scale: 100.0
     embedding_dim: 16
+    initialization: default
   sex:
     encoding: binary
     embedding_dim: 16
+    initialization: default
   head:
+    name: classification
     hidden_dim: 32
     dropout: 0.1
-    activation: elu
+    act: elu
+    kwargs:
+      num_layers: 3
 
 data:
   backend: npz

@@ -43,7 +43,11 @@ class HparamTuneAdapter(TaskAdapter):
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         fields = FINETUNE_RUNTIME_FIELDS | INFER_RUNTIME_FIELDS
-        return fields - FINETUNE_SCHEDULER_FIELDS if variant == "sex_age_baseline" else fields
+        return (
+            fields - (FINETUNE_SCHEDULER_FIELDS - {"lr_decay_shape", "lr_decay_floor"})
+            if variant == "sex_age_baseline"
+            else fields
+        )
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         execution = recipe.get("execution")
@@ -350,7 +354,7 @@ class HparamTuneAdapter(TaskAdapter):
         *,
         run_index_offset: int,
         config_bytes: bytes,
-    ) -> dict[str, Any]:
+    ) -> plan_contract.CompiledPlanContract:
         from .. import plan_contract, plan_hparam
 
         contracts = plan_hparam.compile_hparam_run_contracts(

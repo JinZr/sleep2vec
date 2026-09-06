@@ -228,7 +228,6 @@ def test_recipe_rejects_non_mapping_sections_before_consumers_run(tmp_path: Path
         ("finetune", "avg_ckpts", 2),
         ("infer", "epochs", 2),
         ("sleep2stat", "lr", 1e-6),
-        ("sex_age_baseline", "wandb_mode", "offline"),
     ],
 )
 def test_runtime_fields_are_rejected_when_the_task_or_variant_does_not_consume_them(
@@ -244,8 +243,7 @@ def test_runtime_fields_are_rejected_when_the_task_or_variant_does_not_consume_t
         payload = load_yaml_file("recipes/examples/tiny_fixture_sleep2stat.yaml")
         recipe = write_yaml(case / "sleep2stat.yaml", payload)
     else:
-        variant = "sex_age_baseline" if task == "sex_age_baseline" else "sleep2vec"
-        recipe = write_finetune_recipe(case, variant=variant)
+        recipe = write_finetune_recipe(case, variant="sleep2vec")
     payload = yaml.safe_load(recipe.read_text())
     payload.setdefault("runtime", {})[field] = value
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))

@@ -11,12 +11,16 @@ def test_result_types_reach_callers(tmp_path: Path):
             from pathlib import Path
             from agent_tools import (
                 adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
-                experiment_io, experiment_workspace, managed_scheduler, models, run_artifacts, run_evidence, slurm,
+                experiment_io, experiment_workspace, hparam_runtime, managed_scheduler, models,
+                plan_contract, plan_hparam, run_artifacts, run_evidence, slurm,
             )
+
+            from agent_tools.adapters.base import TaskAdapter
+            from agent_tools.adapters.hparam_tune import HPARAM_TUNE_ADAPTER
 
             from typing import Any, Literal
 
-            def snapshot_result(should_write: bool) -> tuple[dict[str, Any], bool]:
+            def snapshot_result(should_write: bool) -> tuple[managed_scheduler.ExecutionSnapshot, bool]:
                 return {}, should_write
 
             managed_scheduler.SchedulerHooks(validated_snapshot=lambda *args: snapshot_result(True))
@@ -28,6 +32,70 @@ def test_result_types_reach_callers(tmp_path: Path):
 
             managed_scheduler.SchedulerHooks(validated_snapshot=missing_snapshot_write)  # type: ignore[arg-type]
 
+            for execution_snapshot in (
+                managed_scheduler.inspect_execution_target({}, []),
+                managed_scheduler.validated_execution_snapshot(Path("/plan"), {}, [], {})[0],
+                hparam_runtime._inspect_execution_target({}, []),
+                hparam_runtime._validated_execution_snapshot(Path("/plan"), {}, [], {})[0],
+                plan_hparam._inspect_hparam_execution_target({}, []),
+            ):
+                module_name: str = execution_snapshot["module"]
+                snapshot_commit: str = execution_snapshot["runtime_commit"]
+                options: list[str] = execution_snapshot["required_options"]
+                argv_digest: str = execution_snapshot["validated_argv_sha256"]
+                execution_snapshot["module"] = 1  # type: ignore[typeddict-item]
+                execution_snapshot["required_options"] = [1]  # type: ignore[list-item]
+                execution_snapshot["validated_argv_sha256"] = b"hash"  # type: ignore[typeddict-item]
+                execution_snapshot["module_name"]  # type: ignore[typeddict-item]
+                managed_scheduler.write_execution_snapshot_file(Path("/snapshot"), execution_snapshot)
+                managed_scheduler.build_launch_command(
+                    {}, Path("script"), "log", "pid", [], execution_snapshot=execution_snapshot,
+                )
+                hparam_runtime._launch_command(
+                    {}, Path("script"), "log", "pid", [], execution_snapshot=execution_snapshot,
+                )
+
+            minimal_snapshot: managed_scheduler.ExecutionSnapshot = {
+                "module": "runtime_cli", "module_origin": "/runtime_cli.py",
+            }
+            managed_scheduler.build_launch_command(
+                {}, Path("script"), "log", "pid", [], execution_snapshot=minimal_snapshot,
+            )
+            managed_scheduler.build_launch_command(
+                {}, Path("script"), "log", "pid", [],
+                execution_snapshot={"module": 1},  # type: ignore[arg-type]
+            )
+            hparam_runtime._launch_command(
+                {}, Path("script"), "log", "pid", [],
+                execution_snapshot={"module": 1},  # type: ignore[arg-type]
+            )
+
+            planned: managed_scheduler.PlannedArgv = {"run_id": "run-000", "args": ["--value", "ok"]}
+            planned["args"] = [1]  # type: ignore[list-item]
+            planned["run_id"] = 1  # type: ignore[typeddict-item]
+
+            executed_step: Path = adaptive_hparam.adaptive_step("/workflow", execute=True)
+            checked_proposal: Path = adaptive_hparam.adaptive_step("/workflow", proposal_path="/proposal.json")
+            applied_proposal: Path = adaptive_hparam.adaptive_step(
+                "/workflow", proposal_path=Path("/proposal.json"), execute=True,
+            )
+            pending_step: Path | None = adaptive_hparam.adaptive_step("/workflow")
+            required_step: Path = adaptive_hparam.adaptive_step("/workflow")  # type: ignore[assignment]
+
+            def check_step_options(execute: bool, proposal: Path | None) -> None:
+                optional_step: Path | None = adaptive_hparam.adaptive_step(
+                    "/workflow", proposal_path=proposal, execute=execute,
+                )
+                nonoptional_step: Path = adaptive_hparam.adaptive_step(
+                    "/workflow", proposal_path=proposal, execute=execute,
+                )  # type: ignore[assignment]
+                proposal_step: Path = adaptive_hparam.adaptive_step(
+                    "/workflow", proposal_path=Path("/proposal.json"), execute=execute,
+                )
+                executing_step: Path = adaptive_hparam.adaptive_step(
+                    "/workflow", proposal_path=proposal, execute=True,
+                )
+
             def check_commit(value: object) -> None:
                 if models.is_full_git_object_id(value):
                     commit: str = value
@@ -35,6 +103,54 @@ def test_result_types_reach_callers(tmp_path: Path):
             strict_key: tuple[str, str] = experiment_workspace.validated_run_key({})
             optional_key: tuple[str, str] | None = experiment_workspace.managed_run_key({})
             required_key: tuple[str, str] = experiment_workspace.managed_run_key({})  # type: ignore[assignment]
+
+            layouts = plan_hparam.hparam_run_layouts({}, Path("/plan"), 7)
+            layout_identity: dict[str, str] = layouts[0]["identity"]
+            layout_parameters: dict[str, Any] = layouts[0]["parameters"]
+            layout_path: Path = layouts[0]["run_dir"]
+            layout_path_text: str = layouts[0]["run_dir"]  # type: ignore[assignment]
+            layouts[0]["run_path"]  # type: ignore[typeddict-item]
+            layouts[0]["run_dir"] = "/plan/run"  # type: ignore[typeddict-item]
+            layouts[0]["identity"]["run_id"] = 7  # type: ignore[assignment]
+            layouts[0]["parameters"] = []  # type: ignore[typeddict-item]
+
+            compiled_files = plan_hparam.compile_hparam_run_contracts(
+                {}, Path("/plan"), 7, source_config_bytes=b"config",
+            )
+            compiled_bytes: bytes = compiled_files[0]["config_bytes"]
+            compiled_script: str = compiled_files[0]["script_text"]
+            compiled_scheduler: str | None = compiled_files[0].get("scheduler_script_text")
+            compiled_files[0]["config_bytes"] = "text"  # type: ignore[typeddict-item]
+            compiled_files[0]["script_text"] = b"bytes"  # type: ignore[typeddict-item]
+            compiled_files[0]["config_byte"]  # type: ignore[typeddict-item]
+            del compiled_files[0]["config_bytes"]  # type: ignore[misc]
+            row_contracts = plan_hparam.compile_hparam_run_contracts({}, Path("/plan"), 7)
+            optional_bytes: bytes | None = row_contracts[0].get("config_bytes")
+            required_bytes: bytes = row_contracts[0].get("config_bytes")  # type: ignore[assignment]
+            row_contracts[0]["script_text"] = 7  # type: ignore[typeddict-item]
+
+            adapter = TaskAdapter()
+            for plan_result in (
+                adapter.compile_plan_contract({}, Path("/plan"), run_index_offset=7, config_bytes=b"config"),
+                HPARAM_TUNE_ADAPTER.compile_plan_contract(
+                    {}, Path("/plan"), run_index_offset=7, config_bytes=b"config",
+                ),
+                run_artifacts._compile_registered_plan_contract(
+                    adapter, {}, Path("/plan"), run_index_offset=7, config_bytes=b"config",
+                ),
+            ):
+                launch_text: str = plan_result["launch_script_text"]
+                final_command: str | None = plan_result["final_command"]
+                plan_result["launch_script_text"] = b"bytes"  # type: ignore[typeddict-item]
+                plan_result["final_eval_config_required"] = "yes"  # type: ignore[typeddict-item]
+                plan_result["run_file"]  # type: ignore[typeddict-item]
+                for run_files in plan_result["run_files"]:
+                    file_bytes: bytes = run_files["config_bytes"]
+                    file_script: str = run_files["script_text"]
+                    invalid_bytes: str = run_files["config_bytes"]  # type: ignore[assignment]
+                    invalid_script: bytes = run_files["script_text"]  # type: ignore[assignment]
+                plan_contract.validate_final_eval_contract({}, {}, Path("/plan"), plan_result)
+            plan_contract.validate_final_eval_contract({}, {}, Path("/plan"), {})
 
             resources = slurm.normalize_resources({}, 1)
             cpus: int = resources["cpus_per_task"]

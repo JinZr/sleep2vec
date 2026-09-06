@@ -1853,7 +1853,7 @@ def _prepare_attempt_registration_groups(
 
         execution = _pipeline_execution(spec)
         remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
-        snapshots = {}
+        snapshots: dict[str, tuple[Path, managed_scheduler.ExecutionSnapshot]] = {}
         for variant in sorted(groups):
             snapshot_path = snapshot_owner_dirs[variant] / managed_scheduler.EXECUTION_SNAPSHOT_NAME
             exp_io.validate_managed_output_paths(

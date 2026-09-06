@@ -39,6 +39,8 @@ def _sidecar_recipe(tmp_path: Path, kind: str, *, variant: str = "sleep2vec", hp
         payload = survival_config_payload(index, sidecars)
     if kind == "multilabel":
         payload["finetune"].pop("survival")
+        if variant == "sex_age_baseline":
+            payload["finetune"]["loss"] = {"pos_weight": None}
         payload["finetune"]["task"]["type"] = "multilabel_classification"
         payload["finetune"]["multilabel"] = {
             "key_column": "eid",

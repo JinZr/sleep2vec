@@ -1552,7 +1552,7 @@ def test_hparam_ssh_launch_rejects_existing_remote_runtime_root_before_start(tmp
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
 
 
-def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path, monkeypatch):
+def test_hparam_launch_remaps_scalar_runtime_device_pool(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     base_recipe = Path(payload["base_recipe"])
@@ -1573,7 +1573,7 @@ def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path, monkeypatc
 
     rows = _read_table(plan_dir / "launch_manifest.tsv")
     assert rows[0]["gpus"] == "2"
-    assert "--devices 2 --precision" in Path(rows[0]["script"]).read_text()
+    assert "--devices 0 --precision" in Path(rows[0]["script"]).read_text()
     assert "start_new_session=True" in rows[0]["command"]
     assert "CUDA_VISIBLE_DEVICES=2" in rows[0]["command"]
     assert started == [rows[0]["command"]]
@@ -1728,3 +1728,59 @@ def test_hparam_runtime_rejects_legacy_plan_without_side_effects(tmp_path: Path,
     assert started == []
     assert killed == []
     assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
+
+
+def test_execution_snapshot_preserves_dynamic_identity_and_drift(tmp_path: Path):
+    command = "python -m runtime_cli"
+    script = tmp_path / "launch.sh"
+    script.write_text(command + "\n")
+    execution = {"python": "python", "runtime_commit": "a" * 40}
+    runs = [{"run_id": "run-000", "script": str(script), "command": command}]
+    identity = {
+        "python": "python",
+        "python_version": 310,
+        "runtime_commit": "a" * 40,
+        "runtime_repo_root": "/runtime",
+        "runtime_hostname": "host",
+        "module": "external_module",
+        "module_origin": "/runtime/runtime_cli.py",
+        "target": {"external": True},
+        "extra_evidence": [1, 2],
+    }
+
+    def run_command(_execution, argv):
+        if argv[2] == python_programs.source("managed_scheduler.runtime_identity"):
+            output = json.dumps(identity)
+        else:
+            output = "AGENT_CLI_PREFLIGHT=" + json.dumps(
+                {
+                    "supported_options": [2, 1],
+                    "cli_options_sha256": "options-hash",
+                }
+            )
+        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
+
+    def inspect(execution, runs):
+        return managed_scheduler.inspect_execution_target(execution, runs, command_runner=run_command)
+
+    snapshot = inspect(execution, runs)
+    assert snapshot["target"] == {"external": True}
+    assert snapshot["python_version"] == 310
+    assert snapshot["extra_evidence"] == [1, 2]
+    assert snapshot["module"] == "runtime_cli"
+    assert snapshot["supported_options"] == [1, 2]
+    snapshot_path = tmp_path / managed_scheduler.EXECUTION_SNAPSHOT_NAME
+    managed_scheduler.write_execution_snapshot_file(snapshot_path, snapshot)
+    frozen_bytes = snapshot_path.read_bytes()
+    assert json.loads(frozen_bytes) == snapshot
+    assert managed_scheduler.validated_execution_snapshot(
+        tmp_path,
+        execution,
+        runs,
+        {},
+        inspector=inspect,
+    ) == (snapshot, False)
+    identity["extra_evidence"] = [1, 3]
+    with pytest.raises(ValueError, match="Frozen execution snapshot changed: extra_evidence"):
+        managed_scheduler.validated_execution_snapshot(tmp_path, execution, runs, {}, inspector=inspect)
+    assert snapshot_path.read_bytes() == frozen_bytes

@@ -37,7 +37,7 @@ class FinetuneAdapter(TaskAdapter):
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         fields = FINETUNE_RUNTIME_FIELDS
         if variant == "sex_age_baseline":
-            fields = fields - {"wandb_mode"} - FINETUNE_SCHEDULER_FIELDS
+            fields = fields - (FINETUNE_SCHEDULER_FIELDS - {"lr_decay_shape", "lr_decay_floor"})
         return fields
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:

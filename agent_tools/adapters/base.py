@@ -27,6 +27,7 @@ from typing import Any, Mapping
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
 from ..models import coerce_list
+from ..plan_contract import CompiledPlanContract
 from ..plan_rendering import finetune_loaded_split_values
 
 
@@ -307,7 +308,7 @@ class TaskAdapter:
         *,
         run_index_offset: int,
         config_bytes: bytes,
-    ) -> dict[str, Any]:
+    ) -> CompiledPlanContract:
         from .. import plan_contract, plan_rendering, slurm
 
         frozen_inputs = plan_contract.frozen_input_snapshots(recipe)
@@ -331,7 +332,7 @@ class TaskAdapter:
             run["input_snapshots"] = input_snapshots
         commands = plan_contract.generic_commands(recipe, run, self, config_bytes)
         script_text = plan_contract.generic_script_text(recipe, run, self, commands, input_snapshots)
-        contract = {
+        contract: CompiledPlanContract = {
             "runs": [run],
             "commands": commands,
             "script_text": script_text,

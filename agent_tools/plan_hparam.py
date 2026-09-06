@@ -10,7 +10,7 @@ import subprocess
 import sys
 from tempfile import NamedTemporaryFile
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Sequence, TypedDict, overload
 
 import yaml
 
@@ -53,6 +53,12 @@ from .repo import repo_summary
 
 FROZEN_FINAL_EVAL_CONFIG_NAME = plan_contract.FROZEN_FINAL_EVAL_CONFIG_NAME
 _FINAL_EVAL_CONFIG_SNAPSHOT = "_final_eval_config_snapshot"
+
+
+class HparamRunLayout(TypedDict):
+    identity: dict[str, str]
+    parameters: dict[str, Any]
+    run_dir: Path
 
 
 class HparamRegistrationPreflightError(ValueError):
@@ -263,7 +269,7 @@ def validate_hparam_run_configs(recipe: dict, run_configs: list[tuple[dict[str, 
             **(recipe.get("runtime") or {}),
             **{
                 key.split(".", 1)[1]: value
-                for key, value in run.get("parameters", {}).items()
+                for key, value in managed_run_parameters(run).items()
                 if key.startswith("runtime.")
             },
         }
@@ -508,13 +514,33 @@ def hparam_combos(recipe: dict) -> list[dict[str, Any]]:
     return combos[:max_runs]
 
 
+@overload
+def compile_hparam_run_contracts(
+    recipe: dict[str, Any],
+    out: Path,
+    run_index_offset: int,
+    *,
+    source_config_bytes: None = None,
+) -> list[plan_contract.HparamRunContract]: ...
+
+
+@overload
+def compile_hparam_run_contracts(
+    recipe: dict[str, Any],
+    out: Path,
+    run_index_offset: int,
+    *,
+    source_config_bytes: bytes,
+) -> list[plan_contract.MaterializedHparamRunContract]: ...
+
+
 def compile_hparam_run_contracts(
     recipe: dict[str, Any],
     out: Path,
     run_index_offset: int,
     *,
     source_config_bytes: bytes | None = None,
-) -> list[dict[str, Any]]:
+) -> Sequence[plan_contract.HparamRunContract | plan_contract.MaterializedHparamRunContract]:
     plan_context = plan_contract.frozen_plan_context(recipe)
     execution_value = recipe.get("execution")
     execution = execution_value if isinstance(execution_value, dict) else {}
@@ -560,7 +586,7 @@ def compile_hparam_run_contracts(
     evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     test_after_fit = evaluation["test_after_fit"]
     selection_split = str(evaluation.get("selection_split") or "")
-    contracts = []
+    contracts: list[plan_contract.HparamRunContract | plan_contract.MaterializedHparamRunContract] = []
     for layout in hparam_run_layouts(recipe, out, run_index_offset):
         identity = layout["identity"]
         combo = layout["parameters"]
@@ -569,7 +595,7 @@ def compile_hparam_run_contracts(
         runtime = {**runtime_defaults, **runtime_overrides}
         if slurm_resources is not None:
             runtime["devices"] = list(range(slurm_resources["gpus_per_run"]))
-        elif execution.get("gpu_pool") or "gpus_per_run" in execution:
+        elif execution.get("gpu_pool") or runtime_defaults.get("devices") or "gpus_per_run" in execution:
             gpus_per_run = (
                 int(execution["gpus_per_run"])
                 if "gpus_per_run" in execution
@@ -592,9 +618,8 @@ def compile_hparam_run_contracts(
             *rendering.runtime_cli_args(runtime, variant=str(recipe.get("variant"))),
             *rendering.finetune_input_cli_args(run_inputs, variant=str(recipe.get("variant"))),
         ]
-        if recipe.get("variant") != "sex_age_baseline":
-            rendering.append_option(command_parts, "--wandb-project", execution.get("wandb_project"))
-            rendering.append_option(command_parts, "--wandb-group", execution.get("wandb_group"))
+        rendering.append_option(command_parts, "--wandb-project", execution.get("wandb_project"))
+        rendering.append_option(command_parts, "--wandb-group", execution.get("wandb_group"))
         command_parts.append("--test-after-fit" if test_after_fit else "--no-test-after-fit")
         if selection_split == "test":
             command_parts.append("--test-all-checkpoints-after-fit")
@@ -626,7 +651,7 @@ def compile_hparam_run_contracts(
                     "terminal_status_owner": "scheduler_sidecar",
                 }
             )
-        contract: dict[str, Any] = {"row": row}
+        contract: plan_contract.HparamRunContract | plan_contract.MaterializedHparamRunContract = {"row": row}
         if base_config is not None:
             run_config = copy.deepcopy(base_config)
             apply_search_overrides(run_config, combo)
@@ -655,7 +680,11 @@ def compile_hparam_run_contracts(
                     "script_sha256": hashlib.sha256(script_text.encode()).hexdigest(),
                 }
             )
-            contract.update({"config_bytes": config_bytes, "script_text": script_text})
+            materialized: plan_contract.MaterializedHparamRunContract = {
+                "row": row,
+                "config_bytes": config_bytes,
+                "script_text": script_text,
+            }
             if slurm_resources is not None:
                 token = slurm.submit_token(row, slurm_resources, execution["runtime_commit"])
                 scheduler_script_text = slurm.render_batch_script(
@@ -675,13 +704,14 @@ def compile_hparam_run_contracts(
                         "scheduler_script_sha256": hashlib.sha256(scheduler_script_text.encode()).hexdigest(),
                     }
                 )
-                contract["scheduler_script_text"] = scheduler_script_text
+                materialized["scheduler_script_text"] = scheduler_script_text
+            contract = materialized
         contracts.append(contract)
     return contracts
 
 
-def hparam_run_layouts(recipe: dict[str, Any], out: Path, run_index_offset: int) -> list[dict[str, Any]]:
-    layouts = []
+def hparam_run_layouts(recipe: dict[str, Any], out: Path, run_index_offset: int) -> list[HparamRunLayout]:
+    layouts: list[HparamRunLayout] = []
     for index, combo in enumerate(hparam_combos(recipe), start=run_index_offset):
         identity = run_identity(recipe, index, combo)
         layouts.append(
@@ -708,6 +738,10 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
     config_path = (
         out / FROZEN_FINAL_EVAL_CONFIG_NAME if has_explicit_final_eval_config(recipe) else out / "config.source.yaml"
     )
+    logging_args: list[Any] = []
+    if recipe.get("variant") == "sex_age_baseline":
+        rendering.append_option(logging_args, "--wandb-project", execution.get("wandb_project"))
+        rendering.append_option(logging_args, "--wandb-group", execution.get("wandb_group"))
     return rendering.render_command(
         [
             execution["python"],
@@ -722,6 +756,7 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
             "--eval-split",
             "test",
             *rendering.infer_runtime_cli_args(runtime),
+            *logging_args,
             *rendering.infer_input_cli_args(inputs, variant=str(recipe.get("variant"))),
         ]
     )
@@ -1070,7 +1105,7 @@ def write_hparam_plan(
 
 def render_hparam_preflight_card(
     recipe: dict[str, Any],
-    snapshot: dict[str, Any],
+    snapshot: managed_scheduler.ExecutionSnapshot,
     run_configs: list[tuple[dict[str, Any], bytes]],
 ) -> str:
     variant = str(recipe["variant"])
@@ -1243,7 +1278,9 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
     return card
 
 
-def _inspect_hparam_execution_target(execution: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, Any]:
+def _inspect_hparam_execution_target(
+    execution: dict[str, Any], runs: list[dict[str, Any]]
+) -> managed_scheduler.ExecutionSnapshot:
     return managed_scheduler.inspect_execution_target(execution, runs, plan_label="hparam")
 
 

@@ -152,8 +152,10 @@ def finetune_loaded_split_values(recipe: dict, *, load_test: bool | None = None)
 def validate_finetune_runtime(recipe: dict[str, Any], runtime: dict[str, Any], task: dict[str, Any]) -> None:
     if not FINETUNE_SCHEDULER_FIELDS.intersection(runtime):
         return
-    if recipe.get("variant") == "sex_age_baseline":
-        raise ValueError("Scheduler runtime fields are not supported by sex_age_baseline.")
+    if recipe.get("variant") == "sex_age_baseline" and (
+        FINETUNE_SCHEDULER_FIELDS - {"lr_decay_shape", "lr_decay_floor"}
+    ).intersection(runtime):
+        raise ValueError("Scheduler selection, WSD and Plateau fields are not supported by sex_age_baseline.")
     args = SimpleNamespace(**{key: value for key, value in runtime.items() if value is not None})
     if getattr(args, "lr_scheduler", "decay") == "plateau":
         args.label_name = recipe.get("inputs", {}).get("label_name")
@@ -161,7 +163,9 @@ def validate_finetune_runtime(recipe: dict[str, Any], runtime: dict[str, Any], t
         common_module = import_module(variant_module(recipe, "common"))
         task_config = config_module.TaskConfig(**task) if task.get("type") else None
         common_module.apply_task_flags(args, task_config)
-    scheduler_module = import_module(variant_module(recipe, "schedulers"))
+    scheduler_module = import_module(
+        "sleep2vec.schedulers" if recipe.get("variant") == "sex_age_baseline" else variant_module(recipe, "schedulers")
+    )
     scheduler_module.validate_finetune_scheduler_args(args)
 
 
@@ -174,8 +178,7 @@ def runtime_cli_args(runtime: dict[str, Any], *, variant: str | None = None) -> 
         args.extend([flag, runtime.get(key, default)])
     for key, flag in _FINETUNE_RUNTIME_OPTIONS:
         append_option(args, flag, runtime.get(key))
-    if variant != "sex_age_baseline":
-        append_option(args, "--wandb-mode", runtime.get("wandb_mode"))
+    append_option(args, "--wandb-mode", runtime.get("wandb_mode"))
     return args
 
 

@@ -1,17 +1,26 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 import pickle
+import shlex
 import subprocess
+import sys
 
 import pytest
 import yaml
 
+from agent_tools import managed_scheduler
 from agent_tools.configs import config_summary
 from agent_tools.plans import build_plan, evaluate_recipe
 from data.default_dataset import SampleIndex
-from tests.agent_tool_test_helpers import write_yaml as _write_yaml
+from tests.agent_tool_test_helpers import run_execution_preflight_fixture, write_yaml as _write_yaml
+
+
+@pytest.fixture(autouse=True)
+def _stub_execution_target(monkeypatch):
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
 
 
 def _write_survival_config(tmp_path: Path) -> Path:
@@ -32,9 +41,15 @@ def _write_survival_config(tmp_path: Path) -> Path:
             "model": {
                 "name": "sex_age_mlp",
                 "features": ["age", "sex"],
-                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4},
-                "sex": {"encoding": "binary", "embedding_dim": 4},
-                "head": {"hidden_dim": 8, "dropout": 0.1, "activation": "elu"},
+                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4, "initialization": "default"},
+                "sex": {"encoding": "binary", "embedding_dim": 4, "initialization": "default"},
+                "head": {
+                    "name": "classification",
+                    "hidden_dim": 8,
+                    "dropout": 0.1,
+                    "act": "elu",
+                    "kwargs": {"num_layers": 2},
+                },
             },
             "data": {
                 "backend": "npz",
@@ -134,9 +149,15 @@ def _write_multilabel_config(
             "model": {
                 "name": "sex_age_mlp",
                 "features": ["age", "sex"],
-                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4},
-                "sex": {"encoding": "binary", "embedding_dim": 4},
-                "head": {"hidden_dim": 8, "dropout": 0.1, "activation": "elu"},
+                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4, "initialization": "default"},
+                "sex": {"encoding": "binary", "embedding_dim": 4, "initialization": "default"},
+                "head": {
+                    "name": "classification",
+                    "hidden_dim": 8,
+                    "dropout": 0.1,
+                    "act": "elu",
+                    "kwargs": {"num_layers": 2},
+                },
             },
             "data": {
                 "backend": "npz",
@@ -573,7 +594,46 @@ def test_sex_age_baseline_hparam_test_selection_requires_checkpoint_opportunity(
     assert "--wandb-mode" not in script
 
 
-def test_sex_age_baseline_slurm_multi_gpu_is_rejected_before_plan_write(tmp_path: Path):
+@pytest.mark.parametrize("task", ["infer", "evaluate", "hparam_tune"])
+@pytest.mark.parametrize("avg_ckpts", [None, 1])
+def test_baseline_plan_rejects_standalone_averaging_directory(tmp_path: Path, task, avg_ckpts):
+    config = _write_survival_config(tmp_path)
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("placeholder")
+    recipe = _hparam_recipe(tmp_path, config) if task == "hparam_tune" else _infer_recipe(tmp_path, config, ckpt)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["task"] = task
+    payload["decisions"]["task"]["value"] = task
+    payload.setdefault("inputs", {})["ckpt_path"] = str(ckpt)
+    payload["runtime"] = {"avg_ckpt_dir": str(tmp_path)}
+    if avg_ckpts is not None:
+        payload["runtime"]["avg_ckpts"] = avg_ckpts
+    _write_yaml(recipe, payload)
+    output = tmp_path / "rejected-plan"
+    report = build_plan(recipe_path=recipe, output_dir=output, unlock_final_test=task == "hparam_tune")
+    assert report.exit_code != 0
+    assert any(issue.field == "runtime.avg_ckpt_dir" and issue.status.value == "FAIL" for issue in report.issues)
+    assert not (output / "plan.json").exists()
+    assert not (output / "run.sh").exists()
+
+
+@pytest.mark.parametrize("device", ["cuda", "cuda:0"])
+def test_baseline_slurm_device_contract(device):
+    from agent_tools.decision_paths import execution_contract_issues
+
+    recipe = {
+        "variant": "sex_age_baseline",
+        "runtime": {"device": device},
+        "execution": {"scheduler": {"type": "slurm"}},
+    }
+    issues = execution_contract_issues(
+        recipe, source_layer="recipe", supports_runtime_identity=True, supports_slurm=True
+    )
+    device_issues = [issue for issue in issues if issue.field == "runtime.device"]
+    assert bool(device_issues) == (device == "cuda:0")
+
+
+def test_sex_age_baseline_slurm_multi_gpu_plan(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     recipe = _hparam_recipe(
         tmp_path,
@@ -594,10 +654,166 @@ def test_sex_age_baseline_slurm_multi_gpu_is_rejected_before_plan_write(tmp_path
     report = build_plan(recipe_path=recipe, output_dir=plan_dir)
 
     failures = [issue for issue in report.issues if issue.status.value == "FAIL"]
-    assert report.exit_code == 1
-    assert [issue.field for issue in failures] == ["execution.gpus_per_run"]
-    assert "does not support multi-GPU Slurm execution" in failures[0].message
-    assert not plan_dir.exists()
+    assert not failures, failures
+    scripts = list((plan_dir / "runs").glob("run-000--*/launch.sh"))
+    assert len(scripts) == 1
+    assert "--devices 0 1" in scripts[0].read_text()
+
+
+@pytest.mark.parametrize("wandb_mode", ["disabled", "offline"])
+def test_covariate_baseline_bmi_only_and_decay_plan(tmp_path: Path, wandb_mode):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    payload["model"]["features"] = ["bmi"]
+    payload["model"].pop("age")
+    payload["model"].pop("sex")
+    payload["model"]["bmi"] = {"transform": "divide", "scale": 1.0, "embedding_dim": 4, "initialization": "default"}
+    Path(payload["data"]["finetune_data_index"]).write_text("eid,split,bmi\n001,train,24\n002,val,25\n003,test,26\n")
+    _write_yaml(config, payload)
+    recipe = _finetune_recipe(tmp_path, config)
+    recipe_payload = yaml.safe_load(recipe.read_text())
+    recipe_payload["runtime"].update(
+        {"warmup_steps": 2, "lr_decay_shape": "linear", "lr_decay_floor": 0.2, "wandb_mode": wandb_mode}
+    )
+    _write_yaml(recipe, recipe_payload)
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "bmi-plan")
+    assert report.exit_code == 0, report.issues
+    commands = (tmp_path / "bmi-plan" / "run.sh").read_text()
+    assert "--warmup-steps 2" in commands
+    assert "--lr-decay-shape linear" in commands
+    assert "--lr-decay-floor 0.2" in commands
+    assert f"--wandb-mode {wandb_mode}" in commands
+    summary = config_summary(config)
+    assert summary["model"]["features"] == ["bmi"]
+    assert summary["model"]["encodings"] == {"bmi": payload["model"]["bmi"]}
+    assert summary["model"]["head_details"]["kwargs"] == {"num_layers": 2}
+    assert summary["data"]["sample_unit"] == "participant"
+
+
+def test_covariate_hparam_preserves_wandb_routing(tmp_path: Path, monkeypatch):
+    from agent_tools.experiment_workspace import merge_run_manifest
+    from agent_tools.hparam_postprocess import generate_external_eval
+    from agent_tools.plan_hparam import compile_hparam_final_command
+    from sex_age_baseline.finetune import parse_args
+    from sex_age_baseline.infer import parse_args as parse_infer_args
+
+    recipe = _hparam_recipe(
+        tmp_path,
+        _write_survival_config(tmp_path),
+        execution={
+            "wandb_project": "frozen-project",
+            "wandb_group": "frozen-group",
+            "workdir": str(tmp_path),
+            "python": sys.executable,
+            "runtime_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        },
+    )
+    base = tmp_path / "finetune.yaml"
+    payload = yaml.safe_load(base.read_text())
+    payload["runtime"]["wandb_mode"] = "offline"
+    _write_yaml(base, payload)
+    output = tmp_path / "wandb-plan"
+    report = build_plan(recipe_path=recipe, output_dir=output)
+    assert report.exit_code == 0, report.issues
+    plan = json.loads((output / "plan.json").read_text())
+    command = shlex.split(plan["runs"][0]["command"])
+    monkeypatch.setattr(sys, "argv", ["finetune", *command[3:]])
+    args = parse_args()
+    assert args.wandb_project == "frozen-project"
+    assert args.wandb_group == "frozen-group"
+    assert args.wandb_mode == "offline"
+
+    run = plan["runs"][0]
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=0.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("fixture checkpoint")
+    merge_run_manifest(
+        Path(plan["recipe"]["experiment"]["root"]),
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "completed"}],
+    )
+    selected = tmp_path / "selected.csv"
+    selected.write_text("step_id,run_id,rank,checkpoint_path\n" f"{run['step_id']},{run['run_id']},1,{checkpoint}\n")
+    generate_external_eval(output, selected, unlock_final_test=True)
+    with (output / "external_eval_manifest.tsv").open() as manifest:
+        external_command = next(csv.DictReader(manifest, delimiter="\t"))["external_command"]
+    final_recipe = plan["recipe"]
+    final_recipe["inputs"]["ckpt_path"] = str(checkpoint)
+    final_recipe["evaluation_policy"]["final_test_unlocked"] = True
+    final_recipe["evaluation_policy"]["external_test_locked"] = False
+    final_command = compile_hparam_final_command(final_recipe, output)
+    assert final_command is not None
+    for rendered in (external_command, final_command):
+        parts = shlex.split(rendered)
+        monkeypatch.setattr(sys, "argv", ["infer", *parts[parts.index("sex_age_baseline.infer") + 1 :]])
+        infer_args = parse_infer_args()
+        assert infer_args.wandb_project == "frozen-project"
+        assert infer_args.wandb_group == "frozen-group"
+        assert infer_args.wandb_mode == "offline"
+
+
+def test_covariate_baseline_window_plan_rejects_missing_identity(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    payload["data"]["deduplicate_by_key"] = False
+    _write_yaml(config, payload)
+    _recipe, _cfg, report = evaluate_recipe(_finetune_recipe(tmp_path, config))
+    assert report.exit_code != 0
+    assert any("token_start" in issue.message for issue in report.issues)
+
+
+def test_covariate_baseline_window_index_passes_doctor_without_signal_files(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    payload["data"]["deduplicate_by_key"] = False
+    Path(payload["data"]["finetune_data_index"]).write_text(
+        "eid,split,age,sex,path,token_start\n"
+        "001,train,50,0,absent.npz,0\n001,train,50,0,absent.npz,10\n"
+        "002,val,60,1,absent-val.npz,0\n003,test,55,0,absent-test.npz,0\n"
+    )
+    _write_yaml(config, payload)
+    _recipe, _cfg, report = evaluate_recipe(_finetune_recipe(tmp_path, config))
+    assert report.exit_code == 0, report.issues
+    assert config_summary(config)["data"]["sample_unit"] == "window"
+
+
+@pytest.mark.parametrize("bmi", ["", "nan", "inf"])
+def test_covariate_baseline_selected_bmi_invalid_fails_doctor(tmp_path: Path, bmi: str):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    payload["model"]["features"] = ["bmi"]
+    payload["model"]["bmi"] = payload["model"].pop("age")
+    payload["model"].pop("sex")
+    Path(payload["data"]["finetune_data_index"]).write_text(
+        f"eid,split,bmi\n001,train,{bmi}\n002,val,24\n003,test,25\n"
+    )
+    _write_yaml(config, payload)
+    _recipe, _cfg, report = evaluate_recipe(_finetune_recipe(tmp_path, config))
+    assert report.exit_code != 0
+    assert any("bmi" in issue.message for issue in report.issues)
+
+
+def test_covariate_baseline_explicit_scheduler_search_renders_each_arm(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, _write_survival_config(tmp_path))
+    payload = yaml.safe_load(recipe.read_text())
+    payload["search"] = {
+        "method": "grid",
+        "max_runs": 2,
+        "parameters": {"runtime.lr_decay_shape": ["cosine", "linear"], "runtime.lr_decay_floor": [0.2]},
+    }
+    _write_yaml(recipe, payload)
+    plan = tmp_path / "scheduler-plan"
+    report = build_plan(recipe_path=recipe, output_dir=plan)
+    assert report.exit_code == 0, report.issues
+    scripts = [path.read_text() for path in (plan / "runs").glob("run-*--*/launch.sh")]
+    assert len(scripts) == 2
+    assert all("--lr-decay-floor 0.2" in script for script in scripts)
+    from agent_tools.plan_rendering import runtime_cli_args
+
+    argv = runtime_cli_args({"lr_decay_floor": 0.2, "lr_decay_shape": "linear"}, variant="sex_age_baseline")
+    assert argv.count("--lr-decay-floor") == 1
+    assert argv.count("--lr-decay-shape") == 1
+    assert sum("--lr-decay-shape cosine" in script for script in scripts) == 1
+    assert sum("--lr-decay-shape linear" in script for script in scripts) == 1
 
 
 def test_sex_age_baseline_finetune_blocks_invalid_metadata_values(tmp_path: Path):
@@ -1011,8 +1227,6 @@ def test_sex_age_baseline_infer_plan_renders_standalone_module(tmp_path: Path):
     "field,value",
     [
         ("lr_scheduler", "decay"),
-        ("lr_decay_shape", "linear"),
-        ("lr_decay_floor", 0.2),
         ("lr_decay_ratio", 0.2),
         ("lr_plateau_factor", 0.5),
         ("lr_plateau_patience", 2),
