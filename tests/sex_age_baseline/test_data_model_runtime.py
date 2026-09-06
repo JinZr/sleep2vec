@@ -502,10 +502,12 @@ def test_cox_eval_reports_val_c_index(tmp_path: Path):
     loader = make_dataloader(dataset, batch_size=3, num_workers=0, shuffle=False)
     model = SexAgeMLP(cfg)
 
-    result = evaluate_model(model, loader, cfg, device=torch.device("cpu"), stage="val")
+    result = evaluate_model(model, loader, cfg, device=torch.device("cpu"), stage="val", export_predictions=True)
 
     assert "val_c_index" in result.metrics
     assert result.survival_per_disease_rows
+    assert [row["paths"] for row in result.prediction_rows] == [["001"], ["002"], ["003"]]
+    assert all(row["path"] == row["survival_key"] for row in result.prediction_rows)
 
 
 def test_multilabel_masked_bce_ignores_invalid_cells():
@@ -534,11 +536,13 @@ def test_multilabel_eval_reports_macro_and_micro_metrics(tmp_path: Path):
     loader = make_dataloader(dataset, batch_size=4, num_workers=0, shuffle=False)
     model = SexAgeMLP(cfg)
 
-    result = evaluate_model(model, loader, cfg, device=torch.device("cpu"), stage="val")
+    result = evaluate_model(model, loader, cfg, device=torch.device("cpu"), stage="val", export_predictions=True)
 
     assert "val_macro_auroc" in result.metrics
     assert "val_micro_auroc" in result.metrics
     assert result.multilabel_per_disease_rows
+    assert [row["paths"] for row in result.prediction_rows] == [["001"], ["002"], ["003"], ["004"]]
+    assert all(row["path"] == row["multilabel_key"] for row in result.prediction_rows)
 
 
 def test_train_rejects_non_empty_run_dir_before_loading_data(tmp_path: Path, monkeypatch):

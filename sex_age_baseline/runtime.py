@@ -579,7 +579,7 @@ def _evaluate_records(records, cfg, stage, export_predictions):
     for row, item in zip(result.prediction_rows, grouped.values()):
         row["n_windows"] = len(item["identities"])
         row["token_starts"] = [identity[2] for identity in item["identities"]]
-        row["paths"] = list(dict.fromkeys(identity[1] for identity in item["identities"]))
+        row["paths"] = list(dict.fromkeys(identity[1] or identity[0] for identity in item["identities"]))
         row["path"] = item["identities"][0][1] or row["path"]
     return result
 
