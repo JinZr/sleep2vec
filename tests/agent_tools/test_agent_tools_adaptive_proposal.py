@@ -482,8 +482,21 @@ def test_agent_proposal_recovers_exact_published_unregistered_round_after_runtim
     recipe.write_text(yaml.safe_dump(recipe_payload, sort_keys=False))
     assert [row["round"] for row in _read_table(workflow_dir / "adaptive" / "run_registry.tsv")] == ["0"]
 
+    real_preflight = adaptive_hparam.preflight_plan
+    candidate_bytes = []
+
+    def capture_candidate_preflight(*args, **kwargs):
+        recipe_path = Path(kwargs["recipe_path"])
+        if recipe_path.name == "suggested.yaml":
+            candidate_bytes.append(recipe_path.read_bytes())
+        return real_preflight(*args, **kwargs)
+
+    monkeypatch.setattr(adaptive_hparam, "preflight_plan", capture_candidate_preflight)
+
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
 
+    assert len(candidate_bytes) == 2
+    assert candidate_bytes[-1] == frozen_bytes["suggestion"]
     assert (next_dir / "plan.json").read_bytes() == frozen_bytes["plan"]
     assert accepted_path.read_bytes() == frozen_bytes["accepted"]
     assert suggestion_path.read_bytes() == frozen_bytes["suggestion"]
@@ -1237,6 +1250,7 @@ def test_agent_proposal_rebuilds_candidate_from_refreshed_base_and_local_pair(tm
 
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
 
+    assert mutated
     plan = json.loads((workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").read_text())
     assert plan["recipe"]["runtime"]["devices"] == [0]
     assert plan["recipe"]["_local_recipe"]["runtime"]["devices"] == [0]

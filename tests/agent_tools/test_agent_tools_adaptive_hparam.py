@@ -251,10 +251,11 @@ def test_adaptive_combined_removed_fields_stop_at_search_preflight(tmp_path: Pat
 def test_hparam_count_does_not_materialize_search_values():
     recipe = {
         "search": {
+            "max_runs": 2,
             "parameters": {
                 "runtime.lr": range(1000),
                 "runtime.batch_size": range(1000),
-            }
+            },
         }
     }
 
@@ -264,6 +265,7 @@ def test_hparam_count_does_not_materialize_search_values():
 def test_hparam_count_uses_configuration_point_count():
     recipe = {
         "search": {
+            "max_runs": 1,
             "configurations": [
                 {"runtime.lr": 1e-6, "runtime.batch_size": 8},
                 {"runtime.lr": 2e-6, "runtime.batch_size": 16},
@@ -272,6 +274,33 @@ def test_hparam_count_uses_configuration_point_count():
     }
 
     assert adaptive_hparam._hparam_count(recipe) == 2
+
+
+@pytest.mark.parametrize("shape", ["parameters", "configurations"])
+@pytest.mark.parametrize("cap", [{}, {"max_runs": None}, {"max_runs": ""}, {"max_runs": 2}, {"max_runs": 8}])
+def test_round_run_count_matches_materialized_combinations(shape, cap):
+    if shape == "parameters":
+        search = {"parameters": {"runtime.lr": [1e-6, 2e-6], "runtime.batch_size": [8, 16, 32]}}
+    else:
+        search = {"configurations": [{"runtime.lr": lr} for lr in [1e-6, 2e-6, 3e-6]]}
+    recipe = {"search": {**search, **cap}}
+
+    assert adaptive_hparam._round_run_count(recipe) == len(plan_hparam.hparam_combos(recipe))
+
+
+def test_round_run_count_does_not_iterate_search_values():
+    class SizedOnly:
+        def __len__(self):
+            return 1_000_000
+
+        def __iter__(self):
+            raise AssertionError("Counting must not materialize combinations")
+
+    recipe = {"search": {"parameters": {"runtime.lr": SizedOnly(), "runtime.batch_size": SizedOnly()}}}
+
+    assert adaptive_hparam._round_run_count(recipe) == 1_000_000_000_000
+    recipe["search"]["max_runs"] = 2
+    assert adaptive_hparam._round_run_count(recipe) == 2
 
 
 def test_hparam_combos_expands_configuration_points_exactly_and_truncates_by_max_runs():

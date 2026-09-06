@@ -85,6 +85,17 @@ def _require_preflight_pass(report, subject: str) -> None:
         )
 
 
+def _preflight_candidate(candidate_bytes: bytes, next_dir: Path, subject: str) -> dict[str, Any]:
+    with TemporaryDirectory(prefix="agent-tools-adaptive-") as temp_dir:
+        candidate_path = Path(temp_dir) / "suggested.yaml"
+        candidate_path.write_bytes(candidate_bytes)
+        recipe, _, report = preflight_plan(
+            recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
+        )
+    _require_preflight_pass(report, subject)
+    return recipe
+
+
 class AdaptivePreflightError(RuntimeError):
     def __init__(self, report):
         self.report = report
@@ -157,8 +168,7 @@ def _init_adaptive_workflow_locked(  # noqa: C901
         raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
     if workspace != locked_workspace:
         raise ValueError("Adaptive experiment.root changed while acquiring the registration lock.")
-    initial_run_count = _hparam_count(recipe)
-    initial_run_count = min(initial_run_count, int((recipe.get("search") or {}).get("max_runs") or initial_run_count))
+    initial_run_count = _round_run_count(recipe)
     if initial_run_count > int(_adaptive(recipe).get("max_runs_total") or 10**9):
         raise ValueError("Round 000 would exceed adaptive.max_runs_total.")
     exp_io.validate_managed_output_paths(
@@ -513,15 +523,10 @@ def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | No
     if suggested.get("base_recipe"):
         suggested["base_recipe"] = str(_resolve_base_recipe(workflow["recipe_path"], suggested["base_recipe"]))
     candidate_payload = _strip_internal_recipe_keys(suggested)
-    with TemporaryDirectory(prefix="agent-tools-adaptive-") as temp_dir:
-        candidate_path = Path(temp_dir) / "suggested.yaml"
-        candidate_path.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
-        _, _, candidate_preflight = preflight_plan(
-            recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
-        )
-    _require_preflight_pass(candidate_preflight, "Adaptive suggestion")
+    candidate_bytes = yaml.safe_dump(candidate_payload, sort_keys=False).encode()
+    _preflight_candidate(candidate_bytes, next_dir, "Adaptive suggestion")
     out_dir.mkdir(parents=True, exist_ok=True)
-    out.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
+    out.write_bytes(candidate_bytes)
     rationale = _suggestion_rationale(next_round, objective, best, suggested["search"]["parameters"])
     write_text(out_dir / f"round_{next_round:03d}.md", rationale)
     _append_event(root, "suggest", {"round": next_round, "path": str(out), "best_run": best.get("run_id")})
@@ -1318,13 +1323,9 @@ def _adaptive_step(  # noqa: C901
             root, workflow, recipe, workspace, proposal_path
         )
         candidate_payload = _agent_suggestion_payload(recipe, workflow, next_round, validated)
-        with TemporaryDirectory(prefix="agent-tools-agent-proposal-") as temp_dir:
-            candidate_path = Path(temp_dir) / "suggested.yaml"
-            candidate_path.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
-            next_recipe, _, candidate_preflight = preflight_plan(
-                recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
-            )
-        _require_preflight_pass(candidate_preflight, "Agent proposal")
+        next_recipe = _preflight_candidate(
+            yaml.safe_dump(candidate_payload, sort_keys=False).encode(), next_dir, "Agent proposal"
+        )
         workflow = _workflow(root)
         recipe, _, current_preflight = preflight_plan(
             recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
@@ -1341,13 +1342,9 @@ def _adaptive_step(  # noqa: C901
         if refreshed_candidate_payload != candidate_payload:
             # Effective semantics can stay constant across offsetting base/local edits, so use the refreshed pair.
             candidate_payload = refreshed_candidate_payload
-            with TemporaryDirectory(prefix="agent-tools-agent-proposal-") as temp_dir:
-                candidate_path = Path(temp_dir) / "suggested.yaml"
-                candidate_path.write_text(yaml.safe_dump(candidate_payload, sort_keys=False))
-                next_recipe, _, candidate_preflight = preflight_plan(
-                    recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
-                )
-            _require_preflight_pass(candidate_preflight, "Agent proposal")
+            next_recipe = _preflight_candidate(
+                yaml.safe_dump(candidate_payload, sort_keys=False).encode(), next_dir, "Agent proposal"
+            )
         proposal_input, _ = _validated_agent_proposal_input(
             root,
             workflow,
@@ -1362,11 +1359,7 @@ def _adaptive_step(  # noqa: C901
         if not execute:
             return proposal_file
 
-        next_run_count = _hparam_count(next_recipe)
-        next_max_runs = (next_recipe.get("search") or {}).get("max_runs")
-        if next_max_runs is not None and next_max_runs != "":
-            next_run_count = min(next_run_count, int(next_max_runs))
-        if _budget_exhausted(root, recipe, prospective_runs=next_run_count):
+        if _budget_exhausted(root, recipe, prospective_runs=_round_run_count(next_recipe)):
             raise ValueError("Agent proposal no longer fits the remaining adaptive budget.")
         bound_config_sha256 = proposal_input["input"]["source_config_sha256"]
         bound_config_bytes = _bound_source_config_bytes(recipe, bound_config_sha256)
@@ -1404,13 +1397,7 @@ def _adaptive_step(  # noqa: C901
             ):
                 raise ValueError(f"Existing adaptive projection differs from the accepted proposal: {suggestion}")
             candidate_payload = recovered_payload
-            with TemporaryDirectory(prefix="agent-tools-agent-proposal-") as temp_dir:
-                candidate_path = Path(temp_dir) / "suggested.yaml"
-                candidate_path.write_bytes(recovered_bytes)
-                next_recipe, _, candidate_preflight = preflight_plan(
-                    recipe_path=candidate_path, output_dir=next_dir, allow_adaptive_workflow=True
-                )
-            _require_preflight_pass(candidate_preflight, "Published agent suggestion")
+            _preflight_candidate(recovered_bytes, next_dir, "Published agent suggestion")
         round_recipe_payload = candidate_payload
         exp_io.validate_managed_output_paths(
             workspace,
@@ -1470,10 +1457,7 @@ def _adaptive_step(  # noqa: C901
         )
         if preflight.exit_code != 0:
             raise RuntimeError(f"Round {next_round:03d} plan failed preflight with exit code {preflight.exit_code}.")
-        next_run_count = _hparam_count(next_recipe)
-        next_max_runs = (next_recipe.get("search") or {}).get("max_runs")
-        if next_max_runs is not None and next_max_runs != "":
-            next_run_count = min(next_run_count, int(next_max_runs))
+        next_run_count = _round_run_count(next_recipe)
         # Retiring current runs is allowed only when the complete replacement round fits the remaining budget.
         if execute and _budget_exhausted(root, recipe, prospective_runs=next_run_count):
             _append_event(
@@ -2860,6 +2844,14 @@ def _hparam_count(recipe: dict[str, Any]) -> int:
     count = 1
     for choices in params.values():
         count *= len(choices)
+    return count
+
+
+def _round_run_count(recipe: dict[str, Any]) -> int:
+    count = _hparam_count(recipe)
+    max_runs = (recipe.get("search") or {}).get("max_runs")
+    if max_runs is not None and max_runs != "":
+        count = min(count, int(max_runs))
     return count
 
 
