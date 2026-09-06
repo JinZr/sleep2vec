@@ -429,7 +429,7 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   null` and `shared_across_modalities: false`; single-channel source LayerMix
   must also disable sharing. Multi-channel enabled levels cover both shared
   and unshared atomic mappings without spending budget on inert duplicates. It keeps
-  batch size, gradient accumulation, early-stopping patience, aggregation, EMA, pretrained checkpoint,
+  batch size, gradient accumulation, aggregation, EMA, pretrained checkpoint,
   channels, and class weights frozen. Its first point exactly matches the
   effective source runtime and all active source config mappings. Omitted
   runtime defaults are materialized; scheduler-specific `null` values clear
@@ -455,7 +455,25 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   The run budget must cover every distinct joint schedule level; the default
   remains 12. Coverage does not isolate the effect of each schedule field or
   exhaust all combinations with the other families. The audit records this
-  limitation and the fixed batch/accumulation/early-stopping settings.
+  limitation and the fixed batch/accumulation settings.
+- Gradient-norm clipping is a separate bounded family. The first level preserves
+  `runtime.gradient_clip_val` (default `1.0`); a positive source adds disabled
+  clipping (`0.0`) and half the source value. A zero source instead adds `0.5`
+  and `1.0`. Batch size and gradient accumulation are never profile axes;
+  in Cox, accumulation does not combine microbatch risk sets.
+- Early-stopping `runtime.patience` is part of the joint schedule levels and
+  counts validation checks without improvement, not epochs. The baseline
+  preserves the source value (default `100`, nonnegative integer). For the
+  shortened candidate, let `N = floor(epochs / check_val_every_n_epoch)` after
+  capping the validation interval: patience is
+  `min(source_patience, max(1, ceil(N / 2)))`. The doubled-epoch candidate uses
+  `max(source_patience, N)` so ordinary patience exhaustion cannot cut its
+  planned validation horizon short. Other levels retain source patience,
+  except the generated Plateau level uses `max(source_patience, 4)` alongside
+  scheduler patience `2`. This permits training after the first reduction on
+  flat metrics; at least five validation checks are needed to observe a
+  post-reduction result, and short horizons may end before any reduction.
+  These remain joint comparisons, not independent estimates of patience effects.
 - The authored profile remains the only generation intent. The resolved
   recipe and plan freeze its exact configurations, config digest, runtime/repo
   identity, budget, searched-family coverage, metric, and split. Reports may

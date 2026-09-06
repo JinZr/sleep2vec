@@ -243,3 +243,33 @@ def test_plateau_train_epoch_checkpoints_resume_after_validation(scheduler_model
         assert resumed_trainer.lr_scheduler_configs[0].scheduler.state_dict() == (
             full_trainer.lr_scheduler_configs[0].scheduler.state_dict()
         )
+
+
+@pytest.mark.parametrize("patience,expected_epochs", [(2, 6), (4, 10)])
+def test_early_stopping_counts_validation_checks_and_allows_plateau_updates(scheduler_model, patience, expected_epochs):
+    pl, model_class = scheduler_model
+    model = model_class()
+    model.args.lr_plateau_patience = 2
+    early_stop = pl.callbacks.EarlyStopping(monitor="val_score", mode="min", patience=patience)
+    trainer = pl.Trainer(
+        accelerator="cpu",
+        devices=1,
+        max_epochs=20,
+        logger=False,
+        callbacks=[early_stop],
+        enable_checkpointing=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        num_sanity_val_steps=1,
+        check_val_every_n_epoch=2,
+    )
+    loader = DataLoader(TensorDataset(torch.ones(1, 1)), batch_size=1)
+    trainer.fit(model, train_dataloaders=loader, val_dataloaders=loader)
+    assert len(model.epoch_lrs) == expected_epochs
+    assert early_stop.stopped_epoch == expected_epochs - 1
+    assert early_stop.wait_count == patience
+    assert trainer.lr_scheduler_configs[0].scheduler.last_epoch == expected_epochs // 2
+    if patience == 4:
+        assert [lr[1] for lr in model.epoch_lrs] == pytest.approx([1.0] * 8 + [0.5] * 2)
+    else:
+        assert [lr[1] for lr in model.epoch_lrs] == pytest.approx([1.0] * 6)

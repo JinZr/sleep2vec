@@ -143,7 +143,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   for [search expansion](../agent_contracts/task_recipe.md#search-space) and
   [frozen candidate/registration checks](../agent_contracts/task_recipe.md#registration-preflight),
   not caller-local schemas or frozen-plan validators. The profile owns joint
-  training-length/schedule candidate levels and uses resolved task semantics
+  training-length/schedule/early-stopping levels and bounded gradient clipping,
+  keeps batch and accumulation fixed, and uses resolved task semantics
   for custom survival and multilabel eligibility; consult the search contract
   for its fixed settings and budget limits. Managed scheduler checks reuse the
   selected variant's argument validator through `plan_rendering`, including

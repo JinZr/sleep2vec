@@ -612,7 +612,7 @@ if __name__ == "__main__":
         "--patience",
         type=int,
         default=100,
-        help="early stopping patience in epochs (no improvement)",
+        help="early stopping patience in validation checks without improvement",
     )
     parser.add_argument("--gradient-clip-val", type=float, default=1.0, help="gradient clipping value")
     parser.add_argument(
