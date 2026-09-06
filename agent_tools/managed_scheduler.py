@@ -12,7 +12,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 import yaml
 
@@ -145,7 +145,34 @@ class LaunchResult:
     external_status_changes: dict[RunKey, tuple[Any, Any]]
 
 
-ExecutionSnapshotResult = tuple[dict[str, Any], bool] | tuple[None, Literal[False]]
+class PlannedArgv(TypedDict):
+    run_id: str
+    args: list[str]
+
+
+class ExecutionSnapshot(TypedDict, total=False):
+    # External identity fields are passed through, including overrides of execution metadata.
+    target: Any
+    host: Any
+    workdir: Any
+    conda_env: Any
+    python_command: Any
+    expected_runtime_commit: Any
+    execution_env_sha256: Any
+    python: Any
+    python_version: Any
+    runtime_repo_root: Any
+    runtime_hostname: Any
+    module_origin: Any
+    runtime_commit: str
+    module: str
+    required_options: list[str]
+    supported_options: list[Any]
+    cli_options_sha256: str
+    validated_argv_sha256: str
+
+
+ExecutionSnapshotResult = tuple[ExecutionSnapshot, bool] | tuple[None, Literal[False]]
 
 
 @dataclass(frozen=True)
@@ -1654,9 +1681,9 @@ def validated_execution_snapshot(
     runs: list[dict[str, Any]],
     workspace_by_key: dict[RunKey, dict[str, Any]],
     *,
-    inspector: Callable[[dict[str, Any], list[dict[str, Any]]], dict[str, Any]] | None = None,
+    inspector: Callable[[dict[str, Any], list[dict[str, Any]]], ExecutionSnapshot] | None = None,
     plan_label: str = "managed",
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[ExecutionSnapshot, bool]:
     root = Path(owner_dir)
     snapshot_path = root / EXECUTION_SNAPSHOT_NAME
     inspect = inspector or inspect_execution_target
@@ -1684,7 +1711,7 @@ def validated_execution_snapshot(
     return inspect(execution, runs), True
 
 
-def write_execution_snapshot_file(path: str | Path, snapshot: dict[str, Any]) -> None:
+def write_execution_snapshot_file(path: str | Path, snapshot: ExecutionSnapshot) -> None:
     snapshot_path = Path(path)
     payload = (json.dumps(snapshot, indent=2, sort_keys=True) + "\n").encode()
     descriptor, temporary = tempfile.mkstemp(prefix=f".{snapshot_path.name}.", dir=snapshot_path.parent)
@@ -1705,10 +1732,10 @@ def inspect_execution_target(
     *,
     command_runner: Callable[[dict[str, Any], list[str]], subprocess.CompletedProcess] | None = None,
     plan_label: str = "managed",
-) -> dict[str, Any]:
+) -> ExecutionSnapshot:
     modules: set[str] = set()
     python_commands: set[str] = set()
-    planned_argv: list[dict[str, Any]] = []
+    planned_argv: list[PlannedArgv] = []
     required_options: set[str] = set()
     for run in runs:
         command = str(run.get("command") or "")
@@ -1851,7 +1878,7 @@ def build_launch_command(
     pid_path: str | Path,
     gpus: list[Any],
     *,
-    execution_snapshot: dict[str, Any] | None = None,
+    execution_snapshot: ExecutionSnapshot | None = None,
     config_path: Path | None = None,
     script_sha256: str | None = None,
     config_sha256: str | None = None,
@@ -1898,7 +1925,7 @@ def build_launch_command(
                 raise ValueError("Verified module launch command has no Python module.") from exc
             if module_index != 2 or tokens[module_index] != execution_snapshot["module"]:
                 raise ValueError("Verified module launch command differs from its execution snapshot.")
-            planned_argv = [{"run_id": run_id or script.stem, "args": tokens[module_index + 1 :]}]
+            planned_argv: list[PlannedArgv] = [{"run_id": run_id or script.stem, "args": tokens[module_index + 1 :]}]
             verification_commands.extend(
                 [
                     (

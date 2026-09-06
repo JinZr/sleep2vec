@@ -1079,7 +1079,7 @@ def write_hparam_plan(
 
 def render_hparam_preflight_card(
     recipe: dict[str, Any],
-    snapshot: dict[str, Any],
+    snapshot: managed_scheduler.ExecutionSnapshot,
     run_configs: list[tuple[dict[str, Any], bytes]],
 ) -> str:
     variant = str(recipe["variant"])
@@ -1252,7 +1252,9 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
     return card
 
 
-def _inspect_hparam_execution_target(execution: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, Any]:
+def _inspect_hparam_execution_target(
+    execution: dict[str, Any], runs: list[dict[str, Any]]
+) -> managed_scheduler.ExecutionSnapshot:
     return managed_scheduler.inspect_execution_target(execution, runs, plan_label="hparam")
 
 
