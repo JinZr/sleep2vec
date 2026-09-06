@@ -43,6 +43,4 @@ ignore_missing_imports = true
 # environment (requirements-agent-tools.txt); a fuller local environment can
 # surface extra errors from third-party stubs that CI does not install.
 ignore_errors = true
-module = [
-    "agent_tools.adaptive_hparam",
-]
+module = []
