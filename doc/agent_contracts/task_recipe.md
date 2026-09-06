@@ -443,7 +443,10 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   `1.0`, or the alternate cosine/linear shape; WSD with default warmup and
   decay ratio `0.2` or `0.5`; and Plateau with factor `0.1`, patience `2`, and
   no warmup. Other fields retain their source settings except incompatible
-  scheduler options, which are cleared. Duplicate levels are removed.
+  scheduler options, which are cleared. The shortened level disables
+  warmup for WSD and caps `check_val_every_n_epoch` at its epoch count so
+  scheduled validation still occurs. Other levels retain the source validation
+  interval (default `1`). Duplicate levels are removed.
   Omitted epochs resolve to `30`. `null` warmup means 3% of total optimizer
   updates for decay/WSD; Plateau has no warmup. A source explicit warmup
   step count remains fixed in candidates that retain it, so its fraction may

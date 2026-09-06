@@ -119,6 +119,7 @@ def test_default_profile_materializes_twelve_deterministic_unique_joint_points()
     assert "runtime.lr_plateau_factor" not in schedule_family["keys"]
     assert "runtime.lr_plateau_patience" not in schedule_family["keys"]
     assert {item["key"]: item["value"] for item in audit["fixed_schedule_parameters"]} == {
+        "runtime.check_val_every_n_epoch": 1,
         "runtime.lr_plateau_factor": 0.1,
         "runtime.lr_plateau_patience": 2,
     }
@@ -905,6 +906,7 @@ def test_schedule_family_preserves_source_and_clears_inapplicable_options(schedu
     recipe = _recipe()
     recipe["runtime"].update(
         epochs=8,
+        check_val_every_n_epoch=6,
         lr_scheduler=scheduler,
         warmup_steps=None if scheduler == "plateau" else 100,
         lr_decay_floor=0.2,
@@ -916,6 +918,7 @@ def test_schedule_family_preserves_source_and_clears_inapplicable_options(schedu
     compiled = _compile(recipe=recipe)
     points = compiled["configurations"]
     schedule_keys = {
+        "runtime.check_val_every_n_epoch",
         "runtime.epochs",
         "runtime.lr_scheduler",
         "runtime.warmup_steps",
@@ -931,6 +934,9 @@ def test_schedule_family_preserves_source_and_clears_inapplicable_options(schedu
     assert set(_unique_values(points, "runtime.epochs")) == {4, 8, 16}
     assert set(_unique_values(points, "runtime.lr_scheduler")) == {"decay", "wsd", "plateau"}
     for point in points:
+        assert point["runtime.check_val_every_n_epoch"] == (4 if point["runtime.epochs"] == 4 else 6)
+        if point["runtime.epochs"] == 4:
+            assert point["runtime.warmup_steps"] == ({"decay": 100, "wsd": 0, "plateau": None}[scheduler])
         kind = point["runtime.lr_scheduler"]
         if kind != "wsd":
             assert point["runtime.lr_decay_ratio"] is None
@@ -1020,6 +1026,7 @@ def test_custom_profile_freezes_validated_candidates_and_schedule_commands(tmp_p
     label = "custom_endpoint"
     for payload, path in ((base, base_path), (recipe, recipe_path)):
         payload["variant"] = variant
+        payload.setdefault("runtime", {}).update(epochs=8, check_val_every_n_epoch=6)
         payload["decisions"]["label_name"]["value"] = label
         payload["evaluation_policy"].update(selection_metric="val_loss", selection_mode="min")
         if "inputs" in payload:
@@ -1043,6 +1050,9 @@ def test_custom_profile_freezes_validated_candidates_and_schedule_commands(tmp_p
         argv = shlex.split(Path(run["script"]).read_text())
         assert argv[argv.index("--lr-scheduler") + 1] == run["runtime.lr_scheduler"]
         assert int(argv[argv.index("--epochs") + 1]) == run["runtime.epochs"]
+        expected_interval = 4 if run["runtime.epochs"] == 4 else 6
+        assert run["runtime.check_val_every_n_epoch"] == expected_interval
+        assert int(argv[argv.index("--check-val-every-n-epoch") + 1]) == expected_interval
         for field in ("warmup_steps", "lr_decay_ratio", "lr_plateau_factor", "lr_plateau_patience"):
             flag = "--" + field.replace("_", "-")
             value = run["runtime." + field]
@@ -1058,3 +1068,28 @@ def test_profile_keeps_invalid_source_schedule_for_canonical_validation(field):
     recipe["runtime"][field] = ""
     compiled = _compile(recipe=recipe)
     assert compiled["configurations"][0]["runtime." + field] == ""
+
+
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+@pytest.mark.parametrize("warmup,ratio", [(600, 0.3), (0, 0.99)])
+def test_shortened_wsd_profile_fits_runtime_phases(variant, warmup, ratio):
+    from importlib import import_module
+
+    torch = pytest.importorskip("torch")
+    recipe = _recipe()
+    recipe["runtime"].update(epochs=8, lr_scheduler="wsd", warmup_steps=warmup, lr_decay_ratio=ratio)
+    points = _compile(recipe=recipe)["configurations"]
+    baseline = points[0]
+    shortened = next(point for point in points if point["runtime.epochs"] == 4)
+    build = import_module(f"{variant}.schedulers").build_warmup_cosine_scheduler
+    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(1))], lr=0.01)
+    assert baseline["runtime.warmup_steps"] == warmup
+    assert shortened["runtime.warmup_steps"] == 0
+    build(optimizer, total_steps=1000, warmup_steps=baseline["runtime.warmup_steps"], decay_ratio=ratio)
+    schedule = build(
+        optimizer,
+        total_steps=500,
+        warmup_steps=shortened["runtime.warmup_steps"],
+        decay_ratio=shortened["runtime.lr_decay_ratio"],
+    )
+    assert schedule.lr_lambdas[0](499) == pytest.approx(0.1)

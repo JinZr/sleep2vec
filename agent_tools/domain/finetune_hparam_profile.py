@@ -125,7 +125,10 @@ def finetune_balanced_profile_audit(search: dict[str, Any]) -> dict[str, Any]:
         "optimization.lr": [key for key in keys if key == "runtime.lr"],
         "optimization.weight_decay": [key for key in keys if key == "runtime.weight_decay"],
         "optimization.schedule": [
-            key for key in keys if key.startswith("runtime.lr_") or key in {"runtime.epochs", "runtime.warmup_steps"}
+            key
+            for key in keys
+            if key.startswith("runtime.lr_")
+            or key in {"runtime.epochs", "runtime.warmup_steps", "runtime.check_val_every_n_epoch"}
         ],
         "model.layer_mix": [key for key in keys if key == "yaml:/finetune/layer_mix"],
         "regularization.dropout": [
@@ -199,9 +202,10 @@ def finetune_balanced_profile_audit(search: dict[str, Any]) -> dict[str, Any]:
             "design": "Joint schedule candidates; individual effects are not isolated by the run budget.",
             "warmup": (
                 "Decay/WSD null uses 3% of optimizer steps; Plateau has no warmup. "
-                "Explicit step ratios need runtime counts."
+                "Explicit step ratios need runtime counts. Shortened WSD candidates disable warmup."
             ),
             "plateau": "Validation-driven reductions use the frozen monitor and direction.",
+            "validation": "Shortened candidates cap the validation interval at their epoch count.",
             "fixed": "Batch size, gradient accumulation and early-stopping patience remain source settings.",
         },
     }
@@ -245,8 +249,12 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
     floor = 0.1 if floor is None else floor
     shape = runtime.get("lr_decay_shape")
     shape = "cosine" if shape is None else shape
+    validation_interval = runtime.get("check_val_every_n_epoch")
+    validation_interval = 1 if validation_interval is None else validation_interval
+    shortened_epochs = max(1, (epochs + 1) // 2)
     baseline_schedule = {
         "runtime.epochs": epochs,
+        "runtime.check_val_every_n_epoch": validation_interval,
         "runtime.lr_scheduler": scheduler,
         "runtime.warmup_steps": runtime.get("warmup_steps"),
         "runtime.lr_decay_floor": floor,
@@ -269,7 +277,12 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
     }
     schedule_levels = [
         baseline_schedule,
-        {**baseline_schedule, "runtime.epochs": max(1, (epochs + 1) // 2)},
+        {
+            **baseline_schedule,
+            "runtime.epochs": shortened_epochs,
+            "runtime.warmup_steps": 0 if scheduler == "wsd" else baseline_schedule["runtime.warmup_steps"],
+            "runtime.check_val_every_n_epoch": min(validation_interval, shortened_epochs),
+        },
         {**baseline_schedule, "runtime.epochs": epochs * 2},
         {**decay_schedule, "runtime.warmup_steps": 0},
         {**decay_schedule, "runtime.warmup_steps": None},
