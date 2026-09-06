@@ -14,8 +14,9 @@ from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _re
 _stub_execution_snapshot_preflight = test_support._stub_execution_snapshot_preflight
 
 
-def test_adaptive_step_dry_run_writes_suggestion_without_superseding_current_round(tmp_path: Path):
-    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+@pytest.mark.parametrize("max_rounds", [1, 3])
+def test_adaptive_step_dry_run_writes_suggestion_without_superseding_current_round(tmp_path: Path, max_rounds):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=max_rounds)
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
@@ -34,6 +35,7 @@ def test_adaptive_step_dry_run_writes_suggestion_without_superseding_current_rou
     events = (tmp_path / "events.jsonl").read_text()
     assert "supersede_pending_run" not in events
     assert "adaptive_step_dry_run" in events
+    assert "adaptive_budget_exhausted" not in events
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
     assert _read_table(round_dir / "run_status.tsv")[0]["status"] == "planned"
     assert _read_table(round_dir / "launch_manifest.tsv")[0]["status"] == "planned"

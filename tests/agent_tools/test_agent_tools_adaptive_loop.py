@@ -715,8 +715,10 @@ def test_adaptive_step_execute_at_budget_keeps_current_runs_unchanged(tmp_path: 
     monkeypatch.setattr(adaptive_hparam, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
     before = (tmp_path / "run_manifest.tsv").read_bytes()
 
-    adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+    suggestion = adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
+    assert suggestion == workflow_dir / "adaptive" / "suggestions" / "round_001.yaml"
+    assert suggestion.is_file()
     assert calls == []
     assert (tmp_path / "run_manifest.tsv").read_bytes() == before
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
@@ -724,6 +726,10 @@ def test_adaptive_step_execute_at_budget_keeps_current_runs_unchanged(tmp_path: 
     event_types = [event["event_type"] for event in events]
     assert "adaptive_budget_exhausted" in event_types
     assert "adaptive_step_dry_run" not in event_types
+    assert events[-1]["event_type"] == "adaptive_budget_exhausted"
+    assert events[-1]["round"] == 0
+    assert events[-1]["digest"] == str(digest)
+    assert events[-1]["suggestion"] == str(suggestion)
     assert not (workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").exists()
 
 
@@ -747,14 +753,19 @@ def test_adaptive_step_checks_prospective_round_size_against_run_budget(tmp_path
     registry = workflow_dir / "adaptive" / "run_registry.tsv"
     registry_before = registry.read_bytes()
 
-    adaptive_hparam.adaptive_step(workflow_dir, execute=True)
+    suggestion = adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
+    assert suggestion == workflow_dir / "adaptive" / "suggestions" / "round_001.yaml"
+    assert suggestion.is_file()
     assert calls == []
     assert registry.read_bytes() == registry_before
     assert len(_read_table(registry)) == 1
     assert not (workflow_dir / "adaptive" / "rounds" / "round_001" / "plan.json").exists()
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert events[-1]["event_type"] == "adaptive_budget_exhausted"
+    assert events[-1]["round"] == 0
+    assert events[-1]["digest"] == str(digest)
+    assert events[-1]["suggestion"] == str(suggestion)
 
 
 @pytest.mark.parametrize("execute", [False, True])
