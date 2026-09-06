@@ -349,7 +349,7 @@ class HparamTuneAdapter(TaskAdapter):
         *,
         run_index_offset: int,
         config_bytes: bytes,
-    ) -> dict[str, Any]:
+    ) -> plan_contract.CompiledPlanContract:
         from .. import plan_contract, plan_hparam
 
         contracts = plan_hparam.compile_hparam_run_contracts(

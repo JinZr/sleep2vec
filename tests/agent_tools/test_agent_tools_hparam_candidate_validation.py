@@ -20,6 +20,7 @@ from agent_tools import (
     run_evidence,
     slurm,
 )
+from agent_tools.adapters.hparam_tune import HPARAM_TUNE_ADAPTER
 from agent_tools.experiment_workspace import managed_run_key, merge_run_row
 from tests.agent_tools.test_agent_tools_hparam_preflight import _recipe, _snapshot, _workspace_files
 
@@ -122,6 +123,23 @@ def test_consultation_deduplicates_exact_final_bytes_per_call_and_uses_capture(t
     assert len({contract["row"]["command"] for contract in contracts}) == 4
     assert all("runtime" not in yaml.safe_load(contract["config_bytes"]) for contract in contracts)
     assert calls == [expected, expected_changed] * 2  # Artifact compilation is an observer-safe operation.
+
+    row_contracts = plan_hparam.compile_hparam_run_contracts(recipe, tmp_path / "plan", 0)
+    assert all(set(contract) == {"row"} for contract in row_contracts)
+    empty_adapter_result = HPARAM_TUNE_ADAPTER.compile_plan_contract(
+        recipe, tmp_path / "plan", run_index_offset=0, config_bytes=b""
+    )
+    assert empty_adapter_result["run_files"] == row_contracts
+    materialized_adapter_result = HPARAM_TUNE_ADAPTER.compile_plan_contract(
+        recipe, tmp_path / "plan", run_index_offset=0, config_bytes=captured
+    )
+    assert materialized_adapter_result["run_files"] == contracts
+    assert all("scheduler_script_text" not in contract for contract in contracts)
+
+    empty_recipe = copy.deepcopy(recipe)
+    plan_contract.bind_frozen_input_snapshot(empty_recipe, "inputs.config", source, hashlib.sha256(b"").hexdigest())
+    with pytest.raises(ValueError, match="Frozen hparam source config must be a mapping"):
+        plan_hparam.compile_hparam_run_contracts(empty_recipe, tmp_path / "plan", 0, source_config_bytes=b"")
 
 
 def test_duplicate_candidates_keep_scientific_contract_checks(tmp_path: Path):
