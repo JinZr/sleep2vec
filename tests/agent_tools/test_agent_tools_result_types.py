@@ -11,8 +11,8 @@ def test_result_types_reach_callers(tmp_path: Path):
             from pathlib import Path
             from agent_tools import (
                 adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
-                experiment_io, experiment_workspace, managed_scheduler, models, plan_contract, plan_hparam,
-                run_artifacts, run_evidence, slurm,
+                experiment_io, experiment_workspace, hparam_runtime, managed_scheduler, models,
+                plan_contract, plan_hparam, run_artifacts, run_evidence, slurm,
             )
 
             from agent_tools.adapters.base import TaskAdapter
@@ -20,7 +20,7 @@ def test_result_types_reach_callers(tmp_path: Path):
 
             from typing import Any, Literal
 
-            def snapshot_result(should_write: bool) -> tuple[dict[str, Any], bool]:
+            def snapshot_result(should_write: bool) -> tuple[managed_scheduler.ExecutionSnapshot, bool]:
                 return {}, should_write
 
             managed_scheduler.SchedulerHooks(validated_snapshot=lambda *args: snapshot_result(True))
@@ -31,6 +31,48 @@ def test_result_types_reach_callers(tmp_path: Path):
                 return None, True
 
             managed_scheduler.SchedulerHooks(validated_snapshot=missing_snapshot_write)  # type: ignore[arg-type]
+
+            for execution_snapshot in (
+                managed_scheduler.inspect_execution_target({}, []),
+                managed_scheduler.validated_execution_snapshot(Path("/plan"), {}, [], {})[0],
+                hparam_runtime._inspect_execution_target({}, []),
+                hparam_runtime._validated_execution_snapshot(Path("/plan"), {}, [], {})[0],
+                plan_hparam._inspect_hparam_execution_target({}, []),
+            ):
+                module_name: str = execution_snapshot["module"]
+                snapshot_commit: str = execution_snapshot["runtime_commit"]
+                options: list[str] = execution_snapshot["required_options"]
+                argv_digest: str = execution_snapshot["validated_argv_sha256"]
+                execution_snapshot["module"] = 1  # type: ignore[typeddict-item]
+                execution_snapshot["required_options"] = [1]  # type: ignore[list-item]
+                execution_snapshot["validated_argv_sha256"] = b"hash"  # type: ignore[typeddict-item]
+                execution_snapshot["module_name"]  # type: ignore[typeddict-item]
+                managed_scheduler.write_execution_snapshot_file(Path("/snapshot"), execution_snapshot)
+                managed_scheduler.build_launch_command(
+                    {}, Path("script"), "log", "pid", [], execution_snapshot=execution_snapshot,
+                )
+                hparam_runtime._launch_command(
+                    {}, Path("script"), "log", "pid", [], execution_snapshot=execution_snapshot,
+                )
+
+            minimal_snapshot: managed_scheduler.ExecutionSnapshot = {
+                "module": "runtime_cli", "module_origin": "/runtime_cli.py",
+            }
+            managed_scheduler.build_launch_command(
+                {}, Path("script"), "log", "pid", [], execution_snapshot=minimal_snapshot,
+            )
+            managed_scheduler.build_launch_command(
+                {}, Path("script"), "log", "pid", [],
+                execution_snapshot={"module": 1},  # type: ignore[arg-type]
+            )
+            hparam_runtime._launch_command(
+                {}, Path("script"), "log", "pid", [],
+                execution_snapshot={"module": 1},  # type: ignore[arg-type]
+            )
+
+            planned: managed_scheduler.PlannedArgv = {"run_id": "run-000", "args": ["--value", "ok"]}
+            planned["args"] = [1]  # type: ignore[list-item]
+            planned["run_id"] = 1  # type: ignore[typeddict-item]
 
             def check_commit(value: object) -> None:
                 if models.is_full_git_object_id(value):
