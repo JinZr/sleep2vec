@@ -1456,8 +1456,6 @@ def _adaptive_step(  # noqa: C901
             agent_proposal_event,
             identity_field="request_id",
         )
-        digest = input_path
-        budget_exhausted = False
     else:
         if execute:
             _reject_unresolved_launch_attempts(root, workspace)
@@ -1477,165 +1475,159 @@ def _adaptive_step(  # noqa: C901
         if next_max_runs is not None and next_max_runs != "":
             next_run_count = min(next_run_count, int(next_max_runs))
         # Retiring current runs is allowed only when the complete replacement round fits the remaining budget.
-        budget_exhausted = execute and _budget_exhausted(root, recipe, prospective_runs=next_run_count)
-    if execute and not budget_exhausted:
-        if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
-            raise ValueError("Agent proposal frozen source config changed before round materialization.")
-        if bound_config_path is not None:
-            _write_exact_bytes(accepted_path, accepted_bytes, managed_root=workspace)
-            _write_exact_bytes(suggestion, suggestion_bytes, managed_root=workspace)
-            _write_exact_bytes(rationale_path, rationale_bytes, managed_root=workspace)
-        recipe_payload = round_recipe_payload if round_recipe_payload is not None else load_recipe_with_base(suggestion)
-        recipe_source = workflow["recipe_path"] if round_recipe_payload is not None else suggestion
-        expected_recipe = (
-            _materialized_round_recipe(recipe_payload, recipe_source, next_round)
-            if round_recipe_payload is not None
-            else None
-        )
-        expected_base_recipe = (
-            _strip_internal_recipe_keys(copy.deepcopy(recipe["_base_recipe"]))
-            if round_recipe_payload is not None and isinstance(recipe.get("_base_recipe"), dict)
-            else None
-        )
-        try:
-            staging_dir = _stage_round(
-                next_dir,
-                recipe_payload,
-                recipe_source,
-                next_round,
-                bound_config_sha256,
-                expected_recipe=expected_recipe,
-                expected_base_recipe=expected_base_recipe,
-                bound_config_path=bound_config_path,
+        if execute and _budget_exhausted(root, recipe, prospective_runs=next_run_count):
+            _append_event(
+                root,
+                "adaptive_budget_exhausted",
+                {"round": current_round, "digest": str(digest), "suggestion": str(suggestion)},
             )
-        except BaseException:
-            if (
-                bound_config_path is not None
-                and next_dir.is_dir()
-                and not next_dir.is_symlink()
-                and _is_bound_config_placeholder(next_dir, bound_config_path)
-                and not bound_config_path.is_symlink()
-            ):
-                bound_config_path.unlink()
-                lock_path = bound_config_path.with_name(f".{bound_config_path.name}.cas.lock")
-                if os.path.lexists(lock_path):
-                    lock_path.unlink()
-                next_dir.rmdir()
-            raise
-        cleanup_staging = True
-        try:
-            if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
-                raise ValueError("Agent proposal frozen source config changed during plan materialization.")
-            with plan_publication_lock(next_dir):
-                staged_plan = read_json(staging_dir / "plan.json")
-                _validate_adaptive_step_registration(workspace, next_dir, staged_plan)
-                plan_registration_rows_state(
-                    workspace,
-                    plan_hparam.hparam_manifest_rows(staged_plan),
-                    source="Canonical adaptive round",
+            return suggestion
+        if not execute:
+            _append_event(
+                root,
+                "adaptive_step_dry_run",
+                {"round": current_round, "digest": str(digest), "suggestion": str(suggestion)},
+            )
+            return suggestion
+    if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
+        raise ValueError("Agent proposal frozen source config changed before round materialization.")
+    if bound_config_path is not None:
+        _write_exact_bytes(accepted_path, accepted_bytes, managed_root=workspace)
+        _write_exact_bytes(suggestion, suggestion_bytes, managed_root=workspace)
+        _write_exact_bytes(rationale_path, rationale_bytes, managed_root=workspace)
+    recipe_payload = round_recipe_payload if round_recipe_payload is not None else load_recipe_with_base(suggestion)
+    recipe_source = workflow["recipe_path"] if round_recipe_payload is not None else suggestion
+    expected_recipe = (
+        _materialized_round_recipe(recipe_payload, recipe_source, next_round)
+        if round_recipe_payload is not None
+        else None
+    )
+    expected_base_recipe = (
+        _strip_internal_recipe_keys(copy.deepcopy(recipe["_base_recipe"]))
+        if round_recipe_payload is not None and isinstance(recipe.get("_base_recipe"), dict)
+        else None
+    )
+    try:
+        staging_dir = _stage_round(
+            next_dir,
+            recipe_payload,
+            recipe_source,
+            next_round,
+            bound_config_sha256,
+            expected_recipe=expected_recipe,
+            expected_base_recipe=expected_base_recipe,
+            bound_config_path=bound_config_path,
+        )
+    except BaseException:
+        if (
+            bound_config_path is not None
+            and next_dir.is_dir()
+            and not next_dir.is_symlink()
+            and _is_bound_config_placeholder(next_dir, bound_config_path)
+            and not bound_config_path.is_symlink()
+        ):
+            bound_config_path.unlink()
+            lock_path = bound_config_path.with_name(f".{bound_config_path.name}.cas.lock")
+            if os.path.lexists(lock_path):
+                lock_path.unlink()
+            next_dir.rmdir()
+        raise
+    cleanup_staging = True
+    try:
+        if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
+            raise ValueError("Agent proposal frozen source config changed during plan materialization.")
+        with plan_publication_lock(next_dir):
+            staged_plan = read_json(staging_dir / "plan.json")
+            _validate_adaptive_step_registration(workspace, next_dir, staged_plan)
+            plan_registration_rows_state(
+                workspace,
+                plan_hparam.hparam_manifest_rows(staged_plan),
+                source="Canonical adaptive round",
+            )
+            staged_plan_sha256 = artifacts.plan_tree_sha256(staging_dir)
+            published_now = not (next_dir / "plan.json").exists()
+            if published_now:
+                placeholder_backup = _publish_staged_round_locked(
+                    staging_dir,
+                    next_dir,
+                    bound_config_path=bound_config_path,
+                    bound_config_sha256=bound_config_sha256,
                 )
-                staged_plan_sha256 = artifacts.plan_tree_sha256(staging_dir)
-                published_now = not (next_dir / "plan.json").exists()
+            else:
+                if artifacts.plan_tree_sha256(next_dir) != staged_plan_sha256:
+                    raise ValueError(f"Published adaptive round differs from deterministic regeneration: {next_dir}")
+                placeholder_backup = None
+            try:
+                committed_plan = plan_hparam.commit_hparam_plan(
+                    next_dir,
+                    emit_event=False,
+                    preflight_validated=True,
+                )
+            except plan_hparam.HparamRegistrationPreflightError:
                 if published_now:
-                    placeholder_backup = _publish_staged_round_locked(
+                    cleanup_staging = False
+                    cleanup_staging = _restore_uncommitted_round(
                         staging_dir,
                         next_dir,
-                        bound_config_path=bound_config_path,
-                        bound_config_sha256=bound_config_sha256,
+                        placeholder_backup,
+                        staged_plan_sha256,
                     )
-                else:
-                    if artifacts.plan_tree_sha256(next_dir) != staged_plan_sha256:
-                        raise ValueError(
-                            f"Published adaptive round differs from deterministic regeneration: {next_dir}"
-                        )
-                    placeholder_backup = None
-                try:
-                    committed_plan = plan_hparam.commit_hparam_plan(
-                        next_dir,
-                        emit_event=False,
-                        preflight_validated=True,
-                    )
-                except plan_hparam.HparamRegistrationPreflightError:
-                    if published_now:
-                        cleanup_staging = False
-                        cleanup_staging = _restore_uncommitted_round(
-                            staging_dir,
-                            next_dir,
-                            placeholder_backup,
-                            staged_plan_sha256,
-                        )
-                    raise
-                _reconcile_plan_event(workspace, next_dir, committed_plan)
-                if placeholder_backup is not None:
-                    shutil.rmtree(placeholder_backup)
-                _append_registry_rows(root, next_round, next_dir)
-                if staging_dir.exists() and not staging_dir.is_symlink():
-                    shutil.rmtree(staging_dir)
-        except BaseException:
-            if cleanup_staging and staging_dir.exists() and not staging_dir.is_symlink():
+                raise
+            _reconcile_plan_event(workspace, next_dir, committed_plan)
+            if placeholder_backup is not None:
+                shutil.rmtree(placeholder_backup)
+            _append_registry_rows(root, next_round, next_dir)
+            if staging_dir.exists() and not staging_dir.is_symlink():
                 shutil.rmtree(staging_dir)
-            raise
-        execution_value = recipe.get("execution")
-        execution = execution_value if isinstance(execution_value, dict) else {}
-        scheduler_value = execution.get("scheduler")
-        scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
-        if scheduler.get("type") == "slurm":
-            monitor_hparam_runs(round_dir)
-        current_plan = artifacts.read_hparam_plan(round_dir)
-        bad_run_keys = _bad_running_run_keys(root, round_dir, recipe)
-        ordered_bad_run_keys = [
-            validated_run_key(run) for run in current_plan["runs"] if validated_run_key(run) in bad_run_keys
-        ]
-        next_plan_keys = {validated_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
-        canonical_rows = read_run_manifest(workspace)
-        state = _ReplacementState(
-            next_round=next_round,
-            next_dir=next_dir,
-            next_plan_keys=next_plan_keys,
-            started_keys=_accepted_start_keys(
-                [row for row in canonical_rows if validated_run_key(row) in next_plan_keys]
-            ),
-            launch_failed_keys={
-                validated_run_key(row)
-                for row in canonical_rows
-                if validated_run_key(row) in next_plan_keys and row.get("status") == "launch_failed"
-            },
-        )
-        next_round_rows = _launch_initial_replacement(root, workspace, state, round_dir)
-        next_round_rows = _drain_bad_runs(
-            root, workspace, state, round_dir, recipe, ordered_bad_run_keys, next_round_rows
-        )
+    except BaseException:
+        if cleanup_staging and staging_dir.exists() and not staging_dir.is_symlink():
+            shutil.rmtree(staging_dir)
+        raise
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
+    scheduler_value = execution.get("scheduler")
+    scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
+    if scheduler.get("type") == "slurm":
+        monitor_hparam_runs(round_dir)
+    current_plan = artifacts.read_hparam_plan(round_dir)
+    bad_run_keys = _bad_running_run_keys(root, round_dir, recipe)
+    ordered_bad_run_keys = [
+        validated_run_key(run) for run in current_plan["runs"] if validated_run_key(run) in bad_run_keys
+    ]
+    next_plan_keys = {validated_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
+    canonical_rows = read_run_manifest(workspace)
+    state = _ReplacementState(
+        next_round=next_round,
+        next_dir=next_dir,
+        next_plan_keys=next_plan_keys,
+        started_keys=_accepted_start_keys([row for row in canonical_rows if validated_run_key(row) in next_plan_keys]),
+        launch_failed_keys={
+            validated_run_key(row)
+            for row in canonical_rows
+            if validated_run_key(row) in next_plan_keys and row.get("status") == "launch_failed"
+        },
+    )
+    next_round_rows = _launch_initial_replacement(root, workspace, state, round_dir)
+    next_round_rows = _drain_bad_runs(root, workspace, state, round_dir, recipe, ordered_bad_run_keys, next_round_rows)
 
-        if not state.round_committed:
-            statuses = ", ".join(sorted({str(row.get("status") or "") for row in next_round_rows})) or "none"
-            raise RuntimeError(
-                f"Round {next_round:03d} started no runs (statuses: {statuses}); the round was not committed and "
-                f"current runs were not retired. Prospective run states were preserved at {next_dir}."
-            )
-        if agent_proposal_event is not None:
-            # The replay receipt is terminal: any earlier launch or replacement failure must remain failed.
-            _reconcile_event(
-                workspace,
-                "agent_proposal_execute_completed",
-                agent_proposal_event,
-                identity_field="request_id",
-            )
-            _validate_agent_proposal_execute_events(
-                read_experiment_events(workspace),
-                agent_proposal_event,
-                next_dir,
-            )
-    elif budget_exhausted:
-        _append_event(
-            root,
-            "adaptive_budget_exhausted",
-            {"round": current_round, "digest": str(digest), "suggestion": str(suggestion)},
+    if not state.round_committed:
+        statuses = ", ".join(sorted({str(row.get("status") or "") for row in next_round_rows})) or "none"
+        raise RuntimeError(
+            f"Round {next_round:03d} started no runs (statuses: {statuses}); the round was not committed and "
+            f"current runs were not retired. Prospective run states were preserved at {next_dir}."
         )
-    else:
-        _append_event(
-            root,
-            "adaptive_step_dry_run",
-            {"round": current_round, "digest": str(digest), "suggestion": str(suggestion)},
+    if agent_proposal_event is not None:
+        # The replay receipt is terminal: any earlier launch or replacement failure must remain failed.
+        _reconcile_event(
+            workspace,
+            "agent_proposal_execute_completed",
+            agent_proposal_event,
+            identity_field="request_id",
+        )
+        _validate_agent_proposal_execute_events(
+            read_experiment_events(workspace),
+            agent_proposal_event,
+            next_dir,
         )
     return suggestion
 
