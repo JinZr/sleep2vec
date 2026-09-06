@@ -1800,6 +1800,16 @@ def test_best_neighborhood_bounds_decay_floor(floor):
         assert values == [0.4, 0.8, 1.0]
 
 
+@pytest.mark.parametrize("candidates", [[0, 0.5, 1], [1, 0.5, 0], [0.5, 0, 1]])
+@pytest.mark.parametrize(
+    "incumbent,expected", [("0", [0.0, 1e-6, 3e-6]), ("0.5", [0.25, 0.5, 0.75]), ("1", [0.5, 1.0])]
+)
+def test_best_neighborhood_preserves_fractional_decay_floor_from_digest(candidates, incumbent, expected):
+    recipe = {"search": {"parameters": {"runtime.lr_decay_floor": candidates}}}
+    suggested = adaptive_hparam._suggest_parameters(recipe, [{"runtime.lr_decay_floor": incumbent}])
+    assert suggested["runtime.lr_decay_floor"] == expected
+
+
 def test_explicit_best_neighborhood_uses_existing_numeric_neighbors(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"

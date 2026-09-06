@@ -2752,7 +2752,11 @@ def _suggest_parameters(recipe: dict[str, Any], ranked: list[dict[str, Any]]) ->
         if key not in best:
             suggested[key] = values
             continue
-        value = _coerce_like(best[key], values[0] if values else best[key])
+        value = (
+            float(best[key])
+            if key == "runtime.lr_decay_floor"
+            else _coerce_like(best[key], values[0] if values else best[key])
+        )
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             suggested[key] = _numeric_neighbors(value)
             if key == "runtime.lr_decay_floor":
