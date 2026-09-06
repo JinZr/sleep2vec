@@ -9,6 +9,7 @@ from .adaptive_proposals import validate_parameter_envelopes
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import managed_runtime_env_issues, managed_runtime_resource_issues, multilabel_sidecar_issue
 from .models import REPO_ROOT, is_full_git_object_id
+from .plan_rendering import FINETUNE_SCHEDULER_FIELDS
 
 DEFAULT_ADAPTIVE_SUGGEST_STRATEGY = "agent_proposal"
 
@@ -985,6 +986,7 @@ def _hparam_search_parameter_issues(parameters: Any) -> list[DecisionIssue]:
 
 _ALLOWED_RUNTIME_SEARCH_FIELDS = frozenset(
     {
+        *FINETUNE_SCHEDULER_FIELDS,
         "lr",
         "weight_decay",
         "batch_size",

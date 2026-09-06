@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from fractions import Fraction
 import math
+from typing import TYPE_CHECKING
 
-import torch
+if TYPE_CHECKING:
+    import torch
 
 
 def build_warmup_cosine_scheduler(
@@ -15,6 +17,8 @@ def build_warmup_cosine_scheduler(
     decay_shape: str = "cosine",
     decay_ratio: float | None = None,
 ) -> torch.optim.lr_scheduler.LambdaLR:
+    import torch
+
     floor = float(decay_floor)
     if not 0.0 <= floor <= 1.0:
         raise ValueError("decay_floor must be in [0, 1].")
@@ -55,6 +59,12 @@ def build_warmup_cosine_scheduler(
 
 def validate_finetune_scheduler_args(args) -> None:
     scheduler_name = getattr(args, "lr_scheduler", "decay")
+    for name in ("lr_decay_floor", "lr_decay_ratio", "lr_plateau_factor"):
+        value = getattr(args, name, None)
+        if value is not None and type(value) not in (int, float):
+            raise ValueError(f"{name} must be numeric.")
+    if getattr(args, "lr_decay_shape", "cosine") not in {"cosine", "linear"}:
+        raise ValueError("lr_decay_shape must be 'cosine' or 'linear'.")
     floor = float(getattr(args, "lr_decay_floor", 0.1))
     if not 0.0 <= floor <= 1.0:
         raise ValueError("lr_decay_floor must be in [0, 1].")
@@ -84,5 +94,5 @@ def validate_finetune_scheduler_args(args) -> None:
         patience = 10 if plateau_patience is None else plateau_patience
         if not 0.0 < factor < 1.0:
             raise ValueError("lr_plateau_factor must be in (0, 1).")
-        if patience < 0:
-            raise ValueError("lr_plateau_patience must be nonnegative.")
+        if type(patience) is not int or patience < 0:
+            raise ValueError("lr_plateau_patience must be a nonnegative integer.")

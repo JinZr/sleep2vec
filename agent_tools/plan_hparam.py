@@ -4,6 +4,7 @@ import copy
 import hashlib
 from importlib import import_module
 from itertools import product
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -257,6 +258,16 @@ def validate_finetune_config_bytes(recipe: dict, config_bytes: bytes) -> None:
 def validate_hparam_run_configs(recipe: dict, run_configs: list[tuple[dict[str, Any], bytes]]) -> None:
     validated_configs: set[bytes] = set()
     for run, config_bytes in run_configs:
+        config = yaml.safe_load(config_bytes)
+        runtime = {
+            **(recipe.get("runtime") or {}),
+            **{
+                key.split(".", 1)[1]: value
+                for key, value in run.get("parameters", {}).items()
+                if key.startswith("runtime.")
+            },
+        }
+        rendering.validate_finetune_runtime(recipe, runtime, config.get("finetune", {}).get("task") or {})
         if config_bytes in validated_configs:
             continue
         try:
@@ -386,6 +397,11 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
             finetune = finetune_value if isinstance(finetune_value, dict) else {}
             task_value = finetune.get("task")
             task = task_value if isinstance(task_value, dict) else {}
+            runtime = {
+                **(recipe.get("runtime") or {}),
+                **{key.split(".", 1)[1]: value for key, value in combo.items() if key.startswith("runtime.")},
+            }
+            rendering.validate_finetune_runtime(recipe, runtime, task)
             config_contract = {
                 "data_backend": (
                     data_backend,
@@ -1013,6 +1029,12 @@ def write_hparam_plan(
         )
         for family in profile_audit["searched_families"]:
             plan_lines.append(f"| {family['id']} | {', '.join(family['keys'])} | {family['covered_levels']} |")
+        plan_lines.append("")
+        plan_lines.extend(profile_audit["schedule_policy"].values())
+        plan_lines.extend(
+            f"Fixed `{parameter['key']}` = `{json.dumps(parameter['value'])}`: {parameter['reason']}"
+            for parameter in profile_audit["fixed_schedule_parameters"]
+        )
     if final_allowed:
         final_command = compile_hparam_final_command(recipe, out)
         assert final_command is not None

@@ -4,8 +4,9 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import shlex
 
-from agent_tool_test_helpers import run_execution_preflight_fixture
+from agent_tool_test_helpers import run_execution_preflight_fixture, write_survival_sidecars
 import pytest
 import yaml
 
@@ -114,9 +115,17 @@ def test_default_profile_materializes_twelve_deterministic_unique_joint_points()
 
     audit = finetune_balanced_profile_audit(first)
     assert audit["candidate_count"] == 12
+    schedule_family = next(family for family in audit["searched_families"] if family["id"] == "optimization.schedule")
+    assert "runtime.lr_plateau_factor" not in schedule_family["keys"]
+    assert "runtime.lr_plateau_patience" not in schedule_family["keys"]
+    assert {item["key"]: item["value"] for item in audit["fixed_schedule_parameters"]} == {
+        "runtime.lr_plateau_factor": 0.1,
+        "runtime.lr_plateau_patience": 2,
+    }
     assert {family["id"]: family["covered_levels"] for family in audit["searched_families"]} == {
         "optimization.lr": 3,
         "optimization.weight_decay": 3,
+        "optimization.schedule": 10,
         "model.layer_mix": 4,
         "regularization.dropout": 3,
         # Four, not three: this source carries a `groups` override, so it is a policy the
@@ -889,3 +898,163 @@ def test_real_profile_candidate_validation_precedes_target_probe(tmp_path: Path,
     assert "layer_indices" in issue.message
     assert issue.evidence["preflight_before_workspace"] is True
     assert not workspace.exists()
+
+
+@pytest.mark.parametrize("scheduler", ["decay", "wsd", "plateau"])
+def test_schedule_family_preserves_source_and_clears_inapplicable_options(scheduler):
+    recipe = _recipe()
+    recipe["runtime"].update(
+        epochs=8,
+        lr_scheduler=scheduler,
+        warmup_steps=None if scheduler == "plateau" else 100,
+        lr_decay_floor=0.2,
+        lr_decay_shape="cosine",
+        lr_decay_ratio=0.3 if scheduler == "wsd" else None,
+        lr_plateau_factor=0.4 if scheduler == "plateau" else None,
+        lr_plateau_patience=3 if scheduler == "plateau" else None,
+    )
+    compiled = _compile(recipe=recipe)
+    points = compiled["configurations"]
+    schedule_keys = {
+        "runtime.epochs",
+        "runtime.lr_scheduler",
+        "runtime.warmup_steps",
+        "runtime.lr_decay_floor",
+        "runtime.lr_decay_shape",
+        "runtime.lr_decay_ratio",
+        "runtime.lr_plateau_factor",
+        "runtime.lr_plateau_patience",
+    }
+    assert {key: points[0][key] for key in schedule_keys} == {
+        key: recipe["runtime"][key.removeprefix("runtime.")] for key in schedule_keys
+    }
+    assert set(_unique_values(points, "runtime.epochs")) == {4, 8, 16}
+    assert set(_unique_values(points, "runtime.lr_scheduler")) == {"decay", "wsd", "plateau"}
+    for point in points:
+        kind = point["runtime.lr_scheduler"]
+        if kind != "wsd":
+            assert point["runtime.lr_decay_ratio"] is None
+        if kind != "plateau":
+            assert point["runtime.lr_plateau_factor"] is None
+            assert point["runtime.lr_plateau_patience"] is None
+        else:
+            assert point["runtime.warmup_steps"] is None
+            assert point["runtime.lr_decay_shape"] == "cosine"
+    schedule_audit = next(
+        family
+        for family in finetune_balanced_profile_audit(compiled)["searched_families"]
+        if family["id"] == "optimization.schedule"
+    )
+    assert schedule_audit["covered_levels"] <= 11
+    assert all(len(_unique_values(points, key)) > 1 for key in schedule_audit["keys"])
+
+
+def test_schedule_defaults_are_materialized_and_budget_does_not_silently_drop_levels():
+    recipe = _recipe()
+    recipe["runtime"].update(epochs=None, lr_scheduler=None, lr_decay_shape=None, lr_decay_floor=None)
+    compiled = _compile(recipe=recipe)
+    first = compiled["configurations"][0]
+    assert first["runtime.epochs"] == 30
+    assert first["runtime.lr_scheduler"] == "decay"
+    assert first["runtime.warmup_steps"] is None
+    assert first["runtime.lr_decay_floor"] == 0.1
+    assert first["runtime.lr_decay_shape"] == "cosine"
+    recipe["search"]["max_runs"] = 9
+    search, issues = compile_finetune_balanced_profile(recipe, _summary())
+    assert search is None
+    assert issues[0].evidence["minimum_runs"] == 10
+
+
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2"])
+@pytest.mark.parametrize("task_type", ["survival", "multilabel_classification"])
+def test_custom_task_profile_uses_resolved_semantics_and_preserves_scientific_fields(variant, task_type):
+    recipe = _recipe(label="an_arbitrary_scientific_endpoint", variant=variant)
+    summary = _summary(pos_weight=[2.0, 3.0])
+    summary["finetune"]["task"] = {
+        "type": task_type,
+        "monitor": "val_c_index" if task_type == "survival" else "val_auroc",
+        "monitor_mod": "max",
+        "output_dim": 2,
+        "is_seq": False,
+    }
+    before = copy.deepcopy(summary)
+    compiled = _compile(recipe=recipe, summary=summary)
+    assert summary == before
+    assert len(compiled["configurations"]) == 12
+    for point in compiled["configurations"]:
+        assert not any(key.startswith("yaml:/finetune/task") for key in point)
+        assert not any(key.startswith("yaml:/finetune/loss") for key in point)
+    summary["finetune"]["task"]["type"] = "classification"
+    rejected, issues = compile_finetune_balanced_profile(recipe, summary)
+    assert rejected is None
+    assert issues[0].status == DecisionStatus.NEEDS_USER_INPUT
+
+
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2"])
+@pytest.mark.parametrize("task_type", ["survival", "multilabel_classification"])
+def test_custom_profile_freezes_validated_candidates_and_schedule_commands(tmp_path, variant, task_type):
+    recipe_path, workspace = _profile_recipe(tmp_path)
+    recipe = yaml.safe_load(recipe_path.read_text())
+    base_path = Path(recipe["base_recipe"])
+    base = yaml.safe_load(base_path.read_text())
+    config_path = Path(base["inputs"]["config"])
+    index_path = config_path.parent / "index.csv"
+    index_path.write_text("path,split,duration,eid,ppg_mask\na.npz,train,60,001,1\nb.npz,val,60,002,1\n")
+    sidecars = write_survival_sidecars(config_path.parent)
+    config = yaml.safe_load((REPO_ROOT / "configs/ppg_cox_finetune_large.yaml").read_text())
+    config["data"]["finetune_data_index"] = str(index_path)
+    config["finetune"]["task"].update(type=task_type, output_dim=2)
+    if task_type == "survival":
+        config["finetune"]["survival"] = {"key_column": "eid", **sidecars}
+    else:
+        del config["finetune"]["survival"]
+        config["model"]["head"]["name"] = "mlp"
+        config["finetune"]["multilabel"] = {
+            "key_column": "eid",
+            "disease_columns_index": sidecars["disease_columns_index"],
+            "label_index": sidecars["is_event_index"],
+            "has_label_index": sidecars["has_label_index"],
+        }
+        config["finetune"]["loss"]["pos_weight"] = [2.0, 3.0]
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    label = "custom_endpoint"
+    for payload, path in ((base, base_path), (recipe, recipe_path)):
+        payload["variant"] = variant
+        payload["decisions"]["label_name"]["value"] = label
+        payload["evaluation_policy"].update(selection_metric="val_loss", selection_mode="min")
+        if "inputs" in payload:
+            payload["inputs"]["label_name"] = label
+            payload["decisions"]["required_channels"]["value"] = ["ppg"]
+        path.write_text(yaml.safe_dump(payload, sort_keys=False))
+    plan_dir = workspace / "plans" / "custom"
+    result = plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
+    assert result.exit_code == 0, [(issue.field, issue.message, issue.evidence) for issue in result.issues]
+    plan = json.loads((plan_dir / "plan.json").read_text())
+    assert len(plan["runs"]) == 12
+    assert {run["runtime.lr_scheduler"] for run in plan["runs"]} == {"decay", "wsd", "plateau"}
+    for run in plan["runs"]:
+        candidate_bytes = Path(run["config"]).read_bytes()
+        candidate = yaml.safe_load(candidate_bytes)
+        validate_finetune_config_bytes(plan["recipe"], candidate_bytes)
+        assert candidate["finetune"]["task"] == config["finetune"]["task"]
+        assert candidate["finetune"]["loss"] == config["finetune"]["loss"]
+        sidecar_block = "survival" if task_type == "survival" else "multilabel"
+        assert candidate["finetune"][sidecar_block] == config["finetune"][sidecar_block]
+        argv = shlex.split(Path(run["script"]).read_text())
+        assert argv[argv.index("--lr-scheduler") + 1] == run["runtime.lr_scheduler"]
+        assert int(argv[argv.index("--epochs") + 1]) == run["runtime.epochs"]
+        for field in ("warmup_steps", "lr_decay_ratio", "lr_plateau_factor", "lr_plateau_patience"):
+            flag = "--" + field.replace("_", "-")
+            value = run["runtime." + field]
+            if value is None:
+                assert flag not in argv
+            else:
+                assert float(argv[argv.index(flag) + 1]) == value
+
+
+@pytest.mark.parametrize("field", ["lr_scheduler", "lr_decay_shape"])
+def test_profile_keeps_invalid_source_schedule_for_canonical_validation(field):
+    recipe = _recipe()
+    recipe["runtime"][field] = ""
+    compiled = _compile(recipe=recipe)
+    assert compiled["configurations"][0]["runtime." + field] == ""

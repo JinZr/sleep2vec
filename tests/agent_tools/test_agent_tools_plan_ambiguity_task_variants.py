@@ -990,3 +990,95 @@ def test_hparam_local_ask_user_overrides_base_test_after_fit_decision(tmp_path: 
     assert "base_finetune.test_after_fit" in result.stdout
     assert not (output_dir / "plan.json").exists()
     assert not (output_dir / "runs").exists()
+
+
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_hparam_joint_schedulers_freeze_and_render_conditional_runtime(tmp_path: Path, variant: str):
+    recipe = _hparam_recipe(tmp_path, variant=variant)
+    payload = yaml.safe_load(recipe.read_text())
+    base_path = Path(payload["base_recipe"])
+    base = yaml.safe_load(base_path.read_text())
+    base["runtime"].update({"lr_scheduler": "wsd", "lr_decay_ratio": 0.2, "warmup_steps": 7})
+    write_yaml(base_path, base)
+    rows = [
+        {
+            "runtime.lr_scheduler": scheduler,
+            "runtime.lr_decay_shape": shape,
+            "runtime.lr_decay_floor": floor,
+            "runtime.lr_decay_ratio": ratio,
+            "runtime.lr_plateau_factor": factor,
+            "runtime.lr_plateau_patience": patience,
+            "runtime.warmup_steps": warmup,
+        }
+        for scheduler, shape, floor, ratio, factor, patience, warmup in [
+            ("decay", "linear", 0.2, None, None, None, 0),
+            ("wsd", "cosine", 0.3, 0.29, None, None, 0),
+            ("plateau", "cosine", 0.25, None, 0.5, 2, None),
+        ]
+    ]
+    payload["search"] = {"method": "grid", "max_runs": 3, "configurations": rows}
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    runs = json.loads((output_dir / "plan.json").read_text())["runs"]
+    assert len(runs) == 3
+    for run, expected in zip(runs, rows):
+        script = Path(run["script"]).read_text()
+        assert f"python -m {variant}.finetune" in script
+        for field, value in expected.items():
+            assert run[field] == value
+            flag = "--" + field.removeprefix("runtime.").replace("_", "-")
+            if value is None:
+                assert flag not in script
+            else:
+                assert f"{flag} {value}" in script
+
+
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+@pytest.mark.parametrize("task", ["finetune", "hparam_tune"])
+@pytest.mark.parametrize(
+    "runtime,message",
+    [
+        ({"lr_scheduler": "wsd"}, "lr_decay_ratio"),
+        ({"lr_scheduler": "plateau", "warmup_steps": 0}, "warmup_steps"),
+        ({"lr_scheduler": "decay", "lr_plateau_factor": 0.5}, "plateau"),
+        ({"lr_scheduler": "decay", "lr_decay_floor": 1.1}, "lr_decay_floor"),
+        ({"lr_scheduler": "decay", "lr_decay_floor": True}, "lr_decay_floor"),
+        ({"lr_scheduler": "decay", "lr_decay_shape": "exponential"}, "lr_decay_shape"),
+        ({"lr_scheduler": "plateau", "lr_plateau_patience": 1.5}, "lr_plateau_patience"),
+    ],
+)
+def test_invalid_managed_scheduler_rejected_before_plan_publication(tmp_path: Path, variant, task, runtime, message):
+    if task == "finetune":
+        recipe = write_finetune_recipe(tmp_path, variant=variant)
+        payload = yaml.safe_load(recipe.read_text())
+        payload["runtime"].update(runtime)
+    else:
+        recipe = _hparam_recipe(tmp_path, variant=variant)
+        payload = yaml.safe_load(recipe.read_text())
+        valid_runtime = dict(runtime)
+        valid_runtime["lr_scheduler"] = "plateau" if "lr_plateau_factor" in runtime else "decay"
+        if "lr_decay_floor" in valid_runtime:
+            valid_runtime["lr_decay_floor"] = 0.2
+        if "lr_decay_shape" in valid_runtime:
+            valid_runtime["lr_decay_shape"] = "cosine"
+        if "lr_plateau_patience" in valid_runtime:
+            valid_runtime.update(lr_scheduler="plateau", lr_plateau_patience=2)
+        payload["search"] = {
+            "method": "grid",
+            "max_runs": 2,
+            "configurations": [
+                {f"runtime.{key}": value for key, value in candidate.items()} for candidate in (valid_runtime, runtime)
+            ],
+        }
+    write_yaml(recipe, payload)
+    output_dir = tmp_path / "invalid-plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode != 0
+    assert message in result.stdout + result.stderr
+    assert not output_dir.exists()
