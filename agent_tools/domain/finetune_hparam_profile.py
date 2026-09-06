@@ -128,8 +128,9 @@ def finetune_balanced_profile_audit(search: dict[str, Any]) -> dict[str, Any]:
             key
             for key in keys
             if key.startswith("runtime.lr_")
-            or key in {"runtime.epochs", "runtime.warmup_steps", "runtime.check_val_every_n_epoch"}
+            or key in {"runtime.epochs", "runtime.warmup_steps", "runtime.check_val_every_n_epoch", "runtime.patience"}
         ],
+        "optimization.gradient_clip": [key for key in keys if key == "runtime.gradient_clip_val"],
         "model.layer_mix": [key for key in keys if key == "yaml:/finetune/layer_mix"],
         "regularization.dropout": [
             key
@@ -206,7 +207,19 @@ def finetune_balanced_profile_audit(search: dict[str, Any]) -> dict[str, Any]:
             ),
             "plateau": "Validation-driven reductions use the frozen monitor and direction.",
             "validation": "Shortened candidates cap the validation interval at their epoch count.",
-            "fixed": "Batch size, gradient accumulation and early-stopping patience remain source settings.",
+            "early_stopping": (
+                "Patience counts validation checks, not epochs. The short level caps source patience at half its "
+                "planned checks (rounded up, at least one); the long level allows its full validation horizon. "
+                "The generated Plateau level allows one interval after a reduction on flat metrics; "
+                "short horizons may still end before any reduction."
+            ),
+            "gradient_clip": (
+                "Positive clipping sources add zero and half the source value; zero sources add 0.5 and 1.0."
+            ),
+            "fixed": (
+                "Batch size and gradient accumulation remain source settings; "
+                "accumulation does not enlarge Cox risk sets."
+            ),
         },
     }
 
@@ -239,6 +252,20 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
         ),
     ]
 
+    clip = runtime.get("gradient_clip_val")
+    clip = _finite_number(1.0 if clip is None else clip, "runtime.gradient_clip_val", non_negative=True)
+    axes.append(
+        _axis(
+            "optimization.gradient_clip",
+            "runtime.gradient_clip_val",
+            [0.0, 0.5, 1.0] if clip == 0 else [clip, 0.0, clip / 2],
+        )
+    )
+    patience = runtime.get("patience")
+    patience = 100 if patience is None else patience
+    if type(patience) is not int or patience < 0:
+        raise ValueError("finetune_balanced requires runtime.patience to be a nonnegative integer.")
+
     epochs = runtime.get("epochs")
     epochs = 30 if epochs is None else epochs
     if type(epochs) is not int or epochs < 1:
@@ -251,9 +278,14 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
     shape = "cosine" if shape is None else shape
     validation_interval = runtime.get("check_val_every_n_epoch")
     validation_interval = 1 if validation_interval is None else validation_interval
+    if type(validation_interval) is not int or validation_interval < 1:
+        raise ValueError("finetune_balanced requires runtime.check_val_every_n_epoch to be a positive integer.")
     shortened_epochs = max(1, (epochs + 1) // 2)
+    shortened_interval = min(validation_interval, shortened_epochs)
+    shortened_checks = shortened_epochs // shortened_interval
     baseline_schedule = {
         "runtime.epochs": epochs,
+        "runtime.patience": patience,
         "runtime.check_val_every_n_epoch": validation_interval,
         "runtime.lr_scheduler": scheduler,
         "runtime.warmup_steps": runtime.get("warmup_steps"),
@@ -281,9 +313,14 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
             **baseline_schedule,
             "runtime.epochs": shortened_epochs,
             "runtime.warmup_steps": 0 if scheduler == "wsd" else baseline_schedule["runtime.warmup_steps"],
-            "runtime.check_val_every_n_epoch": min(validation_interval, shortened_epochs),
+            "runtime.check_val_every_n_epoch": shortened_interval,
+            "runtime.patience": min(patience, max(1, (shortened_checks + 1) // 2)),
         },
-        {**baseline_schedule, "runtime.epochs": epochs * 2},
+        {
+            **baseline_schedule,
+            "runtime.epochs": epochs * 2,
+            "runtime.patience": max(patience, (epochs * 2) // validation_interval),
+        },
         {**decay_schedule, "runtime.warmup_steps": 0},
         {**decay_schedule, "runtime.warmup_steps": None},
         {**decay_schedule, "runtime.lr_decay_floor": 0.01},
@@ -305,6 +342,7 @@ def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> lis
             "runtime.lr_decay_shape": "cosine",
             "runtime.lr_plateau_factor": 0.1,
             "runtime.lr_plateau_patience": 2,
+            "runtime.patience": max(patience, 4),
         },
     ]
     axes.append({"id": "optimization.schedule", "levels": _stable_unique(schedule_levels)})

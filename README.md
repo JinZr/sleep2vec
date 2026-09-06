@@ -253,6 +253,12 @@ finetune:
 - `finetune.loss.pos_weight` is for multilabel classification only; for built-in `ahi`, a scalar expands across the 30 BCE outputs.
 - `finetune.sampler.weighted_random` affects only the train loader for binary non-sequence classification labels, such as `sex` or a custom binary metadata target.
 
+The managed `finetune_balanced` search also compares bounded gradient-norm
+clipping levels and couples early-stopping patience to the candidate's epochs
+and validation cadence. Patience counts validation checks without improvement,
+not epochs. Batch size and gradient accumulation stay fixed, and the default
+search budget remains 12 runs; see the [search-space contract](doc/agent_contracts/task_recipe.md#search-space).
+
 ### Finetune learning-rate schedules
 
 The `sleep2vec`, `sleep2vec2`, and `sleep2expert` finetune entrypoints accept

@@ -101,6 +101,8 @@ def test_default_profile_materializes_twelve_deterministic_unique_joint_points()
     baseline = first["configurations"][0]
     assert baseline["runtime.lr"] == 1.0e-6
     assert baseline["runtime.weight_decay"] == 1.0e-5
+    assert baseline["runtime.gradient_clip_val"] == 1.0
+    assert baseline["runtime.patience"] == 100
     assert baseline["yaml:/model/head/dropout"] == 0.1
     assert baseline["yaml:/finetune/layer_mix"] == {
         "enabled": False,
@@ -126,6 +128,7 @@ def test_default_profile_materializes_twelve_deterministic_unique_joint_points()
     assert {family["id"]: family["covered_levels"] for family in audit["searched_families"]} == {
         "optimization.lr": 3,
         "optimization.weight_decay": 3,
+        "optimization.gradient_clip": 3,
         "optimization.schedule": 10,
         "model.layer_mix": 4,
         "regularization.dropout": 3,
@@ -1026,7 +1029,14 @@ def test_custom_profile_freezes_validated_candidates_and_schedule_commands(tmp_p
     label = "custom_endpoint"
     for payload, path in ((base, base_path), (recipe, recipe_path)):
         payload["variant"] = variant
-        payload.setdefault("runtime", {}).update(epochs=8, check_val_every_n_epoch=6)
+        payload.setdefault("runtime", {}).update(
+            epochs=8,
+            check_val_every_n_epoch=6,
+            patience=1,
+            gradient_clip_val=2.0,
+            batch_size=32,
+            accumulate_grad_batches=2,
+        )
         payload["decisions"]["label_name"]["value"] = label
         payload["evaluation_policy"].update(selection_metric="val_loss", selection_mode="min")
         if "inputs" in payload:
@@ -1050,6 +1060,10 @@ def test_custom_profile_freezes_validated_candidates_and_schedule_commands(tmp_p
         argv = shlex.split(Path(run["script"]).read_text())
         assert argv[argv.index("--lr-scheduler") + 1] == run["runtime.lr_scheduler"]
         assert int(argv[argv.index("--epochs") + 1]) == run["runtime.epochs"]
+        assert int(argv[argv.index("--batch-size") + 1]) == 32
+        assert int(argv[argv.index("--accumulate-grad-batches") + 1]) == 2
+        assert float(argv[argv.index("--gradient-clip-val") + 1]) == run["runtime.gradient_clip_val"]
+        assert int(argv[argv.index("--patience") + 1]) == run["runtime.patience"]
         expected_interval = 4 if run["runtime.epochs"] == 4 else 6
         assert run["runtime.check_val_every_n_epoch"] == expected_interval
         assert int(argv[argv.index("--check-val-every-n-epoch") + 1]) == expected_interval
@@ -1093,3 +1107,55 @@ def test_shortened_wsd_profile_fits_runtime_phases(variant, warmup, ratio):
         decay_ratio=shortened["runtime.lr_decay_ratio"],
     )
     assert schedule.lr_lambdas[0](499) == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("clip,expected", [(None, [1.0, 0.0, 0.5]), (0, [0.0, 0.5, 1.0]), (2.0, [2.0, 0.0, 1.0])])
+def test_gradient_clip_levels_keep_source_and_do_not_search_batch(clip, expected):
+    recipe = _recipe()
+    recipe["runtime"].update(gradient_clip_val=clip, batch_size=64, accumulate_grad_batches=3)
+    before = copy.deepcopy(recipe)
+    points = _compile(recipe=recipe)["configurations"]
+    assert points[0]["runtime.gradient_clip_val"] == expected[0]
+    assert set(_unique_values(points, "runtime.gradient_clip_val")) == set(expected)
+    assert all("runtime.batch_size" not in point and "runtime.accumulate_grad_batches" not in point for point in points)
+    assert recipe == before
+    assert len(points) == 12
+
+
+@pytest.mark.parametrize("patience", [0, 2, 100])
+@pytest.mark.parametrize("interval", [1, 3, 8])
+def test_early_stopping_joint_levels_follow_validation_checks(patience, interval):
+    recipe = _recipe()
+    recipe["runtime"].update(epochs=8, patience=patience, check_val_every_n_epoch=interval)
+    points = _compile(recipe=recipe)["configurations"]
+    assert points[0]["runtime.patience"] == patience
+    short = next(point for point in points if point["runtime.epochs"] == 4)
+    long = next(point for point in points if point["runtime.epochs"] == 16)
+    assert short["runtime.patience"] <= patience
+    short_checks = 4 // short["runtime.check_val_every_n_epoch"]
+    assert short["runtime.patience"] <= max(1, (short_checks + 1) // 2)
+    assert long["runtime.patience"] >= 16 // interval
+    plateau = next(point for point in points if point["runtime.lr_scheduler"] == "plateau")
+    assert plateau["runtime.patience"] >= plateau["runtime.lr_plateau_patience"] + 2
+    assert all(point["runtime.check_val_every_n_epoch"] == interval for point in points if point["runtime.epochs"] != 4)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("patience", -1),
+        ("patience", 1.5),
+        ("patience", True),
+        ("gradient_clip_val", -1),
+        ("gradient_clip_val", float("nan")),
+        ("gradient_clip_val", True),
+        ("check_val_every_n_epoch", 0),
+        ("check_val_every_n_epoch", True),
+    ],
+)
+def test_profile_rejects_invalid_stability_controls(field, value):
+    recipe = _recipe()
+    recipe["runtime"][field] = value
+    compiled, issues = compile_finetune_balanced_profile(recipe, _summary())
+    assert compiled is None
+    assert field in issues[0].message
