@@ -70,6 +70,7 @@ class BaselineModule(pl.LightningModule):
         self.records = []
         self.evaluation_result = None
         self.evaluation_stage = "test"
+        self._validation_epoch = None
 
     def forward(self, features):
         return self.model(features)
@@ -125,6 +126,7 @@ class BaselineModule(pl.LightningModule):
         for name, value in result.metrics.items():
             self.log(name, value, sync_dist=False)
         self.evaluation_result = result
+        self._validation_epoch = self.current_epoch
 
     def on_test_epoch_start(self):
         self.records = []
@@ -168,7 +170,11 @@ class BaselineModule(pl.LightningModule):
         checkpoint["config"] = asdict(self.cfg)
         checkpoint["label_contract"] = _label_contract(self.cfg)
         checkpoint["model_contract"] = _model_contract(self.cfg)
-        checkpoint["metrics"] = {name: float(value) for name, value in self.trainer.callback_metrics.items()}
+        checkpoint["metrics"] = {
+            name: float(value)
+            for name, value in self.trainer.callback_metrics.items()
+            if not name.startswith("val_") or self._validation_epoch == self.current_epoch
+        }
 
 
 def _trainer(args, *, callbacks=(), training=False):

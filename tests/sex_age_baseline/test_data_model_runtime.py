@@ -1116,7 +1116,8 @@ def test_inference_runtime_passes_custom_results_root(tmp_path: Path, monkeypatc
     assert captured == {"namespace": "sex_age_baseline", "root": results_root}
 
 
-def test_validation_and_checkpoint_cadence_preserve_actual_last_state(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("checkpoint_cadence", [1, 2])
+def test_validation_and_checkpoint_cadence_preserve_actual_last_state(tmp_path: Path, monkeypatch, checkpoint_cadence):
     config = _write_config(
         tmp_path,
         ["001,train,50,0", "002,train,60,1", "003,val,55,0", "004,val,65,1"],
@@ -1126,12 +1127,25 @@ def test_validation_and_checkpoint_cadence_preserve_actual_last_state(tmp_path: 
     monkeypatch.chdir(tmp_path)
     args = _runtime_args(config, tmp_path, version_name="cadence", epochs=3)
     args.check_val_every_n_epoch = 2
-    args.ckpt_every_n_epochs = 2
+    args.ckpt_every_n_epochs = checkpoint_cadence
     baseline_runtime.train_and_save(args, cfg)
     root = tmp_path / "log-finetune" / "cadence" / "checkpoints"
-    assert [path.name for path in root.glob("epoch=*.ckpt")] == ["epoch=01.ckpt"]
-    assert torch.load(root / "best.ckpt", weights_only=False)["epoch"] == 1
-    assert torch.load(root / "last.ckpt", weights_only=False)["epoch"] == 2
+    expected = ["epoch=00.ckpt", "epoch=01.ckpt", "epoch=02.ckpt"] if checkpoint_cadence == 1 else ["epoch=01.ckpt"]
+    assert sorted(path.name for path in root.glob("epoch=*.ckpt")) == expected
+    best = torch.load(root / "best.ckpt", weights_only=False)
+    last = torch.load(root / "last.ckpt", weights_only=False)
+    assert best["epoch"] == 1
+    assert last["epoch"] == 2
+    assert "val_loss" in best["metrics"]
+    assert "train_loss" in last["metrics"]
+    assert not any(name.startswith("val_") for name in last["metrics"])
+    for path in root.glob("epoch=*.ckpt"):
+        state = torch.load(path, weights_only=False)
+        validation = {name: value for name, value in state["metrics"].items() if name.startswith("val_")}
+        if state["epoch"] == 1:
+            assert validation == {name: value for name, value in best["metrics"].items() if name.startswith("val_")}
+        else:
+            assert validation == {}
 
 
 @pytest.mark.parametrize("training", [True, False])
