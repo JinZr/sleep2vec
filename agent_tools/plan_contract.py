@@ -38,6 +38,19 @@ _PASS_PLAN_RESIDUE_NAMES = (
 )
 
 
+class _HparamPlanCore(TypedDict):
+    recipe: dict[str, Any]
+    runs: list[dict[str, Any]]
+    resolved_recipe_sha256: str
+
+
+class HparamPlan(_HparamPlanCore, total=False):
+    # Non-PASS reads do not establish the static contract for these fields.
+    status: Any
+    final_eval_config: Any
+    execution_snapshot: Any
+
+
 class _HparamRunRow(TypedDict):
     row: dict[str, Any]
 

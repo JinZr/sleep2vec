@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import copy
 import hashlib
 from importlib import import_module
@@ -1086,7 +1087,7 @@ def write_hparam_plan(
     write_text(physical_out / "plan.md", "\n".join(plan_lines) + "\n")
 
     plan_recipe = {key: value for key, value in recipe.items() if key != _FINAL_EVAL_CONFIG_SNAPSHOT}
-    plan_payload = {
+    plan_payload: plan_contract.HparamPlan = {
         "status": "PASS",
         "runs": runs,
         "recipe": plan_recipe,
@@ -1289,7 +1290,7 @@ def commit_hparam_plan(
     *,
     emit_event: bool = True,
     preflight_validated: bool = False,
-) -> dict[str, Any]:
+) -> plan_contract.HparamPlan:
     from . import run_artifacts as artifacts
 
     plan_dir = Path(out).expanduser()
@@ -1349,7 +1350,7 @@ def commit_hparam_plan(
 
 def validate_hparam_output_paths(
     out: str | Path,
-    plan: dict[str, Any],
+    plan: Mapping[str, Any],
     *,
     runs: list[dict[str, Any]] | None = None,
 ) -> None:
@@ -1370,7 +1371,7 @@ def validate_hparam_output_paths(
     exp_io.validate_managed_output_paths(Path("/"), paths, remote=remote)
 
 
-def _hparam_registration_state(plan: dict[str, Any]) -> tuple[Path, list[dict[str, Any]]]:
+def _hparam_registration_state(plan: Mapping[str, Any]) -> tuple[Path, list[dict[str, Any]]]:
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     root = experiment_root(recipe)
@@ -1381,7 +1382,7 @@ def _hparam_registration_state(plan: dict[str, Any]) -> tuple[Path, list[dict[st
     return root, manifest_rows
 
 
-def hparam_manifest_rows(plan: dict[str, Any]) -> list[dict[str, Any]]:
+def hparam_manifest_rows(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
     runs_value = plan.get("runs")
     runs = runs_value if isinstance(runs_value, list) else []
     rows = []

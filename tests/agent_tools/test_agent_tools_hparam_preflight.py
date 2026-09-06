@@ -1145,3 +1145,53 @@ def test_validate_only_rejects_non_hparam_without_writes(tmp_path: Path):
     assert any(issue.field == "validate_only" for issue in report.blocking_issues())
     assert _workspace_files(workspace) == before
     assert not plan_dir.exists()
+
+
+@pytest.mark.parametrize("static_contract", [True, False])
+@pytest.mark.parametrize(
+    "workspace_state,adaptive_commit", [(True, True), (False, True), (True, False), (False, False)]
+)
+def test_hparam_reader_preserves_full_mapping_and_read_modes(
+    tmp_path: Path, monkeypatch, static_contract: bool, workspace_state: bool, adaptive_commit: bool
+):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    monkeypatch.setattr(
+        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+    )
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    plan_path = plan_dir / "plan.json"
+    payload = json.loads(plan_path.read_text())
+    payload["extra_evidence"] = {"values": [1, 2]}
+    if not static_contract:
+        payload["recipe"]["task"] = "finetune"
+        payload["status"] = 17
+        payload["final_eval_config"] = ["uninterpreted"]
+        payload["execution_snapshot"] = "uninterpreted"
+        resolved = {key: value for key, value in payload["recipe"].items() if key != "_recipe_path"}
+        resolved_path = plan_dir / "recipe.resolved.yaml"
+        resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
+        payload["resolved_recipe_sha256"] = file_sha256(resolved_path)
+    plan_path.write_text(json.dumps(payload))
+    before = _workspace_files(workspace)
+    documents = []
+    read_documents = run_artifacts._read_plan_documents
+
+    def capture_documents(*args, **kwargs):
+        result = read_documents(*args, **kwargs)
+        documents.append(result[0])
+        return result
+
+    monkeypatch.setattr(run_artifacts, "_read_plan_documents", capture_documents)
+    result = run_artifacts.read_hparam_plan(
+        plan_dir,
+        require_workspace_state=workspace_state,
+        require_adaptive_commit=adaptive_commit,
+    )
+    assert result is documents[0]
+    assert result == payload
+    assert result["recipe"] is documents[0]["recipe"]
+    assert result["runs"] is documents[0]["runs"]
+    assert result["runs"][0] is documents[0]["runs"][0]
+    assert result["extra_evidence"] is documents[0]["extra_evidence"]
+    assert _workspace_files(workspace) == before

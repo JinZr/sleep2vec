@@ -13,6 +13,7 @@ from . import (
     checkpoint_test_results,
     experiment_io as exp_io,
     experiment_tracking as tracking,
+    plan_contract,
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
@@ -50,7 +51,7 @@ class _HparamSelectionBuild:
     all_ranked: list[dict[str, Any]]
     unscored_rows: list[dict[str, Any]]
     checkpoint_audits_to_write: list[tuple[Path, list[dict[str, Any]]]]
-    current_registered: list[tuple[Path, dict[str, Any]]]
+    current_registered: list[tuple[Path, plan_contract.HparamPlan]]
     plan_root_by_key: dict[tuple[str, str] | None, Path]
 
 
@@ -71,7 +72,7 @@ class _HparamSelectionInputs:
     step_runs: list[dict[str, Any]]
     evidence_runs_by_key: dict[tuple[str, str] | None, dict[str, Any]]
     report_run_keys: set[tuple[str, str] | None]
-    current_registered: list[tuple[Path, dict[str, Any]]]
+    current_registered: list[tuple[Path, plan_contract.HparamPlan]]
     plan_root_by_key: dict[tuple[str, str] | None, Path]
 
 
@@ -103,7 +104,7 @@ def resolve_hparam_candidates(  # noqa: C901
     *,
     top_k: int = 1,
     all_candidates: bool = False,
-) -> tuple[list[dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str], plan_contract.HparamPlan]]:
     if not all_candidates and (type(top_k) is not int or top_k <= 0):
         raise ValueError("top_k must be a positive integer.")
     validate_managed_run_rows(candidate_rows, source="selected candidates", cardinality="one_per_run")
@@ -126,7 +127,7 @@ def resolve_hparam_candidates(  # noqa: C901
     workspace_by_key = {validated_run_key(run): run for run in workspace_rows}
 
     owner_runs_by_key = {}
-    owner_plans_by_key = {}
+    owner_plans_by_key: dict[tuple[str, str], plan_contract.HparamPlan] = {}
     for _registered_root, owner_plan in artifacts.iter_registered_hparam_plans(
         workspace,
         step_id,
@@ -174,15 +175,15 @@ def resolve_hparam_candidates(  # noqa: C901
         if str(row.get("step_id") or "") != step_id:
             continue
         matched_current_step = True
-        run = owner_runs_by_key.get(key)
-        if run is None:
+        owner_run = owner_runs_by_key.get(key)
+        if owner_run is None:
             raise ValueError(
                 f"Selected candidate is not managed by a registered hparam plan for the current step: "
                 f"{key[0]} / {key[1]}"
             )
         if str(managed.get("status") or "") not in SUCCESS_STATUSES:
             continue
-        plan_parameters = managed_run_parameters(run)
+        plan_parameters = managed_run_parameters(owner_run)
         extra_parameters = sorted(set(candidate_parameters) - set(plan_parameters))
         if extra_parameters:
             raise ValueError(
@@ -195,12 +196,12 @@ def resolve_hparam_candidates(  # noqa: C901
                 raise ValueError(f"Selected candidate parameter differs from the managed plan: {field}")
         derived = {field: value for field, value in row.items() if field not in candidate_parameters}
         validate_frozen_run_update(
-            run,
+            owner_run,
             derived,
             require_checkpoint_ownership=True,
             allow_execution_identity_fill=True,
         )
-        selectors_by_key[key] = (derived, run)
+        selectors_by_key[key] = (derived, owner_run)
     if active_runs:
         raise ValueError(
             "Hparam candidate resolution requires every registered run to be terminal: " + ", ".join(active_runs)
@@ -987,7 +988,7 @@ def _validate_test_selection_events(
     step_id: str,
     metric: str,
     mode: str,
-    registered: list[tuple[Path, dict[str, Any]]],
+    registered: list[tuple[Path, plan_contract.HparamPlan]],
     canonical_rows: list[dict[str, Any]],
     canonical_by_key: dict[tuple[str, str] | None, dict[str, Any]],
     *,
@@ -1098,7 +1099,7 @@ def _validate_test_selection_events(
 
 
 def _registered_test_checkpoint_ranking(
-    registered_plan: dict[str, Any],
+    registered_plan: plan_contract.HparamPlan,
     runs_by_key: dict[tuple[str, str] | None, dict[str, Any]],
     metric: str,
     mode: str,
