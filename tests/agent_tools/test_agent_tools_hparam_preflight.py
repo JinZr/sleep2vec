@@ -1195,3 +1195,22 @@ def test_hparam_reader_preserves_full_mapping_and_read_modes(
     assert result["runs"][0] is documents[0]["runs"][0]
     assert result["extra_evidence"] is documents[0]["extra_evidence"]
     assert _workspace_files(workspace) == before
+
+
+def test_hparam_reader_skips_missing_workspace_registration_when_disabled(tmp_path: Path, monkeypatch):
+    recipe, workspace = _recipe(tmp_path)
+    plan_dir = workspace / "plans" / "tune"
+    monkeypatch.setattr(
+        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+    )
+    assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    (workspace / "experiment.yaml").unlink()
+    before = _workspace_files(workspace)
+
+    result = run_artifacts.read_hparam_plan(plan_dir, require_workspace_state=False)
+
+    assert result["runs"]
+    assert _workspace_files(workspace) == before
+    with pytest.raises(ValueError, match="not bound to an initialized experiment workspace"):
+        run_artifacts.read_hparam_plan(plan_dir)
+    assert _workspace_files(workspace) == before
