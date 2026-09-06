@@ -140,9 +140,11 @@ jobs:
 
       - name: Run recipe tests
         env:
+          PYTEST_ADDOPTS: --randomly-seed=${{ github.run_number }} --randomly-dont-reset-seed
           RECIPE_MODE: ${{ needs.detect_changes.outputs.recipe_mode }}
           RECIPE_NODES_JSON: ${{ needs.detect_changes.outputs.recipe_nodes_json }}
         run: |
+          echo "pytest random seed: ${GITHUB_RUN_NUMBER}"
           python - <<'PY'
           import json
           import os
@@ -194,7 +196,10 @@ jobs:
       # generated scripts whose frozen-identity preflight imports the variant
       # module (and thus torch) in the invoking python.
       - name: Run agent tools kernel tests
+        env:
+          PYTEST_ADDOPTS: --randomly-seed=${{ github.run_number }} --randomly-dont-reset-seed
         run: |
+          echo "pytest random seed: ${GITHUB_RUN_NUMBER}"
           pytest -q -n auto tests/agent_tools \
             --ignore=tests/agent_tools/test_agent_run_manifest.py \
             --ignore=tests/agent_tools/test_agent_tools_sleep2stat.py \

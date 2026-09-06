@@ -214,3 +214,24 @@ file-level blindness arriving through the config instead of a comment.
 
 Both ledgers are shrink-only: a new function or program over 25 branches is a
 design signal, not a lint to suppress.
+
+## Randomized test order
+
+`requirements-agent-tools.txt` pins `pytest-randomly` for the agent-tool kernel
+and recipe test jobs. CI prints `GITHUB_RUN_NUMBER` as the seed and passes it to
+pytest. Retries keep the same seed and randomized collection order; parallel
+execution order may vary. Both jobs use `--randomly-dont-reset-seed`, so the plugin
+does not reseed between test phases.
+
+Use the printed seed and the same test selection to reproduce the collection
+order. The full suite also needs the domain packages excluded from kernel CI;
+with those installed, a serial check is:
+
+```bash
+python -m pytest tests/agent_tools -q --randomly-seed=1234 --randomly-dont-reset-seed
+```
+
+A minimal test environment avoids optional training-package seed hooks. In a
+macOS environment where DeepSpeed's seed hook crashes while probing MPS, set
+`DS_ACCELERATOR=cpu` for the pytest process. Use `-p no:randomly` for the fixed-order
+control run.
