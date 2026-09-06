@@ -76,7 +76,6 @@ SUPPRESSION_LEDGER = {
     ("agent_tools/managed_scheduler.py", "observe_slurm_run"),  # 44
     ("agent_tools/plans.py", "_build_plan"),  # 31
     ("agent_tools/plans.py", "evaluate_recipe"),  # 40
-    ("agent_tools/run_artifacts.py", "read_hparam_plan"),  # 31
     ("agent_tools/run_artifacts.py", "read_registered_plan"),  # 75
     ("agent_tools/run_evidence.py", "status_row"),  # 29
 }

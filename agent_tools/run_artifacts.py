@@ -615,7 +615,89 @@ def _validate_registered_run_parameters(
             raise ValueError(f"Workspace run manifest differs from plan field {field}: {key[0]} / {key[1]}")
 
 
-def read_hparam_plan(  # noqa: C901
+def _validate_hparam_workspace_registration(
+    *,
+    run_dir: Path,
+    workspace: Path,
+    recipe: dict[str, Any],
+    runs: list[dict[str, Any]],
+    step_id: str,
+    experiment_id: str,
+    expected_experiment: dict[str, Any],
+) -> None:
+    experiment_manifest_path = workspace / "experiment.yaml"
+    if not experiment_manifest_path.exists():
+        raise ValueError(f"Hparam plan is not bound to an initialized experiment workspace: {workspace}")
+    experiment_manifest = read_managed_yaml_mapping(
+        experiment_manifest_path.read_text(),
+        source=f"Managed experiment manifest {experiment_manifest_path}",
+    )
+    existing_experiment = experiment_manifest.get("experiment") if isinstance(experiment_manifest, dict) else None
+    if not isinstance(existing_experiment, dict) or any(
+        existing_experiment.get(field) != expected_experiment.get(field)
+        for field in ("id", "title", "objective", "root", "baseline")
+    ):
+        raise ValueError(f"Hparam plan experiment metadata differs from the managed workspace: {workspace}")
+    step_manifest = read_step_manifest(workspace, step_id)
+    assert step_manifest is not None  # Missing steps raise unless allow_missing is explicitly enabled.
+    expected_step_manifest = merge_step_manifest(
+        step_manifest,
+        {
+            "step": recipe["step"],
+            "experiment_id": experiment_id,
+            "plan_controller": (
+                "adaptive"
+                if isinstance(recipe.get("adaptive"), dict) and recipe["adaptive"].get("enabled") is True
+                else "ordinary"
+            ),
+            "recipe_path": recipe.get("_recipe_path", ""),
+            "plans": [str(run_dir.resolve())],
+        },
+    )
+    if expected_step_manifest != step_manifest:
+        raise ValueError(f"Hparam plan is not registered by its managed step: {run_dir}")
+    workspace_rows = read_run_manifest(workspace)
+    workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
+    missing_runs = [run for run in runs if managed_run_key(run) not in workspace_by_key]
+    if missing_runs:
+        missing = ", ".join(f"{run['step_id']} / {run['run_id']}" for run in missing_runs)
+        raise ValueError(f"Workspace run_manifest.tsv is missing plan runs: {missing}")
+    for run in runs:
+        workspace_row = workspace_by_key[managed_run_key(run)]
+        if workspace_row.get("status") in (None, ""):
+            raise ValueError(f"Workspace run manifest is missing status: {run['step_id']} / {run['run_id']}")
+        for field in (
+            "experiment_id",
+            "step_id",
+            "run_id",
+            "run_name",
+            "parameter_summary",
+            "version",
+            "config",
+            "config_sha256",
+            "script",
+            "script_sha256",
+            "run_dir",
+            "artifacts",
+            "runtime_dir",
+            "checkpoint_dir",
+            "terminal_status_owner",
+            *sorted(SCHEDULER_PLAN_IDENTITY_FIELDS),
+        ):
+            if str(workspace_row.get(field) or "") != str(run.get(field) or ""):
+                raise ValueError(
+                    f"Workspace run manifest differs from plan field {field}: {run['step_id']} / {run['run_id']}"
+                )
+        if run.get("scheduler_type") == "slurm" and str(workspace_row.get("log_path") or "") != str(
+            run.get("log_path") or ""
+        ):
+            raise ValueError(
+                f"Workspace run manifest differs from plan field log_path: {run['step_id']} / {run['run_id']}"
+            )
+        _validate_registered_run_parameters(recipe, run, workspace_row)
+
+
+def read_hparam_plan(
     run_dir: Path,
     *,
     semantic_dir: Path | None = None,
@@ -666,76 +748,15 @@ def read_hparam_plan(  # noqa: C901
         if str(run["experiment_id"]) != experiment_id or str(run["step_id"]) != step_id:
             raise ValueError("Managed run identity does not match the hparam recipe workspace binding.")
     if require_workspace_state:
-        experiment_manifest_path = workspace / "experiment.yaml"
-        if not experiment_manifest_path.exists():
-            raise ValueError(f"Hparam plan is not bound to an initialized experiment workspace: {workspace}")
-        experiment_manifest = read_managed_yaml_mapping(
-            experiment_manifest_path.read_text(),
-            source=f"Managed experiment manifest {experiment_manifest_path}",
+        _validate_hparam_workspace_registration(
+            run_dir=run_dir,
+            workspace=workspace,
+            recipe=recipe,
+            runs=runs,
+            step_id=step_id,
+            experiment_id=experiment_id,
+            expected_experiment=expected_experiment,
         )
-        existing_experiment = experiment_manifest.get("experiment") if isinstance(experiment_manifest, dict) else None
-        if not isinstance(existing_experiment, dict) or any(
-            existing_experiment.get(field) != expected_experiment.get(field)
-            for field in ("id", "title", "objective", "root", "baseline")
-        ):
-            raise ValueError(f"Hparam plan experiment metadata differs from the managed workspace: {workspace}")
-        step_manifest = read_step_manifest(workspace, step_id)
-        assert step_manifest is not None  # Missing steps raise unless allow_missing is explicitly enabled.
-        expected_step_manifest = merge_step_manifest(
-            step_manifest,
-            {
-                "step": recipe["step"],
-                "experiment_id": experiment_id,
-                "plan_controller": (
-                    "adaptive"
-                    if isinstance(recipe.get("adaptive"), dict) and recipe["adaptive"].get("enabled") is True
-                    else "ordinary"
-                ),
-                "recipe_path": recipe.get("_recipe_path", ""),
-                "plans": [str(run_dir.resolve())],
-            },
-        )
-        if expected_step_manifest != step_manifest:
-            raise ValueError(f"Hparam plan is not registered by its managed step: {run_dir}")
-        workspace_rows = read_run_manifest(workspace)
-        workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
-        missing_runs = [run for run in runs if managed_run_key(run) not in workspace_by_key]
-        if missing_runs:
-            missing = ", ".join(f"{run['step_id']} / {run['run_id']}" for run in missing_runs)
-            raise ValueError(f"Workspace run_manifest.tsv is missing plan runs: {missing}")
-        for run in runs:
-            workspace_row = workspace_by_key[managed_run_key(run)]
-            if workspace_row.get("status") in (None, ""):
-                raise ValueError(f"Workspace run manifest is missing status: {run['step_id']} / {run['run_id']}")
-            for field in (
-                "experiment_id",
-                "step_id",
-                "run_id",
-                "run_name",
-                "parameter_summary",
-                "version",
-                "config",
-                "config_sha256",
-                "script",
-                "script_sha256",
-                "run_dir",
-                "artifacts",
-                "runtime_dir",
-                "checkpoint_dir",
-                "terminal_status_owner",
-                *sorted(SCHEDULER_PLAN_IDENTITY_FIELDS),
-            ):
-                if str(workspace_row.get(field) or "") != str(run.get(field) or ""):
-                    raise ValueError(
-                        f"Workspace run manifest differs from plan field {field}: {run['step_id']} / {run['run_id']}"
-                    )
-            if run.get("scheduler_type") == "slurm" and str(workspace_row.get("log_path") or "") != str(
-                run.get("log_path") or ""
-            ):
-                raise ValueError(
-                    f"Workspace run manifest differs from plan field log_path: {run['step_id']} / {run['run_id']}"
-                )
-            _validate_registered_run_parameters(recipe, run, workspace_row)
     search = recipe["search"] if isinstance(recipe.get("search"), dict) else {}
     execution = recipe["execution"] if isinstance(recipe.get("execution"), dict) else {}
     adaptive = recipe["adaptive"] if isinstance(recipe.get("adaptive"), dict) else {}
