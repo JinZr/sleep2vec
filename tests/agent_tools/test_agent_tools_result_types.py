@@ -11,9 +11,12 @@ def test_result_types_reach_callers(tmp_path: Path):
             from pathlib import Path
             from agent_tools import (
                 adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
-                experiment_io, experiment_workspace, managed_scheduler, models, plan_hparam,
+                experiment_io, experiment_workspace, managed_scheduler, models, plan_contract, plan_hparam,
                 run_artifacts, run_evidence, slurm,
             )
+
+            from agent_tools.adapters.base import TaskAdapter
+            from agent_tools.adapters.hparam_tune import HPARAM_TUNE_ADAPTER
 
             from typing import Any, Literal
 
@@ -46,6 +49,44 @@ def test_result_types_reach_callers(tmp_path: Path):
             layouts[0]["run_dir"] = "/plan/run"  # type: ignore[typeddict-item]
             layouts[0]["identity"]["run_id"] = 7  # type: ignore[assignment]
             layouts[0]["parameters"] = []  # type: ignore[typeddict-item]
+
+            compiled_files = plan_hparam.compile_hparam_run_contracts(
+                {}, Path("/plan"), 7, source_config_bytes=b"config",
+            )
+            compiled_bytes: bytes = compiled_files[0]["config_bytes"]
+            compiled_script: str = compiled_files[0]["script_text"]
+            compiled_scheduler: str | None = compiled_files[0].get("scheduler_script_text")
+            compiled_files[0]["config_bytes"] = "text"  # type: ignore[typeddict-item]
+            compiled_files[0]["script_text"] = b"bytes"  # type: ignore[typeddict-item]
+            compiled_files[0]["config_byte"]  # type: ignore[typeddict-item]
+            del compiled_files[0]["config_bytes"]  # type: ignore[misc]
+            row_contracts = plan_hparam.compile_hparam_run_contracts({}, Path("/plan"), 7)
+            optional_bytes: bytes | None = row_contracts[0].get("config_bytes")
+            required_bytes: bytes = row_contracts[0].get("config_bytes")  # type: ignore[assignment]
+            row_contracts[0]["script_text"] = 7  # type: ignore[typeddict-item]
+
+            adapter = TaskAdapter()
+            for plan_result in (
+                adapter.compile_plan_contract({}, Path("/plan"), run_index_offset=7, config_bytes=b"config"),
+                HPARAM_TUNE_ADAPTER.compile_plan_contract(
+                    {}, Path("/plan"), run_index_offset=7, config_bytes=b"config",
+                ),
+                run_artifacts._compile_registered_plan_contract(
+                    adapter, {}, Path("/plan"), run_index_offset=7, config_bytes=b"config",
+                ),
+            ):
+                launch_text: str = plan_result["launch_script_text"]
+                final_command: str | None = plan_result["final_command"]
+                plan_result["launch_script_text"] = b"bytes"  # type: ignore[typeddict-item]
+                plan_result["final_eval_config_required"] = "yes"  # type: ignore[typeddict-item]
+                plan_result["run_file"]  # type: ignore[typeddict-item]
+                for run_files in plan_result["run_files"]:
+                    file_bytes: bytes = run_files["config_bytes"]
+                    file_script: str = run_files["script_text"]
+                    invalid_bytes: str = run_files["config_bytes"]  # type: ignore[assignment]
+                    invalid_script: bytes = run_files["script_text"]  # type: ignore[assignment]
+                plan_contract.validate_final_eval_contract({}, {}, Path("/plan"), plan_result)
+            plan_contract.validate_final_eval_contract({}, {}, Path("/plan"), {})
 
             resources = slurm.normalize_resources({}, 1)
             cpus: int = resources["cpus_per_task"]

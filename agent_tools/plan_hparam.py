@@ -9,7 +9,7 @@ import subprocess
 import sys
 from tempfile import NamedTemporaryFile
 from types import SimpleNamespace
-from typing import Any, TypedDict
+from typing import Any, Sequence, TypedDict, overload
 
 import yaml
 
@@ -498,13 +498,33 @@ def hparam_combos(recipe: dict) -> list[dict[str, Any]]:
     return combos[:max_runs]
 
 
+@overload
+def compile_hparam_run_contracts(
+    recipe: dict[str, Any],
+    out: Path,
+    run_index_offset: int,
+    *,
+    source_config_bytes: None = None,
+) -> list[plan_contract.HparamRunContract]: ...
+
+
+@overload
+def compile_hparam_run_contracts(
+    recipe: dict[str, Any],
+    out: Path,
+    run_index_offset: int,
+    *,
+    source_config_bytes: bytes,
+) -> list[plan_contract.MaterializedHparamRunContract]: ...
+
+
 def compile_hparam_run_contracts(
     recipe: dict[str, Any],
     out: Path,
     run_index_offset: int,
     *,
     source_config_bytes: bytes | None = None,
-) -> list[dict[str, Any]]:
+) -> Sequence[plan_contract.HparamRunContract | plan_contract.MaterializedHparamRunContract]:
     plan_context = plan_contract.frozen_plan_context(recipe)
     execution_value = recipe.get("execution")
     execution = execution_value if isinstance(execution_value, dict) else {}
@@ -550,7 +570,7 @@ def compile_hparam_run_contracts(
     evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     test_after_fit = evaluation["test_after_fit"]
     selection_split = str(evaluation.get("selection_split") or "")
-    contracts = []
+    contracts: list[plan_contract.HparamRunContract | plan_contract.MaterializedHparamRunContract] = []
     for layout in hparam_run_layouts(recipe, out, run_index_offset):
         identity = layout["identity"]
         combo = layout["parameters"]
@@ -616,7 +636,7 @@ def compile_hparam_run_contracts(
                     "terminal_status_owner": "scheduler_sidecar",
                 }
             )
-        contract: dict[str, Any] = {"row": row}
+        contract: plan_contract.HparamRunContract | plan_contract.MaterializedHparamRunContract = {"row": row}
         if base_config is not None:
             run_config = copy.deepcopy(base_config)
             apply_search_overrides(run_config, combo)
@@ -645,7 +665,11 @@ def compile_hparam_run_contracts(
                     "script_sha256": hashlib.sha256(script_text.encode()).hexdigest(),
                 }
             )
-            contract.update({"config_bytes": config_bytes, "script_text": script_text})
+            materialized: plan_contract.MaterializedHparamRunContract = {
+                "row": row,
+                "config_bytes": config_bytes,
+                "script_text": script_text,
+            }
             if slurm_resources is not None:
                 token = slurm.submit_token(row, slurm_resources, execution["runtime_commit"])
                 scheduler_script_text = slurm.render_batch_script(
@@ -665,7 +689,8 @@ def compile_hparam_run_contracts(
                         "scheduler_script_sha256": hashlib.sha256(scheduler_script_text.encode()).hexdigest(),
                     }
                 )
-                contract["scheduler_script_text"] = scheduler_script_text
+                materialized["scheduler_script_text"] = scheduler_script_text
+            contract = materialized
         contracts.append(contract)
     return contracts
 

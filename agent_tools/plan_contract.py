@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import re
 import sys
-from typing import Any
+from typing import Any, Sequence, TypedDict
 
 from . import plan_rendering as rendering, python_programs, slurm
 from .decision_models import USER_DECISIONS_FILENAME
@@ -36,6 +36,44 @@ _PASS_PLAN_RESIDUE_NAMES = (
     "runs",
     "validation.sh",
 )
+
+
+class _HparamRunRow(TypedDict):
+    row: dict[str, Any]
+
+
+class HparamRunContract(_HparamRunRow, total=False):
+    config_bytes: bytes
+    script_text: str
+    scheduler_script_text: str
+
+
+class _MaterializedHparamRun(_HparamRunRow):
+    config_bytes: bytes
+    script_text: str
+
+
+class MaterializedHparamRunContract(_MaterializedHparamRun, total=False):
+    scheduler_script_text: str
+
+
+class FinalEvalContract(TypedDict, total=False):
+    final_command: str | None
+    final_eval_config_required: bool
+    final_eval_config_sha256: str | None
+
+
+class _CompiledPlanRuns(FinalEvalContract):
+    runs: list[dict[str, Any]]
+
+
+class CompiledPlanContract(_CompiledPlanRuns, total=False):
+    commands: list[str]
+    script_text: str
+    scheduler_script_text: str
+    launch_script_text: str
+    run_files: Sequence[HparamRunContract | MaterializedHparamRunContract]
+    final_script_text: str | None
 
 
 def blocked_plan_control_paths(plan_dir: Path) -> list[Path]:
@@ -260,7 +298,7 @@ def validate_final_eval_contract(
     plan: dict[str, Any],
     recipe: dict[str, Any],
     plan_dir: Path,
-    contract: dict[str, Any],
+    contract: FinalEvalContract,
 ) -> tuple[Path | None, str | None]:
     required = bool(contract.get("final_eval_config_required"))
     present = "final_eval_config" in plan

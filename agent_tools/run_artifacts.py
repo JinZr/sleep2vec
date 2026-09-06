@@ -13,6 +13,7 @@ import yaml
 
 from . import decision_rules as task_rules, experiment_io as exp_io, plan_contract, plan_hparam
 from .adapters import get_adapter
+from .adapters.base import TaskAdapter
 from .decision_models import USER_DECISIONS_FILENAME
 from .experiment_workspace import (
     SCHEDULER_PLAN_IDENTITY_FIELDS,
@@ -528,13 +529,13 @@ def read_registered_plan(  # noqa: C901
 
 
 def _compile_registered_plan_contract(
-    adapter: Any,
+    adapter: TaskAdapter,
     recipe: dict[str, Any],
     plan_dir: Path,
     *,
     run_index_offset: int,
     config_bytes: bytes,
-) -> dict[str, Any]:
+) -> plan_contract.CompiledPlanContract:
     try:
         return adapter.compile_plan_contract(
             recipe,
