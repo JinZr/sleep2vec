@@ -13,7 +13,7 @@ from pathlib import Path
 import shutil
 from tempfile import TemporaryDirectory
 import time
-from typing import Any
+from typing import Any, Literal, overload
 
 import yaml
 
@@ -1225,6 +1225,33 @@ def _drain_bad_runs(
             )
         state.retirement_credit += len(newly_started)
     return next_round_rows
+
+
+@overload
+def adaptive_step(
+    workflow_dir: str | Path,
+    *,
+    proposal_path: str | Path | None = None,
+    execute: Literal[True],
+) -> Path: ...
+
+
+@overload
+def adaptive_step(
+    workflow_dir: str | Path,
+    *,
+    proposal_path: str | Path,
+    execute: bool = False,
+) -> Path: ...
+
+
+@overload
+def adaptive_step(
+    workflow_dir: str | Path,
+    *,
+    proposal_path: str | Path | None = None,
+    execute: bool = False,
+) -> Path | None: ...
 
 
 def adaptive_step(

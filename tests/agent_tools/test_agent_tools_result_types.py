@@ -74,6 +74,28 @@ def test_result_types_reach_callers(tmp_path: Path):
             planned["args"] = [1]  # type: ignore[list-item]
             planned["run_id"] = 1  # type: ignore[typeddict-item]
 
+            executed_step: Path = adaptive_hparam.adaptive_step("/workflow", execute=True)
+            checked_proposal: Path = adaptive_hparam.adaptive_step("/workflow", proposal_path="/proposal.json")
+            applied_proposal: Path = adaptive_hparam.adaptive_step(
+                "/workflow", proposal_path=Path("/proposal.json"), execute=True,
+            )
+            pending_step: Path | None = adaptive_hparam.adaptive_step("/workflow")
+            required_step: Path = adaptive_hparam.adaptive_step("/workflow")  # type: ignore[assignment]
+
+            def check_step_options(execute: bool, proposal: Path | None) -> None:
+                optional_step: Path | None = adaptive_hparam.adaptive_step(
+                    "/workflow", proposal_path=proposal, execute=execute,
+                )
+                nonoptional_step: Path = adaptive_hparam.adaptive_step(
+                    "/workflow", proposal_path=proposal, execute=execute,
+                )  # type: ignore[assignment]
+                proposal_step: Path = adaptive_hparam.adaptive_step(
+                    "/workflow", proposal_path=Path("/proposal.json"), execute=execute,
+                )
+                executing_step: Path = adaptive_hparam.adaptive_step(
+                    "/workflow", proposal_path=proposal, execute=True,
+                )
+
             def check_commit(value: object) -> None:
                 if models.is_full_git_object_id(value):
                     commit: str = value
