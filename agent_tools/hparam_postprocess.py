@@ -18,7 +18,7 @@ from .experiment_workspace import canonical_local_experiment_root, validated_run
 from .hparam_selection import resolve_hparam_candidates
 from .manifests import read_rows, write_rows, write_text
 from .models import REPO_ROOT, module_for_variant
-from .plan_rendering import infer_runtime_cli_args, render_command
+from .plan_rendering import append_option, infer_runtime_cli_args, render_command
 
 
 def generate_external_eval(
@@ -83,6 +83,11 @@ def generate_external_eval(
             finetune_data_index=finetune_data_index,
         )
         runtime = dict(runtime_defaults)
+        logging_args: list[Any] = []
+        if variant == "sex_age_baseline":
+            execution = recipe.get("execution") or {}
+            append_option(logging_args, "--wandb-project", execution.get("wandb_project"))
+            append_option(logging_args, "--wandb-group", execution.get("wandb_group"))
         for key, value in row.items():
             if key.startswith("runtime.") and value not in (None, ""):
                 runtime[key.removeprefix("runtime.")] = value
@@ -100,6 +105,7 @@ def generate_external_eval(
                 "--eval-split",
                 eval_split,
                 *infer_runtime_cli_args(runtime),
+                *logging_args,
             ]
         )
         checkpoint_sha256 = str(row.get("checkpoint_sha256") or "")

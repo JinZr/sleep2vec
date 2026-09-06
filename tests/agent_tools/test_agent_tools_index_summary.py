@@ -244,9 +244,15 @@ def test_index_summary_blocks_sex_age_multilabel_keys_missing_from_sidecars(tmp_
             "model": {
                 "name": "sex_age_mlp",
                 "features": ["age", "sex"],
-                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4},
-                "sex": {"encoding": "binary", "embedding_dim": 4},
-                "head": {"hidden_dim": 8, "dropout": 0.1, "activation": "elu"},
+                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4, "initialization": "default"},
+                "sex": {"encoding": "binary", "embedding_dim": 4, "initialization": "default"},
+                "head": {
+                    "name": "classification",
+                    "hidden_dim": 8,
+                    "dropout": 0.1,
+                    "act": "elu",
+                    "kwargs": {"num_layers": 3},
+                },
             },
             "data": {
                 "backend": "npz",
@@ -305,9 +311,15 @@ def test_index_summary_uses_sex_age_configured_split_column_for_filtering(tmp_pa
             "model": {
                 "name": "sex_age_mlp",
                 "features": ["age", "sex"],
-                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4},
-                "sex": {"encoding": "binary", "embedding_dim": 4},
-                "head": {"hidden_dim": 8, "dropout": 0.1, "activation": "elu"},
+                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4, "initialization": "default"},
+                "sex": {"encoding": "binary", "embedding_dim": 4, "initialization": "default"},
+                "head": {
+                    "name": "classification",
+                    "hidden_dim": 8,
+                    "dropout": 0.1,
+                    "act": "elu",
+                    "kwargs": {"num_layers": 3},
+                },
             },
             "data": {
                 "backend": "npz",

@@ -1788,6 +1788,28 @@ def test_agent_proposal_rejects_envelope_valid_joint_config_before_acceptance(
     assert not (workflow_dir / "adaptive" / "rounds" / "round_001").exists()
 
 
+@pytest.mark.parametrize("floor", [0, 0.0, 0.8, 1, 1.0])
+def test_best_neighborhood_bounds_decay_floor(floor):
+    recipe = {"search": {"parameters": {"runtime.lr_decay_floor": [floor]}}}
+    suggested = adaptive_hparam._suggest_parameters(recipe, [{"runtime.lr_decay_floor": floor}])
+    values = suggested["runtime.lr_decay_floor"]
+    assert floor in values
+    assert len(values) == len(set(values))
+    assert all(0 <= value <= 1 for value in values)
+    if floor == 0.8:
+        assert values == [0.4, 0.8, 1.0]
+
+
+@pytest.mark.parametrize("candidates", [[0, 0.5, 1], [1, 0.5, 0], [0.5, 0, 1]])
+@pytest.mark.parametrize(
+    "incumbent,expected", [("0", [0.0, 1e-6, 3e-6]), ("0.5", [0.25, 0.5, 0.75]), ("1", [0.5, 1.0])]
+)
+def test_best_neighborhood_preserves_fractional_decay_floor_from_digest(candidates, incumbent, expected):
+    recipe = {"search": {"parameters": {"runtime.lr_decay_floor": candidates}}}
+    suggested = adaptive_hparam._suggest_parameters(recipe, [{"runtime.lr_decay_floor": incumbent}])
+    assert suggested["runtime.lr_decay_floor"] == expected
+
+
 def test_explicit_best_neighborhood_uses_existing_numeric_neighbors(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"

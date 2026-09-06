@@ -1552,7 +1552,7 @@ def test_hparam_ssh_launch_rejects_existing_remote_runtime_root_before_start(tmp
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
 
 
-def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path, monkeypatch):
+def test_hparam_launch_remaps_scalar_runtime_device_pool(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     base_recipe = Path(payload["base_recipe"])
@@ -1573,7 +1573,7 @@ def test_hparam_launch_accepts_scalar_runtime_devices(tmp_path: Path, monkeypatc
 
     rows = _read_table(plan_dir / "launch_manifest.tsv")
     assert rows[0]["gpus"] == "2"
-    assert "--devices 2 --precision" in Path(rows[0]["script"]).read_text()
+    assert "--devices 0 --precision" in Path(rows[0]["script"]).read_text()
     assert "start_new_session=True" in rows[0]["command"]
     assert "CUDA_VISIBLE_DEVICES=2" in rows[0]["command"]
     assert started == [rows[0]["command"]]

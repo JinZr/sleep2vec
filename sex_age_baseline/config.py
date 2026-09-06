@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Any
 
@@ -12,27 +13,32 @@ class AgeConfig:
     transform: str
     scale: float
     embedding_dim: int
+    initialization: str
 
 
 @dataclass(frozen=True)
 class SexConfig:
     encoding: str
     embedding_dim: int
+    initialization: str
 
 
 @dataclass(frozen=True)
 class HeadConfig:
+    name: str
     hidden_dim: int
     dropout: float
-    activation: str
+    act: str
+    kwargs: dict[str, int]
 
 
 @dataclass(frozen=True)
 class ModelConfig:
     name: str
     features: list[str]
-    age: AgeConfig
-    sex: SexConfig
+    age: AgeConfig | None
+    sex: SexConfig | None
+    bmi: AgeConfig | None
     head: HeadConfig
 
 
@@ -77,6 +83,7 @@ class MultilabelConfig:
 @dataclass(frozen=True)
 class FinetuneLossConfig:
     pos_weight: float | list[float] | None = None
+    eps: float = 1e-9
 
 
 @dataclass(frozen=True)
@@ -121,7 +128,7 @@ def load_pretrain_config(path: str | Path):
 
 def validate_model_config(model_cfg: ModelConfig | BaselineConfig) -> int:
     model = model_cfg.model if isinstance(model_cfg, BaselineConfig) else model_cfg
-    return int(model.age.embedding_dim) + int(model.sex.embedding_dim)
+    return sum(getattr(model, feature).embedding_dim for feature in model.features)
 
 
 def validate_sidecar_shapes(cfg: BaselineConfig) -> None:
@@ -152,12 +159,22 @@ def _build_model(raw: dict[str, Any]) -> ModelConfig:
     features = _list_of_strings(raw, "features")
     if len(set(features)) != len(features):
         raise ValueError("model.features contains duplicate entries.")
-    if features != ["age", "sex"]:
-        raise ValueError("sex_age_baseline v1 requires model.features: [age, sex].")
-    age = _build_age(_mapping(raw, "age"))
-    sex = _build_sex(_mapping(raw, "sex"))
+    if set(features) - {"age", "sex", "bmi"}:
+        raise ValueError("model.features supports only age, sex, bmi.")
+    extra = set(raw) - {"name", "features", "head", *features}
+    if extra:
+        raise ValueError(f"model contains unsupported or inactive feature blocks: {sorted(extra)}")
+    age = _build_age(_mapping(raw, "age")) if "age" in features else None
+    bmi = _build_age(_mapping(raw, "bmi")) if "bmi" in features else None
+    sex = _build_sex(_mapping(raw, "sex")) if "sex" in features else None
     head = _build_head(_mapping(raw, "head"))
-    return ModelConfig(name=name, features=features, age=age, sex=sex, head=head)
+    zero_features = [feature for feature in features if raw[feature]["initialization"] == "zeros"]
+    if head.act == "relu" and zero_features:
+        raise ValueError(
+            f"model.head.act=relu blocks gradients to zero-initialized encoders: {zero_features}. "
+            "Use initialization=default or a different head activation."
+        )
+    return ModelConfig(name=name, features=features, age=age, sex=sex, bmi=bmi, head=head)
 
 
 def _build_age(raw: dict[str, Any]) -> AgeConfig:
@@ -165,24 +182,52 @@ def _build_age(raw: dict[str, Any]) -> AgeConfig:
     if transform != "divide":
         raise ValueError("model.age.transform must be 'divide'.")
     scale = _positive_float(raw, "scale")
-    return AgeConfig(transform=transform, scale=scale, embedding_dim=_positive_int(raw, "embedding_dim"))
+    if set(raw) - {"transform", "scale", "embedding_dim", "initialization"}:
+        raise ValueError("Continuous encoding contains unsupported fields.")
+    return AgeConfig(
+        transform=transform,
+        scale=scale,
+        embedding_dim=_positive_int(raw, "embedding_dim"),
+        initialization=_initialization(raw),
+    )
 
 
 def _build_sex(raw: dict[str, Any]) -> SexConfig:
     encoding = _string(raw, "encoding")
     if encoding != "binary":
         raise ValueError("model.sex.encoding must be 'binary'.")
-    return SexConfig(encoding=encoding, embedding_dim=_positive_int(raw, "embedding_dim"))
+    if set(raw) - {"encoding", "embedding_dim", "initialization"}:
+        raise ValueError("Sex encoding contains unsupported fields.")
+    return SexConfig(
+        encoding=encoding, embedding_dim=_positive_int(raw, "embedding_dim"), initialization=_initialization(raw)
+    )
+
+
+def _initialization(raw: dict[str, Any]) -> str:
+    value = _string(raw, "initialization")
+    if value not in {"zeros", "default"}:
+        raise ValueError("initialization must be zeros or default.")
+    return value
 
 
 def _build_head(raw: dict[str, Any]) -> HeadConfig:
-    activation = _string(raw, "activation")
+    if set(raw) - {"name", "hidden_dim", "dropout", "act", "kwargs"}:
+        raise ValueError("model.head contains unsupported fields.")
+    name = _string(raw, "name")
+    if name != "classification":
+        raise ValueError("model.head.name must be classification (raw logits/log-risk).")
+    activation = _string(raw, "act")
     if activation not in {"elu", "gelu", "relu", "silu"}:
-        raise ValueError("model.head.activation must be one of elu, gelu, relu, or silu.")
+        raise ValueError("model.head.act must be one of elu, gelu, relu, or silu.")
     dropout = _float(raw, "dropout")
     if dropout < 0.0 or dropout >= 1.0:
         raise ValueError("model.head.dropout must be in [0, 1).")
-    return HeadConfig(hidden_dim=_positive_int(raw, "hidden_dim"), dropout=dropout, activation=activation)
+    kwargs = _mapping(raw, "kwargs")
+    if set(kwargs) != {"num_layers"} or _positive_int(kwargs, "num_layers") not in {1, 2, 3}:
+        raise ValueError("model.head.kwargs must specify num_layers as 1, 2, or 3.")
+    return HeadConfig(
+        name=name, hidden_dim=_positive_int(raw, "hidden_dim"), dropout=dropout, act=activation, kwargs=dict(kwargs)
+    )
 
 
 def _build_data(raw: dict[str, Any]) -> DataConfig:
@@ -205,8 +250,6 @@ def _build_data(raw: dict[str, Any]) -> DataConfig:
         if not kaldi_data_root or not kaldi_manifest:
             raise ValueError("data.backend=kaldi requires kaldi_data_root and kaldi_manifest.")
     deduplicate_by_key = _bool(raw, "deduplicate_by_key")
-    if not deduplicate_by_key:
-        raise ValueError("sex_age_baseline v1 requires data.deduplicate_by_key=true.")
     return DataConfig(
         backend=backend,
         finetune_data_index=finetune_data_index,
@@ -220,16 +263,24 @@ def _build_data(raw: dict[str, Any]) -> DataConfig:
 
 
 def _build_finetune(raw: dict[str, Any], data: DataConfig) -> FinetuneConfig:
+    extra = sorted(set(raw) - {"task", "survival", "multilabel", "loss"})
+    if extra:
+        raise ValueError(f"finetune contains unsupported fields: {extra}; training options belong in recipe runtime.")
     task = _build_task(_mapping(raw, "task"))
     if task.type == "survival":
-        if "loss" in raw:
-            raise ValueError("finetune.loss is only supported for multilabel_classification tasks.")
         if "multilabel" in raw:
             raise ValueError("finetune.multilabel is only supported for multilabel_classification tasks.")
         survival = _build_survival(_mapping(raw, "survival"))
         if survival.key_column != data.key_column:
             raise ValueError("finetune.survival.key_column must match data.key_column.")
-        return FinetuneConfig(task=task, survival=survival)
+        loss = FinetuneLossConfig()
+        if "loss" in raw:
+            loss_raw = _mapping(raw, "loss")
+            if set(loss_raw) - {"eps"}:
+                raise ValueError("Survival finetune.loss supports only eps.")
+            if "eps" in loss_raw:
+                loss = FinetuneLossConfig(eps=_positive_float(loss_raw, "eps"))
+        return FinetuneConfig(task=task, survival=survival, loss=loss)
     if task.type == "multilabel_classification":
         if "survival" in raw:
             raise ValueError("finetune.survival is only supported for survival tasks.")
@@ -287,7 +338,7 @@ def _build_loss(raw: dict[str, Any], output_dim: int) -> FinetuneLossConfig:
     if pos_weight is None:
         return FinetuneLossConfig()
     if isinstance(pos_weight, (int, float)) and not isinstance(pos_weight, bool):
-        if pos_weight <= 0:
+        if not math.isfinite(pos_weight) or pos_weight <= 0:
             raise ValueError("finetune.loss.pos_weight must contain only positive numbers.")
         return FinetuneLossConfig(pos_weight=float(pos_weight))
     if isinstance(pos_weight, list):
@@ -296,7 +347,10 @@ def _build_loss(raw: dict[str, Any], output_dim: int) -> FinetuneLossConfig:
                 "finetune.loss.pos_weight length must match finetune.task.output_dim "
                 f"({output_dim}); got {len(pos_weight)}."
             )
-        if not all(isinstance(item, (int, float)) and not isinstance(item, bool) and item > 0 for item in pos_weight):
+        if not all(
+            isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(item) and item > 0
+            for item in pos_weight
+        ):
             raise ValueError("finetune.loss.pos_weight must contain only positive numbers.")
         return FinetuneLossConfig(pos_weight=[float(item) for item in pos_weight])
     raise ValueError("finetune.loss.pos_weight must be a positive number or list of positive numbers.")
@@ -348,7 +402,7 @@ def _bool(raw: dict[str, Any], key: str) -> bool:
 
 def _float(raw: dict[str, Any], key: str) -> float:
     value = raw.get(key)
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
         raise ValueError(f"{key} must be a number.")
     return float(value)
 

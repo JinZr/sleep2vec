@@ -45,7 +45,7 @@ Preprocessing produces the index, preset, or Kaldi artifacts consumed by the dat
 | Agent declarations | [`skills/`](../../skills/), [`recipes/`](../../recipes/), [`agent_policies/`](../../agent_policies/), [`doc/agent_contracts/`](../agent_contracts/) | Human playbooks, task recipes, approved decisions, machine-readable contracts | declared workflow or policy changes |
 | Dense standalone variant | [`sleep2vec2/`](../../sleep2vec2/), [`configs/sleep2vec2/`](../../configs/sleep2vec2/) | Package-local dense runtime and RoFormer implementation | `sleep2vec2` behavior or parity changes |
 | MoE standalone variant | [`sleep2expert/`](../../sleep2expert/), [`configs/sleep2expert/`](../../configs/sleep2expert/) | Package-local MoE runtime, routing, regularization, checkpoint expansion, compact export | expert routing or MoE parity changes |
-| Sex/age baseline | [`sex_age_baseline/`](../../sex_age_baseline/), [`configs/sex_age_baseline/`](../../configs/sex_age_baseline/) | Standalone demographic baseline for Cox and multilabel tasks | baseline-only data/model/runtime changes |
+| Covariate baseline | [`sex_age_baseline/`](../../sex_age_baseline/README.md), [`configs/sex_age_baseline/`](../../configs/sex_age_baseline/) | YAML-selected age/sex/BMI encodings and shared dense heads; metadata-only participant/window sampling; Lightning Cox/multilabel training and distributed participant evaluation | baseline config/data/model/runtime; managed variant contracts |
 | Contract tests | [`tests/`](../../tests/) | Pin config, data, model, runtime, variant, sleep2stat, and agent contracts | any documented contract changes |
 
 ## Core Data Contract

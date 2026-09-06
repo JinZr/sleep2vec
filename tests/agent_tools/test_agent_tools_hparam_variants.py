@@ -346,6 +346,8 @@ def test_hparam_card_skips_sidecar_tables_without_weakening_validation(
     payload = yaml.safe_load((REPO_ROOT / config_path).read_bytes())
     payload["data"]["finetune_data_index"] = str(index)
     payload["finetune"].pop("survival", None)
+    if variant == "sex_age_baseline" and sidecar_kind == "multilabel":
+        payload["finetune"].pop("loss", None)
     payload["finetune"]["task"] = {
         "type": "survival" if sidecar_kind == "survival" else "multilabel_classification",
         "output_dim": 2,

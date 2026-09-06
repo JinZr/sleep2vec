@@ -33,10 +33,7 @@ class FinetuneAdapter(TaskAdapter):
     enforces_required_channels = True
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
-        fields = FINETUNE_RUNTIME_FIELDS
-        if variant == "sex_age_baseline":
-            fields = fields - {"wandb_mode"}
-        return fields
+        return FINETUNE_RUNTIME_FIELDS
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         return ("python", "-m", variant_module(recipe, "finetune"))

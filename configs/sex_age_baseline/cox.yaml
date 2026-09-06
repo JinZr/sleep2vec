@@ -5,13 +5,18 @@ model:
     transform: divide
     scale: 100.0
     embedding_dim: 16
+    initialization: zeros
   sex:
     encoding: binary
     embedding_dim: 16
+    initialization: zeros
   head:
+    name: classification
     hidden_dim: 32
     dropout: 0.1
-    activation: elu
+    act: elu
+    kwargs:
+      num_layers: 3
 
 data:
   backend: npz
@@ -24,6 +29,8 @@ data:
   deduplicate_by_key: true
 
 finetune:
+  loss:
+    eps: 1.0e-9
   task:
     type: survival
     output_dim: 177

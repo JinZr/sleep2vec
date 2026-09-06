@@ -309,8 +309,9 @@ def test_infer_slurm_round_trip_preserves_unsubmitted_identity(
     assert run["scheduler_submit_token"] == slurm.submit_token(run, resources, execution["runtime_commit"])
 
 
-def test_infer_slurm_derives_multiple_logical_devices(tmp_path: Path, _runtime_commit, _runtime_probe):
-    recipe_path = _infer_slurm_recipe(tmp_path, variant="sleep2vec", task="infer", runtime_commit=_runtime_commit)
+@pytest.mark.parametrize("variant", ["sleep2vec", "sex_age_baseline"])
+def test_infer_slurm_derives_multiple_logical_devices(tmp_path: Path, variant, _runtime_commit, _runtime_probe):
+    recipe_path = _infer_slurm_recipe(tmp_path, variant=variant, task="infer", runtime_commit=_runtime_commit)
     recipe = yaml.safe_load(recipe_path.read_text())
     recipe["execution"]["gpus_per_run"] = 2
     recipe_path.write_text(yaml.safe_dump(recipe))
@@ -330,7 +331,6 @@ def test_infer_slurm_derives_multiple_logical_devices(tmp_path: Path, _runtime_c
 @pytest.mark.parametrize(
     ("variant", "section", "field", "value", "expected_field"),
     [
-        ("sex_age_baseline", "execution", "gpus_per_run", 2, "execution.gpus_per_run"),
         ("sleep2vec", "runtime", "devices", [2], "runtime.devices"),
         ("sleep2vec", "runtime", "accelerator", "cpu", "runtime.accelerator"),
         ("sleep2vec", "execution", "workdir", None, "execution.workdir"),
