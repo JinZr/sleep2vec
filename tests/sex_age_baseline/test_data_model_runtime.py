@@ -1134,6 +1134,23 @@ def test_validation_and_checkpoint_cadence_preserve_actual_last_state(tmp_path: 
     assert torch.load(root / "last.ckpt", weights_only=False)["epoch"] == 2
 
 
+@pytest.mark.parametrize("training", [True, False])
+def test_trainer_sets_same_float32_matmul_precision_for_fit_and_inference(monkeypatch, training):
+    previous = torch.get_float32_matmul_precision()
+    observed = []
+    monkeypatch.setattr(
+        baseline_runtime.pl, "Trainer", lambda **kwargs: observed.append(torch.get_float32_matmul_precision())
+    )
+    try:
+        torch.set_float32_matmul_precision("highest")
+        baseline_runtime._trainer(
+            Namespace(device="cpu", devices=[0], epochs=1, precision="32-true"), training=training
+        )
+        assert observed == ["high"]
+    finally:
+        torch.set_float32_matmul_precision(previous)
+
+
 def test_trainer_forwards_runtime_settings_and_resolves_auto_cpu(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(baseline_runtime.pl, "Trainer", lambda **kwargs: kwargs)

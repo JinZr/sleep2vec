@@ -172,6 +172,7 @@ class BaselineModule(pl.LightningModule):
 
 
 def _trainer(args, *, callbacks=(), training=False):
+    torch.set_float32_matmul_precision("high")
     if getattr(args, "device", "cuda") not in {"cpu", "cuda"}:
         raise ValueError("--device must be cpu or cuda; choose GPU IDs with --devices.")
     accelerator = "cpu" if getattr(args, "device", "cuda") == "cpu" else getattr(args, "accelerator", "gpu")
@@ -238,7 +239,6 @@ def build_version_name(args: Namespace, cfg: BaselineConfig) -> str:
 
 
 def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
-    torch.set_float32_matmul_precision("high")
     if not hasattr(args, "test_all_checkpoints_after_fit"):
         args.test_all_checkpoints_after_fit = False
     if args.test_all_checkpoints_after_fit and not args.test_after_fit:
