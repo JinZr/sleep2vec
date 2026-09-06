@@ -11,7 +11,8 @@ def test_result_types_reach_callers(tmp_path: Path):
             from pathlib import Path
             from agent_tools import (
                 adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
-                experiment_io, experiment_workspace, managed_scheduler, models, run_artifacts, run_evidence, slurm,
+                experiment_io, experiment_workspace, managed_scheduler, models, plan_hparam,
+                run_artifacts, run_evidence, slurm,
             )
 
             from typing import Any, Literal
@@ -35,6 +36,16 @@ def test_result_types_reach_callers(tmp_path: Path):
             strict_key: tuple[str, str] = experiment_workspace.validated_run_key({})
             optional_key: tuple[str, str] | None = experiment_workspace.managed_run_key({})
             required_key: tuple[str, str] = experiment_workspace.managed_run_key({})  # type: ignore[assignment]
+
+            layouts = plan_hparam.hparam_run_layouts({}, Path("/plan"), 7)
+            layout_identity: dict[str, str] = layouts[0]["identity"]
+            layout_parameters: dict[str, Any] = layouts[0]["parameters"]
+            layout_path: Path = layouts[0]["run_dir"]
+            layout_path_text: str = layouts[0]["run_dir"]  # type: ignore[assignment]
+            layouts[0]["run_path"]  # type: ignore[typeddict-item]
+            layouts[0]["run_dir"] = "/plan/run"  # type: ignore[typeddict-item]
+            layouts[0]["identity"]["run_id"] = 7  # type: ignore[assignment]
+            layouts[0]["parameters"] = []  # type: ignore[typeddict-item]
 
             resources = slurm.normalize_resources({}, 1)
             cpus: int = resources["cpus_per_task"]
