@@ -370,7 +370,13 @@ def test_agent_proposal_preview_is_read_only_and_execute_uses_bound_snapshot(tmp
     events_path = tmp_path / "events.jsonl"
     events_before = events_path.read_bytes()
 
-    assert adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path) == proposal_path
+    with monkeypatch.context() as preview:
+        preview.setattr(
+            adaptive_hparam,
+            "_bound_source_config_bytes",
+            lambda *_args: pytest.fail("Proposal dry-run must not bind source config bytes"),
+        )
+        assert adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path) == proposal_path
     assert events_path.read_bytes() == events_before
     assert not (workflow_dir / "adaptive" / "proposals" / "round_001.json").exists()
     assert not (workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").exists()
