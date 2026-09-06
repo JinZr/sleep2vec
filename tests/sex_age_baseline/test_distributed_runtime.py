@@ -219,6 +219,60 @@ def test_cox_loss_uses_rank_local_batch(tmp_path):
     assert not torch.isclose(observed, _batch_loss(logits, batch, cfg))
 
 
+def _masked_gradient_worker(rank, root):
+    torch.distributed.init_process_group("gloo", init_method=f"file://{root}/process-group", rank=rank, world_size=2)
+    try:
+        cfg = replace(
+            _config(Path(root)),
+            finetune=FinetuneConfig(
+                TaskConfig("multilabel_classification", 2, False, "val_macro_auroc", "max"),
+                loss=FinetuneLossConfig(pos_weight=[1.5, 2.0]),
+            ),
+        )
+        features = torch.tensor([[1.0, 0.5], [0.2, 1.0], [1.5, -0.5], [-0.2, 0.3]])
+        labels = torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.0, 0.0]])
+        for mask in (
+            [[1, 0], [0, 0], [1, 1], [0, 0]],
+            [[0, 0], [0, 0], [1, 1], [1, 0]],
+            [[0, 0], [0, 0], [0, 0], [0, 0]],
+        ):
+            torch.manual_seed(42)
+            reference = torch.nn.Linear(2, 2)
+            module = BaselineModule(cfg, Namespace())
+            model = torch.nn.Linear(2, 2)
+            model.load_state_dict(reference.state_dict())
+            module.model = torch.nn.parallel.DistributedDataParallel(model)
+            module._trainer = Namespace(world_size=2)
+            module.log = lambda *args, **kwargs: None
+            batch = {"features": features, "disease_label": labels, "has_label": torch.tensor(mask)}
+            expected = _batch_loss(reference(features), batch, cfg)
+            expected.backward()
+            local = {name: value[rank * 2 : (rank + 1) * 2] for name, value in batch.items()}
+            actual = module.training_step(local, 0)
+            actual.backward()
+            for parameter, reference_parameter in zip(model.parameters(), reference.parameters()):
+                torch.testing.assert_close(parameter.grad, reference_parameter.grad)
+            mean_loss = actual.detach().clone()
+            torch.distributed.all_reduce(mean_loss)
+            torch.testing.assert_close(mean_loss / 2, expected.detach())
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+def test_two_rank_masked_multilabel_gradients_match_global_reference(tmp_path):
+    entry = tmp_path / "masked_gradient.py"
+    entry.write_text(
+        f"import sys\nsys.path.insert(0, {str(Path(__file__).parent)!r})\n"
+        "import torch\nfrom test_distributed_runtime import _masked_gradient_worker\n"
+        "if __name__ == '__main__':\n"
+        f"    torch.multiprocessing.spawn(_masked_gradient_worker, args=({str(tmp_path)!r},), nprocs=2)\n"
+    )
+    env = dict(os.environ, OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2]) + os.pathsep + env.get("PYTHONPATH", "")
+    result = subprocess.run([sys.executable, str(entry)], env=env, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_subject_logrisk_mean_preserves_authored_duplicates_and_removes_padding(tmp_path):
     (tmp_path / "columns.txt").write_text("disease\n")
     cfg = _config(tmp_path)

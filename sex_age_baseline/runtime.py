@@ -98,6 +98,12 @@ class BaselineModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         logits = self(batch["features"])
         loss = _batch_loss(logits, batch, self.cfg)
+        if self.cfg.finetune.task.type == "multilabel_classification" and self.trainer.world_size > 1:
+            valid_count = (batch["has_label"] > 0.5).sum()
+            global_count = valid_count.clone()
+            torch.distributed.all_reduce(global_count)
+            # DDP averages gradients; scale the local mean to the global valid-entry mean.
+            loss = loss * (valid_count * self.trainer.world_size / global_count.clamp_min(1))
         self.log("train_loss", loss, on_step=True, on_epoch=True, batch_size=logits.shape[0], sync_dist=True)
         return loss
 
