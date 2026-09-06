@@ -1357,7 +1357,98 @@ def adaptive_step(
         return _adaptive_step(root, proposal_path=proposal_path, execute=True)
 
 
-def _adaptive_step(  # noqa: C901
+def _stage_and_publish_round(
+    *,
+    root: Path,
+    workspace: Path,
+    next_dir: Path,
+    next_round: int,
+    recipe_payload: dict[str, Any],
+    recipe_source: str | Path,
+    bound_config_sha256: str | None,
+    expected_recipe: dict[str, Any] | None,
+    expected_base_recipe: dict[str, Any] | None,
+    bound_config_path: Path | None,
+) -> None:
+    try:
+        staging_dir = _stage_round(
+            next_dir,
+            recipe_payload,
+            recipe_source,
+            next_round,
+            bound_config_sha256,
+            expected_recipe=expected_recipe,
+            expected_base_recipe=expected_base_recipe,
+            bound_config_path=bound_config_path,
+        )
+    except BaseException:
+        if (
+            bound_config_path is not None
+            and next_dir.is_dir()
+            and not next_dir.is_symlink()
+            and _is_bound_config_placeholder(next_dir, bound_config_path)
+            and not bound_config_path.is_symlink()
+        ):
+            bound_config_path.unlink()
+            lock_path = bound_config_path.with_name(f".{bound_config_path.name}.cas.lock")
+            if os.path.lexists(lock_path):
+                lock_path.unlink()
+            next_dir.rmdir()
+        raise
+    cleanup_staging = True
+    try:
+        if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
+            raise ValueError("Agent proposal frozen source config changed during plan materialization.")
+        with plan_publication_lock(next_dir):
+            staged_plan = read_json(staging_dir / "plan.json")
+            _validate_adaptive_step_registration(workspace, next_dir, staged_plan)
+            plan_registration_rows_state(
+                workspace,
+                plan_hparam.hparam_manifest_rows(staged_plan),
+                source="Canonical adaptive round",
+            )
+            staged_plan_sha256 = artifacts.plan_tree_sha256(staging_dir)
+            published_now = not (next_dir / "plan.json").exists()
+            if published_now:
+                placeholder_backup = _publish_staged_round_locked(
+                    staging_dir,
+                    next_dir,
+                    bound_config_path=bound_config_path,
+                    bound_config_sha256=bound_config_sha256,
+                )
+            else:
+                if artifacts.plan_tree_sha256(next_dir) != staged_plan_sha256:
+                    raise ValueError(f"Published adaptive round differs from deterministic regeneration: {next_dir}")
+                placeholder_backup = None
+            try:
+                committed_plan = plan_hparam.commit_hparam_plan(
+                    next_dir,
+                    emit_event=False,
+                    preflight_validated=True,
+                )
+            except plan_hparam.HparamRegistrationPreflightError:
+                if published_now:
+                    cleanup_staging = False
+                    cleanup_staging = _restore_uncommitted_round(
+                        staging_dir,
+                        next_dir,
+                        placeholder_backup,
+                        staged_plan_sha256,
+                    )
+                raise
+            _reconcile_plan_event(workspace, next_dir, committed_plan)
+            if placeholder_backup is not None:
+                shutil.rmtree(placeholder_backup)
+            _append_registry_rows(root, next_round, next_dir)
+            if staging_dir.exists() and not staging_dir.is_symlink():
+                shutil.rmtree(staging_dir)
+    except BaseException:
+        if cleanup_staging and staging_dir.exists() and not staging_dir.is_symlink():
+            shutil.rmtree(staging_dir)
+        raise
+
+
+def _adaptive_step(
     root: Path,
     *,
     proposal_path: str | Path | None,
@@ -1553,82 +1644,18 @@ def _adaptive_step(  # noqa: C901
         if round_recipe_payload is not None and isinstance(recipe.get("_base_recipe"), dict)
         else None
     )
-    try:
-        staging_dir = _stage_round(
-            next_dir,
-            recipe_payload,
-            recipe_source,
-            next_round,
-            bound_config_sha256,
-            expected_recipe=expected_recipe,
-            expected_base_recipe=expected_base_recipe,
-            bound_config_path=bound_config_path,
-        )
-    except BaseException:
-        if (
-            bound_config_path is not None
-            and next_dir.is_dir()
-            and not next_dir.is_symlink()
-            and _is_bound_config_placeholder(next_dir, bound_config_path)
-            and not bound_config_path.is_symlink()
-        ):
-            bound_config_path.unlink()
-            lock_path = bound_config_path.with_name(f".{bound_config_path.name}.cas.lock")
-            if os.path.lexists(lock_path):
-                lock_path.unlink()
-            next_dir.rmdir()
-        raise
-    cleanup_staging = True
-    try:
-        if bound_config_path is not None and file_sha256(bound_config_path) != bound_config_sha256:
-            raise ValueError("Agent proposal frozen source config changed during plan materialization.")
-        with plan_publication_lock(next_dir):
-            staged_plan = read_json(staging_dir / "plan.json")
-            _validate_adaptive_step_registration(workspace, next_dir, staged_plan)
-            plan_registration_rows_state(
-                workspace,
-                plan_hparam.hparam_manifest_rows(staged_plan),
-                source="Canonical adaptive round",
-            )
-            staged_plan_sha256 = artifacts.plan_tree_sha256(staging_dir)
-            published_now = not (next_dir / "plan.json").exists()
-            if published_now:
-                placeholder_backup = _publish_staged_round_locked(
-                    staging_dir,
-                    next_dir,
-                    bound_config_path=bound_config_path,
-                    bound_config_sha256=bound_config_sha256,
-                )
-            else:
-                if artifacts.plan_tree_sha256(next_dir) != staged_plan_sha256:
-                    raise ValueError(f"Published adaptive round differs from deterministic regeneration: {next_dir}")
-                placeholder_backup = None
-            try:
-                committed_plan = plan_hparam.commit_hparam_plan(
-                    next_dir,
-                    emit_event=False,
-                    preflight_validated=True,
-                )
-            except plan_hparam.HparamRegistrationPreflightError:
-                if published_now:
-                    cleanup_staging = False
-                    cleanup_staging = _restore_uncommitted_round(
-                        staging_dir,
-                        next_dir,
-                        placeholder_backup,
-                        staged_plan_sha256,
-                    )
-                raise
-            _reconcile_plan_event(workspace, next_dir, committed_plan)
-            if placeholder_backup is not None:
-                shutil.rmtree(placeholder_backup)
-            _append_registry_rows(root, next_round, next_dir)
-            if staging_dir.exists() and not staging_dir.is_symlink():
-                shutil.rmtree(staging_dir)
-    except BaseException:
-        if cleanup_staging and staging_dir.exists() and not staging_dir.is_symlink():
-            shutil.rmtree(staging_dir)
-        raise
+    _stage_and_publish_round(
+        root=root,
+        workspace=workspace,
+        next_dir=next_dir,
+        next_round=next_round,
+        recipe_payload=recipe_payload,
+        recipe_source=recipe_source,
+        bound_config_sha256=bound_config_sha256,
+        expected_recipe=expected_recipe,
+        expected_base_recipe=expected_base_recipe,
+        bound_config_path=bound_config_path,
+    )
     execution_value = recipe.get("execution")
     execution = execution_value if isinstance(execution_value, dict) else {}
     scheduler_value = execution.get("scheduler")
