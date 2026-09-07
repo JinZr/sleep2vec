@@ -68,7 +68,7 @@ class _HparamSelectionInputs:
     checkpoint_out: Path
     canonical_rows: list[dict[str, Any]]
     canonical_by_key: dict[tuple[str, str] | None, dict[str, Any]]
-    existing_report_steps: list[dict[str, Any]]
+    existing_report_steps: list[tracking.HparamSelectionReportStep]
     step_runs: list[dict[str, Any]]
     evidence_runs_by_key: dict[tuple[str, str] | None, dict[str, Any]]
     report_run_keys: set[tuple[str, str] | None]
@@ -878,8 +878,8 @@ def _commit_hparam_selection(selection: _HparamSelectionBuild) -> Path:
     return selection.out
 
 
-def _selection_report_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    selected_steps = []
+def _selection_report_steps(rows: list[dict[str, Any]]) -> list[tracking.HparamSelectionReportStep]:
+    selected_steps: list[tracking.HparamSelectionReportStep] = []
     selected_step_ids = sorted(
         {
             str(row["step_id"])
@@ -905,7 +905,7 @@ def _selection_report_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if len(policies) != 1:
             raise ValueError(f"Canonical hparam rows disagree on selection policy: {step_id}")
         metric, mode, split = next(iter(policies))
-        step = {
+        step: tracking.HparamSelectionReportStep = {
             "step_id": step_id,
             "selection": {"metric": metric, "mode": mode, "split": split},
             "rows": step_rows,

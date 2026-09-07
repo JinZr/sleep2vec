@@ -55,10 +55,27 @@ class HparamSelectionReportSnapshot(TypedDict):
     ranking_sha256: str | None
 
 
+class _HparamSelectionStepCore(TypedDict):
+    step_id: str
+    selection: artifacts.RegisteredPlanSelection
+    rows: list[dict[str, Any]]
+
+
+class HparamSelectionReportStep(_HparamSelectionStepCore, total=False):
+    ranked: list[dict[str, Any]]
+    checkpoint_audit_rows: list[dict[str, str]]
+    legacy_selection: bool
+
+
+class HparamSelectionStep(HparamSelectionReportStep):
+    plan_path: str
+    plans: list[artifacts.RegisteredPlanSummary]
+
+
 class HparamSelectionLifecycle(TypedDict):
-    hparam_steps: list[dict[str, Any]]
-    pending_steps: list[dict[str, Any]]
-    selected_steps: list[dict[str, Any]]
+    hparam_steps: list[HparamSelectionStep]
+    pending_steps: list[HparamSelectionStep]
+    selected_steps: list[HparamSelectionStep]
     expected_report: str | None
     report_path: str
     report_valid: bool
@@ -989,9 +1006,9 @@ def hparam_selection_lifecycle(
     rows_by_step: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         rows_by_step.setdefault(str(row["step_id"]), []).append(row)
-    hparam_steps = []
-    pending_steps = []
-    selected_steps = []
+    hparam_steps: list[HparamSelectionStep] = []
+    pending_steps: list[HparamSelectionStep] = []
+    selected_steps: list[HparamSelectionStep] = []
     for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
         manifest = registered["manifest"]
         if manifest["plan_controller"] != "ordinary":
@@ -1007,11 +1024,15 @@ def hparam_selection_lifecycle(
         if not selection.get("metric") or selection.get("mode") not in {"min", "max"} or not selection.get("split"):
             raise ValueError(f"Registered hparam plan has an incomplete selection policy: {step_id}")
         plan_keys = {tuple(key) for plan in plans for key in plan["run_keys"]}
-        step: dict[str, Any] = {
+        step: HparamSelectionStep = {
             "step_id": step_id,
             "plan_path": min(str(plan["path"]) for plan in plans),
             "plans": plans,
-            "selection": selection,
+            "selection": {
+                "metric": str(selection["metric"]),
+                "mode": str(selection["mode"]),
+                "split": str(selection["split"]),
+            },
             "rows": sorted(
                 [row for row in rows_by_step.get(step_id, []) if managed_run_key(row) in plan_keys],
                 key=lambda row: str(row["run_id"]),
@@ -1097,7 +1118,7 @@ def hparam_selection_lifecycle(
 
 
 def _validate_test_checkpoint_audits(
-    step: dict[str, Any],
+    step: HparamSelectionStep,
     audit_files: dict[str, exp_io.ManagedFileSnapshot | None] | None,
 ) -> None:
     if step["selection"]["split"] != "test":
@@ -1105,12 +1126,12 @@ def _validate_test_checkpoint_audits(
     if not isinstance(audit_files, dict):
         raise ValueError(f"Frozen checkpoint test rankings are missing for selected step {step['step_id']}")
     canonical_by_key = {managed_run_key(row): row for row in step["rows"]}
-    all_audit_rows = []
+    all_audit_rows: list[dict[str, str]] = []
     reverse = step["selection"]["mode"] == "max"
     for plan in step["plans"]:
-        plan_keys = {tuple(key) for key in plan["run_keys"]}
+        plan_keys = set(plan["run_keys"])
         successful_keys = {
-            key for key in plan_keys if (canonical_by_key.get(key) or {}).get("status") in SUCCESS_STATUSES
+            key for key in plan_keys if (canonical_by_key.get(key) or {}).get("status", "") in SUCCESS_STATUSES
         }
         if not successful_keys:
             continue
@@ -1236,7 +1257,7 @@ def _validate_test_checkpoint_audits(
     step["checkpoint_audit_rows"] = all_audit_rows
 
 
-def _hparam_ranking_matches(selected_steps: list[dict[str, Any]], ranking_text: Any) -> bool:
+def _hparam_ranking_matches(selected_steps: Sequence[HparamSelectionReportStep], ranking_text: Any) -> bool:
     ranked_rows = [row for step in selected_steps for row in step["ranked"]]
     expected_rows = hparam_ranking_projection(ranked_rows)
     if not expected_rows:
@@ -1275,7 +1296,7 @@ def hparam_ranking_projection(rows: list[dict[str, Any]]) -> list[dict[str, Any]
     return [{field: row.get(field, "") for field in fields} for row in rows]
 
 
-def hparam_selection_report_text(selected_steps: list[dict[str, Any]], *, root: Path) -> str:
+def hparam_selection_report_text(selected_steps: Sequence[HparamSelectionReportStep], *, root: Path) -> str:
     lines = [
         "# Hyper-parameter Selection",
         "",
@@ -1324,7 +1345,7 @@ def hparam_selection_report_text(selected_steps: list[dict[str, Any]], *, root: 
     return "\n".join(lines)
 
 
-def validated_hparam_ranking(step: dict[str, Any]) -> list[dict[str, Any]] | None:
+def validated_hparam_ranking(step: HparamSelectionReportStep) -> list[dict[str, Any]] | None:
     rows = step["rows"]
     selection = step["selection"]
     evidence_fields = ("metric", "selection_mode", "selection_split", "rank", "score", "checkpoint_path")
@@ -1340,7 +1361,7 @@ def validated_hparam_ranking(step: dict[str, Any]) -> list[dict[str, Any]] | Non
             if str(row.get(field) or "") != expected:
                 raise ValueError(f"Canonical hparam selection {field} differs for {step['step_id']} / {row['run_id']}")
         rank = row.get("rank")
-        if rank in (None, ""):
+        if rank is None or rank == "":
             if any(row.get(field) not in (None, "") for field in HPARAM_SELECTION_RESULT_FIELDS):
                 raise ValueError(f"Canonical hparam selection is incomplete for {step['step_id']} / {row['run_id']}")
             continue

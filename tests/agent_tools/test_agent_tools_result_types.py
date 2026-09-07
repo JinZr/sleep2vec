@@ -340,6 +340,36 @@ def test_result_types_reach_callers(tmp_path: Path):
             )
             steps[0]["plans"][0]["run_key"]  # type: ignore[typeddict-item]
             lifecycle = experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"))
+            lifecycle_step = lifecycle["hparam_steps"][0]
+            selected_step = lifecycle["selected_steps"][0]
+            plan_path: str = lifecycle_step["plan_path"]
+            policy_metric: str = lifecycle_step["selection"]["metric"]
+            lifecycle_step["selection"]["mode"] = 1  # type: ignore[typeddict-item]
+            lifecycle_step["plans"][0]["run_keys"] = ["run-001"]  # type: ignore[list-item]
+            lifecycle["pending_steps"][0]["plan_path"] = None  # type: ignore[typeddict-item]
+            selected_step["rankings"]  # type: ignore[typeddict-item]
+            selected_step["ranked"] = ["run-001"]  # type: ignore[list-item]
+            selected_step["legacy_selection"] = "yes"  # type: ignore[typeddict-item]
+            if "checkpoint_audit_rows" in selected_step:
+                audit_score: str = selected_step["checkpoint_audit_rows"][0]["score"]
+                selected_step["checkpoint_audit_rows"][0]["score"] = 0.5  # type: ignore[assignment]
+            report_steps = hparam_selection._selection_report_steps([])
+            report_steps[0]["step_id"] = 1  # type: ignore[typeddict-item]
+            report_steps[0]["ranked"] = ["run-001"]  # type: ignore[list-item]
+            ranking_input: experiment_tracking.HparamSelectionReportStep = {
+                "step_id": "step", "selection": {"metric": "score", "mode": "max", "split": "val"}, "rows": [],
+            }
+            experiment_tracking.validated_hparam_ranking(ranking_input)
+            experiment_tracking.hparam_selection_report_text(report_steps, root=Path("/workspace"))
+            experiment_tracking.hparam_selection_report_text(lifecycle["selected_steps"], root=Path("/workspace"))
+            experiment_tracking._hparam_ranking_matches(report_steps, "csv")
+            experiments._validate_hparam_checkpoints([], lifecycle["selected_steps"], remote=None)
+            invalid_report_step = {"step_id": "step", "selection": {}, "rows": "bad"}
+            experiment_tracking.validated_hparam_ranking(invalid_report_step)  # type: ignore[arg-type]
+            experiment_tracking.hparam_selection_report_text(
+                [invalid_report_step], root=Path("/workspace"),  # type: ignore[list-item]
+            )
+            experiments._validate_hparam_checkpoints([], [invalid_report_step], remote=None)  # type: ignore[list-item]
             expected_report: str | None = lifecycle["expected_report"]
             report_valid: bool = lifecycle["report_valid"]
             lifecycle["selected_step"]  # type: ignore[typeddict-item]

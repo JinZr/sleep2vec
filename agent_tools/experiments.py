@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
@@ -547,7 +548,7 @@ def register_experiment_step(run_dir: str | Path, spec_path: str | Path, *, remo
 
 def _validate_hparam_checkpoints(
     rows: list[dict[str, Any]],
-    selected_steps: list[dict[str, Any]],
+    selected_steps: Sequence[tracking.HparamSelectionReportStep],
     *,
     remote: str | None,
 ) -> None:
