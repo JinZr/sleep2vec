@@ -1005,3 +1005,46 @@ def test_managed_scheduler_validates_result_root_against_explicit_output_root(tm
     assert len(starts) == 1
     assert result.committed_rows[0]["status"] == "launched"
     assert rows[0]["run_id"] == "run-000"
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_fields", "expected"),
+    [
+        ({}, {}),
+        ({"checkpoint": None, "checkpoint_sha256": None}, {}),
+        ({"checkpoint": "", "checkpoint_sha256": ""}, {}),
+        (
+            {"checkpoint": "relative/model.ckpt"},
+            {"checkpoint_path": Path("relative/model.ckpt"), "checkpoint_sha256": None},
+        ),
+        ({"checkpoint_sha256": "a" * 64}, {"checkpoint_path": None, "checkpoint_sha256": "a" * 64}),
+    ],
+)
+@pytest.mark.parametrize("with_snapshot", [False, True])
+def test_managed_launch_preserves_optional_verification_arguments(tmp_path, checkpoint_fields, expected, with_snapshot):
+    _write_runtime_rows(tmp_path, [{"run_id": "pending", "status": "pending", "target": ""}])
+    planned = json.loads((tmp_path / "plan.json").read_text())["runs"]
+    planned[0].update(checkpoint_fields, command="python -m sleep2vec.finetune")
+    snapshot = {"runtime_commit": "a" * 40, "extra_identity": {"raw": [None, 17]}} if with_snapshot else None
+    calls = []
+    hooks = managed_scheduler.SchedulerHooks(
+        validated_snapshot=lambda *_args, **_kwargs: (snapshot, False),
+        build_command=lambda *_args, **kwargs: calls.append(kwargs) or "fixture-command",
+        start_process=lambda *_args: "launch_failed",
+    )
+
+    result = managed_scheduler.launch_managed_runs(
+        tmp_path, tmp_path, planned, {"target": "local", "workdir": str(tmp_path)}, {}, dry_run=False, hooks=hooks
+    )
+
+    assert len(calls) == 1
+    kwargs = calls[0]
+    assert {key: kwargs[key] for key in ("checkpoint_path", "checkpoint_sha256") if key in kwargs} == expected
+    assert kwargs["execution_snapshot"] is snapshot
+    if with_snapshot:
+        assert kwargs["planned_command"] == planned[0]["command"]
+        assert kwargs["run_id"] == "pending"
+    else:
+        assert "planned_command" not in kwargs
+        assert "run_id" not in kwargs
+    assert result.committed_rows[0]["status"] == "launch_failed"
