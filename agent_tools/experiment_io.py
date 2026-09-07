@@ -396,7 +396,7 @@ def read_rows_at(
     return rows
 
 
-def validate_managed_output_paths(  # noqa: C901
+def validate_managed_output_paths(
     root: str | Path,
     paths: Sequence[str | Path],
     *,
@@ -419,22 +419,7 @@ def validate_managed_output_paths(  # noqa: C901
         return
 
     root_path = Path(os.path.abspath(root))
-    current = Path(root_path.anchor)
-    for part in root_path.relative_to(current).parts[:-1]:
-        current /= part
-        try:
-            info = os.lstat(current)
-        except FileNotFoundError:
-            break
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            raise ValueError(f"Managed output paths must be independent regular files: {current}")
-    try:
-        root_info = os.lstat(root_path)
-    except FileNotFoundError:
-        pass
-    else:
-        if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
-            raise ValueError(f"Managed output paths must be independent regular files: {root_path}")
+    _validate_managed_output_root(root_path)
     seen_paths: dict[Path, None] = {}
     seen_inodes: set[tuple[int, int]] = set()
     for raw_target in paths:
@@ -473,50 +458,80 @@ def validate_managed_output_paths(  # noqa: C901
         inode = (info.st_dev, info.st_ino)
         if inode in seen_inodes:
             # Any earlier path may have changed identity. Pin all seen paths before judging a stale collision.
-            with ExitStack() as stack:
-                # O_PATH preserves write-only access; platforms without it fail closed on read-access denial.
-                metadata_flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
-                try:
-                    root_descriptor = _open_managed_root(root_path, directory_flags=metadata_flags | os.O_DIRECTORY)
-                except FileNotFoundError:
-                    seen_inodes.clear()
-                    continue
-                except OSError as exc:
-                    if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
-                        raise
-                    raise ValueError(f"Managed output paths must be independent regular files: {root_path}") from exc
-                stack.callback(_close_descriptor, root_descriptor)
-                descriptors = []
-                for candidate in seen_paths:
-                    try:
-                        parent_descriptor, name = _open_managed_parent(
-                            root_descriptor,
-                            candidate.relative_to(root_path),
-                            create=False,
-                            directory_flags=metadata_flags | os.O_DIRECTORY,
-                        )
-                        stack.callback(_close_descriptor, parent_descriptor)
-                        descriptor = os.open(name, metadata_flags, dir_fd=parent_descriptor)
-                    except FileNotFoundError:
-                        continue
-                    except OSError as exc:
-                        if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
-                            raise
-                        raise ValueError(
-                            f"Managed output paths must be independent regular files: {candidate}"
-                        ) from exc
-                    stack.callback(_close_descriptor, descriptor)
-                    descriptors.append(descriptor)
-                current_infos = [os.fstat(descriptor) for descriptor in descriptors]
-                if any(current.st_nlink == 0 for current in current_infos):
-                    raise RuntimeError(f"Managed output paths changed during independence validation: {target}")
-                if any(not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 for current in current_infos):
-                    raise ValueError(f"Managed output paths must be independent regular files: {target}")
-                seen_inodes = {(current.st_dev, current.st_ino) for current in current_infos}
-                if len(seen_inodes) != len(current_infos):
-                    raise ValueError(f"Managed output paths must be independent regular files: {target}")
+            seen_inodes = _recheck_managed_output_inodes(
+                root_path=root_path, target=target, seen_paths=seen_paths, seen_inodes=seen_inodes
+            )
         else:
             seen_inodes.add(inode)
+
+
+def _validate_managed_output_root(root_path: Path) -> None:
+    current = Path(root_path.anchor)
+    for part in root_path.relative_to(current).parts[:-1]:
+        current /= part
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            break
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"Managed output paths must be independent regular files: {current}")
+    try:
+        root_info = os.lstat(root_path)
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+            raise ValueError(f"Managed output paths must be independent regular files: {root_path}")
+
+
+def _recheck_managed_output_inodes(
+    *,
+    root_path: Path,
+    target: Path,
+    seen_paths: dict[Path, None],
+    seen_inodes: set[tuple[int, int]],
+) -> set[tuple[int, int]]:
+    with ExitStack() as stack:
+        # O_PATH preserves write-only access; platforms without it fail closed on read-access denial.
+        metadata_flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+        try:
+            root_descriptor = _open_managed_root(root_path, directory_flags=metadata_flags | os.O_DIRECTORY)
+        except FileNotFoundError:
+            seen_inodes.clear()
+            return seen_inodes
+        except OSError as exc:
+            if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                raise
+            raise ValueError(f"Managed output paths must be independent regular files: {root_path}") from exc
+        stack.callback(_close_descriptor, root_descriptor)
+        descriptors = []
+        for candidate in seen_paths:
+            try:
+                parent_descriptor, name = _open_managed_parent(
+                    root_descriptor,
+                    candidate.relative_to(root_path),
+                    create=False,
+                    directory_flags=metadata_flags | os.O_DIRECTORY,
+                )
+                stack.callback(_close_descriptor, parent_descriptor)
+                descriptor = os.open(name, metadata_flags, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
+                    raise
+                raise ValueError(f"Managed output paths must be independent regular files: {candidate}") from exc
+            stack.callback(_close_descriptor, descriptor)
+            descriptors.append(descriptor)
+        current_infos = [os.fstat(descriptor) for descriptor in descriptors]
+        if any(current.st_nlink == 0 for current in current_infos):
+            raise RuntimeError(f"Managed output paths changed during independence validation: {target}")
+        if any(not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 for current in current_infos):
+            raise ValueError(f"Managed output paths must be independent regular files: {target}")
+        seen_inodes = {(current.st_dev, current.st_ino) for current in current_infos}
+        if len(seen_inodes) != len(current_infos):
+            raise ValueError(f"Managed output paths must be independent regular files: {target}")
+    return seen_inodes
 
 
 def read_text_at(path: str | Path, *, remote: str | None = None) -> str:

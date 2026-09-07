@@ -61,7 +61,6 @@ PACKAGE = Path("agent_tools")
 SUPPRESSION_LEDGER = {
     ("agent_tools/experiment_io.py", "append_managed_text_at"),  # 28
     ("agent_tools/experiment_io.py", "conditional_atomic_replace_text_at"),  # 47
-    ("agent_tools/experiment_io.py", "validate_managed_output_paths"),  # 39
 }
 #: Assembled blocks already above the ceiling: ``(program, block) -> scores``.
 #: Spelled here rather than as a ``# noqa`` in the fragment, because a
@@ -79,7 +78,6 @@ SUPPRESSION_LEDGER = {
 #: and that swap leaves the debt exactly as the ledger describes it.
 PROGRAM_LEDGER = {
     ("experiment_io.conditional_atomic_replace_text", "TryExcept"): (46,),
-    ("experiment_io.validate_managed_output_paths", "Loop"): (30,),
 }
 
 SUPPRESSION = re.compile(r"#\s*noqa:\s*C901\b")

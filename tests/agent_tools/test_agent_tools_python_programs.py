@@ -15,7 +15,7 @@ SOURCE_HASHES = {
     "experiment_io.read_managed_output_texts": "5fd7bd1da8cf83fb26034f9cd6eaa55f6548f620294765adf36e1c4486360c2e",
     "experiment_io.read_text": "98a9a6036e73c9e43cc87ec31103a1185f0a51a62dcdf510c77c3cbe63d39f64",
     "experiment_io.remote_dir_nonempty": "d9604eaedee251e2b5a8ef5f055344f0e51c976c4c9c2420df7ffb4c0343bc77",
-    "experiment_io.validate_managed_output_paths": "59198ca38ad76b6ee88bf33d524c59f2a47cde862a56931bbcac170033581df9",
+    "experiment_io.validate_managed_output_paths": "092228961de6640de45426002fa69558160068b2e0fd42aaf13faa2ae781e4ab",
     "experiment_workspace.write_run_matrix_if_current": (
         "82220ec43daaa0e9244a6a30fddabfba5a6ee7e7a5406bcd1d42a74bca38c0b9"
     ),
@@ -44,7 +44,7 @@ COMMAND_HASHES = {
     "experiment_io.read_managed_output_texts": "d1445b6b99b4c0441495c35e2f26dfbbe469ad3be83446882407c9c1fac8cfd0",
     "experiment_io.read_text": "6a0e31af6006881d55b1109f58f0dfea2c332e503c6315741261569eb9b4edc0",
     "experiment_io.remote_dir_nonempty": "bea5ad87ff7a0921736c954d84dec11f66a8d3079db464bb00a3b6328a0c60fc",
-    "experiment_io.validate_managed_output_paths": "565198db56507fa2b584cd6c8b055d685ca2db9e47bd3d47114055d6f81ee69e",
+    "experiment_io.validate_managed_output_paths": "5a8bcd931dfa0af7efeecb373ced1a1685837f266d3b531efbb45006aa718835",
     "experiment_workspace.write_run_matrix_if_current": (
         "89160398c17ccd32df9d2949fe4e6273de5f0ccc62dbc1da514c4aa9fbe9f7eb"
     ),

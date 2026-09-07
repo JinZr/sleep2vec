@@ -186,7 +186,7 @@ unchecked. The checker spells the ceiling value; nothing else does.
 Three checks, mirroring the mypy ledger ratchet in `utils/type_check.py`:
 
 1. **The ceiling** — C901 over `agent_tools`.
-2. **The suppression ledger** — the 3 functions already above the ceiling carry
+2. **The suppression ledger** — the 2 functions already above the ceiling carry
    `# noqa: C901` on their `def` line. Re-running with noqa disabled proves
    every suppression still hides a real violation (a stale one must be deleted),
    that nothing else is silencing C901, and that the live set is exactly
@@ -200,7 +200,7 @@ Three checks, mirroring the mypy ledger ratchet in `utils/type_check.py`:
    assembled and checked at the same ceiling, with noqa disabled: there is no
    second check behind this one, so an annotation in a fragment would be the
    gate switched off rather than a suppression to audit. `PROGRAM_LEDGER`
-   grandfathers the two blocks already above the ceiling, keyed per block, so a
+   grandfathers the remaining block above the ceiling, keyed per block, so a
    second over-ceiling block appearing in a grandfathered program is reported.
    mccabe names an unnamed block after its line, which moves whenever a fragment
    above it grows, so the key drops that number and the score carries what
