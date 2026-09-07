@@ -1,12 +1,46 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, TypedDict
+
+from typing_extensions import Never, NotRequired
 
 from . import experiment_io as exp_io
+
+
+class ResearchLogEvidence(TypedDict):
+    label: str
+    locator: str
+    sha256: NotRequired[str]
+
+
+class _EmptyResearchLogScope(TypedDict):
+    pass
+
+
+class ResearchLogScope(TypedDict):
+    step_id: str
+    run_ids: NotRequired[list[str]]
+
+
+class NormalizedResearchLogEntry(TypedDict):
+    id: str
+    recorded_at: str
+    kind: str
+    title: str
+    actor: str
+    source: str
+    evidence: list[ResearchLogEvidence]
+    body: str
+    occurred_at: NotRequired[str]
+    authority: NotRequired[str]
+    scope: NotRequired[ResearchLogScope]
+    supersedes: NotRequired[list[str]]
+
 
 RESEARCH_LOG_NAME = "RESEARCH_LOG.md"
 RESEARCH_LOG_KINDS = {"action", "observation", "interpretation", "decision", "conclusion"}
@@ -66,10 +100,10 @@ def _normalized_research_log_scope(
     root: Path,
     remote: str | None,
     read_step_manifest,
-    managed_run_key,
-) -> dict[str, Any]:
+    managed_run_key: Callable[[Mapping[str, Any]], tuple[str, str] | None],
+) -> ResearchLogScope | _EmptyResearchLogScope:
     scope = entry.get("scope")
-    normalized_scope: dict[str, Any] = {}
+    normalized_scope: ResearchLogScope | _EmptyResearchLogScope = {}
     if "scope" in entry:
         if not isinstance(scope, dict) or not scope:
             raise ValueError("Research log entry scope must be a non-empty mapping.")
@@ -86,7 +120,7 @@ def _normalized_research_log_scope(
         step_manifest = read_step_manifest(root, step_id, remote=remote)
         if step_manifest["experiment_id"] != experiment_id:
             raise ValueError("Research log entry scope.step_id belongs to a different experiment.")
-        normalized_scope["step_id"] = step_id
+        normalized_scope = {"step_id": step_id}
         if "run_ids" in scope:
             run_ids = scope["run_ids"]
             if not isinstance(run_ids, list) or not run_ids:
@@ -112,8 +146,8 @@ def _normalized_research_log_entry(
     root: Path,
     remote: str | None,
     read_step_manifest,
-    managed_run_key,
-) -> dict[str, Any]:
+    managed_run_key: Callable[[Mapping[str, Any]], tuple[str, str] | None],
+) -> NormalizedResearchLogEntry:
     unexpected = sorted(set(entry) - RESEARCH_LOG_ENTRY_FIELDS)
     if unexpected:
         raise ValueError(f"Unexpected research log entry fields: {', '.join(unexpected)}")
@@ -150,7 +184,7 @@ def _normalized_research_log_entry(
     evidence = entry["evidence"]
     if not isinstance(evidence, list) or not evidence:
         raise ValueError("Research log entry evidence must be a non-empty list.")
-    normalized_evidence = []
+    normalized_evidence: list[ResearchLogEvidence] = []
     for index, item in enumerate(evidence):
         if not isinstance(item, dict):
             raise ValueError(f"Research log entry evidence[{index}] must be a mapping.")
@@ -164,7 +198,7 @@ def _normalized_research_log_entry(
             raise ValueError(
                 f"Research log entry evidence[{index}] is missing required fields: {', '.join(missing_evidence)}"
             )
-        normalized_item = {
+        normalized_item: ResearchLogEvidence = {
             "label": _research_log_single_line(item["label"], f"evidence[{index}].label"),
             "locator": _research_log_single_line(item["locator"], f"evidence[{index}].locator"),
         }
@@ -201,7 +235,7 @@ def _normalized_research_log_entry(
         if entry_id in normalized_supersedes:
             raise ValueError("Research log entry cannot supersede itself.")
 
-    normalized: dict[str, Any] = {
+    normalized: NormalizedResearchLogEntry = {
         "id": entry_id,
         "recorded_at": _research_log_timestamp(entry["recorded_at"], "recorded_at"),
         "kind": kind,
@@ -247,7 +281,7 @@ def _research_log_blocks(text: str, path: Path) -> dict[str, str]:
     return entries
 
 
-def _research_log_block(entry: dict[str, Any], experiment_id: str) -> str:
+def _research_log_block(entry: NormalizedResearchLogEntry, experiment_id: str) -> str:
     lines = [
         f"## {entry['title']}",
         "",
@@ -264,7 +298,7 @@ def _research_log_block(entry: dict[str, Any], experiment_id: str) -> str:
             f"- Experiment: `{experiment_id}`",
         ]
     )
-    scope = entry.get("scope") or {}
+    scope: ResearchLogScope | dict[str, Never] = entry.get("scope") or {}
     if "step_id" in scope:
         lines.append(f"- Step: `{scope['step_id']}`")
     if "run_ids" in scope:
@@ -292,7 +326,7 @@ def append_research_log(
     managed_rows: list[dict[str, Any]],
     remote: str | None,
     read_step_manifest,
-    managed_run_key,
+    managed_run_key: Callable[[Mapping[str, Any]], tuple[str, str] | None],
     io=exp_io,
 ) -> tuple[Path, str, bool]:
     root = Path(root)

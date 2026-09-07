@@ -24,6 +24,14 @@ class RunIdentity(TypedDict):
     version: str
 
 
+class StepManifest(TypedDict):
+    step: dict[str, Any]
+    experiment_id: Any
+    plan_controller: str
+    recipe_path: Any
+    plans: list[str]
+
+
 class AdaptiveInitEvent(TypedDict):
     round: int
     recipe_path: str
@@ -414,7 +422,9 @@ def validate_plan_output(
     return None
 
 
-def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+def merge_step_manifest(
+    existing: StepManifest | dict[str, Any], incoming: StepManifest | dict[str, Any]
+) -> StepManifest:
     allowed_fields = {"step", "experiment_id", "plan_controller", "recipe_path", "plans"}
     for source, payload in (("existing", existing), ("incoming", incoming)):
         if not isinstance(payload, dict):
@@ -426,7 +436,7 @@ def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> d
             raise ValueError(f"{source} step manifest step must be a mapping.")
         if "plans" in payload and not isinstance(payload["plans"], list):
             raise ValueError(f"{source} step manifest plans must be a list.")
-        controller = payload.get("plan_controller")
+        controller: Any = payload.get("plan_controller")
         if controller not in (None, "") and controller not in PLAN_CONTROLLERS:
             raise ValueError(f"{source} step manifest has invalid plan_controller: {controller}")
 
@@ -479,7 +489,7 @@ def merge_step_manifest(existing: dict[str, Any], incoming: dict[str, Any]) -> d
     }
 
 
-def validate_step_registration(root: str | Path, incoming: dict[str, Any]) -> None:
+def validate_step_registration(root: str | Path, incoming: StepManifest | dict[str, Any]) -> None:
     existing = read_step_manifest(root, str(incoming["step"]["id"]), allow_missing=True)
     merge_step_manifest(existing or {}, incoming)
 
@@ -557,10 +567,10 @@ def read_registered_steps(
 
 def commit_step_manifest(
     root: str | Path,
-    incoming: dict[str, Any],
+    incoming: StepManifest | dict[str, Any],
     *,
     remote: str | None = None,
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[StepManifest, bool]:
     root = Path(root)
     step = incoming["step"] if isinstance(incoming.get("step"), dict) else {}
     step_id = str(step.get("id") or "")
@@ -670,7 +680,7 @@ def _normalized_research_log_entry(
     managed_rows: list[dict[str, Any]],
     root: Path,
     remote: str | None,
-) -> dict[str, Any]:
+) -> research_log.NormalizedResearchLogEntry:
     return research_log._normalized_research_log_entry(
         entry,
         experiment_id=experiment_id,
@@ -748,7 +758,7 @@ def ensure_experiment_workspace(
         plan_path = (Path.cwd() / plan_path).resolve()
     else:
         plan_path = plan_path.resolve()
-    step_payload = {
+    step_payload: StepManifest = {
         "step": step,
         "experiment_id": experiment["id"],
         "plan_controller": controller,
