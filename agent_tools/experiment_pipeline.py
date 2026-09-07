@@ -521,9 +521,27 @@ def _freeze_pipeline(root: Path, pipeline_dir: Path, spec_file: Path, source_tex
     append_event(root, "pipeline_frozen", {"pipeline_id": state["pipeline_id"], "spec": str(spec_file)})
 
 
-def _validate_frozen_pipeline(  # noqa: C901
-    pipeline_dir: Path, source_text: str, spec: dict[str, Any]
-) -> dict[str, Any]:
+def _validate_frozen_source_plans(state: dict[str, Any], spec: dict[str, Any]) -> None:
+    snapshots = state.get("source_plans")
+    if not isinstance(snapshots, list):
+        raise ValueError("Frozen source plan snapshots are malformed.")
+    snapshots_by_id = {str(snapshot.get("source_id")): snapshot for snapshot in snapshots if isinstance(snapshot, dict)}
+    if len(snapshots_by_id) != len(snapshots) or set(snapshots_by_id) != set(spec["checkpoint_sources"]):
+        raise ValueError("Frozen source plan identities differ from the pipeline spec.")
+    for source_id, source in spec["checkpoint_sources"].items():
+        snapshot = snapshots_by_id[source_id]
+        if str(snapshot.get("plan_dir") or "") != str(source["plan"]):
+            raise ValueError(f"Frozen source plan path drifted: {source_id}")
+        plan_path = Path(str(snapshot["plan_path"]))
+        resolved_recipe_path = Path(str(snapshot["resolved_recipe_path"]))
+        if file_sha256(plan_path) != snapshot["plan_sha256"]:
+            raise ValueError(f"Source plan changed after pipeline freeze: {plan_path}")
+        if file_sha256(resolved_recipe_path) != snapshot["resolved_recipe_sha256"]:
+            raise ValueError(f"Source plan recipe changed after pipeline freeze: {resolved_recipe_path}")
+        artifacts.read_hparam_plan(Path(str(snapshot["plan_dir"])))
+
+
+def _validate_frozen_pipeline(pipeline_dir: Path, source_text: str, spec: dict[str, Any]) -> dict[str, Any]:
     state_path = pipeline_dir / "pipeline.json"
     if not state_path.is_file() or state_path.is_symlink():
         raise ValueError(f"Frozen pipeline state is missing or aliased: {state_path}")
@@ -564,23 +582,7 @@ def _validate_frozen_pipeline(  # noqa: C901
         raise ValueError("Frozen source spec changed.")
     if file_sha256(resolved_path) != state["spec_resolved_sha256"]:
         raise ValueError("Frozen resolved spec changed.")
-    snapshots = state.get("source_plans")
-    if not isinstance(snapshots, list):
-        raise ValueError("Frozen source plan snapshots are malformed.")
-    snapshots_by_id = {str(snapshot.get("source_id")): snapshot for snapshot in snapshots if isinstance(snapshot, dict)}
-    if len(snapshots_by_id) != len(snapshots) or set(snapshots_by_id) != set(spec["checkpoint_sources"]):
-        raise ValueError("Frozen source plan identities differ from the pipeline spec.")
-    for source_id, source in spec["checkpoint_sources"].items():
-        snapshot = snapshots_by_id[source_id]
-        if str(snapshot.get("plan_dir") or "") != str(source["plan"]):
-            raise ValueError(f"Frozen source plan path drifted: {source_id}")
-        plan_path = Path(str(snapshot["plan_path"]))
-        resolved_recipe_path = Path(str(snapshot["resolved_recipe_path"]))
-        if file_sha256(plan_path) != snapshot["plan_sha256"]:
-            raise ValueError(f"Source plan changed after pipeline freeze: {plan_path}")
-        if file_sha256(resolved_recipe_path) != snapshot["resolved_recipe_sha256"]:
-            raise ValueError(f"Source plan recipe changed after pipeline freeze: {resolved_recipe_path}")
-        artifacts.read_hparam_plan(Path(str(snapshot["plan_dir"])))
+    _validate_frozen_source_plans(state, spec)
     preset_snapshots = state.get("external_presets")
     if not isinstance(preset_snapshots, list):
         raise ValueError("Frozen external preset snapshots are malformed.")

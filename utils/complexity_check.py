@@ -61,14 +61,11 @@ PACKAGE = Path("agent_tools")
 SUPPRESSION_LEDGER = {
     ("agent_tools/experiment_io.py", "append_managed_text_at"),  # 28
     ("agent_tools/experiment_io.py", "conditional_atomic_replace_text_at"),  # 47
-    ("agent_tools/experiment_io.py", "read_managed_output_texts_at"),  # 26
     ("agent_tools/experiment_io.py", "validate_managed_output_paths"),  # 39
     ("agent_tools/experiment_pipeline.py", "_run_attempts"),  # 27
-    ("agent_tools/experiment_pipeline.py", "_validate_frozen_pipeline"),  # 29
     ("agent_tools/experiment_pipeline.py", "_validate_spec"),  # 57
     ("agent_tools/hparam_selection.py", "resolve_hparam_candidates"),  # 47
     ("agent_tools/managed_scheduler.py", "_launch_managed_runs"),  # 46
-    ("agent_tools/managed_scheduler.py", "_launch_slurm_runs"),  # 28
     ("agent_tools/managed_scheduler.py", "observe_slurm_run"),  # 44
     ("agent_tools/plans.py", "evaluate_recipe"),  # 40
     ("agent_tools/run_artifacts.py", "read_registered_plan"),  # 75
