@@ -59,10 +59,25 @@ class HparamSelectionLifecycle(TypedDict):
     automatic_report_final: bool
 
 
+class _ExperimentStatusActionCore(TypedDict):
+    id: str
+    step_id: str | None
+    control_host: str | None
+    reason: str
+    advisory: bool
+    mutates: bool
+    requires_authorization: bool
+    argv: list[str]
+
+
+class ExperimentStatusAction(_ExperimentStatusActionCore, total=False):
+    required_inputs: list[str]
+
+
 class ExperimentStatusDecision(TypedDict):
     manual_choice_required: bool
-    recommended_next: dict[str, Any] | None
-    other_legal_actions: list[dict[str, Any]]
+    recommended_next: ExperimentStatusAction | None
+    other_legal_actions: list[ExperimentStatusAction]
     blocked_actions: list[str]
 
 
@@ -563,7 +578,7 @@ def _experiment_lifecycle_decision(
     plan_blockers: list[dict[str, Any]],
     missing_stop_reason_rows: list[dict[str, Any]],
     hparam: HparamSelectionLifecycle,
-    candidates: list[dict[str, Any]],
+    candidates: list[ExperimentStatusAction],
     blockers: list[dict[str, Any]],
     root: Path,
     remote: str | None,
@@ -1280,7 +1295,7 @@ def validated_hparam_ranking(step: dict[str, Any]) -> list[dict[str, Any]] | Non
     return ranked or None
 
 
-def _hparam_select_action(step_id: str, plan_path: str, remote: str | None) -> dict[str, Any]:
+def _hparam_select_action(step_id: str, plan_path: str, remote: str | None) -> ExperimentStatusAction:
     return _status_action(
         "hparam-select",
         "Rank terminal successful candidates and regenerate the deterministic selection report.",
@@ -1290,7 +1305,7 @@ def _hparam_select_action(step_id: str, plan_path: str, remote: str | None) -> d
     )
 
 
-def _finalize_action(root: Path, report_path: str, remote: str | None) -> dict[str, Any]:
+def _finalize_action(root: Path, report_path: str, remote: str | None) -> ExperimentStatusAction:
     return _status_action(
         "experiment-finalize",
         "Publish the verified non-empty experiment report.",
@@ -1431,7 +1446,7 @@ def _plan_advice(
     rows: list[dict[str, Any]],
     *,
     remote: str | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[ExperimentStatusAction]]:
     rows_by_key = {managed_run_key(row): row for row in rows}
     blockers = []
     candidates = []
@@ -1585,7 +1600,7 @@ def _status_blocker(
     }
 
 
-def _monitor_action(root: Path, remote: str | None) -> dict[str, Any]:
+def _monitor_action(root: Path, remote: str | None) -> ExperimentStatusAction:
     argv = ["python", "-m", "agent_tools", "experiment-monitor", "--run-dir", str(root)]
     if remote:
         argv.extend(["--remote", remote])
@@ -1603,7 +1618,7 @@ def _status_action(
     *,
     step_id: str | None = None,
     control_host: str | None = None,
-) -> dict[str, Any]:
+) -> ExperimentStatusAction:
     return {
         "id": action_id,
         "step_id": step_id,
