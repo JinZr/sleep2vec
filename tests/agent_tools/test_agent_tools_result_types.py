@@ -12,7 +12,8 @@ def test_result_types_reach_callers(tmp_path: Path):
             from agent_tools import (
                 adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
                 experiment_io, experiment_sources, experiment_workspace, hparam_runtime, hparam_selection,
-                managed_scheduler, models,
+                managed_scheduler, models, experiment_pipeline, experiment_pipeline_results,
+                experiment_pipeline_cohort_selection,
                 plan_contract, plan_hparam, run_artifacts, run_evidence, slurm,
             )
 
@@ -20,6 +21,49 @@ def test_result_types_reach_callers(tmp_path: Path):
             from agent_tools.adapters.hparam_tune import HPARAM_TUNE_ADAPTER
 
             from typing import Any, Literal
+
+            source_states = experiment_pipeline._inspect_sources(Path("/workspace"), {}, refresh=False)
+            source_complete: bool = source_states[0]["complete"]
+            source_states[0]["complete"] = "true"  # type: ignore[typeddict-item]
+            frozen_candidates = experiment_pipeline._select_checkpoint_sources(Path("/workspace"), {})
+            frozen_score: float = frozen_candidates[0]["score"]
+            frozen_candidates[0]["score"] = "1"  # type: ignore[typeddict-item]
+            checkpoint_key_count: int = frozen_candidates[0]["state_dict_key_count"]
+
+            logical_jobs = experiment_pipeline_results.logical_job_states({}, [])
+            attempt_count: int = logical_jobs[0]["attempt_count"]
+            logical_jobs[0]["status"] = "ready"  # type: ignore[typeddict-item]
+            execution_result = experiment_pipeline._run_attempts(
+                Path("/workspace"), Path("/pipeline"), {}, {}, [], poll_seconds=0,
+            )
+            execution_result["jobs"][0]["attempt_count"] = "1"  # type: ignore[typeddict-item]
+            if "missing_pid_blocker" in execution_result:
+                execution_result["missing_pid_blocker"]["status"] = "running"  # type: ignore[typeddict-item]
+            for pipeline_result in (
+                experiment_pipeline.run_experiment_pipeline(Path("/workspace"), Path("/spec")),
+                experiments.run_experiment_pipeline(Path("/workspace"), Path("/spec")),
+            ):
+                pipeline_result["status"] = "unknown"  # type: ignore[arg-type]
+
+            selection_evidence = experiment_pipeline_results.selection_evidence(Path("/phase"), {}, {})
+            evidence_hash: str = selection_evidence[0]["result_manifest_sha256"]
+            selection_evidence[0]["result_manifest_sha256"] = None  # type: ignore[typeddict-item]
+            _, cohort_decision = experiment_pipeline_cohort_selection.rank_candidates({}, {}, selection_evidence)
+            cohort_winner = cohort_decision["winner"]
+            if cohort_winner is not None:
+                winner_rank: int = cohort_winner["source_rank"]
+                cohort_winner["source_rank"] = "1"  # type: ignore[typeddict-item]
+                gate_value: int | float = cohort_winner["selection_evidence"][0]["value"]
+                cohort_winner["selection_evidence"][0]["value"] = "1"  # type: ignore[typeddict-item]
+            experiment_pipeline._write_no_winner_report(Path("/pipeline"), cohort_decision)
+            _, typed_decision = experiment_pipeline._validate_cohort_decision(
+                Path("/pipeline"), {}, {}, selection_evidence,
+            )
+            typed_decision["winner"] = "none"  # type: ignore[typeddict-item]
+            _, pipeline_metrics = experiment_pipeline_results.build_result_rows({}, {}, {})
+            scalar_value: int | float | str = pipeline_metrics[0]["value"]
+            pipeline_metrics[0]["value"] = None  # type: ignore[typeddict-item]
+            experiment_pipeline_results.write_rows_atomic(Path("/metrics.csv"), pipeline_metrics)
 
             def snapshot_result(should_write: bool) -> tuple[managed_scheduler.ExecutionSnapshot, bool]:
                 return {}, should_write

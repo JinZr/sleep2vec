@@ -12,7 +12,7 @@ import yaml
 
 from agent_tools import experiment_pipeline
 from agent_tools.experiment_workspace import commit_step_manifest, file_sha256
-from agent_tools.manifests import write_rows
+from agent_tools.manifests import read_rows, write_rows
 
 
 def test_freeze_attempt_recipe_writes_once_and_reuses_exact_yaml(tmp_path: Path, monkeypatch):
@@ -722,6 +722,34 @@ def test_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path, monk
         experiment_pipeline._select_checkpoint_sources(root, spec)
 
 
+def test_frozen_checkpoint_selection_preserves_unknown_fields_and_decoded_identity(tmp_path: Path, monkeypatch):
+    spec = _spec(tmp_path / "workspace")
+    selection = _selection(tmp_path)
+    selection.update(
+        {
+            "plan": spec["checkpoint_sources"]["age"]["plan"],
+            "source_task": "age",
+            "source_plan_task": "hparam_tune",
+            "inference_task": "infer",
+            "extra_evidence": {"notes": ["frozen"], "optional": None},
+        }
+    )
+    path = tmp_path / "checkpoints.json"
+    path.write_text(json.dumps({"pipeline_id": "external-v1", "sources": [selection]}) + "\n")
+    decoded = json.loads(path.read_text())
+    monkeypatch.setattr(experiment_pipeline, "read_json", lambda _path: decoded)
+
+    selections = experiment_pipeline._read_frozen_selections(path, spec)
+
+    selected = selections["age"]
+    assert selected == selection
+    assert selected is decoded["sources"][0]
+    assert selected["extra_evidence"] is decoded["sources"][0]["extra_evidence"]
+    selected["extra_evidence"]["notes"].append("reviewed")
+    assert decoded["sources"][0]["extra_evidence"]["notes"] == ["frozen", "reviewed"]
+    assert json.loads(path.read_text())["sources"][0] == selection
+
+
 def test_frozen_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path):
     root = tmp_path / "workspace"
     spec = _spec(root)
@@ -776,6 +804,7 @@ def test_retryable_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Pa
     )
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
     attempts = [{"job_id": "age-hsp-i2-psg", "attempt": 1, "status": retryable_status, "verified": "false"}]
+    original_attempt = attempts[0]
 
     updated, created = experiment_pipeline._create_needed_retries(
         root,
@@ -786,6 +815,8 @@ def test_retryable_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Pa
     )
 
     assert created is True
+    assert updated is attempts
+    assert updated[0] is original_attempt
     assert [int(row["attempt"]) for row in updated] == [1, 2]
     assert Path(updated[1]["result_root"]).name == "attempt-002"
     assert not Path(updated[1]["result_root"]).exists()
@@ -807,6 +838,7 @@ def test_retryable_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Pa
     )
     assert created_again is False
     assert unchanged == updated
+    assert unchanged is updated
     assert experiment_pipeline._logical_job_states(spec, updated)[0]["status"] == "failed"
     retry_events = [
         event
@@ -815,6 +847,90 @@ def test_retryable_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Pa
     ]
     assert len(retry_events) == 1
     assert retry_events[0]["attempt"] == 2
+
+
+@pytest.mark.parametrize(
+    "status,verified,extra,expected_status",
+    [
+        ("completed", "true", {}, "completed"),
+        ("running", "false", {}, "running"),
+        ("failed", "false", {}, "failed"),
+        ("launch_failed", "false", {}, "failed"),
+        ("missing_pid", "false", {}, "blocked"),
+        ("unknown_remote", "false", {}, "blocked"),
+        ("stopped", "false", {}, "blocked"),
+        ("superseded", "false", {}, "blocked"),
+        ("planned", "false", {"retry_blocker": "unsafe identity"}, "blocked"),
+        ("completed", "false", {"validation_error": "manifest drift"}, "failed"),
+        ("planned", "false", {"retry_preparation_error": "preflight failed"}, "failed"),
+    ],
+)
+def test_logical_job_states_preserves_int_and_tsv_attempts(
+    tmp_path: Path, status: str, verified: str, extra: dict, expected_status: str
+):
+    spec = _spec(tmp_path)
+    attempts = [
+        {
+            "job_id": spec["jobs"][0]["id"],
+            "attempt": 2,
+            "run_id": "run-002",
+            "status": status,
+            "verified": verified,
+            "result_manifest": "/results/manifest.json" if verified == "true" else "",
+            **extra,
+        },
+        {
+            "job_id": spec["jobs"][0]["id"],
+            "attempt": 1,
+            "run_id": "run-001",
+            "status": "failed",
+            "verified": "false",
+        },
+    ]
+    jobs_path = tmp_path / "jobs.tsv"
+    write_rows(jobs_path, attempts)
+    persisted = read_rows(jobs_path)
+    assert [row["attempt"] for row in persisted] == ["2", "1"]
+    before_attempts = copy.deepcopy(attempts)
+    before_persisted = copy.deepcopy(persisted)
+    original_rows = list(attempts)
+    persisted_rows = list(persisted)
+
+    logical = experiment_pipeline._logical_job_states(spec, attempts)
+    from_tsv = experiment_pipeline._logical_job_states(spec, persisted)
+
+    assert logical == from_tsv
+    assert logical[0]["status"] == expected_status
+    assert logical[0]["attempt_count"] == 2
+    assert logical[0]["successful_run_id"] == ("run-002" if verified == "true" else "")
+    assert logical[0]["result_manifest"] == ("/results/manifest.json" if verified == "true" else "")
+    assert attempts == before_attempts
+    assert persisted == before_persisted
+    assert all(row is original for row, original in zip(attempts, original_rows))
+    assert all(row is original for row, original in zip(persisted, persisted_rows))
+
+
+@pytest.mark.parametrize("field", ["run_id", "result_manifest", "retry_preparation_error"])
+def test_logical_job_states_preserves_explicit_none(tmp_path: Path, field: str):
+    spec = _spec(tmp_path)
+    attempt = {
+        "job_id": spec["jobs"][0]["id"],
+        "attempt": 1,
+        "run_id": "run-001",
+        "status": "completed",
+        "verified": "true",
+        "result_manifest": "/results/manifest.json",
+        "retry_preparation_error": "",
+        field: None,
+    }
+    before = attempt.copy()
+
+    logical = experiment_pipeline._logical_job_states(spec, [attempt])
+
+    output_field = "successful_run_id" if field == "run_id" else field
+    assert logical[0][output_field] is None
+    assert logical[0]["status"] == "completed"
+    assert attempt == before
 
 
 @pytest.mark.parametrize("status", ["missing_pid", "unknown_remote", "stopped", "superseded"])

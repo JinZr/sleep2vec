@@ -141,6 +141,19 @@ def _evidence(tmp_path: Path, values: dict[str, float]) -> list[dict]:
     return rows
 
 
+@pytest.mark.parametrize("job", [{"candidate_id": "age-rank-001"}, {"checkpoint_source": "age-rank-001"}])
+def test_candidate_for_job_preserves_candidate_identity(tmp_path: Path, job: dict):
+    candidates = _candidates(tmp_path)
+    candidate = candidates["age-rank-001"]
+    candidate["extra_evidence"] = {"notes": ["frozen"]}
+
+    selected = cohort_selection.candidate_for_job(job, candidates)
+
+    assert selected is candidate
+    selected["extra_evidence"]["notes"].append("reviewed")
+    assert candidate["extra_evidence"]["notes"] == ["frozen", "reviewed"]
+
+
 def test_cohort_selection_uses_kind_without_schema_marker(tmp_path: Path):
     root = tmp_path / "workspace"
     spec = _spec(root)
@@ -285,6 +298,8 @@ def test_target_gate_chooses_the_best_frozen_internal_rank_among_feasible_candid
 
     assert [row["feasible"] for row in ranking] == [True, True]
     assert decision["winner"]["candidate_id"] == "age-rank-001"
+    winner = next(row for row in decision["candidates"] if row["candidate_id"] == "age-rank-001")
+    assert decision["winner"] is winner
 
 
 def test_target_gate_has_no_hidden_fallback_and_requires_a_complete_matrix(tmp_path: Path):
