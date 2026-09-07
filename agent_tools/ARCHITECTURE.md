@@ -209,18 +209,26 @@ design signal, not a lint to suppress.
 `requirements-agent-tools.txt` pins `pytest-randomly` for the agent-tool kernel
 and recipe test jobs. CI prints `GITHUB_RUN_NUMBER` as the seed and passes it to
 pytest. Retries keep the same seed and randomized collection order; parallel
-execution order may vary. Both jobs use `--randomly-dont-reset-seed`, so the plugin
-does not reseed between test phases.
+execution order may vary. Both jobs use `utils/test_agent_tools.py`, which keeps
+random ordering and disables reseeding between test phases.
 
 Use the printed seed and the same test selection to reproduce the collection
 order. The full suite also needs the domain packages excluded from kernel CI;
 with those installed, a serial check is:
 
 ```bash
-python -m pytest tests/agent_tools -q --randomly-seed=1234 --randomly-dont-reset-seed
+conda run -n exp python utils/test_agent_tools.py -q --randomly-seed=1234
 ```
 
-A minimal test environment avoids optional training-package seed hooks. In a
-macOS environment where DeepSpeed's seed hook crashes while probing MPS, set
-`DS_ACCELERATOR=cpu` for the pytest process. Use `-p no:randomly` for the fixed-order
-control run.
+The entrypoint defaults only the test subprocess to `DS_ACCELERATOR=cpu`, because
+DeepSpeed's seed hook can initialize an accelerator during collection in the full
+`exp` environment. An explicit accelerator environment value is preserved.
+For a serial fixed-order control, disable the plugin and omit its seed options:
+
+```bash
+conda run -n exp python utils/test_agent_tools.py -q -p no:randomly
+```
+
+The compact `-pno:randomly` spelling and disabling the plugin through
+`PYTEST_ADDOPTS` are also supported. Remove any `--randomly-seed` option from
+`PYTEST_ADDOPTS` for the fixed-order run as well.

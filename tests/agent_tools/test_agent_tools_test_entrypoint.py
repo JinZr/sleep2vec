@@ -84,3 +84,34 @@ def test_runner_seed_controls_collection_order_without_changing_membership(tmp_p
         orders.append(order)
     assert orders[0] == orders[1]
     assert orders[0] != orders[2]
+
+
+@pytest.mark.parametrize("source", ["cli", "environment"])
+@pytest.mark.parametrize("options", [["-p", "no:randomly"], ["-pno:randomly"]], ids=["separate", "compact"])
+def test_runner_honors_fixed_order_plugin_disable(tmp_path, source, options):
+    probe = tmp_path / "test_fixed_order.py"
+    probe.write_text(
+        "def test_z_first(pytestconfig):\n"
+        "    assert not pytestconfig.pluginmanager.hasplugin('randomly')\n\n"
+        "def test_a_second():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.pop("PYTEST_ADDOPTS", None)
+    arguments = []
+    if source == "environment":
+        env["PYTEST_ADDOPTS"] = " ".join(options)
+    else:
+        arguments = options
+    result = subprocess.run(
+        [sys.executable, str(RUNNER), str(probe), "-v", *arguments],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "2 passed" in result.stdout
+    assert result.stdout.index("test_z_first PASSED") < result.stdout.index("test_a_second PASSED")
