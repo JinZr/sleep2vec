@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import fcntl
 import hashlib
 import json
@@ -10,7 +11,7 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Any, Callable, cast
+from typing import Any, Callable, Literal, TypedDict, cast
 
 import yaml
 
@@ -53,6 +54,87 @@ ACTIVE_STATUSES = {"launched", "running"}
 UNCERTAIN_STATUSES = pipeline_results.UNCERTAIN_STATUSES
 SOURCE_UNCERTAIN_STATUSES = UNCERTAIN_STATUSES | {"submitting", "unknown_scheduler"}
 RETRYABLE_STATUSES = pipeline_results.RETRYABLE_STATUSES
+
+
+class SourcePlanSnapshot(TypedDict):
+    source_id: Any
+    plan_dir: str
+    plan_path: str
+    plan_sha256: str
+    resolved_recipe_path: str
+    resolved_recipe_sha256: str
+
+
+class SourceState(TypedDict):
+    source_id: Any
+    plan: str
+    statuses: list[str]
+    complete: bool
+    failed_runs: list[str]
+    uncertain_runs: list[str]
+
+
+class CheckpointEvidence(TypedDict):
+    state_dict_key_count: int
+    has_ahi_eval_threshold: bool
+
+
+class _CohortCandidateFields(TypedDict, total=False):
+    candidate_id: str
+    source_rank: int
+
+
+class FrozenCheckpointCandidate(CheckpointEvidence, _CohortCandidateFields):
+    source_id: Any
+    plan: str
+    step_id: str
+    run_id: str
+    run_name: str
+    selection_metric: Any
+    selection_mode: Literal["min", "max"]
+    score: float
+    config: str
+    config_sha256: str
+    checkpoint: str
+    checkpoint_sha256: str
+    variant: str
+    label_name: str
+    source_task: str
+    source_plan_task: str
+    inference_task: Literal["infer"]
+
+
+class MissingPidBlocker(TypedDict):
+    status: Literal["missing_pid"]
+    step_id: str
+    run_id: str
+
+
+class _AttemptResultDetails(TypedDict, total=False):
+    missing_pid_blocker: MissingPidBlocker
+
+
+class AttemptExecutionResult(_AttemptResultDetails):
+    status: Literal["completed", "blocked", "failed"]
+    jobs: list[pipeline_results.LogicalJobState]
+
+
+class PipelineReportResult(AttemptExecutionResult):
+    pipeline_id: Any
+    pipeline_dir: str
+    report: str
+
+
+class PipelineDryRunResult(TypedDict):
+    status: Literal["blocked", "ready", "failed", "waiting_for_sources"]
+    dry_run: Literal[True]
+    pipeline_id: str
+    pipeline_dir: str
+    source_states: list[SourceState]
+    job_count: int
+
+
+PipelineResult = PipelineDryRunResult | AttemptExecutionResult | PipelineReportResult
 
 
 class RetryPreparationError(RuntimeError):
@@ -132,7 +214,7 @@ def run_experiment_pipeline(
     resume: bool = False,
     poll_seconds: float = 60,
     finalize_callback: Callable[[str | Path, str | Path], Path] | None = None,
-) -> dict[str, Any]:
+) -> PipelineResult:
     if poll_seconds < 0:
         raise ValueError("poll_seconds must be non-negative.")
     root = canonical_local_experiment_root(run_dir, Path.cwd())
@@ -630,8 +712,8 @@ def _validate_frozen_pipeline(pipeline_dir: Path, source_text: str, spec: dict[s
     return state
 
 
-def _source_plan_snapshots(root: Path, spec: dict[str, Any]) -> list[dict[str, Any]]:
-    snapshots = []
+def _source_plan_snapshots(root: Path, spec: dict[str, Any]) -> list[SourcePlanSnapshot]:
+    snapshots: list[SourcePlanSnapshot] = []
     for source_id, source in spec["checkpoint_sources"].items():
         plan_dir = Path(source["plan"])
         plan = artifacts.read_hparam_plan(plan_dir)
@@ -673,9 +755,9 @@ def _preset_snapshots(spec: dict[str, Any]) -> list[dict[str, str]]:
     return snapshots
 
 
-def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list[dict[str, Any]]:
+def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list[SourceState]:
     canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
-    states = []
+    states: list[SourceState] = []
     for source_id, source in spec["checkpoint_sources"].items():
         plan_dir = Path(source["plan"])
         plan = artifacts.read_hparam_plan(plan_dir)
@@ -721,7 +803,9 @@ def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list
     return states
 
 
-def _source_summary_status(states: list[dict[str, Any]]) -> str:
+def _source_summary_status(
+    states: Sequence[SourceState],
+) -> Literal["blocked", "ready", "failed", "waiting_for_sources"]:
     if any(state["uncertain_runs"] for state in states):
         return "blocked"
     if all(state["complete"] for state in states):
@@ -738,7 +822,7 @@ def _execute_pipeline(
     *,
     poll_seconds: float,
     finalize_callback: Callable[[str | Path, str | Path], Path] | None,
-) -> dict[str, Any]:
+) -> AttemptExecutionResult | PipelineReportResult:
     state = _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
     if state.get("status") == "completed":
         return _finalize_completed_pipeline(root, pipeline_dir, spec, finalize_callback)
@@ -814,7 +898,7 @@ def _finalize_completed_pipeline(
     pipeline_dir: Path,
     spec: dict[str, Any],
     finalize_callback: Callable[[str | Path, str | Path], Path] | None,
-) -> dict[str, Any]:
+) -> PipelineReportResult:
     state = read_json(pipeline_dir / "pipeline.json")
     report = Path(str(state.get("final_report") or ""))
     artifacts_by_path = state.get("result_artifacts")
@@ -872,7 +956,7 @@ def _execute_cohort_selection(
     *,
     poll_seconds: float,
     finalize_callback: Callable[[str | Path, str | Path], Path] | None,
-) -> dict[str, Any]:
+) -> AttemptExecutionResult | PipelineReportResult:
     candidates = _load_or_freeze_selections(root, pipeline_dir, spec)
     selection_spec = _cohort_phase_spec(
         spec,
@@ -1008,11 +1092,11 @@ def _execute_cohort_phase(
     root: Path,
     pipeline_dir: Path,
     phase_spec: dict[str, Any],
-    candidates: dict[str, dict[str, Any]],
+    candidates: Mapping[str, Mapping[str, Any]],
     *,
     poll_seconds: float,
     controller_spec: dict[str, Any],
-) -> dict[str, Any]:
+) -> AttemptExecutionResult:
     phase = str(phase_spec["_execution_stage"])
     phase_dir = pipeline_dir / "phases" / phase
     attempts = _load_or_create_initial_attempts(root, phase_dir, phase_spec, candidates)
@@ -1045,9 +1129,9 @@ def _load_or_freeze_cohort_decision(
     root: Path,
     pipeline_dir: Path,
     spec: dict[str, Any],
-    candidates: dict[str, dict[str, Any]],
-    evidence: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    candidates: Mapping[str, Mapping[str, Any]],
+    evidence: Sequence[cohort_selection.SelectionEvidence],
+) -> tuple[list[dict[str, Any]], cohort_selection.CohortDecision]:
     ranking, decision, artifacts_by_field = _cohort_decision_artifacts(pipeline_dir, spec, candidates, evidence)
     for path, text in artifacts_by_field.values():
         if path.exists():
@@ -1078,9 +1162,9 @@ def _load_or_freeze_cohort_decision(
 def _validate_cohort_decision(
     pipeline_dir: Path,
     spec: dict[str, Any],
-    candidates: dict[str, dict[str, Any]],
-    evidence: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    candidates: Mapping[str, Mapping[str, Any]],
+    evidence: Sequence[cohort_selection.SelectionEvidence],
+) -> tuple[list[dict[str, Any]], cohort_selection.CohortDecision]:
     ranking, decision, artifacts_by_field = _cohort_decision_artifacts(pipeline_dir, spec, candidates, evidence)
     state = read_json(pipeline_dir / "pipeline.json")
     for field, (path, text) in artifacts_by_field.items():
@@ -1097,9 +1181,9 @@ def _validate_cohort_decision(
 def _cohort_decision_artifacts(
     pipeline_dir: Path,
     spec: dict[str, Any],
-    candidates: dict[str, dict[str, Any]],
-    evidence: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, tuple[Path, str]]]:
+    candidates: Mapping[str, Mapping[str, Any]],
+    evidence: Sequence[cohort_selection.SelectionEvidence],
+) -> tuple[list[dict[str, Any]], cohort_selection.CohortDecision, dict[str, tuple[Path, str]]]:
     ranking, decision = cohort_selection.rank_candidates(spec, candidates, evidence)
     ranking_path = pipeline_dir / "cohort_selection_ranking.csv"
     return (
@@ -1118,7 +1202,7 @@ def _cohort_decision_artifacts(
     )
 
 
-def _write_no_winner_report(pipeline_dir: Path, decision: dict[str, Any]) -> Path:
+def _write_no_winner_report(pipeline_dir: Path, decision: cohort_selection.CohortDecision) -> Path:
     lines = [
         "# Cohort Selection Pipeline",
         "",
@@ -1143,7 +1227,7 @@ def _finalize_completed_cohort_selection(
     spec: dict[str, Any],
     report: Path,
     finalize_callback: Callable[[str | Path, str | Path], Path] | None,
-) -> dict[str, Any]:
+) -> PipelineReportResult:
     candidates = _load_or_freeze_selections(root, pipeline_dir, spec)
     selection_spec = _cohort_phase_spec(
         spec,
@@ -1198,8 +1282,8 @@ def _validated_completed_phase(
     root: Path,
     phase_dir: Path,
     phase_spec: dict[str, Any],
-    candidates: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
+    candidates: Mapping[str, Mapping[str, Any]],
+) -> list[pipeline_results.LogicalJobState]:
     attempts = read_rows(phase_dir / "jobs.tsv", require_managed_identity=True)
     _validate_attempt_rows(root, phase_dir, phase_spec, candidates, attempts)
     logical = _logical_job_states(phase_spec, attempts)
@@ -1211,7 +1295,7 @@ def _validated_completed_phase(
     return logical
 
 
-def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, Any]) -> Mapping[str, Mapping[str, Any]]:
     path = _selection_manifest_path(pipeline_dir, spec)
     hash_field = _selection_hash_field(spec)
     cohort_kind = spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
@@ -1269,13 +1353,13 @@ def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, A
         {"pipeline_id": spec["pipeline"]["id"], count_field: len(frozen)},
         identity_fields=("pipeline_id",),
     )
-    key = "candidate_id" if cohort_kind else "source_id"
+    key: Literal["candidate_id", "source_id"] = "candidate_id" if cohort_kind else "source_id"
     return {str(item[key]): item for item in frozen}
 
 
-def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[dict[str, Any]]:
+def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[FrozenCheckpointCandidate]:
     policy = spec["checkpoint_policy"]
-    frozen = []
+    frozen: list[FrozenCheckpointCandidate] = []
     for source_id, source in spec["checkpoint_sources"].items():
         plan_dir = Path(source["plan"])
         plan = artifacts.read_hparam_plan(plan_dir)
@@ -1305,14 +1389,14 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[dict[st
 
 def _freeze_checkpoint_candidate(
     spec: dict[str, Any],
-    source_id: str,
+    source_id: Any,
     source: dict[str, Any],
     plan_dir: Path,
     step_id: str,
     recipe: dict[str, Any],
     row: dict[str, Any],
     policy: dict[str, Any],
-) -> dict[str, Any]:
+) -> FrozenCheckpointCandidate:
     config = Path(str(row.get("config") or ""))
     checkpoint = Path(str(row.get("checkpoint_path") or ""))
     if config.is_symlink() or not config.is_file():
@@ -1338,7 +1422,7 @@ def _freeze_checkpoint_candidate(
     score = artifacts.float_or_none(row.get("score"))
     if score is None or not math.isfinite(score):
         raise ValueError(f"Selected validation score is not finite for source {source_id}.")
-    selection = {
+    selection: FrozenCheckpointCandidate = {
         "source_id": source_id,
         "plan": str(plan_dir),
         "step_id": step_id,
@@ -1436,7 +1520,7 @@ def _selection_hash_field(spec: dict[str, Any]) -> str:
     )
 
 
-def _validate_checkpoint_payload(checkpoint: Path, label_name: str, policy: dict[str, Any]) -> dict[str, Any]:
+def _validate_checkpoint_payload(checkpoint: Path, label_name: str, policy: dict[str, Any]) -> CheckpointEvidence:
     try:
         import torch
 
@@ -1461,7 +1545,7 @@ def _validate_checkpoint_payload(checkpoint: Path, label_name: str, policy: dict
     }
 
 
-def _assert_job_semantic_assertions(spec: dict[str, Any], source_id: str, selection: dict[str, Any]) -> None:
+def _assert_job_semantic_assertions(spec: dict[str, Any], source_id: str, selection: Mapping[str, Any]) -> None:
     expected = {
         "task": selection["source_task"],
         "variant": selection["variant"],
@@ -1490,7 +1574,7 @@ def _load_or_create_initial_attempts(
     root: Path,
     pipeline_dir: Path,
     spec: dict[str, Any],
-    selections: dict[str, dict[str, Any]],
+    selections: Mapping[str, Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     jobs_path = pipeline_dir / "jobs.tsv"
     existing = read_rows(jobs_path, require_managed_identity=True)
@@ -1619,7 +1703,7 @@ def _reconcile_pipeline_event(
 def _ensure_initial_preflight(
     pipeline_dir: Path,
     spec: dict[str, Any],
-    recipes: list[tuple[dict[str, Any], dict[str, Any], int, Path, Path, Path]],
+    recipes: list[tuple[dict[str, Any], Mapping[str, Any], int, Path, Path, Path]],
 ) -> None:
     path = pipeline_dir / "preflight.json"
     expected = {
@@ -1651,7 +1735,7 @@ def _ensure_initial_preflight(
 
 def _prepare_attempt_plan(
     job_id: str,
-    selection: dict[str, Any],
+    selection: Mapping[str, Any],
     recipe_path: Path,
     plan_dir: Path,
     *,
@@ -1687,7 +1771,7 @@ def _materialize_attempt(
     root: Path,
     spec: dict[str, Any],
     job: dict[str, Any],
-    selection: dict[str, Any],
+    selection: Mapping[str, Any],
     attempt: int,
     *,
     recipe_path: Path,
@@ -1714,7 +1798,7 @@ def _materialize_attempt_locked(
     root: Path,
     spec: dict[str, Any],
     job: dict[str, Any],
-    selection: dict[str, Any],
+    selection: Mapping[str, Any],
     attempt: int,
     *,
     recipe_path: Path,
@@ -1799,7 +1883,7 @@ def _materialize_attempt_locked(
 def _prepare_attempt_registration_groups(
     root: Path,
     spec: dict[str, Any],
-    attempts: list[tuple[dict[str, Any], dict[str, Any], int, Path, Path, Path]],
+    attempts: list[tuple[dict[str, Any], Mapping[str, Any], int, Path, Path, Path]],
     *,
     snapshot_owner_dirs: dict[str, Path],
 ) -> dict[str, Path]:
@@ -1902,7 +1986,7 @@ def _prepare_attempt_registration_groups(
 def _validate_physical_attempt_plan(
     spec: dict[str, Any],
     job: dict[str, Any],
-    selection: dict[str, Any],
+    selection: Mapping[str, Any],
     recipe_path: Path,
     plan_dir: Path,
     physical_plan_dir: Path,
@@ -1940,7 +2024,7 @@ def _attempt_recipe(
     pipeline_dir: Path,
     spec: dict[str, Any],
     job: dict[str, Any],
-    selection: dict[str, Any],
+    selection: Mapping[str, Any],
     attempt: int,
 ) -> tuple[dict[str, Any], Path, Path, Path]:
     attempt_name = f"attempt-{attempt:03d}"
@@ -2009,7 +2093,7 @@ def _validate_new_attempt_paths(plan_dir: Path, result_root: Path, *, allow_exis
 
 def _attempt_projection(
     job: dict[str, Any],
-    selection: dict[str, Any],
+    selection: Mapping[str, Any],
     run: dict[str, Any],
     *,
     recipe_path: Path,
@@ -2050,7 +2134,7 @@ def _validate_attempt_rows(
     root: Path,
     pipeline_dir: Path,
     spec: dict[str, Any],
-    selections: dict[str, dict[str, Any]],
+    selections: Mapping[str, Mapping[str, Any]],
     rows: list[dict[str, Any]],
     *,
     require_all_jobs: bool = True,
@@ -2214,14 +2298,14 @@ def _run_attempts(
     root: Path,
     pipeline_dir: Path,
     spec: dict[str, Any],
-    selections: dict[str, dict[str, Any]],
+    selections: Mapping[str, Mapping[str, Any]],
     attempts: list[dict[str, Any]],
     *,
     poll_seconds: float,
     frozen_pipeline_dir: Path | None = None,
     frozen_spec: dict[str, Any] | None = None,
     state_dir: Path | None = None,
-) -> dict[str, Any]:
+) -> AttemptExecutionResult:
     jobs_path = pipeline_dir / "jobs.tsv"
     execution = _pipeline_execution(spec)
     runtime = {"devices": [0]}
@@ -2339,7 +2423,9 @@ def _run_attempts(
 
         pending_or_active = any(row.get("status") in ACTIVE_STATUSES | {"planned", "pending"} for row in attempts)
         if not pending_or_active:
-            final_status = "blocked" if any(job["status"] == "blocked" for job in logical) else "failed"
+            final_status: Literal["blocked", "failed"] = (
+                "blocked" if any(job["status"] == "blocked" for job in logical) else "failed"
+            )
             return {"status": final_status, "jobs": logical}
         time.sleep(poll_seconds)
 
@@ -2421,7 +2507,7 @@ def _create_needed_retries(
     root: Path,
     pipeline_dir: Path,
     spec: dict[str, Any],
-    selections: dict[str, dict[str, Any]],
+    selections: Mapping[str, Mapping[str, Any]],
     attempts: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], bool]:
     created = False

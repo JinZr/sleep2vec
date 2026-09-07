@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -47,6 +47,9 @@ from .experiment_workspace import (
     write_status_report,
 )
 from .manifests import read_json, utc_now
+
+if TYPE_CHECKING:
+    from .experiment_pipeline import PipelineResult
 
 
 def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
@@ -394,7 +397,7 @@ def run_experiment_pipeline(
     execute: bool = False,
     resume: bool = False,
     poll_seconds: float = 60,
-) -> dict[str, Any]:
+) -> PipelineResult:
     from .experiment_pipeline import run_experiment_pipeline as run_pipeline
 
     return run_pipeline(

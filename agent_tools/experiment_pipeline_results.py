@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import csv
 import io
 import math
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from . import experiment_io as exp_io, experiment_pipeline_cohort_selection as cohort_selection
 from .experiment_workspace import file_sha256
@@ -15,8 +16,41 @@ UNCERTAIN_STATUSES = {"missing_pid", "unknown_remote"}
 RETRYABLE_STATUSES = {"failed", "launch_failed"}
 
 
-def logical_job_states(spec: dict[str, Any], attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    logical = []
+class _CohortJobFields(TypedDict, total=False):
+    candidate_id: Any
+    job_template_id: Any
+    role: Literal["selection", "report_only"]
+    provenance: Literal["internal", "external"]
+
+
+class LogicalJobState(_CohortJobFields):
+    job_id: Any
+    status: Literal["completed", "blocked", "failed", "running"]
+    attempt_count: int
+    successful_run_id: Any
+    result_manifest: Any
+    cohort: Any
+    modality: Any
+    checkpoint_source: Any
+    retry_preparation_error: Any
+
+
+class _MetricCohortFields(_CohortJobFields, total=False):
+    source_rank: int
+    is_winner: bool
+
+
+class MetricRow(_MetricCohortFields):
+    job_id: Any
+    cohort: Any
+    modality: Any
+    label_name: Any
+    metric: str
+    value: int | float | str
+
+
+def logical_job_states(spec: dict[str, Any], attempts: Sequence[Mapping[str, Any]]) -> list[LogicalJobState]:
+    logical: list[LogicalJobState] = []
     for job in spec["jobs"]:
         rows = sorted(
             [row for row in attempts if row["job_id"] == job["id"]],
@@ -26,6 +60,7 @@ def logical_job_states(spec: dict[str, Any], attempts: list[dict[str, Any]]) -> 
             (row for row in rows if str(row.get("verified") or "").lower() == "true"),
             None,
         )
+        status: Literal["completed", "blocked", "failed", "running"]
         if successful is not None:
             status = "completed"
         elif any(row.get("status") in UNCERTAIN_STATUSES | {"stopped", "superseded"} for row in rows):
@@ -44,7 +79,7 @@ def logical_job_states(spec: dict[str, Any], attempts: list[dict[str, Any]]) -> 
             status = "failed"
         else:
             status = "running"
-        projection = {
+        projection: LogicalJobState = {
             "job_id": job["id"],
             "status": status,
             "attempt_count": len(rows),
@@ -151,11 +186,11 @@ def validate_result_manifest(spec: dict[str, Any], attempt: dict[str, Any], run:
 
 def build_result_rows(
     spec: dict[str, Any],
-    selections: dict[str, dict[str, Any]],
+    selections: Mapping[str, Mapping[str, Any]],
     successful: dict[str, dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[MetricRow]]:
     summary_rows = []
-    metric_rows = []
+    metric_rows: list[MetricRow] = []
     for job in spec["jobs"]:
         attempt = successful[job["id"]]
         manifest = read_json(attempt["result_manifest"])
@@ -195,8 +230,11 @@ def build_result_rows(
                 continue
             rendered = render_scalar(value)
             summary[f"metric.{name}"] = rendered
-            metric = {
-                **{key: summary[key] for key in ("job_id", "cohort", "modality", "label_name")},
+            metric: MetricRow = {
+                "job_id": summary["job_id"],
+                "cohort": summary["cohort"],
+                "modality": summary["modality"],
+                "label_name": summary["label_name"],
                 "metric": name,
                 "value": rendered,
             }
@@ -212,7 +250,7 @@ def write_result_summary(
     pipeline_dir: Path,
     spec: dict[str, Any],
     summary_rows: list[dict[str, Any]],
-    metric_rows: list[dict[str, Any]],
+    metric_rows: Sequence[MetricRow],
 ) -> Path:
     write_rows_atomic(pipeline_dir / "results.csv", summary_rows)
     write_rows_atomic(pipeline_dir / "metrics.csv", metric_rows)
@@ -227,8 +265,8 @@ def aggregate_results(
     root: Path,
     pipeline_dir: Path,
     spec: dict[str, Any],
-    selections: dict[str, dict[str, Any]],
-    logical_jobs: list[dict[str, Any]],
+    selections: Mapping[str, Mapping[str, Any]],
+    logical_jobs: Sequence[LogicalJobState],
 ) -> Path:
     if len(logical_jobs) != len(spec["jobs"]) or any(job["status"] != "completed" for job in logical_jobs):
         raise ValueError("Cannot aggregate an incomplete external matrix.")
@@ -244,14 +282,14 @@ def aggregate_results(
 def selection_evidence(
     phase_dir: Path,
     spec: dict[str, Any],
-    candidates: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
+    candidates: Mapping[str, Mapping[str, Any]],
+) -> list[cohort_selection.SelectionEvidence]:
     attempts = read_rows(phase_dir / "jobs.tsv", require_managed_identity=True)
     successful_rows = [row for row in attempts if str(row.get("verified") or "").lower() == "true"]
     successful = {str(row["job_id"]): row for row in successful_rows}
     if len(successful_rows) != len(spec["jobs"]) or len(successful) != len(spec["jobs"]):
         raise ValueError("Selection matrix does not have one verified success per logical job.")
-    evidence = []
+    evidence: list[cohort_selection.SelectionEvidence] = []
     for job in spec["jobs"]:
         attempt = successful[job["id"]]
         manifest_path = Path(str(attempt["result_manifest"]))
@@ -277,13 +315,13 @@ def selection_evidence(
 def write_cohort_result_summary(
     pipeline_dir: Path,
     spec: dict[str, Any],
-    candidates: dict[str, dict[str, Any]],
-    winner: dict[str, Any],
+    candidates: Mapping[str, Mapping[str, Any]],
+    winner: cohort_selection.DecisionCandidate,
     selection_spec: dict[str, Any],
     report_spec: dict[str, Any],
 ) -> Path:
     summary_rows = []
-    metric_rows = []
+    metric_rows: list[MetricRow] = []
     for phase_name, phase_spec in (("selection", selection_spec), ("report_only", report_spec)):
         attempts = read_rows(pipeline_dir / "phases" / phase_name / "jobs.tsv", require_managed_identity=True)
         successful_rows = [row for row in attempts if str(row.get("verified") or "").lower() == "true"]
@@ -295,8 +333,8 @@ def write_cohort_result_summary(
         metric_rows.extend(phase_metrics)
     for row in summary_rows:
         row["is_winner"] = row["candidate_id"] == winner["candidate_id"]
-    for row in metric_rows:
-        row["is_winner"] = row["candidate_id"] == winner["candidate_id"]
+    for metric_row in metric_rows:
+        metric_row["is_winner"] = metric_row["candidate_id"] == winner["candidate_id"]
     write_rows_atomic(pipeline_dir / "results.csv", summary_rows)
     write_rows_atomic(pipeline_dir / "metrics.csv", metric_rows)
     markdown = cohort_summary_markdown(pipeline_dir, spec, summary_rows, metric_rows, winner)
@@ -310,8 +348,8 @@ def cohort_summary_markdown(
     pipeline_dir: Path,
     spec: dict[str, Any],
     summary_rows: list[dict[str, Any]],
-    metric_rows: list[dict[str, Any]],
-    winner: dict[str, Any],
+    metric_rows: Sequence[MetricRow],
+    winner: cohort_selection.DecisionCandidate,
 ) -> str:
     winner_path = pipeline_dir / "cohort_selection_winner.json"
     lines = [
@@ -350,9 +388,7 @@ def render_scalar(value: int | float) -> int | float | str:
     return value
 
 
-def summary_markdown(
-    spec: dict[str, Any], summary_rows: list[dict[str, Any]], metric_rows: list[dict[str, Any]]
-) -> str:
+def summary_markdown(spec: dict[str, Any], summary_rows: list[dict[str, Any]], metric_rows: Sequence[MetricRow]) -> str:
     lines = [
         f"# External Evaluation Pipeline: {spec['pipeline']['id']}",
         "",
@@ -367,8 +403,8 @@ def summary_markdown(
             f"{row['attempt']} | `{row['checkpoint']}` | `{row['result_manifest']}` |"
         )
     lines.extend(["", "## Scalar metrics", "", "| Job | Metric | Value |", "|---|---|---:|"])
-    for row in metric_rows:
-        lines.append(f"| {row['job_id']} | {row['metric']} | {row['value']} |")
+    for metric_row in metric_rows:
+        lines.append(f"| {metric_row['job_id']} | {metric_row['metric']} | {metric_row['value']} |")
     return "\n".join(lines) + "\n"
 
 
@@ -389,11 +425,11 @@ def atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
-def write_rows_atomic(path: Path, rows: list[dict[str, Any]]) -> None:
+def write_rows_atomic(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     atomic_write_text(path, render_rows(path, rows))
 
 
-def render_rows(path: Path, rows: list[dict[str, Any]]) -> str:
+def render_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> str:
     fieldnames = sorted({key for row in rows for key in row}) if rows else ["run_id"]
     buffer = io.StringIO(newline="")
     writer = csv.DictWriter(buffer, fieldnames=fieldnames, delimiter="\t" if path.suffix == ".tsv" else ",")

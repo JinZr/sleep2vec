@@ -1,17 +1,60 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Literal, Mapping, Sequence, TypedDict
 
 
-def candidate_for_job(job: dict[str, Any], candidates: dict[str, dict[str, Any]]) -> dict[str, Any]:
+class SelectionEvidence(TypedDict):
+    job_id: Any
+    job_template_id: Any
+    candidate_id: Any
+    cohort: Any
+    metrics: dict[str, Any]
+    result_manifest: str
+    result_manifest_sha256: str
+
+
+class GateContributingEvidence(TypedDict):
+    job: Any
+    cohort: Any
+    metric: Any
+    mode: Literal["min", "max"]
+    threshold: float
+    value: int | float
+    result_manifest: str
+    result_manifest_sha256: str
+
+
+class DecisionCandidate(TypedDict):
+    candidate_id: str
+    source_rank: int
+    step_id: Any
+    run_id: Any
+    checkpoint: Any
+    checkpoint_sha256: Any
+    config: Any
+    config_sha256: Any
+    feasible: bool
+    failed_gates: list[str]
+    selection_evidence: list[GateContributingEvidence]
+
+
+class CohortDecision(TypedDict):
+    pipeline_id: Any
+    source_id: Any
+    selector: dict[str, Any]
+    candidates: list[DecisionCandidate]
+    winner: DecisionCandidate | None
+
+
+def candidate_for_job(job: dict[str, Any], candidates: Mapping[str, Mapping[str, Any]]) -> Mapping[str, Any]:
     key = str(job.get("candidate_id") or job.get("checkpoint_source") or "")
     return candidates[key]
 
 
 def build_phase_jobs(
     spec: dict[str, Any],
-    candidates: dict[str, dict[str, Any]],
+    candidates: Mapping[str, Mapping[str, Any]],
     *,
     role: str,
     winner_id: str | None = None,
@@ -42,29 +85,29 @@ def build_phase_jobs(
 
 def rank_candidates(
     spec: dict[str, Any],
-    candidates: dict[str, dict[str, Any]],
-    evidence: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    candidates: Mapping[str, Mapping[str, Any]],
+    evidence: Sequence[SelectionEvidence],
+) -> tuple[list[dict[str, Any]], CohortDecision]:
     selection_jobs = {job["id"]: job for job in spec["jobs"] if job["role"] == "selection"}
-    evidence_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in evidence:
-        key = (str(row.get("candidate_id") or ""), str(row.get("job_template_id") or ""))
+    evidence_by_key: dict[tuple[str, str], SelectionEvidence] = {}
+    for evidence_row in evidence:
+        key = (str(evidence_row.get("candidate_id") or ""), str(evidence_row.get("job_template_id") or ""))
         if key in evidence_by_key:
             raise ValueError(f"Duplicate cohort-selection result: {key[0]} / {key[1]}")
-        evidence_by_key[key] = row
+        evidence_by_key[key] = evidence_row
 
     expected = {(candidate_id, job_id) for candidate_id in candidates for job_id in selection_jobs}
     if set(evidence_by_key) != expected:
         raise ValueError("Cohort-selection results do not form the complete frozen candidate-by-cohort matrix.")
 
     gates = sorted(spec["selector"]["gates"], key=lambda gate: (gate["job"], gate["metric"]))
-    ranking = []
-    decision_candidates = []
+    ranking: list[dict[str, Any]] = []
+    decision_candidates: list[DecisionCandidate] = []
     for candidate in sorted(candidates.values(), key=_candidate_order):
         candidate_id = str(candidate["candidate_id"])
         values = {}
         failed = []
-        contributing = []
+        contributing: list[GateContributingEvidence] = []
         for gate in gates:
             result = evidence_by_key[(candidate_id, gate["job"])]
             metrics = result.get("metrics")
@@ -124,7 +167,7 @@ def rank_candidates(
     winner_id = str(winner["candidate_id"]) if winner is not None else None
     for row in ranking:
         row["winner"] = row["candidate_id"] == winner_id
-    decision = {
+    decision: CohortDecision = {
         "pipeline_id": spec["pipeline"]["id"],
         "source_id": next(iter(spec["checkpoint_sources"])),
         "selector": spec["selector"],
@@ -134,5 +177,5 @@ def rank_candidates(
     return ranking, decision
 
 
-def _candidate_order(candidate: dict[str, Any]) -> tuple[int, str]:
+def _candidate_order(candidate: Mapping[str, Any]) -> tuple[int, str]:
     return int(candidate["source_rank"]), str(candidate["run_id"])
