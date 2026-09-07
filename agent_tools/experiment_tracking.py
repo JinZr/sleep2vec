@@ -95,13 +95,74 @@ class ExperimentStatusSummary(TypedDict):
     status_counts: dict[str, int]
 
 
+class ExperimentStatusMetadata(TypedDict):
+    id: str
+    title: str
+    root: str
+    status: str
+    remote: str | None
+
+
+class ExperimentStatusStep(TypedDict):
+    id: str
+    phase: str
+    purpose: str
+    plan_controller: str
+    plans: list[str]
+    status_counts: dict[str, int]
+
+
+class ExperimentStatusExecution(TypedDict):
+    target: str | None
+    host: str | None
+
+
+class ExperimentStatusScheduler(TypedDict):
+    type: str | None
+    job_id: str | None
+    cluster: str | None
+    node: str | None
+    raw_state: str | None
+    reason: str | None
+    observed_at: str | None
+
+
+class ExperimentStatusProcess(TypedDict):
+    pid: str | None
+    process_group_id: str | None
+    identity_error: str | None
+    monitored_at: str | None
+
+
+class ExperimentStatusEvidence(TypedDict):
+    health_status: str | None
+    gpu_summary: str | None
+    log_age_seconds: str | None
+    checkpoint_dir: str | None
+    checkpoint_count: str | None
+    run_manifest: str | None
+
+
+class ExperimentStatusRun(TypedDict):
+    step_id: str
+    run_id: str
+    run_name: str
+    parameter_summary: str
+    status: str
+    execution: ExperimentStatusExecution
+    scheduler: ExperimentStatusScheduler
+    process: ExperimentStatusProcess
+    evidence: ExperimentStatusEvidence
+    blockers: list[str]
+
+
 class ExperimentStatusSnapshot(TypedDict):
-    experiment: dict[str, Any]
+    experiment: ExperimentStatusMetadata
     lifecycle_source: str
     live_observation: bool
     summary: ExperimentStatusSummary
-    steps: list[dict[str, Any]]
-    runs: list[dict[str, Any]]
+    steps: list[ExperimentStatusStep]
+    runs: list[ExperimentStatusRun]
     blockers: list[ExperimentStatusBlocker]
     decision: ExperimentStatusDecision
 
@@ -810,7 +871,7 @@ def experiment_status_snapshot(
             if not hparam["selected_steps"] and terminal_selection_sha256 not in (None, ""):
                 raise ValueError("Completed experiment metadata has an unexpected hparam selection report binding.")
     row_payloads = [_status_run_payload(row) for row in sorted_rows]
-    step_payloads = []
+    step_payloads: list[ExperimentStatusStep] = []
     for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
         manifest = registered["manifest"]
         step_id = str(manifest["step"]["id"])
@@ -1548,7 +1609,7 @@ def _plan_advice(
     return blockers, candidates
 
 
-def _status_run_payload(row: dict[str, Any]) -> dict[str, Any]:
+def _status_run_payload(row: dict[str, Any]) -> ExperimentStatusRun:
     return {
         "step_id": str(row["step_id"]),
         "run_id": str(row["run_id"]),
