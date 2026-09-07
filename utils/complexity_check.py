@@ -62,8 +62,6 @@ SUPPRESSION_LEDGER = {
     ("agent_tools/experiment_io.py", "append_managed_text_at"),  # 28
     ("agent_tools/experiment_io.py", "conditional_atomic_replace_text_at"),  # 47
     ("agent_tools/experiment_io.py", "validate_managed_output_paths"),  # 39
-    ("agent_tools/managed_scheduler.py", "_launch_managed_runs"),  # 46
-    ("agent_tools/managed_scheduler.py", "observe_slurm_run"),  # 44
 }
 #: Assembled blocks already above the ceiling: ``(program, block) -> scores``.
 #: Spelled here rather than as a ``# noqa`` in the fragment, because a

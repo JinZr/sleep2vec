@@ -449,7 +449,7 @@ def launch_managed_runs(
         )
 
 
-def _launch_managed_runs(  # noqa: C901
+def _launch_managed_runs(
     workspace: Path,
     owner_dir: Path,
     runs: list[dict[str, Any]],
@@ -501,38 +501,16 @@ def _launch_managed_runs(  # noqa: C901
     )
     refreshed = observed.rows_by_key
     groups = gpu_groups(execution, runtime)
-    external_keys = []
-    if groups:
-        external_keys = [
-            key
-            for key, row in workspace_by_key.items()
-            if key not in expected_keys
-            and row.get("status") in ACTIVE_STATUSES
-            and shares_capacity(execution, groups, row)
-            and all(
-                row.get(field) not in (None, "")
-                for field in ("target", "workdir", "pid_path", "log_path", "command", "script")
-            )
-            and (row.get("target") != "ssh" or row.get("host") not in (None, ""))
-        ]
-    external_observed = observe_runs(owner_dir, workspace_by_key, external_keys, dry_run=dry_run)
-    external_status_changes = external_observed.changes
-    for key in external_status_changes:
-        workspace_by_key[key] = external_observed.rows_by_key[key]
-    if external_status_changes:
-        committed = hooks.merge_manifest(
-            workspace,
-            [workspace_by_key[key] for key in external_status_changes],
-            lock_held=True,
-        )
-        workspace_by_key = {validated_run_key(row): row for row in committed}
-        for key, (before, after) in external_status_changes.items():
-            hooks.append_event(
-                workspace,
-                "run_status_changed",
-                {"step_id": key[0], "run_id": key[1], "from": before, "to": after},
-            )
-        hooks.write_status_report(workspace)
+    workspace_by_key, external_status_changes = _refresh_external_capacity_runs(
+        workspace=workspace,
+        owner_dir=owner_dir,
+        workspace_by_key=workspace_by_key,
+        expected_keys=expected_keys,
+        groups=groups,
+        execution=execution,
+        dry_run=dry_run,
+        hooks=hooks,
+    )
 
     capacity = capacity_state(
         execution,
@@ -655,6 +633,142 @@ def _launch_managed_runs(  # noqa: C901
 
     build_command = hooks.build_command or build_launch_command
     start = hooks.start_process or start_process
+    started_keys = _start_direct_launch_rows(
+        workspace=workspace,
+        rows=rows,
+        launchable=launchable,
+        capacity=capacity,
+        execution=execution,
+        launch_identity_by_key=launch_identity_by_key,
+        workspace_by_key=workspace_by_key,
+        planned_by_key=planned_by_key,
+        execution_snapshot=execution_snapshot,
+        missing_pid_blocker=missing_pid_blocker,
+        dry_run=dry_run,
+        build_command=build_command,
+        start=start,
+        hooks=hooks,
+    )
+
+    commit_rows = []
+    for row in rows:
+        committed_row = dict(row)
+        if dry_run and workspace_by_key[validated_run_key(row)].get("target") in (None, ""):
+            committed_row.update({field: "" for field in EXECUTION_IDENTITY_FIELDS})
+        commit_rows.append(committed_row)
+    committed = hooks.merge_manifest(workspace, commit_rows, lock_held=True)
+    committed_by_key = {validated_run_key(row): row for row in committed}
+    committed_rows = [committed_by_key[validated_run_key(run)] for run in runs]
+    if dry_run:
+        preview_by_key = {validated_run_key(row): row for row in rows}
+        launch_rows = []
+        for committed_row in committed_rows:
+            preview = preview_by_key[validated_run_key(committed_row)]
+            if committed_row.get("target") in (None, ""):
+                launch_rows.append(
+                    {
+                        **committed_row,
+                        **{field: preview.get(field, "") for field in EXECUTION_IDENTITY_FIELDS},
+                    }
+                )
+            else:
+                launch_rows.append(committed_row)
+    else:
+        launch_rows = committed_rows
+    result = LaunchResult(
+        committed_rows=committed_rows,
+        launch_rows=launch_rows,
+        started_keys=frozenset(started_keys),
+        status_changes=observed.changes,
+        external_status_changes=external_status_changes,
+    )
+    if projection_writer is not None:
+        projection_writer(result)
+    for row in committed_rows:
+        key = validated_run_key(row)
+        if key in observed.changes:
+            before, after = observed.changes[key]
+            hooks.append_event(
+                workspace,
+                "run_status_changed",
+                {"step_id": key[0], "run_id": key[1], "from": before, "to": after},
+            )
+        if key in started_keys:
+            hooks.append_event(
+                workspace,
+                "run_launched",
+                {"step_id": key[0], "run_id": key[1], "gpus": row.get("gpus", "")},
+            )
+    hooks.write_status_report(workspace)
+    if missing_pid_blocker is not None:
+        raise missing_pid_blocker
+    return result
+
+
+def _refresh_external_capacity_runs(
+    *,
+    workspace: Path,
+    owner_dir: Path,
+    workspace_by_key: dict[RunKey, dict[str, Any]],
+    expected_keys: set[RunKey],
+    groups: list[list[Any]],
+    execution: dict[str, Any],
+    dry_run: bool,
+    hooks: SchedulerHooks,
+) -> tuple[dict[RunKey, dict[str, Any]], dict[RunKey, tuple[Any, Any]]]:
+    external_keys = []
+    if groups:
+        external_keys = [
+            key
+            for key, row in workspace_by_key.items()
+            if key not in expected_keys
+            and row.get("status") in ACTIVE_STATUSES
+            and shares_capacity(execution, groups, row)
+            and all(
+                row.get(field) not in (None, "")
+                for field in ("target", "workdir", "pid_path", "log_path", "command", "script")
+            )
+            and (row.get("target") != "ssh" or row.get("host") not in (None, ""))
+        ]
+    external_observed = observe_runs(owner_dir, workspace_by_key, external_keys, dry_run=dry_run)
+    external_status_changes = external_observed.changes
+    for key in external_status_changes:
+        workspace_by_key[key] = external_observed.rows_by_key[key]
+    if external_status_changes:
+        committed = hooks.merge_manifest(
+            workspace,
+            [workspace_by_key[key] for key in external_status_changes],
+            lock_held=True,
+        )
+        workspace_by_key = {validated_run_key(row): row for row in committed}
+        for key, (before, after) in external_status_changes.items():
+            hooks.append_event(
+                workspace,
+                "run_status_changed",
+                {"step_id": key[0], "run_id": key[1], "from": before, "to": after},
+            )
+        hooks.write_status_report(workspace)
+
+    return workspace_by_key, external_status_changes
+
+
+def _start_direct_launch_rows(
+    *,
+    workspace: Path,
+    rows: list[dict[str, Any]],
+    launchable: list[tuple[int, dict[str, Any]]],
+    capacity: CapacityState,
+    execution: dict[str, Any],
+    launch_identity_by_key: dict[RunKey, dict[str, Any]],
+    workspace_by_key: dict[RunKey, dict[str, Any]],
+    planned_by_key: dict[RunKey, dict[str, Any]],
+    execution_snapshot: ExecutionSnapshot | None,
+    missing_pid_blocker: MissingPidCapacityError | None,
+    dry_run: bool,
+    build_command: Callable[..., str],
+    start: Callable[..., str],
+    hooks: SchedulerHooks,
+) -> set[RunKey]:
     started_keys: set[RunKey] = set()
     if dry_run:
         preview_loads = list(capacity.group_loads)
@@ -759,59 +873,7 @@ def _launch_managed_runs(  # noqa: C901
             if row["status"] == "planned":
                 row["status"] = "pending"
 
-    commit_rows = []
-    for row in rows:
-        committed_row = dict(row)
-        if dry_run and workspace_by_key[validated_run_key(row)].get("target") in (None, ""):
-            committed_row.update({field: "" for field in EXECUTION_IDENTITY_FIELDS})
-        commit_rows.append(committed_row)
-    committed = hooks.merge_manifest(workspace, commit_rows, lock_held=True)
-    committed_by_key = {validated_run_key(row): row for row in committed}
-    committed_rows = [committed_by_key[validated_run_key(run)] for run in runs]
-    if dry_run:
-        preview_by_key = {validated_run_key(row): row for row in rows}
-        launch_rows = []
-        for committed_row in committed_rows:
-            preview = preview_by_key[validated_run_key(committed_row)]
-            if committed_row.get("target") in (None, ""):
-                launch_rows.append(
-                    {
-                        **committed_row,
-                        **{field: preview.get(field, "") for field in EXECUTION_IDENTITY_FIELDS},
-                    }
-                )
-            else:
-                launch_rows.append(committed_row)
-    else:
-        launch_rows = committed_rows
-    result = LaunchResult(
-        committed_rows=committed_rows,
-        launch_rows=launch_rows,
-        started_keys=frozenset(started_keys),
-        status_changes=observed.changes,
-        external_status_changes=external_status_changes,
-    )
-    if projection_writer is not None:
-        projection_writer(result)
-    for row in committed_rows:
-        key = validated_run_key(row)
-        if key in observed.changes:
-            before, after = observed.changes[key]
-            hooks.append_event(
-                workspace,
-                "run_status_changed",
-                {"step_id": key[0], "run_id": key[1], "from": before, "to": after},
-            )
-        if key in started_keys:
-            hooks.append_event(
-                workspace,
-                "run_launched",
-                {"step_id": key[0], "run_id": key[1], "gpus": row.get("gpus", "")},
-            )
-    hooks.write_status_report(workspace)
-    if missing_pid_blocker is not None:
-        raise missing_pid_blocker
-    return result
+    return started_keys
 
 
 def _managed_scheduler_type(execution: dict[str, Any], runs: list[dict[str, Any]]) -> str:
@@ -1380,7 +1442,7 @@ class SlurmMonitorContext:
         return cached_snapshot.get(job_id) if cached_snapshot is not None else None
 
 
-def observe_slurm_run(  # noqa: C901
+def observe_slurm_run(
     owner_dir: str | Path,
     execution: dict[str, Any],
     row: dict[str, Any],
@@ -1429,50 +1491,17 @@ def observe_slurm_run(  # noqa: C901
         else _read_slurm_json(owner, execution, row["scheduler_result_path"])
     )
     observation: dict[str, Any] = {**row, "scheduler_observed_at": utc_now()}
-    terminal_exit_code: int | None = None
-    terminal_identity: slurm.JobIdentity | None = None
-    runtime_commit = ""
-    if terminal:
-        identity = slurm.sidecar_identity(terminal, token, expected_job_id=job_id or None)
-        if cluster and identity.cluster and identity.cluster != cluster:
-            raise ValueError("Slurm terminal sidecar cluster differs from the canonical run.")
-        terminal_identity = identity
-        job_id = identity.job_id
-        terminal_exit_code = slurm.terminal_exit_code(terminal)
-        observation.update(
-            {
-                "scheduler_node": terminal.get("node", ""),
-                "scheduler_exit_code": terminal_exit_code,
-                "scheduler_started_at": terminal.get("started_at", ""),
-            }
-        )
-        runtime_commit = _slurm_sidecar_runtime_commit(terminal)
-    # A terminal receipt owns lifecycle metadata; allocation only fills missing runtime provenance.
-    if not runtime_commit:
-        allocation = (
-            monitor_context.sidecar(owner, execution, row, "allocation_identity_path")
-            if monitor_context is not None
-            else _read_slurm_json(owner, execution, row["allocation_identity_path"])
-        )
-        if allocation:
-            allocation_identity = slurm.sidecar_identity(allocation, token, expected_job_id=job_id or None)
-            if cluster and allocation_identity.cluster and allocation_identity.cluster != cluster:
-                raise ValueError("Slurm allocation sidecar cluster differs from the canonical run.")
-            if (
-                terminal_identity is not None
-                and terminal_identity.cluster
-                and allocation_identity.cluster
-                and allocation_identity.cluster != terminal_identity.cluster
-            ):
-                raise ValueError("Slurm allocation sidecar cluster differs from the terminal sidecar.")
-            if not terminal:
-                if not job_id:
-                    job_id = allocation_identity.job_id
-                observation["scheduler_node"] = allocation.get("node", "")
-                observation["scheduler_started_at"] = allocation.get("started_at", "")
-            runtime_commit = _slurm_sidecar_runtime_commit(allocation)
-    if runtime_commit:
-        observation["runtime_commit"] = runtime_commit
+    job_id, terminal_exit_code, terminal_identity = _observe_slurm_sidecars(
+        owner=owner,
+        execution=execution,
+        row=row,
+        terminal=terminal,
+        token=token,
+        job_id=job_id,
+        cluster=cluster,
+        observation=observation,
+        monitor_context=monitor_context,
+    )
     health_error = ""
     try:
         if not job_id:
@@ -1571,45 +1600,16 @@ def observe_slurm_run(  # noqa: C901
                 health_error = str(exc)
         if not from_accounting and active.comment != token:
             raise ValueError("Observed Slurm job comment differs from the frozen submit token.")
-        # Sidecars supply lookup candidates, never first-bind identity without scheduler evidence on the frozen route.
-        if not canonical_job_id:
-            if not routing_identity_matches:
-                raise ValueError("Slurm query route differs from the canonical run.")
-            observation["scheduler_job_id"] = job_id
-            observation["launched_at"] = row.get("launched_at") or utc_now()
-        category = slurm.state_category(active.state)
-        reason = active.reason
-        if slurm.normalize_state(active.state) == "REVOKED":
-            reason = "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported."
-            if active.reason:
-                reason = f"{reason} Scheduler reason: {active.reason}"
-        if category == "cancelled" and stop_requested:
-            status = "stopped"
-        elif category in {"queued", "running"}:
-            status = "stopping" if stop_requested else category
-        elif terminal_exit_code is None:
-            # A terminal scheduler state alone does not prove the workload's exit status.
-            status = "unknown_scheduler"
-            if category in {"completed", "failed", "cancelled"}:
-                reason = reason or "Terminal scheduler state is missing the matching terminal sidecar."
-        elif category == "completed":
-            status = "completed" if terminal_exit_code == 0 else "failed"
-        elif category in {"failed", "cancelled"}:
-            status = "failed"
-        else:
-            status = "unknown_scheduler"
-            reason = reason or "Slurm terminal sidecar is present but scheduler state is not recognized."
-        observation.update(
-            {
-                "scheduler_raw_state": active.state,
-                "scheduler_reason": reason,
-                "scheduler_node": active.node_list or observation.get("scheduler_node", ""),
-                "status": status,
-                **{f"scheduler_{field}": value for field, value in active.details.items()},
-            }
+        _apply_slurm_state(
+            canonical_job_id=canonical_job_id,
+            routing_identity_matches=routing_identity_matches,
+            job_id=job_id,
+            active=active,
+            stop_requested=stop_requested,
+            terminal_exit_code=terminal_exit_code,
+            observation=observation,
+            row=row,
         )
-        if status == "stopped":
-            observation["stopped_at"] = row.get("stopped_at") or observation["scheduler_observed_at"]
     except (slurm.SlurmCommandError, subprocess.TimeoutExpired, RuntimeError) as exc:
         observation.update(
             {
@@ -1619,6 +1619,117 @@ def observe_slurm_run(  # noqa: C901
         )
         health_error = str(exc)
     return _slurm_artifact_observation(observation, health=health, health_error=health_error)
+
+
+def _observe_slurm_sidecars(
+    *,
+    owner: Path,
+    execution: dict[str, Any],
+    row: dict[str, Any],
+    terminal: dict[str, Any],
+    token: str,
+    job_id: str,
+    cluster: str,
+    observation: dict[str, Any],
+    monitor_context: SlurmMonitorContext | None,
+) -> tuple[str, int | None, slurm.JobIdentity | None]:
+    terminal_exit_code: int | None = None
+    terminal_identity: slurm.JobIdentity | None = None
+    runtime_commit = ""
+    if terminal:
+        identity = slurm.sidecar_identity(terminal, token, expected_job_id=job_id or None)
+        if cluster and identity.cluster and identity.cluster != cluster:
+            raise ValueError("Slurm terminal sidecar cluster differs from the canonical run.")
+        terminal_identity = identity
+        job_id = identity.job_id
+        terminal_exit_code = slurm.terminal_exit_code(terminal)
+        observation.update(
+            {
+                "scheduler_node": terminal.get("node", ""),
+                "scheduler_exit_code": terminal_exit_code,
+                "scheduler_started_at": terminal.get("started_at", ""),
+            }
+        )
+        runtime_commit = _slurm_sidecar_runtime_commit(terminal)
+    # A terminal receipt owns lifecycle metadata; allocation only fills missing runtime provenance.
+    if not runtime_commit:
+        allocation = (
+            monitor_context.sidecar(owner, execution, row, "allocation_identity_path")
+            if monitor_context is not None
+            else _read_slurm_json(owner, execution, row["allocation_identity_path"])
+        )
+        if allocation:
+            allocation_identity = slurm.sidecar_identity(allocation, token, expected_job_id=job_id or None)
+            if cluster and allocation_identity.cluster and allocation_identity.cluster != cluster:
+                raise ValueError("Slurm allocation sidecar cluster differs from the canonical run.")
+            if (
+                terminal_identity is not None
+                and terminal_identity.cluster
+                and allocation_identity.cluster
+                and allocation_identity.cluster != terminal_identity.cluster
+            ):
+                raise ValueError("Slurm allocation sidecar cluster differs from the terminal sidecar.")
+            if not terminal:
+                if not job_id:
+                    job_id = allocation_identity.job_id
+                observation["scheduler_node"] = allocation.get("node", "")
+                observation["scheduler_started_at"] = allocation.get("started_at", "")
+            runtime_commit = _slurm_sidecar_runtime_commit(allocation)
+    if runtime_commit:
+        observation["runtime_commit"] = runtime_commit
+    return job_id, terminal_exit_code, terminal_identity
+
+
+def _apply_slurm_state(
+    *,
+    canonical_job_id: str,
+    routing_identity_matches: bool,
+    job_id: str,
+    active: slurm.JobObservation,
+    stop_requested: bool,
+    terminal_exit_code: int | None,
+    observation: dict[str, Any],
+    row: dict[str, Any],
+) -> None:
+    # Sidecars supply lookup candidates, never first-bind identity without scheduler evidence on the frozen route.
+    if not canonical_job_id:
+        if not routing_identity_matches:
+            raise ValueError("Slurm query route differs from the canonical run.")
+        observation["scheduler_job_id"] = job_id
+        observation["launched_at"] = row.get("launched_at") or utc_now()
+    category = slurm.state_category(active.state)
+    reason = active.reason
+    if slurm.normalize_state(active.state) == "REVOKED":
+        reason = "Slurm reports REVOKED federation sibling state; sibling-cluster rebinding is unsupported."
+        if active.reason:
+            reason = f"{reason} Scheduler reason: {active.reason}"
+    if category == "cancelled" and stop_requested:
+        status = "stopped"
+    elif category in {"queued", "running"}:
+        status = "stopping" if stop_requested else category
+    elif terminal_exit_code is None:
+        # A terminal scheduler state alone does not prove the workload's exit status.
+        status = "unknown_scheduler"
+        if category in {"completed", "failed", "cancelled"}:
+            reason = reason or "Terminal scheduler state is missing the matching terminal sidecar."
+    elif category == "completed":
+        status = "completed" if terminal_exit_code == 0 else "failed"
+    elif category in {"failed", "cancelled"}:
+        status = "failed"
+    else:
+        status = "unknown_scheduler"
+        reason = reason or "Slurm terminal sidecar is present but scheduler state is not recognized."
+    observation.update(
+        {
+            "scheduler_raw_state": active.state,
+            "scheduler_reason": reason,
+            "scheduler_node": active.node_list or observation.get("scheduler_node", ""),
+            "status": status,
+            **{f"scheduler_{field}": value for field, value in active.details.items()},
+        }
+    )
+    if status == "stopped":
+        observation["stopped_at"] = row.get("stopped_at") or observation["scheduler_observed_at"]
 
 
 def _slurm_sidecar_runtime_commit(payload: dict[str, Any]) -> str:
