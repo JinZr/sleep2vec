@@ -58,11 +58,7 @@ PACKAGE = Path("agent_tools")
 #: function may be improved without a ledger edit until it drops under the
 #: ceiling. Delete entries as you fix them; a new one is a design signal, not a
 #: lint to suppress.
-SUPPRESSION_LEDGER = {
-    ("agent_tools/experiment_io.py", "append_managed_text_at"),  # 28
-    ("agent_tools/experiment_io.py", "conditional_atomic_replace_text_at"),  # 47
-    ("agent_tools/experiment_io.py", "validate_managed_output_paths"),  # 39
-}
+SUPPRESSION_LEDGER: set[tuple[str, str]] = set()
 #: Assembled blocks already above the ceiling: ``(program, block) -> scores``.
 #: Spelled here rather than as a ``# noqa`` in the fragment, because a
 #: fragment's line numbers do not survive concatenation -- and because a noqa
@@ -77,10 +73,7 @@ SUPPRESSION_LEDGER = {
 #: the other reads as unchanged. Pinning the location would mean mapping
 #: assembled line numbers back through the fragment offsets ``source()`` owns,
 #: and that swap leaves the debt exactly as the ledger describes it.
-PROGRAM_LEDGER = {
-    ("experiment_io.conditional_atomic_replace_text", "TryExcept"): (46,),
-    ("experiment_io.validate_managed_output_paths", "Loop"): (30,),
-}
+PROGRAM_LEDGER: dict[tuple[str, str], tuple[int, ...]] = {}
 
 SUPPRESSION = re.compile(r"#\s*noqa:\s*C901\b")
 VIOLATION = re.compile(r"^(?P<path>.+?):(?P<line>\d+):\d+: C901 '(?P<name>.+?)' is too complex \((?P<score>\d+)\)$")

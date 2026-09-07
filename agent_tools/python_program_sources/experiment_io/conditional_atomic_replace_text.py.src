@@ -158,6 +158,94 @@ def rename_noreplace_at(parent_descriptor, source_name, target_name):
     raise OSError(error, os.strerror(error), target_name)
 
 
+def lock_and_check_inputs(
+    lock_stack,
+    root_descriptor,
+    locked_files,
+    target_parent,
+    target_name,
+    target_parent_info,
+    dependency_relative,
+    dependency_expected,
+    guard_relative,
+    guard_expected,
+    append_mode,
+):
+    if dependency_relative is not None:
+        try:
+            dependency_parent, dependency_name = open_managed_parent(root_descriptor, dependency_relative, False)
+        except FileNotFoundError:
+            raise SystemExit(45)
+        lock_stack.callback(close_descriptor, dependency_parent)
+        dependency_lock_name = dependency_name + ".lock"
+        dependency_parent_info = os.fstat(dependency_parent)
+        dependency_lock_key = (
+            dependency_parent_info.st_dev,
+            dependency_parent_info.st_ino,
+            dependency_lock_name,
+        )
+        if dependency_lock_key not in locked_files:
+            lock_stack.enter_context(blocking_file_lock_at(dependency_parent, dependency_lock_name))
+            locked_files.add(dependency_lock_key)
+        try:
+            dependency_current, _dependency_mode = read_regular_file_at(dependency_parent, dependency_name)
+        except FileNotFoundError:
+            raise SystemExit(45)
+        if hashlib.sha256(dependency_current).hexdigest() != dependency_expected:
+            raise SystemExit(45)
+    target_lock_names = [f".{target_name}.cas.lock"]
+    if not append_mode:
+        # Keep lifecycle readers and mixed local/SSH CAS writers on shared locks, in that order.
+        target_lock_names.insert(0, target_name + ".lock")
+    for target_lock_name in target_lock_names:
+        target_lock_key = (target_parent_info.st_dev, target_parent_info.st_ino, target_lock_name)
+        if target_lock_key not in locked_files:
+            lock_stack.enter_context(blocking_file_lock_at(target_parent, target_lock_name))
+            locked_files.add(target_lock_key)
+    if guard_relative is not None:
+        try:
+            guard_parent, guard_name = open_managed_parent(root_descriptor, guard_relative, False)
+        except FileNotFoundError:
+            raise SystemExit(45)
+        lock_stack.callback(close_descriptor, guard_parent)
+        try:
+            guard_current, _guard_mode = read_regular_file_at(guard_parent, guard_name)
+        except FileNotFoundError:
+            raise SystemExit(45)
+        if hashlib.sha256(guard_current).hexdigest() != guard_expected:
+            raise SystemExit(45)
+
+
+def read_target_state(target_parent, target_name, append_mode, expect_missing, expected):
+    if append_mode:
+        try:
+            current, target_mode = read_regular_file_at(target_parent, target_name)
+            target_exists = True
+        except FileNotFoundError:
+            current = b""
+            target_mode = 0o644
+            target_exists = False
+    elif expect_missing:
+        try:
+            os.stat(target_name, dir_fd=target_parent, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise SystemExit(45)
+        current = b""
+        target_mode = 0o644
+        target_exists = False
+    else:
+        try:
+            current, target_mode = read_regular_file_at(target_parent, target_name)
+        except FileNotFoundError:
+            raise SystemExit(45)
+        if hashlib.sha256(current).hexdigest() != expected:
+            raise SystemExit(45)
+        target_exists = True
+    return current, target_mode, target_exists
+
+
 try:
     with ExitStack() as lock_stack:
         root_descriptor = open_managed_root()
@@ -167,75 +255,22 @@ try:
         target_parent, target_name = open_managed_parent(root_descriptor, target_relative, True)
         lock_stack.callback(close_descriptor, target_parent)
         target_parent_info = os.fstat(target_parent)
-        if dependency_relative is not None:
-            try:
-                dependency_parent, dependency_name = open_managed_parent(root_descriptor, dependency_relative, False)
-            except FileNotFoundError:
-                raise SystemExit(45)
-            lock_stack.callback(close_descriptor, dependency_parent)
-            dependency_lock_name = dependency_name + ".lock"
-            dependency_parent_info = os.fstat(dependency_parent)
-            dependency_lock_key = (
-                dependency_parent_info.st_dev,
-                dependency_parent_info.st_ino,
-                dependency_lock_name,
-            )
-            if dependency_lock_key not in locked_files:
-                lock_stack.enter_context(blocking_file_lock_at(dependency_parent, dependency_lock_name))
-                locked_files.add(dependency_lock_key)
-            try:
-                dependency_current, _dependency_mode = read_regular_file_at(dependency_parent, dependency_name)
-            except FileNotFoundError:
-                raise SystemExit(45)
-            if hashlib.sha256(dependency_current).hexdigest() != dependency_expected:
-                raise SystemExit(45)
-        target_lock_names = [f".{target_name}.cas.lock"]
-        if not append_mode:
-            # Keep lifecycle readers and mixed local/SSH CAS writers on shared locks, in that order.
-            target_lock_names.insert(0, target_name + ".lock")
-        for target_lock_name in target_lock_names:
-            target_lock_key = (target_parent_info.st_dev, target_parent_info.st_ino, target_lock_name)
-            if target_lock_key not in locked_files:
-                lock_stack.enter_context(blocking_file_lock_at(target_parent, target_lock_name))
-                locked_files.add(target_lock_key)
-        if guard_relative is not None:
-            try:
-                guard_parent, guard_name = open_managed_parent(root_descriptor, guard_relative, False)
-            except FileNotFoundError:
-                raise SystemExit(45)
-            lock_stack.callback(close_descriptor, guard_parent)
-            try:
-                guard_current, _guard_mode = read_regular_file_at(guard_parent, guard_name)
-            except FileNotFoundError:
-                raise SystemExit(45)
-            if hashlib.sha256(guard_current).hexdigest() != guard_expected:
-                raise SystemExit(45)
-        if append_mode:
-            try:
-                current, target_mode = read_regular_file_at(target_parent, target_name)
-                target_exists = True
-            except FileNotFoundError:
-                current = b""
-                target_mode = 0o644
-                target_exists = False
-        elif expect_missing:
-            try:
-                os.stat(target_name, dir_fd=target_parent, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
-            else:
-                raise SystemExit(45)
-            current = b""
-            target_mode = 0o644
-            target_exists = False
-        else:
-            try:
-                current, target_mode = read_regular_file_at(target_parent, target_name)
-            except FileNotFoundError:
-                raise SystemExit(45)
-            if hashlib.sha256(current).hexdigest() != expected:
-                raise SystemExit(45)
-            target_exists = True
+        lock_and_check_inputs(
+            lock_stack,
+            root_descriptor,
+            locked_files,
+            target_parent,
+            target_name,
+            target_parent_info,
+            dependency_relative,
+            dependency_expected,
+            guard_relative,
+            guard_expected,
+            append_mode,
+        )
+        current, target_mode, target_exists = read_target_state(
+            target_parent, target_name, append_mode, expect_missing, expected
+        )
         incoming = sys.stdin.buffer.read()
         payload = current + incoming if append_mode else incoming
         descriptor, temporary = open_temporary_at(target_parent, target_name)
