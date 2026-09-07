@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import shlex
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import python_programs
 from .experiment_workspace import MONITOR_EXIT_CODE_PREFIX
@@ -88,6 +88,10 @@ PRESET_FIELDS = frozenset(
         "write_sidecar_manifest",
     }
 )
+
+
+if TYPE_CHECKING:
+    from .plan_contract import FrozenInputSnapshot
 
 
 def variant_module(recipe: dict, entrypoint: str) -> str:
@@ -256,7 +260,7 @@ def script_lines(
     run_id: str | None = None,
     lifecycle_python: str | Path | None = None,
     expected_runtime_commit: str | None = None,
-    input_snapshots: list[dict[str, str]] | None = None,
+    input_snapshots: list[FrozenInputSnapshot] | list[dict[str, str]] | None = None,
     slurm_allocation_guard: str | None = None,
 ) -> list[str]:
     cwd_lines = []

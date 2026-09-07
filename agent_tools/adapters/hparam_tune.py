@@ -355,7 +355,7 @@ class HparamTuneAdapter(TaskAdapter):
         *,
         run_index_offset: int,
         config_bytes: bytes,
-    ) -> plan_contract.CompiledPlanContract:
+    ) -> plan_contract.HparamCompiledPlanContract:
         from .. import plan_contract, plan_hparam
 
         contracts = plan_hparam.compile_hparam_run_contracts(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import hashlib
 import json
 import math
@@ -626,7 +627,7 @@ def _compile_registered_plan_contract(
 
 def _validate_plan_contract_runs(
     runs: list[dict[str, Any]],
-    expected_runs: list[dict[str, Any]],
+    expected_runs: Sequence[Mapping[str, Any]],
     plan_path: Path,
 ) -> None:
     if len(runs) != len(expected_runs):

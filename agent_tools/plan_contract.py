@@ -5,16 +5,18 @@ import json
 from pathlib import Path
 import re
 import sys
-from typing import Any, Sequence, TypedDict
+from typing import Any, Literal, Mapping, Sequence, TypedDict
+
+from typing_extensions import Never, NotRequired
 
 from . import plan_rendering as rendering, python_programs, slurm
 from .decision_models import USER_DECISIONS_FILENAME
-from .experiment_workspace import run_identity, safe_artifact_name
+from .experiment_workspace import RunIdentity, run_identity, safe_artifact_name
 from .models import REPO_ROOT, recipe_name
 
 FROZEN_FINAL_EVAL_CONFIG_NAME = "config.final_eval.yaml"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_PLAN_CONTEXT_FIELDS = {"home", "python", "repo_root"}
+_PLAN_CONTEXT_FIELDS: set[Literal["home", "python", "repo_root"]] = {"home", "python", "repo_root"}
 _DOCTOR_CONTROL_NAMES = (
     "questions.json",
     "questions.md",
@@ -36,6 +38,58 @@ _PASS_PLAN_RESIDUE_NAMES = (
     "runs",
     "validation.sh",
 )
+
+
+class FrozenPlanContext(TypedDict):
+    home: str
+    python: str
+    repo_root: str
+
+
+class FrozenInputSnapshot(TypedDict):
+    field: str
+    path: str
+    sha256: str
+
+
+class BoundFinalEvalConfigSnapshot(TypedDict):
+    source_path: str
+    bytes: bytes
+    sha256: str
+
+
+class FinalEvalConfigDescriptor(TypedDict):
+    path: str
+    sha256: str
+    source_path: Any
+
+
+class _GenericRunCore(RunIdentity):
+    experiment_id: Any
+    step_id: Any
+    config: str
+    script: str
+    run_dir: str
+    artifacts: str
+    runtime_dir: str
+    checkpoint_dir: str
+
+
+class GenericRunContract(_GenericRunCore, total=False):
+    scheduler_type: Literal["direct", "slurm"]
+    terminal_status_owner: Literal["script", "scheduler_sidecar"]
+    scheduler_direct_controller: str
+    scheduler_script: str
+    scheduler_result_path: str
+    allocation_identity_path: str
+    log_path: str
+    config_sha256: str
+    script_sha256: str
+    input_snapshots: list[FrozenInputSnapshot]
+    command: str
+    scheduler_submit_token: str
+    scheduler_script_sha256: str
+    status: str
 
 
 class _HparamPlanCore(TypedDict):
@@ -70,23 +124,33 @@ class MaterializedHparamRunContract(_MaterializedHparamRun, total=False):
     scheduler_script_text: str
 
 
-class FinalEvalContract(TypedDict, total=False):
-    final_command: str | None
-    final_eval_config_required: bool
-    final_eval_config_sha256: str | None
-
-
-class _CompiledPlanRuns(FinalEvalContract):
-    runs: list[dict[str, Any]]
-
-
-class CompiledPlanContract(_CompiledPlanRuns, total=False):
+class GenericCompiledPlanContract(TypedDict):
+    runs: list[GenericRunContract]
     commands: list[str]
     script_text: str
-    scheduler_script_text: str
-    launch_script_text: str
+    scheduler_script_text: NotRequired[str]
+    launch_script_text: NotRequired[str]
+    run_files: NotRequired[Never]
+    final_command: NotRequired[Never]
+    final_script_text: NotRequired[Never]
+    final_eval_config_required: NotRequired[Never]
+    final_eval_config_sha256: NotRequired[Never]
+
+
+class HparamCompiledPlanContract(TypedDict):
+    runs: list[dict[str, Any]]
     run_files: Sequence[HparamRunContract | MaterializedHparamRunContract]
+    launch_script_text: str
+    final_command: str | None
     final_script_text: str | None
+    final_eval_config_required: bool
+    final_eval_config_sha256: str | None
+    commands: NotRequired[Never]
+    script_text: NotRequired[Never]
+    scheduler_script_text: NotRequired[Never]
+
+
+CompiledPlanContract = GenericCompiledPlanContract | HparamCompiledPlanContract
 
 
 def blocked_plan_control_paths(plan_dir: Path) -> list[Path]:
@@ -110,15 +174,16 @@ def pass_plan_artifact_paths(plan_dir: Path) -> list[Path]:
 
 
 def bind_plan_context(recipe: dict[str, Any]) -> None:
-    recipe["_plan_context"] = {
+    context: FrozenPlanContext = {
         "home": str(Path.home()),
         "python": sys.executable,
         "repo_root": str(REPO_ROOT),
     }
+    recipe["_plan_context"] = context
 
 
-def frozen_plan_context(recipe: dict[str, Any]) -> dict[str, str]:
-    context = recipe.get("_plan_context")
+def frozen_plan_context(recipe: dict[str, Any]) -> FrozenPlanContext:
+    context: FrozenPlanContext | None = recipe.get("_plan_context")
     if (
         not isinstance(context, dict)
         or set(context) != _PLAN_CONTEXT_FIELDS
@@ -128,7 +193,7 @@ def frozen_plan_context(recipe: dict[str, Any]) -> dict[str, str]:
         or not Path(context["repo_root"]).is_absolute()
     ):
         raise ValueError("Frozen recipe must define an exact absolute _plan_context.")
-    return dict(context)
+    return FrozenPlanContext(**context)
 
 
 def resolve_frozen_repo_path(recipe: dict[str, Any], path: Any) -> Path | None:
@@ -144,21 +209,22 @@ def resolve_frozen_repo_path(recipe: dict[str, Any], path: Any) -> Path | None:
     return candidate if candidate.is_absolute() else Path(context["repo_root"]) / candidate
 
 
-def frozen_input_snapshots(recipe: dict[str, Any]) -> list[dict[str, str]]:
-    snapshots = recipe.get("input_snapshots")
+def frozen_input_snapshots(recipe: dict[str, Any]) -> list[FrozenInputSnapshot]:
+    snapshots: list[FrozenInputSnapshot] | None = recipe.get("input_snapshots")
     if not isinstance(snapshots, list) or not snapshots:
         raise ValueError("Frozen recipe must define input_snapshots.")
-    normalized = []
+    normalized: list[FrozenInputSnapshot] = []
+    text_fields: tuple[Literal["field", "path"], ...] = ("field", "path")
     for snapshot in snapshots:
         if (
             not isinstance(snapshot, dict)
             or set(snapshot) != {"field", "path", "sha256"}
-            or any(not isinstance(snapshot[field], str) or not snapshot[field] for field in ("field", "path"))
+            or any(not isinstance(snapshot[field], str) or not snapshot[field] for field in text_fields)
             or not isinstance(snapshot["sha256"], str)
             or _SHA256_RE.fullmatch(snapshot["sha256"]) is None
         ):
             raise ValueError("Frozen recipe input_snapshots must define field, path, and SHA-256.")
-        normalized.append(dict(snapshot))
+        normalized.append(FrozenInputSnapshot(**snapshot))
     if normalized != sorted(normalized, key=lambda item: (item["field"], item["path"])):
         raise ValueError("Frozen recipe input_snapshots must use stable field/path ordering.")
     if len({item["field"] for item in normalized}) != len(normalized):
@@ -166,7 +232,7 @@ def frozen_input_snapshots(recipe: dict[str, Any]) -> list[dict[str, str]]:
     return normalized
 
 
-def frozen_input_snapshot(recipe: dict[str, Any], field: str) -> dict[str, str]:
+def frozen_input_snapshot(recipe: dict[str, Any], field: str) -> FrozenInputSnapshot:
     matches = [snapshot for snapshot in frozen_input_snapshots(recipe) if snapshot["field"] == field]
     if len(matches) != 1:
         raise ValueError(f"Frozen recipe must define exactly one {field} input snapshot.")
@@ -177,12 +243,13 @@ def bind_frozen_input_snapshot(recipe: dict[str, Any], field: str, path: str | P
     if _SHA256_RE.fullmatch(sha256) is None:
         raise ValueError(f"Frozen input snapshot for {field} requires a lowercase SHA-256.")
     snapshots = recipe.get("input_snapshots")
-    retained = (
+    retained: list[FrozenInputSnapshot | dict[str, Any]] = (
         [snapshot for snapshot in snapshots if isinstance(snapshot, dict) and snapshot.get("field") != field]
         if isinstance(snapshots, list)
         else []
     )
-    retained.append({"field": field, "path": str(path), "sha256": sha256})
+    snapshot: FrozenInputSnapshot = {"field": field, "path": str(path), "sha256": sha256}
+    retained.append(snapshot)
     recipe["input_snapshots"] = sorted(retained, key=lambda item: (item["field"], item["path"]))
 
 
@@ -191,7 +258,7 @@ def generic_run_contract(
     plan_dir: Path,
     run_index: int,
     adapter: Any,
-) -> dict[str, Any]:
+) -> GenericRunContract:
     context = frozen_plan_context(recipe)
     declared_name = safe_artifact_name((recipe.get("artifacts") or {}).get("version_name") or recipe_name(recipe))
     identity = run_identity(recipe, run_index, {}, run_name=declared_name)
@@ -202,7 +269,7 @@ def generic_run_contract(
     runtime_recipe.setdefault("execution", {}).setdefault("workdir", context["repo_root"])
     runtime_dir = adapter.managed_runtime_dir(runtime_recipe, identity["version"])
     checkpoint_dir = runtime_dir / "checkpoints" if runtime_dir is not None else None
-    run = {
+    run: GenericRunContract = {
         "experiment_id": (recipe.get("experiment") or {}).get("id"),
         "step_id": (recipe.get("step") or {}).get("id"),
         **identity,
@@ -215,24 +282,26 @@ def generic_run_contract(
     }
     execution = recipe.get("execution") or {}
     if adapter.direct_launch_subcommand and (execution.get("scheduler") or {}).get("type") == "direct":
-        run.update(scheduler_type="direct", terminal_status_owner="script")
+        run.update({"scheduler_type": "direct", "terminal_status_owner": "script"})
     if adapter.slurm_launch_subcommand and (execution.get("scheduler") or {}).get("type") == "slurm":
         resources = slurm.normalize_resources(execution["scheduler"], execution.get("gpus_per_run", 1))
         run.update(
-            scheduler_type="slurm",
-            scheduler_direct_controller=str(resources["direct_controller"]).lower(),
-            scheduler_script=str(run_dir / "job.sbatch"),
-            scheduler_result_path=str(run_dir / "slurm_terminal.json"),
-            allocation_identity_path=str(run_dir / "allocation_identity.json"),
-            log_path=str(run_dir / "slurm.log"),
-            terminal_status_owner="scheduler_sidecar",
+            {
+                "scheduler_type": "slurm",
+                "scheduler_direct_controller": str(resources["direct_controller"]).lower(),
+                "scheduler_script": str(run_dir / "job.sbatch"),
+                "scheduler_result_path": str(run_dir / "slurm_terminal.json"),
+                "allocation_identity_path": str(run_dir / "allocation_identity.json"),
+                "log_path": str(run_dir / "slurm.log"),
+                "terminal_status_owner": "scheduler_sidecar",
+            }
         )
     return run
 
 
 def generic_commands(
     recipe: dict[str, Any],
-    run: dict[str, Any],
+    run: Mapping[str, Any],
     adapter: Any,
     config_bytes: bytes,
 ) -> list[str]:
@@ -248,10 +317,10 @@ def generic_commands(
 
 def generic_script_text(
     recipe: dict[str, Any],
-    run: dict[str, Any],
+    run: Mapping[str, Any],
     adapter: Any,
     commands: list[str],
-    input_snapshots: list[dict[str, str]],
+    input_snapshots: list[FrozenInputSnapshot],
 ) -> str:
     context = frozen_plan_context(recipe)
     execution = recipe["execution"] if isinstance(recipe.get("execution"), dict) else {}
@@ -311,7 +380,7 @@ def validate_final_eval_contract(
     plan: dict[str, Any],
     recipe: dict[str, Any],
     plan_dir: Path,
-    contract: FinalEvalContract,
+    contract: Mapping[str, Any],
 ) -> tuple[Path | None, str | None]:
     required = bool(contract.get("final_eval_config_required"))
     present = "final_eval_config" in plan
