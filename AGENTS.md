@@ -105,6 +105,7 @@ bash utils/style_check.sh
 - Keep the index limited to `README.md`, `MODULE_MAP.md`, `REUSE_GUIDE.md`, and `WORKFLOWS.md`.
 
 ## Testing Guidelines
+- For `agent_tools` tests, install `requirements-agent-tools.txt` in the chosen environment and use `conda run -n exp python utils/test_agent_tools.py -q <test paths> --randomly-seed=<seed>`; omit paths to collect `tests/agent_tools`. This shared local/CI entrypoint keeps random ordering, disables per-test reseeding, and defaults only the test subprocess to `DS_ACCELERATOR=cpu` (an explicit environment value is preserved). The full `exp` environment includes a DeepSpeed seeder that otherwise initializes an accelerator during pytest collection. Use ordinary pytest for model/GPU tests.
 - Use targeted pytest files for the affected ownership boundary. Training or evaluation smoke runs require explicit execution authorization; a code-review or refactor request does not authorize them.
 - There is a checked `tests/` suite; prefer the smallest relevant test set for the ownership boundary touched.
 - `--print-diagnostics` still calls `Trainer.fit`; it is a short training run, not a read-only check.
@@ -254,7 +255,7 @@ python -m pytest -q tests/runtime/test_checkpoints.py tests/config/test_config_l
 - Full integration gate for changes spanning agent-tool contracts or final integration (CI splits this coverage using `.github/workflows/unit_tests.yml`):
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python -m compileall agent_tools tests
-python -m pytest -q tests/agent_tools
+python utils/test_agent_tools.py -q
 python -m agent_tools skills --validate
 python utils/type_check.py
 ```
