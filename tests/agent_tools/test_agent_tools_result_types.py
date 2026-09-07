@@ -419,14 +419,76 @@ def test_result_types_reach_callers(tmp_path: Path):
             optional_key: tuple[str, str] | None = experiment_workspace.managed_run_key({})
             required_key: tuple[str, str] = experiment_workspace.managed_run_key({})  # type: ignore[assignment]
 
+            frozen_context = plan_contract.frozen_plan_context({})
+            frozen_home: str = frozen_context["home"]
+            frozen_context["python"] = Path("/python")  # type: ignore[typeddict-item]
+            frozen_context["repo"]  # type: ignore[typeddict-item]
+            del frozen_context["repo_root"]  # type: ignore[misc]
+            for frozen_input in (
+                plan_contract.frozen_input_snapshots({})[0],
+                plan_contract.frozen_input_snapshot({}, "inputs.config"),
+            ):
+                frozen_path: str = frozen_input["path"]
+                frozen_hash: str = frozen_input["sha256"]
+                frozen_input["field"] = None  # type: ignore[typeddict-item]
+                frozen_input["sha256"] = b"hash"  # type: ignore[typeddict-item]
+                frozen_input["source_path"]  # type: ignore[typeddict-item]
+                del frozen_input["sha256"]  # type: ignore[misc]
+            final_descriptor: plan_contract.FinalEvalConfigDescriptor = {
+                "path": "/plan/config.final_eval.yaml", "sha256": "a" * 64, "source_path": "relative.yaml",
+            }
+            final_descriptor["source_path"] = None
+            final_descriptor["source_path"] = {"raw": [None, 1]}
+            bound_final: plan_contract.BoundFinalEvalConfigSnapshot = {
+                "source_path": "relative.yaml", "bytes": b"config", "sha256": "a" * 64,
+            }
+            bound_final["source_path"] = Path("relative.yaml")  # type: ignore[typeddict-item]
+            bound_final["bytes"] = "config"  # type: ignore[typeddict-item]
+            del bound_final["sha256"]  # type: ignore[misc]
+            del final_descriptor["path"]  # type: ignore[misc]
+
+            generic_run = plan_contract.generic_run_contract({}, Path("/plan"), 7, TaskAdapter())
+            generic_config: str = generic_run["config"]
+            generic_run["config"] = Path("/config")  # type: ignore[typeddict-item]
+            generic_run["run_id"] = 7  # type: ignore[typeddict-item]
+            generic_run["scheduler_type"] = "unknown"  # type: ignore[typeddict-item]
+            generic_run["experiment_id"] = None
+            generic_run["step_id"] = {"raw": None}
+            del generic_run["script"]  # type: ignore[misc]
+
+            generic_compiled: plan_contract.GenericCompiledPlanContract = {
+                "runs": [generic_run], "commands": [], "script_text": "",
+            }
+            generic_compiled["run_files"] = []  # type: ignore[typeddict-item]
+            generic_compiled["final_command"] = None  # type: ignore[typeddict-item]
+            del generic_compiled["commands"]  # type: ignore[misc]
+            del generic_compiled["script_text"]  # type: ignore[misc]
+            hparam_compiled = HPARAM_TUNE_ADAPTER.compile_plan_contract(
+                {}, Path("/plan"), run_index_offset=7, config_bytes=b"config",
+            )
+            hparam_launch: str = hparam_compiled["launch_script_text"]
+            hparam_final: str | None = hparam_compiled["final_command"]
+            hparam_compiled["commands"] = []  # type: ignore[typeddict-item]
+            hparam_compiled["script_text"] = ""  # type: ignore[typeddict-item]
+            del hparam_compiled["run_files"]  # type: ignore[misc]
+            del hparam_compiled["final_eval_config_required"]  # type: ignore[misc]
+            hparam_compiled["runs"][0]["custom"] = {"raw": [None, 1]}
+            raw_plan, raw_recipe = run_artifacts._read_plan_documents(Path("/plan"))
+            raw_plan["custom"] = {"raw": [None, 1]}
+            raw_recipe["custom"] = None
+            raw_final = plan_hparam.final_eval_config_snapshot({})
+            if raw_final is not None:
+                raw_final["custom"] = [None, {"field": 1}]
+                raw_final["bytes"] = None
+
             layouts = plan_hparam.hparam_run_layouts({}, Path("/plan"), 7)
-            layout_identity: dict[str, str] = layouts[0]["identity"]
+            layout_identity: experiment_workspace.RunIdentity = layouts[0]["identity"]
             layout_parameters: dict[str, Any] = layouts[0]["parameters"]
             layout_path: Path = layouts[0]["run_dir"]
             layout_path_text: str = layouts[0]["run_dir"]  # type: ignore[assignment]
             layouts[0]["run_path"]  # type: ignore[typeddict-item]
             layouts[0]["run_dir"] = "/plan/run"  # type: ignore[typeddict-item]
-            layouts[0]["identity"]["run_id"] = 7  # type: ignore[assignment]
+            layouts[0]["identity"]["run_id"] = 7  # type: ignore[typeddict-item]
             layouts[0]["parameters"] = []  # type: ignore[typeddict-item]
 
             compiled_files = plan_hparam.compile_hparam_run_contracts(
@@ -456,8 +518,8 @@ def test_result_types_reach_callers(tmp_path: Path):
             ):
                 launch_text: str = plan_result["launch_script_text"]
                 final_command: str | None = plan_result["final_command"]
-                plan_result["launch_script_text"] = b"bytes"  # type: ignore[typeddict-item]
-                plan_result["final_eval_config_required"] = "yes"  # type: ignore[typeddict-item]
+                plan_result["launch_script_text"] = b"bytes"  # type: ignore[arg-type]
+                plan_result["final_eval_config_required"] = "yes"  # type: ignore[arg-type]
                 plan_result["run_file"]  # type: ignore[typeddict-item]
                 for run_files in plan_result["run_files"]:
                     file_bytes: bytes = run_files["config_bytes"]
@@ -465,6 +527,8 @@ def test_result_types_reach_callers(tmp_path: Path):
                     invalid_bytes: str = run_files["config_bytes"]  # type: ignore[assignment]
                     invalid_script: bytes = run_files["script_text"]  # type: ignore[assignment]
                 plan_contract.validate_final_eval_contract({}, {}, Path("/plan"), plan_result)
+            plan_contract.validate_final_eval_contract({}, {}, Path("/plan"), generic_compiled)
+            plan_contract.validate_final_eval_contract({}, {}, Path("/plan"), hparam_compiled)
             plan_contract.validate_final_eval_contract({}, {}, Path("/plan"), {})
 
             resources = slurm.normalize_resources({}, 1)
