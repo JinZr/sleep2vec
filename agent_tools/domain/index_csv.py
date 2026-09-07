@@ -5,12 +5,82 @@ import math
 from numbers import Integral, Real
 from pathlib import Path
 import pickle
-from typing import Any
+from typing import Any, TypedDict
 
 import pandas as pd
 
 from ..configs import config_summary
 from ..models import repo_relative, resolve_repo_path
+
+
+class LabelPresence(TypedDict):
+    exists: bool
+    non_null: int
+
+
+class MaskCoverage(TypedDict):
+    exists: bool
+    true_count: int
+    false_count: int
+
+
+class ChannelCoverage(TypedDict):
+    mask_column: str
+    available_rows: int
+
+
+class CovariateSummary(TypedDict):
+    exists: bool
+    non_null_rows: int
+    missing_rows: int
+
+
+class KeySummary(CovariateSummary):
+    key_column: str
+    unique_keys: int
+    sidecar_key_count: int | None
+    missing_from_sidecars: int | None
+    missing_from_sidecars_examples: list[str]
+
+
+class NumericShiftMetrics(TypedDict):
+    train_val_mean: float
+    test_mean: float
+    train_val_median: float
+    test_median: float
+    standardized_mean_difference: float
+
+
+class SamplePathCheck(TypedDict):
+    checked: int
+    existing: int
+    missing_examples: list[str]
+
+
+class IndexStatistics(TypedDict):
+    duration: dict[str, float]
+    label_presence: dict[str, LabelPresence]
+    mask_columns: dict[str, MaskCoverage]
+    channel_coverage_from_config: dict[str, ChannelCoverage]
+    # Grouping columns and their values come from the input dataframe.
+    split_source_label_counts: dict[str, list[dict[str, Any]]]
+    channel_mask_coverage_by_split_source: dict[str, list[dict[str, Any]]]
+    numeric_shift_metrics: dict[str, NumericShiftMetrics]
+
+
+class IndexSummary(IndexStatistics):
+    index_paths: list[str]
+    rows: int
+    columns: list[str]
+    required_columns: dict[str, bool]
+    split_counts: dict[Any, int]
+    source_counts: dict[Any, int]
+    survival_key: KeySummary | None
+    multilabel_key: KeySummary | None
+    survival_covariates: dict[str, CovariateSummary]
+    sample_path_check: SamplePathCheck
+    warnings: list[str]
+    blocking_issues: list[str]
 
 
 def _index_statistics(
@@ -19,8 +89,8 @@ def _index_statistics(
     *,
     label_name: str | None,
     split_column: str,
-) -> dict[str, Any]:
-    duration = {}
+) -> IndexStatistics:
+    duration: dict[str, float] = {}
     if "duration" in df.columns and not df.empty:
         duration_series = pd.to_numeric(df["duration"], errors="coerce").dropna()
         if not duration_series.empty:
@@ -32,11 +102,11 @@ def _index_statistics(
     labels = ["age", "sex", "ahi", "stage3", "stage4", "stage5"]
     if label_name and label_name not in labels:
         labels.append(label_name)
-    label_presence = {
+    label_presence: dict[str, LabelPresence] = {
         label: {"exists": label in df.columns, "non_null": int(df[label].notna().sum()) if label in df.columns else 0}
         for label in labels
     }
-    mask_columns = {}
+    mask_columns: dict[str, MaskCoverage] = {}
     for column in df.columns:
         if column.endswith("_mask") or column in {"stage_mask", "ah_event_mask"}:
             values = pd.to_numeric(df[column], errors="coerce").fillna(0)
@@ -45,7 +115,7 @@ def _index_statistics(
                 "true_count": int((values == 1).sum()),
                 "false_count": int((values != 1).sum()),
             }
-    channel_coverage = {}
+    channel_coverage: dict[str, ChannelCoverage] = {}
     if cfg:
         for channel in (cfg.get("data") or {}).get("data_channel_names", []):
             if channel == "stage5":
@@ -54,7 +124,8 @@ def _index_statistics(
                 mask_column = "ah_event_mask"
             else:
                 mask_column = f"{channel}_mask"
-            available = mask_columns.get(mask_column, {}).get("true_count", len(df) if not df.empty else 0)
+            coverage: MaskCoverage | dict[str, int] = mask_columns.get(mask_column, {})
+            available = coverage.get("true_count", len(df) if not df.empty else 0)
             channel_coverage[channel] = {"mask_column": mask_column, "available_rows": int(available)}
     source_col = _first_existing(df, ["source", "dataset", "sample_source", "original_dataset"])
     label_cols = _label_columns(df, label_name=label_name)
@@ -108,7 +179,7 @@ def index_summary(
     sample_path_check: int = 0,
     sample_npz_check: int = 0,
     validated_summary: tuple[dict[str, Any], dict[str, set[str]]] | None = None,
-) -> dict[str, Any]:
+) -> IndexSummary:
     resolved_paths = [resolve_repo_path(path, relative_to=local_path_base) for path in index_paths]
     paths = [path for path in resolved_paths if path is not None]
     if validated_summary is None:
@@ -159,7 +230,7 @@ def index_summary(
     required_columns = {name: name in df.columns for name in required_names}
     statistics = _index_statistics(df, cfg, label_name=label_name, split_column=split_column)
 
-    path_check = {"checked": 0, "existing": 0, "missing_examples": []}
+    path_check: SamplePathCheck = {"checked": 0, "existing": 0, "missing_examples": []}
     if sample_path_check and "path" in df.columns:
         example_paths = [Path(str(path)) for path in df["path"].dropna().head(sample_path_check)]
         path_check = {
@@ -500,8 +571,8 @@ def _normalized_split_value(value: Any) -> str:
     return "" if pd.isna(value) else str(value).strip()
 
 
-def _survival_covariate_summary(df: pd.DataFrame, covariates: list[str]) -> dict[str, dict[str, Any]]:
-    summary: dict[str, dict[str, Any]] = {}
+def _survival_covariate_summary(df: pd.DataFrame, covariates: list[str]) -> dict[str, CovariateSummary]:
+    summary: dict[str, CovariateSummary] = {}
     for covariate in covariates:
         if covariate not in df.columns:
             summary[covariate] = {
@@ -524,7 +595,7 @@ def _key_summary(
     key_column: str | None,
     *,
     sidecar_keys: set[str] | None = None,
-) -> dict[str, Any] | None:
+) -> KeySummary | None:
     if not key_column:
         return None
     if key_column not in df.columns:
@@ -577,7 +648,7 @@ def _label_columns(df: pd.DataFrame, *, label_name: str | None = None) -> list[s
     return labels
 
 
-def _numeric_shift_metrics(df: pd.DataFrame) -> dict[str, Any]:
+def _numeric_shift_metrics(df: pd.DataFrame) -> dict[str, NumericShiftMetrics]:
     if "split" not in df.columns or df.empty:
         return {}
     candidates = [
@@ -589,7 +660,7 @@ def _numeric_shift_metrics(df: pd.DataFrame) -> dict[str, Any]:
         "num_tokens",
         "token_count",
     ]
-    out: dict[str, Any] = {}
+    out: dict[str, NumericShiftMetrics] = {}
     train_like = df[df["split"].isin(["train", "val"])]
     test = df[df["split"] == "test"]
     if train_like.empty or test.empty:

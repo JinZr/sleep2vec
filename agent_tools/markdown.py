@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+from typing import Any, TypedDict
+
 from .decisions import DecisionReport, DecisionStatus
 
 
-def questions_payload(report: DecisionReport) -> list[dict]:
+class ConsultationQuestion(TypedDict):
+    field: str
+    status: str
+    message: str
+    question: str | None
+    evidence: dict[str, Any]
+
+
+def questions_payload(report: DecisionReport) -> list[ConsultationQuestion]:
     return [
         {
             "field": issue.field,
