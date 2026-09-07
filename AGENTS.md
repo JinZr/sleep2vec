@@ -15,22 +15,26 @@ experiments and legible scientific contracts, not engineering generality.
 - Do not engineer for scale, concurrency, or hostility that does not exist here.
   No retry/backoff layers, caching tiers, rate limits, worker pools, migration
   frameworks, or defensive re-validation of values the canonical path already
-  rejects. `runtime_lock` covers the one real race.
-- Prefer deleting over adding and inlining over wrapping. A helper with exactly
-  one caller belongs at that call site.
+  rejects. Reuse the canonical lock for the operation; runtime checkout,
+  plan publication, and experiment registration have distinct lock owners.
+- Prefer deleting over adding and inline trivial wrappers. A single-caller
+  helper is appropriate when it names a coherent validation or execution phase
+  and improves readability or satisfies an existing complexity gate. Keep it
+  in the owning module, with explicit inputs and outputs; do not fragment code
+  arbitrarily just to lower a metric.
 - Match the weight of the change to the weight of the problem. A one-line
   special case is usually the right fix for a one-line problem. Propose it as
   such instead of escalating to a refactor.
 - If a change adds more scaffolding than behavior -- new modules, base classes,
   protocols, or option plumbing that outweigh the actual logic -- stop and ask
-  before writing it.
+  before writing it unless that scope is already explicitly authorized.
 - Optimize for the reader, not the CPU. Indexes hold thousands of records and an
   experiment holds dozens of runs; clarity beats micro-optimization here.
 - `agent_tools/` carries deliberate layering because it is the shared control
   surface that agents drive. That ceremony is a constraint on that package, not
   a template for the rest of the repo, and not a licence to keep growing it.
-- New code is a liability maintained by one person. Justify it by the experiment
-  it enables, not by the flexibility it offers.
+- New code is a liability maintained by one person. Justify it by a concrete
+  experiment, contract, or maintenance requirement, not hypothetical flexibility.
 
 ## Project Structure & Module Organization
 - `sleep2vec/` is the core library and CLI entrypoints (e.g., `pretrain.py`, `finetune.py`, `infer.py`).
@@ -45,6 +49,9 @@ experiments and legible scientific contracts, not engineering generality.
 - Training flow: pretrain (`sleep2vec.pretrain`) builds the backbone; finetune (`sleep2vec.finetune`) attaches a downstream head; infer (`sleep2vec.infer`) evaluates checkpoints without training.
 
 ## Build, Test, and Development Commands
+Use a dependency-complete Python environment consistently for all commands below.
+On this workstation, activate `exp` or prefix commands with `conda run -n exp`;
+CI uses its configured Python environment and scoped requirements files.
 Install dependencies (select the correct PyTorch wheel for your CUDA version):
 ```bash
 pip install -r requirements.txt
@@ -62,6 +69,9 @@ bash utils/style_check.sh
 
 ## Coding Style & Naming Conventions
 - Python formatting is enforced by Black (line length 120), isort (Black profile), and Flake8. All `agent_tools` modules are additionally type-checked by mypy; its scope and settings live in `[tool.mypy]` in `pyproject.toml`. `utils/type_check.py` rejects global and per-module `ignore_errors` settings; fix type errors rather than suppressing a module. The existing third-party `ignore_missing_imports` allowlist remains separate.
+- `utils/complexity_check.py` owns the `agent_tools` mccabe ceiling and the function/embedded-program suppression ledgers. Satisfy that gate with coherent local changes, remove stale annotations and ledger entries together, and do not add suppressions to bypass it. Do not duplicate ledger counts here.
+- For behavior-preserving extractions, keep module-level dependency lookup, validation and event order, return values, artifact bytes, lock scope, exception propagation, and cleanup ownership intact. Existing monkeypatch-based tests must still intercept the same dependencies.
+- When changing a data contract, prefer `TypedDict` for stable dictionaries and dataclasses for internal state that benefits from named fields. Narrow validated inputs at their existing boundary and update producers and consumers together. Do not replace `Any` mechanically with `object`, casts, or all-optional field bags; raw external payloads may remain dynamic until validated. Do not add duplicate runtime validation solely to satisfy typing.
 - Use 4-space indentation; follow snake_case for functions/variables/modules and PascalCase for classes.
 - For small special-case handling changes, patch the canonical code path in place instead of adding a helper or wrapper; when the exception is not obvious, leave a brief comment noting the intention.
 - Keep architecture and loss choices in YAML under `configs/`; training hyperparameters stay on the CLI.
@@ -95,13 +105,11 @@ bash utils/style_check.sh
 - Keep the index limited to `README.md`, `MODULE_MAP.md`, `REUSE_GUIDE.md`, and `WORKFLOWS.md`.
 
 ## Testing Guidelines
-- Use targeted pytest files for contract changes and smoke commands for runtime changes.
+- Use targeted pytest files for the affected ownership boundary. Training or evaluation smoke runs require explicit execution authorization; a code-review or refactor request does not authorize them.
 - There is a checked `tests/` suite; prefer the smallest relevant test set for the ownership boundary touched.
-- Quick smoke test example:
-```bash
-python -m sleep2vec.pretrain --config configs/sleep2vec_dense_pretrain.yaml \
-  --print-diagnostics --diagnostics-steps 5 --precision 32 --devices 0
-```
+- `--print-diagnostics` still calls `Trainer.fit`; it is a short training run, not a read-only check.
+- Record the tested commit, environment, command, and random seed when ordering is randomized. Compare suspected baseline failures under the same conditions; report them separately rather than calling the suite green. Final validation must cover the final PR HEAD.
+- A pure refactor may rely on existing behavioral tests; do not add tests that only assert helper shape or weaken assertions to make a refactor pass.
 - If adding tests, place them under `tests/` with `test_*.py` naming.
 
 ## Commit & Pull Request Guidelines
@@ -117,7 +125,7 @@ Agents must not silently guess high-impact experiment decisions.
 
 Before generating runnable commands for preset preparation, finetuning, inference, evaluation, embedding extraction, or hyper-parameter tuning, run the relevant agent consultation checks through `agent_tools doctor` or `agent_tools plan`. `agent_tools context` is diagnostic-only and does not authorize runnable commands.
 
-If the tool returns `NEEDS_USER_INPUT`, stop and ask the user the generated questions. When `doctor --output-dir` or a safely published blocked `plan` emits `decisions.yaml`, fill only user-authorized values and pass that file back with `--user-decisions`. A blocked-plan retry must use a fresh output directory. A doctor retry may reuse its output directory only while the existing `decisions.yaml` already contains every currently requested decision and matches every currently resolved concrete value; newly exposed or changed concrete decisions require a fresh doctor output directory. `context` remains diagnostic-only and does not emit this template. Do not run training. Do not generate executable scripts. Do not evaluate external test data.
+If the tool returns `NEEDS_USER_INPUT`, stop and ask the user the generated questions. When `doctor --output-dir` or a safely published blocked `plan` emits `decisions.yaml`, fill only user-authorized values and pass that file back with `--user-decisions`. A blocked-plan retry must use a fresh output directory. A doctor retry may reuse its output directory only while the existing `decisions.yaml` already contains every currently requested decision and matches every currently resolved concrete value; newly exposed or changed concrete decisions require a fresh doctor output directory. `context` remains diagnostic-only and does not emit this template. While required decisions remain unresolved, do not generate executable experiment scripts, run training, or evaluate external test data. After consultation passes, follow the publication and launch authorization boundaries below; passing consultation alone does not authorize execution.
 
 Generated runtime commands must respect recipe `variant`; do not route `sleep2vec2` or `sleep2expert` recipes through root `sleep2vec` entrypoints.
 
@@ -151,7 +159,7 @@ While creating a new hparam recipe, an explicit request to tune hyper-parameters
 - `AGENTS.md` defines subagent ownership and routing policy, but does not automatically spawn or schedule subagents. The parent Codex agent must still choose which subagent(s) to invoke.
 - Split work by cross-file contracts and runtime coupling, not by raw file count.
 - When a task crosses multiple ownership boundaries, assign one lead owner and request review from the adjacent owner instead of letting two agents edit the same contract blindly.
-- If a task touches `sleep2vec_moe/` or `sleep2vec2/`, treat variant validation as mandatory before calling the work complete.
+- If a task touches `sleep2expert/`, `sleep2vec2/`, or their configs under `configs/`, treat variant validation as mandatory before calling the work complete.
 
 ### Default Subagent Catalog
 
@@ -162,8 +170,8 @@ While creating a new hparam recipe, an explicit request to tune hyper-parameters
 - Must not be split from: pair-first and available-channel tests in `tests/data/test_pair_first_sampler.py`, `tests/data/test_bucket_sampler.py`, and `tests/data/test_data_utils.py`.
 - Verification gate:
 ```bash
-PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall data tests
-python3.10 -m pytest -q tests/data/test_pair_first_sampler.py tests/data/test_bucket_sampler.py tests/data/test_data_utils.py
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python -m compileall data tests
+python -m pytest -q tests/data/test_pair_first_sampler.py tests/data/test_bucket_sampler.py tests/data/test_data_utils.py
 ```
 
 #### `config-task-contract`
@@ -173,8 +181,8 @@ python3.10 -m pytest -q tests/data/test_pair_first_sampler.py tests/data/test_bu
 - Must not be split from: `tests/config/test_config_loading.py`, `tests/config/test_common_finetune_apply.py`, `tests/config/test_metadata_task_validation.py`, `tests/config/test_registries_and_builders.py`.
 - Verification gate:
 ```bash
-PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec tests
-python3.10 -m pytest -q \
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python -m compileall sleep2vec tests
+python -m pytest -q \
   tests/config/test_config_loading.py \
   tests/config/test_common_finetune_apply.py \
   tests/config/test_metadata_task_validation.py \
@@ -188,8 +196,8 @@ python3.10 -m pytest -q \
 - Must not be split from: `sleep2vec/config.py` task/model semantics when interface changes are involved; request review from `config-task-contract` in that case.
 - Verification gate:
 ```bash
-PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec tests
-python3.10 -m pytest -q \
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python -m compileall sleep2vec tests
+python -m pytest -q \
   tests/models/test_losses.py \
   tests/visualization/test_layer_mix_visualization.py \
   tests/config/test_registries_and_builders.py
@@ -202,19 +210,13 @@ python3.10 -m pytest -q \
 - Must not be split from: `tests/runtime/test_checkpoints.py` and config/task guard tests when runtime flags or monitor names change.
 - Verification gate:
 ```bash
-PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec tests
-python3.10 -m pytest -q \
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python -m compileall sleep2vec tests
+python -m pytest -q \
   tests/runtime/test_checkpoints.py \
   tests/config/test_common_finetune_apply.py \
   tests/config/test_metadata_task_validation.py
 ```
-- Smoke gate:
-```bash
-WANDB_MODE=offline python3.10 -m sleep2vec.pretrain \
-  --config configs/sleep2vec_dense_pretrain.yaml \
-  --version-name runtime-smoke \
-  --print-diagnostics --diagnostics-steps 5 --precision 32 --devices 0
-```
+- An explicitly authorized runtime smoke run may supplement these tests; use the correct variant and the consultation/publication/launch boundaries above. Do not run training automatically as a review gate.
 
 #### `preset-pipeline`
 - Owns: `preprocess/save_dataset_presets.py`, `preprocess/merge_dataset_presets.py`, `preprocess/split_index_by_dataset.py`, `preprocess/mask_missing_stats.py`, `preprocess/preprocess_pipeline.ipynb`.
@@ -223,7 +225,7 @@ WANDB_MODE=offline python3.10 -m sleep2vec.pretrain \
 - Must not be split from: `data-contract-guardian` when a preprocessing change affects runtime `SampleIndex` payload semantics.
 - Verification gate:
 ```bash
-PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall preprocess data
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python -m compileall preprocess data
 python preprocess/save_dataset_presets.py --help
 python preprocess/merge_dataset_presets.py --help
 python preprocess/split_index_by_dataset.py --help
@@ -231,14 +233,15 @@ python preprocess/mask_missing_stats.py --help
 ```
 
 #### `variant-maintainer`
-- Owns: `sleep2vec_moe/`, `configs_moe/`, and variant-specific `sleep2vec2/` files, especially `sleep2vec2/backbones/encoder_factory.py` and `sleep2vec2/backbones/roformer/`.
-- Responsibilities: MoE config/task extensions, router/expert behavior, MoE callbacks and logging, base-to-variant parity checks, symlinked variant safety.
-- Invoke when: changing any shared base contract that might affect `sleep2vec_moe` or `sleep2vec2`, or when editing variant-only files directly.
+- Owns: `sleep2expert/`, `sleep2vec2/`, `configs/sleep2expert/`, and `configs/sleep2vec2/`.
+- Responsibilities: package-local dense and MoE behavior, router/expert contracts, variant configuration, runtime and artifact parity. These are standalone packages; verify parity explicitly rather than assuming inheritance or symlinks.
+- Invoke when: changing any shared base contract that might affect `sleep2expert` or `sleep2vec2`, or when editing variant-only files directly.
 - Must not be skipped for: backbone API changes, CLS/task config changes, checkpoint-loading changes, callback/logging changes, or tokenizer/projection interface changes.
 - Verification gate:
 ```bash
-PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall sleep2vec_moe sleep2vec2
-python3.10 -m pytest -q tests/runtime/test_checkpoints.py tests/config/test_config_loading.py
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python -m compileall sleep2expert sleep2vec2
+python -m pytest -q tests/runtime/test_checkpoints.py tests/config/test_config_loading.py \
+  tests/variants/test_sleep2vec2_namespace.py tests/variants/test_sleep2expert_namespace.py
 ```
 
 #### `agent-tooling-maintainer`
@@ -247,10 +250,11 @@ python3.10 -m pytest -q tests/runtime/test_checkpoints.py tests/config/test_conf
 - CLI help is a contract, not a nicety: agents discover `agent_tools` through `--help`, so a new subcommand needs a one-line summary and every new option needs `help=` text. Register subcommands with `cli._command(sub, name, summary)` so the `--help` listing entry and the subcommand's own description stay in sync. `test_agent_tools_cli_contract.py` fails on a bare `add_parser` or `add_argument`. State the dry-run/execute default and any non-launching guarantee in the summary, since the stop-and-consult policy depends on both.
 - Invoke when: adding or changing agent skills, recipe or pipeline schemas, context-gathering tools, run-plan generators, consultation policies, user-decision files, managed experiment pipelines, or agent-facing documentation.
 - Must not be split from: `runtime-orchestrator` when the change affects training/inference command semantics; `preset-pipeline` when the change affects preset preparation; `regression-guard` when adding new agent-tool contracts.
-- Verification gate:
+- For localized changes, select the relevant behavioral tests; documentation-only edits need link/command checks and any affected documentation-contract tests.
+- Full integration gate for changes spanning agent-tool contracts or final integration (CI splits this coverage using `.github/workflows/unit_tests.yml`):
 ```bash
-PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python3 -m compileall agent_tools tests
-python3 -m pytest -q tests/agent_tools/test_agent_tools_*.py tests/agent_tools/test_agent_consultation_policy.py tests/agent_tools/test_agent_user_decisions.py tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py tests/agent_tools/test_type_check.py
+PYTHONPYCACHEPREFIX=/tmp/sleep2vec_pycache python -m compileall agent_tools tests
+python -m pytest -q tests/agent_tools
 python -m agent_tools skills --validate
 python utils/type_check.py
 ```
@@ -268,7 +272,7 @@ python utils/type_check.py
 - If a task changes entrypoints, checkpoints, metrics, callbacks, diagnostics, or inference/export behavior, route first to `runtime-orchestrator`.
 - If a task changes preprocessing scripts or preset generation logic, route first to `preset-pipeline`.
 - If a task changes agent-facing skills, recipes, context bundles, command plans, consultation gates, or user-decision schemas, route first to `agent-tooling-maintainer`.
-- If a task touches `sleep2vec_moe/`, `configs_moe/`, or `sleep2vec2/`, require `variant-maintainer` review before completion.
+- If a task touches `sleep2expert/`, `sleep2vec2/`, `configs/sleep2expert/`, or `configs/sleep2vec2/`, require `variant-maintainer` review before completion.
 - If a task changes a contract already covered by tests, or should be covered but is not, involve `regression-guard`.
 
 ### Do Not Split
@@ -284,4 +288,4 @@ python utils/type_check.py
   - contract assumptions
   - verification commands run
   - blockers or unverified parts
-- If verification could not run because `python3.10` or `pytest` is unavailable, state that explicitly instead of implying the gate passed.
+- If verification could not run in the required environment, state the missing dependency or execution error explicitly instead of implying the gate passed.
