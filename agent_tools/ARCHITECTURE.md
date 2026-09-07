@@ -186,27 +186,16 @@ unchecked. The checker spells the ceiling value; nothing else does.
 Three checks, mirroring the mypy ledger ratchet in `utils/type_check.py`:
 
 1. **The ceiling** — C901 over `agent_tools`.
-2. **The suppression ledger** — the 2 functions already above the ceiling carry
-   `# noqa: C901` on their `def` line. Re-running with noqa disabled proves
-   every suppression still hides a real violation (a stale one must be deleted),
-   that nothing else is silencing C901, and that the live set is exactly
-   `SUPPRESSION_LEDGER` — identities, not a count, so simplifying one function
-   while another goes over does not net out to a passing check. Growing the
-   ledger therefore takes a reviewed diff, not one comment.
+2. **The suppression ledger** — `SUPPRESSION_LEDGER` is empty. Re-running with
+   noqa disabled checks that no function is silently exempt and that the live
+   violation identities match the ledger. Stale annotations and ledger entries
+   fail the gate.
 3. **The embedded programs** — `python_program_sources/*.py.src` are fragments
    assembled by `python_programs.source()` and run through `python -c`. They do
    not lint standalone (names resolve only once concatenated) and flake8's
-   directory walk never sees them, so each of the 25 registered programs is
-   assembled and checked at the same ceiling, with noqa disabled: there is no
-   second check behind this one, so an annotation in a fragment would be the
-   gate switched off rather than a suppression to audit. `PROGRAM_LEDGER`
-   grandfathers the remaining block above the ceiling, keyed per block, so a
-   second over-ceiling block appearing in a grandfathered program is reported.
-   mccabe names an unnamed block after its line, which moves whenever a fragment
-   above it grows, so the key drops that number and the score carries what
-   identity remains: two same-kind blocks of equal score in one program are
-   indistinguishable, and swapping one for the other reads as unchanged. That
-   swap leaves the debt exactly as the ledger describes it.
+   directory walk never sees them, so every registered program is assembled and
+   checked at the same ceiling with noqa disabled. `PROGRAM_LEDGER` is also
+   empty; no assembled function or top-level block is exempt.
 
 Every probe runs `--isolated`. Reading `.flake8` would let one
 `per-file-ignores` entry blind both the gate and the ledger audit at once —
