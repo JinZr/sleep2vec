@@ -309,7 +309,7 @@ def _normalize_runtime_commit(recipe: dict[str, Any]) -> None:
         execution["runtime_commit"] = runtime_commit.lower()
 
 
-def evaluate_recipe(  # noqa: C901
+def evaluate_recipe(
     recipe_path: str | Path,
     user_decisions_path: str | Path | None = None,
     *,
@@ -437,6 +437,28 @@ def evaluate_recipe(  # noqa: C901
                     ),
                 )
 
+    cfg, report = _evaluate_config_consultation(
+        recipe,
+        source_recipe=source_recipe,
+        recipe_adapter=recipe_adapter,
+        policy=policy,
+        user_decisions=user_decisions,
+        recipe_decisions=recipe_decisions,
+        materialization_issues=materialization_issues,
+    )
+    return recipe, cfg, report
+
+
+def _evaluate_config_consultation(
+    recipe: dict[str, Any],
+    *,
+    source_recipe: dict[str, Any],
+    recipe_adapter: TaskAdapter | None,
+    policy: dict[str, Any],
+    user_decisions: dict[str, Any],
+    recipe_decisions: dict[str, Any],
+    materialization_issues: list[DecisionIssue],
+) -> tuple[ConfigSummaryInput | None, DecisionReport]:
     inputs_value = recipe.get("inputs")
     inputs = inputs_value if isinstance(inputs_value, dict) else {}
     source_config = inputs.get("config")
@@ -648,7 +670,7 @@ def evaluate_recipe(  # noqa: C901
     )
     if override_issues:
         report = _append_issues(report, override_issues)
-    return recipe, cfg, report
+    return cfg, report
 
 
 def write_questions(output_dir: str | Path, report: DecisionReport) -> None:

@@ -98,7 +98,7 @@ def select_hparam_candidates(
     return _commit_hparam_selection(selection)
 
 
-def resolve_hparam_candidates(  # noqa: C901
+def resolve_hparam_candidates(
     run_dir: str | Path,
     candidate_rows: list[dict[str, Any]],
     *,
@@ -150,6 +150,82 @@ def resolve_hparam_candidates(  # noqa: C901
         status = str(canonical.get("status") or "")
         if status not in TERMINAL_STATUSES:
             active_runs.append(f"{run['step_id']} / {run['run_id']} ({status})")
+    selectors_by_key = _validated_candidate_selectors(
+        candidate_rows=candidate_rows,
+        workspace_by_key=workspace_by_key,
+        owner_runs_by_key=owner_runs_by_key,
+        step_id=step_id,
+        active_runs=active_runs,
+    )
+
+    step_rows = [workspace_by_key[key] for key in owner_runs_by_key]
+    canonical_ranked = tracking.validated_hparam_ranking(
+        {
+            "step_id": step_id,
+            "selection": {"metric": selection_metric, "mode": selection_mode, "split": selection_split},
+            "rows": step_rows,
+        }
+    )
+    ranking_rows = tracking.hparam_ranking_projection(canonical_ranked) if canonical_ranked is not None else []
+    ranking_by_key = {validated_run_key(row): row for row in ranking_rows}
+    if selection_split == "test" and not ranking_by_key:
+        raise ValueError("Test-selected candidate resolution requires canonical hparam selection.")
+    if ranking_by_key:
+        ranking_path = workspace / "reports" / "ranking.csv"
+        frozen_ranking = read_rows(ranking_path, require_managed_identity=True)
+        validate_managed_run_rows(frozen_ranking, source=str(ranking_path), cardinality="one_per_run")
+        frozen_by_key = {
+            validated_run_key(row): row for row in frozen_ranking if str(row.get("step_id") or "") == step_id
+        }
+        if set(frozen_by_key) != set(ranking_by_key):
+            raise ValueError(f"Frozen hparam ranking candidates differ from canonical selection: {step_id}")
+        for key, expected_row in ranking_by_key.items():
+            frozen_row = frozen_by_key[key]
+            for field, expected in expected_row.items():
+                actual = "" if frozen_row.get(field) is None else str(frozen_row.get(field))
+                expected_value = "" if expected is None else str(expected)
+                if actual != expected_value:
+                    raise ValueError(
+                        f"Frozen hparam ranking {field} differs from canonical selection: {key[0]} / {key[1]}"
+                    )
+
+    selected = _resolve_ranked_candidates(
+        selectors_by_key=selectors_by_key,
+        ranking_by_key=ranking_by_key,
+        workspace_by_key=workspace_by_key,
+        selection_split=selection_split,
+        top_k=top_k,
+        all_candidates=all_candidates,
+    )
+
+    if selection_split == "test" and ranking_by_key:
+        # Physical I/O follows selection so an unused lower-rank checkpoint cannot block top-k postprocessing.
+        for row in selected:
+            key = validated_run_key(row)
+            canonical = workspace_by_key[key]
+            checkpoint_path = str(canonical.get("checkpoint_path") or "")
+            checkpoint_sha256 = str(canonical.get("checkpoint_sha256") or "")
+            evidence_row = {**owner_runs_by_key[key], **canonical}
+            owner_recipe_value = owner_plans_by_key[key].get("recipe")
+            owner_recipe = owner_recipe_value if isinstance(owner_recipe_value, dict) else {}
+            execution_value = owner_recipe.get("execution")
+            execution = execution_value if isinstance(execution_value, dict) else {}
+            for field in ("target", "host"):
+                if evidence_row.get(field) in (None, ""):
+                    evidence_row[field] = execution.get(field, "")
+            if evidence.checkpoint_file_sha256(evidence_row, checkpoint_path) != checkpoint_sha256:
+                raise ValueError(f"Frozen checkpoint SHA-256 differs: {checkpoint_path}")
+    return selected, owner_plans_by_key
+
+
+def _validated_candidate_selectors(
+    *,
+    candidate_rows: list[dict[str, Any]],
+    workspace_by_key: dict[tuple[str, str], dict[str, Any]],
+    owner_runs_by_key: dict[tuple[str, str], dict[str, Any]],
+    step_id: str,
+    active_runs: list[str],
+) -> dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]]:
     selectors_by_key = {}
     matched_current_step = False
     for row in candidate_rows:
@@ -211,37 +287,18 @@ def resolve_hparam_candidates(  # noqa: C901
     if not selectors_by_key:
         raise ValueError("No successful selected candidates remain after canonical status filtering.")
 
-    step_rows = [workspace_by_key[key] for key in owner_runs_by_key]
-    canonical_ranked = tracking.validated_hparam_ranking(
-        {
-            "step_id": step_id,
-            "selection": {"metric": selection_metric, "mode": selection_mode, "split": selection_split},
-            "rows": step_rows,
-        }
-    )
-    ranking_rows = tracking.hparam_ranking_projection(canonical_ranked) if canonical_ranked is not None else []
-    ranking_by_key = {validated_run_key(row): row for row in ranking_rows}
-    if selection_split == "test" and not ranking_by_key:
-        raise ValueError("Test-selected candidate resolution requires canonical hparam selection.")
-    if ranking_by_key:
-        ranking_path = workspace / "reports" / "ranking.csv"
-        frozen_ranking = read_rows(ranking_path, require_managed_identity=True)
-        validate_managed_run_rows(frozen_ranking, source=str(ranking_path), cardinality="one_per_run")
-        frozen_by_key = {
-            validated_run_key(row): row for row in frozen_ranking if str(row.get("step_id") or "") == step_id
-        }
-        if set(frozen_by_key) != set(ranking_by_key):
-            raise ValueError(f"Frozen hparam ranking candidates differ from canonical selection: {step_id}")
-        for key, expected_row in ranking_by_key.items():
-            frozen_row = frozen_by_key[key]
-            for field, expected in expected_row.items():
-                actual = "" if frozen_row.get(field) is None else str(frozen_row.get(field))
-                expected_value = "" if expected is None else str(expected)
-                if actual != expected_value:
-                    raise ValueError(
-                        f"Frozen hparam ranking {field} differs from canonical selection: {key[0]} / {key[1]}"
-                    )
+    return selectors_by_key
 
+
+def _resolve_ranked_candidates(
+    *,
+    selectors_by_key: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]],
+    ranking_by_key: dict[tuple[str, str], dict[str, Any]],
+    workspace_by_key: dict[tuple[str, str], dict[str, Any]],
+    selection_split: str,
+    top_k: int,
+    all_candidates: bool,
+) -> list[dict[str, Any]]:
     resolved = []
     selection_fields = ("rank", "checkpoint_path", "checkpoint_sha256")
     if ranking_by_key:
@@ -300,24 +357,7 @@ def resolve_hparam_candidates(  # noqa: C901
         if not all_candidates:
             selected = selected[:top_k]
 
-    if selection_split == "test" and ranking_by_key:
-        # Physical I/O follows selection so an unused lower-rank checkpoint cannot block top-k postprocessing.
-        for row in selected:
-            key = validated_run_key(row)
-            canonical = workspace_by_key[key]
-            checkpoint_path = str(canonical.get("checkpoint_path") or "")
-            checkpoint_sha256 = str(canonical.get("checkpoint_sha256") or "")
-            evidence_row = {**owner_runs_by_key[key], **canonical}
-            owner_recipe_value = owner_plans_by_key[key].get("recipe")
-            owner_recipe = owner_recipe_value if isinstance(owner_recipe_value, dict) else {}
-            execution_value = owner_recipe.get("execution")
-            execution = execution_value if isinstance(execution_value, dict) else {}
-            for field in ("target", "host"):
-                if evidence_row.get(field) in (None, ""):
-                    evidence_row[field] = execution.get(field, "")
-            if evidence.checkpoint_file_sha256(evidence_row, checkpoint_path) != checkpoint_sha256:
-                raise ValueError(f"Frozen checkpoint SHA-256 differs: {checkpoint_path}")
-    return selected, owner_plans_by_key
+    return selected
 
 
 def _build_hparam_selection(
