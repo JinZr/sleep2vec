@@ -81,14 +81,28 @@ class ExperimentStatusDecision(TypedDict):
     blocked_actions: list[str]
 
 
+class ExperimentStatusBlocker(TypedDict):
+    code: str
+    step_id: str | None
+    run_ids: list[str]
+    message: str
+    blocked_actions: list[str]
+
+
+class ExperimentStatusSummary(TypedDict):
+    state: str
+    run_count: int
+    status_counts: dict[str, int]
+
+
 class ExperimentStatusSnapshot(TypedDict):
     experiment: dict[str, Any]
     lifecycle_source: str
     live_observation: bool
-    summary: dict[str, Any]
+    summary: ExperimentStatusSummary
     steps: list[dict[str, Any]]
     runs: list[dict[str, Any]]
-    blockers: list[dict[str, Any]]
+    blockers: list[ExperimentStatusBlocker]
     decision: ExperimentStatusDecision
 
 
@@ -575,11 +589,11 @@ def _experiment_lifecycle_decision(
     completed: bool,
     rows: list[dict[str, Any]],
     sorted_rows: list[dict[str, Any]],
-    plan_blockers: list[dict[str, Any]],
+    plan_blockers: list[ExperimentStatusBlocker],
     missing_stop_reason_rows: list[dict[str, Any]],
     hparam: HparamSelectionLifecycle,
     candidates: list[ExperimentStatusAction],
-    blockers: list[dict[str, Any]],
+    blockers: list[ExperimentStatusBlocker],
     root: Path,
     remote: str | None,
 ) -> tuple[str, ExperimentStatusDecision]:
@@ -1446,7 +1460,7 @@ def _plan_advice(
     rows: list[dict[str, Any]],
     *,
     remote: str | None = None,
-) -> tuple[list[dict[str, Any]], list[ExperimentStatusAction]]:
+) -> tuple[list[ExperimentStatusBlocker], list[ExperimentStatusAction]]:
     rows_by_key = {managed_run_key(row): row for row in rows}
     blockers = []
     candidates = []
@@ -1588,7 +1602,7 @@ def _status_blocker(
     step_id: str | None = None,
     rows: list[dict[str, Any]] | None = None,
     blocked_actions: list[str] | None = None,
-) -> dict[str, Any]:
+) -> ExperimentStatusBlocker:
     rows = rows or []
     step_ids = sorted({str(row["step_id"]) for row in rows})
     return {
