@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 import csv
 import hashlib
@@ -800,7 +801,7 @@ def run_identity(
     return {"run_id": run_id, "run_name": semantic_name, "version": version}
 
 
-def managed_run_key(row: dict[str, Any]) -> tuple[str, str] | None:
+def managed_run_key(row: Mapping[str, Any]) -> tuple[str, str] | None:
     step_id = str(row.get("step_id") or "")
     run_id = str(row.get("run_id") or "")
     if not step_id.strip() or not run_id.strip():
@@ -808,7 +809,7 @@ def managed_run_key(row: dict[str, Any]) -> tuple[str, str] | None:
     return step_id, run_id
 
 
-def validated_run_key(row: dict[str, Any]) -> tuple[str, str]:
+def validated_run_key(row: Mapping[str, Any]) -> tuple[str, str]:
     """Read identity from an already validated managed row; this does not validate the whole row."""
     key = managed_run_key(row)
     if key is None:
@@ -820,7 +821,7 @@ def stopped_runs_without_reason(rows: list[dict[str, Any]]) -> list[dict[str, An
     return [row for row in rows if row.get("status") == "stopped" and not str(row.get("stop_reason") or "").strip()]
 
 
-def managed_run_parameters(row: dict[str, Any]) -> dict[str, Any]:
+def managed_run_parameters(row: Mapping[str, Any]) -> dict[str, Any]:
     legacy_fields = sorted(str(key) for key in row if str(key).startswith("param."))
     if legacy_fields:
         raise ValueError(f"Historical parameter fields are read-only and unsupported: {', '.join(legacy_fields)}")
@@ -831,7 +832,7 @@ def managed_run_parameters(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def validate_managed_run_rows(rows: list[dict[str, Any]], *, source: str, cardinality: str) -> None:
+def validate_managed_run_rows(rows: Sequence[Mapping[str, Any]], *, source: str, cardinality: str) -> None:
     if cardinality not in {"one_per_run", "many_per_run"}:
         raise ValueError(f"Unsupported managed row cardinality for {source}: {cardinality}")
     seen = set()
@@ -870,7 +871,7 @@ def run_evidence_key(row: dict[str, Any]) -> tuple[str, ...] | None:
     return ("external", external_id) if external_id else None
 
 
-def resolve_run_row(rows: list[dict[str, Any]], evidence: dict[str, Any]) -> dict[str, Any] | None:
+def resolve_run_row(rows: list[dict[str, Any]], evidence: Mapping[str, Any]) -> dict[str, Any] | None:
     key = managed_run_key(evidence)
     if key is not None:
         matches = [row for row in rows if managed_run_key(row) == key]
@@ -898,7 +899,7 @@ def resolve_run_row(rows: list[dict[str, Any]], evidence: dict[str, Any]) -> dic
     return None
 
 
-def resolve_external_run_row(rows: list[dict[str, Any]], evidence: dict[str, Any]) -> dict[str, Any] | None:
+def resolve_external_run_row(rows: list[dict[str, Any]], evidence: Mapping[str, Any]) -> dict[str, Any] | None:
     if evidence.get("experiment_id") in (None, ""):
         return resolve_run_row(rows, {"version": evidence.get("version")})
     matched = resolve_run_row(rows, evidence)
@@ -1022,8 +1023,8 @@ def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
 
 
 def validate_frozen_run_update(
-    existing: dict[str, Any],
-    incoming: dict[str, Any],
+    existing: Mapping[str, Any],
+    incoming: Mapping[str, Any],
     *,
     require_checkpoint_ownership: bool = False,
     allow_execution_identity_fill: bool = False,
@@ -1110,7 +1111,7 @@ def plan_registration_rows_state(
     return "present"
 
 
-def scheduler_type(row: dict[str, Any]) -> str:
+def scheduler_type(row: Mapping[str, Any]) -> str:
     value = str(row.get("scheduler_type") or "direct")
     if value not in {"direct", "slurm"}:
         raise ValueError(f"scheduler_type must be direct or slurm: {value!r}")
@@ -1189,8 +1190,8 @@ def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
 
 
 def validate_checkpoint_ownership(
-    existing: dict[str, Any],
-    incoming: dict[str, Any],
+    existing: Mapping[str, Any],
+    incoming: Mapping[str, Any],
 ) -> None:
     checkpoint_path = incoming.get("checkpoint_path")
     if checkpoint_path in (None, ""):

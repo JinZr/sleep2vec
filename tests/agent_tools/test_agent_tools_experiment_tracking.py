@@ -2196,7 +2196,7 @@ def test_remote_checkpoint_scan_skips_confirmed_missing_run_and_indexes_other_ru
 
     def fake_run(command, **kwargs):
         commands.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, f"{checkpoint}\t123.0\n", "")
+        return subprocess.CompletedProcess(command, 0, f"{checkpoint}\t123.4500\n", "")
 
     monkeypatch.setattr(experiment_io, "path_exists_at", fake_exists)
     monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
@@ -2206,6 +2206,11 @@ def test_remote_checkpoint_scan_skips_confirmed_missing_run_and_indexes_other_ru
     rows = experiment_tracking._remote_checkpoint_rows([missing, ready], "unit-host")
 
     assert [(row["run_id"], row["checkpoint_path"]) for row in rows] == [("run-001", checkpoint)]
+    assert rows[0]["mtime"] == "123.4500"
+    assert rows[0]["epoch"] == "01"
+    assert rows[0]["global_step"] == ""
+    assert rows[0]["is_last"] == "false"
+    assert rows[0]["is_best_by_val"] == "false"
     command, kwargs = commands[0]
     assert missing["checkpoint_dir"] not in command[-1]
     assert ready["checkpoint_dir"] in command[-1]
@@ -2560,3 +2565,54 @@ def test_experiment_rank_remote_rejects_deleted_checkpoint_on_run_host_before_wr
     evidence_calls = [command for command, _kwargs in calls if checkpoint in command[-1]]
     assert evidence_calls
     assert all(command[:2] == ["ssh", "worker"] for command in evidence_calls)
+
+
+@pytest.mark.parametrize(
+    ("config", "expected_identity"),
+    [({}, {}), ({"experiment_id": "", "step_id": "step", "run_id": ""}, {"step_id": "step"})],
+)
+def test_wandb_metric_observations_preserve_numeric_strings_and_filter_nonfinite_values(config, expected_identity):
+    class FakeRun:
+        id = "wandb-string-metrics"
+        name = "run-a"
+        state = "pending"
+        summary = {"val_score": "0.750", "val_flag": True, "val_nan": float("nan"), "val_inf": "inf"}
+
+        def history(self, **kwargs):
+            return [{"epoch": "2", "val_score": "0.500", "val_flag": False, "val_inf": float("inf")}]
+
+    run = FakeRun()
+    run.config = config
+    payload = experiment_tracking.wandb_run_payload(run, entity="entity", project="project")
+
+    score_rows = [row for row in payload["metric_rows"] if row["metric"] == "val_score"]
+    assert [(row["source"], row["value"], row["epoch"]) for row in score_rows] == [
+        ("wandb_summary", "0.750", ""),
+        ("wandb_history", "0.500", "2"),
+    ]
+    assert not any(row["metric"] in {"val_flag", "val_nan", "val_inf"} for row in payload["metric_rows"])
+    assert payload["history_rows"][0]["val_score"] == "0.500"
+    assert "status" not in payload["run_row"]
+    for row in [payload["run_row"], *score_rows]:
+        assert {
+            field: row[field] for field in ("experiment_id", "step_id", "run_id") if field in row
+        } == expected_identity
+
+
+def test_managed_metric_enrichment_accepts_readonly_evidence_without_mutating_it():
+    run = {"experiment_id": "unit", "step_id": "step", "run_id": "run-000", "version": "run-a", "run_name": "name"}
+    original = {
+        "experiment_id": "unit",
+        "step_id": "step",
+        "run_id": "run-000",
+        "metric": "val_score",
+        "value": "0.750",
+    }
+    observation = types.MappingProxyType(original)
+
+    rows = experiment_tracking.managed_metric_rows([run], (observation,))
+
+    assert rows[0]["run_name"] == "name"
+    assert rows[0]["value"] == "0.750"
+    assert "run_name" not in original
+    assert rows[0] is not original

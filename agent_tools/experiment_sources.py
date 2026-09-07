@@ -1,17 +1,76 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import json
 import math
 from pathlib import Path
 import re
 import stat
 import subprocess
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from . import experiment_io as exp_io, run_artifacts as artifacts, transport
 from .experiment_workspace import managed_run_key, validate_checkpoint_ownership, validate_frozen_run_update
 from .manifests import read_json, utc_now
 from .models import json_ready
+
+
+class _WandbIdentity(TypedDict, total=False):
+    experiment_id: str
+    step_id: str
+    run_id: str
+
+
+class _WandbRunCore(_WandbIdentity):
+    version: str
+    state: str
+    wandb_run_id: str
+    wandb_url: str
+    wandb_entity: str
+    wandb_project: str
+    wandb_group: str
+    created_at: str
+    updated_at: str
+
+
+class WandbRunObservation(_WandbRunCore, total=False):
+    status: str
+
+
+class WandbMetricObservation(_WandbIdentity):
+    version: str
+    epoch: str
+    split: str
+    metric: str
+    value: Any
+    source: str
+    metric_scope: str
+    wandb_run_id: str
+    updated_at: str
+
+
+class WandbRunPayload(TypedDict):
+    run_row: WandbRunObservation
+    metric_rows: list[WandbMetricObservation]
+    summary_line: str
+    history_rows: list[dict[str, Any]]
+    history_filename: str
+
+
+class CheckpointObservation(TypedDict):
+    experiment_id: str
+    step_id: str
+    run_id: str
+    run_name: str
+    version: str
+    checkpoint_path: str
+    epoch: str
+    global_step: str
+    mtime: str
+    metric: str
+    value: str
+    is_best_by_val: str
+    is_last: str
 
 
 def wandb_runs(entity: str, project: str, group: str | None) -> list[Any]:
@@ -22,7 +81,7 @@ def wandb_runs(entity: str, project: str, group: str | None) -> list[Any]:
     return list(api.runs(f"{entity}/{project}", filters=filters))
 
 
-def wandb_run_payload(run: Any, *, entity: str, project: str) -> dict[str, Any]:
+def wandb_run_payload(run: Any, *, entity: str, project: str) -> WandbRunPayload:
     wandb_run_id = str(getattr(run, "id", ""))
     version = str(getattr(run, "name", "") or wandb_run_id)
     run_group = str(getattr(run, "group", "") or "")
@@ -37,7 +96,7 @@ def wandb_run_payload(run: Any, *, entity: str, project: str) -> dict[str, Any]:
         "killed": "stopped",
         "running": "running",
     }.get(state)
-    row = {
+    row: WandbRunObservation = {
         "version": version,
         "state": state,
         "wandb_run_id": wandb_run_id,
@@ -48,17 +107,22 @@ def wandb_run_payload(run: Any, *, entity: str, project: str) -> dict[str, Any]:
         "created_at": str(getattr(run, "created_at", "") or ""),
         "updated_at": str(getattr(run, "updated_at", "") or ""),
     }
+    field: Literal["experiment_id", "step_id", "run_id"]
     for field in ("experiment_id", "step_id", "run_id"):
         if config.get(field) not in (None, ""):
             row[field] = str(config[field])
     if status:
         row["status"] = status
-    metric_rows = []
+    metric_rows: list[WandbMetricObservation] = []
     for metric, value in summary.items():
         if _is_scalar_number(value):
+            identity: _WandbIdentity = {}
+            for field in ("experiment_id", "step_id", "run_id"):
+                if field in row:
+                    identity[field] = row[field]
             metric_rows.append(
                 {
-                    **{field: row[field] for field in ("experiment_id", "step_id", "run_id") if field in row},
+                    **identity,
                     "version": version,
                     "epoch": _summary_epoch(summary),
                     "split": _metric_split(metric),
@@ -81,8 +145,8 @@ def wandb_run_payload(run: Any, *, entity: str, project: str) -> dict[str, Any]:
     }
 
 
-def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows = []
+def _local_checkpoint_rows(runs: list[dict[str, str]]) -> list[CheckpointObservation]:
+    rows: list[CheckpointObservation] = []
     for run in runs:
         runtime_dir = Path(str(run["runtime_dir"]))
         checkpoint_dir = Path(str(run["checkpoint_dir"]))
@@ -114,10 +178,11 @@ def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for path in paths:
             rows.append(
                 {
-                    **{
-                        field: run.get(field, "")
-                        for field in ("experiment_id", "step_id", "run_id", "run_name", "version")
-                    },
+                    "experiment_id": run.get("experiment_id", ""),
+                    "step_id": run.get("step_id", ""),
+                    "run_id": run.get("run_id", ""),
+                    "run_name": run.get("run_name", ""),
+                    "version": run.get("version", ""),
                     "checkpoint_path": str(path),
                     "epoch": _checkpoint_epoch(path.name),
                     "global_step": _checkpoint_step(path.name),
@@ -134,10 +199,10 @@ def _local_checkpoint_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _parse_remote_checkpoint_rows(
-    stdout: str, available_runs: list[dict[str, Any]], *, remote: str
-) -> list[dict[str, Any]]:
+    stdout: str, available_runs: list[dict[str, str]], *, remote: str
+) -> list[CheckpointObservation]:
     runs_by_checkpoint_dir = {str(run["checkpoint_dir"]): run for run in available_runs}
-    rows = {}
+    rows: dict[str, CheckpointObservation] = {}
     for line in stdout.splitlines():
         if not line.strip():
             continue
@@ -157,10 +222,11 @@ def _parse_remote_checkpoint_rows(
         if owner_run is None:
             raise RuntimeError(f"SSH checkpoint scan returned an undeclared checkpoint path on {remote}: {path_text}")
         rows[path_text] = {
-            **{
-                field: owner_run.get(field, "")
-                for field in ("experiment_id", "step_id", "run_id", "run_name", "version")
-            },
+            "experiment_id": owner_run.get("experiment_id", ""),
+            "step_id": owner_run.get("step_id", ""),
+            "run_id": owner_run.get("run_id", ""),
+            "run_name": owner_run.get("run_name", ""),
+            "version": owner_run.get("version", ""),
             "checkpoint_path": path_text,
             "epoch": _checkpoint_epoch(name),
             "global_step": _checkpoint_step(name),
@@ -173,7 +239,7 @@ def _parse_remote_checkpoint_rows(
     return list(rows.values())
 
 
-def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> list[dict[str, Any]]:
+def _remote_checkpoint_rows(runs: list[dict[str, str]], remote: str | None) -> list[CheckpointObservation]:
     if not remote or not runs:
         return []
     available_runs = []
@@ -256,7 +322,7 @@ def _remote_checkpoint_rows(runs: list[dict[str, Any]], remote: str | None) -> l
 
 def validate_checkpoint_evidence_rows(
     runs: list[dict[str, Any]],
-    rows: list[dict[str, Any]],
+    rows: Sequence[Mapping[str, Any]],
     *,
     remote: str | None = None,
 ) -> None:
@@ -313,18 +379,23 @@ def _history_rows_for_run(run: Any) -> list[dict[str, Any]]:
 def _history_metric_rows(
     wandb_run_id: str,
     version: str,
-    run_row: dict[str, Any],
+    run_row: WandbRunObservation,
     history: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    rows = []
+) -> list[WandbMetricObservation]:
+    rows: list[WandbMetricObservation] = []
     for record in history:
         epoch = _record_epoch(record)
         for metric, value in record.items():
             if metric.startswith("_") or not _is_scalar_number(value):
                 continue
+            identity: _WandbIdentity = {}
+            field: Literal["experiment_id", "step_id", "run_id"]
+            for field in ("experiment_id", "step_id", "run_id"):
+                if field in run_row:
+                    identity[field] = run_row[field]
             rows.append(
                 {
-                    **{field: run_row[field] for field in ("experiment_id", "step_id", "run_id") if field in run_row},
+                    **identity,
                     "version": version,
                     "epoch": "" if epoch is None else epoch,
                     "split": _metric_split(metric),
