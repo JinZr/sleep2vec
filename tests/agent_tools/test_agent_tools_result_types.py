@@ -313,6 +313,65 @@ def test_result_types_reach_callers(tmp_path: Path):
             planned["args"] = [1]  # type: ignore[list-item]
             planned["run_id"] = 1  # type: ignore[typeddict-item]
 
+            from agent_tools import adaptive_proposals
+            from types import MappingProxyType
+
+            proposal_document = adaptive_proposals.build_proposal_input({}, expected_proposal_path="/proposal.json")
+            proposal_document["request_id"] = None  # type: ignore[typeddict-item]
+            proposal_document["input"]["remaining_budget"]["runs"] = "1"  # type: ignore[typeddict-item]
+            proposal_document["input"]["objective"]["mode"] = 1  # type: ignore[typeddict-item]
+            proposal_document["input"]["digest_rows"][0]["custom"] = None
+            proposal_document["input"]["execution_identity"]["host"] = None
+            checked_document = adaptive_proposals.validate_proposal_input(proposal_document)
+            checked_document["expected_proposal_path"] = Path("/proposal")  # type: ignore[typeddict-item]
+            envelope = adaptive_proposals.validate_parameter_envelopes({"runtime.lr": [0.1]})["runtime.lr"]
+            envelope["kind"] = "unknown"  # type: ignore[arg-type]
+            validated_proposal = adaptive_proposals.validate_proposal({}, proposal_document)
+            validated_proposal["target_round"] = "1"  # type: ignore[typeddict-item]
+            validated_proposal["evidence_run_ids"] = [1]  # type: ignore[list-item]
+            validated_proposal["proposer"] = None
+            validated_proposal["proposer"] = {"agent": "codex", "model": 1}  # type: ignore[typeddict-item]
+
+            def adaptive_events(
+                initialized: experiment_workspace.AdaptiveInitEvent,
+                binding: experiment_workspace.AdaptiveProposalRequestBinding,
+                requested: experiment_workspace.AdaptiveProposalRequestedEvent,
+                accepted: experiment_workspace.AdaptiveProposalAcceptedEvent,
+                workflow: adaptive_hparam.InitialAdaptiveWorkflow,
+                accepted_payload: adaptive_hparam.AcceptedProposalPayload,
+            ) -> None:
+                snapshot = adaptive_hparam._agent_proposal_input_payload(Path("/workflow"), {}, {}, [])
+                snapshot["source_config_sha256"] = None  # type: ignore[typeddict-item]
+                generated_binding = adaptive_hparam._proposal_request_event_fields(
+                    proposal_document, Path("/input"), "a" * 64, Path("/proposal"),
+                )
+                generated_binding["target_round"] = "1"  # type: ignore[typeddict-item]
+                accepted_payload["proposal_sha256"] = None  # type: ignore[typeddict-item]
+                accepted_payload["schema_version"] = 2  # type: ignore[typeddict-item]
+                initialized["round"] = "0"  # type: ignore[typeddict-item]
+                binding["input_sha256"] = None  # type: ignore[typeddict-item]
+                requested["digest"] = Path("/digest")  # type: ignore[typeddict-item]
+                accepted["suggestion_sha256"] = None  # type: ignore[typeddict-item]
+                created = adaptive_hparam._plan_event(Path("/round"), {"recipe": {"step": {"id": None}}})
+                created["step_id"] = None
+                created["run_count"] = "1"  # type: ignore[typeddict-item]
+                for event_payload in (initialized, requested, accepted, created):
+                    experiment_workspace.append_event(Path("/workspace"), "event", event_payload)
+                    experiment_workspace.event_matches({}, "event", event_payload)
+                raw_event: dict[str, Any] = {"round": None, "request_id": None, "custom": [None]}
+                experiment_workspace.append_event(Path("/workspace"), "event", raw_event)
+                readonly_event = MappingProxyType(raw_event)
+                experiment_workspace.event_matches({}, "event", readonly_event)
+                experiment_workspace.append_event(Path("/workspace"), "event", readonly_event)  # type: ignore[arg-type]
+                typed_workflow = adaptive_hparam._validate_workflow_payload(Path("/workflow"), workflow)
+                typed_workflow["external_optimized"] = False  # type: ignore[typeddict-item]
+                typed_workflow["recipe_path"] = None  # type: ignore[typeddict-item]
+                raw_workflow: dict[str, Any] = {"custom": None, "objective_metric": None}
+                retained_workflow: dict[str, Any] = adaptive_hparam._validate_workflow_payload(
+                    Path("/workflow"), raw_workflow,
+                )
+                retained_workflow["unknown"] = {"nested": None}
+
             executed_step: Path = adaptive_hparam.adaptive_step("/workflow", execute=True)
             checked_proposal: Path = adaptive_hparam.adaptive_step("/workflow", proposal_path="/proposal.json")
             applied_proposal: Path = adaptive_hparam.adaptive_step(

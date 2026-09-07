@@ -5,7 +5,81 @@ import hashlib
 import json
 import math
 import re
-from typing import Any
+from typing import Any, Literal, TypedDict
+
+from typing_extensions import Never, NotRequired
+
+
+class NumericParameterEnvelope(TypedDict):
+    kind: Literal["integer", "number"]
+    min: int | float
+    max: int | float
+
+
+class CategoricalParameterEnvelope(TypedDict):
+    kind: Literal["categorical"]
+    choices: list[bool | str]
+
+
+ParameterEnvelope = NumericParameterEnvelope | CategoricalParameterEnvelope
+ProposalValue = bool | int | float | str
+
+
+class ProposalObjective(TypedDict):
+    metric: str
+    mode: str
+
+
+class ProposalRemainingBudget(TypedDict):
+    rounds: int
+    runs: int
+    round_size: int
+
+
+class ProposalInputSnapshot(TypedDict):
+    source_round: int
+    target_round: int
+    objective: ProposalObjective
+    remaining_budget: ProposalRemainingBudget
+    digest_rows: list[dict[str, Any]]
+    parameter_envelopes: dict[str, ParameterEnvelope]
+    resolved_recipe_sha256: str
+    source_config_sha256: str
+    execution_identity: dict[str, Any]
+
+
+class ProposalInputDocument(TypedDict):
+    schema_version: Literal[2]
+    request_id: str
+    input: ProposalInputSnapshot
+    expected_proposal_path: str
+
+
+class ProposalProposer(TypedDict):
+    agent: str
+    model: str
+
+
+class ValidatedProposal(TypedDict):
+    request_id: str
+    target_round: int
+    evidence_run_ids: list[str]
+    rationale: str
+    proposer: ProposalProposer | None
+    max_runs: int
+    parameters: NotRequired[dict[str, list[ProposalValue]]]
+    configurations: NotRequired[list[dict[str, ProposalValue]]]
+
+
+class ProposalParameters(TypedDict):
+    parameters: dict[str, list[ProposalValue]]
+    configurations: NotRequired[Never]
+
+
+class ProposalConfigurations(TypedDict):
+    configurations: list[dict[str, ProposalValue]]
+    parameters: NotRequired[Never]
+
 
 _INPUT_FIELDS = {
     "source_round",
@@ -35,7 +109,7 @@ _REQUEST_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
 
 def validate_parameter_envelopes(
     parameters: Mapping[str, Any], bounds: Mapping[str, Any] | None = None
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, ParameterEnvelope]:
     if not isinstance(parameters, Mapping) or not parameters:
         raise ValueError("search.parameters must be a non-empty mapping for agent proposals.")
     if bounds is None:
@@ -47,7 +121,7 @@ def validate_parameter_envelopes(
         names = ", ".join(sorted(repr(key) for key in invalid_bound_keys))
         raise ValueError(f"adaptive.suggest.bounds contains unknown parameter(s): {names}.")
 
-    envelopes: dict[str, dict[str, Any]] = {}
+    envelopes: dict[str, ParameterEnvelope] = {}
     for key, values in parameters.items():
         if not isinstance(key, str) or not key:
             raise ValueError("Agent proposal parameter names must be non-empty strings.")
@@ -79,7 +153,7 @@ def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
 
 
-def build_proposal_input(input_payload: Mapping[str, Any], *, expected_proposal_path: str) -> dict[str, Any]:
+def build_proposal_input(input_payload: Mapping[str, Any], *, expected_proposal_path: str) -> ProposalInputDocument:
     normalized = _validate_input_payload(input_payload)
     if not isinstance(expected_proposal_path, str) or not expected_proposal_path.strip():
         raise ValueError("expected_proposal_path must be a non-empty string.")
@@ -113,7 +187,7 @@ def load_strict_json(text: str, *, source: str = "JSON") -> dict[str, Any]:
     return payload
 
 
-def validate_proposal_input(document: Mapping[str, Any]) -> dict[str, Any]:
+def validate_proposal_input(document: Mapping[str, Any]) -> ProposalInputDocument:
     if not isinstance(document, Mapping):
         raise ValueError("Proposal input must be a mapping.")
     _validate_closed_fields(document, _PROPOSAL_INPUT_FIELDS, _PROPOSAL_INPUT_FIELDS, "Proposal input")
@@ -129,7 +203,7 @@ def validate_proposal_input(document: Mapping[str, Any]) -> dict[str, Any]:
     expected_request_id = proposal_request_id(input_payload)
     if request_id != expected_request_id:
         raise ValueError("Proposal input request_id does not match its canonical input snapshot.")
-    normalized = {
+    normalized: ProposalInputDocument = {
         "schema_version": 2,
         "request_id": request_id,
         "input": input_payload,
@@ -139,7 +213,7 @@ def validate_proposal_input(document: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def validate_proposal(proposal: Mapping[str, Any], proposal_input: Mapping[str, Any]) -> dict[str, Any]:
+def validate_proposal(proposal: Mapping[str, Any], proposal_input: Mapping[str, Any]) -> ValidatedProposal:
     snapshot = validate_proposal_input(proposal_input)
     if not isinstance(proposal, Mapping):
         raise ValueError("Proposal must be a mapping.")
@@ -157,10 +231,9 @@ def validate_proposal(proposal: Mapping[str, Any], proposal_input: Mapping[str, 
         raise ValueError("Proposal target_round does not match the bound input snapshot.")
 
     envelopes = input_payload["parameter_envelopes"]
+    normalized_search: ProposalParameters | ProposalConfigurations
     if "parameters" in proposal:
-        normalized_search: dict[str, Any] = {
-            "parameters": _validate_proposal_parameters(proposal["parameters"], envelopes)
-        }
+        normalized_search = {"parameters": _validate_proposal_parameters(proposal["parameters"], envelopes)}
         max_runs = 1
         for values in normalized_search["parameters"].values():
             max_runs *= len(values)
@@ -213,7 +286,7 @@ def validate_proposal(proposal: Mapping[str, Any], proposal_input: Mapping[str, 
     }
 
 
-def _validate_proposal_parameters(parameters: Any, envelopes: Mapping[str, Any]) -> dict[str, list[Any]]:
+def _validate_proposal_parameters(parameters: Any, envelopes: Mapping[str, Any]) -> dict[str, list[ProposalValue]]:
     if not isinstance(parameters, Mapping):
         raise ValueError("Proposal parameters must be a mapping.")
     missing = sorted(set(envelopes) - set(parameters))
@@ -226,7 +299,7 @@ def _validate_proposal_parameters(parameters: Any, envelopes: Mapping[str, Any])
             detail.append(f"unknown: {', '.join(unknown)}")
         raise ValueError(f"Proposal parameter keys must exactly match the input snapshot ({'; '.join(detail)}).")
 
-    normalized_parameters: dict[str, list[Any]] = {}
+    normalized_parameters: dict[str, list[ProposalValue]] = {}
     for key, envelope in envelopes.items():
         values = parameters[key]
         if not isinstance(values, list) or not values:
@@ -239,10 +312,12 @@ def _validate_proposal_parameters(parameters: Any, envelopes: Mapping[str, Any])
     return normalized_parameters
 
 
-def _validate_proposal_configurations(configurations: Any, envelopes: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _validate_proposal_configurations(
+    configurations: Any, envelopes: Mapping[str, Any]
+) -> list[dict[str, ProposalValue]]:
     if not isinstance(configurations, list) or not configurations:
         raise ValueError("Proposal configurations must be a non-empty list.")
-    points: list[dict[str, Any]] = []
+    points: list[dict[str, ProposalValue]] = []
     for index, point in enumerate(configurations):
         if not isinstance(point, Mapping):
             raise ValueError(f"Proposal configurations[{index}] must be a mapping.")
@@ -265,7 +340,7 @@ def _validate_proposal_configurations(configurations: Any, envelopes: Mapping[st
     return points
 
 
-def _parameter_kind(key: str, values: Any) -> str:
+def _parameter_kind(key: str, values: Any) -> Literal["categorical", "integer", "number"]:
     if not isinstance(values, list) or not values:
         raise ValueError(f"Search parameter {key} must have a non-empty list of values.")
     if all(isinstance(value, bool) for value in values):
@@ -282,7 +357,7 @@ def _parameter_kind(key: str, values: Any) -> str:
     raise ValueError(f"Search parameter {key} has unsupported mixed or composite values for agent proposals.")
 
 
-def _validate_input_payload(input_payload: Mapping[str, Any]) -> dict[str, Any]:
+def _validate_input_payload(input_payload: Mapping[str, Any]) -> ProposalInputSnapshot:
     if not isinstance(input_payload, Mapping):
         raise ValueError("Proposal input snapshot must be a mapping.")
     _validate_closed_fields(input_payload, _INPUT_FIELDS, _INPUT_FIELDS, "Proposal input snapshot")
@@ -336,7 +411,7 @@ def _validate_input_payload(input_payload: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(input_payload["execution_identity"], Mapping) or not input_payload["execution_identity"]:
         raise ValueError("Proposal input execution_identity must be a non-empty mapping.")
 
-    normalized = json.loads(_canonical_json(dict(input_payload)))
+    normalized: ProposalInputSnapshot = json.loads(_canonical_json(dict(input_payload)))
     return normalized
 
 
