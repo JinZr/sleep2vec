@@ -155,6 +155,8 @@ def test_generated_infer_worker_commits_only_authenticated_terminal_evidence(
             "--label",
             run["script"],
         ]
+    allocation_path = Path(run["allocation_identity_path"])
+    assert allocation_path.exists() == (mode != "topology")
     terminal_path = Path(run["scheduler_result_path"])
     if mode == "outer-kill":
         assert not terminal_path.exists()
@@ -164,6 +166,13 @@ def test_generated_infer_worker_commits_only_authenticated_terminal_evidence(
         assert slurm.sidecar_identity(terminal, run["scheduler_submit_token"]) == slurm.JobIdentity(
             "3880", "unit-cluster"
         )
+        if mode == "topology":
+            assert terminal["runtime_commit"] == ""
+        else:
+            allocation = json.loads(allocation_path.read_text())
+            for field in ("scheduler_job_id", "scheduler_cluster", "scheduler_submit_token", "node", "started_at"):
+                assert terminal[field] == allocation[field]
+            assert terminal["runtime_commit"] == allocation["execution_snapshot"]["runtime_commit"]
         if mode == "rolling-runtime":
             assert terminal["runtime_commit"] == "0" * 40
 

@@ -22,6 +22,48 @@ def test_result_types_reach_callers(tmp_path: Path):
 
             from typing import Any, Literal
 
+            direct_launch: managed_scheduler.DirectLaunchIdentity = {
+                "target": "local", "host": None, "workdir": Path("/runtime"),
+                "gpus": "", "pid_path": "/run/pid", "log_path": "/run/stdout.log", "command": "",
+            }
+            direct_log: str = direct_launch["log_path"]
+            direct_launch["log_path"] = Path("/log")  # type: ignore[typeddict-item]
+            direct_launch["pid"] = "123"  # type: ignore[typeddict-item]
+            direct_launch["planned_runtime_commit"] = None  # type: ignore[typeddict-item]
+            slurm_launch = managed_scheduler._slurm_execution_identity({}, {})
+            submit_command: str = slurm_launch["command"]
+            slurm_launch["command"] = None  # type: ignore[typeddict-item]
+            slurm_launch["execution_snapshot_sha256"] = 1  # type: ignore[typeddict-item]
+            slurm_launch["log_path"] = None
+            verification_options: managed_scheduler.LaunchVerificationOptions = {}
+            verification_options["checkpoint_path"] = None
+            verification_options["checkpoint_sha256"] = None
+            verification_options["checkpoint_path"] = "path"  # type: ignore[typeddict-item]
+            verification_options["run_id"] = None  # type: ignore[typeddict-item]
+            managed_scheduler.build_launch_command({}, Path("/script"), "/log", "/pid", [], **verification_options)
+            frozen_artifact: managed_scheduler.FrozenLaunchArtifact = {"path": "/config", "sha256": "a" * 64}
+            frozen_artifact["sha256"] = None  # type: ignore[typeddict-item]
+
+            terminal_sidecar: slurm.TerminalSidecar = {
+                "schema_version": 1, "scheduler_job_id": "42", "scheduler_cluster": "cluster",
+                "scheduler_submit_token": "token", "node": "node", "started_at": "time",
+                "ended_at": "time", "exit_code": 0, "runtime_commit": "",
+            }
+            terminal_sidecar["exit_code"] = "0"  # type: ignore[typeddict-item]
+            terminal_sidecar["scheduler_job_id"] = 42  # type: ignore[typeddict-item]
+            allocation_sidecar: slurm.AllocationSidecar = {
+                "schema_version": 1, "scheduler_job_id": "42", "scheduler_cluster": "cluster",
+                "scheduler_submit_token": "token", "node": "node", "started_at": "time",
+                "execution_snapshot": {"runtime_commit": "a" * 40, "module": "sleep2vec.infer"},
+            }
+            allocation_sidecar["execution_snapshot"]["module"] = None  # type: ignore[typeddict-item]
+            allocation_sidecar["schema_version"] = 2  # type: ignore[typeddict-item]
+            for generated_sidecar in (allocation_sidecar, terminal_sidecar):
+                slurm.sidecar_identity(generated_sidecar, "token")
+                managed_scheduler._slurm_sidecar_runtime_commit(generated_sidecar)
+                slurm._atomic_create_json(Path("/sidecar"), generated_sidecar)
+            slurm.terminal_exit_code(terminal_sidecar)
+
             source_states = experiment_pipeline._inspect_sources(Path("/workspace"), {}, refresh=False)
             source_complete: bool = source_states[0]["complete"]
             source_states[0]["complete"] = "true"  # type: ignore[typeddict-item]

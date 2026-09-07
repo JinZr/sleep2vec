@@ -425,3 +425,53 @@ def test_real_subprocess_sidecar_counts_scale_with_hosts(tmp_path, routes):
         assert counts["squeue"] == routes
         assert counts["ssh"] == (8 if sample["mode"] == "ordinary" else 12) + 3 * routes
         assert counts.get("ssh:run_evidence.log_tail_and_age", 0) == (0 if sample["mode"] == "ordinary" else 4)
+
+
+@pytest.mark.parametrize("field", ["scheduler_result_path", "allocation_identity_path"])
+@pytest.mark.parametrize(
+    ("identity_field", "bad_value", "message"),
+    [
+        ("scheduler_submit_token", "wrong-token", "submit token"),
+        ("scheduler_job_id", "4999", "job id"),
+        ("scheduler_cluster", "wrong-cluster", "cluster differs"),
+    ],
+)
+@pytest.mark.parametrize("batched", [False, True])
+def test_sidecar_identity_mismatch_fails_before_scheduler_query(
+    tmp_path, monkeypatch, reads, field, identity_field, bad_value, message, batched
+):
+    rows = _bound_rows(tmp_path, 1)
+    row = rows[0]
+    _write_sidecar(row, field)
+    path = Path(row[field])
+    payload = json.loads(path.read_text())
+    payload[identity_field] = bad_value
+    path.write_text(json.dumps(payload))
+    original = dict(row)
+    monkeypatch.setattr(slurm, "run_command", lambda *_a, **_k: pytest.fail("invalid sidecar must fail before query"))
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path) if batched else None
+
+    with pytest.raises(ValueError, match=message):
+        managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context)
+
+    assert row == original
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_observation_preserves_unknown_raw_fields_without_mutating_input(tmp_path, monkeypatch, reads, batched):
+    rows = _bound_rows(tmp_path, 1)
+    row = rows[0]
+    raw = {"values": [None, 17, {"unrecognized": True}]}
+    row.update(extra_evidence=raw, optional_value=None)
+    original = dict(row)
+    _write_sidecar(row)
+    _stub_queue(monkeypatch, rows)
+    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path) if batched else None
+
+    observed = managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context)
+
+    assert observed["status"] == "running"
+    assert observed["extra_evidence"] is raw
+    assert observed["optional_value"] is None
+    assert row == original
+    assert observed is not row
