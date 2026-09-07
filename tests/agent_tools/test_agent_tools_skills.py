@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import yaml
+
 from agent_tools.models import REPO_ROOT, SUPPORTED_VARIANTS
 from agent_tools.skills import validate_skills
 
@@ -108,6 +110,53 @@ def test_hparam_guidance_separates_search_budget_from_launch_authority():
     assert "Launch requires an explicit request" in agents
     assert "Launch requires an explicit request" in skill
     assert "does not authorize publication or launch" in contract
+
+
+def test_hparam_guidance_defaults_to_adaptive_without_rewriting_authored_searches():
+    for name in (
+        "AGENTS.md",
+        "skills/hyperparameter_tuning/SKILL.md",
+        "doc/agent_contracts/task_recipe.md",
+        "recipes/schemas/task_recipe.schema.md",
+    ):
+        guidance = " ".join((REPO_ROOT / name).read_text().split())
+        assert "terminal-only" in guidance
+        assert "agent_proposal" in guidance
+        assert "Static profile/grid search requires an explicit request." in guidance
+        assert "Existing authored or frozen searches must not be rewritten." in guidance
+        assert "ceil(total" in guidance
+    skill = (REPO_ROOT / "skills/hyperparameter_tuning/SKILL.md").read_text()
+    assert "A concurrency cap does not fix epochs." in skill
+    assert "not automatic parser defaults" in skill
+
+
+def test_hparam_skill_links_a_result_to_proposal_example_and_preserves_uncertainty():
+    skill = (REPO_ROOT / "skills/hyperparameter_tuning/SKILL.md").read_text()
+    example = REPO_ROOT / "skills/hyperparameter_tuning/examples/result_to_proposal.md"
+
+    assert "(examples/result_to_proposal.md)" in skill
+    assert example.is_file()
+    assert "Separate observations from explanations." in skill
+    assert "missing evidence instead of inventing curve shape or noise estimates" in skill
+    assert "RESEARCH_LOG.md" in skill and "experiment-note" in skill
+    assert "not a runnable recipe or an experiment result" in example.read_text()
+
+
+def test_hparam_skill_recipe_examples_include_terminal_proposal_domains():
+    examples = REPO_ROOT / "skills/hyperparameter_tuning/examples"
+    for path in sorted(examples.glob("*.yaml")):
+        recipe = yaml.safe_load(path.read_text())
+        adaptive = recipe["adaptive"]
+        assert adaptive["enabled"] is True
+        assert adaptive["suggest"]["strategy"] == "agent_proposal"
+        assert adaptive["replacement"] == {"enabled": False}
+        assert adaptive["max_runs_total"] == 12
+        assert adaptive["round_size"] == recipe["search"]["max_runs"] == 2
+        assert adaptive["max_rounds"] * adaptive["round_size"] == adaptive["max_runs_total"]
+        assert adaptive["objective_metric"] == recipe["evaluation_policy"]["selection_metric"]
+        assert adaptive["test_feedback_for_selection"] is True
+        assert recipe["evaluation_policy"]["test_after_fit"] is True
+        assert "profile" not in recipe["search"]
 
 
 def test_user_decision_guidance_preserves_explicit_final_test_unlock():

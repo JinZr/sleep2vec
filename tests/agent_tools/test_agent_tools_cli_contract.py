@@ -298,6 +298,12 @@ def test_hparam_adaptive_step_cli_contract():
     assert args.proposal is None
     assert args.execute is False
     assert "exact committed proposal may be retried safely" in actions["execute"].help
+    assert "proposal JSON" in actions["proposal"].help
+    assert "terminal results" in actions["proposal"].help
+    assert "without launching" in subcommands["hparam-adaptive-init"].description
+    assert "agent_proposal is the default" in subcommands["hparam-adaptive-init"].description
+    assert "explicit best_neighborhood" in subcommands["hparam-suggest"].description
+    assert "agent_proposal is unsupported" in subcommands["hparam-adaptive-loop"].description
 
 
 def test_plan_cli_contract():

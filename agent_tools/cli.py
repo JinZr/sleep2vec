@@ -617,7 +617,7 @@ def _build_parser() -> argparse.ArgumentParser:
     suggest = _command(
         sub,
         "hparam-suggest",
-        "Propose the next adaptive round from the workflow's published digests.",
+        "Suggest a round for explicit best_neighborhood workflows. Does not launch or drive agent_proposal.",
     )
     suggest.add_argument("--workflow-dir", required=True, help="Adaptive workflow root holding the round digests.")
     suggest.set_defaults(func=_cmd_hparam_suggest)
@@ -625,7 +625,7 @@ def _build_parser() -> argparse.ArgumentParser:
     adaptive_init = _command(
         sub,
         "hparam-adaptive-init",
-        "Initialize an adaptive hyper-parameter workflow from a recipe.",
+        "Initialize an adaptive workflow without launching; agent_proposal is the default tuning strategy.",
     )
     adaptive_init.add_argument("--recipe", required=True, help="Path to the adaptive hparam recipe YAML.")
     adaptive_init.add_argument("--output-dir", required=True, help="Directory to create the workflow root in.")
@@ -634,12 +634,12 @@ def _build_parser() -> argparse.ArgumentParser:
     adaptive_step_cmd = _command(
         sub,
         "hparam-adaptive-step",
-        "Advance an adaptive workflow by one round. Validates a proposal unless --execute is given.",
+        "Issue agent inputs or preview a proposal. Launches a round only with --execute.",
     )
     adaptive_step_cmd.add_argument("--workflow-dir", required=True, help="Adaptive workflow root to advance.")
     adaptive_step_cmd.add_argument(
         "--proposal",
-        help="External proposal YAML to validate and register; omit to use the workflow's own suggestion.",
+        help="Issued-path proposal JSON to preview; omit to request agent inputs after terminal results.",
     )
     adaptive_step_cmd.add_argument(
         "--execute",
@@ -651,7 +651,7 @@ def _build_parser() -> argparse.ArgumentParser:
     adaptive_loop_cmd = _command(
         sub,
         "hparam-adaptive-loop",
-        "Advance an adaptive workflow round after round until its budget is exhausted.",
+        "Loop an explicit best_neighborhood workflow; agent_proposal is unsupported. Dry run unless --execute.",
     )
     adaptive_loop_cmd.add_argument("--workflow-dir", required=True, help="Adaptive workflow root to advance.")
     adaptive_loop_cmd.add_argument(

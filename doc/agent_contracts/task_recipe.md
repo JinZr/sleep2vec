@@ -488,26 +488,46 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   envelope and neighborhood source. `search.configurations` appears only in
   derived rounds and static plans.
 
-While creating a new hparam recipe, an explicit request to tune selects the
-unique supported `finetune_balanced` profile only when no authored parameters,
-configurations, or adaptive search exists. Existing explicit/adaptive search
-always wins. That request covers the profile's deterministic technical levels
-and default 12-run search budget when experiment, step, config, label,
-selection split/metric/mode, test policy, host, and runtime identity are already
-unambiguous. An authored budget override or expansion needs separate authority.
-Without `inputs.pretrained_backbone_path`, adaptation stays fixed at the
-source `finetune.tuning` block, and a source whose effective group table
-freezes the encoder is rejected rather than searched; whether the encoder
-trains is read from that table, not from the preset's name.
+For a new recipe with no authored search, an ordinary tuning request defaults
+to terminal-only `adaptive.suggest.strategy: agent_proposal`. Static profile/grid
+search requires an explicit request. Existing authored or frozen searches must
+not be rewritten. The agent authors the initial scalar `search.parameters` and
+numeric `adaptive.suggest.bounds` after reviewing the effective source config,
+available prior results, useful fixed/search axes and boundary evidence; there
+is no automatic profile-to-adaptive compiler. A source value is not by itself a
+reason to freeze a technical axis, and a concurrency cap does not fix epochs.
+See the [proposal reasoning workflow](../../skills/hyperparameter_tuning/SKILL.md#result-to-proposal-reasoning).
+
+If the user did not specify a total budget, use the default 12-run search budget.
+The default round size is 2 and the default maximum is 6 rounds. With a smaller
+authorized concurrency or total-run cap, set `round_size` to the minimum of 2,
+the permitted concurrent runs and the total budget; set `max_rounds` to
+`ceil(total budget / round_size)`. If only a GPU cap is specified, account for
+GPUs per run before deriving concurrent runs. These are agent authoring defaults,
+not parser fallbacks: write the explicit objective, budget, strategy and
+`replacement: {enabled: false}` before consultation. Keep round 000's full
+Cartesian product within the round size; use later joint configurations to
+avoid wasting runs on incidental combinations. Templates are starting examples
+whose axes, bounds and first points must be adjusted to the actual experiment.
+
+An explicit static request may use the supported `finetune_balanced` profile
+above, or an authored grid. Do not convert existing static plans into adaptive
+workflows. Without `inputs.pretrained_backbone_path`, the profile's adaptation
+stays fixed at the source `finetune.tuning` block, and a source whose effective
+group table freezes the encoder is rejected rather than searched; whether the
+encoder trains is read from that table, not from the preset's name.
 `inputs.ckpt_path` is final-evaluation-only, not a tuning backbone.
 
 The tuning request alone does not authorize publication or launch. Publication
-may carry the authorized scope through doctor and plan. Once launch is explicitly
-authorized, continue through launch dry-run, queue execute, terminal monitoring,
-selection, final report, and finalization without asking again about tool-owned
-technical levels or execution. This does not authorize test unlock, changed
-label/split/checkpoint/data, or an adaptive round. Report only the best observed
-candidate within the frozen domain, metric, split, and budget, never a global optimum.
+may carry the authorized scope through doctor and the appropriate planner or
+adaptive initializer. Once launch is explicitly authorized, continue through
+initial launch checks, terminal monitoring, proposals and authorized next rounds
+for adaptive work, or the plan/queue sequence for static work, then selection,
+final report and finalization without asking again about technical levels or
+execute. This does not authorize test unlock, changed label/split/checkpoint/data,
+expansion beyond the authorized budget or frozen search domain, or changes to an
+existing adaptive protocol. Report only the best observed candidate within the
+frozen domain, metric, split and budget, never a global optimum.
 
 ### Registration preflight
 
@@ -925,6 +945,12 @@ A proposal changes only the search space and submits exactly one of:
 - `configurations`: complete joint points, budgeted by point count, with every
   point covering exactly the snapshot keys, satisfying all envelopes, and
   remaining unique.
+
+The JSON submission also requires the existing `schema_version: 1`, the exact
+issued `request_id` and `target_round`, a non-empty `evidence_run_ids` list and
+a non-empty `rationale` string. Optional `proposer` records `agent` and `model`.
+Use the rationale to connect observations, competing explanations and the purpose
+of each candidate; see the [worked example](../../skills/hyperparameter_tuning/examples/result_to_proposal.md).
 
 The submission must cite evidence run IDs from the issued snapshot and fit both
 `round_size` and the remaining total-run budget. Use joint configurations for

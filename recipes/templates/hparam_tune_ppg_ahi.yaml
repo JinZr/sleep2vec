@@ -15,8 +15,34 @@ step:
 
 base_recipe: finetune_ppg_ahi.yaml
 
+# Starting example only: adjust axes, bounds and first points to the actual
+# base/runtime config, prior evidence and compute authority before initialization.
 search:
-  profile: finetune_balanced
+  method: grid
+  max_runs: 2
+  parameters:
+    runtime.lr: [1.0e-6, 3.0e-6]
+    runtime.weight_decay: [1.0e-5]
+    runtime.epochs: [30]
+    yaml:/model/head/dropout: [0.1]
+
+adaptive:
+  enabled: true
+  objective_metric: val_ahi_pearson
+  objective_mode: max
+  round_size: 2
+  max_rounds: 6
+  max_runs_total: 12
+  test_feedback_for_selection: false
+  replacement:
+    enabled: false
+  suggest:
+    strategy: agent_proposal
+    bounds:
+      runtime.lr: [1.0e-7, 1.0e-4]
+      runtime.weight_decay: [0.0, 1.0e-3]
+      runtime.epochs: [15, 60]
+      yaml:/model/head/dropout: [0.0, 0.3]
 
 artifacts:
   overwrite: false

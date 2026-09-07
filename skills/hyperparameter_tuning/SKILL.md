@@ -12,11 +12,11 @@ maintenance. Do not infer lifecycle from history.
 
 ## Required inputs
 
-Use the authorized experiment/step, base recipe, search space or supported
-profile, budget, selection metric/mode/split, test/final-evaluation policy and
+Use the authorized experiment/step, base recipe, search domain or explicitly
+requested static profile/grid, budget, selection metric/mode/split, test/final-evaluation policy and
 execution identity. Read the relevant detailed owners before preparing work:
 
-- [Search space](../../doc/agent_contracts/task_recipe.md#search-space) for explicit grids/joint configurations and bounded `finetune_balanced` defaults.
+- [Search space](../../doc/agent_contracts/task_recipe.md#search-space) for the default adaptive workflow, scalar domains, joint configurations and explicitly requested static `finetune_balanced` searches.
 - [Test-access policy](../../doc/agent_contracts/external_test_locking.md#selection-and-test-access-policy) for selection split, test-after-fit and unlock requirements.
 - [Launch and queue](../../doc/agent_contracts/task_recipe.md#launch-and-queue) for local/SSH identity, direct/Slurm resources and capacity.
 - [Adaptive workflow](../../doc/agent_contracts/task_recipe.md#adaptive-workflow) when enabled; it owns initialization, frozen Python/route/scientific identity, per-round commit provenance, strategy and budget.
@@ -61,12 +61,84 @@ resolved concrete value differs from the preserved template; doctor neither
 merges nor overwrites the old file. The decision file records intent but does
 not itself authorize a later interaction stage.
 
-When creating a new recipe, a tuning request selects the unique supported
-`finetune_balanced` profile only if no authored explicit or adaptive search
-exists. Its technical levels and default 12-run search budget need no second
-question once the scientific and execution choices are explicit. Existing
-searches remain unchanged; a budget override/expansion, test unlock, changed
-data/label/split/checkpoint or adaptive protocol needs its own authorization.
+For a new recipe with no authored search, an ordinary tuning request defaults
+to terminal-only `adaptive.suggest.strategy: agent_proposal`. Static profile/grid
+search requires an explicit request. Existing authored or frozen searches must
+not be rewritten. Explain at the outset that the agent will use completed results
+to choose later rounds; do not preplan the whole budget and call it adaptive.
+
+Use the default 12-run search budget only when the user has not specified a total
+budget. Default to `round_size: 2` and `max_rounds: 6`; a smaller concurrency or
+total-run cap reduces round size to `min(2, permitted concurrent runs, total
+budget)`, with `max_rounds = ceil(total budget / round_size)`. Translate GPU limits
+using the authorized GPUs per run. A concurrency cap does not fix epochs. Author
+these fields, the explicit objective and `replacement: {enabled: false}` in the
+recipe; they are not automatic parser defaults.
+
+Before initialization, inspect the effective base/runtime config and available
+prior experiments. Choose a bounded scalar domain and first-round points using:
+
+- The strongest comparable result, missing evidence, and whether its best point
+  touches a parameter bound or the final checkpoint. Boundary evidence motivates
+  a hypothesis; it does not prove that expanding the bound will improve results.
+- The important technical axes to search or hold fixed, with an evidence or
+  budget reason for each fixed choice. Do not freeze a setting merely because it
+  appears in the source config. Include only parameters consumed by the task and
+  variant; coupled settings must produce valid complete candidate configs.
+- What the initial points can distinguish within the compute authority. Keep the
+  full initial Cartesian product within round size. Numeric bounds can leave
+  room beyond the first points; categorical choices must already be declared.
+  The current proposal contract supports scalar values, not composite LayerMix
+  or adaptation mappings. Do not invent an automatic profile-to-adaptive compiler.
+
+The templates are starting examples to adjust to the actual base config, runtime
+and evidence. Choose technical values within the authorized domain without asking
+for each learning rate, training length, scheduler, dropout or LoRA level. Unknown
+scientific choices still require consultation. Budget/domain expansion, test
+unlock, changed data/label/split/checkpoint, an existing protocol change or a later
+interaction stage needs its own authority. Do not modify active frozen workflows
+to accommodate a newly noticed search limitation.
+
+## Result-to-proposal reasoning
+
+After each round is terminal and required results are complete, read the issued
+proposal input and its cited config, manifest, diagnostic and log evidence. Compare
+all available completed rounds with the incumbent and revisit earlier rationale
+and `RESEARCH_LOG.md`; the previous round's winner is not automatically the
+workflow's best result. Use test feedback only under its frozen authorization.
+Use the exact evidence identities and submission format
+in the [proposal handshake](../../doc/agent_contracts/task_recipe.md#proposal-handshake).
+
+Write a concise, useful `rationale` using the existing free-text field:
+
+1. Separate observations from explanations. Identify the compared configurations,
+   metric differences, training/checkpoint evidence and failure causes. A scalar
+   score or last-checkpoint winner alone does not establish underfitting,
+   overfitting or an unstable optimizer. Read available trajectories when needed;
+   state missing evidence instead of inventing curve shape or noise estimates.
+2. State the leading explanation and plausible alternatives. Joint changes support
+   a joint strategy, not the isolated effect of one parameter. Small differences
+   without repeat evidence remain uncertain. Infrastructure failure is not a low
+   scientific score; distinguish it from a supported infeasible configuration.
+3. Explain each complete candidate point: what it changes, why that could improve
+   the objective or distinguish explanations, and which observed runs support it.
+   Balance improvement near the incumbent with useful exploration according to
+   evidence and remaining budget; neither a fixed quota nor automatic shrinking
+   around the latest winner is required. Prefer `configurations` for intentional
+   joint points. Avoid repeats unless they answer an explicit reproducibility or
+   unresolved-failure question within the existing contract and authority.
+4. Say what result would change the current interpretation and why these points
+   merit the remaining runs. Stay within the issued domain and budget; if an
+   important alternative is outside them, report the concrete limitation instead
+   of silently changing the workflow. On the next result, check this expectation
+   and append meaningful observations or revised interpretations with
+   `experiment-note`, rather than copying unchanged monitoring history.
+
+Use [the worked result-to-proposal example](examples/result_to_proposal.md) for the
+level of reasoning expected. Tool validation establishes identity, completeness
+and allowed values; a non-empty rationale does not by itself establish scientific
+quality. Report only the best observed candidate, with uncertainty and any
+explicit test-feedback selection clearly identified.
 
 ## Stop-and-consult gates
 
@@ -88,16 +160,17 @@ after its spawn boundary records A while the checkout advances to B, and a later
 process records B. That SHA is point-in-time provenance, not a guarantee that
 checkout code bytes remain fixed for the whole job.
 
-For ordinary tuning, follow doctor → `plan` → `hparam-launch` dry-run →
+For explicitly static tuning, follow doctor → `plan` → `hparam-launch` dry-run →
 authorized `hparam-run-queue --execute` → terminal monitoring → `hparam-select`
-→ report/finalization. Once launch is explicitly authorized, the supported
-automatic-profile authorization covers this sequence without another question
-about technical levels or execute.
+→ report/finalization. Once launch is explicitly authorized, continue the chosen
+workflow without another question about technical levels or each execute step.
 Use variant-local runtime commands generated by the planner, not hand-written
 training scripts. Stop via `hparam-stop --run-id <id> --reason <text>` under the
 existing [direct/Slurm evidence contract](../../doc/agent_contracts/run_manifest.md).
 
-Adaptive recipes enter through `hparam-adaptive-init`, not generic `plan`.
+For the default adaptive workflow, complete doctor, `hparam-adaptive-init`,
+initial launch dry-run and the authorized initial launch, then terminal monitoring
+and the next-round proposals. Adaptive recipes do not enter through generic `plan`.
 Follow the exact [proposal handshake](../../doc/agent_contracts/task_recipe.md#proposal-handshake):
 the tool issues the input, the external agent writes only its named submission,
 and the tool preflights/registers/launches. `hparam-adaptive-loop` is only for
