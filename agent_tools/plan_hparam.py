@@ -49,7 +49,7 @@ from .experiment_workspace import (
     run_identity,
 )
 from .manifests import read_json, write_json, write_text
-from .models import REPO_ROOT, coerce_list, resolve_repo_path
+from .models import REPO_ROOT, ConfigSummaryInput, coerce_list, resolve_repo_path
 from .repo import repo_summary
 
 FROZEN_FINAL_EVAL_CONFIG_NAME = plan_contract.FROZEN_FINAL_EVAL_CONFIG_NAME
@@ -87,7 +87,7 @@ def final_script_allowed(
 
 def final_test_checkpoint_issues(
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     *,
     unlock_final_test: bool,
 ) -> list[DecisionIssue]:
@@ -189,7 +189,8 @@ def final_test_checkpoint_issues(
             )
             return issues
         config_summary = plan_context.load_config_summary_for_recipe(recipe, config_bytes=config_bytes)
-        for message in (config_summary or {}).get("blocking_issues", []):
+        blocking_issues = config_summary.get("blocking_issues", []) if config_summary is not None else []
+        for message in blocking_issues:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
@@ -847,7 +848,7 @@ def freeze_hparam_execution(recipe: dict) -> dict:
             raise ValueError(
                 "execution.runtime_commit must be explicit when the target runtime is not local REPO_ROOT."
             )
-        repository = repo_summary().get("git") or {}
+        repository: Mapping[str, Any] = repo_summary().get("git") or {}
         if not repository.get("available") or not repository.get("commit"):
             raise ValueError(
                 "Cannot freeze the target runtime baseline commit because the manager repository is unavailable."
@@ -1118,7 +1119,7 @@ def render_hparam_preflight_card(
     models: dict[bytes, dict[str, Any]] = {}
     for run, config_bytes in run_configs:
         if config_bytes not in models:
-            summary = configs.config_summary(
+            summary: Mapping[str, Any] = configs.config_summary(
                 recipe["inputs"]["config"],
                 variant=variant,
                 validate_survival_local_paths=False,

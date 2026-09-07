@@ -8,7 +8,7 @@ from typing import Any
 from .adaptive_proposals import validate_parameter_envelopes
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import managed_runtime_env_issues, managed_runtime_resource_issues, multilabel_sidecar_issue
-from .models import REPO_ROOT, is_full_git_object_id
+from .models import REPO_ROOT, ConfigSummaryInput, is_full_git_object_id
 from .plan_rendering import FINETUNE_SCHEDULER_FIELDS
 
 DEFAULT_ADAPTIVE_SUGGEST_STRATEGY = "agent_proposal"
@@ -272,7 +272,7 @@ def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> 
 
 def _hparam_config_issues(
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     decisions: dict[str, ResolvedDecision],
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
@@ -590,7 +590,7 @@ def _hparam_evaluation_issues(
 
 def hparam_tune_issues(
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     decisions: dict[str, ResolvedDecision],
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:

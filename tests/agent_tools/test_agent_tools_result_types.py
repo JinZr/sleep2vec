@@ -94,6 +94,59 @@ def test_result_types_reach_callers(tmp_path: Path):
                 context["recommended_commands"] = [1]  # type: ignore[list-item]
                 return plan_context.context_markdown(context)
 
+            def diagnostic_contracts() -> None:
+                from agent_tools import configs
+                from agent_tools.domain.finetune_summary import finetune_summary_body
+                from agent_tools.domain.sex_age_summary import sex_age_baseline_config_summary
+                from agent_tools.domain.sidecar_summaries import survival_summary, multilabel_summary
+                from agent_tools.adapters.sleep2stat import sleep2stat_config_summary
+                from agent_tools.adapters.config_providers import CONFIG_SUMMARY_PROVIDERS
+
+                for diagnostic in (
+                    configs.config_summary(Path("config.yaml")),
+                    TaskAdapter().config_summary(Path("config.yaml")),
+                    CONFIG_SUMMARY_PROVIDERS[0].summarize(Path("config.yaml")),
+                ):
+                    warnings: list[str] = diagnostic["warnings"]
+                    config_path: str = diagnostic["config_path"]
+                    diagnostic["blocking_issues"] = [1]  # type: ignore[list-item]
+                    diagnostic["_source_config_bytes"] = "bytes"  # type: ignore[arg-type]
+                from types import MappingProxyType
+                from agent_tools import decision_paths
+                from agent_tools.domain.finetune_hparam_profile import compile_finetune_balanced_profile
+                readonly: MappingProxyType[str, Any] = MappingProxyType({"data": {}, "finetune": {}})
+                decision_paths._config_data(readonly)  # type: ignore[arg-type]
+                decision_paths._config_finetune(readonly)  # type: ignore[arg-type]
+                compile_finetune_balanced_profile({}, readonly)  # type: ignore[arg-type]
+                fine = finetune_summary_body(Path("config.yaml"))
+                fine["model"]["channels"][0]["unknown"] = 1  # type: ignore[typeddict-unknown-key]
+                fine["model"]["layer_mix_present"] = "yes"  # type: ignore[typeddict-item]
+                fine["model"]["head_details"]["kwargs"] = []  # type: ignore[typeddict-item]
+                fine["finetune"]["tuning_present"] = 1  # type: ignore[typeddict-item]
+                fine["data"]["train_dataset_names"] = "train"  # type: ignore[typeddict-item]
+                fine["finetune"]["task"]["output_dim"] = {"invalid": "preserved"}
+                sex = sex_age_baseline_config_summary(Path("config.yaml"))
+                sex["model"]["features"] = [1]  # type: ignore[list-item]
+                stats = sleep2stat_config_summary(Path("config.yaml"))
+                stats["agent_risk_issues"] = False  # type: ignore[typeddict-item]
+                stats["sleep2stat"]["supported_analyzer_types"] = [1]  # type: ignore[list-item]
+                stats["sleep2stat"]["analyzers"][0]["enabled"] = "yes"  # type: ignore[typeddict-item]
+                stats["sleep2stat"]["reducers"][0]["source"] = 1  # type: ignore[typeddict-item]
+                for sidecar in (survival_summary({}, {}), multilabel_summary({}, {})):
+                    if sidecar is not None:
+                        valid: bool = sidecar["valid"]
+                        count: int | None = sidecar["sidecar_key_count"]
+                        sidecar["valid"] = "yes"  # type: ignore[arg-type]
+                        sidecar["issues"] = [1]  # type: ignore[list-item]
+                        sidecar["output_dim"] = ["unvalidated"]
+
+            def discovery_context(context: plan_context.ContextPayload) -> None:
+                available: bool = context["repo"]["git"]["available"]
+                context["repo"]["python"]["version"] = 1  # type: ignore[typeddict-item]
+                context["skill"]["unexpected"] = "owner"  # type: ignore[typeddict-unknown-key]
+                if context["config_summary"] is not None:
+                    context["config_summary"]["warnings"] = [1]  # type: ignore[list-item]
+
             minimal_snapshot: managed_scheduler.ExecutionSnapshot = {
                 "module": "runtime_cli", "module_origin": "/runtime_cli.py",
             }

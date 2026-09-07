@@ -7,7 +7,7 @@ from typing import Any
 
 from . import gpu_rules, slurm, transport
 from .decision_models import DecisionIssue, DecisionStatus
-from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, is_full_git_object_id
+from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, ConfigSummaryInput, is_full_git_object_id
 
 _EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target", "workdir"}
 _RUNTIME_IDENTITY_FIELDS = {"python", "runtime_commit"}
@@ -382,12 +382,12 @@ def managed_runtime_env_issues(
     return issues
 
 
-def _config_data(config_summary: dict | None) -> dict[str, Any]:
+def _config_data(config_summary: ConfigSummaryInput | None) -> dict[str, Any]:
     data = config_summary.get("data") if isinstance(config_summary, dict) else {}
     return data if isinstance(data, dict) else {}
 
 
-def _config_finetune(config_summary: dict | None) -> dict[str, Any]:
+def _config_finetune(config_summary: ConfigSummaryInput | None) -> dict[str, Any]:
     finetune = config_summary.get(CONFIG_FINETUNE_SECTION) if isinstance(config_summary, dict) else {}
     return finetune if isinstance(finetune, dict) else {}
 
@@ -395,7 +395,7 @@ def _config_finetune(config_summary: dict | None) -> dict[str, Any]:
 def _effective_preset_path(
     task: str,
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     recipe_field: str | None = None,
     *,
     uses_finetune_config: bool = False,
@@ -414,7 +414,7 @@ def _effective_preset_path(
 def survival_sidecar_issue(
     task: str,
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     *,
     required: bool | None = None,
     preset_path_recipe_field: str | None = None,
@@ -442,7 +442,7 @@ def survival_sidecar_issue(
 def multilabel_sidecar_issue(
     task: str,
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     *,
     required: bool | None = None,
     preset_path_recipe_field: str | None = None,
@@ -470,7 +470,7 @@ def multilabel_sidecar_issue(
 def _requires_survival_sidecars(
     task: str,
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     required: bool | None = None,
     preset_path_recipe_field: str | None = None,
     uses_finetune_config: bool = False,
@@ -493,7 +493,7 @@ def _requires_survival_sidecars(
 def _requires_multilabel_sidecars(
     task: str,
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     required: bool | None = None,
     preset_path_recipe_field: str | None = None,
     uses_finetune_config: bool = False,
@@ -510,7 +510,7 @@ def _append_remote_survival_sidecar_issues(
     issues: list[DecisionIssue],
     task: str,
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     required: bool | None = None,
     preset_path_recipe_field: str | None = None,
     uses_finetune_config: bool = False,
@@ -544,7 +544,7 @@ def _append_remote_multilabel_sidecar_issues(
     issues: list[DecisionIssue],
     task: str,
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     required: bool | None = None,
     preset_path_recipe_field: str | None = None,
     uses_finetune_config: bool = False,
@@ -577,7 +577,7 @@ def _append_remote_multilabel_sidecar_issues(
 def path_issues(
     task: str,
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     *,
     required_input_paths: list[tuple[str, Any]] | None = None,
     requires_survival_sidecars: bool | None = None,

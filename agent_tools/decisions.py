@@ -14,6 +14,7 @@ from .decision_models import (
     question_for,
 )
 from .experiment_workspace import experiment_metadata_issues
+from .models import ConfigSummaryInput
 
 __all__ = [
     "DecisionIssue",
@@ -201,7 +202,7 @@ def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> 
 def evaluate_consultation_gates(
     task: str | None,
     recipe: dict | None,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     cli_args: dict | None,
     policy: dict,
     *,
@@ -401,7 +402,7 @@ def _policy_tasks(high_impact: dict[str, dict[str, Any]]) -> set[str]:
 def _resolve_decision(
     field: str,
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     cli_args: dict,
     user_decisions: dict,
     *,
@@ -472,23 +473,21 @@ def _recipe_field_value(field: str, recipe: dict) -> Any:
     return value
 
 
-def _config_field_value(field: str, config_summary: dict | None) -> Any:
+def _config_field_value(field: str, config_summary: ConfigSummaryInput | None) -> Any:
     if not config_summary:
         return _MISSING
     spec = schema_map.CONFIG_FIELDS.get(field)
     if spec is None:
         return _MISSING
-    node: Any = config_summary
+    summary: Any = config_summary
+    node: Any = summary
     for part in spec.summary_path[:-1]:
         node = node.get(part, {})
     value = node.get(spec.summary_path[-1])
     if (
         field == "data_backend"
         and value is None
-        and (
-            config_summary.get("data", {}).get("finetune_preset_path")
-            or config_summary.get("data", {}).get("finetune_data_index")
-        )
+        and (summary.get("data", {}).get("finetune_preset_path") or summary.get("data", {}).get("finetune_data_index"))
     ):
         return "npz"
     if value in (None, ""):
@@ -499,7 +498,7 @@ def _config_field_value(field: str, config_summary: dict | None) -> Any:
 def _task_specific_issues(
     task: str,
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     decisions: dict[str, ResolvedDecision],
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
@@ -512,7 +511,7 @@ def _task_specific_issues(
 def _base_task_issues(
     base_task: str,
     recipe: dict,
-    config_summary: dict | None,
+    config_summary: ConfigSummaryInput | None,
     cli_args: dict,
     policy: dict,
 ) -> list[DecisionIssue]:

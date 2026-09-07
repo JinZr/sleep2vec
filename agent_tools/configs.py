@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
 
 import yaml
 
@@ -10,7 +9,12 @@ from .adapters import all_adapters
 from .adapters.config_providers import CONFIG_SUMMARY_PROVIDERS
 from .adapters.sleep2stat import sleep2stat_config_summary  # noqa: F401 -- test-frozen import path
 from .domain.finetune_summary import finetune_summary_body, guess_variant
-from .models import load_yaml, repo_relative, resolve_repo_path  # noqa: F401 -- load_yaml re-exported for importers
+from .models import (  # noqa: F401 -- load_yaml re-exported for importers
+    ConfigSummary,
+    load_yaml,
+    repo_relative,
+    resolve_repo_path,
+)
 
 
 def config_summary(
@@ -21,7 +25,7 @@ def config_summary(
     local_path_base: str | Path | None = None,
     config_bytes: bytes | None = None,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
-) -> dict[str, Any]:
+) -> ConfigSummary:
     resolved = resolve_repo_path(config_path)
     if resolved is None:
         raise FileNotFoundError("Config path is required.")
@@ -39,6 +43,7 @@ def config_summary(
         snapshot.write(config_bytes)
         snapshot.flush()
         summary_path = Path(snapshot.name)
+    summary: ConfigSummary
     try:
         for adapter in all_adapters():
             if adapter.matches_config_data(data):

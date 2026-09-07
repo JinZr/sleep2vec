@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
-from ..models import coerce_list
+from ..models import ConfigSummary, ConfigSummaryInput, coerce_list
 from ..plan_contract import CompiledPlanContract
 from ..plan_rendering import finetune_loaded_split_values
 
@@ -41,7 +41,7 @@ def recipe_inputs(recipe: dict[str, Any]) -> dict[str, Any]:
     return inputs if isinstance(inputs, dict) else {}
 
 
-def config_summary_issues(recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[DecisionIssue]:
+def config_summary_issues(recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[DecisionIssue]:
     """Issues a task raises from its loaded config summary: the config's own
     blocking issues, plus an explicit recipe/config variant conflict."""
     if not config_summary:
@@ -155,7 +155,7 @@ class TaskAdapter:
         return []
 
     def config_override_issues(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue] | None:
         """None: the kernel runs its generic flat config-contract block.
         Non-None: the kernel skips that block and appends these issues at the
@@ -165,7 +165,7 @@ class TaskAdapter:
     def bind_effective_recipe(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         *,
         source_recipe: dict[str, Any] | None = None,
     ) -> list[DecisionIssue]:
@@ -179,7 +179,7 @@ class TaskAdapter:
     def preflight_issues(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         *,
         unlock_final_test: bool,
         output_dir: Path | None = None,
@@ -270,7 +270,7 @@ class TaskAdapter:
         """Whether a loaded config mapping belongs to this task's domain."""
         return False
 
-    def config_summary(self, config_path: str | Path) -> dict[str, Any]:
+    def config_summary(self, config_path: str | Path) -> ConfigSummary:
         """Structured summary of a domain config. Domain-leaf imports used by
         adapter hooks must stay inside the method body (deferred)."""
         raise NotImplementedError
@@ -278,7 +278,7 @@ class TaskAdapter:
     def task_issues(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
     ) -> list[DecisionIssue]:
@@ -287,12 +287,12 @@ class TaskAdapter:
         return []
 
     def configured_input_issues(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue]:
         """Existence checks for task-specific configured input paths."""
         return []
 
-    def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
+    def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
         """Runnable commands for this task; [] means the recipe cannot be
         rendered (the kernel reports it as unsupported)."""
         return []
@@ -389,11 +389,13 @@ class TaskAdapter:
         None means use the generic path."""
         return None
 
-    def expected_artifacts(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[dict[str, str]]:
+    def expected_artifacts(
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
+    ) -> list[dict[str, str]]:
         """Expected output artifacts for context/plan documents."""
         return []
 
-    def effective_preset_path(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> Any:
+    def effective_preset_path(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> Any:
         """The preset this task actually loads: the recipe's declared
         ``preset_path_recipe_field`` override when concrete, else the config's
         ``finetune_preset_path``. None when neither is."""
@@ -403,7 +405,8 @@ class TaskAdapter:
                 return value
         if not self.uses_finetune_config:
             return None
-        value = ((config_summary or {}).get("data") or {}).get("finetune_preset_path")
+        data: Any = (config_summary or {}).get("data") or {}
+        value = data.get("finetune_preset_path")
         return value if value not in (None, "", "ASK_USER") else None
 
     def index_summary_split_values(self, recipe: dict[str, Any]) -> list[Any]:
@@ -413,7 +416,7 @@ class TaskAdapter:
         return finetune_loaded_split_values(recipe)
 
     def index_summary_inputs_override(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> tuple[list[Any], Any, list[Any]] | None:
         """(index_paths, config, split_values) when this adapter claims the
         recipe/config combination, else None. Claiming is by config shape,
@@ -432,5 +435,5 @@ class TaskAdapter:
         split_values = self.index_summary_split_values(recipe)
         if self.effective_preset_path(recipe, config_summary) is not None:
             return [], inputs.get("config"), split_values
-        data = (config_summary or {}).get("data") or {}
+        data: Any = (config_summary or {}).get("data") or {}
         return coerce_list(data.get("finetune_data_index")), inputs.get("config"), split_values

@@ -8,15 +8,26 @@ import yaml
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from ..decision_paths import path_context, path_validation, validate_input_path
 from ..domain.sidecar_summaries import looks_like_placeholder_path
-from ..models import REPO_ROOT, coerce_list, repo_relative, resolve_repo_path
+from ..models import (
+    REPO_ROOT,
+    AnalyzerSummary,
+    ConfigSummaryInput,
+    ReducerSummary,
+    Sleep2statConfigSummary,
+    Sleep2statSummary,
+    coerce_list,
+    repo_relative,
+    resolve_repo_path,
+)
 from ..plan_rendering import append_bool_option, append_list_option, append_option, render_command
 from .base import TaskAdapter
 
 
-def sleep2stat_config_run_dir(cfg: dict | None) -> str | None:
+def sleep2stat_config_run_dir(cfg: ConfigSummaryInput | None) -> str | None:
     if not cfg or not cfg.get("is_sleep2stat"):
         return None
-    value = ((cfg.get("sleep2stat") or {}).get("run") or {}).get("output_dir")
+    sleep2stat: Any = cfg.get("sleep2stat") or {}
+    value = (sleep2stat.get("run") or {}).get("output_dir")
     return str(value) if value not in (None, "") else None
 
 
@@ -46,8 +57,8 @@ def sleep2stat_record_check_args(recipe: dict[str, Any]) -> list[Any]:
     return args
 
 
-def sleep2stat_has_yasa_stage(cfg: dict | None) -> bool:
-    sleep2stat = (cfg or {}).get("sleep2stat") or {}
+def sleep2stat_has_yasa_stage(cfg: ConfigSummaryInput | None) -> bool:
+    sleep2stat: Any = (cfg or {}).get("sleep2stat") or {}
     for analyzer in sleep2stat.get("analyzers", []):
         if analyzer.get("enabled") is not False and analyzer.get("type") == "yasa_stage":
             return True
@@ -81,13 +92,13 @@ def sleep2stat_existing_run_dir_issue(recipe: dict, raw_path: Any) -> DecisionIs
     )
 
 
-def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
+def sleep2stat_config_summary(config_path: str | Path) -> Sleep2statConfigSummary:
     from sleep2stat.config import SUPPORTED_ANALYZER_TYPES, SUPPORTED_REDUCER_TYPES, load_config
 
     resolved = resolve_repo_path(config_path)
     if resolved is None:
         raise FileNotFoundError("Config path is required.")
-    supported = {
+    supported: Sleep2statSummary = {
         "supported_analyzer_types": sorted(SUPPORTED_ANALYZER_TYPES),
         "supported_reducer_types": sorted(SUPPORTED_REDUCER_TYPES),
     }
@@ -104,11 +115,11 @@ def sleep2stat_config_summary(config_path: str | Path) -> dict[str, Any]:
             "agent_risk_issues": [],
         }
 
-    analyzers = []
-    reducers = []
+    analyzers: list[AnalyzerSummary] = []
+    reducers: list[ReducerSummary] = []
     agent_risk_issues = []
     for item in cfg.analyzers:
-        analyzer = {
+        analyzer: AnalyzerSummary = {
             "name": item.name,
             "type": item.type,
             "enabled": item.enabled,
@@ -217,13 +228,13 @@ class Sleep2statAdapter(TaskAdapter):
     def matches_config_data(self, data: dict[str, Any]) -> bool:
         return {"run", "data", "signals", "analyzers", "reducers", "outputs"}.issubset(set(data))
 
-    def config_summary(self, config_path: str | Path) -> dict[str, Any]:
+    def config_summary(self, config_path: str | Path) -> Sleep2statConfigSummary:
         return sleep2stat_config_summary(config_path)
 
     def task_issues(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
     ) -> list[DecisionIssue]:
@@ -257,7 +268,7 @@ class Sleep2statAdapter(TaskAdapter):
                     {"config_path": config_summary.get("config_path")},
                 )
             )
-        sleep2stat = config_summary.get("sleep2stat") or {}
+        sleep2stat: Any = config_summary.get("sleep2stat") or {}
         cfg_run = sleep2stat.get("run") or {}
         cfg_data = sleep2stat.get("data") or {}
         artifacts_value = recipe.get("artifacts")
@@ -306,7 +317,8 @@ class Sleep2statAdapter(TaskAdapter):
                     {"effective_split": effective_split, "external_test_locked": external_test_locked},
                 )
             )
-        for message in config_summary.get("agent_risk_issues", []):
+        risk_issues: Any = config_summary.get("agent_risk_issues", [])
+        for message in risk_issues:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.NEEDS_USER_INPUT,
@@ -319,12 +331,12 @@ class Sleep2statAdapter(TaskAdapter):
         return issues
 
     def configured_input_issues(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue]:
         issues: list[DecisionIssue] = []
         if not config_summary or not config_summary.get("is_sleep2stat"):
             return issues
-        sleep2stat = config_summary.get("sleep2stat") or {}
+        sleep2stat: Any = config_summary.get("sleep2stat") or {}
         data = sleep2stat.get("data") or {}
         for data_field in ("index", "kaldi_data_root", "kaldi_manifest"):
             value = data.get(data_field)
@@ -357,7 +369,7 @@ class Sleep2statAdapter(TaskAdapter):
                     issues.append(issue)
         return issues
 
-    def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
+    def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
         inputs_value = recipe.get("inputs")
         inputs = inputs_value if isinstance(inputs_value, dict) else {}
         runtime_value = recipe.get("runtime")
@@ -428,12 +440,14 @@ class Sleep2statAdapter(TaskAdapter):
         commands.append(render_command(["python", "-m", "agent_tools", "skills", "--validate"]))
         return commands
 
-    def expected_artifacts(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[dict[str, str]]:
+    def expected_artifacts(
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
+    ) -> list[dict[str, str]]:
         cfg = config_summary
         run_dir = sleep2stat_config_run_dir(cfg)
         if not run_dir:
             return []
-        sleep2stat = cfg.get("sleep2stat") if cfg else {}
+        sleep2stat: Any = cfg.get("sleep2stat") if cfg else {}
         outputs = (sleep2stat or {}).get("outputs") or {}
         compression = outputs.get("compression", "gzip")
         global_tables = outputs.get("global_tables") or {}
@@ -462,10 +476,11 @@ class Sleep2statAdapter(TaskAdapter):
         return expected
 
     def index_summary_inputs_override(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> tuple[list[Any], Any, list[Any]] | None:
         if config_summary and config_summary.get("is_sleep2stat"):
-            data = (config_summary.get("sleep2stat") or {}).get("data") or {}
+            sleep2stat: Any = config_summary.get("sleep2stat") or {}
+            data = sleep2stat.get("data") or {}
             return coerce_list(data.get("index")), None, []
         return None
 

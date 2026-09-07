@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from ..models import resolve_repo_path
+from ..models import MultilabelSummary, SurvivalSummary, resolve_repo_path
 
 
 def looks_like_placeholder_path(value: str | Path | None) -> bool:
@@ -27,7 +27,7 @@ def survival_summary(
     validate_local_paths: bool = True,
     local_path_base: str | Path | None = None,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
-) -> dict[str, Any] | None:
+) -> SurvivalSummary | None:
     if task.get("type") != "survival":
         return None
 
@@ -37,7 +37,7 @@ def survival_summary(
     if isinstance(covariates, list):
         covariates = list(covariates)
     path_fields = ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index")
-    summary: dict[str, Any] = {
+    summary: SurvivalSummary = {
         "key_column": raw.get("key_column"),
         "disease_columns_index": raw.get("disease_columns_index"),
         "event_time_index": raw.get("event_time_index"),
@@ -102,14 +102,14 @@ def multilabel_summary(
     validate_local_paths: bool = True,
     local_path_base: str | Path | None = None,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
-) -> dict[str, Any] | None:
+) -> MultilabelSummary | None:
     if task.get("type") != "multilabel_classification":
         return None
 
     raw_value = finetune.get("multilabel")
     raw = raw_value if isinstance(raw_value, dict) else {}
     path_fields = ("disease_columns_index", "label_index", "has_label_index")
-    summary: dict[str, Any] = {
+    summary: MultilabelSummary = {
         "key_column": raw.get("key_column"),
         "disease_columns_index": raw.get("disease_columns_index"),
         "label_index": raw.get("label_index"),

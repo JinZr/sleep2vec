@@ -5,7 +5,7 @@ from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status, needs_issue
 from ..decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
-from ..models import REPO_ROOT, recipe_name
+from ..models import REPO_ROOT, ConfigSummaryInput, recipe_name
 from ..plan_rendering import (
     FINETUNE_RUNTIME_FIELDS,
     FINETUNE_SCHEDULER_FIELDS,
@@ -57,7 +57,7 @@ class FinetuneAdapter(TaskAdapter):
     def task_issues(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
     ) -> list[DecisionIssue]:
@@ -69,8 +69,9 @@ class FinetuneAdapter(TaskAdapter):
         issues.extend(config_summary_issues(recipe, config_summary))
         if config_summary:
             try:
+                summary: Any = config_summary
                 validate_finetune_runtime(
-                    recipe, recipe.get("runtime") or {}, config_summary.get("finetune", {}).get("task") or {}
+                    recipe, recipe.get("runtime") or {}, summary.get("finetune", {}).get("task") or {}
                 )
             except (TypeError, ValueError) as exc:
                 issues.append(
@@ -91,7 +92,7 @@ class FinetuneAdapter(TaskAdapter):
             issues.append(
                 needs_issue("external_test_locked", "external_test_locked must be explicit for finetune.", high_impact)
             )
-        data = config_summary.get("data", {}) if config_summary else {}
+        data: Any = config_summary.get("data", {}) if config_summary else {}
         if config_summary and config_summary.get("data_backend") == "npz":
             if not data.get("finetune_data_index") and not data.get("finetune_preset_path"):
                 issues.append(
@@ -145,7 +146,7 @@ class FinetuneAdapter(TaskAdapter):
     def preflight_issues(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         *,
         unlock_final_test: bool,
         output_dir: Path | None = None,
@@ -172,7 +173,7 @@ class FinetuneAdapter(TaskAdapter):
         issues = [*report.issues, *self.preflight_issues(recipe, None, unlock_final_test=False)]
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
 
-    def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
+    def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
         inputs = recipe_inputs(recipe)
         runtime = recipe.get("runtime")
         if not isinstance(runtime, dict):
