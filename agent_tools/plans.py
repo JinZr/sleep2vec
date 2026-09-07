@@ -1378,7 +1378,41 @@ def build_plan(
         )
 
 
-def _build_plan(  # noqa: C901
+def _prepare_plan_staging(
+    *,
+    out: Path,
+    root: Path,
+    staging_dir: str | Path | None,
+    defer_commit: bool,
+    plan_adapter: TaskAdapter | None,
+) -> tuple[Path, bool]:
+    write_out = out
+    generated_staging = False
+    if staging_dir is not None:
+        if out.exists() and not defer_commit:
+            raise ValueError(f"Atomic plan output already exists: {out}")
+        write_out = canonical_local_experiment_root(staging_dir, Path.cwd())
+        try:
+            write_out.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Atomic plan staging directory must be inside experiment.root: {write_out}") from exc
+        if write_out.is_symlink() or write_out.exists():
+            raise ValueError(f"Atomic plan staging directory must not exist: {write_out}")
+        write_out.mkdir(parents=True)
+    elif plan_adapter is not None:
+        staging_parent = out.parent
+        if os.path.lexists(out) and out.lstat().st_dev != out.parent.lstat().st_dev:
+            # A plan may itself be a mount point, so its parent is not always the destination filesystem.
+            staging_parent = out
+        while not os.path.lexists(staging_parent):
+            staging_parent = staging_parent.parent
+        write_out = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".staging", dir=staging_parent))
+        generated_staging = True
+
+    return write_out, generated_staging
+
+
+def _build_plan(
     *,
     recipe_path: str | Path,
     output_dir: str | Path,
@@ -1552,34 +1586,19 @@ def _build_plan(  # noqa: C901
     if run_index_offset is None:
         run_index_offset = _registered_plan_run_index(recipe, out)
 
-    write_out = out
-    generated_staging = False
     output_identity = None
     if plan_adapter is not None and os.path.lexists(out):
         output_stat = out.lstat()
         output_identity = (output_stat.st_dev, output_stat.st_ino)
     if defer_commit and staging_dir is None:
         raise ValueError("Deferred plan commit requires a staging directory.")
-    if staging_dir is not None:
-        if out.exists() and not defer_commit:
-            raise ValueError(f"Atomic plan output already exists: {out}")
-        write_out = canonical_local_experiment_root(staging_dir, Path.cwd())
-        try:
-            write_out.relative_to(root)
-        except ValueError as exc:
-            raise ValueError(f"Atomic plan staging directory must be inside experiment.root: {write_out}") from exc
-        if write_out.is_symlink() or write_out.exists():
-            raise ValueError(f"Atomic plan staging directory must not exist: {write_out}")
-        write_out.mkdir(parents=True)
-    elif plan_adapter is not None:
-        staging_parent = out.parent
-        if os.path.lexists(out) and out.lstat().st_dev != out.parent.lstat().st_dev:
-            # A plan may itself be a mount point, so its parent is not always the destination filesystem.
-            staging_parent = out
-        while not os.path.lexists(staging_parent):
-            staging_parent = staging_parent.parent
-        write_out = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".staging", dir=staging_parent))
-        generated_staging = True
+    write_out, generated_staging = _prepare_plan_staging(
+        out=out,
+        root=root,
+        staging_dir=staging_dir,
+        defer_commit=defer_commit,
+        plan_adapter=plan_adapter,
+    )
 
     if plan_adapter is not None and plan_adapter.materializes_plan:
         return _materialize_adapter_plan(
