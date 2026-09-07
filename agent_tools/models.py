@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-from typing import Any, TypeGuard
+from typing import Any, TypeGuard, overload
 
 import yaml
 
@@ -70,6 +70,14 @@ def json_ready(value: Any) -> Any:
     if hasattr(value, "tolist"):
         return value.tolist()
     return value
+
+
+@overload
+def repo_relative(path: Path) -> str: ...
+
+
+@overload
+def repo_relative(path: str | Path | None) -> str | None: ...
 
 
 def repo_relative(path: str | Path | None) -> str | None:

@@ -943,7 +943,7 @@ def build_context(
     if _has_output_artifact_issue(report):
         return report
     skill, relevant_docs = context.skill_context(task)
-    payload = {
+    payload: context.ContextPayload = {
         "task": task,
         "status": report.status.value,
         "can_generate_commands": report.exit_code == 0,

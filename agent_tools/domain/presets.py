@@ -4,12 +4,36 @@ import json
 from pathlib import Path
 import pickle
 import sys
-from typing import Any
+from typing import Any, TypedDict
 
 from ..models import REPO_ROOT, repo_relative, resolve_repo_path
 
 
-def preset_summary(preset_path: str | Path, *, local_path_base: str | Path | None = None) -> dict[str, Any]:
+class PresetBounds(TypedDict):
+    min_start: Any
+    max_end: Any
+
+
+class _PresetSummaryCore(TypedDict):
+    preset_path: str
+    samples: int
+    warnings: list[str]
+    blocking_issues: list[str]
+
+
+class PresetSummary(_PresetSummaryCore, total=False):
+    # These fields are absent when the preset cannot be loaded.
+    id_examples: list[Any]
+    path_examples: list[Any]
+    start_end: PresetBounds
+    metadata_keys: list[Any]
+    payload_keys: list[Any]
+    available_channels_counts: dict[str, int]
+    source_counts: dict[str, int]
+    sidecar_manifest: Any
+
+
+def preset_summary(preset_path: str | Path, *, local_path_base: str | Path | None = None) -> PresetSummary:
     resolved = resolve_repo_path(preset_path, relative_to=local_path_base)
     if resolved is None:
         raise FileNotFoundError("Preset path is required.")

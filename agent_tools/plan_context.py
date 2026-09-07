@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import yaml
 
@@ -10,10 +10,37 @@ from .adapters import all_adapters, get_adapter
 from .configs import config_summary, load_yaml
 from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
 from .decision_paths import path_context, path_validation
-from .domain.presets import preset_summary
+from .domain.index_csv import IndexSummary
+from .domain.presets import PresetSummary, preset_summary
 from .index_csv import index_summary
+from .markdown import ConsultationQuestion
 from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, SUPPORTED_VARIANTS, coerce_list, resolve_repo_path
 from .skills import list_skills
+
+
+class SummaryFailure(TypedDict):
+    blocking_issues: list[str]
+
+
+class ContextPayload(TypedDict):
+    task: str
+    status: str
+    can_generate_commands: bool
+    consultation_required: bool
+    questions: list[ConsultationQuestion]
+    repo: dict[str, Any]
+    skill: dict[str, Any]
+    owners: Any
+    relevant_docs: list[str]
+    inputs: dict[str, Any]
+    config_summary: dict[str, Any] | None
+    index_summary: IndexSummary | SummaryFailure | None
+    preset_summary: PresetSummary | SummaryFailure | None
+    expected_artifacts: list[dict[str, str]]
+    recommended_commands: list[str]
+    validation_commands: list[str]
+    warnings: list[str]
+    blocking_issues: list[str]
 
 
 def load_config_summary_for_recipe(
@@ -117,7 +144,7 @@ def context_index_summary(
     cfg: dict | None,
     *,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
-) -> dict | None:
+) -> IndexSummary | SummaryFailure | None:
     paths, config, split_values = index_summary_inputs(recipe, cfg)
     data = (cfg or {}).get("data") or {}
     uses_kaldi_manifest = bool(
@@ -193,12 +220,12 @@ def index_summary_issues(
     recipe: dict,
     cfg: dict | None,
     *,
-    index_payload: dict | None = None,
+    index_payload: IndexSummary | SummaryFailure | None = None,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
 ) -> list[DecisionIssue]:
     if index_payload is None:
         index_payload = context_index_summary(recipe, cfg, validated_sidecar_keys=validated_sidecar_keys)
-    blocking = (index_payload or {}).get("blocking_issues") or []
+    blocking = (index_payload.get("blocking_issues") or []) if index_payload is not None else []
     return [
         DecisionIssue(
             DecisionStatus.FAIL,
@@ -211,7 +238,7 @@ def index_summary_issues(
     ]
 
 
-def context_preset_summary(recipe: dict, cfg: dict | None) -> dict | None:
+def context_preset_summary(recipe: dict, cfg: dict | None) -> PresetSummary | SummaryFailure | None:
     preset_path = effective_preset_path(recipe, cfg)
     if preset_path in (None, ""):
         return None
@@ -242,7 +269,7 @@ def expected_context_artifacts(
     return expected
 
 
-def context_markdown(payload: dict) -> str:
+def context_markdown(payload: ContextPayload) -> str:
     lines = [f"# Agent Context: {payload['task']}", "", f"Status: {payload['status']}", ""]
     if payload["consultation_required"]:
         lines.extend(

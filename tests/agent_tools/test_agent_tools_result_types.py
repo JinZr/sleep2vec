@@ -56,6 +56,44 @@ def test_result_types_reach_callers(tmp_path: Path):
                     {}, Path("script"), "log", "pid", [], execution_snapshot=execution_snapshot,
                 )
 
+            from agent_tools.domain.index_csv import index_summary
+            from agent_tools.domain.presets import preset_summary
+            from agent_tools import plan_context, markdown
+            from agent_tools.decision_models import DecisionReport, DecisionStatus
+
+            index = index_summary([])
+            row_count: int = index["rows"]
+            label_count: int = index["label_presence"]["age"]["non_null"]
+            missing_paths: list[str] = index["sample_path_check"]["missing_examples"]
+            missing_paths = index["sample_path_check"]["checked"]  # type: ignore[assignment]
+            index["mask_columns"]["ppg"]["true_count"] = "1"  # type: ignore[typeddict-item]
+            index["numeric_shift_metrics"]["age"]["test_mean"] = "1"  # type: ignore[typeddict-item]
+            index["survival_covariates"]["age"]["missing_rows"] = "1"  # type: ignore[typeddict-item]
+            if index["survival_key"] is not None:
+                key_count: int | None = index["survival_key"]["sidecar_key_count"]
+                index["survival_key"]["missing_from_sidecars_examples"] = [1]  # type: ignore[list-item]
+            preset = preset_summary(Path("samples.pkl"))
+            sample_count: int = preset["samples"]
+            preset["source_counts"] = {"source": "1"}  # type: ignore[dict-item]
+            preset["sidecar_manifest"] = ["unvalidated", 1]
+            for summary in (
+                plan_context.context_index_summary({}, None),
+                plan_context.context_preset_summary({}, None),
+            ):
+                if summary is not None:
+                    errors: list[str] = summary["blocking_issues"]
+                    errors = summary["blocking_issues"][0]  # type: ignore[assignment]
+            questions = markdown.questions_payload(DecisionReport(status=DecisionStatus.FAIL))
+            question_text: str | None = questions[0]["question"]
+            questions[0]["field"] = 1  # type: ignore[typeddict-item]
+
+            def consume_context(context: plan_context.ContextPayload) -> str:
+                allowed: bool = context["can_generate_commands"]
+                commands: list[str] = context["recommended_commands"]
+                context["questions"][0]["message"] = 1  # type: ignore[typeddict-item]
+                context["recommended_commands"] = [1]  # type: ignore[list-item]
+                return plan_context.context_markdown(context)
+
             minimal_snapshot: managed_scheduler.ExecutionSnapshot = {
                 "module": "runtime_cli", "module_origin": "/runtime_cli.py",
             }
