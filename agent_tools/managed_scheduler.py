@@ -845,18 +845,14 @@ def _managed_launch_preflight(
     return snapshot_path, expected_keys, workspace_by_key
 
 
-def _launch_slurm_runs(  # noqa: C901
+def _preflight_slurm_launch(
     workspace: Path,
     owner_dir: Path,
     runs: list[dict[str, Any]],
-    execution: dict[str, Any],
     *,
     dry_run: bool,
-    runtime_output_fields: tuple[str, ...],
-    runtime_output_root: str | Path | None,
-    projection_writer: Callable[[LaunchResult], None] | None,
     hooks: SchedulerHooks,
-) -> LaunchResult:
+) -> tuple[Path, dict[RunKey, dict[str, Any]]]:
     snapshot_path, expected_keys, workspace_by_key = _managed_launch_preflight(workspace, owner_dir, runs)
     missing = expected_keys - set(workspace_by_key)
     if missing:
@@ -892,6 +888,22 @@ def _launch_slurm_runs(  # noqa: C901
             {field: run[field] for field in planned_fields if field in run},
             allow_execution_identity_fill=True,
         )
+    return snapshot_path, workspace_by_key
+
+
+def _launch_slurm_runs(
+    workspace: Path,
+    owner_dir: Path,
+    runs: list[dict[str, Any]],
+    execution: dict[str, Any],
+    *,
+    dry_run: bool,
+    runtime_output_fields: tuple[str, ...],
+    runtime_output_root: str | Path | None,
+    projection_writer: Callable[[LaunchResult], None] | None,
+    hooks: SchedulerHooks,
+) -> LaunchResult:
+    snapshot_path, workspace_by_key = _preflight_slurm_launch(workspace, owner_dir, runs, dry_run=dry_run, hooks=hooks)
 
     status_changes: dict[RunKey, tuple[Any, Any]] = {}
     if not dry_run:
