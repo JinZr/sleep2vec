@@ -9,7 +9,7 @@ from data.whole_night_index import validate_whole_night_index
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from ..experiment_workspace import experiment_root
-from ..models import REPO_ROOT, SUPPORTED_VARIANTS, coerce_list, resolve_repo_path
+from ..models import REPO_ROOT, SUPPORTED_VARIANTS, ConfigSummaryInput, coerce_list, resolve_repo_path
 from ..plan_rendering import render_command, variant_module
 from .base import TaskAdapter
 
@@ -30,7 +30,7 @@ def _fail(field: str, message: str, value: Any = None) -> DecisionIssue:
 
 
 def _config_compatibility_issues(
-    config_summary: dict[str, Any] | None,
+    config_summary: ConfigSummaryInput | None,
     model: dict[str, Any],
     model_channels: set[Any],
 ) -> list[DecisionIssue]:
@@ -51,7 +51,7 @@ def _config_compatibility_issues(
                 )
             )
         if config_summary.get("is_finetune") is True:
-            data = config_summary.get("data") or {}
+            data: Any = config_summary.get("data") or {}
             if data.get("finetune_preset_path"):
                 issues.append(
                     _fail(
@@ -126,7 +126,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         return paths
 
     def config_override_issues(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue] | None:
         variant = recipe.get("variant")
         config_bytes = (config_summary or {}).get("_source_config_bytes")
@@ -151,7 +151,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
     def task_issues(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
     ) -> list[DecisionIssue]:
@@ -161,7 +161,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         runtime = _mapping(recipe, "runtime")
         artifacts = _mapping(recipe, "artifacts")
         evaluation = _mapping(recipe, "evaluation_policy")
-        model = (config_summary or {}).get("model") or {}
+        model: Any = (config_summary or {}).get("model") or {}
         model_channels = {
             item.get("name") for item in model.get("channels", []) if isinstance(item, dict) and item.get("name")
         }
@@ -317,7 +317,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         return issues
 
     def configured_input_issues(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue]:
         inputs = _mapping(recipe, "inputs")
         extraction = _mapping(recipe, "extraction")
@@ -336,7 +336,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         if not index_paths or any(path is None or not path.is_file() for path in index_paths):
             return []
         try:
-            data = (config_summary or {}).get("data") or {}
+            data: Any = (config_summary or {}).get("data") or {}
             source_field = "test_dataset_names" if eval_split == "test" else "train_dataset_names"
             validate_whole_night_index(
                 authored_index_paths,
@@ -352,7 +352,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
     def preflight_issues(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         *,
         unlock_final_test: bool,
         output_dir: Path | None = None,
@@ -399,7 +399,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
                     ]
         return []
 
-    def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
+    def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
         inputs = _mapping(recipe, "inputs")
         extraction = _mapping(recipe, "extraction")
         runtime = _mapping(recipe, "runtime")
@@ -442,14 +442,16 @@ class EmbeddingExtractionAdapter(TaskAdapter):
             )
         ]
 
-    def expected_artifacts(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[dict[str, str]]:
+    def expected_artifacts(
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
+    ) -> list[dict[str, str]]:
         embedding_dir = _mapping(recipe, "artifacts").get("embedding_dir")
         if embedding_dir in (None, "", "ASK_USER"):
             return []
         return [{"name": "embedding_manifest", "path": str(Path(str(embedding_dir)) / "manifest.json")}]
 
     def index_summary_inputs_override(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> tuple[list[Any], Any, list[Any]] | None:
         if recipe.get("task") != self.task:
             return None

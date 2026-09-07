@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-from typing import Any, TypeGuard, overload
+from typing import Any, Final, TypedDict, TypeGuard, overload
 
 import yaml
 
@@ -13,8 +13,253 @@ VARIANTLESS_TASKS = {"sleep2stat"}
 # task name but is config vocabulary, not task dispatch (the adapter leak
 # guard matches raw task-name constants, so kernel modules read the section
 # through this constant).
-CONFIG_FINETUNE_SECTION = "finetune"
+CONFIG_FINETUNE_SECTION: Final = "finetune"
 _FULL_GIT_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}")
+
+
+class _ConfigProvenance(TypedDict, total=False):
+    authoritative_variant: str
+    _source_config_bytes: bytes
+    _source_config_sha256: str
+
+
+class ConfigDiagnostics(_ConfigProvenance):
+    config_path: str
+    data_backend: Any
+    warnings: list[str]
+    blocking_issues: list[str]
+
+
+class SidecarDiagnostics(TypedDict):
+    key_column: Any
+    disease_columns_index: Any
+    has_label_index: Any
+    output_dim: Any
+    valid: bool
+    disease_count: int | None
+    sidecar_key_count: int | None
+    issues: list[str]
+
+
+class SurvivalSummary(SidecarDiagnostics):
+    event_time_index: Any
+    is_event_index: Any
+    covariates: Any
+    covariate_embedding_dim: Any
+
+
+class MultilabelSummary(SidecarDiagnostics):
+    label_index: Any
+
+
+class ChannelSummary(TypedDict):
+    name: Any
+    input_dim: Any
+    tokenizer: Any
+    out_dim: Any
+
+
+class TaskSummary(TypedDict):
+    type: Any
+    output_dim: Any
+    is_seq: Any
+    monitor: Any
+    monitor_mod: Any
+
+
+class _OptionalSidecarSummaries(TypedDict, total=False):
+    survival: SurvivalSummary
+    multilabel: MultilabelSummary
+
+
+class TaskConfigSummary(_OptionalSidecarSummaries):
+    task: TaskSummary
+    loss: dict[str, Any]
+
+
+class FinetuneTaskSummary(TaskConfigSummary):
+    tuning: dict[str, Any]
+    tuning_present: bool
+
+
+class AggregationSummary(TypedDict):
+    name: Any
+    kwargs: dict[str, Any]
+
+
+class HeadSummary(TypedDict):
+    name: Any
+    dropout: Any
+    hidden_dim: Any
+    kwargs: dict[str, Any]
+    channel_agg: AggregationSummary
+    temporal_agg: AggregationSummary
+
+
+class AveragingSummary(TypedDict):
+    present: bool
+    name: Any
+    enabled: Any
+
+
+class ClsSummary(TypedDict):
+    embedding_type: Any
+    downstream: Any
+
+
+class NamedComponentSummary(TypedDict):
+    name: Any
+
+
+class FinetuneModelSummary(TypedDict):
+    backbone: Any
+    hidden_size: Any
+    backbone_depth: Any
+    channels: list[ChannelSummary]
+    cls: ClsSummary
+    head: NamedComponentSummary
+    head_details: HeadSummary
+    layer_mix_present: bool
+    layer_mix: dict[str, Any]
+    model_averaging: AveragingSummary
+
+
+class FinetuneDataSummary(TypedDict):
+    max_tokens: Any
+    data_channel_names: list[Any]
+    finetune_data_index: Any
+    finetune_preset_path: Any
+    train_dataset_names: list[Any]
+    test_dataset_names: list[Any]
+    kaldi_data_root: Any
+    kaldi_manifest: Any
+
+
+class PresetBuildSummary(TypedDict):
+    required_channels: Any
+    min_channels: Any
+
+
+class FinetuneConfigSummary(ConfigDiagnostics):
+    variant_guess: str
+    is_finetune: bool
+    is_pretrain: bool
+    model: FinetuneModelSummary
+    data: FinetuneDataSummary
+    finetune: FinetuneTaskSummary
+    preset_build: PresetBuildSummary
+    plausible_labels: list[str]
+
+
+class EmptySummary(TypedDict):
+    pass
+
+
+class _SexAgeModelDetails(TypedDict, total=False):
+    encodings: dict[str, dict[str, Any]]
+    head_details: dict[str, Any]
+
+
+class SexAgeModelSummary(_SexAgeModelDetails):
+    name: str
+    features: list[str]
+
+
+class SexAgeDataSummary(TypedDict):
+    backend: str
+    finetune_data_index: str | None
+    finetune_preset_path: str | None
+    kaldi_data_root: str | None
+    kaldi_manifest: str | None
+    split_column: str
+    key_column: str
+    deduplicate_by_key: bool
+    sample_unit: str
+
+
+class SexAgeConfigSummary(ConfigDiagnostics):
+    variant_guess: str
+    is_finetune: bool
+    is_pretrain: bool
+    model: SexAgeModelSummary
+    data: SexAgeDataSummary | EmptySummary
+    finetune: TaskConfigSummary | EmptySummary
+    preset_build: EmptySummary
+    plausible_labels: list[str]
+
+
+class AnalyzerSummary(TypedDict):
+    name: str
+    type: str
+    enabled: bool
+    namespace: str | None
+    label_name: str | None
+    config: str | None
+    ckpt_path: str | None
+    input_channels: list[str]
+    stage_source: str | None
+    event_source: str | None
+
+
+class ReducerSummary(TypedDict):
+    name: str
+    type: str
+    enabled: bool
+    source: str | None
+    left: str | None
+    right: str | None
+    age_prediction: str | None
+    sex_prediction: str | None
+    metadata_age_column: str
+    metadata_sex_column: str
+    options: dict[str, Any]
+
+
+class Sleep2statRunSummary(TypedDict):
+    name: str
+    output_dir: str
+
+
+class Sleep2statDataSummary(TypedDict):
+    backend: str
+    index: str | None
+    kaldi_data_root: str | None
+    kaldi_manifest: str | None
+    split: list[str]
+    metadata_columns: list[str]
+    token_sec: int
+    max_tokens: int
+
+
+class Sleep2statOutputSummary(TypedDict):
+    write_global_tables: bool
+    write_per_record: bool
+    compression: str
+    global_tables: dict[str, bool]
+
+
+class SupportedAnalysisTypes(TypedDict):
+    supported_analyzer_types: list[str]
+    supported_reducer_types: list[str]
+
+
+class Sleep2statSummary(SupportedAnalysisTypes, total=False):
+    # A failed config load reports supported types without resolved configuration.
+    run: Sleep2statRunSummary
+    data: Sleep2statDataSummary
+    analyzers: list[AnalyzerSummary]
+    reducers: list[ReducerSummary]
+    outputs: Sleep2statOutputSummary
+
+
+class Sleep2statConfigSummary(ConfigDiagnostics):
+    is_sleep2stat: bool
+    sleep2stat: Sleep2statSummary
+    agent_risk_issues: list[str]
+
+
+ConfigSummary = FinetuneConfigSummary | SexAgeConfigSummary | Sleep2statConfigSummary
+ConfigSummaryInput = ConfigSummary | dict[str, Any]
 
 
 def is_full_git_object_id(value: Any) -> TypeGuard[str]:

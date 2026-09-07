@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import yaml
 
@@ -21,6 +21,23 @@ REQUIRED_HEADINGS = (
 )
 
 
+class SkillSummary(TypedDict):
+    name: Any
+    path: Any
+    task_types: Any
+    owners: Any
+    relevant_index: Any
+
+
+class SkillValidationStatus(TypedDict):
+    ok: bool
+    issues: list[str]
+
+
+class SkillValidationResult(SkillValidationStatus, total=False):
+    skills: list[SkillSummary]
+
+
 def load_manifest(path: Path | None = None) -> dict[str, Any]:
     manifest_path = path or REPO_ROOT / "skills" / "manifest.yaml"
     data = yaml.safe_load(manifest_path.read_text())
@@ -29,7 +46,7 @@ def load_manifest(path: Path | None = None) -> dict[str, Any]:
     return data
 
 
-def list_skills() -> list[dict[str, Any]]:
+def list_skills() -> list[SkillSummary]:
     manifest = load_manifest()
     skills = manifest.get("skills") or {}
     return [
@@ -44,7 +61,7 @@ def list_skills() -> list[dict[str, Any]]:
     ]
 
 
-def validate_skills() -> dict[str, Any]:
+def validate_skills() -> SkillValidationResult:
     issues: list[str] = []
     manifest_path = REPO_ROOT / "skills" / "manifest.yaml"
     if not manifest_path.exists():

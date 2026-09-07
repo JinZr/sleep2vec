@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, NamedTuple
 
 from ..domain.sex_age_summary import _looks_like_sex_age_baseline_config_data, sex_age_baseline_config_summary
+from ..models import SexAgeConfigSummary
 
 
 class ConfigSummaryProvider(NamedTuple):
@@ -12,7 +13,7 @@ class ConfigSummaryProvider(NamedTuple):
     #: Config-shape probe on the raw loaded mapping.
     matches: Callable[[dict[str, Any]], bool]
     #: Produce the structured summary for a resolved config path.
-    summarize: Callable[..., dict[str, Any]]
+    summarize: Callable[..., SexAgeConfigSummary]
 
 
 CONFIG_SUMMARY_PROVIDERS: tuple[ConfigSummaryProvider, ...] = (

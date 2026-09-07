@@ -3,7 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..models import CONFIG_FINETUNE_SECTION, load_yaml, repo_relative, resolve_repo_path
+from ..models import (
+    CONFIG_FINETUNE_SECTION,
+    ChannelSummary,
+    FinetuneConfigSummary,
+    FinetuneTaskSummary,
+    load_yaml,
+    repo_relative,
+    resolve_repo_path,
+)
 from .sidecar_summaries import multilabel_summary, survival_summary
 
 BUILTIN_LABELS = ("stage3", "stage4", "stage5", "ahi", "sex", "age")
@@ -20,7 +28,7 @@ def guess_variant(config_path: str | Path) -> str:
     return "sleep2vec"
 
 
-def _channel_summary(item: dict[str, Any]) -> dict[str, Any]:
+def _channel_summary(item: dict[str, Any]) -> ChannelSummary:
     tokenizer_value = item.get("tokenizer")
     tokenizer = tokenizer_value if isinstance(tokenizer_value, dict) else {}
     return {
@@ -37,7 +45,7 @@ def finetune_summary_body(
     validate_survival_local_paths: bool = True,
     local_path_base: str | Path | None = None,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
-) -> dict[str, Any]:
+) -> FinetuneConfigSummary:
     resolved = resolve_repo_path(config_path)
     if resolved is None:
         raise FileNotFoundError("Config path is required.")
@@ -51,7 +59,7 @@ def finetune_summary_body(
     # them while the summary still reports `is_finetune: true`.
     raw_finetune = data.get(CONFIG_FINETUNE_SECTION)
     is_finetune = isinstance(raw_finetune, dict)
-    finetune = raw_finetune if isinstance(raw_finetune, dict) else {}
+    finetune: Any = raw_finetune if isinstance(raw_finetune, dict) else {}
     task_value = finetune.get("task")
     task = task_value if isinstance(task_value, dict) else {}
     survival = survival_summary(
@@ -78,9 +86,9 @@ def finetune_summary_body(
         field: raw_head_kwargs[field] for field in ("attn_dropout", "temporal_dropout") if field in raw_head_kwargs
     }
     temporal_agg_value = head.get("temporal_agg")
-    temporal_agg = temporal_agg_value if isinstance(temporal_agg_value, dict) else {}
+    temporal_agg: Any = temporal_agg_value if isinstance(temporal_agg_value, dict) else {}
     channel_agg_value = head.get("channel_agg")
-    channel_agg = channel_agg_value if isinstance(channel_agg_value, dict) else {}
+    channel_agg: Any = channel_agg_value if isinstance(channel_agg_value, dict) else {}
     layer_mix_value = finetune.get("layer_mix")
     layer_mix = layer_mix_value if isinstance(layer_mix_value, dict) else {}
     tuning_value = finetune.get("tuning")
@@ -128,7 +136,7 @@ def finetune_summary_body(
     if model_channel_names == ["ppg"] and is_finetune and "required_channels" not in preset_build:
         warnings.append("single-channel PPG finetune config has no preset_build.required_channels.")
 
-    finetune_summary = {
+    finetune_summary: FinetuneTaskSummary = {
         "task": {
             "type": task.get("type"),
             "output_dim": task.get("output_dim"),
@@ -145,7 +153,7 @@ def finetune_summary_body(
     if multilabel is not None:
         finetune_summary["multilabel"] = multilabel
 
-    summary: dict[str, Any] = {
+    summary: FinetuneConfigSummary = {
         "config_path": repo_relative(resolved),
         "variant_guess": guess_variant(resolved),
         "is_finetune": is_finetune,

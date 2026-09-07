@@ -9,7 +9,7 @@ from ..decision_paths import (
     sex_age_pretrained_backbone_issue,
     survival_sidecar_issue,
 )
-from ..models import coerce_list
+from ..models import ConfigSummaryInput, coerce_list
 from ..plan_rendering import (
     INFER_RUNTIME_FIELDS,
     infer_input_cli_args,
@@ -86,7 +86,7 @@ class InferEvaluateAdapter(TaskAdapter):
     def bind_effective_recipe(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         *,
         source_recipe: dict[str, Any] | None = None,
     ) -> list[DecisionIssue]:
@@ -124,7 +124,7 @@ class InferEvaluateAdapter(TaskAdapter):
     def task_issues(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
     ) -> list[DecisionIssue]:
@@ -193,7 +193,7 @@ class InferEvaluateAdapter(TaskAdapter):
             issues.append(multilabel_issue)
         return issues
 
-    def commands(self, recipe: dict[str, Any], config_summary: dict[str, Any] | None) -> list[str]:
+    def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
         inputs = recipe_inputs(recipe)
         runtime = recipe.get("runtime")
         if not isinstance(runtime, dict):

@@ -63,7 +63,7 @@ from .experiment_workspace import (
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import REPO_ROOT, json_ready, resolve_repo_path
+from .models import REPO_ROOT, ConfigSummaryInput, json_ready, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions
 
 
@@ -314,7 +314,7 @@ def evaluate_recipe(  # noqa: C901
     user_decisions_path: str | Path | None = None,
     *,
     check_existing_experiment: bool = False,
-) -> tuple[dict, dict | None, DecisionReport]:
+) -> tuple[dict, ConfigSummaryInput | None, DecisionReport]:
     """Evaluate recipe decisions and return (recipe, config summary, consultation report).
 
     Early recipe-contract blockers return before decisions or defaults are
@@ -445,6 +445,7 @@ def evaluate_recipe(  # noqa: C901
     if source_config_path is not None and source_config_path.is_file():
         source_config_bytes = source_config_path.read_bytes()
 
+    cfg: ConfigSummaryInput | None
     config_error = None
     validated_sidecar_keys: dict[str, set[str]] = {}
     try:
@@ -467,9 +468,10 @@ def evaluate_recipe(  # noqa: C901
         except OSError:
             config_changed_during_validation = True
         if cfg is not None and not config_changed_during_validation:
-            cfg = dict(cfg)
-            cfg["_source_config_bytes"] = source_config_bytes
-            cfg["_source_config_sha256"] = hashlib.sha256(source_config_bytes).hexdigest()
+            bound_cfg = dict(cfg)
+            bound_cfg["_source_config_bytes"] = source_config_bytes
+            bound_cfg["_source_config_sha256"] = hashlib.sha256(source_config_bytes).hexdigest()
+            cfg = bound_cfg
     consultation_cfg = dict(cfg) if cfg is not None else None
     if consultation_cfg is not None:
         consultation_cfg.pop("_source_config_bytes", None)
@@ -510,7 +512,8 @@ def evaluate_recipe(  # noqa: C901
     ):
         required_channels = user_decisions.get("required_channels", recipe_decisions.get("required_channels"))
         required_channels_value = _decision_value(required_channels)
-        config_required_channels = (cfg.get("preset_build") or {}).get("required_channels")
+        preset_build_summary: Any = cfg.get("preset_build") or {}
+        config_required_channels = preset_build_summary.get("required_channels")
         if (
             required_channels is not None
             and required_channels_value not in (None, "", "ASK_USER")
@@ -562,7 +565,7 @@ def evaluate_recipe(  # noqa: C901
         config_contracts = {}
         for field, decision_value in decision_values.items():
             spec = schema_map.CONFIG_FIELDS[field]
-            node = cfg
+            node: Any = cfg
             for part in spec.summary_path[:-1]:
                 node = node.get(part, {})
             config_value = node.get(spec.summary_path[-1])
@@ -990,7 +993,7 @@ def build_context(
 
 def _validate_bound_recipe(
     recipe: dict[str, Any],
-    cfg: dict[str, Any] | None,
+    cfg: ConfigSummaryInput | None,
     report: DecisionReport,
     out: Path,
     *,
@@ -1762,7 +1765,7 @@ def preflight_plan(
     unlock_final_test: bool = False,
     allow_existing_output_artifacts: bool = False,
     allow_adaptive_workflow: bool = False,
-) -> tuple[dict, dict | None, DecisionReport]:
+) -> tuple[dict, ConfigSummaryInput | None, DecisionReport]:
     """Check whether a recipe can be published at output_dir, without publishing it.
 
     Returns (recipe, optional config summary, DecisionReport), retaining
@@ -1967,7 +1970,7 @@ def _wandb_summary_for_run(run_dir: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _commands_for_recipe(recipe: dict, cfg: dict | None = None) -> list[str]:
+def _commands_for_recipe(recipe: dict, cfg: ConfigSummaryInput | None = None) -> list[str]:
     task = recipe.get("task")
     adapter = get_adapter(task)
     if adapter is not None:

@@ -13,12 +13,27 @@ from .decision_paths import path_context, path_validation
 from .domain.presets import PresetSummary, preset_summary
 from .index_csv import IndexSummary, index_summary
 from .markdown import ConsultationQuestion
-from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, SUPPORTED_VARIANTS, coerce_list, resolve_repo_path
+from .models import (
+    CONFIG_FINETUNE_SECTION,
+    REPO_ROOT,
+    SUPPORTED_VARIANTS,
+    ConfigSummary,
+    ConfigSummaryInput,
+    coerce_list,
+    resolve_repo_path,
+)
+from .repo import RepoSummary
 from .skills import list_skills
 
 
 class SummaryFailure(TypedDict):
     blocking_issues: list[str]
+
+
+class ContextSkill(TypedDict):
+    name: Any
+    path: Any
+    owners: Any
 
 
 class ContextPayload(TypedDict):
@@ -27,12 +42,12 @@ class ContextPayload(TypedDict):
     can_generate_commands: bool
     consultation_required: bool
     questions: list[ConsultationQuestion]
-    repo: dict[str, Any]
-    skill: dict[str, Any]
+    repo: RepoSummary
+    skill: ContextSkill
     owners: Any
-    relevant_docs: list[str]
+    relevant_docs: Any
     inputs: dict[str, Any]
-    config_summary: dict[str, Any] | None
+    config_summary: ConfigSummary | None
     index_summary: IndexSummary | SummaryFailure | None
     preset_summary: PresetSummary | SummaryFailure | None
     expected_artifacts: list[dict[str, str]]
@@ -47,7 +62,7 @@ def load_config_summary_for_recipe(
     *,
     config_bytes: bytes | None = None,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
-) -> dict | None:
+) -> ConfigSummary | None:
     inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
     config = inputs.get("config")
     if not config:
@@ -128,7 +143,7 @@ def validation_commands(recipe: dict) -> list[str]:
     return commands
 
 
-def skill_context(task: str) -> tuple[dict[str, Any], list[str]]:
+def skill_context(task: str) -> tuple[ContextSkill, Any]:
     for skill in list_skills():
         if task in skill.get("task_types", []):
             return (
@@ -140,17 +155,17 @@ def skill_context(task: str) -> tuple[dict[str, Any], list[str]]:
 
 def context_index_summary(
     recipe: dict,
-    cfg: dict | None,
+    cfg: ConfigSummaryInput | None,
     *,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
 ) -> IndexSummary | SummaryFailure | None:
     paths, config, split_values = index_summary_inputs(recipe, cfg)
-    data = (cfg or {}).get("data") or {}
+    data: Any = (cfg or {}).get("data") or {}
     uses_kaldi_manifest = bool(
         cfg and cfg.get("authoritative_variant") == "sex_age_baseline" and data.get("backend") == "kaldi"
     )
     preset_path = effective_preset_path(recipe, cfg)
-    finetune = (cfg or {}).get(CONFIG_FINETUNE_SECTION) or {}
+    finetune: Any = (cfg or {}).get(CONFIG_FINETUNE_SECTION) or {}
     task_type = (finetune.get("task") or {}).get("type")
     label_sidecars_valid = False
     if task_type == "survival":
@@ -200,7 +215,7 @@ def context_index_summary(
         return {"blocking_issues": [f"Failed to summarize index: {exc}"]}
 
 
-def index_summary_inputs(recipe: dict, cfg: dict | None) -> tuple[list[Any], Any, list[Any]]:
+def index_summary_inputs(recipe: dict, cfg: ConfigSummaryInput | None) -> tuple[list[Any], Any, list[Any]]:
     inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
     config = inputs.get("config")
     for adapter in all_adapters():
@@ -210,14 +225,14 @@ def index_summary_inputs(recipe: dict, cfg: dict | None) -> tuple[list[Any], Any
 
     paths = coerce_list(inputs.get("index"))
     if not paths and cfg:
-        data = cfg.get("data") or {}
+        data: Any = cfg.get("data") or {}
         paths = coerce_list(data.get("finetune_data_index"))
     return paths, config, []
 
 
 def index_summary_issues(
     recipe: dict,
-    cfg: dict | None,
+    cfg: ConfigSummaryInput | None,
     *,
     index_payload: IndexSummary | SummaryFailure | None = None,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
@@ -237,7 +252,7 @@ def index_summary_issues(
     ]
 
 
-def context_preset_summary(recipe: dict, cfg: dict | None) -> PresetSummary | SummaryFailure | None:
+def context_preset_summary(recipe: dict, cfg: ConfigSummaryInput | None) -> PresetSummary | SummaryFailure | None:
     preset_path = effective_preset_path(recipe, cfg)
     if preset_path in (None, ""):
         return None
@@ -247,13 +262,13 @@ def context_preset_summary(recipe: dict, cfg: dict | None) -> PresetSummary | Su
         return {"blocking_issues": [f"Failed to summarize preset: {exc}"]}
 
 
-def effective_preset_path(recipe: dict, cfg: dict | None) -> Any:
+def effective_preset_path(recipe: dict, cfg: ConfigSummaryInput | None) -> Any:
     adapter = get_adapter(recipe.get("task"))
     return adapter.effective_preset_path(recipe, cfg) if adapter is not None else None
 
 
 def expected_context_artifacts(
-    recipe: dict, cfg: dict | None, out: Path, report: DecisionReport
+    recipe: dict, cfg: ConfigSummaryInput | None, out: Path, report: DecisionReport
 ) -> list[dict[str, str]]:
     artifacts = recipe["artifacts"] if isinstance(recipe.get("artifacts"), dict) else {}
     expected = [

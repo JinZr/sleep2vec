@@ -10,7 +10,7 @@ from typing import Any, TypedDict
 import pandas as pd
 
 from ..configs import config_summary
-from ..models import repo_relative, resolve_repo_path
+from ..models import ConfigSummaryInput, repo_relative, resolve_repo_path
 
 
 class LabelPresence(TypedDict):
@@ -85,7 +85,7 @@ class IndexSummary(IndexStatistics):
 
 def _index_statistics(
     df: pd.DataFrame,
-    cfg: dict[str, Any] | None,
+    cfg: ConfigSummaryInput | None,
     *,
     label_name: str | None,
     split_column: str,
@@ -117,7 +117,8 @@ def _index_statistics(
             }
     channel_coverage: dict[str, ChannelCoverage] = {}
     if cfg:
-        for channel in (cfg.get("data") or {}).get("data_channel_names", []):
+        data: Any = cfg.get("data") or {}
+        for channel in data.get("data_channel_names", []):
             if channel == "stage5":
                 mask_column = "stage_mask"
             elif channel == "ahi":
@@ -178,8 +179,9 @@ def index_summary(
     preset_path: str | Path | None = None,
     sample_path_check: int = 0,
     sample_npz_check: int = 0,
-    validated_summary: tuple[dict[str, Any], dict[str, set[str]]] | None = None,
+    validated_summary: tuple[ConfigSummaryInput, dict[str, set[str]]] | None = None,
 ) -> IndexSummary:
+    cfg: ConfigSummaryInput | None
     resolved_paths = [resolve_repo_path(path, relative_to=local_path_base) for path in index_paths]
     paths = [path for path in resolved_paths if path is not None]
     if validated_summary is None:
@@ -193,7 +195,7 @@ def index_summary(
     survival_key_column = _survival_key_column(cfg)
     survival_covariate_names = _survival_covariates(cfg)
     multilabel_key_column = _multilabel_key_column(cfg)
-    data_summary = (cfg or {}).get("data") or {}
+    data_summary: Any = (cfg or {}).get("data") or {}
     split_column = str(data_summary.get("split_column") or "split")
     read_csv_kwargs: dict[str, Any] = {"low_memory": False}
     converters = {key_column: str for key_column in (survival_key_column, multilabel_key_column) if key_column}
@@ -219,10 +221,11 @@ def index_summary(
     df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
     df = _filter_splits(df, split_values, split_column=split_column)
     if cfg and cfg.get("authoritative_variant") == "sex_age_baseline":
+        summary: Any = cfg
         required_names: tuple[str, ...] = (
             data_summary.get("key_column") or "eid",
             split_column,
-            *((cfg.get("model") or {}).get("features") or []),
+            *((summary.get("model") or {}).get("features") or []),
             *(("path", "token_start") if data_summary.get("deduplicate_by_key") is False else ()),
         )
     else:
@@ -246,12 +249,13 @@ def index_summary(
         if not exists:
             blocking_issues.append(f"Index CSV missing required column: {column}")
     if cfg and cfg.get("authoritative_variant") == "sex_age_baseline":
+        summary = cfg
         blocking_issues.extend(
             _sex_age_metadata_value_issues(
                 df,
                 key_column=str(data_summary.get("key_column") or "eid"),
                 split_column=split_column,
-                features=(cfg.get("model") or {}).get("features", []),
+                features=(summary.get("model") or {}).get("features", []),
             )
         )
         blocking_issues.extend(_sex_age_requested_split_issues(df, split_values, split_column=split_column))
@@ -320,24 +324,26 @@ def index_summary(
     }
 
 
-def _survival_key_column(cfg: dict[str, Any] | None) -> str | None:
+def _survival_key_column(cfg: ConfigSummaryInput | None) -> str | None:
     if not cfg:
         return None
-    task = (cfg.get("finetune") or {}).get("task") or {}
-    survival = (cfg.get("finetune") or {}).get("survival") or {}
+    finetune_value: Any = cfg.get("finetune") or {}
+    task = finetune_value.get("task") or {}
+    finetune_value = cfg.get("finetune") or {}
+    survival = finetune_value.get("survival") or {}
     key_column = survival.get("key_column")
     if task.get("type") != "survival" or key_column in (None, ""):
         return None
     return str(key_column)
 
 
-def _uses_sex_age_kaldi_manifest(cfg: dict[str, Any] | None) -> bool:
-    data = (cfg or {}).get("data") or {}
+def _uses_sex_age_kaldi_manifest(cfg: ConfigSummaryInput | None) -> bool:
+    data: Any = (cfg or {}).get("data") or {}
     return bool(cfg and cfg.get("authoritative_variant") == "sex_age_baseline" and data.get("backend") == "kaldi")
 
 
-def _uses_sex_age_preset_metadata(cfg: dict[str, Any] | None, preset_path: str | Path | None) -> bool:
-    data = (cfg or {}).get("data") or {}
+def _uses_sex_age_preset_metadata(cfg: ConfigSummaryInput | None, preset_path: str | Path | None) -> bool:
+    data: Any = (cfg or {}).get("data") or {}
     return bool(
         cfg
         and cfg.get("authoritative_variant") == "sex_age_baseline"
@@ -347,7 +353,7 @@ def _uses_sex_age_preset_metadata(cfg: dict[str, Any] | None, preset_path: str |
 
 
 def _sex_age_preset_frames(
-    cfg: dict[str, Any] | None,
+    cfg: ConfigSummaryInput | None,
     preset_path: str | Path | None,
     *,
     local_path_base: str | Path | None = None,
@@ -362,7 +368,7 @@ def _sex_age_preset_frames(
     except Exception as exc:
         return [], [resolved], [], [f"Failed to read preset: {exc}"]
 
-    data = (cfg or {}).get("data") or {}
+    data: Any = (cfg or {}).get("data") or {}
     key_column = str(data.get("key_column") or "eid")
     split_column = str(data.get("split_column") or "split")
     rows = []
@@ -370,11 +376,12 @@ def _sex_age_preset_frames(
         metadata = getattr(sample, "metadata", None)
         if not isinstance(metadata, dict):
             return [], [resolved], [], ["Sex/age baseline preset entries must expose a metadata mapping."]
+        summary: Any = cfg
         rows.append(
             {
                 key_column: metadata.get(key_column),
                 split_column: metadata.get(split_column),
-                **{name: metadata.get(name) for name in ((cfg or {}).get("model") or {}).get("features", [])},
+                **{name: metadata.get(name) for name in ((summary or {}).get("model") or {}).get("features", [])},
                 "path": getattr(sample, "path", None),
                 "token_start": getattr(sample, "start", None),
             }
@@ -451,13 +458,13 @@ def _blank_values(values: pd.Series) -> pd.Series:
 
 
 def _kaldi_manifest_frames(
-    cfg: dict[str, Any] | None,
+    cfg: ConfigSummaryInput | None,
     *,
     split_column: str,
     read_csv_kwargs: dict[str, Any],
     local_path_base: str | Path | None = None,
 ) -> tuple[list[pd.DataFrame], list[Path], list[str], list[str]]:
-    data = (cfg or {}).get("data") or {}
+    data: Any = (cfg or {}).get("data") or {}
     root = resolve_repo_path(data.get("kaldi_data_root"), relative_to=local_path_base)
     manifest_path = resolve_repo_path(data.get("kaldi_manifest"), relative_to=local_path_base)
     issues: list[str] = []
@@ -495,32 +502,39 @@ def _kaldi_manifest_frames(
     return frames, paths, missing_inputs, issues
 
 
-def _survival_covariates(cfg: dict[str, Any] | None) -> list[str]:
+def _survival_covariates(cfg: ConfigSummaryInput | None) -> list[str]:
     if not cfg:
         return []
-    task = (cfg.get("finetune") or {}).get("task") or {}
-    survival = (cfg.get("finetune") or {}).get("survival") or {}
+    finetune_value: Any = cfg.get("finetune") or {}
+    task = finetune_value.get("task") or {}
+    finetune_value = cfg.get("finetune") or {}
+    survival = finetune_value.get("survival") or {}
     covariates = survival.get("covariates")
     if task.get("type") != "survival" or not isinstance(covariates, list):
         return []
     return [item for item in covariates if isinstance(item, str) and item]
 
 
-def _multilabel_key_column(cfg: dict[str, Any] | None) -> str | None:
+def _multilabel_key_column(cfg: ConfigSummaryInput | None) -> str | None:
     if not cfg:
         return None
-    task = (cfg.get("finetune") or {}).get("task") or {}
-    multilabel = (cfg.get("finetune") or {}).get("multilabel") or {}
+    finetune_value: Any = cfg.get("finetune") or {}
+    task = finetune_value.get("task") or {}
+    finetune_value = cfg.get("finetune") or {}
+    multilabel = finetune_value.get("multilabel") or {}
     key_column = multilabel.get("key_column")
     if task.get("type") != "multilabel_classification" or key_column in (None, ""):
         return None
     return str(key_column)
 
 
-def _survival_sidecar_keys(cfg: dict[str, Any] | None, *, local_path_base: str | Path | None = None) -> set[str] | None:
+def _survival_sidecar_keys(
+    cfg: ConfigSummaryInput | None, *, local_path_base: str | Path | None = None
+) -> set[str] | None:
     if not cfg:
         return None
-    survival = (cfg.get("finetune") or {}).get("survival") or {}
+    finetune_value: Any = cfg.get("finetune") or {}
+    survival = finetune_value.get("survival") or {}
     if not survival.get("valid"):
         return None
     key_column = survival.get("key_column")
@@ -535,11 +549,12 @@ def _survival_sidecar_keys(cfg: dict[str, Any] | None, *, local_path_base: str |
 
 
 def _multilabel_sidecar_keys(
-    cfg: dict[str, Any] | None, *, local_path_base: str | Path | None = None
+    cfg: ConfigSummaryInput | None, *, local_path_base: str | Path | None = None
 ) -> set[str] | None:
     if not cfg:
         return None
-    multilabel = (cfg.get("finetune") or {}).get("multilabel") or {}
+    finetune_value: Any = cfg.get("finetune") or {}
+    multilabel = finetune_value.get("multilabel") or {}
     if not multilabel.get("valid"):
         return None
     key_column = multilabel.get("key_column")

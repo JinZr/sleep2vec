@@ -4,7 +4,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from ..models import CONFIG_FINETUNE_SECTION, repo_relative, resolve_repo_path
+from ..models import CONFIG_FINETUNE_SECTION, SexAgeConfigSummary, TaskConfigSummary, repo_relative, resolve_repo_path
 from .sidecar_summaries import looks_like_placeholder_path, multilabel_summary, survival_summary
 
 
@@ -21,7 +21,7 @@ def sex_age_baseline_config_summary(
     validate_survival_local_paths: bool = True,
     local_path_base: str | Path | None = None,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
-) -> dict[str, Any]:
+) -> SexAgeConfigSummary:
     from ..models import load_yaml
 
     resolved = resolve_repo_path(config_path)
@@ -73,7 +73,7 @@ def sex_age_baseline_config_summary(
     kaldi_data_root = cfg.data.kaldi_data_root
     kaldi_manifest = cfg.data.kaldi_manifest
     raw_loss = raw_finetune.get("loss")
-    finetune_summary = {
+    finetune_summary: TaskConfigSummary = {
         "task": {
             "type": cfg.finetune.task.type,
             "output_dim": cfg.finetune.task.output_dim,

@@ -6,6 +6,7 @@ import math
 from typing import Any, TypeGuard
 
 from ..decision_models import DecisionIssue, DecisionStatus
+from ..models import ConfigSummaryInput
 from ..plan_rendering import DEFAULT_FINETUNE_LR, DEFAULT_FINETUNE_WEIGHT_DECAY
 
 PROFILE_ID = "finetune_balanced"
@@ -17,7 +18,7 @@ _SUPPORTED_LABELS = {"ahi", "arousal", "stage4", "age", "sex"}
 
 def compile_finetune_balanced_profile(
     recipe: dict[str, Any],
-    config_summary: dict[str, Any] | None,
+    config_summary: ConfigSummaryInput | None,
 ) -> tuple[dict[str, Any] | None, list[DecisionIssue]]:
     search_value = recipe.get("search")
     search = search_value if isinstance(search_value, dict) else {}
@@ -67,7 +68,7 @@ def compile_finetune_balanced_profile(
                 {},
             )
         ]
-    finetune = config_summary.get("finetune") or {}
+    finetune: Any = config_summary.get("finetune") or {}
     task = finetune.get("task") or {}
     task_type = task.get("type")
     if variant not in _SUPPORTED_VARIANTS or (
@@ -224,7 +225,7 @@ def finetune_balanced_profile_audit(search: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _profile_axes(recipe: dict[str, Any], config_summary: dict[str, Any]) -> list[dict[str, Any]]:
+def _profile_axes(recipe: dict[str, Any], config_summary: ConfigSummaryInput) -> list[dict[str, Any]]:
     runtime_value = recipe.get("runtime")
     runtime = runtime_value if isinstance(runtime_value, dict) else {}
     model_value = config_summary.get("model")

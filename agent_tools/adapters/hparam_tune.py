@@ -9,6 +9,7 @@ from typing import Any
 from .. import plan_contract, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
+from ..models import ConfigSummaryInput
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, FINETUNE_SCHEDULER_FIELDS, INFER_RUNTIME_FIELDS, variant_module
 from .base import PlanRegistrationPreflightError, TaskAdapter
 
@@ -71,7 +72,7 @@ class HparamTuneAdapter(TaskAdapter):
     def bind_effective_recipe(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         *,
         source_recipe: dict[str, Any] | None = None,
     ) -> list[DecisionIssue]:
@@ -96,14 +97,14 @@ class HparamTuneAdapter(TaskAdapter):
     def task_issues(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
     ) -> list[DecisionIssue]:
         return hparam_tune_issues(recipe, config_summary, decisions, high_impact)
 
     def config_override_issues(
-        self, recipe: dict[str, Any], config_summary: dict[str, Any] | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue] | None:
         from .. import plan_hparam
 
@@ -124,7 +125,7 @@ class HparamTuneAdapter(TaskAdapter):
     def preflight_issues(
         self,
         recipe: dict[str, Any],
-        config_summary: dict[str, Any] | None,
+        config_summary: ConfigSummaryInput | None,
         *,
         unlock_final_test: bool,
         output_dir: Path | None = None,

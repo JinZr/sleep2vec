@@ -2,9 +2,41 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from typing import Any
+from typing import TypedDict
 
 from .models import REPO_ROOT
+
+
+class RepoGitSummary(TypedDict):
+    available: bool
+    branch: str
+    commit: str
+    dirty: bool
+
+
+class RepoIndexSummary(TypedDict):
+    path: str
+    exists: bool
+
+
+class RepoImportantPaths(TypedDict):
+    agents_md: str
+    skills_manifest: str
+    configs: str
+    tests: str
+
+
+class RepoPythonSummary(TypedDict):
+    executable: str
+    version: str
+
+
+class RepoSummary(TypedDict):
+    repo_root: str
+    git: RepoGitSummary
+    codex_index: RepoIndexSummary
+    important_paths: RepoImportantPaths
+    python: RepoPythonSummary
 
 
 def _git(args: list[str]) -> tuple[bool, str]:
@@ -21,7 +53,7 @@ def _git(args: list[str]) -> tuple[bool, str]:
     return result.returncode == 0, result.stdout.strip()
 
 
-def repo_summary() -> dict[str, Any]:
+def repo_summary() -> RepoSummary:
     git_available = (REPO_ROOT / ".git").exists()
     branch = ""
     commit = ""
