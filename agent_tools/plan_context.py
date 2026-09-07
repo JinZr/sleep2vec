@@ -10,9 +10,8 @@ from .adapters import all_adapters, get_adapter
 from .configs import config_summary, load_yaml
 from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
 from .decision_paths import path_context, path_validation
-from .domain.index_csv import IndexSummary
 from .domain.presets import PresetSummary, preset_summary
-from .index_csv import index_summary
+from .index_csv import IndexSummary, index_summary
 from .markdown import ConsultationQuestion
 from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, SUPPORTED_VARIANTS, coerce_list, resolve_repo_path
 from .skills import list_skills

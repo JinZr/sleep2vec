@@ -56,7 +56,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                     {}, Path("script"), "log", "pid", [], execution_snapshot=execution_snapshot,
                 )
 
-            from agent_tools.domain.index_csv import index_summary
+            from agent_tools.index_csv import index_summary
             from agent_tools.domain.presets import preset_summary
             from agent_tools import plan_context, markdown
             from agent_tools.decision_models import DecisionReport, DecisionStatus
