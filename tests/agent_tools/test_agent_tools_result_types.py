@@ -11,7 +11,8 @@ def test_result_types_reach_callers(tmp_path: Path):
             from pathlib import Path
             from agent_tools import (
                 adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
-                experiment_io, experiment_workspace, hparam_runtime, hparam_selection, managed_scheduler, models,
+                experiment_io, experiment_sources, experiment_workspace, hparam_runtime, hparam_selection,
+                managed_scheduler, models,
                 plan_contract, plan_hparam, run_artifacts, run_evidence, slurm,
             )
 
@@ -69,6 +70,43 @@ def test_result_types_reach_callers(tmp_path: Path):
                 {}, Path("script"), "log", "pid", [],
                 execution_snapshot={"module": 1},  # type: ignore[arg-type]
             )
+
+            wandb_payload = experiment_sources.wandb_run_payload(None, entity="entity", project="project")
+            history_filename: str = wandb_payload["history_filename"]
+            wandb_payload["history_file"]  # type: ignore[typeddict-item]
+            wandb_payload["summary_line"] = []  # type: ignore[typeddict-item]
+            wandb_row = wandb_payload["run_row"]
+            wandb_row["wandb_run_id"] = 1  # type: ignore[typeddict-item]
+            wandb_row["status"] = None  # type: ignore[typeddict-item]
+            if "experiment_id" in wandb_row:
+                wandb_experiment: str = wandb_row["experiment_id"]
+            metric_row = wandb_payload["metric_rows"][0]
+            metric_row["metric_scope"] = 1  # type: ignore[typeddict-item]
+            metric_row["epoch"] = 1  # type: ignore[typeddict-item]
+            metric_row["metric_name"]  # type: ignore[typeddict-item]
+            metric_row["value"] = "0.750"
+            history_metrics = experiment_sources._history_metric_rows("id", "version", wandb_row, [])
+            history_metrics[0]["updated_at"] = None  # type: ignore[typeddict-item]
+            experiment_tracking.wandb_run_observations([], [wandb_row])
+            experiment_tracking.managed_metric_rows([], [metric_row])
+            for checkpoint_observations in (
+                experiment_sources._local_checkpoint_rows([]),
+                experiment_sources._remote_checkpoint_rows([], None),
+                experiment_sources._parse_remote_checkpoint_rows("", [], remote="host"),
+                experiment_tracking.checkpoint_rows(Path("/workspace")),
+            ):
+                checkpoint_observation = checkpoint_observations[0]
+                observed_checkpoint_path: str = checkpoint_observation["checkpoint_path"]
+                checkpoint_observation["mtime"] = 1.0  # type: ignore[typeddict-item]
+                checkpoint_observation["is_last"] = True  # type: ignore[typeddict-item]
+                checkpoint_observation["checkpoint"]  # type: ignore[typeddict-item]
+                experiment_sources.validate_checkpoint_evidence_rows([], checkpoint_observations)
+                experiment_workspace.validate_managed_run_rows(
+                    checkpoint_observations, source="checkpoint scan", cardinality="many_per_run",
+                )
+                checkpoint_metric = experiment_tracking.best_metric_for_checkpoint(checkpoint_observation, [])
+                checkpoint_metric["value"] = 1.0  # type: ignore[typeddict-item]
+                checkpoint_observation.update(checkpoint_metric)
 
             planned: managed_scheduler.PlannedArgv = {"run_id": "run-000", "args": ["--value", "ok"]}
             planned["args"] = [1]  # type: ignore[list-item]

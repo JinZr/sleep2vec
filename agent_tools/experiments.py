@@ -826,7 +826,7 @@ def sync_wandb_runs(
         "\n".join(summary_lines) + ("\n" if summary_lines else ""),
         remote=remote,
     )
-    exp_io.write_rows_at(root / "wandb" / "runs.tsv", run_rows, remote=remote)
+    exp_io.write_rows_at(root / "wandb" / "runs.tsv", [dict(row) for row in run_rows], remote=remote)
     metrics_path = root / "metrics_manifest.tsv"
     if merged_metrics:
         exp_io.write_rows_at(metrics_path, merged_metrics, remote=remote)
@@ -852,7 +852,7 @@ def index_checkpoints(run_dir: str | Path, *, remote: str | None = None) -> Path
         row.update(tracking.best_metric_for_checkpoint(row, metrics))
     validate_managed_run_rows(rows, source="checkpoint_manifest.tsv", cardinality="many_per_run")
     if rows:
-        exp_io.write_rows_at(checkpoint_path, rows, remote=remote)
+        exp_io.write_rows_at(checkpoint_path, [dict(row) for row in rows], remote=remote)
     else:
         exp_io.write_text_at(checkpoint_path, "step_id\trun_id\n", remote=remote)
     return root / "checkpoint_manifest.tsv"

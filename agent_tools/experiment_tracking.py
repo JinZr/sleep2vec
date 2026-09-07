@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping, Sequence
 import csv
 import io
 import json
@@ -38,6 +39,11 @@ from .experiment_workspace import (
     validated_run_key,
 )
 from .manifests import utc_now
+
+
+class CheckpointMetric(TypedDict):
+    metric: str
+    value: str
 
 
 class HparamSelectionReportSnapshot(TypedDict):
@@ -252,7 +258,9 @@ def update_experiment_wandb(root: Path, *, entity: str, project: str, group: str
     exp_io.write_rows_at(path, rows, remote=remote)
 
 
-def wandb_run_observations(run_rows: list[dict[str, Any]], wandb_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def wandb_run_observations(
+    run_rows: list[dict[str, Any]], wandb_rows: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
     validate_managed_run_rows(run_rows, source="run_manifest.tsv", cardinality="one_per_run")
     observations: dict[tuple[str, str], dict[str, Any]] = {}
     wandb_run_ids: dict[tuple[str, str], str] = {}
@@ -290,7 +298,9 @@ def experiment_run_rows(root: Path, *, remote: str | None = None) -> list[dict[s
     return read_run_manifest(root, remote=remote)
 
 
-def managed_metric_rows(run_rows: list[dict[str, Any]], metric_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def managed_metric_rows(
+    run_rows: list[dict[str, Any]], metric_rows: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
     validate_managed_run_rows(run_rows, source="run_manifest.tsv", cardinality="one_per_run")
     rows = []
     wandb_run_ids: dict[tuple[str, str], str] = {}
@@ -323,7 +333,7 @@ def managed_metric_rows(run_rows: list[dict[str, Any]], metric_rows: list[dict[s
     return rows
 
 
-def checkpoint_rows(root: Path, *, remote: str | None = None) -> list[dict[str, Any]]:
+def checkpoint_rows(root: Path, *, remote: str | None = None) -> list[experiment_sources.CheckpointObservation]:
     previous_rows = exp_io.read_rows_at(root / "checkpoint_manifest.tsv", remote=remote, require_managed_identity=True)
     validate_managed_run_rows(previous_rows, source="checkpoint_manifest.tsv", cardinality="many_per_run")
     runs = read_run_manifest(root, remote=remote)
@@ -387,7 +397,7 @@ def checkpoint_rows(root: Path, *, remote: str | None = None) -> list[dict[str, 
     validate_checkpoint_evidence_rows(runs, previous_rows, remote=remote)
     if not eligible_runs:
         return []
-    rows = []
+    rows: list[experiment_sources.CheckpointObservation] = []
     for run in eligible_runs:
         evidence_host = checkpoint_evidence_host(run, remote)
         if evidence_host:
@@ -398,7 +408,7 @@ def checkpoint_rows(root: Path, *, remote: str | None = None) -> list[dict[str, 
     return rows
 
 
-def best_metric_for_checkpoint(row: dict[str, Any], metrics: list[dict[str, str]]) -> dict[str, Any]:
+def best_metric_for_checkpoint(row: Mapping[str, Any], metrics: list[dict[str, str]]) -> CheckpointMetric:
     epoch = artifacts.epoch_number(row.get("epoch"))
     key = managed_run_key(row)
     same_run = [item for item in metrics if managed_run_key(item) == key]
@@ -1714,7 +1724,7 @@ def _table_text(value: Any) -> str:
     return "" if value is None else str(value).replace("|", "/")
 
 
-def write_wandb_report(root: Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> None:
+def write_wandb_report(root: Path, rows: Sequence[Mapping[str, Any]], *, remote: str | None = None) -> None:
     lines = ["# W&B Sync", "", f"Synced runs: {len(rows)}", ""]
     for row in rows[:20]:
         lines.append(f"- `{row.get('version')}`: {row.get('state', '')} {row.get('wandb_url', '')}")
