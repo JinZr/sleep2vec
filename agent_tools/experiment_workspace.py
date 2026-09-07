@@ -10,12 +10,51 @@ import os
 from pathlib import Path
 import re
 import threading
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypedDict, cast
 
 import yaml
 
 from . import experiment_io as exp_io, research_log, transport
 from .models import REPO_ROOT, is_full_git_object_id, json_ready
+
+
+class AdaptiveInitEvent(TypedDict):
+    round: int
+    recipe_path: str
+    round_dir: str
+
+
+class AdaptiveProposalRequestBinding(TypedDict):
+    source_round: int
+    target_round: int
+    request_id: str
+    input_path: str
+    input_sha256: str
+    proposal_path: str
+
+
+class AdaptiveProposalRequestedEvent(AdaptiveProposalRequestBinding):
+    digest: str
+
+
+class AdaptiveProposalAcceptedEvent(TypedDict):
+    round: int
+    request_id: str
+    proposal_path: str
+    proposal_sha256: str
+    suggestion: str
+    suggestion_sha256: str
+
+
+class PlanCreatedEvent(TypedDict):
+    step_id: Any
+    plan_dir: str
+    run_count: int
+
+
+AdaptiveEventPayload = (
+    AdaptiveInitEvent | AdaptiveProposalRequestedEvent | AdaptiveProposalAcceptedEvent | PlanCreatedEvent
+)
 
 PHASES = {"prepare", "train", "evaluate", "analyze"}
 PLAN_CONTROLLERS = {"unassigned", "ordinary", "adaptive", "pipeline"}
@@ -755,7 +794,7 @@ def ensure_experiment_workspace(
     return root, step_dir
 
 
-def append_event(root: str | Path, event_type: str, payload: dict[str, Any]) -> None:
+def append_event(root: str | Path, event_type: str, payload: dict[str, Any] | AdaptiveEventPayload) -> None:
     root = Path(root)
     path = root / "events.jsonl"
     row = {"time": _now(), "event_type": event_type, **json_ready(payload)}
@@ -783,7 +822,7 @@ def read_experiment_events(root: str | Path) -> list[dict[str, Any]]:
     return events
 
 
-def event_matches(event: dict[str, Any], event_type: str, payload: dict[str, Any]) -> bool:
+def event_matches(event: dict[str, Any], event_type: str, payload: Mapping[str, Any]) -> bool:
     return event.get("event_type") == event_type and all(
         field in event and type(event[field]) is type(value) and event[field] == value
         for field, value in payload.items()

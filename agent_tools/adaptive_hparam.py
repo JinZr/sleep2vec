@@ -14,7 +14,7 @@ from pathlib import Path
 import shutil
 from tempfile import TemporaryDirectory
 import time
-from typing import Any, Literal, overload
+from typing import Any, Literal, TypedDict, TypeVar, overload
 
 import yaml
 
@@ -32,6 +32,12 @@ from . import (
 from .decision_hparam import DEFAULT_ADAPTIVE_SUGGEST_STRATEGY
 from .experiment_workspace import (
     TERMINAL_STATUSES,
+    AdaptiveEventPayload,
+    AdaptiveInitEvent,
+    AdaptiveProposalAcceptedEvent,
+    AdaptiveProposalRequestBinding,
+    AdaptiveProposalRequestedEvent,
+    PlanCreatedEvent,
     append_event as _write_experiment_event,
     canonical_local_experiment_root,
     event_matches,
@@ -137,6 +143,26 @@ def init_adaptive_workflow(recipe_path: str | Path, output_dir: str | Path) -> P
         return _init_adaptive_workflow_locked(recipe_path, root, locked_workspace=registration_root)
 
 
+class InitialAdaptiveWorkflow(TypedDict):
+    recipe_path: str
+    execution_identity: dict[str, Any]
+    root: str
+    external_optimized: Literal[True]
+    objective_metric: str
+    objective_mode: str
+
+
+class AcceptedProposalPayload(adaptive_proposals.ValidatedProposal):
+    schema_version: Literal[1]
+    input_path: str
+    input_sha256: str
+    proposal_path: str
+    proposal_sha256: str
+
+
+_WorkflowPayload = TypeVar("_WorkflowPayload", bound=InitialAdaptiveWorkflow | dict[str, Any])
+
+
 @dataclass(frozen=True)
 class _InitialRoundInputs:
     recipe_path: Path
@@ -217,7 +243,7 @@ def _init_adaptive_workflow_locked(recipe_path: str | Path, root: Path, *, locke
     source_config_bytes = inputs.source_config_bytes
     source_config_sha256 = inputs.source_config_sha256
     round_recipe_payload = inputs.round_recipe_payload
-    workflow = {
+    workflow: InitialAdaptiveWorkflow = {
         "recipe_path": str(recipe_path),
         "execution_identity": {field: recipe["execution"][field] for field in _EXECUTION_IDENTITY_FIELDS},
         "root": str(root),
@@ -226,7 +252,7 @@ def _init_adaptive_workflow_locked(recipe_path: str | Path, root: Path, *, locke
         "objective_mode": str(_adaptive(recipe).get("objective_mode") or "max"),
     }
     readme_text = _adaptive_readme(workflow)
-    adaptive_event = {"round": 0, "recipe_path": str(recipe_path), "round_dir": str(round_dir)}
+    adaptive_event: AdaptiveInitEvent = {"round": 0, "recipe_path": str(recipe_path), "round_dir": str(round_dir)}
 
     staging_dir = None
     cleanup_staging = False
@@ -418,7 +444,7 @@ def _digest_rows(
     round_dir: Path,
     round_index: int,
     workspace: Path,
-    objective: dict[str, str],
+    objective: adaptive_proposals.ProposalObjective | dict[str, str],
 ) -> list[dict[str, Any]]:
     plan = artifacts.read_hparam_plan(round_dir)
     recipe_value = plan.get("recipe")
@@ -617,7 +643,7 @@ def _agent_proposal_input_payload(
     workflow: dict[str, Any],
     recipe: dict[str, Any],
     rows: list[dict[str, Any]],
-) -> dict[str, Any]:
+) -> adaptive_proposals.ProposalInputSnapshot:
     source_round = _latest_round_index(root)
     target_round = _next_round_index(root)
     adaptive = _adaptive(recipe)
@@ -702,19 +728,16 @@ def _write_agent_proposal_input(
             )
         else:
             # Only a completely unbound snapshot is the recoverable crash gap between write and issuance.
-            _write_experiment_event(
-                workspace,
-                "agent_proposal_requested",
-                {
-                    "source_round": source_round,
-                    "target_round": target_round,
-                    "digest": str(digest),
-                    "request_id": request_id,
-                    "input_path": str(input_path),
-                    "input_sha256": input_sha256,
-                    "proposal_path": str(proposal_path),
-                },
-            )
+            requested_event: AdaptiveProposalRequestedEvent = {
+                "source_round": source_round,
+                "target_round": target_round,
+                "digest": str(digest),
+                "request_id": request_id,
+                "input_path": str(input_path),
+                "input_sha256": input_sha256,
+                "proposal_path": str(proposal_path),
+            }
+            _write_experiment_event(workspace, "agent_proposal_requested", requested_event)
     return input_path
 
 
@@ -725,11 +748,11 @@ def _proposal_request_events(workspace: Path) -> list[dict[str, Any]]:
 
 
 def _proposal_request_event_fields(
-    proposal_input: dict[str, Any],
+    proposal_input: adaptive_proposals.ProposalInputDocument,
     input_path: Path,
     input_sha256: str,
     proposal_path: Path,
-) -> dict[str, Any]:
+) -> AdaptiveProposalRequestBinding:
     snapshot = proposal_input["input"]
     return {
         "source_round": snapshot["source_round"],
@@ -741,9 +764,15 @@ def _proposal_request_event_fields(
     }
 
 
-def _related_proposal_request_events(events: list[dict[str, Any]], expected: dict[str, Any]) -> list[dict[str, Any]]:
-    direct_binding_fields = ("request_id", "input_path", "proposal_path")
-    path_fields = ("input_path", "proposal_path")
+def _related_proposal_request_events(
+    events: list[dict[str, Any]], expected: AdaptiveProposalRequestBinding
+) -> list[dict[str, Any]]:
+    direct_binding_fields: tuple[Literal["request_id", "input_path", "proposal_path"], ...] = (
+        "request_id",
+        "input_path",
+        "proposal_path",
+    )
+    path_fields: tuple[Literal["input_path", "proposal_path"], ...] = ("input_path", "proposal_path")
     expected_parents = {field: Path(expected[field]).parent for field in path_fields}
     related = []
     for event in events:
@@ -761,7 +790,7 @@ def _related_proposal_request_events(events: list[dict[str, Any]], expected: dic
 
 def _validate_proposal_request_event(
     workspace: Path,
-    proposal_input: dict[str, Any],
+    proposal_input: adaptive_proposals.ProposalInputDocument,
     input_path: Path,
     input_sha256: str,
     proposal_path: Path,
@@ -787,13 +816,13 @@ def _load_agent_proposal_input(
     proposal_path: Path,
     *,
     expected_sha256: str | None = None,
-) -> tuple[dict[str, Any], str]:
+) -> tuple[adaptive_proposals.ProposalInputDocument, str]:
     input_bytes = input_path.read_bytes()
     input_sha256 = hashlib.sha256(input_bytes).hexdigest()
     if expected_sha256 is not None and input_sha256 != expected_sha256:
         raise ValueError("Agent proposal input snapshot changed during validation.")
-    proposal_input = adaptive_proposals.load_strict_json(input_bytes.decode(), source=str(input_path))
-    proposal_input = adaptive_proposals.validate_proposal_input(proposal_input)
+    raw_input = adaptive_proposals.load_strict_json(input_bytes.decode(), source=str(input_path))
+    proposal_input = adaptive_proposals.validate_proposal_input(raw_input)
     if Path(proposal_input["expected_proposal_path"]) != proposal_path:
         raise ValueError("Proposal input expected path does not match its request id and target round.")
     _validate_proposal_request_event(workspace, proposal_input, input_path, input_sha256, proposal_path)
@@ -809,7 +838,7 @@ def _validated_agent_proposal_input(
     proposal_path: Path,
     *,
     expected_sha256: str | None = None,
-) -> tuple[dict[str, Any], str]:
+) -> tuple[adaptive_proposals.ProposalInputDocument, str]:
     proposal_input, input_sha256 = _load_agent_proposal_input(
         workspace,
         input_path,
@@ -869,7 +898,7 @@ def _load_agent_proposal(
     recipe: dict[str, Any],
     workspace: Path,
     proposal_path: str | Path,
-) -> tuple[Path, Path, dict[str, Any], str, str]:
+) -> tuple[Path, Path, adaptive_proposals.ValidatedProposal, str, str]:
     proposal_file, input_path, expected_proposal_path, proposal, proposal_sha256 = _load_agent_proposal_binding(
         root, workspace, proposal_path
     )
@@ -921,7 +950,7 @@ def _applied_agent_proposal(root: Path, workspace: Path, proposal_path: str | Pa
         )
     accepted_path = root / "adaptive" / "proposals" / f"round_{target_round:03d}.json"
     suggestion_path = root / "adaptive" / "suggestions" / f"round_{target_round:03d}.yaml"
-    accepted_payload = {
+    accepted_payload: AcceptedProposalPayload = {
         "schema_version": 1,
         **validated,
         "input_path": str(input_path),
@@ -966,7 +995,7 @@ def _applied_agent_proposal(root: Path, workspace: Path, proposal_path: str | Pa
 
 
 def _agent_suggestion_payload(
-    recipe: dict[str, Any], workflow: dict[str, Any], target_round: int, validated: dict[str, Any]
+    recipe: dict[str, Any], workflow: dict[str, Any], target_round: int, validated: adaptive_proposals.ValidatedProposal
 ) -> dict[str, Any]:
     source_value = recipe.get("_local_recipe")
     source = source_value if isinstance(source_value, dict) else recipe
@@ -988,7 +1017,7 @@ def _agent_suggestion_payload(
     return _strip_internal_recipe_keys(suggested)
 
 
-def _agent_suggestion_rationale(validated: dict[str, Any]) -> str:
+def _agent_suggestion_rationale(validated: adaptive_proposals.ValidatedProposal) -> str:
     lines = [
         f"# Agent Proposal Round {validated['target_round']:03d}",
         "",
@@ -1478,7 +1507,7 @@ def _adaptive_step(
     bound_config_path: Path | None = None
     bound_config_sha256: str | None = None
     round_recipe_payload: dict[str, Any] | None = None
-    agent_proposal_event: dict[str, Any] | None = None
+    agent_proposal_event: AdaptiveProposalAcceptedEvent | None = None
     accepted: _AcceptedProposalArtifacts | None = None
 
     if strategy == "agent_proposal" and proposal_path is None:
@@ -1559,7 +1588,7 @@ def _adaptive_step(
             ],
         )
         _reject_unresolved_launch_attempts(root, workspace)
-        accepted_payload = {
+        accepted_payload: AcceptedProposalPayload = {
             "schema_version": 1,
             **validated,
             "input_path": str(input_path),
@@ -1781,7 +1810,7 @@ def _workflow_workspace(root: Path) -> Path:
     return workspace
 
 
-def _objective(root: Path, recipe: dict[str, Any]) -> dict[str, str]:
+def _objective(root: Path, recipe: dict[str, Any]) -> adaptive_proposals.ProposalObjective:
     workflow = _workflow(root) if (root / "adaptive" / "workflow.json").exists() else {}
     adaptive = _adaptive(recipe)
     return {
@@ -1800,11 +1829,11 @@ def _workflow(root: Path) -> dict[str, Any]:
 
 def _validate_workflow_payload(
     root: Path,
-    workflow: dict[str, Any],
+    workflow: _WorkflowPayload,
     *,
     require_adaptive_commit: bool = True,
     registry_rows: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
+) -> _WorkflowPayload:
     path = root / "adaptive" / "workflow.json"
     if not isinstance(workflow, dict):
         raise ValueError(f"Adaptive workflow must contain a mapping: {path}")
@@ -2078,7 +2107,7 @@ def _ensure_initial_readme(root: Path, expected: str) -> None:
         raise ValueError(f"Existing adaptive README differs from requested initialization: {readme_path}")
 
 
-def _validate_public_initial_workflow(root: Path, expected: dict[str, Any], expected_readme: str) -> None:
+def _validate_public_initial_workflow(root: Path, expected: InitialAdaptiveWorkflow, expected_readme: str) -> None:
     workflow_path = root / "adaptive" / "workflow.json"
     registry_path = root / "adaptive" / "run_registry.tsv"
     readme_path = root / "adaptive" / "README.md"
@@ -2094,7 +2123,7 @@ def _validate_public_initial_workflow(root: Path, expected: dict[str, Any], expe
 
 def _validate_initial_support_snapshots(
     root: Path,
-    workflow: dict[str, Any],
+    workflow: InitialAdaptiveWorkflow | dict[str, Any],
     expected_readme: str,
     snapshots: dict[str, exp_io.ManagedFileSnapshot],
 ) -> None:
@@ -2114,7 +2143,7 @@ def _validate_initial_support_snapshots(
 def _reconcile_event(
     workspace: Path,
     event_type: str,
-    payload: dict[str, Any],
+    payload: dict[str, Any] | AdaptiveEventPayload,
     *,
     identity_field: str,
 ) -> None:
@@ -2128,7 +2157,7 @@ def _reconcile_event(
 def _validate_event_history(
     workspace: Path,
     event_type: str,
-    payload: dict[str, Any],
+    payload: dict[str, Any] | AdaptiveEventPayload,
     *,
     identity_field: str,
 ) -> bool:
@@ -2160,7 +2189,7 @@ def _agent_proposal_accepted_event(events: list[dict[str, Any]], round_index: in
 def _round_event_index(
     events: list[dict[str, Any]],
     event_type: str,
-    payload: dict[str, Any],
+    payload: Mapping[str, Any],
 ) -> int | None:
     related = [
         (index, event)
@@ -2177,7 +2206,7 @@ def _round_event_index(
 
 def _validate_agent_proposal_execute_events(
     events: list[dict[str, Any]],
-    accepted_event: dict[str, Any],
+    accepted_event: Mapping[str, Any],
     round_dir: Path,
 ) -> None:
     accepted_index = _round_event_index(events, "agent_proposal_accepted", accepted_event)
@@ -2200,7 +2229,7 @@ def _validate_agent_proposal_execute_events(
 def _is_related_event(
     event: dict[str, Any],
     event_type: str,
-    payload: dict[str, Any],
+    payload: Mapping[str, Any],
     identity_field: str,
 ) -> bool:
     return event.get("event_type") == event_type and event.get(identity_field) == payload[identity_field]
@@ -2208,8 +2237,8 @@ def _is_related_event(
 
 def _validate_initial_event_order(
     workspace: Path,
-    plan_event: dict[str, Any],
-    ready_event: dict[str, Any],
+    plan_event: PlanCreatedEvent,
+    ready_event: AdaptiveInitEvent,
     *,
     allow_ready_event: bool,
 ) -> None:
@@ -2230,7 +2259,7 @@ def _validate_initial_event_order(
         raise ValueError("Adaptive initialization events are out of order.")
 
 
-def _plan_event(round_dir: Path, plan: Mapping[str, Any]) -> dict[str, Any]:
+def _plan_event(round_dir: Path, plan: Mapping[str, Any]) -> PlanCreatedEvent:
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     return {
@@ -2789,7 +2818,7 @@ def _manifest_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
 
 def _test_checkpoint_objective(
     manifest: dict[str, Any],
-    objective: dict[str, str],
+    objective: adaptive_proposals.ProposalObjective | dict[str, str],
     checkpoint_dir: str,
     checkpoint_names: list[str],
 ) -> checkpoint_test_results.CheckpointTestResult | None:
@@ -2815,7 +2844,9 @@ def _test_checkpoint_objective(
     return checkpoint_test_results.best_checkpoint_test_result(candidates, objective["mode"])
 
 
-def _digest_markdown(rows: list[dict[str, Any]], objective: dict[str, str]) -> str:
+def _digest_markdown(
+    rows: list[dict[str, Any]], objective: adaptive_proposals.ProposalObjective | dict[str, str]
+) -> str:
     ranked = _rank_rows(rows, objective)
     lines = [
         "# Adaptive Hparam Digest",
@@ -2834,7 +2865,12 @@ def _digest_markdown(rows: list[dict[str, Any]], objective: dict[str, str]) -> s
     return "\n".join(lines) + "\n"
 
 
-def _write_incumbent(root: Path, rows: list[dict[str, Any]], objective: dict[str, str], round_index: int) -> None:
+def _write_incumbent(
+    root: Path,
+    rows: list[dict[str, Any]],
+    objective: adaptive_proposals.ProposalObjective | dict[str, str],
+    round_index: int,
+) -> None:
     ranked = _rank_rows(rows, objective)
     if not ranked:
         return
@@ -2861,7 +2897,9 @@ def _write_incumbent(root: Path, rows: list[dict[str, Any]], objective: dict[str
     write_rows(path, incumbents)
 
 
-def _rank_rows(rows: list[dict[str, Any]], objective: dict[str, str]) -> list[dict[str, Any]]:
+def _rank_rows(
+    rows: list[dict[str, Any]], objective: adaptive_proposals.ProposalObjective | dict[str, str]
+) -> list[dict[str, Any]]:
     reverse = objective["mode"] == "max"
 
     def score(row: dict[str, Any]) -> float | None:
@@ -2945,7 +2983,10 @@ def _round_run_count(recipe: dict[str, Any]) -> int:
 
 
 def _suggestion_rationale(
-    round_index: int, objective: dict[str, str], best: dict[str, Any], params: dict[str, list[Any]]
+    round_index: int,
+    objective: adaptive_proposals.ProposalObjective | dict[str, str],
+    best: dict[str, Any],
+    params: dict[str, list[Any]],
 ) -> str:
     lines = [
         f"# Adaptive Suggestion Round {round_index:03d}",
@@ -3151,7 +3192,7 @@ def _budget_exhausted(root: Path, recipe: dict[str, Any], *, prospective_runs: i
     )
 
 
-def _adaptive_readme(workflow: dict[str, Any]) -> str:
+def _adaptive_readme(workflow: Mapping[str, Any]) -> str:
     return (
         "# Adaptive Hparam Workflow\n\n"
         "This workflow is external-optimized and may use test/external feedback for selection.\n\n"
