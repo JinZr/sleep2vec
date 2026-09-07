@@ -108,6 +108,30 @@ def test_result_types_reach_callers(tmp_path: Path):
                 checkpoint_metric["value"] = 1.0  # type: ignore[typeddict-item]
                 checkpoint_observation.update(checkpoint_metric)
 
+            direct_health = run_evidence.health_fields(Path("/run"), {}, {}, None, None, "running", None)
+            health_count: int | Literal[""] = direct_health["checkpoint_count"]
+            progress_age: int | None = direct_health["progress_age_seconds"]
+            direct_health["checkpoint_count"] = "0"  # type: ignore[typeddict-item]
+            direct_health["io_read_bytes"] = 1.5  # type: ignore[typeddict-item]
+            direct_health["log_age_seconds"] = None  # type: ignore[typeddict-item]
+            direct_health["progress_age_seconds"] = ""  # type: ignore[typeddict-item]
+            direct_health["gpu_summary"] = None  # type: ignore[typeddict-item]
+            direct_health["checkpoint_counts"]  # type: ignore[typeddict-item]
+            direct_health["progress_processed"] = "003"
+            slurm_health: managed_scheduler.SlurmHealthFields = {
+                "health_status": "scheduler_queued", "scheduler_health_error": "",
+                "scheduler_queue_age_seconds": 0, "scheduler_allocation_age_seconds": "", "log_age_seconds": "",
+            }
+            slurm_health["scheduler_queue_age_seconds"] = "0"  # type: ignore[typeddict-item]
+            slurm_health["scheduler_health_error"] = None  # type: ignore[typeddict-item]
+            slurm_health["queue_age_seconds"]  # type: ignore[typeddict-item]
+            experiment_tracking.monitor_report((direct_health, slurm_health))
+            monitor_result = experiments.monitor_experiment("/workspace")
+            monitor_report_path: str = monitor_result["report"]
+            monitor_result["runs"] = ["run-000"]  # type: ignore[list-item]
+            monitor_result["report"] = Path("/report")  # type: ignore[typeddict-item]
+            monitor_result["decision"]  # type: ignore[typeddict-item]
+
             planned: managed_scheduler.PlannedArgv = {"run_id": "run-000", "args": ["--value", "ok"]}
             planned["args"] = [1]  # type: ignore[list-item]
             planned["run_id"] = 1  # type: ignore[typeddict-item]

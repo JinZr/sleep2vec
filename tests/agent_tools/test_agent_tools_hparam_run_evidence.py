@@ -1098,3 +1098,40 @@ def test_hparam_remote_command_timeout_returns_unknown_remote(monkeypatch):
     result = run_evidence.run_row_command({"target": "ssh", "host": "baichuan3"}, "ps")
 
     assert result.returncode == 124
+
+
+@pytest.mark.parametrize("observed", [False, True])
+def test_health_fields_distinguish_missing_observations_from_zero(tmp_path, monkeypatch, observed):
+    progress = {"status": None, "processed": "003", "total": None, "updated_at": ""}
+    monkeypatch.setattr(run_evidence, "read_run_progress", lambda *_args: progress)
+    monkeypatch.setattr(run_evidence, "proc_io", lambda *_args: {"read_bytes": 0, "write_bytes": 0} if observed else {})
+    monkeypatch.setattr(run_evidence, "log_age_seconds", lambda *_args: 0 if observed else None)
+    monkeypatch.setattr(run_evidence, "gpu_summary", lambda *_args: "" if observed else None)
+
+    result = run_evidence.health_fields(
+        tmp_path,
+        {},
+        {"io_read_bytes": "0", "io_write_bytes": "0", "checkpoint_count": "0"},
+        123,
+        True,
+        "running",
+        [] if observed else None,
+    )
+
+    expected = 0 if observed else ""
+    for field in (
+        "io_read_bytes",
+        "io_write_bytes",
+        "io_read_delta_bytes",
+        "io_write_delta_bytes",
+        "log_age_seconds",
+        "checkpoint_count",
+    ):
+        assert result[field] == expected
+    assert result["health_status"] == ("healthy_running" if observed else "health_unknown")
+    assert result["gpu_summary"] == ""
+    assert result["progress_status"] is None
+    assert result["progress_processed"] == "003"
+    assert result["progress_total"] is None
+    assert result["progress_updated_at"] == ""
+    assert result["progress_age_seconds"] is None

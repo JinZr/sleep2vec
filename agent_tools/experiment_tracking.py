@@ -179,6 +179,12 @@ class ExperimentStatusRun(TypedDict):
     blockers: list[str]
 
 
+class ExperimentMonitorResult(TypedDict):
+    run_dir: str
+    runs: list[dict[str, Any]]
+    report: str
+
+
 class ExperimentStatusSnapshot(TypedDict):
     experiment: ExperimentStatusMetadata
     lifecycle_source: str
@@ -638,7 +644,7 @@ def merge_rows(existing: list[dict[str, str]], new_rows: list[dict[str, Any]]) -
     return [by_key[key] for key in order]
 
 
-def monitor_report(rows: list[dict[str, Any]]) -> str:
+def monitor_report(rows: Sequence[Mapping[str, Any]]) -> str:
     lines = ["# Experiment Monitor", ""]
     if not rows:
         return "# Experiment Monitor\n\nNo runs found.\n"

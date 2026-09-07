@@ -1979,3 +1979,24 @@ def test_slurm_monitor_preserves_concurrent_stop_intent(tmp_path: Path, monkeypa
     assert launch["status"] == "stopping"
     assert launch["stop_requested_at"] == "2026-08-21T03:40:00Z"
     assert launch["stop_reason"] == "validation diverged"
+
+
+@pytest.mark.parametrize("age", [None, 0])
+@pytest.mark.parametrize("health_error", ["", "accounting unavailable"])
+def test_slurm_health_preserves_missing_ages_and_lifecycle(monkeypatch, age, health_error):
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda *_args: None)
+    monkeypatch.setattr(run_evidence, "log_tail_and_age", lambda *_args: ("log", age))
+    monkeypatch.setattr(managed_scheduler, "_timestamp_age_seconds", lambda *_args: age)
+    custom = {"retained": True}
+    row = {"status": "queued", "custom": custom}
+
+    observed = managed_scheduler._slurm_artifact_observation(row, health=True, health_error=health_error)
+
+    assert observed is row
+    assert observed["custom"] is custom
+    assert observed["status"] == "queued"
+    assert observed["health_status"] == ("health_unknown" if health_error else "scheduler_queued")
+    assert observed["scheduler_health_error"] == health_error
+    for field in ("scheduler_queue_age_seconds", "scheduler_allocation_age_seconds", "log_age_seconds"):
+        assert observed[field] == ("" if age is None else age)
+    assert observed["log_tail"] == "log"

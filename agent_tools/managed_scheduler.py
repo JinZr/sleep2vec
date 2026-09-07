@@ -145,6 +145,14 @@ class LaunchResult:
     external_status_changes: dict[RunKey, tuple[Any, Any]]
 
 
+class SlurmHealthFields(TypedDict):
+    health_status: str
+    scheduler_health_error: str
+    scheduler_queue_age_seconds: int | Literal[""]
+    scheduler_allocation_age_seconds: int | Literal[""]
+    log_age_seconds: int | Literal[""]
+
+
 class PlannedArgv(TypedDict):
     run_id: str
     args: list[str]
@@ -1662,15 +1670,14 @@ def _slurm_artifact_observation(row: dict[str, Any], *, health: bool = False, he
             health_status = status
         queue_age = _timestamp_age_seconds(row.get("launched_at")) if status == "queued" else None
         allocation_age = _timestamp_age_seconds(row.get("scheduler_started_at"))
-        row.update(
-            {
-                "health_status": health_status,
-                "scheduler_health_error": health_error,
-                "scheduler_queue_age_seconds": "" if queue_age is None else queue_age,
-                "scheduler_allocation_age_seconds": "" if allocation_age is None else allocation_age,
-                "log_age_seconds": "" if log_age is None else log_age,
-            }
-        )
+        health_fields: SlurmHealthFields = {
+            "health_status": health_status,
+            "scheduler_health_error": health_error,
+            "scheduler_queue_age_seconds": "" if queue_age is None else queue_age,
+            "scheduler_allocation_age_seconds": "" if allocation_age is None else allocation_age,
+            "log_age_seconds": "" if log_age is None else log_age,
+        }
+        row.update(health_fields)
     row["monitored_at"] = utc_now()
     return row
 
