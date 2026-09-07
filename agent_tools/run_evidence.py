@@ -96,7 +96,7 @@ class ProcessIdentityError(RuntimeError):
     pass
 
 
-def status_row(  # noqa: C901
+def status_row(
     run_dir: Path,
     row: dict[str, Any],
     previous: dict[str, Any] | None = None,
@@ -181,6 +181,60 @@ def status_row(  # noqa: C901
             observed_status = "missing_pid"
     else:
         observed_status = row.get("status") or "unknown"
+    observed_status = _direct_run_status(
+        row=row,
+        previous=previous,
+        observed_status=observed_status,
+        pid=pid,
+        running_state=running_state,
+        managed_process_identity=managed_process_identity,
+        dead_unbound_process_identity=dead_unbound_process_identity,
+        script_commits_terminal_status=script_commits_terminal_status,
+    )
+    # Remote artifacts must be observed on the execution host; transport uncertainty preserves prior evidence.
+    manifest = str(previous.get("run_manifest") or row.get("run_manifest") or "")
+    checkpoints = [name for name in str(previous.get("checkpoints") or row.get("checkpoints") or "").split(";") if name]
+    artifact_row = {
+        **row,
+        **{field: previous[field] for field in ("runtime_dir", "checkpoint_dir") if field in previous},
+    }
+    observed_artifacts = runtime_artifacts(artifact_row)
+    health_checkpoints = None
+    if observed_artifacts is not None:
+        manifest, _manifest_data, checkpoints = observed_artifacts
+        health_checkpoints = checkpoints
+    observation = {
+        **row,
+        **(committed_process_identity or {}),
+        "status": observed_status,
+        "pid": (committed_process_identity["pid"] if committed_process_identity else None)
+        or previous.get("pid")
+        or row.get("pid")
+        or "",
+        "log_tail": log_tail(row.get("log_path"), row),
+        "run_manifest": str(manifest or ""),
+        "checkpoints": ";".join(checkpoints),
+        "monitored_at": utc_now(),
+    }
+    if process_identity_error:
+        observation["process_identity_error"] = process_identity_error
+    output = merge_run_row(previous, observation)
+    if health:
+        output.update(health_fields(run_dir, row, previous, pid, running_state, output["status"], health_checkpoints))
+    return output
+
+
+def _direct_run_status(
+    *,
+    row: dict[str, Any],
+    previous: dict[str, Any],
+    observed_status: str,
+    pid: int | None,
+    running_state: bool | None,
+    managed_process_identity: bool,
+    dead_unbound_process_identity: bool,
+    script_commits_terminal_status: bool,
+) -> str:
     running = bool(running_state)
     if observed_status in TERMINAL_STATUSES:
         pass
@@ -232,37 +286,7 @@ def status_row(  # noqa: C901
     if script_commits_terminal_status and previous.get("status") == "stopping" and previous.get("stop_requested_at"):
         # The stop manager owns final stopped evidence; a live probe cannot release its recorded intent.
         observed_status = "stopping"
-    # Remote artifacts must be observed on the execution host; transport uncertainty preserves prior evidence.
-    manifest = str(previous.get("run_manifest") or row.get("run_manifest") or "")
-    checkpoints = [name for name in str(previous.get("checkpoints") or row.get("checkpoints") or "").split(";") if name]
-    artifact_row = {
-        **row,
-        **{field: previous[field] for field in ("runtime_dir", "checkpoint_dir") if field in previous},
-    }
-    observed_artifacts = runtime_artifacts(artifact_row)
-    health_checkpoints = None
-    if observed_artifacts is not None:
-        manifest, _manifest_data, checkpoints = observed_artifacts
-        health_checkpoints = checkpoints
-    observation = {
-        **row,
-        **(committed_process_identity or {}),
-        "status": observed_status,
-        "pid": (committed_process_identity["pid"] if committed_process_identity else None)
-        or previous.get("pid")
-        or row.get("pid")
-        or "",
-        "log_tail": log_tail(row.get("log_path"), row),
-        "run_manifest": str(manifest or ""),
-        "checkpoints": ";".join(checkpoints),
-        "monitored_at": utc_now(),
-    }
-    if process_identity_error:
-        observation["process_identity_error"] = process_identity_error
-    output = merge_run_row(previous, observation)
-    if health:
-        output.update(health_fields(run_dir, row, previous, pid, running_state, output["status"], health_checkpoints))
-    return output
+    return observed_status
 
 
 def runtime_artifacts(row: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]] | None:
