@@ -59,7 +59,6 @@ PACKAGE = Path("agent_tools")
 #: ceiling. Delete entries as you fix them; a new one is a design signal, not a
 #: lint to suppress.
 SUPPRESSION_LEDGER = {
-    ("agent_tools/adapters/embedding_extraction.py", "EmbeddingExtractionAdapter.task_issues"),  # 30
     ("agent_tools/domain/index_csv.py", "index_summary"),  # 33
     ("agent_tools/experiment_io.py", "append_managed_text_at"),  # 28
     ("agent_tools/experiment_io.py", "conditional_atomic_replace_text_at"),  # 47

@@ -29,6 +29,51 @@ def _fail(field: str, message: str, value: Any = None) -> DecisionIssue:
     )
 
 
+def _config_compatibility_issues(
+    config_summary: dict[str, Any] | None,
+    model: dict[str, Any],
+    model_channels: set[Any],
+) -> list[DecisionIssue]:
+    issues: list[DecisionIssue] = []
+    if config_summary is not None:
+        if config_summary.get("data_backend") != "npz":
+            issues.append(_fail("config", "Whole-night extraction requires config data.backend=npz."))
+        backbone = model.get("backbone")
+        if backbone not in (None, "roformer"):
+            issues.append(_fail("config", "Whole-night extraction requires a RoFormer config.", backbone))
+        cls_embedding_type = (model.get("cls") or {}).get("embedding_type")
+        if cls_embedding_type != "bert":
+            issues.append(
+                _fail(
+                    "config",
+                    "Whole-night dual embedding extraction requires model.cls.embedding_type=bert.",
+                    cls_embedding_type,
+                )
+            )
+        if config_summary.get("is_finetune") is True:
+            data = config_summary.get("data") or {}
+            if data.get("finetune_preset_path"):
+                issues.append(
+                    _fail(
+                        "config",
+                        "Whole-night extraction requires recipe-owned data_index; "
+                        "config data.finetune_preset_path must be null.",
+                        data.get("finetune_preset_path"),
+                    )
+                )
+            data_channels = set(data.get("data_channel_names") or [])
+            if model_channels and data_channels and data_channels != model_channels:
+                issues.append(
+                    _fail(
+                        "config",
+                        "Finetune config data.data_channel_names must match model.channels for "
+                        "whole-night extraction.",
+                        sorted(data_channels),
+                    )
+                )
+    return issues
+
+
 class EmbeddingExtractionAdapter(TaskAdapter):
     task = "embedding_extraction"
 
@@ -103,7 +148,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
             return [_fail("config", f"Extraction config failed strict runtime loading: {exc}")]
         return []
 
-    def task_issues(  # noqa: C901
+    def task_issues(
         self,
         recipe: dict[str, Any],
         config_summary: dict[str, Any] | None,
@@ -268,42 +313,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
                     needs_issue("final_eval_unlock", "Test extraction requires explicit final unlock.", high_impact)
                 )
 
-        if config_summary is not None:
-            if config_summary.get("data_backend") != "npz":
-                issues.append(_fail("config", "Whole-night extraction requires config data.backend=npz."))
-            backbone = model.get("backbone")
-            if backbone not in (None, "roformer"):
-                issues.append(_fail("config", "Whole-night extraction requires a RoFormer config.", backbone))
-            cls_embedding_type = (model.get("cls") or {}).get("embedding_type")
-            if cls_embedding_type != "bert":
-                issues.append(
-                    _fail(
-                        "config",
-                        "Whole-night dual embedding extraction requires model.cls.embedding_type=bert.",
-                        cls_embedding_type,
-                    )
-                )
-            if config_summary.get("is_finetune") is True:
-                data = config_summary.get("data") or {}
-                if data.get("finetune_preset_path"):
-                    issues.append(
-                        _fail(
-                            "config",
-                            "Whole-night extraction requires recipe-owned data_index; "
-                            "config data.finetune_preset_path must be null.",
-                            data.get("finetune_preset_path"),
-                        )
-                    )
-                data_channels = set(data.get("data_channel_names") or [])
-                if model_channels and data_channels and data_channels != model_channels:
-                    issues.append(
-                        _fail(
-                            "config",
-                            "Finetune config data.data_channel_names must match model.channels for "
-                            "whole-night extraction.",
-                            sorted(data_channels),
-                        )
-                    )
+        issues.extend(_config_compatibility_issues(config_summary, model, model_channels))
         return issues
 
     def configured_input_issues(
