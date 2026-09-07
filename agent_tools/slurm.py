@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -13,10 +13,13 @@ import socket
 import subprocess
 import tempfile
 import traceback
-from typing import Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from . import manifests, python_programs, transport
 from .runtime_lock import runtime_lock
+
+if TYPE_CHECKING:
+    from .managed_scheduler import ExecutionSnapshot
 
 
 class SlurmResources(TypedDict):
@@ -96,6 +99,28 @@ class JobObservation:
     comment: str = ""
     exit_code: str = ""
     details: dict[str, str] = field(default_factory=dict)
+
+
+class AllocationSidecar(TypedDict):
+    schema_version: Literal[1]
+    scheduler_job_id: str
+    scheduler_cluster: str
+    scheduler_submit_token: str
+    node: str
+    started_at: str
+    execution_snapshot: ExecutionSnapshot
+
+
+class TerminalSidecar(TypedDict):
+    schema_version: Literal[1]
+    scheduler_job_id: str
+    scheduler_cluster: str
+    scheduler_submit_token: str
+    node: str
+    started_at: str
+    ended_at: str
+    exit_code: int
+    runtime_commit: str
 
 
 class SlurmCommandError(RuntimeError):
@@ -388,20 +413,18 @@ def run_frozen_job(
     observed_runtime_commit = ""
 
     def write_terminal(exit_code: int) -> None:
-        _atomic_create_json(
-            result_path,
-            {
-                "schema_version": 1,
-                "scheduler_job_id": job_id,
-                "scheduler_cluster": cluster,
-                "scheduler_submit_token": submit_token,
-                "node": node,
-                "started_at": started_at,
-                "ended_at": _utc_now(),
-                "exit_code": exit_code,
-                "runtime_commit": observed_runtime_commit,
-            },
-        )
+        terminal: TerminalSidecar = {
+            "schema_version": 1,
+            "scheduler_job_id": job_id,
+            "scheduler_cluster": cluster,
+            "scheduler_submit_token": submit_token,
+            "node": node,
+            "started_at": started_at,
+            "ended_at": _utc_now(),
+            "exit_code": exit_code,
+            "runtime_commit": observed_runtime_commit,
+        }
+        _atomic_create_json(result_path, terminal)
 
     def verify_frozen_artifacts(when: str) -> None:
         for path, expected in ((script, script_sha256), (config, config_sha256)):
@@ -473,18 +496,16 @@ def run_frozen_job(
                         exit_code = 128 + received_signal
                     else:
                         verify_frozen_artifacts("before process start")
-                        _atomic_create_json(
-                            allocation_identity_path,
-                            {
-                                "schema_version": 1,
-                                "scheduler_job_id": job_id,
-                                "scheduler_cluster": cluster,
-                                "scheduler_submit_token": submit_token,
-                                "node": node,
-                                "started_at": started_at,
-                                "execution_snapshot": snapshot,
-                            },
-                        )
+                        allocation: AllocationSidecar = {
+                            "schema_version": 1,
+                            "scheduler_job_id": job_id,
+                            "scheduler_cluster": cluster,
+                            "scheduler_submit_token": submit_token,
+                            "node": node,
+                            "started_at": started_at,
+                            "execution_snapshot": snapshot,
+                        }
+                        _atomic_create_json(allocation_identity_path, allocation)
                         child_env = os.environ.copy()
                         for env_name in tuple(child_env):
                             if env_name in _DISTRIBUTED_ENV_FIELDS or env_name.startswith("MASTER_"):
@@ -861,7 +882,7 @@ def _submission_argv(script: str, submit_token: str, execution_snapshot_sha256: 
 
 
 def sidecar_identity(
-    payload: dict[str, Any],
+    payload: Mapping[str, Any],
     submit_token: str,
     *,
     expected_job_id: str | None = None,
@@ -879,7 +900,7 @@ def sidecar_identity(
     return JobIdentity(job_id, cluster)
 
 
-def terminal_exit_code(payload: dict[str, Any]) -> int:
+def terminal_exit_code(payload: Mapping[str, Any]) -> int:
     exit_code = payload.get("exit_code")
     if type(exit_code) is not int or exit_code < 0:
         raise ValueError("Slurm terminal sidecar exit_code must be a non-negative integer.")
@@ -980,7 +1001,7 @@ def _utc_now() -> str:
     return manifests.utc_now()
 
 
-def _atomic_create_json(path: str | Path, payload: dict[str, Any]) -> None:
+def _atomic_create_json(path: str | Path, payload: dict[str, Any] | AllocationSidecar | TerminalSidecar) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() or target.is_symlink():

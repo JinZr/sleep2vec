@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -151,6 +151,43 @@ class SlurmHealthFields(TypedDict):
     scheduler_queue_age_seconds: int | Literal[""]
     scheduler_allocation_age_seconds: int | Literal[""]
     log_age_seconds: int | Literal[""]
+
+
+class _LaunchIdentityExtras(TypedDict, total=False):
+    pid: Literal[""]
+    process_group_id: Literal[""]
+    process_start_token: Literal[""]
+    planned_runtime_commit: str
+    execution_snapshot_sha256: str
+
+
+class _LaunchIdentityFields(_LaunchIdentityExtras):
+    target: str
+    host: Any
+    workdir: Any
+    gpus: str
+    pid_path: str
+    command: str
+
+
+class DirectLaunchIdentity(_LaunchIdentityFields):
+    log_path: str
+
+
+class SlurmLaunchIdentity(_LaunchIdentityFields):
+    log_path: Any
+
+
+class LaunchVerificationOptions(TypedDict, total=False):
+    checkpoint_path: Path | None
+    checkpoint_sha256: str | None
+    planned_command: str
+    run_id: str
+
+
+class FrozenLaunchArtifact(TypedDict):
+    path: str
+    sha256: str
 
 
 class PlannedArgv(TypedDict):
@@ -529,14 +566,14 @@ def _launch_managed_runs(
             missing_pid_blocker = MissingPidCapacityError(*blockers[0])
 
     target = str(execution.get("target", "local") or "local")
-    launch_identity_by_key: dict[RunKey, dict[str, Any]] = {}
+    launch_identity_by_key: dict[RunKey, DirectLaunchIdentity] = {}
     rows: list[dict[str, Any]] = []
     for run in runs:
         key = validated_run_key(run)
         previous = refreshed[key]
         script = Path(str(run["script"]))
         semantic_run_dir = Path(str(run.get("run_dir") or script.parent))
-        launch_identity_by_key[key] = {
+        launch_identity: DirectLaunchIdentity = {
             "target": target,
             "host": execution.get("host", ""),
             "workdir": execution.get("workdir") or str(REPO_ROOT),
@@ -544,8 +581,10 @@ def _launch_managed_runs(
             "log_path": str(semantic_run_dir / "stdout.log"),
             "pid_path": str(semantic_run_dir / "pid"),
             "command": "",
-            **{field: "" for field in PROCESS_IDENTITY_FIELDS},
         }
+        for field in PROCESS_IDENTITY_FIELDS:
+            launch_identity[field] = ""
+        launch_identity_by_key[key] = launch_identity
         execution_identity = (
             {field: previous.get(field, "") for field in launch_identity_by_key[key]}
             if previous.get("target") not in (None, "")
@@ -587,10 +626,9 @@ def _launch_managed_runs(
         hooks.validate_run_update(previous, row, allow_execution_identity_fill=True)
 
     launchable = [(index, row) for index, row in enumerate(rows) if row["status"] in LAUNCHABLE_STATUSES]
+    output_path_fields: tuple[Literal["log_path", "pid_path"], ...] = ("log_path", "pid_path")
     run_output_paths = [
-        Path(str(launch_identity_by_key[validated_run_key(row)][field]))
-        for row in rows
-        for field in ("log_path", "pid_path")
+        Path(str(launch_identity_by_key[validated_run_key(row)][field])) for row in rows for field in output_path_fields
     ]
     if target == "ssh":
         if not dry_run:
@@ -759,7 +797,7 @@ def _start_direct_launch_rows(
     launchable: list[tuple[int, dict[str, Any]]],
     capacity: CapacityState,
     execution: dict[str, Any],
-    launch_identity_by_key: dict[RunKey, dict[str, Any]],
+    launch_identity_by_key: dict[RunKey, DirectLaunchIdentity],
     workspace_by_key: dict[RunKey, dict[str, Any]],
     planned_by_key: dict[RunKey, dict[str, Any]],
     execution_snapshot: ExecutionSnapshot | None,
@@ -781,7 +819,7 @@ def _start_direct_launch_rows(
                 else None
             )
             gpus = list(capacity.gpu_groups[group_index]) if group_index is not None else []
-            identity = dict(launch_identity_by_key[validated_run_key(row)])
+            identity = launch_identity_by_key[validated_run_key(row)].copy()
             identity["gpus"] = ",".join(str(item) for item in gpus)
             identity["command"] = build_command(
                 execution,
@@ -809,12 +847,12 @@ def _start_direct_launch_rows(
             ]
             if row.get("target") in (None, ""):
                 gpus = list(capacity.gpu_groups[group_index]) if group_index is not None else []
-                identity = dict(launch_identity_by_key[validated_run_key(row)])
+                identity = launch_identity_by_key[validated_run_key(row)].copy()
                 identity["gpus"] = ",".join(str(item) for item in gpus)
                 planned = planned_by_key[validated_run_key(row)]
                 checkpoint_path = planned.get("checkpoint")
                 checkpoint_sha256 = planned.get("checkpoint_sha256")
-                launch_kwargs: dict[str, Any] = {}
+                launch_kwargs: LaunchVerificationOptions = {}
                 # Keep these verification arguments absent when the frozen plan does not bind them.
                 if checkpoint_path not in (None, "") or checkpoint_sha256 not in (None, ""):
                     launch_kwargs["checkpoint_path"] = (
@@ -1155,7 +1193,7 @@ def _launch_slurm_runs(
 
 def _slurm_execution_identity(
     execution: dict[str, Any], run: dict[str, Any], execution_snapshot_sha256: str | None = None
-) -> dict[str, Any]:
+) -> SlurmLaunchIdentity:
     target = str(execution.get("target", "local") or "local")
     inner = slurm.submission_command(
         str(run["scheduler_script"]),
@@ -1163,7 +1201,7 @@ def _slurm_execution_identity(
         execution_snapshot_sha256,
     )
     command = f"ssh {transport.sh(execution['host'])} {transport.sh(inner)}" if target == "ssh" else inner
-    identity: dict[str, Any] = {
+    identity: SlurmLaunchIdentity = {
         "target": target,
         "host": execution.get("host", ""),
         "workdir": execution.get("workdir") or str(REPO_ROOT),
@@ -1171,8 +1209,9 @@ def _slurm_execution_identity(
         "pid_path": "",
         "log_path": run["log_path"],
         "command": command,
-        **{field: "" for field in PROCESS_IDENTITY_FIELDS},
     }
+    for field in PROCESS_IDENTITY_FIELDS:
+        identity[field] = ""
     if execution.get("runtime_commit") not in (None, ""):
         identity["planned_runtime_commit"] = str(execution["runtime_commit"])
     if execution_snapshot_sha256:
@@ -1626,7 +1665,7 @@ def _observe_slurm_sidecars(
     owner: Path,
     execution: dict[str, Any],
     row: dict[str, Any],
-    terminal: dict[str, Any],
+    terminal: Mapping[str, Any],
     token: str,
     job_id: str,
     cluster: str,
@@ -1732,7 +1771,7 @@ def _apply_slurm_state(
         observation["stopped_at"] = row.get("stopped_at") or observation["scheduler_observed_at"]
 
 
-def _slurm_sidecar_runtime_commit(payload: dict[str, Any]) -> str:
+def _slurm_sidecar_runtime_commit(payload: Mapping[str, Any]) -> str:
     snapshot = payload.get("execution_snapshot")
     value = snapshot.get("runtime_commit") if isinstance(snapshot, dict) else payload.get("runtime_commit")
     if value in (None, ""):
@@ -2037,7 +2076,7 @@ def build_launch_command(
     ):
         if config_path is None or not script_sha256 or not config_sha256:
             raise ValueError("Verified launch requires frozen script and config hashes.")
-        artifacts = [
+        artifacts: list[FrozenLaunchArtifact] = [
             {"path": str(script), "sha256": script_sha256},
             {"path": str(config_path), "sha256": config_sha256},
         ]
