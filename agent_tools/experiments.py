@@ -1101,22 +1101,9 @@ def _managed_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]:
     return rows
 
 
-def _managed_workspace(  # noqa: C901
-    root: Path,
-    *,
-    remote: str | None,
-    allow_completed: bool = False,
-    validate_experiment_index: bool = True,
-) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    manifest_path = root / "experiment.yaml"
-    if not exp_io.path_exists_at(manifest_path, remote=remote):
-        raise ValueError("experiment.yaml is missing. Initialize the experiment first.")
-    files = exp_io.read_managed_files_at(root, [manifest_path], remote=remote)
-    experiment_text = files[str(manifest_path)]["text"]
-    manifest = read_managed_yaml_mapping(experiment_text, source=f"Managed experiment manifest {manifest_path}")
-    if set(manifest) != {"experiment"}:
-        raise ValueError("experiment.yaml must contain only the experiment owner mapping.")
-    raw_experiment = manifest.get("experiment")
+def _normalized_completed_metadata(
+    raw_experiment: Any, *, root: Path, allow_completed: bool
+) -> tuple[Any, list[str | Path]]:
     validated_experiment = raw_experiment
     completed_bindings: list[str | Path] = []
     if (
@@ -1160,6 +1147,28 @@ def _managed_workspace(  # noqa: C901
                     raise ValueError("Completed experiment selection report binding is invalid.")
                 completed_bindings.append(root / "reports" / "hparam_selection.md")
         validated_experiment = {field: value for field, value in raw_experiment.items() if field not in terminal_fields}
+    return validated_experiment, completed_bindings
+
+
+def _managed_workspace(
+    root: Path,
+    *,
+    remote: str | None,
+    allow_completed: bool = False,
+    validate_experiment_index: bool = True,
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    manifest_path = root / "experiment.yaml"
+    if not exp_io.path_exists_at(manifest_path, remote=remote):
+        raise ValueError("experiment.yaml is missing. Initialize the experiment first.")
+    files = exp_io.read_managed_files_at(root, [manifest_path], remote=remote)
+    experiment_text = files[str(manifest_path)]["text"]
+    manifest = read_managed_yaml_mapping(experiment_text, source=f"Managed experiment manifest {manifest_path}")
+    if set(manifest) != {"experiment"}:
+        raise ValueError("experiment.yaml must contain only the experiment owner mapping.")
+    raw_experiment = manifest.get("experiment")
+    validated_experiment, completed_bindings = _normalized_completed_metadata(
+        raw_experiment, root=root, allow_completed=allow_completed
+    )
     issues = experiment_metadata_issues(
         {
             "experiment": validated_experiment,

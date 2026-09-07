@@ -268,6 +268,7 @@ def test_hparam_materialization_failure_does_not_register_plan(tmp_path: Path, m
     assert not (workspace / "steps" / step_id / "step.yaml").exists()
     assert read_run_manifest(workspace) == []
     assert not output_dir.exists()
+    assert not list(tmp_path.rglob(".*.staging"))
 
     monkeypatch.setattr(plan_hparam, "write_text", original_write_text)
     successful_dir = workspace / "successful-plan"

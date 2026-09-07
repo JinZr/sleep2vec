@@ -13,67 +13,13 @@ from ..configs import config_summary
 from ..models import repo_relative, resolve_repo_path
 
 
-def index_summary(  # noqa: C901
-    index_paths: list[str | Path],
+def _index_statistics(
+    df: pd.DataFrame,
+    cfg: dict[str, Any] | None,
     *,
-    config: str | Path | None = None,
-    config_bytes: bytes | None = None,
-    local_path_base: str | Path | None = None,
-    label_name: str | None = None,
-    split_values: list[str] | None = None,
-    preset_path: str | Path | None = None,
-    sample_path_check: int = 0,
-    sample_npz_check: int = 0,
-    validated_summary: tuple[dict[str, Any], dict[str, set[str]]] | None = None,
+    label_name: str | None,
+    split_column: str,
 ) -> dict[str, Any]:
-    resolved_paths = [resolve_repo_path(path, relative_to=local_path_base) for path in index_paths]
-    paths = [path for path in resolved_paths if path is not None]
-    if validated_summary is None:
-        cfg = config_summary(config, config_bytes=config_bytes, local_path_base=local_path_base) if config else None
-        survival_sidecar_keys = _survival_sidecar_keys(cfg, local_path_base=local_path_base)
-        multilabel_sidecar_keys = _multilabel_sidecar_keys(cfg, local_path_base=local_path_base)
-    else:
-        cfg, validated_sidecar_keys = validated_summary
-        survival_sidecar_keys = validated_sidecar_keys.get("survival")
-        multilabel_sidecar_keys = validated_sidecar_keys.get("multilabel")
-    survival_key_column = _survival_key_column(cfg)
-    survival_covariate_names = _survival_covariates(cfg)
-    multilabel_key_column = _multilabel_key_column(cfg)
-    data_summary = (cfg or {}).get("data") or {}
-    split_column = str(data_summary.get("split_column") or "split")
-    read_csv_kwargs: dict[str, Any] = {"low_memory": False}
-    converters = {key_column: str for key_column in (survival_key_column, multilabel_key_column) if key_column}
-    if converters:
-        read_csv_kwargs["converters"] = converters
-    source_issues: list[str] = []
-    if not paths and _uses_sex_age_preset_metadata(cfg, preset_path):
-        frames, paths, missing_inputs, source_issues = _sex_age_preset_frames(
-            cfg,
-            preset_path,
-            local_path_base=local_path_base,
-        )
-    elif not paths and _uses_sex_age_kaldi_manifest(cfg):
-        frames, paths, missing_inputs, source_issues = _kaldi_manifest_frames(
-            cfg,
-            split_column=split_column,
-            read_csv_kwargs=read_csv_kwargs,
-            local_path_base=local_path_base,
-        )
-    else:
-        missing_inputs = [str(path) for path in paths if not path.exists()]
-        frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
-    df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
-    df = _filter_splits(df, split_values, split_column=split_column)
-    if cfg and cfg.get("authoritative_variant") == "sex_age_baseline":
-        required_names: tuple[str, ...] = (
-            data_summary.get("key_column") or "eid",
-            split_column,
-            *((cfg.get("model") or {}).get("features") or []),
-            *(("path", "token_start") if data_summary.get("deduplicate_by_key") is False else ()),
-        )
-    else:
-        required_names = ("path", "split", "duration")
-    required_columns = {name: name in df.columns for name in required_names}
     duration = {}
     if "duration" in df.columns and not df.empty:
         duration_series = pd.to_numeric(df["duration"], errors="coerce").dropna()
@@ -138,6 +84,80 @@ def index_summary(  # noqa: C901
             )
 
     numeric_shift_metrics = _numeric_shift_metrics(df)
+
+    return {
+        "duration": duration,
+        "label_presence": label_presence,
+        "mask_columns": mask_columns,
+        "channel_coverage_from_config": channel_coverage,
+        "split_source_label_counts": split_source_label_counts,
+        "channel_mask_coverage_by_split_source": channel_mask_coverage_by_split_source,
+        "numeric_shift_metrics": numeric_shift_metrics,
+    }
+
+
+def index_summary(
+    index_paths: list[str | Path],
+    *,
+    config: str | Path | None = None,
+    config_bytes: bytes | None = None,
+    local_path_base: str | Path | None = None,
+    label_name: str | None = None,
+    split_values: list[str] | None = None,
+    preset_path: str | Path | None = None,
+    sample_path_check: int = 0,
+    sample_npz_check: int = 0,
+    validated_summary: tuple[dict[str, Any], dict[str, set[str]]] | None = None,
+) -> dict[str, Any]:
+    resolved_paths = [resolve_repo_path(path, relative_to=local_path_base) for path in index_paths]
+    paths = [path for path in resolved_paths if path is not None]
+    if validated_summary is None:
+        cfg = config_summary(config, config_bytes=config_bytes, local_path_base=local_path_base) if config else None
+        survival_sidecar_keys = _survival_sidecar_keys(cfg, local_path_base=local_path_base)
+        multilabel_sidecar_keys = _multilabel_sidecar_keys(cfg, local_path_base=local_path_base)
+    else:
+        cfg, validated_sidecar_keys = validated_summary
+        survival_sidecar_keys = validated_sidecar_keys.get("survival")
+        multilabel_sidecar_keys = validated_sidecar_keys.get("multilabel")
+    survival_key_column = _survival_key_column(cfg)
+    survival_covariate_names = _survival_covariates(cfg)
+    multilabel_key_column = _multilabel_key_column(cfg)
+    data_summary = (cfg or {}).get("data") or {}
+    split_column = str(data_summary.get("split_column") or "split")
+    read_csv_kwargs: dict[str, Any] = {"low_memory": False}
+    converters = {key_column: str for key_column in (survival_key_column, multilabel_key_column) if key_column}
+    if converters:
+        read_csv_kwargs["converters"] = converters
+    source_issues: list[str] = []
+    if not paths and _uses_sex_age_preset_metadata(cfg, preset_path):
+        frames, paths, missing_inputs, source_issues = _sex_age_preset_frames(
+            cfg,
+            preset_path,
+            local_path_base=local_path_base,
+        )
+    elif not paths and _uses_sex_age_kaldi_manifest(cfg):
+        frames, paths, missing_inputs, source_issues = _kaldi_manifest_frames(
+            cfg,
+            split_column=split_column,
+            read_csv_kwargs=read_csv_kwargs,
+            local_path_base=local_path_base,
+        )
+    else:
+        missing_inputs = [str(path) for path in paths if not path.exists()]
+        frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
+    df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
+    df = _filter_splits(df, split_values, split_column=split_column)
+    if cfg and cfg.get("authoritative_variant") == "sex_age_baseline":
+        required_names: tuple[str, ...] = (
+            data_summary.get("key_column") or "eid",
+            split_column,
+            *((cfg.get("model") or {}).get("features") or []),
+            *(("path", "token_start") if data_summary.get("deduplicate_by_key") is False else ()),
+        )
+    else:
+        required_names = ("path", "split", "duration")
+    required_columns = {name: name in df.columns for name in required_names}
+    statistics = _index_statistics(df, cfg, label_name=label_name, split_column=split_column)
 
     path_check = {"checked": 0, "existing": 0, "missing_examples": []}
     if sample_path_check and "path" in df.columns:
@@ -213,16 +233,16 @@ def index_summary(  # noqa: C901
             if "source" in df.columns
             else df["dataset"].value_counts(dropna=False).to_dict() if "dataset" in df.columns else {}
         ),
-        "duration": duration,
-        "label_presence": label_presence,
-        "mask_columns": mask_columns,
-        "channel_coverage_from_config": channel_coverage,
+        "duration": statistics["duration"],
+        "label_presence": statistics["label_presence"],
+        "mask_columns": statistics["mask_columns"],
+        "channel_coverage_from_config": statistics["channel_coverage_from_config"],
         "survival_key": survival_key,
         "multilabel_key": multilabel_key,
         "survival_covariates": survival_covariates,
-        "split_source_label_counts": split_source_label_counts,
-        "channel_mask_coverage_by_split_source": channel_mask_coverage_by_split_source,
-        "numeric_shift_metrics": numeric_shift_metrics,
+        "split_source_label_counts": statistics["split_source_label_counts"],
+        "channel_mask_coverage_by_split_source": statistics["channel_mask_coverage_by_split_source"],
+        "numeric_shift_metrics": statistics["numeric_shift_metrics"],
         "sample_path_check": path_check,
         "warnings": warnings,
         "blocking_issues": blocking_issues,
