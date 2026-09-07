@@ -11,7 +11,7 @@ import signal
 import stat
 import subprocess
 import time
-from typing import Any, BinaryIO, TypedDict, TypeGuard, cast
+from typing import Any, BinaryIO, Literal, TypedDict, TypeGuard, cast
 
 from . import run_artifacts as artifacts, transport
 from .experiment_io import REMOTE_MISSING_RETURN_CODE
@@ -74,6 +74,22 @@ class _RequiredProcessIdentity(TypedDict):
 
 class ProcessIdentity(_RequiredProcessIdentity, total=False):
     runtime_commit: str
+
+
+class RunHealthFields(TypedDict):
+    health_status: str
+    gpu_summary: str
+    io_read_bytes: int | Literal[""]
+    io_write_bytes: int | Literal[""]
+    io_read_delta_bytes: int | Literal[""]
+    io_write_delta_bytes: int | Literal[""]
+    progress_status: Any
+    progress_processed: Any
+    progress_total: Any
+    progress_updated_at: Any
+    progress_age_seconds: int | None
+    log_age_seconds: int | Literal[""]
+    checkpoint_count: int | Literal[""]
 
 
 class ProcessIdentityError(RuntimeError):
@@ -702,7 +718,7 @@ def health_fields(
     running_state: bool | None,
     status: str,
     checkpoints: list[str] | None,
-) -> dict[str, Any]:
+) -> RunHealthFields:
     progress = read_run_progress(run_dir, row)
     io_counts = proc_io(row, pid)
     read_bytes = io_counts.get("read_bytes")

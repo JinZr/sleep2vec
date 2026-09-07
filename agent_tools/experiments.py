@@ -859,7 +859,7 @@ def index_checkpoints(run_dir: str | Path, *, remote: str | None = None) -> Path
     return root / "checkpoint_manifest.tsv"
 
 
-def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> dict[str, Any]:
+def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> tracking.ExperimentMonitorResult:
     """Observe managed runs once and commit their current status without launching work.
 
     Requires an active, valid managed workspace. Reads local/remote process,
