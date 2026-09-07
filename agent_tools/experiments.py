@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 import yaml
 
@@ -50,6 +50,19 @@ from .manifests import read_json, utc_now
 
 if TYPE_CHECKING:
     from .experiment_pipeline import PipelineResult
+
+
+class ExperimentNoteResult(TypedDict):
+    path: str
+    entry_id: str
+    appended: bool
+
+
+class ExperimentCompletionFields(TypedDict):
+    status: Literal["completed"]
+    completed_at: str
+    final_report: str
+    final_report_sha256: str
 
 
 def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
@@ -492,7 +505,7 @@ def append_experiment_note(
     entry_path: str | Path,
     *,
     remote: str | None = None,
-) -> dict[str, Any]:
+) -> ExperimentNoteResult:
     root = _target_root(run_dir, remote)
     experiment, rows = _managed_workspace(root, remote=remote, allow_completed=True)
     entry = read_managed_yaml_mapping(
@@ -738,14 +751,13 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         expected_guard_sha256=manifest_sha256,
     ):
         raise RuntimeError(f"Final report changed during publication: {target}")
-    manifest["experiment"].update(
-        {
-            "status": "completed",
-            "completed_at": utc_now(),
-            "final_report": str(target),
-            "final_report_sha256": report_sha256,
-        }
-    )
+    completion: ExperimentCompletionFields = {
+        "status": "completed",
+        "completed_at": utc_now(),
+        "final_report": str(target),
+        "final_report_sha256": report_sha256,
+    }
+    manifest["experiment"].update(completion)
     if selected_report is not None:
         manifest["experiment"]["selection_report_sha256"] = selected_report["sha256"]
     exp_io.append_event_at(root, "experiment_finalization_prepared", {"report": str(target)}, remote=remote)
