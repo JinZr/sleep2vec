@@ -300,3 +300,8 @@ and parity rules.
 Start with the focused suite in
 [High-Risk Seams And Tests](./MODULE_MAP.md#high-risk-seams-and-tests), then run
 the owning verification gate from [`AGENTS.md`](../../AGENTS.md).
+
+For agent-tools tests, local runs and CI share
+[`utils/test_agent_tools.py`](../../utils/test_agent_tools.py), which owns the
+test-process CPU default and random-order policy. Model/GPU tests use ordinary
+pytest; see `AGENTS.md` for commands.

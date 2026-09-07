@@ -59,6 +59,7 @@ jobs:
           shared_files = {
               ".github/workflows/unit_tests.yml",
               "requirements-agent-tools.txt",
+              "utils/test_agent_tools.py",
               "requirements-unit-tests.txt",
               "sleep2stat/config.py",
               "tests/agent_tools/test_agent_tools_recipes.py",
@@ -140,7 +141,7 @@ jobs:
 
       - name: Run recipe tests
         env:
-          PYTEST_ADDOPTS: --randomly-seed=${{ github.run_number }} --randomly-dont-reset-seed
+          PYTEST_ADDOPTS: --randomly-seed=${{ github.run_number }}
           RECIPE_MODE: ${{ needs.detect_changes.outputs.recipe_mode }}
           RECIPE_NODES_JSON: ${{ needs.detect_changes.outputs.recipe_nodes_json }}
         run: |
@@ -153,9 +154,9 @@ jobs:
 
           if os.environ["RECIPE_MODE"] == "changed":
               nodes = json.loads(os.environ["RECIPE_NODES_JSON"])
-              command = ["pytest", "-q", "-n", "auto", *nodes]
+              command = [sys.executable, "utils/test_agent_tools.py", "-q", "-n", "auto", *nodes]
           else:
-              command = ["pytest", "-q", "-n", "auto", "tests/agent_tools/test_agent_tools_recipes.py"]
+              command = [sys.executable, "utils/test_agent_tools.py", "-q", "-n", "auto", "tests/agent_tools/test_agent_tools_recipes.py"]
           sys.exit(subprocess.run(command).returncode)
           PY
 
@@ -197,10 +198,10 @@ jobs:
       # module (and thus torch) in the invoking python.
       - name: Run agent tools kernel tests
         env:
-          PYTEST_ADDOPTS: --randomly-seed=${{ github.run_number }} --randomly-dont-reset-seed
+          PYTEST_ADDOPTS: --randomly-seed=${{ github.run_number }}
         run: |
           echo "pytest random seed: ${GITHUB_RUN_NUMBER}"
-          pytest -q -n auto tests/agent_tools \
+          python utils/test_agent_tools.py -q -n auto tests/agent_tools \
             --ignore=tests/agent_tools/test_agent_run_manifest.py \
             --ignore=tests/agent_tools/test_agent_tools_sleep2stat.py \
             --ignore=tests/agent_tools/test_agent_sex_age_baseline.py \
