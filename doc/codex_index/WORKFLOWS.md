@@ -131,7 +131,8 @@ Direct finetune cannot select checkpoints on test; the supported route is a
 New tuning requests default to terminal-only agent proposals: design the bounded
 domain and opening batch, initialize, launch the authorized batch, then use the
 [proposal handshake](../agent_contracts/task_recipe.md#proposal-handshake) after
-complete results. Existing authored plans retain
+complete results. Inputs bind all committed terminal rounds, prior proposal
+rationales and available checkpoint trajectories. Existing authored plans retain
 their chosen workflow. Explicit static searches follow
 [search-space authorization](../agent_contracts/task_recipe.md#search-space),
 [registration preflight](../agent_contracts/task_recipe.md#registration-preflight),

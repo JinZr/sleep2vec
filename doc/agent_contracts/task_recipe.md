@@ -906,11 +906,40 @@ the exact snapshot without its issuance, retry appends the missing event. One
 matching event is idempotent; duplicate or conflicting records fail. Input v1
 must be regenerated, while proposal submissions remain schema v1.
 
+New inputs include `digest_rows` for **all committed terminal rounds** of this
+workflow, ordered by round and frozen plan order. The tool rebuilds them from
+registered plans, the canonical manifest and runtime artifacts; previously
+written digest CSVs are not historical authority. Uncommitted attempts and
+other workspace steps are excluded. Each row retains its `round`, `step_id`
+and `run_id`. Run IDs increase within the workflow's frozen step, so
+`evidence_run_ids` can cite any included round without a new identifier format.
+`is_incumbent` is `"True"` for the best successful run across this history
+(earlier round/plan order breaks equal-score ties), and `"False"` otherwise.
+No failed run is marked incumbent, even if it retains forensic metrics.
+
+Rows from proposed rounds include the accepted `proposal_rationale`,
+`proposal_path` and `proposal_sha256`. The submission, its issued input and
+ordered acceptance/execute evidence are verified before that rationale becomes
+bound history. Use it to compare the previous prediction with the actual result;
+consult relevant `RESEARCH_LOG.md` entries for additional research context.
+
+For a successful test-selected checkpoint objective, `checkpoint_path`, `epoch`
+and scalar `test_*` metrics belong to the same selected checkpoint.
+`monitor_checkpoint_path` identifies retained monitor/best-model evidence.
+`checkpoint_test_results` contains the complete validated trajectory, ordered
+by epoch and path, as `{checkpoint_path, epoch, metrics}` records. It is a JSON
+array in proposal inputs and compact JSON in digest CSV cells. Undefined
+non-finite auxiliary metrics become `null`; the objective must still be finite
+at every required checkpoint. Incomplete/failed results do not gain a trajectory.
+`stop_reason` comes from the canonical run manifest. Config and log locators
+remain available for targeted diagnosis; four log-tail lines and a best score
+alone do not establish overfitting, undertraining or optimization instability.
+
 Phase two requires one matching issuance and exact snapshot bytes before it
 trusts bounds or budget. It reconstructs the complete input from current recipe,
-workflow, round, manifest/registry, and runtime evidence, then repeats that
+workflow, all committed rounds, manifest/registry, and runtime evidence, then repeats that
 validation after candidate preflight and before lifecycle mutation. Config-byte
-or canonical-state drift therefore fails. If refreshed base and local layers
+or canonical-state drift in any historical round therefore fails. If refreshed base and local layers
 offset one another without changing the effective snapshot, the candidate is
 rebuilt and preflighted from that refreshed pair.
 
@@ -937,6 +966,11 @@ conflicting, or uncertain launch state continues to fail closed.
 Acceptance, launch, and completion events must occur in that order. Replaying
 an older proposal also requires every later committed agent-proposal round to
 have the same ordered completion evidence and no canonical `launch_failed` row.
+Replay of an already executed historical proposal uses its original bound input;
+it does not rebuild or extend that input with newer history. An unaccepted old
+input must satisfy the current complete-evidence contract and cannot be patched
+or silently reissued under an existing target-round issuance. Updating a runtime
+does not migrate pending proposal inputs.
 
 A proposal changes only the search space and submits exactly one of:
 

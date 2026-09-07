@@ -105,8 +105,11 @@ After each round is terminal and required results are complete, read the issued
 proposal input and its cited config, manifest, diagnostic and log evidence. Compare
 all available completed rounds with the incumbent and revisit earlier rationale
 and `RESEARCH_LOG.md`; the previous round's winner is not automatically the
-workflow's best result. Use test feedback only under its frozen authorization.
-Use the exact evidence identities and submission format
+workflow's best result. The issued rows identify the global incumbent and carry
+accepted prior proposal rationale; inspect `checkpoint_test_results` trajectories,
+`monitor_checkpoint_path` and `stop_reason` when present. Keep validation-monitor
+and test-objective checkpoint identities distinct, and use test feedback only
+under its frozen authorization. Use the exact evidence identities and submission format
 in the [proposal handshake](../../doc/agent_contracts/task_recipe.md#proposal-handshake).
 
 Write a concise, useful `rationale` using the existing free-text field:

@@ -634,7 +634,7 @@ def _build_parser() -> argparse.ArgumentParser:
     adaptive_step_cmd = _command(
         sub,
         "hparam-adaptive-step",
-        "Issue agent inputs or preview a proposal. Launches a round only with --execute.",
+        "Issue complete-history agent inputs or preview a proposal. Launches a round only with --execute.",
     )
     adaptive_step_cmd.add_argument("--workflow-dir", required=True, help="Adaptive workflow root to advance.")
     adaptive_step_cmd.add_argument(
