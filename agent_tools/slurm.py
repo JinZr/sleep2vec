@@ -279,7 +279,7 @@ def fixed_node_resource_capacity(
     }
 
 
-def submit_token(run: dict[str, Any], resources: SlurmResources, runtime_commit: str) -> str:
+def submit_token(run: Mapping[str, Any], resources: SlurmResources, runtime_commit: str) -> str:
     payload = {
         "experiment_id": run["experiment_id"],
         "step_id": run["step_id"],
@@ -296,7 +296,7 @@ def submit_token(run: dict[str, Any], resources: SlurmResources, runtime_commit:
 
 def render_batch_script(
     *,
-    run: dict[str, Any],
+    run: Mapping[str, Any],
     execution: dict[str, Any],
     resources: SlurmResources,
     token: str,

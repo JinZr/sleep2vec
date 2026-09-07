@@ -37,6 +37,7 @@ from .decision_paths import (
 )
 from .experiment_workspace import (
     SCHEDULER_PLAN_IDENTITY_FIELDS,
+    RunIdentity,
     append_event,
     ensure_experiment_workspace,
     experiment_root,
@@ -57,7 +58,7 @@ _FINAL_EVAL_CONFIG_SNAPSHOT = "_final_eval_config_snapshot"
 
 
 class HparamRunLayout(TypedDict):
-    identity: dict[str, str]
+    identity: RunIdentity
     parameters: dict[str, Any]
     run_dir: Path
 
@@ -167,11 +168,12 @@ def final_test_checkpoint_issues(
                 )
             )
             return issues
-        recipe[_FINAL_EVAL_CONFIG_SNAPSHOT] = {
+        final_config_snapshot: plan_contract.BoundFinalEvalConfigSnapshot = {
             "source_path": str(final_config),
             "bytes": config_bytes,
             "sha256": hashlib.sha256(config_bytes).hexdigest(),
         }
+        recipe[_FINAL_EVAL_CONFIG_SNAPSHOT] = final_config_snapshot
         try:
             validate_finetune_config_bytes(recipe, config_bytes)
         except Exception as exc:
@@ -931,7 +933,7 @@ def write_hparam_plan(
     final_allowed = final_script_allowed(recipe, evaluation, False)
     frozen_final_eval_config = out / FROZEN_FINAL_EVAL_CONFIG_NAME
     write_frozen_final_eval_config = physical_out / FROZEN_FINAL_EVAL_CONFIG_NAME
-    bound_final_config = None
+    bound_final_config: tuple[dict[str, Any], bytes, str] | None = None
     final_config_snapshot = final_eval_config_snapshot(recipe)
     if final_allowed and has_explicit_final_eval_config(recipe):
         if final_config_snapshot is None:
@@ -1095,11 +1097,12 @@ def write_hparam_plan(
         "resolved_recipe_sha256": file_sha256(physical_out / "recipe.resolved.yaml"),
     }
     if bound_final_config is not None:
-        plan_payload["final_eval_config"] = {
+        final_eval_config: plan_contract.FinalEvalConfigDescriptor = {
             "path": str(frozen_final_eval_config),
             "sha256": file_sha256(write_frozen_final_eval_config),
             "source_path": bound_final_config[0]["source_path"],
         }
+        plan_payload["final_eval_config"] = final_eval_config
     # plan.json is the terminal physical-plan manifest and is written only after
     # every frozen file in the bundle is complete.
     write_json(physical_out / "plan.json", plan_payload)

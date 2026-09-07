@@ -1222,7 +1222,9 @@ def _materialize_single_run_plan(
     run_adapter = get_adapter(task)
     assert run_adapter is not None
     run_index = next_run_index(recipe) if run_index_offset is None else run_index_offset
-    run = plan_contract.generic_run_contract(recipe, out, run_index, run_adapter)
+    run: plan_contract.GenericRunContract | dict[str, Any] = plan_contract.generic_run_contract(
+        recipe, out, run_index, run_adapter
+    )
     run_id = run["run_id"]
     run_name = run["run_name"]
     write_run_dir = write_out / "runs" / f"{run_id}--{run_name}"

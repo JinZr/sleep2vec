@@ -27,7 +27,7 @@ from typing import Any, Mapping
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
 from ..models import ConfigSummary, ConfigSummaryInput, coerce_list
-from ..plan_contract import CompiledPlanContract
+from ..plan_contract import CompiledPlanContract, GenericCompiledPlanContract
 from ..plan_rendering import finetune_loaded_split_values
 
 
@@ -332,7 +332,7 @@ class TaskAdapter:
             run["input_snapshots"] = input_snapshots
         commands = plan_contract.generic_commands(recipe, run, self, config_bytes)
         script_text = plan_contract.generic_script_text(recipe, run, self, commands, input_snapshots)
-        contract: CompiledPlanContract = {
+        contract: GenericCompiledPlanContract = {
             "runs": [run],
             "commands": commands,
             "script_text": script_text,
@@ -340,7 +340,7 @@ class TaskAdapter:
         if run.get("scheduler_type") == "slurm":
             execution = recipe["execution"]
             resources = slurm.normalize_resources(execution["scheduler"], execution.get("gpus_per_run", 1))
-            run.update(command=commands[0], script_sha256=hashlib.sha256(script_text.encode()).hexdigest())
+            run.update({"command": commands[0], "script_sha256": hashlib.sha256(script_text.encode()).hexdigest()})
             token = slurm.submit_token(run, resources, execution["runtime_commit"])
             scheduler_text = slurm.render_batch_script(
                 run=run,
@@ -354,8 +354,10 @@ class TaskAdapter:
                 module=self.frozen_command_prefix(recipe)[2],
             )
             run.update(
-                scheduler_submit_token=token,
-                scheduler_script_sha256=hashlib.sha256(scheduler_text.encode()).hexdigest(),
+                {
+                    "scheduler_submit_token": token,
+                    "scheduler_script_sha256": hashlib.sha256(scheduler_text.encode()).hexdigest(),
+                }
             )
             contract["scheduler_script_text"] = scheduler_text
         launch_subcommand = None

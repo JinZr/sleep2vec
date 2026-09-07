@@ -18,6 +18,12 @@ from . import experiment_io as exp_io, research_log, transport
 from .models import REPO_ROOT, is_full_git_object_id, json_ready
 
 
+class RunIdentity(TypedDict):
+    run_id: str
+    run_name: str
+    version: str
+
+
 class AdaptiveInitEvent(TypedDict):
     round: int
     recipe_path: str
@@ -831,7 +837,7 @@ def event_matches(event: dict[str, Any], event_type: str, payload: Mapping[str, 
 
 def run_identity(
     recipe: dict[str, Any], index: int, parameters: dict[str, Any], *, run_name: str | None = None
-) -> dict[str, str]:
+) -> RunIdentity:
     run_id = f"run-{index:03d}"
     semantic_name = safe_artifact_name(run_name) if run_name is not None else semantic_run_name(parameters)
     experiment_id = str((recipe.get("experiment") or {}).get("id"))
