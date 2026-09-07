@@ -220,7 +220,7 @@ def run_experiment_pipeline(
             raise
 
 
-def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool | None) -> None:  # noqa: C901
+def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool | None) -> None:
     raw_pipeline = spec.get("pipeline")
     kind = raw_pipeline.get("kind") if isinstance(raw_pipeline, dict) else None
     legacy_version = spec.get("schema_version")
@@ -247,6 +247,41 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
     if pipeline.get("finalize") is not True:
         raise ValueError("pipeline.finalize must be true.")
 
+    _validate_runtime_execution(spec)
+
+    evaluation = _mapping(spec, "evaluation_policy")
+    _reject_unknown_fields(evaluation, _EVALUATION_FIELDS, "evaluation_policy")
+    if evaluation.get("external_test_locked") is not False or evaluation.get("final_test_unlocked") is not True:
+        raise ValueError("External pipeline spec must explicitly unlock final test evaluation.")
+    if unlock_final_test is False:
+        raise ValueError("External pipeline execution also requires --unlock-final-test.")
+
+    checkpoint_policy = _mapping(spec, "checkpoint_policy")
+    _reject_unknown_fields(checkpoint_policy, _CHECKPOINT_POLICY_FIELDS, "checkpoint_policy")
+    if type(checkpoint_policy.get("avg_ckpts")) is not int or checkpoint_policy["avg_ckpts"] != 1:
+        raise ValueError("checkpoint_policy.avg_ckpts must be 1.")
+    if checkpoint_policy.get("require_no_model_averaging") is not True:
+        raise ValueError("checkpoint_policy.require_no_model_averaging must be true.")
+    prefixes = checkpoint_policy.get("forbidden_state_dict_prefixes")
+    if (
+        not isinstance(prefixes, list)
+        or not prefixes
+        or any(not isinstance(item, str) or not item for item in prefixes)
+    ):
+        raise ValueError("checkpoint_policy.forbidden_state_dict_prefixes must be a non-empty string list.")
+    if not {"ema_model.", "running_mean_model."}.issubset(prefixes):
+        raise ValueError("checkpoint_policy.forbidden_state_dict_prefixes must include EMA and running-mean keys.")
+    if checkpoint_policy.get("require_ahi_eval_threshold") is not True:
+        raise ValueError("checkpoint_policy.require_ahi_eval_threshold must be true.")
+
+    _validate_pipeline_sources_and_jobs(spec, root=root, kind=kind)
+    if kind == COHORT_SELECTION_KIND:
+        _validate_cohort_selection_contract(spec)
+    if not pipeline_id:
+        raise AssertionError("validated pipeline id is empty")
+
+
+def _validate_runtime_execution(spec: dict[str, Any]) -> None:
     runtime = _mapping(spec, "runtime")
     _reject_unknown_fields(runtime, _RUNTIME_FIELDS, "runtime")
     for field in ("workdir", "runtime_commit"):
@@ -308,31 +343,8 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
     if type(execution.get("max_attempts")) is not int or execution["max_attempts"] != 2:
         raise ValueError("Managed evaluation pipelines require execution.max_attempts=2.")
 
-    evaluation = _mapping(spec, "evaluation_policy")
-    _reject_unknown_fields(evaluation, _EVALUATION_FIELDS, "evaluation_policy")
-    if evaluation.get("external_test_locked") is not False or evaluation.get("final_test_unlocked") is not True:
-        raise ValueError("External pipeline spec must explicitly unlock final test evaluation.")
-    if unlock_final_test is False:
-        raise ValueError("External pipeline execution also requires --unlock-final-test.")
 
-    checkpoint_policy = _mapping(spec, "checkpoint_policy")
-    _reject_unknown_fields(checkpoint_policy, _CHECKPOINT_POLICY_FIELDS, "checkpoint_policy")
-    if type(checkpoint_policy.get("avg_ckpts")) is not int or checkpoint_policy["avg_ckpts"] != 1:
-        raise ValueError("checkpoint_policy.avg_ckpts must be 1.")
-    if checkpoint_policy.get("require_no_model_averaging") is not True:
-        raise ValueError("checkpoint_policy.require_no_model_averaging must be true.")
-    prefixes = checkpoint_policy.get("forbidden_state_dict_prefixes")
-    if (
-        not isinstance(prefixes, list)
-        or not prefixes
-        or any(not isinstance(item, str) or not item for item in prefixes)
-    ):
-        raise ValueError("checkpoint_policy.forbidden_state_dict_prefixes must be a non-empty string list.")
-    if not {"ema_model.", "running_mean_model."}.issubset(prefixes):
-        raise ValueError("checkpoint_policy.forbidden_state_dict_prefixes must include EMA and running-mean keys.")
-    if checkpoint_policy.get("require_ahi_eval_threshold") is not True:
-        raise ValueError("checkpoint_policy.require_ahi_eval_threshold must be true.")
-
+def _validate_pipeline_sources_and_jobs(spec: dict[str, Any], *, root: Path, kind: str) -> None:
     sources = _mapping(spec, "checkpoint_sources")
     if not sources:
         raise ValueError("checkpoint_sources must not be empty.")
@@ -397,10 +409,6 @@ def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool 
         expected_workers = {"psg": 8, "bcg": 16}.get(str(job["modality"]).lower())
         if expected_workers is not None and workers != expected_workers:
             raise ValueError(f"jobs[{index}].num_workers must be {expected_workers} for {job['modality']} inference.")
-    if kind == COHORT_SELECTION_KIND:
-        _validate_cohort_selection_contract(spec)
-    if not pipeline_id:
-        raise AssertionError("validated pipeline id is empty")
 
 
 def _validate_cohort_selection_contract(spec: dict[str, Any]) -> None:
@@ -2202,7 +2210,7 @@ def _write_registered_jobs(path: Path, rows: list[dict[str, Any]]) -> None:
         raise PipelineRegistrationRecoveryError("Pipeline jobs projection must be reconciled on resume.") from exc
 
 
-def _run_attempts(  # noqa: C901
+def _run_attempts(
     root: Path,
     pipeline_dir: Path,
     spec: dict[str, Any],
@@ -2281,33 +2289,7 @@ def _run_attempts(  # noqa: C901
                 (controller_dir / "spec.source.yaml").read_text(),
                 controller_spec,
             )
-        changed = False
-        for row in attempts:
-            key = cast(tuple[str, str], managed_run_key(row))
-            run = canonical[key]
-            status = str(run.get("status") or "")
-            if row.get("status") != status:
-                row["status"] = status
-                changed = True
-            runtime_commit = str(run.get("runtime_commit") or "")
-            if row.get("runtime_commit") != runtime_commit:
-                row["runtime_commit"] = runtime_commit
-                changed = True
-            if (
-                status in SUCCESS_STATUSES
-                and str(row.get("verified") or "").lower() != "true"
-                and row.get("validation_error") in (None, "")
-            ):
-                try:
-                    manifest_path = _validate_result_manifest(spec, row, run)
-                except ValueError as exc:
-                    row["verified"] = "false"
-                    row["validation_error"] = str(exc)
-                else:
-                    row["verified"] = "true"
-                    row["result_manifest"] = str(manifest_path)
-                    row["validation_error"] = ""
-                changed = True
+        changed = _refresh_attempt_results(spec, attempts=attempts, canonical=canonical)
         if changed:
             _write_jobs(jobs_path, attempts)
 
@@ -2360,6 +2342,42 @@ def _run_attempts(  # noqa: C901
             final_status = "blocked" if any(job["status"] == "blocked" for job in logical) else "failed"
             return {"status": final_status, "jobs": logical}
         time.sleep(poll_seconds)
+
+
+def _refresh_attempt_results(
+    spec: dict[str, Any],
+    *,
+    attempts: list[dict[str, Any]],
+    canonical: dict[tuple[str, str], dict[str, Any]],
+) -> bool:
+    changed = False
+    for row in attempts:
+        key = cast(tuple[str, str], managed_run_key(row))
+        run = canonical[key]
+        status = str(run.get("status") or "")
+        if row.get("status") != status:
+            row["status"] = status
+            changed = True
+        runtime_commit = str(run.get("runtime_commit") or "")
+        if row.get("runtime_commit") != runtime_commit:
+            row["runtime_commit"] = runtime_commit
+            changed = True
+        if (
+            status in SUCCESS_STATUSES
+            and str(row.get("verified") or "").lower() != "true"
+            and row.get("validation_error") in (None, "")
+        ):
+            try:
+                manifest_path = _validate_result_manifest(spec, row, run)
+            except ValueError as exc:
+                row["verified"] = "false"
+                row["validation_error"] = str(exc)
+            else:
+                row["verified"] = "true"
+                row["result_manifest"] = str(manifest_path)
+                row["validation_error"] = ""
+            changed = True
+    return changed
 
 
 def _pipeline_execution(spec: dict[str, Any]) -> dict[str, Any]:
