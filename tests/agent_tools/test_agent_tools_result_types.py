@@ -308,11 +308,40 @@ def test_result_types_reach_callers(tmp_path: Path):
             lifecycle["report_valid"] = "yes"  # type: ignore[typeddict-item]
             required_report: str = lifecycle["expected_report"]  # type: ignore[assignment]
             status_snapshot = experiment_tracking.experiment_status_snapshot({}, steps, [], root=Path("/workspace"))
+            status_summary = status_snapshot["summary"]
+            status_counts: dict[str, int] = status_summary["status_counts"]
+            run_count: int = status_summary["run_count"]
+            status_summary["run_counts"]  # type: ignore[typeddict-item]
+            status_summary["run_count"] = "1"  # type: ignore[typeddict-item]
+            status_summary["status_counts"]["completed"] = "1"  # type: ignore[assignment]
+            status_blocker = status_snapshot["blockers"][0]
+            blocker_step: str | None = status_blocker["step_id"]
+            blocker_runs: list[str] = status_blocker["run_ids"]
+            status_blocker["run_id"]  # type: ignore[typeddict-item]
+            status_blocker["blocked_actions"] = [1]  # type: ignore[list-item]
+            constructed_blocker = experiment_tracking._status_blocker("missing_stop_reason", "Record a reason")
+            constructed_blocker["message"] = None  # type: ignore[typeddict-item]
             manual_choice: bool = status_snapshot["decision"]["manual_choice_required"]
             blocked_actions: list[str] = status_snapshot["decision"]["blocked_actions"]
             status_snapshot["decisions"]  # type: ignore[typeddict-item]
             status_snapshot["decision"]["manual_choice_required"] = 1  # type: ignore[typeddict-item]
-            status_snapshot["decision"]["recommended_next"]["command"]  # type: ignore[index]
+            status_snapshot["decision"]["recommended_next"]["argv"]  # type: ignore[index]
+            recommended = status_snapshot["decision"]["recommended_next"]
+            if recommended is not None:
+                action_argv: list[str] = recommended["argv"]
+                action_host: str | None = recommended["control_host"]
+                recommended["command"]  # type: ignore[typeddict-item]
+                recommended["argv"] = [1]  # type: ignore[list-item]
+                recommended["required_inputs"] = "report_path"  # type: ignore[typeddict-item]
+                if "required_inputs" in recommended:
+                    required_inputs: list[str] = recommended["required_inputs"]
+            alternative = status_snapshot["decision"]["other_legal_actions"][0]
+            alternative["reason"] = 1  # type: ignore[typeddict-item]
+            constructed_action = experiment_tracking._status_action("monitor", "Refresh evidence", ["python"])
+            constructed_action["argv"] = "python"  # type: ignore[typeddict-item]
+            missing_action_fields: experiment_tracking.ExperimentStatusAction = {  # type: ignore[typeddict-item]
+                "id": "monitor",
+            }
             experiment_tracking.hparam_selection_lifecycle(
                 [{"manifest": {}, "plans": ["/plan"]}], [], root=Path("/workspace"),  # type: ignore[list-item]
             )
