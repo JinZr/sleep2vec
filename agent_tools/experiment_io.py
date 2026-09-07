@@ -248,7 +248,35 @@ def read_managed_files_at(
     return payload
 
 
-def read_managed_output_texts_at(  # noqa: C901
+def _read_remote_managed_output_texts(root: Path, path_keys: list[str], *, remote: str) -> dict[str, str | None]:
+    request = json.dumps([str(root), path_keys])
+    result = _run_remote_text_program(remote, "experiment_io.read_managed_output_texts", request)
+    if result.returncode == 2:
+        raise ValueError(result.stderr.strip() or "Managed output files are invalid.")
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"SSH managed-output read failed on {remote}: {detail}")
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        payload = {}
+        for key, value in pairs:
+            if key in payload:
+                raise ValueError("SSH managed-output read returned duplicate paths.")
+            payload[key] = value
+        return payload
+
+    remote_payload = json.loads(result.stdout, object_pairs_hook=unique_object)
+    # A complete positive response is required even when SSH rewrites a failed child's exit status.
+    if (
+        not isinstance(remote_payload, dict)
+        or set(remote_payload) != set(path_keys)
+        or any(value is not None and not isinstance(value, str) for value in remote_payload.values())
+    ):
+        raise ValueError("SSH managed-output read returned an invalid or incomplete response.")
+    return remote_payload
+
+
+def read_managed_output_texts_at(
     root: str | Path,
     paths: Sequence[str | Path],
     *,
@@ -266,31 +294,7 @@ def read_managed_output_texts_at(  # noqa: C901
     if not targets:
         return {}
     if remote:
-        request = json.dumps([str(root), path_keys])
-        result = _run_remote_text_program(remote, "experiment_io.read_managed_output_texts", request)
-        if result.returncode == 2:
-            raise ValueError(result.stderr.strip() or "Managed output files are invalid.")
-        if result.returncode != 0:
-            detail = result.stderr.strip() or f"exit code {result.returncode}"
-            raise RuntimeError(f"SSH managed-output read failed on {remote}: {detail}")
-
-        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-            payload = {}
-            for key, value in pairs:
-                if key in payload:
-                    raise ValueError("SSH managed-output read returned duplicate paths.")
-                payload[key] = value
-            return payload
-
-        remote_payload = json.loads(result.stdout, object_pairs_hook=unique_object)
-        # A complete positive response is required even when SSH rewrites a failed child's exit status.
-        if (
-            not isinstance(remote_payload, dict)
-            or set(remote_payload) != set(path_keys)
-            or any(value is not None and not isinstance(value, str) for value in remote_payload.values())
-        ):
-            raise ValueError("SSH managed-output read returned an invalid or incomplete response.")
-        return remote_payload
+        return _read_remote_managed_output_texts(root, path_keys, remote=remote)
 
     payload: dict[str, str | None] = {}
     seen_inodes: set[tuple[int, int]] = set()

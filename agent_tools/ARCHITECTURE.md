@@ -186,7 +186,7 @@ unchecked. The checker spells the ceiling value; nothing else does.
 Three checks, mirroring the mypy ledger ratchet in `utils/type_check.py`:
 
 1. **The ceiling** — C901 over `agent_tools`.
-2. **The suppression ledger** — the 13 functions already above the ceiling carry
+2. **The suppression ledger** — the 12 functions already above the ceiling carry
    `# noqa: C901` on their `def` line. Re-running with noqa disabled proves
    every suppression still hides a real violation (a stale one must be deleted),
    that nothing else is silencing C901, and that the live set is exactly
