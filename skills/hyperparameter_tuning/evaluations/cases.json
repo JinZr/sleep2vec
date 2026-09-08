@@ -1,0 +1,260 @@
+{
+  "common": {
+    "evidence_kind": "Invented teaching cases, not experiment results or runnable recipes.",
+    "task": "Concept planning only: choose up to two complete next-round configurations and explain the evidence, alternatives, uncertainty, and which next result would change your interpretation. Cite the supplied run IDs. Do not run tools for experiments, publish a recipe, or launch work. There is no single required candidate set.",
+    "objective": {
+      "metric": "val_auroc",
+      "mode": "max",
+      "selection_split": "val"
+    },
+    "authority": "Scientific/data/checkpoint/runtime identity is fixed. Training and validation evidence is allowed; test feedback is not available. The bounded technical domain and four remaining runs over two rounds are authorized. Seed is fixed; do not invent independent-seed replication or expand the domain.",
+    "remaining_budget": {
+      "runs": 4,
+      "rounds": 2,
+      "round_size": 2
+    },
+    "domain": {
+      "runtime.lr": [
+        0.0001,
+        0.0004
+      ],
+      "runtime.epochs": [
+        8,
+        16
+      ],
+      "yaml:/model/head/dropout": [
+        0.1,
+        0.3
+      ]
+    },
+    "history_note": "W&B histories below are already synced observations and may be sampled or sparse. Missing values are not zero. The _step key is a W&B log index. Learning-rate min/max values do not specify schedule order. No actual completed-step count or Lightning early-stop cause is recorded."
+  },
+  "cases": [
+    {
+      "id": "rising_observations",
+      "runs": [
+        {
+          "run_id": "run-000",
+          "status": "finished",
+          "is_incumbent": true,
+          "parameters": {
+            "runtime.lr": 0.0003,
+            "runtime.epochs": 12,
+            "yaml:/model/head/dropout": 0.1
+          },
+          "val_auroc": 0.741,
+          "checkpoint_epoch": 7,
+          "stop_reason": "",
+          "training_history": {
+            "observations": [
+              {
+                "epoch": 0,
+                "metrics": {
+                  "train_loss_epoch": 0.66,
+                  "val_auroc": 0.68,
+                  "val_loss": 0.65
+                }
+              },
+              {
+                "epoch": 3,
+                "metrics": {
+                  "train_loss_epoch": 0.56,
+                  "val_auroc": 0.72,
+                  "val_loss": 0.59
+                }
+              },
+              {
+                "epoch": 7,
+                "metrics": {
+                  "train_loss_epoch": 0.49,
+                  "val_auroc": 0.741,
+                  "val_loss": 0.56
+                }
+              }
+            ],
+            "learning_rate_ranges": {
+              "lr-AdamW": {
+                "min": 3e-05,
+                "max": 0.0003
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "declining_after_best",
+      "runs": [
+        {
+          "run_id": "run-000",
+          "status": "finished",
+          "is_incumbent": true,
+          "parameters": {
+            "runtime.lr": 0.0003,
+            "runtime.epochs": 12,
+            "yaml:/model/head/dropout": 0.1
+          },
+          "val_auroc": 0.741,
+          "checkpoint_epoch": 7,
+          "stop_reason": "",
+          "training_history": {
+            "observations": [
+              {
+                "epoch": 0,
+                "metrics": {
+                  "train_loss_epoch": 0.66,
+                  "val_auroc": 0.68,
+                  "val_loss": 0.65
+                }
+              },
+              {
+                "epoch": 3,
+                "metrics": {
+                  "train_loss_epoch": 0.56,
+                  "val_auroc": 0.72,
+                  "val_loss": 0.59
+                }
+              },
+              {
+                "epoch": 7,
+                "metrics": {
+                  "train_loss_epoch": 0.49,
+                  "val_auroc": 0.741,
+                  "val_loss": 0.56
+                }
+              },
+              {
+                "epoch": 9,
+                "metrics": {
+                  "train_loss_epoch": 0.44,
+                  "val_auroc": 0.728,
+                  "val_loss": 0.59
+                }
+              },
+              {
+                "epoch": 11,
+                "metrics": {
+                  "train_loss_epoch": 0.4,
+                  "val_auroc": 0.714,
+                  "val_loss": 0.63
+                }
+              }
+            ],
+            "learning_rate_ranges": {
+              "lr-AdamW": {
+                "min": 3e-05,
+                "max": 0.0003
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "missing_curve",
+      "runs": [
+        {
+          "run_id": "run-000",
+          "status": "finished",
+          "is_incumbent": true,
+          "parameters": {
+            "runtime.lr": 0.0003,
+            "runtime.epochs": 12,
+            "yaml:/model/head/dropout": 0.1
+          },
+          "val_auroc": 0.741,
+          "checkpoint_epoch": 7,
+          "stop_reason": "",
+          "training_history": ""
+        }
+      ],
+      "additional_evidence": "Only a W&B log index _step=900 is retained in a log excerpt. No trainer/global_step, curve or explicit training-stop reason is available."
+    },
+    {
+      "id": "historical_incumbent",
+      "runs": [
+        {
+          "run_id": "run-000",
+          "status": "finished",
+          "is_incumbent": true,
+          "parameters": {
+            "runtime.lr": 0.0003,
+            "runtime.epochs": 12,
+            "yaml:/model/head/dropout": 0.1
+          },
+          "val_auroc": 0.741,
+          "checkpoint_epoch": 7,
+          "stop_reason": "",
+          "round": 0,
+          "training_history": ""
+        },
+        {
+          "run_id": "run-001",
+          "status": "finished",
+          "is_incumbent": false,
+          "parameters": {
+            "runtime.lr": 0.0004,
+            "runtime.epochs": 12,
+            "yaml:/model/head/dropout": 0.1
+          },
+          "val_auroc": 0.731,
+          "checkpoint_epoch": 5,
+          "stop_reason": "",
+          "round": 1,
+          "training_history": "",
+          "proposal_rationale": "A higher LR may improve the incumbent; hold other settings fixed."
+        },
+        {
+          "run_id": "run-002",
+          "status": "finished",
+          "is_incumbent": false,
+          "parameters": {
+            "runtime.lr": 0.0003,
+            "runtime.epochs": 16,
+            "yaml:/model/head/dropout": 0.1
+          },
+          "val_auroc": 0.737,
+          "checkpoint_epoch": 10,
+          "stop_reason": "",
+          "round": 1,
+          "training_history": "",
+          "proposal_rationale": "A longer horizon may improve the incumbent; hold other settings fixed."
+        }
+      ]
+    },
+    {
+      "id": "small_joint_gain",
+      "runs": [
+        {
+          "run_id": "run-000",
+          "status": "finished",
+          "is_incumbent": false,
+          "parameters": {
+            "runtime.lr": 0.0003,
+            "runtime.epochs": 12,
+            "yaml:/model/head/dropout": 0.1
+          },
+          "val_auroc": 0.74,
+          "checkpoint_epoch": 7,
+          "stop_reason": "",
+          "training_history": ""
+        },
+        {
+          "run_id": "run-001",
+          "status": "finished",
+          "is_incumbent": true,
+          "parameters": {
+            "runtime.lr": 0.0004,
+            "runtime.epochs": 12,
+            "yaml:/model/head/dropout": 0.3
+          },
+          "val_auroc": 0.742,
+          "checkpoint_epoch": 7,
+          "stop_reason": "",
+          "training_history": ""
+        }
+      ],
+      "additional_evidence": "There are no independent repeats or noise estimates. The latest candidate jointly changed LR and dropout. Both changed values reach their frozen upper bound."
+    }
+  ]
+}

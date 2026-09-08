@@ -242,6 +242,10 @@ Use final external evaluation only under the explicit unlock. Report the best
 observed candidate within the frozen domain, metric, split and budget, not a
 global optimum.
 
+For skill maintenance, use the [fixed reasoning cases and review rubric](evaluations/rubric.md)
+to inspect whether changed guidance affects decisions; these are concept-planning
+cases, not an experiment launcher or a numerical-answer test.
+
 ## Common failure modes
 
 For missing decisions, slow checks, submission uncertainty, incomplete
