@@ -108,6 +108,20 @@ For test-selected hparam runs, the terminal runtime manifest also contains
 `epoch=*.ckpt` in the frozen checkpoint directory.
 Top-level `metrics` remains the test result for the validation-best checkpoint;
 checkpoint-level hparam selection uses only the complete nested evidence.
+
+Finetune's `multilabel_per_disease_metrics.csv` and
+`survival_per_disease_metrics.csv` retain each evaluated checkpoint's rows,
+identified by `ckpt_path`. The optional `--export-predictions` flag (disabled by
+default) also writes each checkpoint's predictions to the run's `predictions.csv`,
+recorded as `prediction_csv_path` in the terminal runtime manifest. Predictions
+are written after each test to avoid retaining all checkpoints' predictions in
+memory; partial files from failed or interrupted runs are not complete evidence.
+Consumers of a selected model must filter these tables by the exact checkpoint
+path in the selection result, not by row order or the validation-best summary.
+Missing rows must not fall back to another checkpoint. Prediction output that
+was not enabled is unavailable, and historical missing outputs require separate
+authorized evaluation rather than inference from aggregate scores.
+
 The [selection owner](task_recipe.md#selection-and-selected-candidate-consumers)
 keeps a many-checkpoint audit separate from this table's one lifecycle row per
 run, which projects only that run's best test-ranked checkpoint.
