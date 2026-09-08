@@ -99,6 +99,15 @@ prior experiments. Choose a bounded domain and first-round points using:
   semantics, including pretrained-backbone requirements for frozen adaptation.
   Runtime values remain scalar. There is no automatic profile-to-adaptive compiler.
 
+Before freezing, consider plausible opening outcomes: continued improvement at a
+boundary, or deterioration away from an earlier best point. Explain which useful
+follow-up comparisons the domain permits and which it deliberately excludes.
+More axes or wider bounds are not inherently better; allocate room to hypotheses
+that merit the remaining fits. Distinguish a measured cost limit from a provisional
+compute judgment when throughput is unknown. Use the
+[initial-domain example](examples/initial_search_domain.md) for this reasoning;
+it does not prescribe numerical ranges.
+
 The templates are starting examples to adjust to the actual base config, runtime
 and evidence. Choose technical values within the authorized domain without asking
 for each learning rate, training length, scheduler, dropout or LoRA level. Unknown
