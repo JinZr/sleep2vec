@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 from tempfile import TemporaryDirectory
 import time
+from types import SimpleNamespace
 from typing import Any, Literal, TypedDict, TypeVar, overload
 
 import yaml
@@ -27,6 +28,7 @@ from . import (
     managed_scheduler,
     plan_contract,
     plan_hparam,
+    plan_rendering,
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
@@ -545,10 +547,19 @@ def _digest_rows(
                 )
         row["status"] = status.get("status", "")
         row["stop_reason"] = status.get("stop_reason", "")
+        history_monitor = manifest.get("monitor")
+        if not history_monitor:
+            run_config = yaml.safe_load(Path(run["config"]).read_text())
+            task = run_config.get("finetune", {}).get("task") or {}
+            history_monitor = task.get("monitor")
+            if not history_monitor:
+                task_args = SimpleNamespace()
+                plan_rendering.apply_finetune_task_flags(task_args, recipe, task)
+                history_monitor = task_args.monitor
         training_history = experiment_sources.read_wandb_training_history(
             workspace,
             status,
-            monitor=str(manifest.get("monitor") or ""),
+            monitor=str(history_monitor),
             objective=objective["metric"],
         )
         row["training_history"] = (

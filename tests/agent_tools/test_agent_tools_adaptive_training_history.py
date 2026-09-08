@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from agent_tools import adaptive_hparam, experiment_sources, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
@@ -255,3 +256,54 @@ def test_ssh_digest_binds_workspace_history_by_canonical_run_id(tmp_path: Path, 
     assert history["observations"] == [{"epoch": 2, "metrics": {"val_loss": 0.4}}]
     assert row["test_auroc"] == "0.73"
     assert row["val_ahi_pearson"] == "0.5"
+
+
+@pytest.mark.parametrize("status", ["stopped", "failed"])
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+@pytest.mark.parametrize("explicit_task", [False, True])
+def test_incomplete_run_history_keeps_frozen_validation_monitor(
+    tmp_path: Path, monkeypatch, status: str, variant: str, explicit_task: bool
+):
+    monitor = "val_auroc" if explicit_task else "val_ahi_pearson"
+    task = (
+        {"type": "classification", "output_dim": 2, "is_seq": False, "monitor": monitor, "monitor_mod": "max"}
+        if explicit_task
+        else None
+    )
+    config_path = tmp_path / "frozen-config.yaml"
+    config_path.write_text(yaml.safe_dump({"finetune": {"task": task}}))
+    run = {
+        "experiment_id": "unit-experiment",
+        "step_id": "unit-round-000",
+        "run_id": "run-001",
+        "run_name": "lr-0.001",
+        "version": "unit-version",
+        "config": str(config_path),
+    }
+    canonical = {
+        **run,
+        "status": status,
+        "stop_reason": "budget limit" if status == "stopped" else "",
+        "wandb_run_id": "canonical-id",
+    }
+    recipe = {
+        "variant": variant,
+        "inputs": {"label_name": "custom_binary" if explicit_task else "ahi"},
+        "evaluation_policy": {"selection_split": "test"},
+    }
+    monkeypatch.setattr(adaptive_hparam.artifacts, "read_hparam_plan", lambda _path: {"recipe": recipe, "runs": [run]})
+    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _path: [canonical])
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
+    _write_history(tmp_path, f"epoch,val_loss,{monitor},test_auroc\n0,0.4,0.73,0.99\n")
+
+    row = adaptive_hparam._digest_rows(tmp_path, 0, tmp_path, {"metric": "test_auroc", "mode": "max"})[0]
+
+    assert json.loads(row["training_history"])["observations"] == [
+        {"epoch": 0, "metrics": {"val_loss": 0.4, monitor: 0.73}}
+    ]
+    assert row["status"] == status
+    assert row["stop_reason"] == canonical["stop_reason"]
+    assert row["run_manifest"] == row["checkpoint_path"] == ""
+    assert monitor not in row
+    assert "test_auroc" not in row
+    assert "epoch" not in row
