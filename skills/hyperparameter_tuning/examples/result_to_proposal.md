@@ -91,6 +91,67 @@ if later candidates are worse. Check C's best epoch and available trajectory bef
 choosing another longer horizon. Do not enlarge a frozen boundary or spend beyond
 the authorized budget merely because the new best point is on a boundary.
 
+## Same best score, different trajectories
+
+These are two alternative synthetic histories for C, both with a best validation
+AUROC of 0.741. Each reports validation points at epochs 3, 7 and 11; the training
+loss values come from the corresponding logged epochs. Suppose separate completion
+evidence confirms that both reached the configured 12-epoch horizon.
+
+| History | Validation AUROC at epochs 3, 7, 11 | Training loss at those epochs | A defensible next comparison |
+| --- | --- | --- | --- |
+| Still improving | 0.730, 0.737, 0.741 | 0.49, 0.43, 0.40 | Extend C to 16 epochs with LR and dropout fixed; compare with a different LR at 12 epochs if both fit the remaining budget. |
+| Earlier peak | 0.741, 0.734, 0.729 | 0.49, 0.43, 0.40 | Compare a lower LR with stronger dropout at the same horizon, changing one axis per point. |
+
+The first history makes a longer horizon worth testing, without proving that it
+will help. No improvement beyond C's best checkpoint weakens that explanation;
+an improved LR point would instead support exploring that local LR direction.
+The second history makes generalization loss after the early peak plausible.
+If stronger dropout lowers training fit without improving validation, that weakens
+this proposed remedy; if lower LR preserves or improves validation later in
+training, optimizer behavior deserves further attention. A shorter horizon can
+also test whether comparable quality costs fewer epochs, but cannot recover an
+accuracy gain beyond a checkpoint already included in selection merely by ending
+earlier. These are alternatives to justify, not a required pair of candidates.
+
+Logged curves may be sparse or sampled. Three points do not establish what
+happened between them, and the final logged epoch alone does not establish the
+actual training end. If the completion evidence above is absent, leave that
+uncertain. A short log is not an early-stopping diagnosis; use an explicit recorded
+cause when available. When a joint LR/dropout/adaptation change helps, attribute
+the observation to that joint strategy until a comparison separates its effects.
+
+For adaptation specifically, suppose matched full-adaptation runs repeatedly show
+the earlier-peak pattern while a supported head-only strategy is already in the
+frozen domain. Testing head-only with other settings fixed is a defensible
+alternative to another scalar adjustment. If it worsens both training fit and
+validation, that weakens restricting adaptation as the remedy. This comparison
+requires the complete block choices described below; the trajectory itself does
+not authorize adding a new strategy to the domain.
+
+## A worse batch and an uncertain gain
+
+Suppose the next batch returns 0.735 and 0.733 while historical C remains at 0.741.
+Keep C as the incumbent. The new points weaken the explanations they tested; they
+do not justify recentering the search on 0.735. One possible next batch explores
+an untested authorized direction near C, while another tests a distinct strategy.
+If both again regress, reconsider those explanations rather than treating each
+latest batch as progress.
+
+For a separate synthetic case, suppose a candidate exceeds C by only 0.001, and
+available matched repeats vary by about 0.006. That variation makes confirmation
+more valuable than the same gap would be with consistent repeat evidence. A
+repeat comparison is useful only if the frozen contract already represents the
+intended repeat. Duplicate points within one submitted batch are rejected; an
+earlier run can be repeated in a later batch for a stated question. Reusing its
+fixed seed does not measure independent-seed variability, and changing an
+unrelated setting does not create a repeat. If the intended repeats cannot be expressed, state that limitation
+and use an informative allowed comparison without claiming to measure noise.
+If later matched results consistently favor the candidate, exploiting its
+neighborhood gains support; if the ordering reverses, confidence in the small
+gain falls. With no repeat evidence at all, do not invent the 0.006 noise scale:
+continued exploration can still be reasonable, but the gain remains uncertain.
+
 ## Choose complete configuration blocks
 
 For a separate example, suppose the authorized task has a pretrained backbone,

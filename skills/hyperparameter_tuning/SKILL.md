@@ -120,6 +120,16 @@ and test-objective checkpoint identities distinct, and use test feedback only
 under its frozen authorization. Use the exact evidence identities and submission format
 in the [proposal handshake](../../doc/agent_contracts/task_recipe.md#proposal-handshake).
 
+Use `training_history.observations` when present to compare the logged training
+loss and validation trajectory, not just each run's best score. Its source path
+and hash identify the already-synced W&B history; an empty field means these
+observations are unavailable. Sparse or sampled points do not locate the actual
+training endpoint. `_step` is a W&B log index; only an explicit
+`trainer/global_step` is trainer-step evidence. `learning_rate_ranges` reports
+observed extrema, not schedule order. Read the cited history for a needed detail
+within the frozen split policy; do not infer an early-stopping cause or silently
+sync new evidence while applying an already-issued proposal.
+
 Write a concise, useful `rationale` using the existing free-text field:
 
 1. Separate observations from explanations. Identify the compared configurations,
