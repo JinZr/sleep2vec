@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+import csv
+import hashlib
+import io
 import json
 import math
 from pathlib import Path
@@ -57,6 +60,14 @@ class WandbRunPayload(TypedDict):
     history_filename: str
 
 
+class WandbTrainingHistory(TypedDict):
+    source_path: str
+    source_sha256: str
+    wandb_run_id: str
+    observations: list[dict[str, Any]]
+    learning_rate_ranges: dict[str, dict[str, float]]
+
+
 class CheckpointObservation(TypedDict):
     experiment_id: str
     step_id: str
@@ -79,6 +90,52 @@ def wandb_runs(entity: str, project: str, group: str | None) -> list[Any]:
     api = wandb.Api()
     filters = {"group": group} if group else None
     return list(api.runs(f"{entity}/{project}", filters=filters))
+
+
+def read_wandb_training_history(
+    workspace: Path, run: Mapping[str, Any], *, monitor: str, objective: str
+) -> WandbTrainingHistory | None:
+    """Read an already-synced history bound by the canonical run's W&B id; never sync or infer completion."""
+    run_id = str(run.get("wandb_run_id") or "")
+    if not run_id:
+        return None
+    path = workspace / "wandb" / "history" / f"{_safe_filename(run_id)}.csv"
+    if not path.exists():
+        return None
+    content = path.read_bytes()
+    records = csv.DictReader(io.StringIO(content.decode("utf-8")), strict=True)
+    metrics = {"train_loss_epoch", "val_loss"}
+    metrics.update(name for name in (monitor, objective) if name.startswith("val_"))
+    observations, learning_rates = _training_history_observations(records, metrics)
+    return {
+        "source_path": str(path),
+        "source_sha256": hashlib.sha256(content).hexdigest(),
+        "wandb_run_id": run_id,
+        "observations": observations,
+        "learning_rate_ranges": learning_rates,
+    }
+
+
+def _training_history_observations(
+    records: Iterable[dict[str, Any]], metrics: set[str]
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, float]]]:
+    observations = []
+    learning_rates: dict[str, dict[str, float]] = {}
+    for record in records:
+        values = {name: float(record[name]) for name in sorted(metrics) if _is_scalar_number(record.get(name))}
+        if values:
+            observation: dict[str, Any] = {"metrics": values}
+            for key in ("epoch", "trainer/epoch", "current_epoch", "_step", "trainer/global_step"):
+                if _is_scalar_number(record.get(key)):
+                    observation[key] = float(record[key])
+            observations.append(observation)
+        for name, value in record.items():
+            if isinstance(name, str) and name.startswith("lr-") and _is_scalar_number(value):
+                score = float(value)
+                limits = learning_rates.setdefault(name, {"min": score, "max": score})
+                limits["min"] = min(limits["min"], score)
+                limits["max"] = max(limits["max"], score)
+    return observations, learning_rates
 
 
 def wandb_run_payload(run: Any, *, entity: str, project: str) -> WandbRunPayload:

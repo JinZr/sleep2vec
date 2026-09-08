@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 from tempfile import TemporaryDirectory
 import time
+from types import SimpleNamespace
 from typing import Any, Literal, TypedDict, TypeVar, overload
 
 import yaml
@@ -22,10 +23,12 @@ from . import (
     adaptive_proposals,
     checkpoint_test_results,
     experiment_io as exp_io,
+    experiment_sources,
     hparam_runtime,
     managed_scheduler,
     plan_contract,
     plan_hparam,
+    plan_rendering,
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
@@ -544,6 +547,26 @@ def _digest_rows(
                 )
         row["status"] = status.get("status", "")
         row["stop_reason"] = status.get("stop_reason", "")
+        history_monitor = manifest.get("monitor")
+        if not history_monitor:
+            run_config = yaml.safe_load(Path(run["config"]).read_text())
+            task = run_config.get("finetune", {}).get("task") or {}
+            history_monitor = task.get("monitor")
+            if not history_monitor:
+                task_args = SimpleNamespace()
+                plan_rendering.apply_finetune_task_flags(task_args, recipe, task)
+                history_monitor = task_args.monitor
+        training_history = experiment_sources.read_wandb_training_history(
+            workspace,
+            status,
+            monitor=str(history_monitor),
+            objective=objective["metric"],
+        )
+        row["training_history"] = (
+            json.dumps(training_history, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            if training_history is not None
+            else ""
+        )
         row["pid"] = status.get("pid", "")
         rows.append(row)
     return rows
@@ -650,8 +673,9 @@ def _proposal_digest_rows(root: Path, workspace: Path) -> list[dict[str, Any]]:
     fieldnames = sorted({key for row in rows for key in row})
     normalized = [{key: "" if row.get(key) is None else str(row.get(key)) for key in fieldnames} for row in rows]
     for row in normalized:
-        if row.get("checkpoint_test_results"):
-            row["checkpoint_test_results"] = json.loads(row["checkpoint_test_results"])
+        for field in ("checkpoint_test_results", "training_history"):
+            if row.get(field):
+                row[field] = json.loads(row[field])
     return normalized
 
 

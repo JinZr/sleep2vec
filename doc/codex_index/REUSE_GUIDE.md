@@ -148,7 +148,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   for custom survival and multilabel eligibility; consult the search contract
   for its fixed settings and budget limits. Managed scheduler checks reuse the
   selected variant's argument validator through `plan_rendering`, including
-  every effective hparam candidate before publication.
+  every effective hparam candidate before publication. The same bridge resolves
+  built-in task flags when a frozen config omits an explicit task block.
 - Keep manifest/CAS and `plan_controller` binding in `experiment_workspace`, evidence acquisition
   in `experiment_sources`, and projections/status in `experiment_tracking` behind `experiments`;
   see [canonical state](../agent_contracts/run_manifest.md#canonical-state-and-projections)
@@ -173,7 +174,10 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   `adaptive_proposals`, and preflight/lifecycle orchestration in `adaptive_hparam`.
   Reuse its canonical round evidence for complete-history proposal
   inputs and `checkpoint_test_results` for checkpoint attribution; do not reconstruct
-  historical evidence from digest CSVs. See the [adaptive workflow](../agent_contracts/task_recipe.md#adaptive-workflow)
+  historical evidence from digest CSVs. `experiment_sources.read_wandb_training_history`
+  reads already-synced, canonical-run-bound history for sparse training/validation
+  observations; it neither syncs W&B nor establishes training completion.
+  See the [adaptive workflow](../agent_contracts/task_recipe.md#adaptive-workflow)
   and [proposal handshake](../agent_contracts/task_recipe.md#proposal-handshake).
 
 ### Standalone variants
