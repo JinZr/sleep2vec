@@ -129,6 +129,10 @@ training endpoint. `_step` is a W&B log index; only an explicit
 observed extrema, not schedule order. Read the cited history for a needed detail
 within the frozen split policy; do not infer an early-stopping cause or silently
 sync new evidence while applying an already-issued proposal.
+If an absent curve would change the next decision, the existing
+`experiment-sync-wandb` can refresh authorized workspace evidence before
+requesting a proposal input. Missing optional history does not itself block a
+proposal; explain what can and cannot be concluded from the available evidence.
 
 Write a concise, useful `rationale` using the existing free-text field:
 

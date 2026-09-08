@@ -977,7 +977,7 @@ alone do not establish overfitting, undertraining or optimization instability.
 
 `training_history` adds already-synced W&B observations when the canonical run
 has a `wandb_run_id` and its workspace `wandb/history/<id>.csv` exists. The
-existing W&B sync owns identity matching and history acquisition; digest and
+existing `experiment-sync-wandb` owns identity matching and history acquisition; digest and
 proposal issuance only read that saved file, including for SSH training runs.
 They do not contact W&B, sync data, or search runtime directories for substitutes.
 An absent binding or file produces an empty field. An available file produces
