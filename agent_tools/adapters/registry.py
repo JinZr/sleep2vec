@@ -1,8 +1,9 @@
 """Task-adapter registration, lookup, and the registration invariants.
 
-Layer 1. Kernel dispatch points resolve an adapter through ``get_adapter`` and
-never hardcode a task name, so this table is the only place task names and
-their implementations are associated.
+Layer 1. Associates task names with adapter instances and exposes
+``get_adapter`` for adapter lookup. Launch-action mappings also live in
+``experiment_tracking``, while ``experiments`` owns task-specific launch
+validation; those paths contain explicit task-name branches.
 
 Registration order and the import-time invariants both carry their rationale at
 the code below.
