@@ -586,9 +586,10 @@ def test_result_types_reach_callers(tmp_path: Path):
             checkpoint_rows[0]["checkpoint_paths"]  # type: ignore[typeddict-item]
             checkpoint_rows[0]["score"] = "0.5"  # type: ignore[typeddict-item]
             checkpoint_rows[0]["epoch"] = 1.5  # type: ignore[typeddict-item]
-            objective_result = adaptive_hparam._test_checkpoint_objective({}, {}, "/checkpoints", [])
-            objective_result["score"]  # type: ignore[index]
-            if objective_result is not None:
+            objective_evidence = adaptive_hparam._test_checkpoint_evidence({}, {}, "/checkpoints", [])
+            objective_evidence[0]  # type: ignore[index]
+            if objective_evidence is not None:
+                objective_result, checkpoint_trajectory = objective_evidence
                 objective_score: float = objective_result["score"]
                 objective_result["checkpoint_paths"]  # type: ignore[typeddict-item]
 

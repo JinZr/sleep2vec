@@ -1855,7 +1855,7 @@ def test_explicit_best_neighborhood_uses_existing_numeric_neighbors(tmp_path: Pa
 @pytest.mark.parametrize(
     ("objective_mode", "scores", "top_level_score", "expected_score"),
     [
-        ("max", {1: 0.5, 2: 0.9, 3: 0.9}, 0.99, "0.9"),
+        ("max", {3: 0.9, 1: 0.5, 2: 0.9}, 0.99, "0.9"),
         ("min", {1: 0.5, 2: 0.1, 3: 0.1}, 0.01, "0.1"),
     ],
 )
@@ -1884,6 +1884,14 @@ def test_test_selected_adaptive_evidence_uses_checkpoint_objective_through_agent
     assert digest_row["val_ahi_pearson"] == "0.5"
     assert digest_row["checkpoint_path"] == str(checkpoints[2])
     assert digest_row["epoch"] == "2"
+    assert digest_row["monitor_checkpoint_path"] == str(checkpoints[1])
+    trajectory = [
+        {"checkpoint_path": str(checkpoints[epoch]), "epoch": epoch, "metrics": {"test_auroc": scores[epoch]}}
+        for epoch in sorted(scores)
+    ]
+    assert digest_row["checkpoint_test_results"] == json.dumps(
+        trajectory, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
     incumbent = _read_table(workflow_dir / "adaptive" / "incumbents.tsv")[-1]
     assert incumbent["run_id"] == run["run_id"]
     assert incumbent["objective_score"] == expected_score
@@ -1895,13 +1903,14 @@ def test_test_selected_adaptive_evidence_uses_checkpoint_objective_through_agent
     assert proposal_row["test_auroc"] == expected_score
     assert proposal_row["checkpoint_path"] == str(checkpoints[2])
     assert proposal_row["epoch"] == "2"
+    assert proposal_row["checkpoint_test_results"] == trajectory
 
 
 def test_failed_test_checkpoint_objective_stays_unscored_through_agent_proposal(tmp_path: Path):
     recipe = _test_selected_adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
-    run, _checkpoints = _write_checkpoint_test_manifest(
+    run, checkpoints = _write_checkpoint_test_manifest(
         workflow_dir,
         scores={1: 0.8, 2: 0.9},
         top_level_score=0.99,
@@ -1916,6 +1925,8 @@ def test_failed_test_checkpoint_objective_stays_unscored_through_agent_proposal(
     assert digest_row.get("test_auroc", "") == ""
     assert digest_row["checkpoint_path"] == ""
     assert digest_row.get("epoch", "") == ""
+    assert digest_row["monitor_checkpoint_path"] == str(checkpoints[1])
+    assert "checkpoint_test_results" not in digest_row
     assert not (workflow_dir / "adaptive" / "incumbents.tsv").exists()
     proposal_row = json.loads(input_path.read_text())["input"]["digest_rows"][0]
     assert proposal_row["status"] == "failed"
@@ -2067,8 +2078,11 @@ def test_test_selected_adaptive_distinct_test_objective_uses_checkpoint_evidence
         workflow_dir,
         scores={1: 0.5, 2: 0.9, 3: 0.8},
         top_level_score=0.99,
-        extra_checkpoint_metrics={"test_loss": {1: 0.4, 2: 0.2, 3: 0.2}},
-        extra_top_level_metrics={"test_loss": 0.01},
+        extra_checkpoint_metrics={
+            "test_loss": {1: 0.4, 2: 0.2, 3: 0.2},
+            "test_undefined": {1: float("nan"), 2: float("nan"), 3: float("nan")},
+        },
+        extra_top_level_metrics={"test_loss": 0.01, "test_top_level_only": 0.88},
     )
     _mark_round_terminal(workflow_dir, tmp_path)
 
@@ -2077,15 +2091,28 @@ def test_test_selected_adaptive_distinct_test_objective_uses_checkpoint_evidence
     assert input_path is not None
     digest_row = _read_table(workflow_dir / "adaptive" / "digests" / "round_000.csv")[0]
     assert digest_row["test_loss"] == "0.2"
+    assert digest_row["test_auroc"] == "0.9"
+    assert "test_top_level_only" not in digest_row
+    assert digest_row["test_undefined"] == ""
     assert digest_row["checkpoint_path"] == str(checkpoints[2])
     assert digest_row["epoch"] == "2"
+    assert digest_row["monitor_checkpoint_path"] == str(checkpoints[1])
+    assert digest_row["best_model_score"] == "0.5"
+    assert digest_row["val_ahi_pearson"] == "0.5"
+    trajectory = json.loads(digest_row["checkpoint_test_results"])
+    assert [point["epoch"] for point in trajectory] == [1, 2, 3]
+    assert [point["metrics"]["test_auroc"] for point in trajectory] == [0.5, 0.9, 0.8]
+    assert [point["metrics"]["test_loss"] for point in trajectory] == [0.4, 0.2, 0.2]
+    assert all(point["metrics"]["test_undefined"] is None for point in trajectory)
     incumbent = _read_table(workflow_dir / "adaptive" / "incumbents.tsv")[-1]
     assert incumbent["run_id"] == run["run_id"]
     assert incumbent["objective_score"] == "0.2"
     assert incumbent["checkpoint_path"] == str(checkpoints[2])
     proposal_row = json.loads(input_path.read_text())["input"]["digest_rows"][0]
     assert proposal_row["test_loss"] == "0.2"
+    assert proposal_row["test_auroc"] == "0.9"
     assert proposal_row["checkpoint_path"] == str(checkpoints[2])
+    assert proposal_row["checkpoint_test_results"] == trajectory
 
 
 def test_test_selected_adaptive_run_level_objective_keeps_top_level_evidence(tmp_path: Path):
@@ -2119,7 +2146,8 @@ def test_test_selected_adaptive_run_level_objective_keeps_top_level_evidence(tmp
     assert proposal_row["checkpoint_path"] == str(checkpoints[1])
 
 
-def test_adaptive_digest_uses_canonical_status_not_runtime_manifest(tmp_path: Path):
+@pytest.mark.parametrize("status", ["failed", "stopped"])
+def test_adaptive_digest_uses_canonical_status_not_runtime_manifest(tmp_path: Path, status: str):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
@@ -2129,19 +2157,21 @@ def test_adaptive_digest_uses_canonical_status_not_runtime_manifest(tmp_path: Pa
     runtime_manifest = Path(run["runtime_dir"]) / "run_manifest.json"
     runtime = json.loads(runtime_manifest.read_text())
     runtime["status"] = "completed"
+    runtime["stop_reason"] = "Runtime manifest must not own the stop reason."
     runtime["metrics"]["status"] = "finished"
     runtime_manifest.write_text(json.dumps(runtime))
     merge_run_manifest(
         tmp_path,
-        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "failed"}],
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": status, "stop_reason": "Diagnostic stop."}],
     )
     manifests.write_rows(round_dir / "run_status.tsv", [{**run, "status": "planned"}])
 
     digest = adaptive_hparam.digest_hparam_run(round_dir)
 
-    assert _read_table(digest)[0]["status"] == "failed"
-    assert _read_table(round_dir / "run_status.tsv")[0]["status"] == "failed"
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
+    assert _read_table(digest)[0]["status"] == status
+    assert _read_table(digest)[0]["stop_reason"] == "Diagnostic stop."
+    assert _read_table(round_dir / "run_status.tsv")[0]["status"] == status
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == status
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert "run_status_changed" not in [event["event_type"] for event in events]
 

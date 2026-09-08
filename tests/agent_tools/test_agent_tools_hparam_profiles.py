@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from itertools import product
 import json
 from pathlib import Path
 import shlex
@@ -11,6 +12,7 @@ import pytest
 import yaml
 
 from agent_tools import managed_scheduler, plans
+from agent_tools.adaptive_proposals import validate_parameter_envelopes
 from agent_tools.configs import config_summary
 from agent_tools.decision_models import DecisionStatus
 from agent_tools.domain.finetune_hparam_profile import (
@@ -442,6 +444,8 @@ def _profile_recipe(tmp_path: Path, *, max_runs: int | None = None) -> tuple[Pat
     base_path.write_text(yaml.safe_dump(base, sort_keys=False))
 
     recipe = yaml.safe_load((REPO_ROOT / "recipes/templates/hparam_tune_ppg_ahi.yaml").read_text())
+    del recipe["adaptive"]
+    recipe["search"] = {"profile": "finetune_balanced"}
     recipe["experiment"] = experiment
     recipe["step"] = {"id": "auto-tune", "phase": "train", "purpose": "Select a bounded candidate."}
     recipe["base_recipe"] = str(base_path)
@@ -639,14 +643,44 @@ def test_tiny_fixture_keeps_legacy_explicit_search():
     assert recipe["search"]["parameters"] == {"runtime.lr": [1.0e-6]}
 
 
-def test_checked_in_templates_select_only_supported_profile_variants():
-    root = yaml.safe_load((REPO_ROOT / "recipes/templates/hparam_tune_ppg_ahi.yaml").read_text())
-    sleep2vec2 = yaml.safe_load((REPO_ROOT / "recipes/templates/hparam_tune_sleep2vec2_ppg_ahi.yaml").read_text())
-    sleep2expert = yaml.safe_load((REPO_ROOT / "recipes/templates/hparam_tune_sleep2expert_ahi.yaml").read_text())
+@pytest.mark.parametrize(
+    "template_name",
+    ["hparam_tune_ppg_ahi.yaml", "hparam_tune_sleep2vec2_ppg_ahi.yaml", "hparam_tune_sleep2expert_ahi.yaml"],
+)
+def test_checked_in_templates_use_bounded_terminal_agent_proposals(template_name):
+    template_dir = REPO_ROOT / "recipes/templates"
+    template = yaml.safe_load((template_dir / template_name).read_text())
+    search = template["search"]
+    adaptive = template["adaptive"]
 
-    assert root["search"] == {"profile": "finetune_balanced"}
-    assert sleep2vec2["search"] == {"profile": "finetune_balanced"}
-    for template in (root, sleep2vec2):
+    assert "profile" not in search
+    assert search["method"] == "grid"
+    assert adaptive["enabled"] is True
+    assert adaptive["suggest"]["strategy"] == "agent_proposal"
+    assert adaptive["replacement"] == {"enabled": False}
+    assert adaptive["max_runs_total"] == 12
+    assert adaptive["round_size"] == search["max_runs"] == 2
+    assert adaptive["max_rounds"] * adaptive["round_size"] == adaptive["max_runs_total"]
+    assert adaptive["objective_metric"] == template["evaluation_policy"]["selection_metric"]
+    assert adaptive["objective_mode"] == template["evaluation_policy"]["selection_mode"]
+    envelopes = validate_parameter_envelopes(search["parameters"], adaptive["suggest"]["bounds"])
+    assert envelopes["runtime.epochs"]["max"] > max(search["parameters"]["runtime.epochs"])
+    assert envelopes["runtime.lr"]["max"] > max(search["parameters"]["runtime.lr"])
+
+    keys = list(search["parameters"])
+    points = [dict(zip(keys, values)) for values in product(*(search["parameters"][key] for key in keys))]
+    assert len(points) == search["max_runs"]
+    base = yaml.safe_load((template_dir / template["base_recipe"]).read_text())
+    source = REPO_ROOT / base["inputs"]["config"]
+    payload = yaml.safe_load(source.read_text())
+    for point in points:
+        for key, value in point.items():
+            assert envelopes[key]["min"] <= value <= envelopes[key]["max"]
+        candidate = copy.deepcopy(payload)
+        apply_search_overrides(candidate, point)
+        validate_finetune_config_bytes(_recipe(variant=template["variant"]), yaml.safe_dump(candidate).encode())
+
+    if template["variant"] in {"sleep2vec", "sleep2vec2"}:
         assert template["evaluation_policy"] == {
             "selection_metric": "val_ahi_pearson",
             "selection_mode": "max",
@@ -657,18 +691,25 @@ def test_checked_in_templates_select_only_supported_profile_variants():
             "require_manual_unlock_for_final_test": True,
             "final_test_unlocked": False,
         }
+        assert adaptive["test_feedback_for_selection"] is False
         assert template["decisions"]["external_test_locked"]["value"] is True
         assert template["decisions"]["test_after_fit"]["value"] is False
         assert template["decisions"]["train_val_test_policy"]["value"] == "val"
-    assert "profile" not in sleep2expert["search"]
-    assert "parameters" in sleep2expert["search"]
+    else:
+        assert adaptive["test_feedback_for_selection"] is True
+        assert template["evaluation_policy"]["test_after_fit"] is True
+        assert template["decisions"]["test_after_fit"]["value"] is True
 
 
-def test_task_recipe_schema_profile_skeleton_keeps_test_locked():
+def test_task_recipe_schema_adaptive_skeleton_keeps_test_locked():
     text = (REPO_ROOT / "recipes/schemas/task_recipe.schema.md").read_text()
     block = text.split("```yaml\n", 1)[1].split("\n```", 1)[0]
     skeleton = yaml.safe_load(block)
 
+    assert "profile" not in skeleton["search"]
+    assert skeleton["adaptive"]["suggest"]["strategy"] == "agent_proposal"
+    assert skeleton["adaptive"]["replacement"] == {"enabled": False}
+    assert skeleton["search"]["max_runs"] == skeleton["adaptive"]["round_size"] == 2
     policy = skeleton["evaluation_policy"]
     assert policy["selection_metric"] == "val_ahi_pearson"
     assert policy["selection_split"] == "val"

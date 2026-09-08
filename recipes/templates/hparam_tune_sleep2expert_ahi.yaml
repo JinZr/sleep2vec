@@ -15,13 +15,34 @@ step:
 
 base_recipe: finetune_sleep2expert_ahi.yaml
 
-# finetune_balanced is not registered for sleep2expert; keep the search explicit.
+# Starting example only: adjust axes, bounds and first points to the actual
+# base/runtime config, prior evidence and compute authority before initialization.
 search:
   method: grid
-  max_runs: 6
+  max_runs: 2
   parameters:
     runtime.lr: [1.0e-6, 3.0e-6]
-    runtime.batch_size: [8, 12]
+    runtime.weight_decay: [1.0e-5]
+    runtime.epochs: [30]
+    yaml:/model/head/dropout: [0.1]
+
+adaptive:
+  enabled: true
+  objective_metric: test_ahi_pearson
+  objective_mode: max
+  round_size: 2
+  max_rounds: 6
+  max_runs_total: 12
+  test_feedback_for_selection: true
+  replacement:
+    enabled: false
+  suggest:
+    strategy: agent_proposal
+    bounds:
+      runtime.lr: [1.0e-7, 1.0e-4]
+      runtime.weight_decay: [0.0, 1.0e-3]
+      runtime.epochs: [15, 60]
+      yaml:/model/head/dropout: [0.0, 0.3]
 
 artifacts:
   overwrite: false
@@ -32,6 +53,7 @@ evaluation_policy:
   selection_split: test
   final_eval_split: test
   external_test_locked: false
+  test_after_fit: true
   require_manual_unlock_for_final_test: true
   final_test_unlocked: false
 
@@ -49,6 +71,9 @@ decisions:
     value: test
     source: explicit_recipe
     rationale: Select hyper-parameters on the test metric with test access unlocked.
+  test_after_fit:
+    value: true
+    source: explicit_recipe
   overwrite_policy:
     value: false
     source: explicit_recipe

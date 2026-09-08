@@ -12,11 +12,41 @@ step:
   phase: train
   purpose: Tune sleep2expert using test selection.
 base_recipe: recipes/templates/finetune_sleep2expert_ahi.yaml
+# Starting example only: adjust axes, bounds and first points to the actual
+# base/runtime config, prior evidence and compute authority before initialization.
+search:
+  method: grid
+  max_runs: 2
+  parameters:
+    runtime.lr: [1.0e-6, 3.0e-6]
+    runtime.weight_decay: [1.0e-5]
+    runtime.epochs: [30]
+    yaml:/model/head/dropout: [0.1]
+
+adaptive:
+  enabled: true
+  objective_metric: test_ahi_pearson
+  objective_mode: max
+  round_size: 2
+  max_rounds: 6
+  max_runs_total: 12
+  test_feedback_for_selection: true
+  replacement:
+    enabled: false
+  suggest:
+    strategy: agent_proposal
+    bounds:
+      runtime.lr: [1.0e-7, 1.0e-4]
+      runtime.weight_decay: [0.0, 1.0e-3]
+      runtime.epochs: [15, 60]
+      yaml:/model/head/dropout: [0.0, 0.3]
+
 evaluation_policy:
   selection_metric: test_ahi_pearson
   selection_mode: max
   selection_split: test
   external_test_locked: false
+  test_after_fit: true
   final_eval_split: test
   final_test_unlocked: false
   require_manual_unlock_for_final_test: true

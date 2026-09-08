@@ -497,25 +497,41 @@ def _digest_rows(
         }
         row.update(managed_run_parameters(run))
         row.update(_manifest_metrics(manifest))
+        if status.get("status") in {"completed", "finished"}:
+            monitor = manifest.get("monitor")
+            if isinstance(monitor, str) and monitor:
+                row[monitor] = artifacts.metric_value(manifest, monitor)
         checkpoint_test_objective = selection_split == "test" and objective["metric"].startswith("test_")
         if checkpoint_test_objective:
             # Checkpoint test evidence changes identity and is valid only after canonical successful completion.
+            row["monitor_checkpoint_path"] = checkpoint_path
             row.pop(objective["metric"], None)
             row.pop("epoch", None)
             row["checkpoint_path"] = ""
             if status.get("status") in {"completed", "finished"}:
-                checkpoint_objective = _test_checkpoint_objective(
+                checkpoint_evidence = _test_checkpoint_evidence(
                     manifest,
                     objective,
                     checkpoint_dir,
                     checkpoint_names,
                 )
                 # Completed test-selected runs participate atomically; partial evidence cannot steer later rounds.
-                if checkpoint_objective is None:
+                if checkpoint_evidence is None:
                     raise ValueError(
                         f"Completed test-selected adaptive run lacks complete checkpoint test evidence: "
                         f"{run['step_id']} / {run_id}"
                     )
+                checkpoint_objective, checkpoint_results = checkpoint_evidence
+                selected = next(
+                    result
+                    for result in checkpoint_results
+                    if result["checkpoint_path"] == checkpoint_objective["checkpoint_path"]
+                )
+                row = {key: value for key, value in row.items() if not key.startswith("test_")}
+                row.update(selected["metrics"])
+                row["checkpoint_test_results"] = json.dumps(
+                    checkpoint_results, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+                )
                 row[objective["metric"]] = checkpoint_objective["score"]
                 row["checkpoint_path"] = checkpoint_objective["checkpoint_path"]
                 row["epoch"] = checkpoint_objective["epoch"]
@@ -527,6 +543,7 @@ def _digest_rows(
                     f"{run['step_id']} / {run_id}"
                 )
         row["status"] = status.get("status", "")
+        row["stop_reason"] = status.get("stop_reason", "")
         row["pid"] = status.get("pid", "")
         rows.append(row)
     return rows
@@ -559,7 +576,7 @@ def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | No
         round_dir = _round_dir(root, current_round)
         if not _round_is_terminal(round_dir, workspace):
             raise ValueError("agent_proposal requires the current adaptive round to be terminal.")
-        return _write_agent_proposal_input(root, workflow, recipe, digest, rows)
+        return _write_agent_proposal_input(root, workflow, recipe, digest, _proposal_digest_rows(root, workspace))
 
     ranked = _rank_rows(rows, objective)
     out_dir = root / "adaptive" / "suggestions"
@@ -608,15 +625,71 @@ def _round_is_terminal(round_dir: Path, workspace: Path) -> bool:
     return bool(run_keys) and all(canonical_by_key.get(key, {}).get("status") in TERMINAL_STATUSES for key in run_keys)
 
 
-def _proposal_digest_rows(root: Path, workspace: Path) -> list[dict[str, str]]:
-    source_round = _latest_round_index(root)
-    round_dir = _round_dir(root, source_round)
-    plan = artifacts.read_hparam_plan(round_dir)
-    recipe_value = plan.get("recipe")
-    recipe = recipe_value if isinstance(recipe_value, dict) else {}
-    rows = _digest_rows(round_dir, source_round, workspace, _objective(root, recipe))
+def _proposal_digest_rows(root: Path, workspace: Path) -> list[dict[str, Any]]:
+    registry = read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True)
+    events = read_experiment_events(workspace)
+    rows: list[dict[str, Any]] = []
+    for round_index in sorted(_committed_round_indexes(root)):
+        round_dir = _round_dir(root, round_index)
+        plan = artifacts.read_hparam_plan(round_dir)
+        _validate_round_registry(root, round_index, plan, registry)
+        if not _round_is_terminal(round_dir, workspace):
+            raise ValueError(f"Agent proposal history round {round_index:03d} is not terminal.")
+        recipe = plan["recipe"]
+        objective = _objective(root, recipe)
+        round_rows = _digest_rows(round_dir, round_index, workspace, objective)
+        if round_index:
+            context = _proposal_round_context(root, workspace, round_index, events)
+            for row in round_rows:
+                row.update(context)
+        rows.extend(round_rows)
+    successful = [row for row in rows if row["status"] in {"completed", "finished"}]
+    ranked = _rank_rows(successful, objective)
+    for row in rows:
+        row["is_incumbent"] = bool(ranked) and row is ranked[0]
     fieldnames = sorted({key for row in rows for key in row})
-    return [{key: "" if row.get(key) is None else str(row.get(key)) for key in fieldnames} for row in rows]
+    normalized = [{key: "" if row.get(key) is None else str(row.get(key)) for key in fieldnames} for row in rows]
+    for row in normalized:
+        if row.get("checkpoint_test_results"):
+            row["checkpoint_test_results"] = json.loads(row["checkpoint_test_results"])
+    return normalized
+
+
+def _proposal_round_context(
+    root: Path, workspace: Path, round_index: int, events: list[dict[str, Any]]
+) -> dict[str, str]:
+    binding_directories = {
+        "proposal_path": root / "adaptive" / "proposal_submissions",
+        "suggestion": root / "adaptive" / "suggestions",
+        "round_dir": root / "adaptive" / "rounds",
+    }
+    events = [
+        event
+        for event in events
+        if any(
+            isinstance(event.get(field), str) and Path(event[field]).parent == directory
+            for field, directory in binding_directories.items()
+        )
+    ]
+    accepted_event = _agent_proposal_accepted_event(events, round_index)
+    proposal_file, input_path, expected_path, proposal, proposal_sha256 = _load_agent_proposal_binding(
+        root, workspace, accepted_event["proposal_path"]
+    )
+    proposal_input, _ = _load_agent_proposal_input(workspace, input_path, expected_path)
+    validated = adaptive_proposals.validate_proposal(proposal, proposal_input)
+    if (
+        proposal_file != expected_path
+        or proposal_sha256 != accepted_event["proposal_sha256"]
+        or validated["target_round"] != round_index
+        or validated["request_id"] != accepted_event["request_id"]
+    ):
+        raise ValueError(f"Agent proposal history differs from accepted round {round_index:03d}.")
+    _validate_agent_proposal_execute_events(events, accepted_event, _round_dir(root, round_index))
+    return {
+        "proposal_path": str(proposal_file),
+        "proposal_sha256": proposal_sha256,
+        "proposal_rationale": validated["rationale"],
+    }
 
 
 def _source_config_sha256(recipe: dict[str, Any]) -> str:
@@ -647,15 +720,17 @@ def _agent_proposal_input_payload(
     source_round = _latest_round_index(root)
     target_round = _next_round_index(root)
     adaptive = _adaptive(recipe)
-    plan = artifacts.read_hparam_plan(_round_dir(root, source_round))
-    expected_run_ids = [str(run["run_id"]) for run in plan.get("runs", [])]
-    digest_run_ids = [str(row.get("run_id") or "") for row in rows]
-    if len(digest_run_ids) != len(set(digest_run_ids)) or set(digest_run_ids) != set(expected_run_ids):
-        raise ValueError("Agent proposal digest rows do not match the source round plan.")
-    if any(str(row.get("round")) != str(source_round) for row in rows):
-        raise ValueError("Agent proposal digest rows do not belong to the source round.")
+    committed_rounds = _committed_round_indexes(root)
+    expected_keys = {
+        (str(round_index), validated_run_key(run))
+        for round_index in committed_rounds
+        for run in artifacts.read_hparam_plan(_round_dir(root, round_index))["runs"]
+    }
+    digest_keys = [(str(row.get("round")), managed_run_key(row)) for row in rows]
+    if len(digest_keys) != len(set(digest_keys)) or set(digest_keys) != expected_keys:
+        raise ValueError("Agent proposal digest rows do not match the committed round plans.")
     registered = read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True)
-    remaining_rounds = int(adaptive.get("max_rounds") or 1) - len(_committed_round_indexes(root))
+    remaining_rounds = int(adaptive.get("max_rounds") or 1) - len(committed_rounds)
     remaining_runs = int(adaptive.get("max_runs_total") or 10**9) - len(registered)
     if remaining_rounds <= 0 or remaining_runs <= 0:
         raise ValueError("Adaptive budget is exhausted; no agent proposal can be requested.")
@@ -2816,12 +2891,12 @@ def _manifest_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _test_checkpoint_objective(
+def _test_checkpoint_evidence(
     manifest: dict[str, Any],
     objective: adaptive_proposals.ProposalObjective | dict[str, str],
     checkpoint_dir: str,
     checkpoint_names: list[str],
-) -> checkpoint_test_results.CheckpointTestResult | None:
+) -> tuple[checkpoint_test_results.CheckpointTestResult, list[dict[str, Any]]] | None:
     results = manifest.get("checkpoint_test_results")
     if manifest.get("test_all_checkpoints_after_fit") is not True or not isinstance(results, list):
         return None
@@ -2841,7 +2916,22 @@ def _test_checkpoint_objective(
         )
     except ValueError:
         return None
-    return checkpoint_test_results.best_checkpoint_test_result(candidates, objective["mode"])
+    metrics_by_path = {
+        result["checkpoint_path"]: {
+            key: None if isinstance(value, float) and not math.isfinite(value) else value
+            for key, value in result["metrics"].items()
+        }
+        for result in results
+    }
+    trajectory = [
+        {
+            "checkpoint_path": candidate["checkpoint_path"],
+            "epoch": candidate["epoch"],
+            "metrics": metrics_by_path[candidate["checkpoint_path"]],
+        }
+        for candidate in sorted(candidates, key=lambda row: (row["epoch"], row["checkpoint_path"]))
+    ]
+    return checkpoint_test_results.best_checkpoint_test_result(candidates, objective["mode"]), trajectory
 
 
 def _digest_markdown(

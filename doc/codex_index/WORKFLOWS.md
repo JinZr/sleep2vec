@@ -128,11 +128,17 @@ see [selection and test access](../agent_contracts/external_test_locking.md#sele
 Direct finetune cannot select checkpoints on test; the supported route is a
 [one-configuration hparam plan](../agent_contracts/external_test_locking.md#test-selected-runtime-requirements).
 
-Managed tuning follows [search-space authorization](../agent_contracts/task_recipe.md#search-space),
+New tuning requests default to terminal-only agent proposals: design the bounded
+domain and opening batch, initialize, launch the authorized batch, then use the
+[proposal handshake](../agent_contracts/task_recipe.md#proposal-handshake) after
+complete results. Inputs bind all committed terminal rounds, prior proposal
+rationales and available checkpoint trajectories. Existing authored plans retain
+their chosen workflow. Explicit static searches follow
+[search-space authorization](../agent_contracts/task_recipe.md#search-space),
 [registration preflight](../agent_contracts/task_recipe.md#registration-preflight),
 [launch and queue](../agent_contracts/task_recipe.md#launch-and-queue), then
 [selection](../agent_contracts/task_recipe.md#selection-and-selected-candidate-consumers).
-The hparam adapter delegates supported automatic profile expansion to
+For an explicitly chosen static profile, the hparam adapter delegates expansion to
 [`finetune_hparam_profile.py`](../../agent_tools/domain/finetune_hparam_profile.py).
 The recipe contract owns candidate/config/argv validation and its evidence
 limits; [workspace finalization](../agent_contracts/experiment_workspace.md#finalization)

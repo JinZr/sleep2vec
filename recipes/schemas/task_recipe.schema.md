@@ -18,10 +18,37 @@ evaluation_policy:
   test_after_fit: false
   final_test_unlocked: false
 search:
-  profile: finetune_balanced
+  method: grid
+  max_runs: 2
+  parameters:
+    runtime.lr: [1.0e-6, 3.0e-6]
+adaptive:
+  enabled: true
+  objective_metric: val_ahi_pearson
+  objective_mode: max
+  round_size: 2
+  max_rounds: 6
+  max_runs_total: 12
+  replacement: {enabled: false}
+  suggest:
+    strategy: agent_proposal
+    bounds:
+      runtime.lr: [1.0e-7, 1.0e-4]
 ```
 
-See [`recipes/examples/tiny_fixture_hparam.yaml`](../examples/tiny_fixture_hparam.yaml) for a complete runnable example.
+An ordinary tuning request with no authored search defaults to terminal-only
+`agent_proposal`, with a default 12-run search budget, round size 2 and 6 rounds.
+The agent authors these fields explicitly after reviewing source config, prior
+evidence, parameter bounds and fixed axes; templates are starting examples,
+not an adaptive compiler. A smaller user concurrency/total-run cap reduces the
+round size, and `max_rounds = ceil(total budget / round_size)`; account for GPUs
+per run when translating a GPU cap. Static profile/grid search requires an
+explicit request. Existing authored or frozen searches must not be rewritten.
+See [search-space guidance](../../doc/agent_contracts/task_recipe.md#search-space).
+
+[`recipes/examples/tiny_fixture_hparam.yaml`](../examples/tiny_fixture_hparam.yaml)
+is a complete static command-generation fixture; it does not select the default
+tuning strategy.
 
 Use `ASK_USER` when a recipe author intentionally wants the agent to stop and ask the user before generating commands.
 
