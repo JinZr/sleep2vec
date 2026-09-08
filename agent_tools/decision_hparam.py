@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from .adaptive_proposals import validate_parameter_envelopes
+from .adaptive_proposals import validate_configurations, validate_parameter_envelopes
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import managed_runtime_env_issues, managed_runtime_resource_issues, multilabel_sidecar_issue
 from .models import REPO_ROOT, ConfigSummaryInput, is_full_git_object_id
@@ -244,19 +244,55 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
                     source_layer,
                 )
             )
-        parameters = recipe.get("search", {}).get("parameters") if isinstance(recipe.get("search"), dict) else None
-        if isinstance(parameters, dict) and parameters:
-            try:
-                validate_parameter_envelopes(parameters, suggest.get("bounds"))
-            except ValueError as exc:
-                issues.append(
-                    _contract_issue(
-                        "adaptive.suggest.bounds",
-                        str(exc),
-                        suggest.get("bounds"),
-                        source_layer,
-                    )
+        issues.extend(_agent_proposal_search_issues(recipe, source_layer=source_layer))
+    return issues
+
+
+def uses_agent_proposals(recipe: dict) -> bool:
+    adaptive_value = recipe.get("adaptive")
+    adaptive = adaptive_value if isinstance(adaptive_value, dict) else {}
+    suggest_value = adaptive.get("suggest")
+    suggest = suggest_value if isinstance(suggest_value, dict) else {}
+    return (
+        adaptive.get("enabled") is True
+        and suggest.get("strategy", DEFAULT_ADAPTIVE_SUGGEST_STRATEGY) == "agent_proposal"
+    )
+
+
+def _agent_proposal_search_issues(recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
+    search_value = recipe.get("search")
+    search = search_value if isinstance(search_value, dict) else {}
+    parameters = search.get("parameters")
+    if not isinstance(parameters, dict) or not parameters:
+        return []
+    adaptive = recipe["adaptive"]
+    suggest_value = adaptive.get("suggest")
+    suggest = suggest_value if isinstance(suggest_value, dict) else {}
+    try:
+        envelopes = validate_parameter_envelopes(parameters, suggest.get("bounds"))
+    except ValueError as exc:
+        return [_contract_issue("adaptive.suggest.bounds", str(exc), suggest.get("bounds"), source_layer)]
+    if "configurations" not in search:
+        return []
+    try:
+        points = validate_configurations(search["configurations"], envelopes, location="search.configurations")
+    except ValueError as exc:
+        return [_contract_issue("search.configurations", str(exc), search["configurations"], source_layer)]
+    issues = []
+    for field, budget in (
+        ("search.max_runs", search.get("max_runs")),
+        ("adaptive.round_size", adaptive.get("round_size")),
+        ("adaptive.max_runs_total", adaptive.get("max_runs_total")),
+    ):
+        if type(budget) is int and len(points) > budget:
+            issues.append(
+                _contract_issue(
+                    "search.configurations",
+                    f"Initial configuration count {len(points)} exceeds {field} {budget}; points cannot be truncated.",
+                    search["configurations"],
+                    source_layer,
                 )
+            )
     return issues
 
 
@@ -345,12 +381,10 @@ def _hparam_config_issues(
     return issues
 
 
-def hparam_search_issues(
-    search: dict[str, Any],
-    *,
-    profile_mode: bool,
-    high_impact: dict[str, dict[str, Any]],
-) -> list[DecisionIssue]:
+def hparam_search_issues(recipe: dict, *, high_impact: dict[str, dict[str, Any]]) -> list[DecisionIssue]:
+    search_value = recipe.get("search")
+    search = search_value if isinstance(search_value, dict) else {}
+    profile_mode = "profile" in search
     issues = []
     if "max_trials" in search:
         issues.append(
@@ -375,18 +409,26 @@ def hparam_search_issues(
             )
         )
     configurations = search.get("configurations")
-    if "configurations" in search and "parameters" in search:
+    if "configurations" in search and "parameters" in search and not uses_agent_proposals(recipe):
         issues.append(
             DecisionIssue(
                 DecisionStatus.FAIL,
                 "hparam_search_space",
-                "search.parameters and search.configurations are mutually exclusive.",
+                (
+                    "search.parameters and search.configurations are mutually exclusive outside "
+                    "enabled agent_proposal workflows."
+                ),
                 None,
                 {"parameters": search.get("parameters"), "configurations": configurations},
             )
         )
     elif "configurations" in search:
         issues.extend(_hparam_search_configurations_issues(configurations))
+        if "parameters" in search:
+            if not search["parameters"]:
+                issues.append(needs_issue("hparam_search_space", "search.parameters is required.", high_impact))
+            else:
+                issues.extend(_hparam_search_parameter_issues(search["parameters"]))
     elif not search.get("parameters") and not profile_mode:
         issues.append(needs_issue("hparam_search_space", "search.parameters is required.", high_impact))
     elif "parameters" in search:
@@ -471,7 +513,7 @@ def _hparam_evaluation_issues(
             search.get("method") == "grid"
             and type(max_runs) is int
             and max_runs > 0
-            and not ("configurations" in search and "parameters" in search)
+            and (not ("configurations" in search and "parameters" in search) or uses_agent_proposals(recipe))
             and (
                 isinstance(configurations, list)
                 and bool(configurations)
@@ -610,7 +652,7 @@ def hparam_tune_issues(
 
     issues = hparam_recipe_contract_issues(recipe, source_layer="effective")
     issues.extend(_hparam_config_issues(recipe, config_summary, decisions, high_impact))
-    issues.extend(hparam_search_issues(search, profile_mode=profile_mode, high_impact=high_impact))
+    issues.extend(hparam_search_issues(recipe, high_impact=high_impact))
     issues.extend(
         _hparam_execution_issues(
             execution,

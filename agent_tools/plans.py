@@ -29,6 +29,7 @@ from . import (
 from .adapters import SUPPORTED_TASKS, composite_adapter, get_adapter
 from .adapters.base import PlanRegistrationPreflightError, TaskAdapter
 from .configs import config_summary
+from .decision_hparam import uses_agent_proposals
 from .decision_models import USER_DECISIONS_FILENAME
 from .decisions import (
     DecisionIssue,
@@ -243,13 +244,14 @@ def _materialize_decisions(
                 )
                 continue
         if field == "hparam_search_space":
-            # A concrete decision replaces the authored search-space owner; profiles already imply grid search.
+            # Domain decisions preserve explicit adaptive seed points; static decisions replace their search shape.
             target = dict(target)
             if "profile" in target:
                 if target.get("method") is None:
                     target["method"] = "grid"
                 target.pop("profile")
-            target.pop("configurations", None)
+            if not uses_agent_proposals(recipe):
+                target.pop("configurations", None)
         recipe[section] = {**target, key: value}
     if user_supplied:
         recipe_decisions_value = recipe.get("decisions")

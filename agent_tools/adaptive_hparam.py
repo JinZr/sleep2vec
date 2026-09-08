@@ -1087,6 +1087,11 @@ def _agent_suggestion_payload(
         search.pop("configurations", None)
         search["parameters"] = validated["parameters"]
     search["max_runs"] = validated["max_runs"]
+    decisions = suggested.get("decisions")
+    if isinstance(decisions, dict):
+        # The accepted proposal owns this round's points and budget.
+        decisions.pop("hparam_search_space", None)
+        decisions.pop("hparam_budget", None)
     if suggested.get("base_recipe"):
         suggested["base_recipe"] = str(_resolve_base_recipe(workflow["recipe_path"], suggested["base_recipe"]))
     return _strip_internal_recipe_keys(suggested)
@@ -1851,12 +1856,10 @@ def _validate_adaptive_recipe(recipe: dict[str, Any]) -> None:
     uses_external = objective.startswith("test_") or objective.startswith("external_")
     if uses_external and adaptive.get("test_feedback_for_selection") is not True:
         raise ValueError("adaptive.test_feedback_for_selection=true is required for test/external objectives.")
-    # Both strategies derive their search space from parameters (envelopes for
-    # agent_proposal, neighborhood mutation for best_neighborhood); explicit
-    # configuration points are only valid in derived round recipes.
+    # Agent proposals may seed exact points independently of their frozen domain.
     search_value = recipe.get("search")
     search = search_value if isinstance(search_value, dict) else {}
-    if "configurations" in search:
+    if "configurations" in search and (_suggest_strategy(recipe) != "agent_proposal" or not search.get("parameters")):
         raise ValueError("Adaptive source recipes must declare search.parameters, not search.configurations.")
     if not search.get("parameters"):
         raise ValueError("Adaptive source recipes must declare a non-empty search.parameters mapping.")
@@ -2008,7 +2011,7 @@ def _validate_initial_round(
     if round_recipe.is_symlink() or not round_recipe.is_file():
         raise FileNotFoundError(f"Missing frozen adaptive round recipe: {round_recipe}")
     actual_recipe = yaml.safe_load(round_recipe.read_text())
-    if actual_recipe != expected_recipe:
+    if adaptive_proposals.canonical_sha256(actual_recipe) != adaptive_proposals.canonical_sha256(expected_recipe):
         raise ValueError(f"Frozen adaptive round recipe differs from the requested initialization: {round_recipe}")
     source_config = round_dir / "config.source.yaml"
     if source_config.is_symlink() or not source_config.is_file():
@@ -2533,7 +2536,14 @@ def _validate_workflow_scientific_contract(recipe: dict[str, Any], workflow: dic
             {field: value for field, value in runtime.items() if field not in searched_runtime_fields},
             {field: value for field, value in initial_runtime.items() if field not in searched_runtime_fields},
         ),
-        "search.parameters": (search.get("parameters"), initial_search.get("parameters")),
+        "search.parameters": (
+            adaptive_proposals.canonical_sha256(search.get("parameters")),
+            adaptive_proposals.canonical_sha256(initial_search.get("parameters")),
+        ),
+        "search.configurations": (
+            adaptive_proposals.canonical_sha256(search.get("configurations")),
+            adaptive_proposals.canonical_sha256(initial_search.get("configurations")),
+        ),
         "adaptive.suggest.bounds": (suggest.get("bounds"), initial_suggest.get("bounds")),
         "adaptive.suggest.strategy": (_suggest_strategy(recipe), _suggest_strategy(initial_recipe)),
         "adaptive.round_size": (
