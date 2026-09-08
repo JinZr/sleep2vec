@@ -1,4 +1,5 @@
 import argparse
+import ast
 import importlib
 import importlib.util
 import json
@@ -14,6 +15,30 @@ import pytest
 FINETUNE_MODULES = ("sleep2vec.finetune", "sleep2vec2.finetune", "sleep2expert.finetune")
 RESULT_PACKAGES = ("sleep2vec", "sleep2vec2", "sleep2expert")
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("package_name", RESULT_PACKAGES)
+@pytest.mark.parametrize("task", ("survival", "multilabel"))
+def test_empty_evaluation_clears_previous_disease_metrics(package_name, task):
+    source_path = REPO_ROOT / package_name / "sleep2vec_finetuning.py"
+    source = ast.parse(source_path.read_text())
+    model_class = next(
+        node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "Sleep2vecFinetuning"
+    )
+    method_name = f"_finalize_{task}_epoch"
+    method = next(node for node in model_class.body if isinstance(node, ast.FunctionDef) and node.name == method_name)
+    namespace = {}
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(source_path), "exec"), namespace)
+    validation_row = {"stage": "val", "disease": "d1", "score": 0.6}
+    metric_rows_name = f"{task}_per_disease_metric_rows"
+    model = SimpleNamespace(
+        **{metric_rows_name: [validation_row, {"stage": "test", "disease": "d1", "score": 0.9}]},
+        _gather_survival_eval_records=lambda rows: rows,
+    )
+
+    namespace[method_name](model, "test", [])
+
+    assert getattr(model, metric_rows_name) == [validation_row]
 
 
 def _load_finetune_module(module_name: str, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
@@ -54,6 +79,7 @@ def _load_finetune_module(module_name: str, monkeypatch: pytest.MonkeyPatch) -> 
     stubbed_modules[f"{namespace}.distributed"].is_rank_zero_process = lambda: True
     for name in (
         "save_multilabel_per_disease_metrics_csv",
+        "save_prediction_csv",
         "save_result_csv",
         "save_result_rows_csv",
         "save_survival_per_disease_metrics_csv",
@@ -95,10 +121,14 @@ def _run_supervised(
     *,
     checkpoint_names: tuple[str, ...],
     best_epoch: int = 1,
+    no_best_checkpoint: bool = False,
+    empty_checkpoint: str | None = None,
     test_all_checkpoints_after_fit: bool = True,
     test_failure_checkpoint: str | None = None,
     artifact_failure: str | None = None,
     emit_artifacts: bool = False,
+    export_predictions: bool = False,
+    artifact_rows: list | None = None,
     event_log: list[str] | None = None,
     epochs: int = 3,
     check_val_every_n_epoch: int = 1,
@@ -140,6 +170,8 @@ def _run_supervised(
             self.best_model_path = (
                 str(Path(self.dirpath) / f"best-epoch={best_epoch:02d}.ckpt") if "monitor" in kwargs else ""
             )
+            if no_best_checkpoint:
+                self.best_model_path = ""
             checkpoints.append(self)
 
     class DummyTrainer:
@@ -157,12 +189,24 @@ def _run_supervised(
             (checkpoint_dir / "last.ckpt").write_text("last")
 
         def test(self, *args, **kwargs):
-            checkpoint_path = Path(kwargs["ckpt_path"])
+            self.ckpt_path = checkpoints[0].last_model_path if kwargs["ckpt_path"] == "last" else kwargs["ckpt_path"]
+            checkpoint_path = Path(self.ckpt_path)
             test_calls.append(str(checkpoint_path))
             if checkpoint_path.name == test_failure_checkpoint:
                 raise RuntimeError(f"checkpoint test failed: {checkpoint_path.name}")
             match = re.fullmatch(r"epoch=(\d+)(?:-step=\d+)?\.ckpt", checkpoint_path.name)
             score = float(match.group(1)) if match is not None else 99.0
+            model = kwargs["model"]
+            if emit_artifacts:
+                for attribute in ("survival_per_disease_metric_rows", "multilabel_per_disease_metric_rows"):
+                    previous = getattr(model, attribute)
+                    if checkpoint_path.name == empty_checkpoint:
+                        setattr(model, attribute, [])
+                    elif previous:
+                        previous[0]["value"] = score
+                    else:
+                        setattr(model, attribute, [{"stage": "test", "value": score}])
+            model.prediction_rows = [{"prediction": score}]
             return [{"test_score": score}]
 
     args = argparse.Namespace(
@@ -180,6 +224,7 @@ def _run_supervised(
         ckpt_path="",
         results_csv_path=tmp_path / "results.csv",
         label_name=label_name,
+        export_predictions=export_predictions,
         test_after_fit=True,
         test_all_checkpoints_after_fit=test_all_checkpoints_after_fit,
     )
@@ -212,8 +257,10 @@ def _run_supervised(
         result_rows.extend((checkpoint_path, metrics) for metrics, checkpoint_path in rows)
 
     def save_artifact(kind):
-        def save(*_args, **_kwargs):
+        def save(rows, path, current_args):
             events.append(kind)
+            if artifact_rows is not None:
+                artifact_rows.append((kind, current_args.ckpt_path, [dict(row) for row in rows]))
             if artifact_failure == kind:
                 raise RuntimeError(f"{kind} artifact failed")
 
@@ -224,6 +271,7 @@ def _run_supervised(
         "save_result_rows_csv",
         save_result_rows,
     )
+    monkeypatch.setattr(finetune_mod, "save_prediction_csv", save_artifact("prediction"))
     monkeypatch.setattr(finetune_mod, "save_survival_per_disease_metrics_csv", save_artifact("survival"))
     monkeypatch.setattr(finetune_mod, "save_multilabel_per_disease_metrics_csv", save_artifact("multilabel"))
 
@@ -550,7 +598,7 @@ def test_direct_finetune_keeps_single_best_checkpoint_behavior(
     expected_best = str(Path("log-finetune/unit-test/checkpoints/best-epoch=01.ckpt"))
     assert "save_on_train_epoch_end" not in checkpoints[0].kwargs
     assert test_calls == [expected_best]
-    assert result_rows == [("", {"test_score": 99.0})]
+    assert result_rows == [(expected_best, {"test_score": 99.0})]
     assert manifest_calls[-1][1]["metrics"] == {"test_score": 99.0}
     assert manifest_calls[-1][1]["checkpoint_test_results"] == []
     assert args.ckpt_path == ""
@@ -686,7 +734,7 @@ def test_all_checkpoint_mode_commits_matrix_after_artifacts_before_success_manif
         event_log=events,
     )
 
-    assert events == ["survival", "multilabel", "matrix", "manifest:completed"]
+    assert events == ["survival", "multilabel"] * 3 + ["matrix", "manifest:completed"]
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)
@@ -820,3 +868,90 @@ def test_invalid_scheduler_fails_before_run_preflight(module_name, monkeypatch, 
     with pytest.raises(ValueError, match=message):
         finetune_mod.supervised(args, SimpleNamespace())
     assert preflight == []
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+@pytest.mark.parametrize("label_name", ("multilabel", "survival", "sex", "stage4", "age", "ahi", "arousal"))
+def test_each_checkpoint_artifact_keeps_its_values_and_identity(module_name, label_name, tmp_path, monkeypatch):
+    artifacts = []
+    events = []
+    _, calls, _, manifests, args = _run_supervised(
+        module_name,
+        tmp_path,
+        monkeypatch,
+        checkpoint_names=("epoch=00.ckpt", "epoch=01.ckpt", "epoch=02.ckpt"),
+        emit_artifacts=True,
+        export_predictions=True,
+        artifact_rows=artifacts,
+        event_log=events,
+        label_name=label_name,
+    )
+    for kind in ("prediction", "survival", "multilabel"):
+        rows = [(path, rows) for artifact_kind, path, rows in artifacts if artifact_kind == kind]
+        assert [path for path, _ in rows] == calls
+        key = "prediction" if kind == "prediction" else "value"
+        assert [values[0][key] for _, values in rows] == [0.0, 2.0, 1.0]
+    assert events[:3] == ["prediction"] * 3
+    assert events[-2:] == ["matrix", "manifest:completed"]
+    assert manifests[-1][1]["prediction_csv_path"] == args.inference_prediction_csv_path
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_disabled_prediction_export_does_not_write_predictions(module_name, tmp_path, monkeypatch):
+    artifacts = []
+    _run_supervised(
+        module_name, tmp_path, monkeypatch, checkpoint_names=("epoch=00.ckpt", "epoch=01.ckpt"), artifact_rows=artifacts
+    )
+    assert not artifacts
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_prediction_failure_does_not_publish_checkpoint_matrix(module_name, tmp_path, monkeypatch):
+    events = []
+    _, _, rows, manifests, _ = _run_supervised(
+        module_name,
+        tmp_path,
+        monkeypatch,
+        checkpoint_names=("epoch=00.ckpt", "epoch=01.ckpt"),
+        export_predictions=True,
+        artifact_failure="prediction",
+        event_log=events,
+    )
+    assert rows == []
+    assert events == ["prediction", "manifest:failed"]
+    assert manifests[-1][1]["status"] == "failed"
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_empty_checkpoint_has_no_previous_disease_rows(module_name, tmp_path, monkeypatch):
+    artifacts = []
+    _, calls, _, _, _ = _run_supervised(
+        module_name,
+        tmp_path,
+        monkeypatch,
+        checkpoint_names=("epoch=00.ckpt", "epoch=01.ckpt", "epoch=02.ckpt"),
+        emit_artifacts=True,
+        empty_checkpoint="epoch=02.ckpt",
+        artifact_rows=artifacts,
+    )
+    for kind in ("survival", "multilabel"):
+        assert [path for artifact_kind, path, _ in artifacts if artifact_kind == kind] == [calls[0], calls[2]]
+
+
+@pytest.mark.parametrize("module_name", FINETUNE_MODULES)
+def test_single_last_alias_uses_resolved_checkpoint_in_all_artifacts(module_name, tmp_path, monkeypatch):
+    artifacts = []
+    _, calls, rows, _, _ = _run_supervised(
+        module_name,
+        tmp_path,
+        monkeypatch,
+        checkpoint_names=(),
+        no_best_checkpoint=True,
+        test_all_checkpoints_after_fit=False,
+        emit_artifacts=True,
+        export_predictions=True,
+        artifact_rows=artifacts,
+    )
+    assert calls == ["log-finetune/unit-test/checkpoints/last.ckpt"]
+    assert rows[0][0] == calls[0]
+    assert all(path == calls[0] for _, path, _ in artifacts)

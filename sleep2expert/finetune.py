@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 import logging
 import os
@@ -30,6 +31,7 @@ from sleep2expert.common import apply_finetune_config, persist_run_config_and_ar
 from sleep2expert.distributed import has_rank_environment, is_rank_zero_process
 from sleep2expert.results import (
     save_multilabel_per_disease_metrics_csv,
+    save_prediction_csv,
     save_result_csv,
     save_result_rows_csv,
     save_survival_per_disease_metrics_csv,
@@ -358,6 +360,25 @@ def supervised(args, config_bundle):
         checkpoint_test_results = []
         original_ckpt_path = args.ckpt_path
         checkpoint_result_rows = []
+        per_disease_results = []
+        if getattr(args, "export_predictions", False):
+            args.inference_prediction_csv_path = exp_root / "predictions.csv"
+        prediction_csv_path = getattr(args, "inference_prediction_csv_path", None)
+
+        def collect_test_artifacts():
+            if args.ckpt_path in ("best", "last"):
+                args.ckpt_path = trainer.ckpt_path
+            row_args = copy.copy(args)
+            survival_rows = copy.deepcopy(
+                [row for row in getattr(model, "survival_per_disease_metric_rows", []) if row.get("stage") == "test"]
+            )
+            multilabel_rows = copy.deepcopy(
+                [row for row in getattr(model, "multilabel_per_disease_metric_rows", []) if row.get("stage") == "test"]
+            )
+            per_disease_results.append((row_args, survival_rows, multilabel_rows))
+            if prediction_csv_path:
+                save_prediction_csv(getattr(model, "prediction_rows", []), str(prediction_csv_path), row_args)
+
         if args.test_all_checkpoints_after_fit:
             checkpoint_dir = Path(checkpoint_callback.dirpath)
             resolved_checkpoint_dir = checkpoint_dir.resolve()
@@ -407,6 +428,7 @@ def supervised(args, config_bundle):
                     dataloaders=test_loader,
                 )[0]
                 logging.info(result)
+                collect_test_artifacts()
                 checkpoint_result_rows.append((result, str(checkpoint_path)))
                 checkpoint_test_results.append(
                     {"checkpoint_path": str(checkpoint_path), "epoch": epoch, "metrics": result}
@@ -416,51 +438,46 @@ def supervised(args, config_bundle):
 
             if pretrain_result is None:
                 ckpt_path = best_path or "last"
-                args.ckpt_path = str(Path(ckpt_path).resolve()) if ckpt_path != "last" else ckpt_path
+                args.ckpt_path = ckpt_path
                 pretrain_result = trainer.test(
                     model=model,
                     ckpt_path=ckpt_path,
                     dataloaders=test_loader,
                 )[0]
                 logging.info(pretrain_result)
+                collect_test_artifacts()
                 checkpoint_result_rows.append((pretrain_result, args.ckpt_path))
         else:
             if args.epochs > 0:
                 ckpt_path = best_checkpoint_callback.best_model_path or "last"
             else:
                 ckpt_path = args.ckpt_path if args.ckpt_path != "" else None
+            args.ckpt_path = ckpt_path
             pretrain_result = trainer.test(
                 model=model,
                 ckpt_path=ckpt_path,
                 dataloaders=test_loader,
             )[0]
             logging.info(pretrain_result)
-            save_result_csv(pretrain_result, args.results_csv_path, args)
-        survival_per_disease_metric_rows = [
-            row for row in getattr(model, "survival_per_disease_metric_rows", []) if row.get("stage") == "test"
-        ]
+            collect_test_artifacts()
         survival_per_disease_metrics_csv_path = None
-        if survival_per_disease_metric_rows:
-            survival_per_disease_metrics_csv_path = exp_root / "survival_per_disease_metrics.csv"
-            save_survival_per_disease_metrics_csv(
-                survival_per_disease_metric_rows,
-                str(survival_per_disease_metrics_csv_path),
-                args,
-            )
-        multilabel_per_disease_metric_rows = [
-            row for row in getattr(model, "multilabel_per_disease_metric_rows", []) if row.get("stage") == "test"
-        ]
         multilabel_per_disease_metrics_csv_path = None
-        if multilabel_per_disease_metric_rows:
-            multilabel_per_disease_metrics_csv_path = exp_root / "multilabel_per_disease_metrics.csv"
-            save_multilabel_per_disease_metrics_csv(
-                multilabel_per_disease_metric_rows,
-                str(multilabel_per_disease_metrics_csv_path),
-                args,
-            )
+        for row_args, survival_rows, multilabel_rows in per_disease_results:
+            if survival_rows:
+                survival_per_disease_metrics_csv_path = exp_root / "survival_per_disease_metrics.csv"
+                save_survival_per_disease_metrics_csv(
+                    survival_rows, str(survival_per_disease_metrics_csv_path), row_args
+                )
+            if multilabel_rows:
+                multilabel_per_disease_metrics_csv_path = exp_root / "multilabel_per_disease_metrics.csv"
+                save_multilabel_per_disease_metrics_csv(
+                    multilabel_rows, str(multilabel_per_disease_metrics_csv_path), row_args
+                )
         if checkpoint_result_rows:
             # Publish the checkpoint matrix only after every required run artifact succeeds.
             save_result_rows_csv(checkpoint_result_rows, args.results_csv_path, args)
+        else:
+            save_result_csv(pretrain_result, args.results_csv_path, args)
         args.ckpt_path = original_ckpt_path
         save_training_run_manifest(
             args,
@@ -476,6 +493,7 @@ def supervised(args, config_bundle):
             multilabel_per_disease_metrics_csv_path=multilabel_per_disease_metrics_csv_path,
             metrics=pretrain_result,
             checkpoint_test_results=checkpoint_test_results,
+            prediction_csv_path=prediction_csv_path,
         )
     except BaseException:
         if "manifest_path" in locals() and not getattr(args, "print_diagnostics", False):
@@ -747,6 +765,12 @@ if __name__ == "__main__":
         type=int,
         default=1,
         help="save checkpoints every N epochs",
+    )
+
+    parser.add_argument(
+        "--export-predictions",
+        action="store_true",
+        help="Save test predictions for every evaluated checkpoint to the run's predictions.csv (default: disabled).",
     )
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
