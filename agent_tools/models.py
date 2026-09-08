@@ -1,6 +1,6 @@
 """Root anchor: repository paths, variant/task constants, and summary type vocabulary.
 
-Mixed bridge. Every other module imports it, and it is imported from outside
+Mixed bridge. Widely imported within the package, and also imported from outside
 the package too, so it stays at the package top level. Its domain coupling is
 two hardcoded constants -- ``SUPPORTED_VARIANTS`` (including
 ``sex_age_baseline``) and ``VARIANTLESS_TASKS`` -- plus the per-variant

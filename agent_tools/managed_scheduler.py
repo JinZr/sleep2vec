@@ -1,12 +1,13 @@
-"""Backend selection and the managed run lifecycle shared by every launcher.
+"""Backend selection and reusable managed launch and observation primitives.
 
 Layer 0 leaf. Owns the reusable direct GPU-capacity and process lifecycle, the
 Slurm submit/observe lifecycle, the managed run lock, and the frozen execution
 snapshot each launch commits.
 
-Launchers dispatch through ``SchedulerHooks`` rather than branching on backend,
-so direct and Slurm runs share one capacity, launch-verification, and
-status-change path.
+``_launch_managed_runs`` selects the direct or Slurm backend; ``SchedulerHooks``
+supplies persistence and execution callbacks. ``experiments.launch_preset_run``
+separately sequences execution, manifest updates, and ``start_process`` using
+this module's primitives without the shared launch dispatcher.
 """
 
 from __future__ import annotations

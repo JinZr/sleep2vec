@@ -3,7 +3,9 @@
 Layer 0 leaf. Preflights the registered plan, ranks candidates on the frozen
 ``selection_split``, and validates checkpoint-test results through
 ``checkpoint_test_results``. Reads frozen artifacts and observed results only;
-it never launches work or re-derives the search space.
+it never launches work or authors a new search space. Registered-plan integrity
+validation recompiles run contracts from the frozen configurations or parameter
+product through the hparam adapter and ``plan_hparam``.
 """
 
 from __future__ import annotations

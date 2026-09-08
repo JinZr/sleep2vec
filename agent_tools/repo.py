@@ -1,4 +1,4 @@
-"""Repository orientation summary: git state, entrypoints, indexes, and tracked configs.
+"""Repository orientation: Git state, Python details, index existence, and fixed paths.
 
 Layer 0 leaf behind ``repo-summary``. Read-only and best-effort by design: a
 missing, broken, or non-git checkout reports ``available: False`` instead of

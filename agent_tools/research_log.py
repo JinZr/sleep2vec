@@ -2,8 +2,8 @@
 
 Layer 0 leaf, published behind the ``experiment_workspace`` facade. Entries
 append under a compare-and-swap so two writers cannot interleave, and each
-carries a kind, an authority, and evidence -- the log records what was decided
-and on what basis, not free text.
+carries a kind and evidence. Decision entries additionally require authority;
+other entry kinds may omit it.
 """
 
 from __future__ import annotations
