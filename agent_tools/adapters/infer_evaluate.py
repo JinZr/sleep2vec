@@ -1,9 +1,10 @@
 """The ``infer`` and ``evaluate`` task adapters.
 
 Layer 1, domain. Two registered adapters over one class: they differ in task
-name and in the consultation fields they gate -- ``infer`` additionally gates
-``final_eval_unlock`` -- not in how a checkpoint is validated or how inference
-argv is rendered.
+name and in how the final-unlock decision is sourced -- ``infer`` registers
+``final_eval_unlock`` explicitly while ``evaluate`` receives it from the shared
+consultation policy -- not in how a checkpoint is validated or how inference
+argv is rendered. Both enforce the final unlock for test evaluation.
 
 Both name their evaluation split in the recipe rather than loading the finetune
 split set.

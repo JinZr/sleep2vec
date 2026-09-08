@@ -6,7 +6,9 @@ keeping three kinds of uncertainty apart: a confirmed-unsafe identity
 genuinely absent process. Collapsing them would let a transport failure read as
 a finished run.
 
-Observes and returns. It never persists a row, launches work, or stops it.
+Observes and returns; it never persists a row or launches work. It also owns
+``stop_process_group``, the identity-verified process-group termination
+primitive used by the managed launchers.
 """
 
 from __future__ import annotations

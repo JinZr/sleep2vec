@@ -1,8 +1,10 @@
 """Plain JSON, TSV, and text serialization for managed artifacts.
 
-Layer 0 leaf. Writes are deterministic (sorted keys, trailing newline) so an
-artifact's bytes depend only on its content, which the plan and run digests
-rely on. ``validate_managed_header`` is the one place a managed table's shape
+Layer 0 leaf. JSON and row serializers are deterministic (sorted keys or
+fieldnames, trailing newline), so those artifact bytes depend only on their
+content, which the plan and run digests rely on. ``write_text`` preserves its
+supplied text verbatim, so callers own its newline behavior. The
+``validate_managed_header`` function is the one place a managed table's shape
 is enforced: ``step_id`` and ``run_id`` are required, and the historical
 ``trial_id`` / ``param.*`` fields are rejected as read-only.
 
