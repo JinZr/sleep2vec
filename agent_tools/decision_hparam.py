@@ -1,3 +1,11 @@
+"""The hyper-parameter recipe and search-space decision contract.
+
+Mixed bridge: the generic hparam gates plus the multilabel coupling inherited
+from ``decision_paths``. Owns what a well-formed search declaration is --
+axes, budget, objective, and the agent-proposal strategy -- before any plan is
+materialized. Materialization itself belongs to ``plan_hparam``.
+"""
+
 from __future__ import annotations
 
 import math

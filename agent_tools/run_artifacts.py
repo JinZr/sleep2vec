@@ -1,3 +1,12 @@
+"""Reading frozen registered plans and the artifacts a finished run leaves behind.
+
+Domain-free kernel reader. Reuses ``decision_rules`` for the structural contract of a
+registered plan, deliberately without consultation, config/path probes, or live
+observation -- reading a published plan must not re-run the decisions that
+produced it. Also owns checkpoint-name parsing, metric extraction, and rank
+assignment.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence

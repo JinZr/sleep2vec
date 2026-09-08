@@ -1,3 +1,11 @@
+"""Pure candidate-matrix expansion and the frozen target-gate decision.
+
+Layer 0 leaf, pure: it expands the declared cohort axes into phase jobs and
+ranks candidates against the frozen gate. No filesystem, scheduler, or
+observation access -- the orchestrator in ``experiment_pipeline`` supplies the
+evidence it decides on.
+"""
+
 from __future__ import annotations
 
 import math

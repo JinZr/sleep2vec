@@ -1,3 +1,15 @@
+"""Digest, preflight, registration, launch, and lifecycle of adaptive hparam search.
+
+Domain-free kernel orchestration surrounding the pure contract in
+``adaptive_proposals``. Digests a finished round, writes the proposal input,
+validates and applies the returned proposal, registers and commits the next
+round, and drives ``adaptive_step`` / ``adaptive_loop``.
+
+Round publication is recoverable by construction: staging, commit, and launch
+are distinct steps, so a crash between them is reconciled on the next step
+rather than leaving a half-registered round or a double launch.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping

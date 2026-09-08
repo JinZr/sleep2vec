@@ -1,3 +1,14 @@
+"""Managed file I/O: locked, validated, local-or-remote reads and writes.
+
+Layer 0 leaf. Every managed artifact goes through here, so managed path
+validation, the blocking file lock, and the local/SSH split live in one place.
+
+Remote uncertainty is preserved rather than collapsed into "missing": an
+unreachable host and an absent artifact reach callers as different outcomes,
+which is what lets observation code refuse to treat a transport failure as
+evidence.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence

@@ -1,3 +1,10 @@
+"""Launch, queue, monitor, and stop for a registered hyper-parameter plan's runs.
+
+Layer 0 leaf. Dispatches through ``managed_scheduler`` for capacity and process
+lifecycle, and reconciles launch artifacts so a launch interrupted between
+spawning a process and recording it is repaired rather than double-launched.
+"""
+
 from __future__ import annotations
 
 import json

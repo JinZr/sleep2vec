@@ -1,3 +1,15 @@
+"""Recipe evaluation, doctor reports, context bundles, and frozen plan publication.
+
+Layer 2 kernel. Adds authored/base/local layer orchestration and
+policy-dependent decision validation on top of the structural contract in
+``decision_rules``, then stages and publishes a plan under the publication
+lock.
+
+Publication is the only path that turns a recipe into runnable commands;
+``doctor`` and ``context`` deliberately stop short of it and report blocking
+questions instead.
+"""
+
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, contextmanager, nullcontext

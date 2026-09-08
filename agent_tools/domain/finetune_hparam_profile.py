@@ -1,3 +1,16 @@
+"""The deterministic ``finetune_balanced`` candidate compiler and its audit view.
+
+Layer 0 domain leaf, invoked through the hparam adapter's effective-recipe
+binding hook before consultation, so generic decision code never duplicates
+sleep2vec config fields.
+
+Requires a complete explicit LayerMix block and an explicit ``finetune.tuning``
+preset, preserves the exact source config as candidate zero, and expands only
+its registered technical axes. Omitted ``finetune.tuning.lora``
+hyper-parameters retain the canonical variant loader defaults frozen by config
+and runtime identity.
+"""
+
 from __future__ import annotations
 
 from itertools import combinations, product

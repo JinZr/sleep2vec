@@ -1,3 +1,11 @@
+"""Rendering of recipe fields into CLI argv and launch script text.
+
+Mixed bridge: ``preset_cli_args`` spells sleep preset fields, and one
+``sex_age_baseline`` branch survives here. Owns the runtime, scheduler, and
+input field lists together with the option-appending helpers, so every task
+renders flags through one path instead of formatting argv by hand.
+"""
+
 from __future__ import annotations
 
 from importlib import import_module

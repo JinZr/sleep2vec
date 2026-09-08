@@ -1,3 +1,10 @@
+"""The generic finetune config summary body and variant guessing.
+
+Layer 0 domain leaf; ``configs`` delegates its summary body here, one of the
+frozen reverse edges. Removing that edge would need a registry/provider
+indirection for the finetune-family summary.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

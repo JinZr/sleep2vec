@@ -1,3 +1,11 @@
+"""Post-processing of finished hparam runs: external eval, logits, thresholds, ensembles.
+
+Mixed bridge: kaldi conversion, label-name handling, and torch logit
+post-processing are spelled here. The CLI forwards all four commands, and
+``cli.export_hparam_logits`` is a test-frozen monkeypatch anchor, so that
+attribute name is part of the CLI contract.
+"""
+
 from __future__ import annotations
 
 import importlib

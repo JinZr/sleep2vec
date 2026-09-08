@@ -1,3 +1,18 @@
+"""The ``agent_tools`` command-line surface: 40 subcommands over the kernel.
+
+Mixed bridge -- it forwards the domain commands (``config-summary``,
+``index-summary``, ``preset-summary``, and the four hparam post-processing
+ones) while the rest stay task-agnostic.
+
+``test_agent_tools_cli_contract.py`` freezes the subcommand names, their
+kernel/domain/mixed ownership split, the argument contracts, the task/variant
+routing matrix, and the ``cli.export_hparam_logits`` attribute name (a
+monkeypatch anchor). Register subcommands through ``_command()``, which sets a
+command's summary and description from one string: every subcommand carries a
+``help=`` and a ``description=``, and every option carries a ``help=``, because
+this CLI is the agent-facing documentation of its own capabilities.
+"""
+
 from __future__ import annotations
 
 import argparse

@@ -1,3 +1,13 @@
+"""Local and SSH command construction for every remote agent_tools operation.
+
+Layer 0 leaf. Owns quoting, the ``ssh`` argv shape, the shared timeout, and the
+two sentinel return codes -- ``REMOTE_MISSING_RETURN_CODE`` and
+``REMOTE_CONFLICT_RETURN_CODE`` -- that let a remote probe report "absent" and
+"changed under me" without either being confused with a transport failure.
+Remote Python bodies come from ``python_programs``; this module never embeds
+program source inline.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

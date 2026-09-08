@@ -1,3 +1,10 @@
+"""Survival and multilabel sidecar summaries, and the placeholder-path probe.
+
+Layer 0 domain leaf. ``looks_like_placeholder_path`` is the shared rule for
+"this path was never filled in", so a template value surfaces as an unanswered
+consultation question rather than as a missing file.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

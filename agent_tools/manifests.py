@@ -1,3 +1,15 @@
+"""Plain JSON, TSV, and text serialization for managed artifacts.
+
+Layer 0 leaf. Writes are deterministic (sorted keys, trailing newline) so an
+artifact's bytes depend only on its content, which the plan and run digests
+rely on. ``validate_managed_header`` is the one place a managed table's shape
+is enforced: ``step_id`` and ``run_id`` are required, and the historical
+``trial_id`` / ``param.*`` fields are rejected as read-only.
+
+Local filesystem only. Reads and writes that must honour locking, remote hosts,
+or managed path validation belong to ``experiment_io``.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence

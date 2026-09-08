@@ -1,3 +1,13 @@
+"""Task-adapter registration, lookup, and the registration invariants.
+
+Layer 1. Kernel dispatch points resolve an adapter through ``get_adapter`` and
+never hardcode a task name, so this table is the only place task names and
+their implementations are associated.
+
+Registration order and the import-time invariants both carry their rationale at
+the code below.
+"""
+
 from __future__ import annotations
 
 from typing import Any

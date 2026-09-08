@@ -1,3 +1,13 @@
+"""Terminal job reduction, result-manifest validation, and final aggregation.
+
+Layer 0 leaf behind the ``experiment_pipeline`` orchestrator. Reduces observed
+job states to logical outcomes, validates each run's result manifest, and
+writes the aggregated summaries.
+
+Uncertain and retryable statuses stay distinct from terminal ones throughout,
+so aggregation never counts an unreachable run as a finished one.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence

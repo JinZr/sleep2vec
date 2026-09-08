@@ -1,3 +1,14 @@
+"""The ``hparam_tune`` task adapter.
+
+Layer 1, domain, and the single composite adapter: its ``base_task`` is
+``finetune``, so recipes carrying ``_base_recipe`` / ``_local_recipe`` layers
+close under its contract.
+
+Binds the hparam decision contract, invokes the ``finetune_balanced`` candidate
+compiler through the effective-recipe hook before consultation, and compiles
+the plan contract for hyper-parameter plans.
+"""
+
 from __future__ import annotations
 
 import json

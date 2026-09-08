@@ -1,3 +1,12 @@
+"""Materialization of hyper-parameter plans: layouts, combos, and final evaluation.
+
+Mixed bridge -- hparam plan materialization over the domain-aware primitives.
+Owns search-override application (JSON-pointer writes into config bytes), the
+per-run directory layout, and the frozen final-evaluation config snapshot,
+including the test-unlock gate that decides whether a final script may be
+emitted at all.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping

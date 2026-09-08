@@ -1,3 +1,14 @@
+"""Thin shell that resolves a config path to its structured summary.
+
+Mixed bridge: dispatches through ``adapters.config_providers`` for variants
+that claim a config by shape, and otherwise delegates the summary body to
+``domain.finetune_summary``.
+
+Two frozen re-export paths run through here --
+``configs.sleep2stat_config_summary`` and ``configs.load_yaml`` -- so importers
+outside the package keep working.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,3 +1,11 @@
+"""Acquisition of W&B run history and remote checkpoint evidence.
+
+Layer 0 leaf, and the only place that reaches out to W&B or lists checkpoints
+on an execution host. ``experiment_tracking`` consumes what it returns.
+Acquisition and interpretation stay split so status, ranking, and projection
+logic remain testable without a network or a cluster.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence

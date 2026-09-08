@@ -1,3 +1,14 @@
+"""The managed external-matrix and cohort-selection state machines.
+
+Layer 2 kernel, exposed through the ``experiments`` facade. Drives a pipeline
+attempt by attempt: source plan snapshots, registration preflight, launch,
+terminal reduction, and retry preparation.
+
+Registration and retry failures are distinct recoverable errors rather than one
+generic exception, so an interrupted attempt is reconciled on the next run
+instead of leaving the pipeline half-registered.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence

@@ -1,3 +1,14 @@
+"""Backend selection and the managed run lifecycle shared by every launcher.
+
+Layer 0 leaf. Owns the reusable direct GPU-capacity and process lifecycle, the
+Slurm submit/observe lifecycle, the managed run lock, and the frozen execution
+snapshot each launch commits.
+
+Launchers dispatch through ``SchedulerHooks`` rather than branching on backend,
+so direct and Slurm runs share one capacity, launch-verification, and
+status-change path.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence

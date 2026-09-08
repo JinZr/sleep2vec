@@ -1,3 +1,9 @@
+"""Dataset preset summaries: channels, splits, bounds, and record counts.
+
+Layer 0 domain leaf. Unpickles preset files, so it is only ever pointed at
+repo-resolved preset paths.
+"""
+
 from __future__ import annotations
 
 import json

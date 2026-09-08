@@ -1,3 +1,12 @@
+"""The pure snapshot, parameter-envelope, and external submission-validation contract.
+
+Layer 0 leaf, pure. Owns what an agent may be shown (``build_proposal_input``)
+and what it may submit back (``validate_proposal``): the numeric and
+categorical envelopes, the objective and remaining budget, and the canonical
+hashes that bind a submission to the round that requested it.
+``adaptive_hparam`` owns the surrounding lifecycle.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence

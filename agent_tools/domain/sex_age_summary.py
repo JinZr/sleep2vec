@@ -1,3 +1,11 @@
+"""The ``sex_age_baseline`` config summary, claimed by config shape.
+
+Layer 0 domain leaf, reached through ``adapters.config_providers`` rather than
+by task name: this variant is recognized from the loaded mapping, so a config
+cannot be summarized under the wrong family just by being pointed at the wrong
+task.
+"""
+
 from __future__ import annotations
 
 from dataclasses import asdict

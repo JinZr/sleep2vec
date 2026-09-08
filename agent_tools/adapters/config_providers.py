@@ -1,3 +1,11 @@
+"""Config-shape providers: variants claimed by the config rather than by the task.
+
+Layer 1. A provider either forces a variant outright or probes the raw loaded
+mapping. ``configs`` walks this tuple before falling back to the generic
+finetune summary body, so a config is summarized under the family it actually
+belongs to even when the caller names a different task.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Callable, NamedTuple

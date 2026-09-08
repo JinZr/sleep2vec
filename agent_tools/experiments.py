@@ -1,3 +1,16 @@
+"""Facade for the experiment lifecycle commands the CLI drives.
+
+Domain-free kernel facade: init, note, register-step, finalize, W&B sync, checkpoint
+indexing, monitor, status, rank, the pipeline entrypoint, and the preset/infer
+launch and stop paths.
+
+A facade, not a second implementation: lifecycle rules live in
+``experiment_workspace``, evidence in ``experiment_tracking``, and the pipeline
+state machines in ``experiment_pipeline``. What stays here is the sequencing a
+command performs across those owners -- most visibly in
+``finalize_experiment``.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence

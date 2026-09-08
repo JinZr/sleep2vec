@@ -1,3 +1,12 @@
+"""The per-checkout runtime lock shared by runtime updates and launch paths.
+
+Layer 0 leaf. One exclusive ``flock`` at the checkout root, so a
+``runtime_sync`` fast-forward cannot cross the short
+HEAD-observation-to-process-start critical section of a launch. Linked
+worktrees resolve to their own root: a worktree keeps a ``.git`` marker file
+rather than a directory but still owns an independent checkout-root lock.
+"""
+
 from __future__ import annotations
 
 from contextlib import contextmanager

@@ -1,3 +1,14 @@
+"""Observation of one direct run: process identity, logs, artifacts, and health.
+
+Layer 0 leaf. Turns a manifest row plus live probes into a status row while
+keeping three kinds of uncertainty apart: a confirmed-unsafe identity
+(``ProcessIdentityError``), an unreachable host (``unknown_remote``), and a
+genuinely absent process. Collapsing them would let a transport failure read as
+a finished run.
+
+Observes and returns. It never persists a row, launches work, or stops it.
+"""
+
 from __future__ import annotations
 
 import base64

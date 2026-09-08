@@ -1,3 +1,14 @@
+"""The consultation gate: where a recipe is judged ready, blocked, or in question.
+
+Layer 2 kernel. Folds structural rules, path and sidecar validation, adapter
+task hooks, experiment metadata, and resolved user decisions into one
+``DecisionReport``.
+
+Holds the task-specific dispatch hoisted out of ``decision_paths`` and reaches
+tasks only through the adapter registry, so no kernel module hardcodes a task
+name.
+"""
+
 from __future__ import annotations
 
 from typing import Any

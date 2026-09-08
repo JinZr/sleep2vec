@@ -1,3 +1,14 @@
+"""Slurm resource and script contracts, CLI transport, and job identity parsing.
+
+Layer 0 leaf. Owns the batch-script shape, ``sbatch`` / ``squeue`` / ``sacct``
+transport, machine-readable job and sidecar identity parsing, state
+normalization, compute-wrapper execution, and cancellation primitives.
+
+Every probe requests a machine-readable format (``--parsable``,
+``--parsable2``, an explicit ``--format``), so a change to the cluster's
+human-facing output cannot silently alter an observed job state.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence

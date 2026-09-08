@@ -1,3 +1,15 @@
+"""Managed manifests and the one-way ``plan_controller`` binding.
+
+Layer 0 leaf, and the workspace facade. Owns ``run_manifest.tsv`` -- the
+lifecycle owner for run status -- the frozen run, scheduler, process, and
+runtime-provenance identity field sets, the phase and status vocabularies, and
+the one-way step ``plan_controller`` binding that classifies a plan as
+ordinary, adaptive, or pipeline.
+
+``research_log`` publishes behind this facade rather than writing to the
+workspace directly.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence

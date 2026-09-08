@@ -1,3 +1,11 @@
+"""GPU pool partitioning: how a run's device list becomes concurrent launch groups.
+
+Layer 0 leaf. Pure arithmetic over the recipe's ``execution.gpu_pool`` and
+``runtime.devices``; it reports ``GpuRuleIssue`` values rather than raising, and
+never probes a device. Live capacity and process placement belong to
+``managed_scheduler``.
+"""
+
 from __future__ import annotations
 
 from typing import Any, NamedTuple

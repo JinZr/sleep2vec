@@ -1,3 +1,11 @@
+"""Validation of the checked-in ``skills/`` playbooks against their manifest.
+
+Layer 0 leaf behind the ``skills`` command. ``REQUIRED_HEADINGS`` is the
+structural contract every playbook must carry, so a skill cannot silently drop
+its stop-and-consult gates or its validation section. Checks structure and
+manifest agreement only; it never executes anything a playbook describes.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

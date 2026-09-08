@@ -1,3 +1,14 @@
+"""The ``infer`` and ``evaluate`` task adapters.
+
+Layer 1, domain. Two registered adapters over one class: they differ in task
+name and in the consultation fields they gate -- ``infer`` additionally gates
+``final_eval_unlock`` -- not in how a checkpoint is validated or how inference
+argv is rendered.
+
+Both name their evaluation split in the recipe rather than loading the finetune
+split set.
+"""
+
 from __future__ import annotations
 
 from typing import Any
