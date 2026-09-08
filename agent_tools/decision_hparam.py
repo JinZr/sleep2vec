@@ -244,7 +244,6 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
                     source_layer,
                 )
             )
-        issues.extend(_agent_proposal_search_issues(recipe, source_layer=source_layer))
     return issues
 
 
@@ -433,6 +432,8 @@ def hparam_search_issues(recipe: dict, *, high_impact: dict[str, dict[str, Any]]
         issues.append(needs_issue("hparam_search_space", "search.parameters is required.", high_impact))
     elif "parameters" in search:
         issues.extend(_hparam_search_parameter_issues(search.get("parameters")))
+    if uses_agent_proposals(recipe):
+        issues.extend(_agent_proposal_search_issues(recipe, source_layer="effective"))
     return issues
 
 

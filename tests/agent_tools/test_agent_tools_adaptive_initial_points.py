@@ -207,16 +207,26 @@ def test_combined_initial_search_remains_exclusive_to_agent_proposals(tmp_path: 
 
 
 @pytest.mark.parametrize("outside", [False, True])
-def test_domain_decision_preserves_initial_points_and_revalidates_them(tmp_path: Path, outside: bool):
+@pytest.mark.parametrize("decision_source", ["authored", "user"])
+def test_domain_decision_preserves_initial_points_and_revalidates_them(
+    tmp_path: Path, outside: bool, decision_source: str
+):
     recipe, workspace = _joint_recipe(tmp_path)
     source = yaml.safe_load(recipe.read_text())
     parameters = copy.deepcopy(source["search"]["parameters"])
     if outside:
         parameters["runtime.epochs"] = [3, 4]
+    else:
+        source["search"]["parameters"]["runtime.epochs"] = [3, 4]
     decisions = tmp_path / "decisions.yaml"
-    decisions.write_text(yaml.safe_dump({"decisions": {"hparam_search_space": {"value": parameters}}}))
+    decision_payload = {"hparam_search_space": {"value": parameters}}
+    if decision_source == "authored":
+        source["decisions"].update(decision_payload)
+    else:
+        decisions.write_text(yaml.safe_dump({"decisions": decision_payload}))
+    recipe.write_text(yaml.safe_dump(source, sort_keys=False))
 
-    effective, _config, report = plans.evaluate_recipe(recipe, decisions)
+    effective, _config, report = plans.evaluate_recipe(recipe, decisions if decision_source == "user" else None)
 
     assert effective["search"]["configurations"] == source["search"]["configurations"]
     assert effective["search"]["parameters"] == parameters
