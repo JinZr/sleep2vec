@@ -206,6 +206,26 @@ def test_combined_initial_search_remains_exclusive_to_agent_proposals(tmp_path: 
     assert not workspace.exists()
 
 
+@pytest.mark.parametrize("exact_points", [False, True])
+def test_duplicate_structured_domain_choices_fail_before_initial_publication(tmp_path: Path, exact_points: bool):
+    recipe, workspace = _joint_recipe(tmp_path)
+    source = yaml.safe_load(recipe.read_text())
+    key = "yaml:/finetune/tuning"
+    choice = {"preset": "lora", "lora": {"r": 4, "alpha": 8}}
+    source["search"]["parameters"][key] = [choice, dict(reversed(list(choice.items())))]
+    if exact_points:
+        for point in source["search"]["configurations"]:
+            point[key] = choice
+    else:
+        source["search"].pop("configurations")
+    recipe.write_text(yaml.safe_dump(source, sort_keys=False))
+
+    with pytest.raises(adaptive_hparam.AdaptivePreflightError, match="contains duplicate values"):
+        adaptive_hparam.init_adaptive_workflow(recipe, workspace / "workflow")
+
+    assert not workspace.exists()
+
+
 @pytest.mark.parametrize("outside", [False, True])
 @pytest.mark.parametrize("decision_source", ["authored", "user"])
 def test_domain_decision_preserves_initial_points_and_revalidates_them(

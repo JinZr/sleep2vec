@@ -540,9 +540,18 @@ def test_structured_mapping_order_preserves_request_identity_and_duplicate_detec
     assert _snapshot(parameters={key: [reordered]})["request_id"] == snapshot["request_id"]
     assert validate_proposal(_proposal(snapshot, parameters={key: [reordered]}), snapshot)["max_runs"] == 1
     with pytest.raises(ValueError, match="duplicate values"):
+        validate_parameter_envelopes({key: [choice, reordered]})
+    with pytest.raises(ValueError, match="duplicate values"):
         validate_proposal(_proposal(snapshot, parameters={key: [choice, reordered]}), snapshot)
     with pytest.raises(ValueError, match="duplicate configuration points"):
         validate_proposal(_configuration_proposal(snapshot, configurations=[{key: choice}, {key: reordered}]), snapshot)
+
+
+def test_structured_list_domain_rejects_duplicates_but_preserves_list_order():
+    key = "yaml:/finetune/layer_mix/layer_indices"
+    with pytest.raises(ValueError, match="duplicate values"):
+        validate_parameter_envelopes({key: [[1, 2], [1, 2]]})
+    assert validate_parameter_envelopes({key: [[1, 2], [2, 1]]})[key]["choices"] == [[1, 2], [2, 1]]
 
 
 @pytest.mark.parametrize(

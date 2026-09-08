@@ -135,6 +135,8 @@ def validate_parameter_envelopes(
         if kind == "categorical":
             if key in bounds:
                 raise ValueError(f"adaptive.suggest.bounds cannot constrain categorical parameter {key}.")
+            if _has_duplicates(values, kind):
+                raise ValueError(f"Search parameter {key} contains duplicate values.")
             envelopes[key] = {"kind": kind, "choices": list(values)}
             continue
 
