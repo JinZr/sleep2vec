@@ -497,6 +497,10 @@ def _digest_rows(
         }
         row.update(managed_run_parameters(run))
         row.update(_manifest_metrics(manifest))
+        if status.get("status") in {"completed", "finished"}:
+            monitor = manifest.get("monitor")
+            if isinstance(monitor, str) and monitor:
+                row[monitor] = artifacts.metric_value(manifest, monitor)
         checkpoint_test_objective = selection_split == "test" and objective["metric"].startswith("test_")
         if checkpoint_test_objective:
             # Checkpoint test evidence changes identity and is valid only after canonical successful completion.
@@ -2881,9 +2885,6 @@ def _manifest_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
     metrics_value = manifest.get("metrics")
     metrics = metrics_value if isinstance(metrics_value, dict) else {}
     row = {key: value for key, value in metrics.items() if isinstance(key, str) and key != "status"}
-    monitor = manifest.get("monitor")
-    if isinstance(monitor, str) and monitor:
-        row[monitor] = artifacts.metric_value(manifest, monitor)
     for key in ("best_model_score", "epoch", "monitor", "monitor_mode"):
         if manifest.get(key) is not None:
             row[key] = manifest.get(key)

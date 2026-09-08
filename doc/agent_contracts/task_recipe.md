@@ -916,6 +916,9 @@ and `run_id`. Run IDs increase within the workflow's frozen step, so
 `is_incumbent` is `"True"` for the best successful run across this history
 (earlier round/plan order breaks equal-score ties), and `"False"` otherwise.
 No failed run is marked incumbent, even if it retains forensic metrics.
+Named validation metrics are filled from `monitor` / `best_model_score` only
+for canonical `completed` or `finished` runs. Other rows retain these original
+diagnostic fields without gaining a fallback score for ranking or suggestions.
 
 Rows from proposed rounds include the accepted `proposal_rationale`,
 `proposal_path` and `proposal_sha256`. The submission, its issued input and
