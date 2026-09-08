@@ -4,29 +4,6 @@ Use this example before authoring a new adaptive domain. It illustrates reasons
 to preserve useful choices within a small budget; the numbers are observations,
 not reusable parameter recommendations. Existing frozen searches stay unchanged.
 
-## A provisional base without downstream results
-
-Suppose whole-night tuning has twelve fits and two concurrent two-GPU runs.
-A freshly drafted base says eight epochs, but no comparable downstream result or
-throughput is available. The draft is a starting point. Its horizon is not an
-observed training requirement, and the concurrency limit supplies no evidence
-that eight or twelve epochs is an adequate maximum.
-
-An LR contrast at a common horizon can be a useful first comparison. Before
-freezing the domain, explain why the chosen epoch bounds leave enough room to
-investigate a plausible result: both candidates might still improve at their last
-checkpoint, or both might peak earlier and deteriorate. That does not require a
-longer opening fit or an arbitrarily large maximum. A modest upper bound can be
-reasonable if its opportunity cost and supporting evidence are stated; absent
-throughput, it is a provisional compute judgment, not a measured budget limit.
-Saving and testing every checkpoint also costs time.
-
-Distinguish inherited architecture and evaluation settings from downstream
-optimization defaults. Pretraining LR, warmup or EMA configuration does not
-establish the effective downstream schedule or model readiness. Missing effective
-config and data/model compatibility evidence belong in publication prerequisites,
-not in invented assumptions that make a concept plan look executable.
-
 ## An incumbent at the observed LR and horizon edges
 
 Suppose a completed LR 3e-4, eight-epoch, warmup-500 run wins at epoch seven.

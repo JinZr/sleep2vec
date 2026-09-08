@@ -32,5 +32,5 @@ already reason well, say so. Code CI checks evidence transport and invariants;
 these case reviews assess the resulting explanations and decisions separately.
 
 For the separate decision of choosing a new domain before initialization, use
-the [historical initialization cases and review](initialization/review.md). Their
-evidence cuts withhold the original search choices and all subsequent outcomes.
+the [UKB initialization case and review](initialization/review.md). Its
+evidence cut withholds the original search choices and all subsequent outcomes.
