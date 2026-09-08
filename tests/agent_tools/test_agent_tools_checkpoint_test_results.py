@@ -152,7 +152,7 @@ def test_hparam_selection_keeps_evidence_and_hash_order(monkeypatch):
     assert rows[0]["checkpoint_sha256"] == "a" * 64
 
 
-def test_adaptive_checkpoint_objective_keeps_invalid_none_and_epoch_tie_break():
+def test_adaptive_checkpoint_evidence_keeps_invalid_none_and_epoch_tie_break():
     manifest = {
         "test_all_checkpoints_after_fit": True,
         "checkpoint_test_results": [
@@ -171,14 +171,17 @@ def test_adaptive_checkpoint_objective_keeps_invalid_none_and_epoch_tie_break():
     objective = {"metric": "test_metric", "mode": "max"}
     checkpoint_names = ["epoch=1-step=10.ckpt", "epoch=2-step=20.ckpt"]
 
-    selected = adaptive_hparam._test_checkpoint_objective(
+    evidence = adaptive_hparam._test_checkpoint_evidence(
         manifest,
         objective,
         "/checkpoints",
         checkpoint_names,
     )
+    assert evidence is not None
+    selected, trajectory = evidence
+    assert trajectory == sorted(manifest["checkpoint_test_results"], key=lambda row: row["epoch"])
     manifest["checkpoint_test_results"].pop()
-    invalid = adaptive_hparam._test_checkpoint_objective(
+    invalid = adaptive_hparam._test_checkpoint_evidence(
         manifest,
         objective,
         "/checkpoints",
