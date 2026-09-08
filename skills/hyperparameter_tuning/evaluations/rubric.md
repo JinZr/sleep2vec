@@ -30,3 +30,7 @@ usable; it cannot establish better real-world tuning performance, statistical
 significance, or general superiority of one skill revision. If both versions
 already reason well, say so. Code CI checks evidence transport and invariants;
 these case reviews assess the resulting explanations and decisions separately.
+
+For the separate decision of choosing a new domain before initialization, use
+the [UKB initialization case and review](initialization/review.md). Its
+evidence cut withholds the original search choices and all subsequent outcomes.
