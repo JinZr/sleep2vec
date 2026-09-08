@@ -211,7 +211,9 @@ completion evidence.
 Read [registration preflight](../../doc/agent_contracts/task_recipe.md#registration-preflight)
 and [launch revalidation](../../doc/agent_contracts/task_recipe.md#execution-snapshot-and-launch-revalidation).
 All candidate sources validate final config bytes through the canonical variant
-owner; planner-local config and target CLI checks are distinct evidence, not
+owner. The frozen domain permits values; it does not certify every cross-axis
+combination. Choose jointly valid points and correct rejected, unaccepted
+submissions within the issued domain. Planner-local config and target CLI checks are distinct evidence, not
 proof of model construction, checkpoint compatibility, forward/backward or GPU
 execution. `execution.runtime_commit` is planned/baseline provenance; launch
 first-fills the canonical actual `runtime_commit` from the HEAD observed between

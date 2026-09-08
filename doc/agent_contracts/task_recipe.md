@@ -511,6 +511,16 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   config still passes the canonical variant loader; the domain does not authorize
   arbitrary new fields inside a block or bypass config semantics.
 
+Frozen parameter envelopes define permitted values, not a guarantee that every
+value or cross-axis combination is executable. Initialization validates the
+concrete opening points; each later complete proposal passes canonical config
+and runtime preflight before acceptance, publication or launch. Coupled axes may
+have valid paired points and invalid cross-pairs, so neither the full Cartesian
+product nor each choice applied alone to the source config defines their validity.
+An unused invalid choice can remain in the domain, but selecting it fails preflight
+without accepting or launching that proposal. The agent can correct an unaccepted
+submission within the same issued domain and budget.
+
 For a new recipe with no authored search, an ordinary tuning request defaults
 to terminal-only `adaptive.suggest.strategy: agent_proposal`. Static profile/grid
 search requires an explicit request. Existing authored or frozen searches must
