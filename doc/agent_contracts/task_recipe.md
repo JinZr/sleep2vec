@@ -379,7 +379,10 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
 
 - Search keys are explicit `runtime.<name>` fields or
   `yaml:/json/pointer/path` config overrides. Removed bare or `param.*` forms
-  are rejected rather than translated.
+  are rejected rather than translated. JSON Pointer escapes use only `~0` and
+  `~1`. List indices use canonical non-negative integers (`0`, `1`, ...), with
+  no leading zero, sign or whitespace aliases; numeric dictionary keys remain
+  literal strings.
 - An explicit search requires positive `search.max_runs` and uses `method: grid`.
   Static searches and derived proposal rounds select exactly one of:
   - `search.parameters`: a per-key candidate mapping expanded by Cartesian
