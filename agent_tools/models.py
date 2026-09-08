@@ -1,3 +1,17 @@
+"""Root anchor: repository paths, variant/task constants, and summary type vocabulary.
+
+Mixed bridge. Widely imported within the package, and also imported from outside
+the package too, so it stays at the package top level. Its domain coupling is
+two hardcoded constants -- ``SUPPORTED_VARIANTS`` (including
+``sex_age_baseline``) and ``VARIANTLESS_TASKS`` -- plus the per-variant
+``*ConfigSummary`` shapes.
+
+``CONFIG_FINETUNE_SECTION`` spells the config-schema section name so kernel
+modules can read it without tripping the adapter-leak guard, which matches raw
+task-name constants: the section shares its spelling with the finetune task but
+is config vocabulary, not task dispatch.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

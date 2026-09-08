@@ -1,3 +1,11 @@
+"""Aggregating re-export of the hyper-parameter surface.
+
+A convenience import path only. The owners are ``hparam_runtime`` (launch,
+queue, monitor, stop), ``hparam_selection`` (candidate resolution, checkpoint
+scan, selection), and ``hparam_postprocess`` (external eval, logits, threshold,
+ensemble). Add nothing here but re-exports.
+"""
+
 from .hparam_postprocess import (
     ensemble_hparam_outputs,
     export_hparam_logits,

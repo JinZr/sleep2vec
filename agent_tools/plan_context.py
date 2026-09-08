@@ -1,3 +1,13 @@
+"""Diagnostic context bundles: what an agent is shown before any plan exists.
+
+Layer 2 kernel, mixed bridge -- it imports ``domain.presets`` and the
+``index_csv`` shim directly, both of which should eventually route through an
+adapter hook.
+
+Everything it emits is diagnostic. A context bundle never authorizes a runnable
+command; only ``plans`` publication does.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

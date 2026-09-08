@@ -1,3 +1,14 @@
+"""Task-adapter registration, lookup, and the registration invariants.
+
+Layer 1. Associates task names with adapter instances and exposes
+``get_adapter`` for adapter lookup. Launch-action mappings also live in
+``experiment_tracking``, while ``experiments`` owns task-specific launch
+validation; those paths contain explicit task-name branches.
+
+Registration order and the import-time invariants both carry their rationale at
+the code below.
+"""
+
 from __future__ import annotations
 
 from typing import Any

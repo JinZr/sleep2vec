@@ -1,3 +1,11 @@
+"""Repository orientation: Git state, Python details, index existence, and fixed paths.
+
+Layer 0 leaf behind ``repo-summary``. Read-only and best-effort by design: a
+missing, broken, or non-git checkout reports ``available: False`` instead of
+failing, because this is the first command an agent runs to orient itself and
+it must never be the thing that blocks.
+"""
+
 from __future__ import annotations
 
 import subprocess

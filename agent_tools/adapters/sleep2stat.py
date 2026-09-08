@@ -1,3 +1,10 @@
+"""The ``sleep2stat`` task adapter and its config-summary owner.
+
+Layer 1, domain. The one variantless task (see ``models.VARIANTLESS_TASKS``).
+Also owns ``sleep2stat_config_summary``, which ``configs`` re-exports on a
+test-frozen import path.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

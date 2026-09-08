@@ -1,3 +1,10 @@
+"""The ``preset_prepare`` task adapter.
+
+Layer 1, domain. Dataset-preset preparation: preset field rendering, the
+survival and multilabel sidecar checks, and the execution contract for the
+preparation step.
+"""
+
 from __future__ import annotations
 
 import sys

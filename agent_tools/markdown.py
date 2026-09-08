@@ -1,3 +1,10 @@
+"""Rendering of consultation reports as agent-facing questions and Markdown.
+
+Presentation only: it reads a ``DecisionReport`` and emits text, and decides
+nothing itself. Its import of ``decisions`` is a core-to-core edge, legal
+outside the reverse-edge table.
+"""
+
 from __future__ import annotations
 
 from typing import Any, TypedDict

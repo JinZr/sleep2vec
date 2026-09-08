@@ -1,3 +1,11 @@
+"""The ``finetune`` task adapter.
+
+Layer 1, domain. Declares the finetune runtime and scheduler fields, the
+sidecar checks the task requires (survival, multilabel, sex_age pretrained
+backbone), and the command rendering for a finetune run. ``hparam_tune``
+composes over it as its ``base_task``.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

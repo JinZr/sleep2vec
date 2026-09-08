@@ -1,3 +1,14 @@
+"""Path, sidecar, and execution-contract validation for recipe decisions.
+
+Mixed bridge, and the highest domain signal among the L0 leaves: survival,
+multilabel, and sex_age sidecar checks are spelled here rather than behind an
+adapter hook.
+
+Must never import the adapter registry -- the task-specific dispatch that used
+to live here is hoisted into ``decisions`` instead, which is what keeps this a
+layer 0 leaf that adapters may import.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

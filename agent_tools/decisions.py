@@ -1,3 +1,14 @@
+"""The consultation gate: where a recipe is judged ready, blocked, or in question.
+
+Layer 2 kernel. Folds structural rules, path and sidecar validation, adapter
+task hooks, experiment metadata, and resolved user decisions into one
+``DecisionReport``.
+
+Holds the task-specific dispatch hoisted out of ``decision_paths`` and reaches
+tasks through the adapter registry. Separately, ``experiment_pipeline`` owns
+the literal ``infer`` task spelling in its frozen jobs and generated recipes.
+"""
+
 from __future__ import annotations
 
 from typing import Any

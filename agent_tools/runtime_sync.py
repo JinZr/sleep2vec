@@ -1,3 +1,11 @@
+"""Dry-run inspection and clean ``origin/main`` fast-forward of one existing checkout.
+
+Layer 0 leaf behind ``runtime-sync``. Updates in place and never launches work;
+a dirty tree or a non-fast-forward is reported, not forced. Takes
+``runtime_lock`` so an update cannot cross the short
+HEAD-observation-to-process-start critical section of a launch.
+"""
+
 from __future__ import annotations
 
 import json

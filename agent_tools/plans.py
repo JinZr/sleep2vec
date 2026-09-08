@@ -1,3 +1,16 @@
+"""Recipe evaluation, doctor reports, context bundles, and frozen plan publication.
+
+Layer 2 kernel. Adds authored/base/local layer orchestration and
+policy-dependent decision validation on top of the structural contract in
+``decision_rules``, then stages and publishes a plan under the publication
+lock.
+
+``doctor`` reports consultation results without publishing runnable commands.
+On a passing report, ``build_context`` also emits ``recommended_commands`` and
+an executable ``commands.sh`` in its output directory. These are
+diagnostic outputs, not a frozen registered plan or authorization to execute.
+"""
+
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, contextmanager, nullcontext

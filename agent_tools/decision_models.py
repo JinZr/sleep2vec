@@ -1,3 +1,11 @@
+"""Consultation vocabulary: statuses, issues, reports, and resolved user decisions.
+
+Layer 0 leaf with no intra-package imports. Every gate in the decision and
+adapter layers speaks in these types, and ``merge_status`` is the single place
+the PASS / WARN / NEEDS_USER_INPUT / FAIL lattice is folded, so severity
+ordering cannot drift between callers.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dataclass_field

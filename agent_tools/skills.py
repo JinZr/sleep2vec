@@ -1,3 +1,11 @@
+"""Validation of the checked-in ``skills/`` playbooks against their manifest.
+
+Layer 0 leaf behind the ``skills`` command. ``REQUIRED_HEADINGS`` defines the
+structural headings every playbook must carry. The validator checks heading
+presence and manifest agreement, but does not validate section body content or
+execute anything a playbook describes.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

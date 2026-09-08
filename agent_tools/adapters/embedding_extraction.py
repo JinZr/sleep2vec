@@ -1,3 +1,10 @@
+"""The ``embedding_extraction`` task adapter.
+
+Layer 1, domain. Validates the whole-night index it consumes through
+``data.whole_night_index`` -- the one adapter that reaches outside agent_tools
+-- and renders the extraction command.
+"""
+
 from __future__ import annotations
 
 import importlib

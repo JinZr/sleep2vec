@@ -1,3 +1,14 @@
+"""Projections, status advice, and ranking validation over acquired evidence.
+
+Layer 0 leaf. Consumes ``experiment_sources`` observations plus the run
+manifest and produces the experiment status snapshot, monitor results, the
+hparam-selection lifecycle view, and candidate ranking.
+
+Recipe and canonical pipeline fields are consistency guards here;
+``run_manifest.tsv`` remains the lifecycle owner, so nothing in this module
+advances a run's status.
+"""
+
 from __future__ import annotations
 
 from collections import Counter

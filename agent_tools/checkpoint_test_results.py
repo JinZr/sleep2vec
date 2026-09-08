@@ -1,3 +1,10 @@
+"""Saved-epoch expectations and checkpoint-test result validation.
+
+Layer 0 leaf, pure. Shared by hparam selection and adaptive objective
+extraction so both agree on which ``epoch=*.ckpt`` results a plan should have
+produced and which of them is best. No filesystem or scheduler access.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping

@@ -1,3 +1,11 @@
+"""Recipe, layer, user-decision, and consultation-policy YAML loaders.
+
+Layer 0 leaf. Authored recipes may not carry reserved top-level ``_``-prefixed
+keys: those spellings belong to the ``_base_recipe`` / ``_local_recipe`` layers
+this module merges. ``recipe_name`` is re-exported from ``models`` on a
+test-frozen import path.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
