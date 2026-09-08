@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib
+
 from matplotlib.patches import FancyBboxPatch
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 
 from sleep2vec.config import ConfusionMatrixVisualizationConfig, EvalVisualizationPlotConfig, EvalVisualizationsConfig
 import sleep2vec.visualization.downstream_eval as downstream_eval
@@ -324,7 +327,7 @@ def test_downstream_eval_visualizer_logs_regression_scatter(monkeypatch):
 
     assert len(logged) == 1
     payload, commit = logged[0]
-    assert list(payload) == ["test_eval/regression_scatter"]
+    assert list(payload) == ["test_eval/current model/regression_scatter"]
     assert commit is False
 
 
@@ -386,3 +389,43 @@ def test_downstream_eval_visualizer_skips_roc_curve_when_targets_have_one_class(
     )
 
     assert logged == []
+
+
+@pytest.mark.parametrize("package", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+@pytest.mark.parametrize("task", ["sex", "stage4", "age", "ahi"])
+def test_test_plots_are_bound_to_evaluated_checkpoints(package, task, monkeypatch):
+    module = importlib.import_module(f"{package}.visualization.downstream_eval")
+    logged = []
+    monkeypatch.setattr(module.wandb, "run", object(), raising=False)
+    monkeypatch.setattr(module.wandb, "Image", lambda fig: fig)
+    monkeypatch.setattr(module.wandb, "log", lambda payload, **kwargs: logged.append(payload))
+    visualizer = module.DownstreamEvalVisualizer(
+        EvalVisualizationsConfig(
+            enabled=True,
+            stages=["test"],
+            confusion_matrix=ConfusionMatrixVisualizationConfig(enabled=True),
+            roc_curve=EvalVisualizationPlotConfig(enabled=True),
+            regression_scatter=EvalVisualizationPlotConfig(enabled=True),
+        )
+    )
+    for paths in (["/runs/epoch=11.ckpt"], ["/runs/epoch=07.ckpt"], ["/a.ckpt", "/b.ckpt"]):
+        kwargs = dict(stage="test", label_name=task, current_epoch=99, checkpoint_paths=paths)
+        if task == "ahi":
+            visualizer.log_ahi_summary_scatter(preds=np.array([2.0, 4.0]), targets=np.array([3.0, 5.0]), **kwargs)
+        else:
+            classification = task in {"sex", "stage4"}
+            dim = 2 if task == "sex" else 3 if task == "stage4" else 1
+            visualizer.log(
+                preds=np.eye(dim) if classification else np.array([2.0, 4.0]),
+                targets=np.arange(dim) if classification else np.array([3.0, 5.0]),
+                is_classification=classification,
+                output_dim=dim,
+                **kwargs,
+            )
+        identity = ", ".join(paths)
+        assert all(key.startswith(f"test_eval/{identity}/") for key in logged[-1])
+        for figure in logged[-1].values():
+            titles = [ax.get_title() for ax in figure.axes] + [text.get_text() for text in figure.texts]
+            assert any(identity in title for title in titles)
+            assert all("epoch 99" not in title for title in titles)
+    assert not (logged[0].keys() & logged[1].keys())

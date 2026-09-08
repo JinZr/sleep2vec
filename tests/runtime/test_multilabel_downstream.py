@@ -324,6 +324,47 @@ def test_multilabel_eval_aggregates_duplicate_subject_logits_and_exports_vectors
     assert k1_row["token_starts"] == [0, 10]
     assert module._stage_outputs["test"] == []
 
+    validation_row = {**module.multilabel_per_disease_metric_rows[0], "stage": "val"}
+    module.multilabel_per_disease_metric_rows.append(validation_row)
+    finetuning_cls._finalize_epoch(module, "test")
+    assert module.prediction_rows == []
+    assert module.multilabel_per_disease_metric_rows == [validation_row]
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sleep2vec.sleep2vec_finetuning",
+        "sleep2vec2.sleep2vec_finetuning",
+        "sleep2expert.sleep2vec_finetuning",
+    ],
+)
+def test_multilabel_unlabeled_test_clears_previous_metrics_and_replaces_predictions(module_name: str, tmp_path: Path):
+    finetuning_cls, module = _new_multilabel_finetuning_module(module_name, tmp_path, prediction_export=True)
+    logged = _capture_logged_metrics(module)
+    validation_row = {"stage": "val", "disease": "d1", "auroc": 0.6}
+    module.multilabel_per_disease_metric_rows = [validation_row, {"stage": "test", "disease": "d1", "auroc": 0.9}]
+    module.prediction_rows = [{"path": "previous.npz"}]
+    batch = {
+        "metadata": {
+            "path": ["unlabeled.npz"],
+            "eid": ["unlabeled"],
+            "disease_label": torch.zeros(1, 2),
+            "has_label": torch.zeros(1, 2),
+        },
+        "token_start": torch.tensor([0]),
+    }
+
+    finetuning_cls._shared_step(module, batch, stage="test", model=_StaticLogitModel(torch.tensor([[1.5, -1.5]])))
+    finetuning_cls._finalize_epoch(module, "test")
+
+    assert logged == []
+    assert module.multilabel_per_disease_metric_rows == [validation_row]
+    assert len(module.prediction_rows) == 1
+    assert module.prediction_rows[0]["multilabel_key"] == "unlabeled"
+    assert module.prediction_rows[0]["has_label"] == [0, 0]
+    assert module._stage_outputs["test"] == []
+
 
 @pytest.mark.parametrize(
     "metrics_module",

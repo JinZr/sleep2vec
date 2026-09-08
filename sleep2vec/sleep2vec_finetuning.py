@@ -520,6 +520,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return merged
 
     def _finalize_survival_epoch(self, stage: str, outputs) -> None:
+        self.survival_per_disease_metric_rows = [
+            row for row in self.survival_per_disease_metric_rows if row.get("stage") != stage
+        ]
         records = list(outputs)
         outputs.clear()
         if stage == "train":
@@ -546,9 +549,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
         metric_rows = self._build_survival_per_disease_metric_rows(
             stage, pred, event_time, is_event, has_label, disease_names
         )
-        self.survival_per_disease_metric_rows = [
-            row for row in self.survival_per_disease_metric_rows if row.get("stage") != stage
-        ]
         self.survival_per_disease_metric_rows.extend(metric_rows)
         event_count = int(((is_event > 0.5) & (has_label > 0.5)).sum().item())
         if event_count == 0:
@@ -753,6 +753,9 @@ class Sleep2vecFinetuning(pl.LightningModule):
         return load_multilabel_disease_columns(disease_columns_index)
 
     def _finalize_multilabel_epoch(self, stage: str, outputs) -> None:
+        self.multilabel_per_disease_metric_rows = [
+            row for row in self.multilabel_per_disease_metric_rows if row.get("stage") != stage
+        ]
         records = list(outputs)
         outputs.clear()
         if stage == "train":
@@ -782,9 +785,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
         metric_rows = self._build_multilabel_per_disease_metric_rows(
             stage, labels_np, probs, has_label_np, disease_names
         )
-        self.multilabel_per_disease_metric_rows = [
-            row for row in self.multilabel_per_disease_metric_rows if row.get("stage") != stage
-        ]
         self.multilabel_per_disease_metric_rows.extend(metric_rows)
 
         metrics = compute_multilabel_classification_metrics(labels_np, probs, has_label_np)
@@ -1636,6 +1636,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
                     targets=true_ahi,
                     label_name=self.args.label_name,
                     current_epoch=int(self.current_epoch),
+                    checkpoint_paths=(
+                        (
+                            getattr(self.args, "inference_checkpoint_paths", None)
+                            or [getattr(trainer, "ckpt_path", None) or getattr(self.args, "ckpt_path", None)]
+                        )
+                        if stage == "test"
+                        else None
+                    ),
                 )
             if stage == "test" and rank == 0 and prediction_export_enabled(self.args):
                 self.prediction_rows = build_ahi_prediction_rows(records, eval_threshold)
@@ -1721,6 +1729,14 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 output_dim=getattr(self.args, "output_dim", None),
                 label_name=self.args.label_name,
                 current_epoch=int(self.current_epoch),
+                checkpoint_paths=(
+                    (
+                        getattr(self.args, "inference_checkpoint_paths", None)
+                        or [getattr(trainer, "ckpt_path", None) or getattr(self.args, "ckpt_path", None)]
+                    )
+                    if stage == "test"
+                    else None
+                ),
                 class_labels=getattr(self.args, "class_labels", None),
             )
 

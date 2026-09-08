@@ -123,6 +123,13 @@ Survival and multilabel metrics aggregate by the configured subject key while
 prediction exports retain path/window provenance. Ordinary scalar metrics keep
 window and explicitly named episode denominators separate.
 
+Each finetune checkpoint evaluation owns its overall metrics, per-disease rows,
+and enabled predictions. CSV rows retain the evaluated checkpoint identity;
+partial run outputs are invalid until the terminal manifest is completed.
+Selected-model consumers join outputs by the exact selected checkpoint path,
+not CSV order or the training manifest's validation-best summary. Test plots
+identify evaluated checkpoints, including all inputs to checkpoint averaging.
+
 External or final test data stays locked until the recorded decision allows it;
 see [selection and test access](../agent_contracts/external_test_locking.md#selection-and-test-access-policy).
 Direct finetune cannot select checkpoints on test; the supported route is a

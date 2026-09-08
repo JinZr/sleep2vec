@@ -735,12 +735,16 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
     prepare_hparam_plan_fixture(recipe, plan_dir)
     plan = json.loads((plan_dir / "plan.json").read_text())
 
-    checkpoint_scores = ((0.91, 0.75), (0.79, 0.75))
+    checkpoint_scores = ((0.72, 0.91, 0.75), (0.70, 0.79, 0.75))
     for run, val_score, test_scores in zip(plan["runs"], (0.81, 0.72), checkpoint_scores):
         runtime_dir = Path(run["runtime_dir"])
         checkpoint_dir = Path(run["checkpoint_dir"])
         checkpoint_dir.mkdir(parents=True)
-        checkpoints = [checkpoint_dir / "epoch=00.ckpt", checkpoint_dir / "epoch=3.ckpt"]
+        checkpoints = [
+            checkpoint_dir / "epoch=00.ckpt",
+            checkpoint_dir / "epoch=1.ckpt",
+            checkpoint_dir / "epoch=3.ckpt",
+        ]
         for checkpoint in checkpoints:
             checkpoint.write_text(f"{run['run_id']}:{checkpoint.name}")
         (checkpoint_dir / "best-epoch=3.ckpt").write_text("mutable best alias")
@@ -751,11 +755,11 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
                     "monitor": "val_ahi_pearson",
                     "monitor_mode": "max",
                     "best_model_score": val_score,
-                    "best_model_path": str(checkpoints[1]),
+                    "best_model_path": str(checkpoints[2]),
                     "epoch": 3,
                     "metrics": {
                         "val_ahi_pearson": val_score,
-                        "test_ahi_pearson": test_scores[1],
+                        "test_ahi_pearson": test_scores[2],
                     },
                     "test_all_checkpoints_after_fit": True,
                     "checkpoint_test_results": [
@@ -764,7 +768,7 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
                             "epoch": epoch,
                             "metrics": {"test_ahi_pearson": score},
                         }
-                        for checkpoint, epoch, score in zip(checkpoints, (0, 3), test_scores)
+                        for checkpoint, epoch, score in zip(checkpoints, (0, 1, 3), test_scores)
                     ],
                 }
             )
@@ -778,15 +782,17 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
 
     rows = _read_table(ranking)
     assert [(row["run_id"], row["epoch"], row["score"]) for row in rows] == [
-        ("run-000", "0", "0.91"),
-        ("run-001", "0", "0.79"),
+        ("run-000", "1", "0.91"),
+        ("run-001", "1", "0.79"),
     ]
     checkpoint_rows = _read_table(plan_dir / "checkpoint_test_ranking.csv")
     assert [(row["run_id"], row["epoch"], row["score"]) for row in checkpoint_rows] == [
-        ("run-000", "0", "0.91"),
-        ("run-001", "0", "0.79"),
+        ("run-000", "1", "0.91"),
+        ("run-001", "1", "0.79"),
         ("run-000", "3", "0.75"),
         ("run-001", "3", "0.75"),
+        ("run-000", "0", "0.72"),
+        ("run-001", "0", "0.7"),
     ]
     assert all(len(row["checkpoint_sha256"]) == 64 for row in checkpoint_rows)
     assert all("best-epoch" not in row["checkpoint_path"] for row in checkpoint_rows)
@@ -797,8 +803,11 @@ def test_hparam_select_globally_ranks_every_saved_checkpoint_by_test_metric(tmp_
         if json.loads(line)["event_type"] == "candidate_selected"
     )
     assert selected["selected_run_id"] == "run-000"
-    assert selected["selected_checkpoint_path"] == str(Path(plan["runs"][0]["checkpoint_dir"]) / "epoch=00.ckpt")
+    assert selected["selected_checkpoint_path"] == str(Path(plan["runs"][0]["checkpoint_dir"]) / "epoch=1.ckpt")
     assert len(selected["selected_checkpoint_sha256"]) == 64
+    report = (tmp_path / "reports" / "hparam_selection.md").read_text()
+    assert f"- Winner checkpoint: `{selected['selected_checkpoint_path']}`" in report
+    assert "- Winner score: `0.91`" in report
     canonical = {row["run_id"]: row for row in read_run_manifest(tmp_path)}
     for row in rows:
         assert {
