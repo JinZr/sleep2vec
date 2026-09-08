@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from agent_tools import managed_scheduler, plan_context
-from agent_tools.decision_hparam import hparam_recipe_contract_issues
+from agent_tools.decision_hparam import hparam_recipe_contract_issues, hparam_search_issues
 from agent_tools.decision_models import DecisionStatus
 from agent_tools.experiment_workspace import experiment_metadata_issues
 from agent_tools.models import resolve_repo_path
@@ -595,16 +595,19 @@ def test_default_agent_proposal_requires_replacement_to_be_omitted_or_strictly_d
     ],
 )
 def test_agent_proposal_rejects_invalid_parameter_envelopes(parameters: dict, bounds: dict):
-    fields = _adaptive_contract_fields(
-        parameters=parameters,
-        adaptive={
-            "enabled": True,
-            **_AGENT_PROPOSAL_REQUIRED_VALUES,
-            "suggest": {"strategy": "agent_proposal", "bounds": bounds},
+    issues = hparam_search_issues(
+        {
+            "search": {"method": "grid", "parameters": parameters},
+            "adaptive": {
+                "enabled": True,
+                **_AGENT_PROPOSAL_REQUIRED_VALUES,
+                "suggest": {"strategy": "agent_proposal", "bounds": bounds},
+            },
         },
+        high_impact={},
     )
 
-    assert "adaptive.suggest.bounds" in fields
+    assert any(issue.field == "adaptive.suggest.bounds" and issue.status == DecisionStatus.FAIL for issue in issues)
 
 
 def test_recipe_cases_cover_checked_in_examples_and_templates():

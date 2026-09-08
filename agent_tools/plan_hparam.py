@@ -7,6 +7,7 @@ from importlib import import_module
 from itertools import product
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 from tempfile import NamedTemporaryFile
@@ -806,6 +807,8 @@ def set_json_pointer(config: Any, pointer: str, value: Any) -> None:
         return
     if isinstance(parent, list):
         index = int(last)
+        if str(index) != last:
+            raise ValueError(f"YAML override list index must use canonical integer spelling: {last}")
         if index < 0 or index >= len(parent):
             raise IndexError(f"YAML override list index is out of range: {pointer}")
         parent[index] = value
@@ -820,6 +823,8 @@ def json_pointer_child(parent: Any, part: str) -> Any:
         return parent[part]
     if isinstance(parent, list):
         index = int(part)
+        if str(index) != part:
+            raise ValueError(f"YAML override list index must use canonical integer spelling: {part}")
         if index < 0 or index >= len(parent):
             raise IndexError(f"YAML override list index is out of range: {part}")
         return parent[index]
@@ -829,6 +834,8 @@ def json_pointer_child(parent: Any, part: str) -> Any:
 def json_pointer_parts(pointer: str) -> list[str]:
     if not pointer.startswith("/"):
         raise ValueError(f"YAML override must be a JSON Pointer: {pointer}")
+    if re.search(r"~(?![01])", pointer):
+        raise ValueError(f"YAML override JSON Pointer escapes must use ~0 or ~1: {pointer}")
     return [part.replace("~1", "/").replace("~0", "~") for part in pointer.split("/")[1:]]
 
 

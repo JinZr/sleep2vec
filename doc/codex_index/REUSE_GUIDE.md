@@ -169,8 +169,9 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   `run_frozen_job` uses the short runtime lock for final identity, artifact, and `srun` spawn checks.
 - Reuse `python_programs.source` and `transport.remote_python_program_command` for embedded kernels;
   keep byte-preserving sources under `agent_tools/python_program_sources`, not inline copies.
-- Keep proposal snapshots/envelopes in `adaptive_proposals` and preflight/lifecycle orchestration
-  in `adaptive_hparam`. Reuse its canonical round evidence for complete-history proposal
+- Keep proposal snapshots/envelopes and shared initial/proposal point validation in
+  `adaptive_proposals`, and preflight/lifecycle orchestration in `adaptive_hparam`.
+  Reuse its canonical round evidence for complete-history proposal
   inputs and `checkpoint_test_results` for checkpoint attribution; do not reconstruct
   historical evidence from digest CSVs. See the [adaptive workflow](../agent_contracts/task_recipe.md#adaptive-workflow)
   and [proposal handshake](../agent_contracts/task_recipe.md#proposal-handshake).

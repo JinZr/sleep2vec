@@ -1766,18 +1766,33 @@ def test_agent_proposal_configuration_points_execute_as_exact_runs(tmp_path: Pat
 
 
 @pytest.mark.parametrize("execute", [False, True])
+@pytest.mark.parametrize("initial_points", [False, True])
+@pytest.mark.parametrize(
+    ("domain", "candidate", "message"),
+    [
+        (
+            {"yaml:/model/cls/downstream": ["tokens", "cls"], "yaml:/model/cls/embedding_type": ["bert", "none"]},
+            {"yaml:/model/cls/downstream": ["cls"], "yaml:/model/cls/embedding_type": ["none"]},
+            "model.cls.embedding_type must be set",
+        ),
+        (
+            {"yaml:/finetune/tuning": [{"preset": "full"}, {"preset": "unsupported"}]},
+            {"yaml:/finetune/tuning": [{"preset": "unsupported"}]},
+            "finetune.tuning.preset must be one of",
+        ),
+    ],
+)
 def test_agent_proposal_rejects_envelope_valid_joint_config_before_acceptance(
-    tmp_path: Path, monkeypatch, execute: bool
+    tmp_path: Path, monkeypatch, execute: bool, initial_points: bool, domain: dict, candidate: dict, message: str
 ):
     recipe = _agent_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
-    payload["search"]["parameters"].update(
-        {
-            "yaml:/model/cls/downstream": ["tokens", "cls"],
-            "yaml:/model/cls/embedding_type": ["bert", "none"],
-        }
-    )
+    payload["search"]["parameters"].update(domain)
     assert payload["search"]["max_runs"] == 1
+    if initial_points:
+        payload["search"]["configurations"] = [
+            {key: values[0] for key, values in payload["search"]["parameters"].items()}
+        ]
     recipe.write_text(yaml.safe_dump(payload))
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     _write_fake_manifest(workflow_dir)
@@ -1786,7 +1801,7 @@ def test_agent_proposal_rejects_envelope_valid_joint_config_before_acceptance(
     assert input_path is not None
     proposal_path = _write_agent_submission(input_path)
     proposal = json.loads(proposal_path.read_text())
-    proposal["parameters"].update({"yaml:/model/cls/downstream": ["cls"], "yaml:/model/cls/embedding_type": ["none"]})
+    proposal["parameters"].update(candidate)
     proposal_path.write_text(json.dumps(proposal))
     normalized = adaptive_proposals.validate_proposal(proposal, json.loads(input_path.read_text()))
     assert normalized["max_runs"] == 1
@@ -1798,7 +1813,7 @@ def test_agent_proposal_rejects_envelope_valid_joint_config_before_acceptance(
         lambda *_args, **_kwargs: pytest.fail("Invalid agent candidate reached launch"),
     )
 
-    with pytest.raises(RuntimeError, match="Agent proposal failed preflight.*model.cls.embedding_type must be set"):
+    with pytest.raises(RuntimeError, match=f"Agent proposal failed preflight.*{message}"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=execute)
 
     assert (tmp_path / "events.jsonl").read_bytes() == events_before

@@ -11,6 +11,7 @@ from agent_tools.adaptive_proposals import (
     canonical_sha256,
     load_strict_json,
     proposal_request_id,
+    validate_configurations,
     validate_parameter_envelopes,
     validate_proposal,
     validate_proposal_input,
@@ -456,3 +457,153 @@ def test_parameters_snapshot_accepts_configuration_submission_without_new_reques
     configurations_validated = validate_proposal(_configuration_proposal(snapshot), snapshot)
 
     assert parameters_validated["request_id"] == configurations_validated["request_id"]
+
+
+@pytest.mark.parametrize(
+    ("key", "choices"),
+    [
+        (
+            "yaml:/finetune/layer_mix",
+            [
+                {"enabled": False, "shared_across_modalities": False, "layer_indices": None},
+                {"enabled": True, "shared_across_modalities": False, "layer_indices": [3, 4]},
+            ],
+        ),
+        (
+            "yaml:/finetune/tuning",
+            [
+                {"preset": "full", "groups": {"tokenizers": {"train": False}}},
+                {"preset": "lora", "lora": {"r": 4, "alpha": 8, "target_modules": ["query", "value"]}},
+            ],
+        ),
+        ("yaml:/finetune/layer_mix/layer_indices", [[1, 2], [3, 4]]),
+    ],
+)
+def test_structured_yaml_choices_work_in_parameter_and_configuration_proposals(key, choices):
+    snapshot = _snapshot(parameters={key: choices})
+
+    assert snapshot["input"]["parameter_envelopes"][key] == {"kind": "categorical", "choices": choices}
+    parameters = validate_proposal(_proposal(snapshot, parameters={key: choices}), snapshot)
+    points = [{key: value} for value in reversed(choices)]
+    configurations = validate_proposal(_configuration_proposal(snapshot, configurations=points), snapshot)
+
+    assert parameters["parameters"] == {key: choices}
+    assert parameters["max_runs"] == 2
+    assert configurations["configurations"] == points
+    assert configurations["max_runs"] == 2
+
+
+@pytest.mark.parametrize(
+    "choices",
+    [
+        [{"value": True}, {"value": 1}, {"value": 1.0}, {"value": None}],
+        [[True], [1], [1.0], [None]],
+    ],
+)
+def test_structured_categories_preserve_nested_types_in_membership_dedup_and_hashes(choices):
+    key = "yaml:/finetune/layer_mix"
+    snapshot = _snapshot(parameters={key: choices})
+    parameters = validate_proposal(_proposal(snapshot, parameters={key: choices}), snapshot)
+    points = [{key: value} for value in choices]
+    configurations = validate_proposal(_configuration_proposal(snapshot, configurations=points), snapshot)
+
+    assert parameters["max_runs"] == len(choices)
+    assert configurations["max_runs"] == len(choices)
+    assert len({canonical_sha256(choice) for choice in choices}) == len(choices)
+
+
+@pytest.mark.parametrize(
+    ("authorized", "proposed"),
+    [
+        ({"enabled": True}, {"enabled": 1}),
+        ({"groups": {"encoder": {"lr_scale": 1}}}, {"groups": {"encoder": {"lr_scale": 1.0}}}),
+        ([1, 2], [2, 1]),
+        ([1], [1.0]),
+    ],
+)
+def test_structured_categories_reject_unauthorized_nested_types_and_list_order(authorized, proposed):
+    key = "yaml:/finetune/layer_mix"
+    snapshot = _snapshot(parameters={key: [authorized]})
+
+    with pytest.raises(ValueError, match="not one of the authorized categorical choices"):
+        validate_proposal(_proposal(snapshot, parameters={key: [proposed]}), snapshot)
+    with pytest.raises(ValueError, match="not one of the authorized categorical choices"):
+        validate_proposal(_configuration_proposal(snapshot, configurations=[{key: proposed}]), snapshot)
+
+
+def test_structured_mapping_order_preserves_request_identity_and_duplicate_detection():
+    key = "yaml:/finetune/layer_mix"
+    choice = {"enabled": True, "shared_across_modalities": False, "layer_indices": [3, 4]}
+    reordered = dict(reversed(list(choice.items())))
+    snapshot = _snapshot(parameters={key: [choice]})
+
+    assert _snapshot(parameters={key: [reordered]})["request_id"] == snapshot["request_id"]
+    assert validate_proposal(_proposal(snapshot, parameters={key: [reordered]}), snapshot)["max_runs"] == 1
+    with pytest.raises(ValueError, match="duplicate values"):
+        validate_parameter_envelopes({key: [choice, reordered]})
+    with pytest.raises(ValueError, match="duplicate values"):
+        validate_proposal(_proposal(snapshot, parameters={key: [choice, reordered]}), snapshot)
+    with pytest.raises(ValueError, match="duplicate configuration points"):
+        validate_proposal(_configuration_proposal(snapshot, configurations=[{key: choice}, {key: reordered}]), snapshot)
+
+
+def test_structured_list_domain_rejects_duplicates_but_preserves_list_order():
+    key = "yaml:/finetune/layer_mix/layer_indices"
+    with pytest.raises(ValueError, match="duplicate values"):
+        validate_parameter_envelopes({key: [[1, 2], [1, 2]]})
+    assert validate_parameter_envelopes({key: [[1, 2], [2, 1]]})[key]["choices"] == [[1, 2], [2, 1]]
+
+
+@pytest.mark.parametrize(
+    ("key", "choices", "message"),
+    [
+        ("runtime.lr", [{"value": 1}], "mixed or composite"),
+        ("runtime.lr", [[1]], "mixed or composite"),
+        ("yaml:/finetune/layer_mix", [{"enabled": True}, [1]], "mixed or composite"),
+        ("yaml:/finetune/layer_mix", [{"enabled": True}, None], "mixed or composite"),
+        ("yaml:/finetune/layer_mix", [None], "mixed or composite"),
+        ("yaml:/finetune/layer_mix", [{1: "value"}], "non-string object key"),
+        ("yaml:/finetune/layer_mix", [{"scale": math.inf}], "non-finite"),
+        ("yaml:/finetune/layer_mix", [{"indices": (1, 2)}], "non-JSON"),
+    ],
+)
+def test_structured_categorical_domains_reject_unsupported_keys_types_and_nested_values(key, choices, message):
+    with pytest.raises(ValueError, match=message):
+        validate_parameter_envelopes({key: choices})
+
+
+def test_structured_categorical_domains_reject_numeric_bounds():
+    key = "yaml:/finetune/layer_mix"
+    with pytest.raises(ValueError, match="cannot constrain categorical parameter"):
+        validate_parameter_envelopes({key: [{"enabled": False}]}, {key: [0, 1]})
+
+
+def test_initial_configuration_validation_reports_source_location():
+    envelopes = validate_parameter_envelopes({"runtime.lr": [0.0001, 0.0003]})
+
+    with pytest.raises(ValueError, match=r"search.configurations\[0\].runtime.lr must be within"):
+        validate_configurations([{"runtime.lr": 0.1}], envelopes, location="search.configurations")
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_agent_parameter_envelopes_reject_overlapping_yaml_paths(reverse):
+    parameters = {
+        "yaml:/finetune/layer_mix": [{"enabled": True, "layer_indices": [1, 2]}],
+        "yaml:/finetune/layer_mix/layer_indices": [[3, 4]],
+    }
+    if reverse:
+        parameters = dict(reversed(list(parameters.items())))
+
+    with pytest.raises(ValueError, match="YAML parameter paths overlap"):
+        validate_parameter_envelopes(parameters)
+
+
+def test_agent_parameter_envelopes_accept_sibling_yaml_paths():
+    parameters = {
+        "yaml:/finetune/layer_mix/enabled": [False, True],
+        "yaml:/finetune/layer_mix/layer_indices": [[1, 2], [3, 4]],
+        "yaml:/model/head/kwargs/a~1b": [{"value": 1}],
+        "yaml:/model/head/kwargs/a": [{"value": 2}],
+    }
+
+    assert set(validate_parameter_envelopes(parameters)) == set(parameters)

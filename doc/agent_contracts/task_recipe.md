@@ -379,18 +379,29 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
 
 - Search keys are explicit `runtime.<name>` fields or
   `yaml:/json/pointer/path` config overrides. Removed bare or `param.*` forms
-  are rejected rather than translated.
-- An explicit search requires positive `search.max_runs`, uses `method: grid`,
-  and is exactly one of:
+  are rejected rather than translated. JSON Pointer escapes use only `~0` and
+  `~1`. List indices use canonical non-negative integers (`0`, `1`, ...), with
+  no leading zero, sign or whitespace aliases; numeric dictionary keys remain
+  literal strings.
+- An explicit search requires positive `search.max_runs` and uses `method: grid`.
+  Static searches and derived proposal rounds select exactly one of:
   - `search.parameters`: a per-key candidate mapping expanded by Cartesian
     product, with axes in lexicographic full-key order and each candidate
     value list in its authored order;
   - `search.configurations`: complete joint configuration points expanded
     in their authored list order, one run per point. Mapping key order does
     not affect a point's run name or parameter summary.
-- Both shapes use the same key rules and apply `[:max_runs]` prefix truncation
-  after expansion. Reordering parameter mapping keys does not change run ids
-  or the selected grid prefix.
+- Both shapes use the same key rules. Static searches apply `[:max_runs]` prefix
+  truncation after expansion. Reordering parameter mapping keys does not change
+  run ids or the selected grid prefix. An enabled `agent_proposal` source may
+  combine both fields: `parameters` freezes the full domain, while `configurations`
+  supplies the exact ordered initial points. Each point covers exactly the domain
+  keys, satisfies its envelopes and is unique. Its count must fit `search.max_runs`,
+  `adaptive.round_size` and `adaptive.max_runs_total`; these points are never
+  silently truncated. Both fields remain frozen in round 000. A concrete source
+  `hparam_search_space` decision updates the domain and revalidates the same points.
+  Derived proposal rounds use the accepted proposal's own search and run count;
+  source search-space and search-budget decisions are not reapplied to them.
 - For `sleep2vec`, `sleep2vec2`, and `sleep2expert`, managed finetune runtime
   fields and explicit search keys include `lr_scheduler`, `lr_decay_floor`,
   `lr_decay_shape`, `lr_decay_ratio`, `lr_plateau_factor`, and
@@ -485,13 +496,38 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   explicit searches and historical frozen plans are unchanged; profile
   expansion is not retroactively required by registered-plan readers.
 - Adaptive source recipes must declare `search.parameters`, which supplies the
-  envelope and neighborhood source. `search.configurations` appears only in
-  derived rounds and static plans.
+  envelope or neighborhood source. Only enabled `agent_proposal` sources may also
+  declare initial `search.configurations`; `best_neighborhood` keeps its parameter
+  grid. Initial points do not narrow the domain: later proposals may choose values
+  within its numeric bounds or unused categorical choices.
+- Agent-proposal YAML axes accept scalar choices, homogeneous complete mapping
+  choices, or homogeneous list choices. A mapping/list choice may contain nested
+  JSON values, including `null`. Runtime axes accept numeric, boolean or string
+  candidates; top-level `null` and mixed categorical types remain unsupported.
+  A composite choice is
+  atomic: proposals must select a declared whole value. Mapping key order does not
+  affect identity; list order and nested boolean/integer/float types do. YAML
+  parameter paths must not overlap: a whole block and one of its descendants
+  cannot be separate search axes. Overrides replace the whole addressed value,
+  so replacing `finetune.tuning`
+  removes source `groups` overrides absent from the selected block. Every generated
+  config still passes the canonical variant loader; the domain does not authorize
+  arbitrary new fields inside a block or bypass config semantics.
+
+Frozen parameter envelopes define permitted values, not a guarantee that every
+value or cross-axis combination is executable. Initialization validates the
+concrete opening points; each later complete proposal passes canonical config
+and runtime preflight before acceptance, publication or launch. Coupled axes may
+have valid paired points and invalid cross-pairs, so neither the full Cartesian
+product nor each choice applied alone to the source config defines their validity.
+An unused invalid choice can remain in the domain, but selecting it fails preflight
+without accepting or launching that proposal. The agent can correct an unaccepted
+submission within the same issued domain and budget.
 
 For a new recipe with no authored search, an ordinary tuning request defaults
 to terminal-only `adaptive.suggest.strategy: agent_proposal`. Static profile/grid
 search requires an explicit request. Existing authored or frozen searches must
-not be rewritten. The agent authors the initial scalar `search.parameters` and
+not be rewritten. The agent authors the frozen `search.parameters` domain and
 numeric `adaptive.suggest.bounds` after reviewing the effective source config,
 available prior results, useful fixed/search axes and boundary evidence; there
 is no automatic profile-to-adaptive compiler. A source value is not by itself a
@@ -505,9 +541,10 @@ the permitted concurrent runs and the total budget; set `max_rounds` to
 `ceil(total budget / round_size)`. If only a GPU cap is specified, account for
 GPUs per run before deriving concurrent runs. These are agent authoring defaults,
 not parser fallbacks: write the explicit objective, budget, strategy and
-`replacement: {enabled: false}` before consultation. Keep round 000's full
-Cartesian product within the round size; use later joint configurations to
-avoid wasting runs on incidental combinations. Templates are starting examples
+`replacement: {enabled: false}` before consultation. Prefer explicit initial
+`search.configurations` to spend the opening batch on informative comparisons
+while keeping a wider frozen domain. Without configurations, keep round 000's
+full Cartesian product within the round size. Templates are starting examples
 whose axes, bounds and first points must be adjusted to the actual experiment.
 
 An explicit static request may use the supported `finetune_balanced` profile

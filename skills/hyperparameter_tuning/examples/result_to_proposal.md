@@ -7,6 +7,34 @@ identity are already authorized. The initial domain includes learning rate
 two runs and eight total runs remain. Other settings are fixed with a recorded
 reason. These values illustrate the reasoning, not recommended defaults.
 
+## Design the opening batch
+
+Keep the domain separate from the first two points. This source fragment spends
+two runs on an LR comparison while leaving training length and dropout available
+for later proposals:
+
+```yaml
+search:
+  method: grid
+  max_runs: 2
+  parameters:
+    runtime.lr: [0.00003, 0.0006]
+    runtime.epochs: [8, 16]
+    yaml:/model/head/dropout: [0.1, 0.3]
+  configurations:
+    - runtime.lr: 0.0001
+      runtime.epochs: 8
+      yaml:/model/head/dropout: 0.1
+    - runtime.lr: 0.0003
+      runtime.epochs: 8
+      yaml:/model/head/dropout: 0.1
+```
+
+It requires the enabled `agent_proposal` workflow described in the skill.
+The numeric intervals come from the domain endpoints here; explicit bounds can
+instead define them. The two points need not use those endpoints. The same
+`search.configurations` field is not valid alongside parameters in a static grid.
+
 ## Read the evidence
 
 | Completed run | Learning rate | Epochs | Head dropout | Validation AUROC | Best checkpoint epoch |
@@ -62,3 +90,30 @@ improve on B. Keep the actual incumbent across all completed rounds, including B
 if later candidates are worse. Check C's best epoch and available trajectory before
 choosing another longer horizon. Do not enlarge a frozen boundary or spend beyond
 the authorized budget merely because the new best point is on a boundary.
+
+## Choose complete configuration blocks
+
+For a separate example, suppose the authorized task has a pretrained backbone,
+and its variant config supports these adaptation and LayerMix choices. Declare
+whole values in `search.parameters` before initialization:
+
+```yaml
+yaml:/finetune/tuning:
+  - {preset: full}
+  - {preset: head_only}
+yaml:/finetune/layer_mix:
+  - {enabled: false, layer_indices: null, shared_across_modalities: false}
+  - {enabled: true, layer_indices: [1, 2], shared_across_modalities: false}
+```
+
+The initial points can select the full-adaptation and disabled-LayerMix choices,
+leaving other blocks available later. A later complete point can select the
+enabled LayerMix block without also changing adaptation, making that comparison
+easier to interpret. Replacing `finetune.tuning` replaces source `groups` overrides
+as well; changing only its `preset` would retain those overrides. Every point must
+still include all searched keys, including any runtime axes.
+
+Do not add a second axis inside a searched block, such as
+`yaml:/finetune/layer_mix/enabled`: overlapping paths are rejected because they
+would modify the whole frozen choice. A new layer list or adaptation block that
+was not declared is a domain expansion, even if its resulting config is valid.

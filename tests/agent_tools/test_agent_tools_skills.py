@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import yaml
 
+from agent_tools.adaptive_proposals import validate_configurations, validate_parameter_envelopes
 from agent_tools.models import REPO_ROOT, SUPPORTED_VARIANTS
 from agent_tools.skills import validate_skills
 
@@ -157,6 +158,10 @@ def test_hparam_skill_recipe_examples_include_terminal_proposal_domains():
         assert adaptive["test_feedback_for_selection"] is True
         assert recipe["evaluation_policy"]["test_after_fit"] is True
         assert "profile" not in recipe["search"]
+        search = recipe["search"]
+        envelopes = validate_parameter_envelopes(search["parameters"], adaptive["suggest"]["bounds"])
+        points = validate_configurations(search["configurations"], envelopes, location="search.configurations")
+        assert len(points) == search["max_runs"]
 
 
 def test_user_decision_guidance_preserves_explicit_final_test_unlock():
