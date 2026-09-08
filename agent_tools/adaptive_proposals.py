@@ -5,9 +5,12 @@ import hashlib
 import json
 import math
 import re
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypeAlias, TypedDict
 
 from typing_extensions import Never, NotRequired
+
+
+ProposalValue: TypeAlias = bool | int | float | str | None | list["ProposalValue"] | dict[str, "ProposalValue"]
 
 
 class NumericParameterEnvelope(TypedDict):
@@ -18,11 +21,10 @@ class NumericParameterEnvelope(TypedDict):
 
 class CategoricalParameterEnvelope(TypedDict):
     kind: Literal["categorical"]
-    choices: list[bool | str]
+    choices: list[ProposalValue]
 
 
 ParameterEnvelope = NumericParameterEnvelope | CategoricalParameterEnvelope
-ProposalValue = bool | int | float | str
 
 
 class ProposalObjective(TypedDict):
@@ -120,6 +122,11 @@ def validate_parameter_envelopes(
     if invalid_bound_keys:
         names = ", ".join(sorted(repr(key) for key in invalid_bound_keys))
         raise ValueError(f"adaptive.suggest.bounds contains unknown parameter(s): {names}.")
+    yaml_keys = [key for key in parameters if isinstance(key, str) and key.startswith("yaml:/")]
+    for key in yaml_keys:
+        for parent in yaml_keys:
+            if key.startswith(parent + "/"):
+                raise ValueError(f"Agent proposal YAML parameter paths overlap: {parent} and {key}.")
 
     envelopes: dict[str, ParameterEnvelope] = {}
     for key, values in parameters.items():
@@ -239,7 +246,7 @@ def validate_proposal(proposal: Mapping[str, Any], proposal_input: Mapping[str, 
             max_runs *= len(values)
         budget_noun = "Cartesian product"
     else:
-        points = _validate_proposal_configurations(proposal["configurations"], envelopes)
+        points = validate_configurations(proposal["configurations"], envelopes, location="Proposal configurations")
         normalized_search = {"configurations": points}
         max_runs = len(points)
         budget_noun = "configuration count"
@@ -312,15 +319,15 @@ def _validate_proposal_parameters(parameters: Any, envelopes: Mapping[str, Any])
     return normalized_parameters
 
 
-def _validate_proposal_configurations(
-    configurations: Any, envelopes: Mapping[str, Any]
+def validate_configurations(
+    configurations: Any, envelopes: Mapping[str, Any], *, location: str
 ) -> list[dict[str, ProposalValue]]:
     if not isinstance(configurations, list) or not configurations:
-        raise ValueError("Proposal configurations must be a non-empty list.")
+        raise ValueError(f"{location} must be a non-empty list.")
     points: list[dict[str, ProposalValue]] = []
     for index, point in enumerate(configurations):
         if not isinstance(point, Mapping):
-            raise ValueError(f"Proposal configurations[{index}] must be a mapping.")
+            raise ValueError(f"{location}[{index}] must be a mapping.")
         missing = sorted(set(envelopes) - set(point))
         unknown = sorted(set(point) - set(envelopes))
         if missing or unknown:
@@ -330,13 +337,13 @@ def _validate_proposal_configurations(
             if unknown:
                 detail.append(f"unknown: {', '.join(unknown)}")
             raise ValueError(
-                f"Proposal configurations[{index}] keys must exactly match the input snapshot ({'; '.join(detail)})."
+                f"{location}[{index}] keys must exactly match the parameter envelopes ({'; '.join(detail)})."
             )
         for key, envelope in envelopes.items():
-            _validate_proposal_value(f"Proposal configurations[{index}].{key}", point[key], envelope)
+            _validate_proposal_value(f"{location}[{index}].{key}", point[key], envelope)
         points.append(dict(point))
     if _has_duplicate_points(points, envelopes):
-        raise ValueError("Proposal configurations contains duplicate configuration points.")
+        raise ValueError(f"{location} contains duplicate configuration points.")
     return points
 
 
@@ -353,6 +360,11 @@ def _parameter_kind(key: str, values: Any) -> Literal["categorical", "integer", 
                 raise ValueError(f"Search parameter {key} contains a non-finite number.")
         return "number"
     if all(isinstance(value, str) for value in values):
+        return "categorical"
+    if key.startswith("yaml:/") and (
+        all(isinstance(value, dict) for value in values) or all(isinstance(value, list) for value in values)
+    ):
+        _validate_json_value(values, f"Search parameter {key}")
         return "categorical"
     raise ValueError(f"Search parameter {key} has unsupported mixed or composite values for agent proposals.")
 
@@ -433,7 +445,7 @@ def _validate_envelope_document(envelopes: Any) -> None:
         elif kind == "categorical":
             _validate_closed_fields(envelope, {"kind", "choices"}, {"kind", "choices"}, f"Envelope {key}")
             if _parameter_kind(key, envelope["choices"]) != "categorical":
-                raise ValueError(f"Envelope {key}.choices must contain only booleans or only strings.")
+                raise ValueError(f"Envelope {key}.choices must contain categorical values of one supported type.")
         else:
             raise ValueError(f"Envelope {key}.kind must be integer, number, or categorical.")
 
@@ -445,7 +457,7 @@ def _validate_proposal_value(location: str, value: Any, envelope: Mapping[str, A
         if value < envelope["min"] or value > envelope["max"]:
             raise ValueError(f"{location} must be within [{envelope['min']}, {envelope['max']}].")
         return
-    if not any(type(value) is type(choice) and value == choice for choice in envelope["choices"]):
+    if not any(_canonical_json(value) == _canonical_json(choice) for choice in envelope["choices"]):
         raise ValueError(f"{location} is not one of the authorized categorical choices.")
 
 
@@ -463,7 +475,7 @@ def _has_duplicates(values: list[Any], kind: str) -> bool:
         for other in values[:index]:
             if kind in {"integer", "number"} and value == other:
                 return True
-            if kind == "categorical" and type(value) is type(other) and value == other:
+            if kind == "categorical" and _canonical_json(value) == _canonical_json(other):
                 return True
     return False
 
@@ -471,7 +483,7 @@ def _has_duplicates(values: list[Any], kind: str) -> bool:
 def _has_duplicate_points(points: Sequence[Mapping[str, Any]], envelopes: Mapping[str, Any]) -> bool:
     def values_equal(a: Any, b: Any, kind: str) -> bool:
         if kind == "categorical":
-            return type(a) is type(b) and a == b
+            return _canonical_json(a) == _canonical_json(b)
         return a == b
 
     for index, point in enumerate(points):
