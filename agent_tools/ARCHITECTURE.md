@@ -23,7 +23,8 @@ L0-level domain leaf.
 Mirrors the three frozensets in `layering.py`.
 
 Each module's own docstring is the local authority on what that module owns;
-`test_agent_layering.py` requires every module to carry one. This section is the
+`test_agent_layering.py` requires a non-empty docstring, but does not check its
+ownership claims or accuracy. This section is the
 **cross-module** map — which owner sits behind which facade, and which pairs
 split a concern between them — that no single docstring can state. When the two
 disagree, the docstring is next to the code and wins; fix this document.
@@ -175,7 +176,7 @@ Legal edges outside the reverse-edge table:
   as `Path(agent_tools.__file__).parent / name`).
 - Module ownership docstrings: every `.py` in the package carries one, with a
   non-empty summary line. A new module without one fails
-  `test_every_module_states_its_ownership`.
+  `test_every_module_has_nonempty_docstring`; content accuracy needs code review.
 - Frozen re-exports: `index_csv.index_summary`,
   `configs.sleep2stat_config_summary`, `configs.load_yaml`,
   `recipes.recipe_name`, `experiment_io.SSH_TIMEOUT_SECONDS`.

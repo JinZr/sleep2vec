@@ -5,8 +5,8 @@ task hooks, experiment metadata, and resolved user decisions into one
 ``DecisionReport``.
 
 Holds the task-specific dispatch hoisted out of ``decision_paths`` and reaches
-tasks only through the adapter registry, so no kernel module hardcodes a task
-name.
+tasks through the adapter registry. Separately, ``experiment_pipeline`` owns
+the literal ``infer`` task spelling in its frozen jobs and generated recipes.
 """
 
 from __future__ import annotations

@@ -249,18 +249,15 @@ def _module_summary(source: str, module: str) -> str | None:
     return docstring.strip().splitlines()[0].strip() if docstring and docstring.strip() else None
 
 
-def test_every_module_states_its_ownership():
-    # ARCHITECTURE.md's module-ownership prose is a table the layering guard
-    # cannot check: it verifies the kernel/domain/mixed partition, not the
-    # descriptions. A per-module docstring keeps each module's ownership next to
-    # the code it describes, so the two cannot drift silently.
+def test_every_module_has_nonempty_docstring():
+    # This checks docstring presence only; ownership accuracy needs code review.
     root = _package_dir()
     undocumented = sorted(
         str(path.relative_to(root))
         for path in root.rglob("*.py")
         if _module_summary(path.read_text(), path.stem) is None
     )
-    assert undocumented == [], f"modules without an ownership docstring: {undocumented}"
+    assert undocumented == [], f"modules without a non-empty docstring: {undocumented}"
 
 
 def test_docstring_guard_catches_missing_and_empty():

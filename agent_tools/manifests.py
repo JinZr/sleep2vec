@@ -4,9 +4,9 @@ Layer 0 leaf. JSON and row serializers are deterministic (sorted keys or
 fieldnames, trailing newline), so those artifact bytes depend only on their
 content, which the plan and run digests rely on. ``write_text`` preserves its
 supplied text verbatim, so callers own its newline behavior. The
-``validate_managed_header`` function is the one place a managed table's shape
-is enforced: ``step_id`` and ``run_id`` are required, and the historical
-``trial_id`` / ``param.*`` fields are rejected as read-only.
+``validate_managed_header`` function checks identity and legacy fields for
+``read_rows(require_managed_identity=True)``. ``experiment_workspace`` separately
+enforces those fields when parsing run manifests and validating mapping rows.
 
 Local filesystem only. Reads and writes that must honour locking, remote hosts,
 or managed path validation belong to ``experiment_io``.
