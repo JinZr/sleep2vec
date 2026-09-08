@@ -1,46 +1,51 @@
 # Choosing an initial search domain
 
-Use this example before authoring a new adaptive domain. It illustrates reasons
-to preserve useful choices within a small budget; the numbers are observations,
-not reusable parameter recommendations. Existing frozen searches stay unchanged.
+This invented concept-only example is separate from the historical UKB review
+case. Its scores and curves are synthetic, not experiment evidence or reusable
+parameter recommendations. Existing frozen searches stay unchanged.
 
-## An incumbent at the observed LR and horizon edges
+## A strong interior point and a weaker boundary point
 
-Suppose a completed LR 3e-4, eight-epoch, warmup-500 run wins at epoch seven.
-A slower LR 3e-5, twelve-epoch run and two regularization variants win at epoch
-eleven. The larger LR run is the strongest observed joint configuration. Neither
-its LR effect nor a continuing upward trajectory has been isolated.
+Suppose the user authorizes eight new fits, two concurrent runs, and selection
+on validation AUROC. A prior comparison used the same model, data, effective
+batch, schedule family, 24-epoch cap and 1,200 warmup updates throughout:
 
-Fixing eight epochs and ending the LR domain at 3e-4 leaves no room to investigate
-two visible boundary hypotheses. That can still be a deliberate budget choice,
-but it needs a reason. One defensible allocation keeps more technical axes fixed
-and gives the domain a bounded horizon alternative or an LR value beyond the
-observed range. Another spends the opening pair separating horizon at a common
-LR, or LR at a common horizon. Explain which uncertainty is being prioritized;
-changing LR, horizon and warmup together supports a joint comparison.
+| Prior point | LR | Best validation AUROC | Best checkpoint epoch, zero-based | Supplied curve evidence |
+| --- | ---: | ---: | ---: | --- |
+| A | 2e-5 | 0.731 | 23 | Training loss falls; validation AUROC improves over the last four saved checkpoints. |
+| B | 8e-5 | 0.744 | 15 | Training loss continues falling while validation AUROC declines after epoch 16. |
+| C | 2e-4 | 0.724 | 6 | Validation AUROC declines after its early peak. |
 
-The frozen domain is permission for later choices, not a promise to survey every
-axis or Cartesian combination. With twelve fits, including head width, depth,
-dropout and three LoRA knobs carries an opportunity cost even if each choice is
-valid. Fix settings that lack a useful hypothesis for this budget, with reasons;
-include a coupled block only when its complete choices are understood. A seed or
-repeat axis cannot be invented later to explain a small score difference.
+B is the strongest observed point and is interior to the observed LR range.
+A supplies a duration hypothesis, but its final-checkpoint placement does not
+make it the incumbent. C supplies no direct reason to extend the high-LR edge.
+There are no repeats or wall-clock measurements, so neither noise magnitude nor
+a compute-optimal horizon is established.
 
-Reducing four GPUs to two while retaining a user-authorized per-device batch can
-change effective batch unless accumulation changes too. Preserve the intended
-comparison and account for optimizer-update-dependent warmup and horizon-dependent
-scheduling. Old RAM requests and GPU count alone do not measure epoch cost.
+## Allocate the domain to competing explanations
 
-## State the decision in ordinary prose
+One defensible allocation preserves an LR comparison near B while leaving a
+bounded longer-horizon option for A. Another uses the opening pair to compare
+regularization around B because its supplied training/validation divergence
+makes that question useful. Explain which question gets the first two fits and
+why the other deserves later room, or is deliberately excluded from eight fits.
+The small difference between A and B does not itself establish significance.
 
-A useful initialization explanation identifies the evidence behind the opening
-points, why the bounds were chosen, why other axes are fixed, and what the next
-decision would be if the first comparison improves at a boundary or deteriorates.
-An intentionally excluded possibility is an acknowledged limitation, not something
-to recover through an unauthorized domain change. No new report schema or approval
-for individual technical values is needed.
+A wider LR range would need a hypothesis that addresses C's observed behavior;
+a last-checkpoint winner in a weaker run is not sufficient justification. Equally,
+fixing every horizon at 24 would exclude testing A's continued improvement. Both
+choices have opportunity costs. State a practical upper horizon as a provisional
+compute judgment when throughput is unavailable, and include checkpoint evaluation
+cost. A fit-count or concurrency cap is not a measured time budget.
 
-These are concept choices. Publication still resolves effective configuration
-and consultation; launch still needs its existing authority. Judge initialization
-by the evidence and options available then, not by whether later results happened
-to favor a parameter value outside the original range.
+Changing the horizon may also change a horizon-dependent decay schedule. A new
+regularization axis needs complete valid values and an explicit reason to hold
+head capacity and adaptation settings fixed. Do not add many unrelated axes just
+because the controller can represent them, or invent a seed axis after freezing.
+
+The useful explanation connects each opening point to evidence, gives reasons
+for both searched bounds and fixed settings, and describes which later results
+would change the allocation. It does not need a new report schema or approval for
+individual technical values. Publication still resolves effective configuration
+and consultation; launch still needs its existing authority. Judge the domain
+using the evidence available when it was chosen, not later outcomes.

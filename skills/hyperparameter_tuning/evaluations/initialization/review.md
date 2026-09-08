@@ -8,7 +8,9 @@ no consultation, recipe publication, live resource inspection or execution.
 
 Give an independent agent the case and the guidance revision being assessed.
 Ask it to fulfill the case request using only those files and any explicitly
-assigned initialization example. Withhold this review, original authored domains
+assigned initialization example. Keep the worked example independent of this
+historical case; it must not reproduce its observations or original choices.
+Withhold this review, original authored domains
 and all subsequent outcomes. Keep case bytes, task wording, model/settings and
 available evidence identical across before/after passes, apart from the guidance
 being compared. Retain both outputs and identify the revisions read. If source
