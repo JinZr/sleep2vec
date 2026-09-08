@@ -771,6 +771,12 @@ def test_survival_test_prediction_export_preserves_raw_log_risk(module_name: str
     assert module.survival_per_disease_metric_rows[1]["disease"] == "d2"
     assert module._stage_outputs["test"] == []
 
+    validation_row = {**module.survival_per_disease_metric_rows[0], "stage": "val"}
+    module.survival_per_disease_metric_rows.append(validation_row)
+    finetuning_cls._finalize_epoch(module, "test")
+    assert module.prediction_rows == []
+    assert module.survival_per_disease_metric_rows == [validation_row]
+
 
 @pytest.mark.parametrize(
     ("module_name", "loss_module_name"),

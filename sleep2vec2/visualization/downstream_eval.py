@@ -31,12 +31,17 @@ class DownstreamEvalVisualizer:
         output_dim: int | None,
         label_name: str,
         current_epoch: int,
+        checkpoint_paths: t.Sequence[str | None] | None = None,
         class_labels: t.Sequence[str] | None = None,
     ) -> None:
         if not self.enabled_for_stage(stage):
             return
         if getattr(wandb, "run", None) is None:
             return
+
+        identity = ", ".join(str(path) for path in checkpoint_paths or [] if path) or "current model"
+        evaluation = f"checkpoint {identity}" if stage == "test" else f"epoch {current_epoch}"
+        prefix = f"{stage}_eval/{identity}" if stage == "test" else f"{stage}_eval"
 
         payload: dict[str, t.Any] = {}
 
@@ -47,30 +52,30 @@ class DownstreamEvalVisualizer:
                 np.asarray(targets, dtype=np.int64).reshape(-1),
                 pred_labels.reshape(-1),
                 resolved_labels,
-                title=f"{stage.title()} Confusion Matrix ({label_name}, epoch {current_epoch})",
+                title=f"{stage.title()} Confusion Matrix ({label_name}, {evaluation})",
                 normalize_rows=True,
                 show_raw_counts=self._config.confusion_matrix.show_raw_counts,
             )
-            payload[f"{stage}_eval/confusion_matrix"] = wandb.Image(fig)
+            payload[f"{prefix}/confusion_matrix"] = wandb.Image(fig)
             plt.close(fig)
 
         if is_classification and output_dim == 2 and self._config.roc_curve.enabled:
             fig = render_binary_roc_curve_plot(
                 np.asarray(targets, dtype=np.int64).reshape(-1),
                 np.asarray(preds, dtype=np.float32),
-                title=f"{stage.title()} ROC Curve ({label_name}, epoch {current_epoch})",
+                title=f"{stage.title()} ROC Curve ({label_name}, {evaluation})",
             )
             if fig is not None:
-                payload[f"{stage}_eval/roc_curve"] = wandb.Image(fig)
+                payload[f"{prefix}/roc_curve"] = wandb.Image(fig)
                 plt.close(fig)
 
         if (not is_classification) and output_dim == 1 and self._config.regression_scatter.enabled:
             fig = render_regression_scatter_plot(
                 np.asarray(targets, dtype=np.float32).reshape(-1),
                 np.asarray(preds, dtype=np.float32).reshape(-1),
-                title=f"{stage.title()} Prediction Scatter ({label_name}, epoch {current_epoch})",
+                title=f"{stage.title()} Prediction Scatter ({label_name}, {evaluation})",
             )
-            payload[f"{stage}_eval/regression_scatter"] = wandb.Image(fig)
+            payload[f"{prefix}/regression_scatter"] = wandb.Image(fig)
             plt.close(fig)
 
         if payload:
@@ -84,6 +89,7 @@ class DownstreamEvalVisualizer:
         targets: np.ndarray,
         label_name: str,
         current_epoch: int,
+        checkpoint_paths: t.Sequence[str | None] | None = None,
     ) -> None:
         if not self.enabled_for_stage(stage):
             return
@@ -97,12 +103,16 @@ class DownstreamEvalVisualizer:
         if preds.size == 0 or targets.size == 0:
             return
 
+        identity = ", ".join(str(path) for path in checkpoint_paths or [] if path) or "current model"
+        evaluation = f"checkpoint {identity}" if stage == "test" else f"epoch {current_epoch}"
+        prefix = f"{stage}_eval/{identity}" if stage == "test" else f"{stage}_eval"
+
         fig = render_regression_scatter_plot(
             targets,
             preds,
-            title=f"{stage.title()} Prediction Scatter ({label_name}, epoch {current_epoch})",
+            title=f"{stage.title()} Prediction Scatter ({label_name}, {evaluation})",
         )
-        wandb.log({f"{stage}_eval/regression_scatter": wandb.Image(fig)}, commit=False)
+        wandb.log({f"{prefix}/regression_scatter": wandb.Image(fig)}, commit=False)
         plt.close(fig)
 
     @staticmethod
