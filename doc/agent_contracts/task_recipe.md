@@ -975,6 +975,35 @@ at every required checkpoint. Incomplete/failed results do not gain a trajectory
 remain available for targeted diagnosis; four log-tail lines and a best score
 alone do not establish overfitting, undertraining or optimization instability.
 
+`training_history` adds already-synced W&B observations when the canonical run
+has a `wandb_run_id` and its workspace `wandb/history/<id>.csv` exists. The
+existing W&B sync owns identity matching and history acquisition; digest and
+proposal issuance only read that saved file, including for SSH training runs.
+They do not contact W&B, sync data, or search runtime directories for substitutes.
+An absent binding or file produces an empty field. An available file produces
+an object in proposal inputs and compact JSON in digest CSV cells, containing:
+
+- `source_path`, `source_sha256`, and `wandb_run_id` for the exact imported bytes.
+- Sparse `observations` of `train_loss_epoch`, `val_loss`, and the frozen monitor
+  and objective when their names start with `val_`. Each point retains its
+  numeric logged coordinate keys (`epoch`, `trainer/epoch`, `current_epoch`,
+  `_step`, `trainer/global_step`) when present. Missing/non-finite metric cells
+  are omitted; points are not interpolated, joined across rows or averaged.
+- `learning_rate_ranges` with the observed `min` and `max` of each `lr-*` column.
+  These are ranges across imported samples, not learning-rate trajectories.
+  Consult the cited source for ordering or step-level detail when needed.
+
+The import may be sampled or sparse. `_step` is a W&B logging index, not an
+optimizer step. Logged coordinates are observations, not proof of actual
+completed epochs/steps, and current training manifests do not record the
+Lightning early-stopping cause. Step training losses, test/external metric
+values and unrelated metrics are not copied into `training_history`.
+The existing checkpoint-test contract above remains the source of authorized
+test trajectories. W&B observations never overwrite canonical objective scores,
+checkpoint identities, the incumbent or lifecycle state. History-byte changes
+invalidate an outstanding proposal's reconstructed snapshot; obtain fresh input
+through the existing handshake after any intended evidence refresh.
+
 Phase two requires one matching issuance and exact snapshot bytes before it
 trusts bounds or budget. It reconstructs the complete input from current recipe,
 workflow, all committed rounds, manifest/registry, and runtime evidence, then repeats that

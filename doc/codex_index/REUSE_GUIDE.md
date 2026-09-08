@@ -173,7 +173,10 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   `adaptive_proposals`, and preflight/lifecycle orchestration in `adaptive_hparam`.
   Reuse its canonical round evidence for complete-history proposal
   inputs and `checkpoint_test_results` for checkpoint attribution; do not reconstruct
-  historical evidence from digest CSVs. See the [adaptive workflow](../agent_contracts/task_recipe.md#adaptive-workflow)
+  historical evidence from digest CSVs. `experiment_sources.read_wandb_training_history`
+  reads already-synced, canonical-run-bound history for sparse training/validation
+  observations; it neither syncs W&B nor establishes training completion.
+  See the [adaptive workflow](../agent_contracts/task_recipe.md#adaptive-workflow)
   and [proposal handshake](../agent_contracts/task_recipe.md#proposal-handshake).
 
 ### Standalone variants

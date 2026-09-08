@@ -22,6 +22,7 @@ from . import (
     adaptive_proposals,
     checkpoint_test_results,
     experiment_io as exp_io,
+    experiment_sources,
     hparam_runtime,
     managed_scheduler,
     plan_contract,
@@ -544,6 +545,17 @@ def _digest_rows(
                 )
         row["status"] = status.get("status", "")
         row["stop_reason"] = status.get("stop_reason", "")
+        training_history = experiment_sources.read_wandb_training_history(
+            workspace,
+            status,
+            monitor=str(manifest.get("monitor") or ""),
+            objective=objective["metric"],
+        )
+        row["training_history"] = (
+            json.dumps(training_history, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            if training_history is not None
+            else ""
+        )
         row["pid"] = status.get("pid", "")
         rows.append(row)
     return rows
@@ -650,8 +662,9 @@ def _proposal_digest_rows(root: Path, workspace: Path) -> list[dict[str, Any]]:
     fieldnames = sorted({key for row in rows for key in row})
     normalized = [{key: "" if row.get(key) is None else str(row.get(key)) for key in fieldnames} for row in rows]
     for row in normalized:
-        if row.get("checkpoint_test_results"):
-            row["checkpoint_test_results"] = json.loads(row["checkpoint_test_results"])
+        for field in ("checkpoint_test_results", "training_history"):
+            if row.get(field):
+                row[field] = json.loads(row[field])
     return normalized
 
 
