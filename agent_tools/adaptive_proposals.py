@@ -9,7 +9,6 @@ from typing import Any, Literal, TypeAlias, TypedDict
 
 from typing_extensions import Never, NotRequired
 
-
 ProposalValue: TypeAlias = bool | int | float | str | None | list["ProposalValue"] | dict[str, "ProposalValue"]
 
 

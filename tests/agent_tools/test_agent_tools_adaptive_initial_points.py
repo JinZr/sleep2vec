@@ -94,10 +94,7 @@ def test_next_proposal_can_use_unsampled_domain_after_exact_initial_points(
         )
     merge_run_manifest(
         workspace,
-        [
-            {"step_id": run["step_id"], "run_id": run["run_id"], "status": "finished"}
-            for run in initial_plan["runs"]
-        ],
+        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "finished"} for run in initial_plan["runs"]],
     )
     monkeypatch.setattr(adaptive_hparam, "monitor_hparam_runs", lambda _run_dir: None)
 

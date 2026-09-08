@@ -60,11 +60,7 @@ class HparamTuneAdapter(TaskAdapter):
         return hparam_recipe_contract_issues(recipe, source_layer=source_layer)
 
     def recipe_input_issues(self, recipe: dict[str, Any]) -> list[DecisionIssue]:
-        return [
-            issue
-            for issue in hparam_search_issues(recipe, high_impact={})
-            if issue.status == DecisionStatus.FAIL
-        ]
+        return [issue for issue in hparam_search_issues(recipe, high_impact={}) if issue.status == DecisionStatus.FAIL]
 
     def bind_effective_recipe(
         self,
