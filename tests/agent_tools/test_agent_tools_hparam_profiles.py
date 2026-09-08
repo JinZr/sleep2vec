@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-from itertools import product
 import json
 from pathlib import Path
 import shlex
@@ -12,7 +11,7 @@ import pytest
 import yaml
 
 from agent_tools import managed_scheduler, plans
-from agent_tools.adaptive_proposals import validate_parameter_envelopes
+from agent_tools.adaptive_proposals import validate_configurations, validate_parameter_envelopes
 from agent_tools.configs import config_summary
 from agent_tools.decision_models import DecisionStatus
 from agent_tools.domain.finetune_hparam_profile import (
@@ -667,8 +666,7 @@ def test_checked_in_templates_use_bounded_terminal_agent_proposals(template_name
     assert envelopes["runtime.epochs"]["max"] > max(search["parameters"]["runtime.epochs"])
     assert envelopes["runtime.lr"]["max"] > max(search["parameters"]["runtime.lr"])
 
-    keys = list(search["parameters"])
-    points = [dict(zip(keys, values)) for values in product(*(search["parameters"][key] for key in keys))]
+    points = validate_configurations(search["configurations"], envelopes, location="search.configurations")
     assert len(points) == search["max_runs"]
     base = yaml.safe_load((template_dir / template["base_recipe"]).read_text())
     source = REPO_ROOT / base["inputs"]["config"]

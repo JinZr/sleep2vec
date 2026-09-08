@@ -16,7 +16,7 @@ Use the authorized experiment/step, base recipe, search domain or explicitly
 requested static profile/grid, budget, selection metric/mode/split, test/final-evaluation policy and
 execution identity. Read the relevant detailed owners before preparing work:
 
-- [Search space](../../doc/agent_contracts/task_recipe.md#search-space) for the default adaptive workflow, scalar domains, joint configurations and explicitly requested static `finetune_balanced` searches.
+- [Search space](../../doc/agent_contracts/task_recipe.md#search-space) for the default adaptive workflow, frozen domains, initial joint points and explicitly requested static `finetune_balanced` searches.
 - [Test-access policy](../../doc/agent_contracts/external_test_locking.md#selection-and-test-access-policy) for selection split, test-after-fit and unlock requirements.
 - [Launch and queue](../../doc/agent_contracts/task_recipe.md#launch-and-queue) for local/SSH identity, direct/Slurm resources and capacity.
 - [Adaptive workflow](../../doc/agent_contracts/task_recipe.md#adaptive-workflow) when enabled; it owns initialization, frozen Python/route/scientific identity, per-round commit provenance, strategy and budget.
@@ -76,7 +76,7 @@ these fields, the explicit objective and `replacement: {enabled: false}` in the
 recipe; they are not automatic parser defaults.
 
 Before initialization, inspect the effective base/runtime config and available
-prior experiments. Choose a bounded scalar domain and first-round points using:
+prior experiments. Choose a bounded domain and first-round points using:
 
 - The strongest comparable result, missing evidence, and whether its best point
   touches a parameter bound or the final checkpoint. Boundary evidence motivates
@@ -85,11 +85,19 @@ prior experiments. Choose a bounded scalar domain and first-round points using:
   budget reason for each fixed choice. Do not freeze a setting merely because it
   appears in the source config. Include only parameters consumed by the task and
   variant; coupled settings must produce valid complete candidate configs.
-- What the initial points can distinguish within the compute authority. Keep the
-  full initial Cartesian product within round size. Numeric bounds can leave
-  room beyond the first points; categorical choices must already be declared.
-  The current proposal contract supports scalar values, not composite LayerMix
-  or adaptation mappings. Do not invent an automatic profile-to-adaptive compiler.
+- What the initial points can distinguish within the compute authority. Prefer
+  explicit `search.configurations` for the opening batch, alongside the complete
+  frozen domain in `search.parameters`. Every point must cover every domain key;
+  its values must lie within the envelopes, and the point count must fit all
+  initial budgets. Without configurations, keep the full initial Cartesian product
+  within round size. Numeric bounds and categorical choices can leave useful
+  alternatives for later rounds without spending initial runs on them.
+- For coupled YAML settings, declare complete mapping or list choices under a
+  `yaml:/...` key, such as the whole LayerMix or adaptation block. Each choice
+  replaces that value completely; a proposal selects an authorized block rather
+  than editing arbitrary fields inside it. Use the source variant's valid config
+  semantics, including pretrained-backbone requirements for frozen adaptation.
+  Runtime values remain scalar. There is no automatic profile-to-adaptive compiler.
 
 The templates are starting examples to adjust to the actual base config, runtime
 and evidence. Choose technical values within the authorized domain without asking

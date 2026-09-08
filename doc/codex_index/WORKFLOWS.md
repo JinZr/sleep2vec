@@ -129,7 +129,8 @@ Direct finetune cannot select checkpoints on test; the supported route is a
 [one-configuration hparam plan](../agent_contracts/external_test_locking.md#test-selected-runtime-requirements).
 
 New tuning requests default to terminal-only agent proposals: design the bounded
-domain and opening batch, initialize, launch the authorized batch, then use the
+domain in `search.parameters` and exact opening points in `search.configurations`,
+initialize, launch the authorized batch, then use the
 [proposal handshake](../agent_contracts/task_recipe.md#proposal-handshake) after
 complete results. Inputs bind all committed terminal rounds, prior proposal
 rationales and available checkpoint trajectories. Existing authored plans retain

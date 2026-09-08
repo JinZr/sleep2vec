@@ -25,6 +25,16 @@ search:
     runtime.weight_decay: [1.0e-5]
     runtime.epochs: [30]
     yaml:/model/head/dropout: [0.1]
+  # Exact opening points; the domain above and bounds below remain available later.
+  configurations:
+    - runtime.lr: 1.0e-6
+      runtime.weight_decay: 1.0e-5
+      runtime.epochs: 30
+      yaml:/model/head/dropout: 0.1
+    - runtime.lr: 3.0e-6
+      runtime.weight_decay: 1.0e-5
+      runtime.epochs: 30
+      yaml:/model/head/dropout: 0.1
 
 adaptive:
   enabled: true
