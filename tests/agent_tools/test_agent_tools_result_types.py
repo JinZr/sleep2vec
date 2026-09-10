@@ -97,7 +97,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 cohort_winner["source_rank"] = "1"  # type: ignore[typeddict-item]
                 gate_value: int | float = cohort_winner["selection_evidence"][0]["value"]
                 cohort_winner["selection_evidence"][0]["value"] = "1"  # type: ignore[typeddict-item]
-            experiment_pipeline._write_no_winner_report(Path("/pipeline"), cohort_decision)
+            experiment_pipeline._write_no_winner_report(Path("/pipeline"), {}, cohort_decision)
             _, typed_decision = experiment_pipeline._validate_cohort_decision(
                 Path("/pipeline"), {}, {}, selection_evidence,
             )
