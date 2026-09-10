@@ -290,8 +290,10 @@ def run_experiment_pipeline(
                     _source_hparam_plans(source_id, source)
         else:
             staging_dir = pipeline_dir.parent / f".{pipeline_id}.{os.getpid()}.{time.time_ns()}.staging"
-            staging_dir.mkdir()
             with plan_registration_lock(root):
+                for source_id, source in spec["checkpoint_sources"].items():
+                    _source_hparam_plans(source_id, source)
+                staging_dir.mkdir()
                 _freeze_pipeline(root, staging_dir, spec_file, source_text, spec)
                 os.replace(staging_dir, pipeline_dir)
         try:

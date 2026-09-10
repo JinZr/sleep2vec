@@ -575,6 +575,87 @@ def test_pipeline_rejects_ssh_owner_in_another_round_before_outputs(cross_round_
     assert not (root / "pipelines").exists()
 
 
+@pytest.mark.parametrize("late_owner", ["ssh", "incompatible_variant"])
+def test_first_publication_rechecks_late_owner_before_staging(cross_round_source, tmp_path, monkeypatch, late_owner):
+    root, spec, registered_plans, _canonical = cross_round_source
+    spec_path = tmp_path / "external.yaml"
+    spec_path.write_text(yaml.safe_dump(spec, sort_keys=False))
+    pipeline_dir = root / "pipelines" / spec["pipeline"]["id"]
+    initial_scan = threading.Event()
+    registration_done = threading.Event()
+    errors = []
+    scans = []
+    frozen = []
+    executed = []
+    original_source_plans = experiment_pipeline._source_hparam_plans
+    late_plan = copy.deepcopy(registered_plans[0][1])
+    late_plan["runs"][0]["run_id"] = "run-003"
+    if late_owner == "ssh":
+        late_plan["recipe"]["execution"] = {"target": "ssh", "host": "unit-host"}
+        message = "SSH execution target"
+    else:
+        late_plan["recipe"]["variant"] = "sleep2expert"
+        message = "variant assertion differs"
+
+    def register_late_plan():
+        try:
+            assert initial_scan.wait(timeout=5)
+            with plan_registration_lock(root):
+                registered_plans.append((root / "plans" / "round-003", late_plan))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            registration_done.set()
+
+    registrar = threading.Thread(target=register_late_plan)
+
+    def source_plans(*args):
+        scans.append(True)
+        plans = original_source_plans(*args)
+        if len(scans) == 1:
+            initial_scan.set()
+            assert registration_done.wait(timeout=5)
+            assert not errors
+        return plans
+
+    def freeze(_root, staging_dir, *_args):
+        frozen.append(staging_dir)
+        (staging_dir / "pipeline.json").write_text(json.dumps({"status": "ready"}))
+
+    def execute(*_args, **_kwargs):
+        executed.append(True)
+        return {"status": "blocked", "jobs": []}
+
+    monkeypatch.setattr(experiment_pipeline, "_source_hparam_plans", source_plans)
+    monkeypatch.setattr(experiment_pipeline, "_validate_experiment", lambda *_args, **_kwargs: {"status": "active"})
+    monkeypatch.setattr(experiment_pipeline, "_freeze_pipeline", freeze)
+    monkeypatch.setattr(experiment_pipeline, "_execute_pipeline", execute)
+    registrar.start()
+    try:
+        with pytest.raises(ValueError, match=message):
+            experiment_pipeline.run_experiment_pipeline(root, spec_path, execute=True, unlock_final_test=True)
+    finally:
+        initial_scan.set()
+        registrar.join(timeout=5)
+
+    assert not registrar.is_alive()
+    assert not errors
+    assert len(scans) == 2
+    assert frozen == []
+    assert executed == []
+    assert not pipeline_dir.exists()
+    assert not list(pipeline_dir.parent.glob("*.staging"))
+    assert not list(pipeline_dir.parent.rglob("pipeline.json"))
+
+    registered_plans.pop()
+    result = experiment_pipeline.run_experiment_pipeline(root, spec_path, execute=True, unlock_final_test=True)
+
+    assert result["status"] == "blocked"
+    assert len(frozen) == 1
+    assert executed == [True]
+    assert json.loads((pipeline_dir / "pipeline.json").read_text())["status"] == "ready"
+
+
 @pytest.mark.parametrize("scope", ["all", "top_k", "external_matrix"])
 def test_checkpoint_selection_includes_other_rounds_and_preserves_owner(cross_round_source, scope):
     root, spec, registered, canonical = cross_round_source

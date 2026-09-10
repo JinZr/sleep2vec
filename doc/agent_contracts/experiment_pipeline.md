@@ -130,6 +130,9 @@ the recorded source readiness. Only the frozen owners are read at this stage.
 The managed evaluation controller has no remote source-artifact staging
 boundary, so it accepts only local source plans and rejects any SSH-owned plan
 in the current source scope before creating pipeline state or other outputs.
+Initial publication repeats this source check under the plan-registration lock
+before creating the staging directory, preventing an intervening registration
+from publishing an incompatible pipeline.
 If interruption leaves `checkpoints.json` or `candidates.json` before its hash
 reaches pipeline state, resume reruns the hparam-ranking and candidate-resolution
 owner and accepts the orphan only when every selected field still matches; it
