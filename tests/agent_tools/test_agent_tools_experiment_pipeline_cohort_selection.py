@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -114,6 +115,8 @@ def _candidates(tmp_path: Path) -> dict[str, dict]:
             "step_id": "train-age",
             "run_id": f"run-{rank:03d}",
             "selection_metric": "val_mae",
+            "variant": "sleep2vec2",
+            "label_name": "age",
             "score": score,
             "checkpoint": str(tmp_path / f"rank-{rank}.ckpt"),
             "checkpoint_sha256": str(rank) * 64,
@@ -215,8 +218,8 @@ def test_cohort_selection_rejects_cross_role_cohort_and_preset_reuse(tmp_path: P
         experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
 
     spec = _spec(root)
-    spec["jobs"][0]["provenance"] = "external"
-    with pytest.raises(ValueError, match="must be internal for selection"):
+    spec["jobs"][1]["provenance"] = "internal"
+    with pytest.raises(ValueError, match="must be external for report_only"):
         experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
 
 
@@ -358,6 +361,11 @@ def test_frozen_winner_is_hash_bound_and_tamper_evident(tmp_path: Path, monkeypa
     )
     assert validated == decision
 
+    changed_policy = copy.deepcopy(spec)
+    changed_policy["selector"]["gates"][0]["strict"] = True
+    with pytest.raises(ValueError, match="decision changed"):
+        experiment_pipeline._validate_cohort_decision(pipeline_dir, changed_policy, candidates, evidence)
+
     (pipeline_dir / "cohort_selection_winner.json").write_text("{}\n")
     with pytest.raises(ValueError, match="decision changed"):
         experiment_pipeline._validate_cohort_decision(
@@ -368,7 +376,8 @@ def test_frozen_winner_is_hash_bound_and_tamper_evident(tmp_path: Path, monkeypa
         )
 
 
-def test_selection_evidence_is_reread_after_report_only_execution(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("with_report", [True, False])
+def test_selection_evidence_is_reread_before_completion(tmp_path: Path, monkeypatch, with_report: bool):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "cohort-gate"
     pipeline_dir.mkdir(parents=True)
@@ -382,9 +391,13 @@ def test_selection_evidence_is_reread_after_report_only_execution(tmp_path: Path
     }
     finalized = []
     evidence_reads = []
+    if not with_report:
+        spec["jobs"] = spec["jobs"][:1]
 
     def current_evidence(*_args):
         evidence_reads.append(True)
+        if not with_report and len(evidence_reads) == 2:
+            manifests["age-rank-001"].write_text(json.dumps({"metrics": {"mae": 5.9}}) + "\n")
         rows = []
         for candidate_id, manifest_path in manifests.items():
             manifest = json.loads(manifest_path.read_text())
@@ -432,7 +445,8 @@ def test_selection_evidence_is_reread_after_report_only_execution(tmp_path: Path
     assert json.loads((pipeline_dir / "pipeline.json").read_text()).get("status") != "completed"
 
 
-def test_no_winner_stops_before_report_only_materialization(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("with_report", [True, False])
+def test_no_winner_stops_before_report_only_materialization(tmp_path: Path, monkeypatch, with_report: bool):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "cohort-gate"
     pipeline_dir.mkdir(parents=True)
@@ -441,6 +455,11 @@ def test_no_winner_stops_before_report_only_materialization(tmp_path: Path, monk
     candidates = _candidates(tmp_path)
     calls = []
     states = []
+    spec["jobs"][0]["provenance"] = "external"
+    spec["selector"]["gates"][0]["strict"] = True
+    if not with_report:
+        spec["jobs"] = spec["jobs"][:1]
+    evidence = _evidence(tmp_path, {"age-rank-001": 5.0, "age-rank-002": 5.1})
 
     monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: candidates)
     monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
@@ -454,7 +473,7 @@ def test_no_winner_stops_before_report_only_materialization(tmp_path: Path, monk
     monkeypatch.setattr(
         experiment_pipeline,
         "_load_or_freeze_cohort_decision",
-        lambda *_args: ([], {"winner": None, "candidates": []}),
+        lambda *_args: cohort_selection.rank_candidates(spec, candidates, evidence),
     )
     monkeypatch.setattr(experiment_pipeline, "_update_state", lambda *_args, **kwargs: states.append(kwargs))
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
@@ -470,10 +489,13 @@ def test_no_winner_stops_before_report_only_materialization(tmp_path: Path, monk
     assert result["status"] == "failed"
     assert calls == ["selection"]
     assert states[-1]["failure"] == "no_feasible_candidate"
+    report = (pipeline_dir / "selection_failure.md").read_text()
+    assert "| age-rank-001 | internal_holdout | external | mae | 5.0 | `<` | 5.0 | False |" in report
     assert not (pipeline_dir / "phases" / "report_only").exists()
 
 
-def test_report_only_phase_is_built_from_the_frozen_winner(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("with_report", [True, False])
+def test_report_only_phase_is_built_from_the_frozen_winner(tmp_path: Path, monkeypatch, with_report: bool):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "cohort-gate"
     pipeline_dir.mkdir(parents=True)
@@ -482,6 +504,8 @@ def test_report_only_phase_is_built_from_the_frozen_winner(tmp_path: Path, monke
     spec = _spec(root)
     candidates = _candidates(tmp_path)
     winner = candidates["age-rank-002"]
+    if not with_report:
+        spec["jobs"] = spec["jobs"][:1]
     phases = []
     states = []
     completion_order = []
@@ -528,14 +552,20 @@ def test_report_only_phase_is_built_from_the_frozen_winner(tmp_path: Path, monke
     )
 
     assert result["status"] == "completed"
-    assert [phase for phase, _jobs in phases] == ["selection", "report_only"]
+    assert [phase for phase, _jobs in phases] == (["selection", "report_only"] if with_report else ["selection"])
     assert {job["candidate_id"] for job in phases[0][1]} == set(candidates)
-    assert {job["candidate_id"] for job in phases[1][1]} == {winner["candidate_id"]}
+    if with_report:
+        assert {job["candidate_id"] for job in phases[1][1]} == {winner["candidate_id"]}
+    else:
+        assert not (pipeline_dir / "phases" / "report_only").exists()
     assert states[-1]["status"] == "completed"
     assert completion_order == ["pipeline_completed", "finalize"]
 
 
-def test_completed_cohort_pipeline_reconciles_completion_event_before_finalization(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("with_report", [True, False])
+def test_completed_cohort_pipeline_reconciles_completion_event_before_finalization(
+    tmp_path: Path, monkeypatch, with_report: bool
+):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "cohort-gate"
     pipeline_dir.mkdir(parents=True)
@@ -551,6 +581,9 @@ def test_completed_cohort_pipeline_reconciles_completion_event_before_finalizati
     spec = _spec(root)
     candidates = _candidates(tmp_path)
     winner = candidates["age-rank-001"]
+    if not with_report:
+        spec["jobs"] = spec["jobs"][:1]
+    validated_phases = []
     experiment_status = {"value": "active"}
     finalized = []
 
@@ -559,9 +592,8 @@ def test_completed_cohort_pipeline_reconciles_completion_event_before_finalizati
     monkeypatch.setattr(
         experiment_pipeline,
         "_validated_completed_phase",
-        lambda _root, _phase_dir, phase_spec, _candidates: [
-            {"job_id": job["id"], "status": "completed"} for job in phase_spec["jobs"]
-        ],
+        lambda _root, _phase_dir, phase_spec, _candidates: validated_phases.append(phase_spec["_execution_stage"])
+        or [{"job_id": job["id"], "status": "completed"} for job in phase_spec["jobs"]],
     )
     monkeypatch.setattr(experiment_pipeline.pipeline_results, "selection_evidence", lambda *_args: [])
     monkeypatch.setattr(
@@ -610,3 +642,118 @@ def test_completed_cohort_pipeline_reconciles_completion_event_before_finalizati
     assert result["status"] == "completed"
     assert finalized == [True]
     assert (root / "events.jsonl").read_bytes() == events_before
+    assert validated_phases == (["selection", "report_only"] if with_report else ["selection"]) * 2
+
+    report.write_text("changed after completion\n")
+    with pytest.raises(ValueError, match="Completed pipeline artifact changed"):
+        experiment_pipeline._execute_pipeline(root, pipeline_dir, spec, poll_seconds=0, finalize_callback=finalize)
+    assert finalized == [True]
+    assert (root / "events.jsonl").read_bytes() == events_before
+
+
+@pytest.mark.parametrize("with_report", [True, False])
+def test_external_selection_is_accepted_with_explicit_test_unlock(tmp_path: Path, with_report: bool):
+    spec = _spec(tmp_path)
+    spec["jobs"][0]["provenance"] = "external"
+    if not with_report:
+        spec["jobs"] = spec["jobs"][:1]
+    experiment_pipeline._validate_spec(spec, tmp_path, unlock_final_test=True)
+    with pytest.raises(ValueError, match="unlock"):
+        experiment_pipeline._validate_spec(spec, tmp_path, unlock_final_test=False)
+
+
+def test_cohort_selection_requires_selection_jobs(tmp_path: Path):
+    spec = _spec(tmp_path)
+    spec["jobs"] = spec["jobs"][1:]
+    with pytest.raises(ValueError, match="selection"):
+        experiment_pipeline._validate_spec(spec, tmp_path, unlock_final_test=True)
+
+
+@pytest.mark.parametrize("strict", [None, False, True])
+@pytest.mark.parametrize("mode", ["min", "max"])
+def test_target_gate_comparison_uses_raw_values_and_explicit_strictness(tmp_path: Path, strict, mode: str):
+    spec = _spec(tmp_path)
+    gate = spec["selector"]["gates"][0]
+    gate["mode"] = mode
+    if strict is not None:
+        gate["strict"] = strict
+    experiment_pipeline._validate_spec(spec, tmp_path, unlock_final_test=True)
+    adjacent = math.nextafter(5.0, -math.inf if mode == "min" else math.inf)
+    ranking, decision = cohort_selection.rank_candidates(
+        spec, _candidates(tmp_path), _evidence(tmp_path, {"age-rank-001": 5.0, "age-rank-002": adjacent})
+    )
+    assert [row["feasible"] for row in ranking] == [not strict, True]
+    assert decision["winner"]["candidate_id"] == ("age-rank-002" if strict else "age-rank-001")
+    assert decision["selector"] == spec["selector"]
+
+
+@pytest.mark.parametrize("strict", ["true", "false", 0, 1, None])
+def test_gate_strict_rejects_nonboolean_values(tmp_path: Path, strict):
+    spec = _spec(tmp_path)
+    spec["selector"]["gates"][0]["strict"] = strict
+    with pytest.raises(ValueError, match="strict.*bool"):
+        experiment_pipeline._validate_spec(spec, tmp_path, unlock_final_test=True)
+
+
+@pytest.mark.parametrize("with_report", [True, False])
+def test_real_cohort_summary_preserves_selection_provenance_and_gate_outcomes(tmp_path: Path, with_report: bool):
+    results = experiment_pipeline.pipeline_results
+    spec = _spec(tmp_path)
+    spec["jobs"][0]["provenance"] = "external"
+    spec["selector"]["gates"][0]["strict"] = True
+    if not with_report:
+        spec["jobs"] = spec["jobs"][:1]
+    candidates = _candidates(tmp_path)
+    for candidate in candidates.values():
+        candidate["selection_metric"] = "test_mae"
+    evidence = _evidence(tmp_path, {"age-rank-001": 5.0, "age-rank-002": 4.9})
+    for row in evidence:
+        manifest = Path(row["result_manifest"])
+        payload = json.loads(manifest.read_text())
+        payload["prediction_row_count"] = 10
+        manifest.write_text(json.dumps(payload))
+    _ranking, decision = cohort_selection.rank_candidates(spec, candidates, evidence)
+    winner = decision["winner"]
+    (tmp_path / "cohort_selection_winner.json").write_text(json.dumps(decision))
+    source_recipe = tmp_path / "resolved_recipe.yaml"
+    source_recipe.write_text(yaml.safe_dump({"evaluation_policy": {"selection_split": "test"}}))
+    (tmp_path / "pipeline.json").write_text(
+        json.dumps({"source_plans": [{"resolved_recipe_path": str(source_recipe)}]})
+    )
+    phases = {}
+    for role in ("selection", "report_only"):
+        jobs = cohort_selection.build_phase_jobs(spec, candidates, role=role, winner_id=winner["candidate_id"])
+        phases[role] = {**spec, "jobs": jobs}
+        if not jobs:
+            continue
+        attempts = [
+            {
+                "job_id": job["id"],
+                "step_id": "evaluate",
+                "run_id": f"run-{index:03d}",
+                "attempt": 1,
+                "verified": True,
+                "runtime_commit": "a" * 40,
+                "result_root": str(tmp_path),
+                "result_manifest": str(tmp_path / f"{job['candidate_id']}.json"),
+            }
+            for index, job in enumerate(jobs, 1)
+        ]
+        results.write_rows_atomic(tmp_path / "phases" / role / "jobs.tsv", attempts)
+    report = results.write_cohort_result_summary(
+        tmp_path, spec, candidates, winner, phases["selection"], phases["report_only"]
+    )
+    text = report.read_text()
+    assert "internal-test + external-test selected" in text
+    assert "Winner: `age-rank-002` (internal rank 2)" in text
+    assert "| age-rank-001 | 1 | test | test_mae | 4.0 |" in text
+    assert "| age-rank-001 | internal_holdout | external | mae | 5.0 | `<` | 5.0 | False |" in text
+    assert "| age-rank-002 | internal_holdout | external | mae | 4.9 | `<` | 5.0 | True |" in text
+    assert "| internal_holdout | external | mae |" in text
+    assert ("No report-only cohort" in text) is not with_report
+    assert (tmp_path / "summary.md").read_text() == text
+    rows = results.read_rows(tmp_path / "results.csv")
+    assert len(rows) == (3 if with_report else 2)
+    assert all(row["selection_split"] == "test" for row in rows)
+    if not with_report:
+        assert not (tmp_path / "phases" / "report_only").exists()

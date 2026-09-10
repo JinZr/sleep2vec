@@ -213,7 +213,7 @@ _JOB_FIELDS = {
 _COHORT_JOB_FIELDS = (_JOB_FIELDS - {"checkpoint_source"}) | {"role", "provenance"}
 _CANDIDATE_FIELDS = {"kind", "count"}
 _SELECTOR_FIELDS = {"strategy", "gates", "tie_breaker", "on_no_feasible"}
-_GATE_FIELDS = {"job", "metric", "mode", "threshold"}
+_GATE_FIELDS = {"job", "metric", "mode", "threshold", "strict"}
 
 
 def run_experiment_pipeline(
@@ -487,9 +487,8 @@ def _validate_pipeline_sources_and_jobs(spec: dict[str, Any], *, root: Path, kin
                 raise ValueError(f"jobs[{index}].role must be selection or report_only.")
             if job.get("provenance") not in {"internal", "external"}:
                 raise ValueError(f"jobs[{index}].provenance must be internal or external.")
-            expected_provenance = "internal" if job["role"] == "selection" else "external"
-            if job["provenance"] != expected_provenance:
-                raise ValueError(f"jobs[{index}].provenance must be {expected_provenance} for {job['role']} jobs.")
+            if job["role"] == "report_only" and job["provenance"] != "external":
+                raise ValueError(f"jobs[{index}].provenance must be external for report_only jobs.")
         for field in ("cohort", "modality"):
             if not str(job.get(field) or "").strip():
                 raise ValueError(f"jobs[{index}].{field} is required.")
@@ -518,8 +517,8 @@ def _validate_cohort_selection_contract(spec: dict[str, Any]) -> None:
         raise ValueError("candidates.kind must be top_k or all.")
 
     roles = {job["role"] for job in spec["jobs"]}
-    if roles != {"selection", "report_only"}:
-        raise ValueError("cohort_selection requires at least one selection and one report_only job.")
+    if "selection" not in roles:
+        raise ValueError("cohort_selection requires at least one selection job.")
     for first_index, first in enumerate(spec["jobs"]):
         for second in spec["jobs"][first_index + 1 :]:
             if first["role"] == second["role"]:
@@ -557,6 +556,8 @@ def _validate_cohort_selection_contract(spec: dict[str, Any]) -> None:
             raise ValueError(f"selector.gates[{index}].metric is required.")
         if gate.get("mode") not in {"min", "max"}:
             raise ValueError(f"selector.gates[{index}].mode must be min or max.")
+        if "strict" in gate and not isinstance(gate["strict"], bool):
+            raise ValueError(f"selector.gates[{index}].strict must be a boolean.")
         threshold = gate.get("threshold")
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold):
             raise ValueError(f"selector.gates[{index}].threshold must be finite.")
@@ -1001,7 +1002,7 @@ def _execute_cohort_selection(
     _ranking, decision = _load_or_freeze_cohort_decision(root, pipeline_dir, spec, candidates, evidence)
     winner = decision["winner"]
     if winner is None:
-        report = _write_no_winner_report(pipeline_dir, decision)
+        report = _write_no_winner_report(pipeline_dir, spec, decision)
         _update_state(
             pipeline_dir,
             status="failed",
@@ -1030,23 +1031,26 @@ def _execute_cohort_selection(
             winner_id=str(winner["candidate_id"]),
         ),
     )
-    report_result = _execute_cohort_phase(
-        root,
-        pipeline_dir,
-        report_spec,
-        candidates,
-        poll_seconds=poll_seconds,
-        controller_spec=spec,
-    )
-    if report_result["status"] != "completed":
-        _update_state(
+    report_jobs: list[pipeline_results.LogicalJobState] = []
+    if report_spec["jobs"]:
+        report_result = _execute_cohort_phase(
+            root,
             pipeline_dir,
-            status=report_result["status"],
-            selection_jobs=selection_result["jobs"],
-            report_only_jobs=report_result["jobs"],
-            missing_pid_blocker=report_result.get("missing_pid_blocker"),
+            report_spec,
+            candidates,
+            poll_seconds=poll_seconds,
+            controller_spec=spec,
         )
-        return report_result
+        if report_result["status"] != "completed":
+            _update_state(
+                pipeline_dir,
+                status=report_result["status"],
+                selection_jobs=selection_result["jobs"],
+                report_only_jobs=report_result["jobs"],
+                missing_pid_blocker=report_result.get("missing_pid_blocker"),
+            )
+            return report_result
+        report_jobs = report_result["jobs"]
 
     _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
     # Report-only execution can outlive the selection snapshot; re-read its bound manifests before finalization.
@@ -1070,7 +1074,7 @@ def _execute_cohort_selection(
         pipeline_dir / "summary.md",
         report,
     ]
-    all_jobs = [*selection_result["jobs"], *report_result["jobs"]]
+    all_jobs = [*selection_result["jobs"], *report_jobs]
     _update_state(
         pipeline_dir,
         status="completed",
@@ -1078,7 +1082,7 @@ def _execute_cohort_selection(
         final_report=str(report),
         result_artifacts={str(path): file_sha256(path) for path in result_paths},
         selection_jobs=selection_result["jobs"],
-        report_only_jobs=report_result["jobs"],
+        report_only_jobs=report_jobs,
     )
     _reconcile_pipeline_event(
         root,
@@ -1213,7 +1217,9 @@ def _cohort_decision_artifacts(
     )
 
 
-def _write_no_winner_report(pipeline_dir: Path, decision: cohort_selection.CohortDecision) -> Path:
+def _write_no_winner_report(
+    pipeline_dir: Path, spec: dict[str, Any], decision: cohort_selection.CohortDecision
+) -> Path:
     lines = [
         "# Cohort Selection Pipeline",
         "",
@@ -1227,6 +1233,7 @@ def _write_no_winner_report(pipeline_dir: Path, decision: cohort_selection.Cohor
     for candidate in decision["candidates"]:
         failed = ", ".join(candidate["failed_gates"]) or "none"
         lines.append(f"| {candidate['candidate_id']} | {candidate['source_rank']} | {failed} |")
+    lines.extend(["", *pipeline_results.cohort_gate_markdown(spec, decision)])
     report = pipeline_dir / "selection_failure.md"
     _atomic_write_text(report, "\n".join(lines) + "\n")
     return report
@@ -1266,7 +1273,7 @@ def _finalize_completed_cohort_selection(
         ),
     )
     report_dir = pipeline_dir / "phases" / "report_only"
-    report_jobs = _validated_completed_phase(root, report_dir, report_spec, candidates)
+    report_jobs = _validated_completed_phase(root, report_dir, report_spec, candidates) if report_spec["jobs"] else []
 
     experiment = _validate_experiment(root, spec, allow_completed=True)
     if experiment.get("status") != "completed":
