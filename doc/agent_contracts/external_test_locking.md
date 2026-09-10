@@ -20,7 +20,7 @@ not select a scientific split, unlock test access, or authorize final evaluation
 | Test-selected hparam tuning | `selection_split: test` | `test_after_fit: true`, with complete all-checkpoint evidence | `external_test_locked: false` explicitly authorizes tuning access; final external evaluation remains separate. |
 | Direct `infer` / `evaluate` on test | `eval_split: test` | Not a post-fit operation | Both `external_test_locked: false` and `final_test_unlocked: true`. |
 | Managed external matrix | Registered-ranking winner per source | Separate explicit operation | `experiment-run --unlock-final-test`; external metrics do not rewrite source selection. |
-| Managed cohort selection and external report | Frozen ranked candidates plus internal target gates | Separate explicit operation | `experiment-run --unlock-final-test`; report-only metrics do not change the frozen winner. |
+| Managed cohort selection and optional external report | Frozen ranked candidates plus declared internal or external target gates | Separate explicit operation | `experiment-run --unlock-final-test`; external selection participation is explicit, and report-only metrics do not change the frozen winner. |
 
 For finetune and hparam recipes, omitted `test_after_fit` is materialized as
 `evaluation_policy.test_after_fit=true` before consultation, with a
@@ -64,11 +64,14 @@ overwrite approval.
 For an `external_matrix`, `experiment-run` derives and freezes each checkpoint
 from its source plan's registered ranking before the explicitly unlocked jobs
 launch. For `cohort_selection`, it freezes ranked candidates, completes the
-internal target-gate matrix, freezes the best feasible candidate by the
-documented `internal_rank` tie-breaker, and only then materializes external
-report-only jobs. External-matrix metrics never rewrite source selection, and
-report-only metrics never
-rewrite the cohort-selection winner. The pipeline runner is a launcher;
+declared target-gate matrix, freezes the best feasible candidate by the
+documented `internal_rank` tie-breaker, and only then materializes any declared
+external report-only jobs. Selection jobs may use external-origin cohorts when
+explicitly authorized; their provenance remains external and reports identify
+them as participating in selection. With no report-only jobs, a feasible winner
+can complete the pipeline, but there is no separate untouched reporting cohort.
+External-matrix metrics never rewrite source selection, and report-only metrics
+never rewrite the cohort-selection winner. The pipeline runner is a launcher;
 `hparam-monitor` and `experiment-monitor` never start pending pipeline jobs.
 Source scope, candidate freezing, attempt isolation, retries, result validation,
 and finalization order belong to [experiment_pipeline.md](experiment_pipeline.md),
