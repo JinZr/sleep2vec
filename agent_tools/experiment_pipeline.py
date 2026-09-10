@@ -859,14 +859,16 @@ def _execute_pipeline(
     if state.get("status") == "completed":
         return _finalize_completed_pipeline(root, pipeline_dir, spec, finalize_callback)
     while state.get(_selection_hash_field(spec)) in (None, ""):
-        _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
-        sources = _inspect_sources(root, spec, refresh=True)
-        state_status = _source_summary_status(sources)
-        _update_state(pipeline_dir, status=state_status, source_states=sources)
-        if state_status in {"blocked", "failed"}:
-            raise RuntimeError("External pipeline source plans are failed or have uncertain execution identity.")
-        if state_status == "ready":
-            break
+        with plan_registration_lock(root):
+            _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
+            sources = _inspect_sources(root, spec, refresh=True)
+            state_status = _source_summary_status(sources)
+            _update_state(pipeline_dir, status=state_status, source_states=sources)
+            if state_status in {"blocked", "failed"}:
+                raise RuntimeError("External pipeline source plans are failed or have uncertain execution identity.")
+            if state_status == "ready":
+                _load_or_freeze_selections(root, pipeline_dir, spec)
+                break
         time.sleep(poll_seconds)
 
     if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:

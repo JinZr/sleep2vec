@@ -5,13 +5,14 @@ import csv
 import fcntl
 import json
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import pytest
 import yaml
 
 from agent_tools import experiment_pipeline, hparam_selection
-from agent_tools.experiment_workspace import commit_step_manifest, file_sha256
+from agent_tools.experiment_workspace import commit_step_manifest, file_sha256, plan_registration_lock
 from agent_tools.manifests import read_rows, write_rows
 
 
@@ -647,6 +648,11 @@ def test_bound_selection_resume_ignores_new_running_round(cross_round_source, mo
         "_validate_frozen_pipeline",
         lambda *_args: json.loads((pipeline_dir / "pipeline.json").read_text()),
     )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "plan_registration_lock",
+        lambda *_args: pytest.fail("bound selection must not reacquire registration lock"),
+    )
     evaluations = []
 
     def execute_evaluation(_root, _directory, _spec, selections, *_args, **_kwargs):
@@ -670,6 +676,137 @@ def test_bound_selection_resume_ignores_new_running_round(cross_round_source, mo
     assert result["status"] == ("blocked" if execute else "ready")
     assert evaluations == ([frozen] if execute else [])
     assert selection_path.read_bytes() == frozen_bytes
+
+
+@pytest.mark.parametrize("kind", ["external_matrix", "cohort_selection"])
+@pytest.mark.parametrize("orphan", [False, True])
+def test_selection_publication_holds_registration_lock_through_hash_commit(
+    cross_round_source, monkeypatch, kind, orphan
+):
+    root, spec, _registered, _canonical = cross_round_source
+    spec["pipeline"]["kind"] = kind
+    if kind == "cohort_selection":
+        spec["candidates"] = {"kind": "all"}
+    pipeline_dir = root / "pipelines" / spec["pipeline"]["id"]
+    pipeline_dir.mkdir(parents=True)
+    state_path = pipeline_dir / "pipeline.json"
+    state_path.write_text(json.dumps({"status": "ready"}))
+    (pipeline_dir / "spec.source.yaml").write_text(yaml.safe_dump(spec))
+    if orphan:
+        experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
+        state_path.write_text(json.dumps({"status": "ready"}))
+    original_select = experiment_pipeline._select_checkpoint_sources
+    original_update = experiment_pipeline._update_state
+    original_event = experiment_pipeline._reconcile_pipeline_event
+    attempting = threading.Event()
+    registered = threading.Event()
+    errors = []
+    stages = []
+    registration_states = []
+
+    def register_later_round():
+        attempting.set()
+        try:
+            with plan_registration_lock(root):
+                registration_states.append(json.loads(state_path.read_text()))
+                registered.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    registrar = threading.Thread(target=register_later_round)
+
+    def inspect_sources(*_args, **_kwargs):
+        registrar.start()
+        assert attempting.wait(timeout=5)
+        assert not registered.wait(timeout=0.1)
+        stages.append("ready")
+        return [{"complete": True, "failed_runs": [], "uncertain_runs": []}]
+
+    def select_sources(*args):
+        assert not registered.is_set()
+        stages.append("ranking")
+        return original_select(*args)
+
+    def update_state(*args, **kwargs):
+        committing = experiment_pipeline._selection_hash_field(spec) in kwargs
+        if committing:
+            assert not registered.is_set()
+            stages.append("hash")
+        result = original_update(*args, **kwargs)
+        if committing:
+            assert not registered.is_set()
+        return result
+
+    def reconcile_event(*args, **kwargs):
+        if args[1] in {"pipeline_candidates_frozen", "pipeline_checkpoints_frozen"} and "event" not in stages:
+            assert not registered.is_set()
+            stages.append("event")
+        return original_event(*args, **kwargs)
+
+    def evaluate(*_args, **_kwargs):
+        assert registered.wait(timeout=5)
+        return {"status": "blocked", "jobs": []}
+
+    monkeypatch.setattr(
+        experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: json.loads(state_path.read_text())
+    )
+    monkeypatch.setattr(experiment_pipeline, "_inspect_sources", inspect_sources)
+    monkeypatch.setattr(experiment_pipeline, "_select_checkpoint_sources", select_sources)
+    monkeypatch.setattr(experiment_pipeline, "_update_state", update_state)
+    monkeypatch.setattr(experiment_pipeline, "_reconcile_pipeline_event", reconcile_event)
+    monkeypatch.setattr(experiment_pipeline, "_load_or_create_initial_attempts", lambda *_args: [])
+    monkeypatch.setattr(experiment_pipeline, "_run_attempts", evaluate)
+    monkeypatch.setattr(experiment_pipeline, "_execute_cohort_selection", evaluate)
+    try:
+        result = experiment_pipeline._execute_pipeline(root, pipeline_dir, spec, poll_seconds=0, finalize_callback=None)
+    finally:
+        if registrar.ident is not None:
+            registrar.join(timeout=5)
+
+    assert result["status"] == "blocked"
+    assert not registrar.is_alive()
+    assert not errors
+    assert stages == ["ready", "ranking", "hash", "event"]
+    selection_path = experiment_pipeline._selection_manifest_path(pipeline_dir, spec)
+    assert registration_states[0][experiment_pipeline._selection_hash_field(spec)] == file_sha256(selection_path)
+
+
+def test_waiting_source_poll_releases_registration_lock_before_sleep(tmp_path, monkeypatch):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    pipeline_dir = root / "pipelines" / spec["pipeline"]["id"]
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "pipeline.json").write_text(json.dumps({"status": "ready"}))
+    (pipeline_dir / "spec.source.yaml").write_text(yaml.safe_dump(spec))
+    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_inspect_sources",
+        lambda *_args, **_kwargs: [
+            {"complete": False, "statuses": ["running"], "failed_runs": [], "uncertain_runs": []}
+        ],
+    )
+    acquired = threading.Event()
+
+    def register_later_round():
+        with plan_registration_lock(root):
+            acquired.set()
+
+    registrar = threading.Thread(target=register_later_round)
+
+    def sleep_after_poll(_seconds):
+        registrar.start()
+        assert acquired.wait(timeout=5), "source polling must release registration lock while waiting"
+        raise RuntimeError("stop after one waiting poll")
+
+    monkeypatch.setattr(experiment_pipeline.time, "sleep", sleep_after_poll)
+    try:
+        with pytest.raises(RuntimeError, match="stop after one waiting poll"):
+            experiment_pipeline._execute_pipeline(root, pipeline_dir, spec, poll_seconds=0, finalize_callback=None)
+    finally:
+        if registrar.ident is not None:
+            registrar.join(timeout=5)
+    assert not registrar.is_alive()
 
 
 @pytest.mark.parametrize("wrong_owner", [False, True])

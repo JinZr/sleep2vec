@@ -121,6 +121,9 @@ and the same evidence before selection jobs start. Test-selected source rankings
 provide one best checkpoint per successful run; `candidates: {kind: all}` selects
 all those per-run winners across registered rounds, not every epoch checkpoint.
 Each frozen candidate records its owning plan, which is checked again on resume.
+The canonical plan-registration lock covers the final source-readiness check,
+ranking, candidate resolution, and candidate manifest/hash publication. It is
+released before polling waits or evaluation-attempt registration.
 After the candidate manifest is hash-bound, resume continues the frozen evaluation
 matrix without monitoring or waiting for later training rounds; dry-run retains
 the recorded source readiness. Only the frozen owners are read at this stage.
