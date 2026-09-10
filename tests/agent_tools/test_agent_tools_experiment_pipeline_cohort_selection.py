@@ -262,16 +262,22 @@ def test_cohort_selection_freezes_the_requested_ranked_candidates(tmp_path: Path
         "runs": [{"step_id": "train-age", "run_id": "run-001"}],
     }
     rows = [
-        {"rank": "1", "run_id": "run-001"},
-        {"rank": "2", "run_id": "run-002"},
+        {"step_id": "train-age", "rank": "1", "run_id": "run-001"},
+        {"step_id": "train-age", "rank": "2", "run_id": "run-002"},
     ]
+    source_plan["runs"] = [{"step_id": "train-age", "run_id": row["run_id"]} for row in rows]
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda _source_id, source: [(Path(source["plan"]), source_plan)],
+    )
     resolver_calls = []
     monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda *_args: source_plan)
     monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", lambda *_args: None)
 
     def resolve(*args, **kwargs):
         resolver_calls.append((args, kwargs))
-        return rows, {}
+        return rows, {("train-age", row["run_id"]): source_plan for row in rows}
 
     monkeypatch.setattr(experiment_pipeline, "resolve_hparam_candidates", resolve)
     monkeypatch.setattr(

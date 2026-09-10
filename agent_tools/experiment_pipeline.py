@@ -31,6 +31,7 @@ from . import (
     experiment_pipeline_cohort_selection as cohort_selection,
     experiment_pipeline_results as pipeline_results,
     managed_scheduler,
+    plan_contract,
     run_artifacts as artifacts,
 )
 from .experiment_workspace import (
@@ -51,6 +52,7 @@ from .experiment_workspace import (
     read_run_manifest,
     stopped_runs_without_reason,
     validate_step_registration,
+    validated_run_key,
 )
 from .hparam_runtime import monitor_hparam_runs
 from .hparam_selection import resolve_hparam_candidates, select_hparam_candidates
@@ -767,16 +769,37 @@ def _preset_snapshots(spec: dict[str, Any]) -> list[dict[str, str]]:
     return snapshots
 
 
+def _source_hparam_plans(source_id: str, source: dict[str, Any]) -> list[tuple[Path, plan_contract.HparamPlan]]:
+    plan = artifacts.read_hparam_plan(Path(source["plan"]))
+    recipe = plan["recipe"]
+    evaluation = recipe["evaluation_policy"]
+    root = canonical_local_experiment_root(recipe["experiment"]["root"], Path.cwd())
+    plans = list(
+        artifacts.iter_registered_hparam_plans(
+            root,
+            str(recipe["step"]["id"]),
+            selection_metric=evaluation["selection_metric"],
+            selection_mode=evaluation["selection_mode"],
+            selection_split=evaluation["selection_split"],
+        )
+    )
+    for _plan_dir, owner_plan in plans:
+        _assert_source_semantics(source_id, source, owner_plan["recipe"])
+    return plans
+
+
 def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list[SourceState]:
     canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
     states: list[SourceState] = []
     for source_id, source in spec["checkpoint_sources"].items():
         plan_dir = Path(source["plan"])
-        plan = artifacts.read_hparam_plan(plan_dir)
+        plans = _source_hparam_plans(source_id, source)
         if refresh:
-            monitor_hparam_runs(plan_dir, once=True, health=True)
+            for registered_dir, _plan in plans:
+                monitor_hparam_runs(registered_dir, once=True, health=True)
             canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
-        rows = [canonical[managed_run_key(run)] for run in plan["runs"]]
+        runs = [run for _plan_dir, plan in plans for run in plan["runs"]]
+        rows = [canonical[managed_run_key(run)] for run in runs]
         missing_stop_reasons = stopped_runs_without_reason(rows)
         if missing_stop_reasons:
             run_ids = [str(row["run_id"]) for row in missing_stop_reasons]
@@ -790,7 +813,7 @@ def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list
             and any(status in SUCCESS_STATUSES for status in statuses)
         )
         if complete:
-            for run, row in zip(plan["runs"], rows, strict=True):
+            for run, row in zip(runs, rows, strict=True):
                 if row.get("status") not in SUCCESS_STATUSES:
                     continue
                 manifest_path = artifacts.find_run_manifest(run)
@@ -1380,9 +1403,9 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[FrozenC
     frozen: list[FrozenCheckpointCandidate] = []
     for source_id, source in spec["checkpoint_sources"].items():
         plan_dir = Path(source["plan"])
-        plan = artifacts.read_hparam_plan(plan_dir)
-        recipe = plan["recipe"]
-        step_id = str(recipe["step"]["id"])
+        plans = _source_hparam_plans(source_id, source)
+        owner_dirs = {managed_run_key(run): directory for directory, plan in plans for run in plan["runs"]}
+        runs = [run for _directory, plan in plans for run in plan["runs"]]
         select_hparam_candidates(plan_dir, source["selection_metric"], source["selection_mode"])
         if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
             candidate_scope = spec["candidates"]
@@ -1391,9 +1414,14 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[FrozenC
             )
         else:
             resolver_args = {"top_k": 1}
-        candidates, _owner_plans = resolve_hparam_candidates(plan_dir, plan["runs"], **resolver_args)
+        candidates, owner_plans = resolve_hparam_candidates(plan_dir, runs, **resolver_args)
         for row in candidates:
-            selection = _freeze_checkpoint_candidate(spec, source_id, source, plan_dir, step_id, recipe, row, policy)
+            key = validated_run_key(row)
+            recipe = owner_plans[key]["recipe"]
+            step_id = str(recipe["step"]["id"])
+            selection = _freeze_checkpoint_candidate(
+                spec, source_id, source, owner_dirs[key], step_id, recipe, row, policy
+            )
             if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
                 source_rank = int(row["rank"])
                 selection = {
@@ -1495,13 +1523,21 @@ def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[
             raise ValueError("Frozen candidate ranks must be positive integers.")
         if len(set(ranks)) != len(ranks) or any(item.get("source_id") != source_id for item in selections):
             raise ValueError("Frozen candidate source identities or ranks are invalid.")
+    owner_dirs = {
+        source_id: {
+            managed_run_key(run): str(directory)
+            for directory, plan in _source_hparam_plans(source_id, source)
+            for run in plan["runs"]
+        }
+        for source_id, source in spec["checkpoint_sources"].items()
+    }
     for selection in selections:
         source_id = str(selection.get("source_id") or "")
         source = spec["checkpoint_sources"].get(source_id)
         if source is None:
             raise ValueError("Frozen checkpoint source identities differ from the pipeline spec.")
         expected = {
-            "plan": str(source["plan"]),
+            "plan": owner_dirs[source_id][validated_run_key(selection)],
             "selection_metric": source["selection_metric"],
             "selection_mode": source["selection_mode"],
         }

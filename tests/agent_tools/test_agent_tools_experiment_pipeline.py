@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from agent_tools import experiment_pipeline
+from agent_tools import experiment_pipeline, hparam_selection
 from agent_tools.experiment_workspace import commit_step_manifest, file_sha256
 from agent_tools.manifests import read_rows, write_rows
 
@@ -491,99 +491,121 @@ def test_checkpoint_validation_rejects_averaging_and_requires_ahi_threshold(tmp_
         experiment_pipeline._validate_checkpoint_payload(checkpoint, "age", policy)
 
 
-@pytest.mark.parametrize("other_status", ["completed", "running"])
-def test_checkpoint_selection_stays_with_frozen_source_plan(tmp_path: Path, monkeypatch, other_status: str):
+@pytest.fixture
+def cross_round_source(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     spec = _spec(root)
-    source_plan_dir = Path(spec["checkpoint_sources"]["age"]["plan"])
-    source_config = tmp_path / "source-config.yaml"
-    source_config.write_text("model: source\n")
-    source_checkpoint_dir = tmp_path / "source-checkpoints"
-    source_checkpoint_dir.mkdir()
-    source_checkpoint = source_checkpoint_dir / "source.ckpt"
-    source_checkpoint.write_bytes(b"source")
-    other_config = tmp_path / "other-config.yaml"
-    other_config.write_text("model: other\n")
-    other_checkpoint_dir = tmp_path / "other-checkpoints"
-    other_checkpoint_dir.mkdir()
-    other_checkpoint = other_checkpoint_dir / "other.ckpt"
-    other_checkpoint.write_bytes(b"other")
-    step_id = "train-age"
-    source_run = {"step_id": step_id, "run_id": "run-001"}
-    source_plan = {
-        "recipe": {
+    source_dir = Path(spec["checkpoint_sources"]["age"]["plan"])
+    registered = []
+    canonical = []
+    for index, plan_dir in enumerate((source_dir, source_dir.with_name("round-002")), start=1):
+        plan_dir.mkdir(parents=True)
+        config = plan_dir / "config.yaml"
+        config.write_text("model: source\n")
+        checkpoint_dir = plan_dir / "checkpoints"
+        checkpoint_dir.mkdir()
+        checkpoint = checkpoint_dir / "epoch=1.ckpt"
+        checkpoint.write_bytes(f"round {index}".encode())
+        run = {
+            "step_id": "train-age",
+            "run_id": f"run-{index:03d}",
+            "config": str(config),
+            "config_sha256": file_sha256(config),
+            "checkpoint_dir": str(checkpoint_dir),
+        }
+        recipe = {
             "task": "hparam_tune",
             "variant": "sleep2vec2",
-            "experiment": {"root": str(root)},
-            "step": {"id": step_id},
+            "experiment": {"id": "unit", "root": str(root)},
+            "step": {"id": "train-age"},
             "inputs": {"label_name": "age"},
-        },
-        "runs": [source_run],
-    }
-    ranking = [
-        {
-            "step_id": step_id,
-            "run_id": "run-000",
-            "run_name": "other-plan-best",
-            "rank": "1",
-            "score": "3.0",
-            "config": str(other_config),
-            "checkpoint_path": str(other_checkpoint),
-        },
-        {
-            **source_run,
-            "run_name": "source-plan-best",
-            "rank": "2",
-            "score": "4.5",
-            "config": str(source_config),
-            "checkpoint_path": str(source_checkpoint),
-        },
-    ]
-    canonical = [
-        {
-            "step_id": step_id,
-            "run_id": "run-000",
-            "status": other_status,
-            "checkpoint_dir": str(other_checkpoint_dir),
-        },
-        {
-            **source_run,
-            "status": "completed",
-            "checkpoint_dir": str(source_checkpoint_dir),
-        },
-    ]
-    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda plan_dir: source_plan)
-    monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", lambda *_args: None)
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: canonical)
-    monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: ranking)
-    resolver_calls = []
-
-    def resolve_candidates(plan_dir, candidate_rows, **kwargs):
-        resolver_calls.append((plan_dir, candidate_rows, kwargs))
-        return [
+            "evaluation_policy": {"selection_metric": "val_mae", "selection_mode": "min", "selection_split": "val"},
+        }
+        registered.append((plan_dir, {"recipe": recipe, "runs": [run]}))
+        canonical.append(
             {
-                **ranking[1],
-                "config_sha256": file_sha256(source_config),
-                "checkpoint_dir": str(source_checkpoint_dir),
-                "checkpoint_sha256": file_sha256(source_checkpoint),
+                **run,
                 "status": "completed",
+                "run_name": f"round-{index}",
+                "rank": str(3 - index),
+                "score": str(6 - index),
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": file_sha256(checkpoint),
             }
-        ], {}
-
-    monkeypatch.setattr(experiment_pipeline, "resolve_hparam_candidates", resolve_candidates)
+        )
+    plans = dict(registered)
+    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda path: plans[Path(path)])
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_checkpoint_payload",
-        lambda *_args: {"state_dict_key_count": 1, "has_ahi_eval_threshold": False},
+        experiment_pipeline.artifacts, "iter_registered_hparam_plans", lambda *_args, **_kwargs: iter(registered)
     )
+    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: canonical)
+    monkeypatch.setattr(hparam_selection, "read_run_manifest", lambda _root: canonical)
+    monkeypatch.setattr(hparam_selection.tracking, "validated_hparam_ranking", lambda _step: canonical)
+    monkeypatch.setattr(
+        hparam_selection,
+        "read_rows",
+        lambda *_args, **_kwargs: hparam_selection.tracking.hparam_ranking_projection(canonical),
+    )
+    monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", lambda *_args: None)
+    monkeypatch.setattr(experiment_pipeline, "_validate_checkpoint_payload", lambda *_args: {})
+    return root, spec, registered, canonical
+
+
+@pytest.mark.parametrize("scope", ["all", "top_k", "external_matrix"])
+def test_checkpoint_selection_includes_other_rounds_and_preserves_owner(cross_round_source, scope):
+    root, spec, registered, canonical = cross_round_source
+    if scope != "external_matrix":
+        spec["pipeline"]["kind"] = "cohort_selection"
+        spec["candidates"] = {"kind": scope, **({"count": 1} if scope == "top_k" else {})}
 
     selected = experiment_pipeline._select_checkpoint_sources(root, spec)
 
-    assert selected[0]["plan"] == str(source_plan_dir)
-    assert selected[0]["run_id"] == source_run["run_id"]
-    assert selected[0]["checkpoint"] == str(source_checkpoint)
-    assert selected[0]["score"] == 4.5
-    assert resolver_calls == [(source_plan_dir, [source_run], {"top_k": 1})]
+    expected = list(reversed(canonical)) if scope == "all" else [canonical[1]]
+    assert [row["run_id"] for row in selected] == [row["run_id"] for row in expected]
+    owner_dirs = {plan["runs"][0]["run_id"]: str(path) for path, plan in registered}
+    for row, run in zip(selected, expected, strict=True):
+        assert row["plan"] == owner_dirs[run["run_id"]]
+        assert row["config"] == run["config"]
+        assert row["checkpoint"] == run["checkpoint_path"]
+        assert row["score"] == float(run["score"])
+
+
+@pytest.mark.parametrize("wrong_owner", [False, True])
+def test_frozen_cross_round_winner_requires_its_registered_owner(cross_round_source, wrong_owner):
+    root, spec, registered, _canonical = cross_round_source
+    selected = experiment_pipeline._select_checkpoint_sources(root, spec)
+    if wrong_owner:
+        selected[0]["plan"] = str(registered[0][0])
+    path = root / "checkpoints.json"
+    path.write_text(json.dumps({"pipeline_id": spec["pipeline"]["id"], "sources": selected}))
+
+    if wrong_owner:
+        with pytest.raises(ValueError, match="source field drifted: age.plan"):
+            experiment_pipeline._read_frozen_selections(path, spec)
+    else:
+        assert experiment_pipeline._read_frozen_selections(path, spec)["age"] == selected[0]
+
+
+def test_source_refresh_monitors_every_registered_round(cross_round_source, monkeypatch):
+    root, spec, registered, canonical = cross_round_source
+    canonical[1]["status"] = "running"
+    monitored = []
+    monkeypatch.setattr(experiment_pipeline, "monitor_hparam_runs", lambda path, **_kwargs: monitored.append(path))
+
+    experiment_pipeline._inspect_sources(root, spec, refresh=True)
+
+    assert monitored == [path for path, _plan in registered]
+
+
+@pytest.mark.parametrize("status", ["running", "pending", "unknown"])
+def test_source_readiness_waits_for_other_registered_round(cross_round_source, status):
+    root, spec, _registered, canonical = cross_round_source
+    canonical[1]["status"] = status
+
+    states = experiment_pipeline._inspect_sources(root, spec, refresh=False)
+
+    assert states[0]["complete"] is False
+    assert states[0]["statuses"] == ["completed", status]
 
 
 @pytest.mark.parametrize(
@@ -646,9 +668,14 @@ def test_checkpoint_selection_uses_canonical_status_after_ranking(
                 "checkpoint_sha256": file_sha256(checkpoint),
                 "status": canonical["status"],
             }
-        ], {}
+        ], {("train-age", "run-001"): source_plan}
 
     monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: source_plan)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda _source_id, source: [(Path(source["plan"]), source_plan)],
+    )
     monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", select_candidates)
     monkeypatch.setattr(experiment_pipeline, "resolve_hparam_candidates", resolve_candidates)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(canonical)])
@@ -698,6 +725,11 @@ def test_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path, monk
     ]
     canonical = [{**source_run, "status": "completed", "checkpoint_dir": str(checkpoint.parent)}]
     monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: source_plan)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda _source_id, source: [(Path(source["plan"]), source_plan)],
+    )
     monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", lambda *_args: None)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: canonical)
     monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: ranking)
@@ -714,7 +746,7 @@ def test_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path, monk
                     "status": "completed",
                 }
             ],
-            {},
+            {("train-age", "run-001"): source_plan},
         ),
     )
 
@@ -725,6 +757,12 @@ def test_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path, monk
 def test_frozen_checkpoint_selection_preserves_unknown_fields_and_decoded_identity(tmp_path: Path, monkeypatch):
     spec = _spec(tmp_path / "workspace")
     selection = _selection(tmp_path)
+    selection.update({"step_id": "train-age", "run_id": "run-001"})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda _source_id, source: [(Path(source["plan"]), {"runs": [selection]})],
+    )
     selection.update(
         {
             "plan": spec["checkpoint_sources"]["age"]["plan"],
@@ -750,10 +788,16 @@ def test_frozen_checkpoint_selection_preserves_unknown_fields_and_decoded_identi
     assert json.loads(path.read_text())["sources"][0] == selection
 
 
-def test_frozen_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path):
+def test_frozen_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     spec = _spec(root)
     selection = _selection(tmp_path)
+    selection.update({"step_id": "train-age", "run_id": "run-001"})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda _source_id, source: [(Path(source["plan"]), {"runs": [selection]})],
+    )
     checkpoint = Path(selection["checkpoint"])
     (tmp_path / "checkpoint-alias.ckpt").hardlink_to(checkpoint)
     selection.update(
@@ -779,6 +823,12 @@ def test_retryable_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Pa
     pipeline_dir.mkdir(parents=True)
     spec = _spec(root)
     selection = _selection(tmp_path)
+    selection.update({"step_id": "train-age", "run_id": "run-001"})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda _source_id, source: [(Path(source["plan"]), {"runs": [selection]})],
+    )
 
     monkeypatch.setattr(
         experiment_pipeline,

@@ -468,9 +468,9 @@ def test_mixed_terminal_source_accepts_no_test_after_fit_manifest(
     manifest_path.write_text(json.dumps({"status": "skipped_test", "metrics": {"val_mae": 4.5}}) + "\n")
 
     monkeypatch.setattr(
-        experiment_pipeline.artifacts,
-        "read_hparam_plan",
-        lambda _plan_dir: {"runs": [successful, unsuccessful]},
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda _source_id, source: [(Path(source["plan"]), {"runs": [successful, unsuccessful]})],
     )
     monkeypatch.setattr(
         experiment_pipeline,
@@ -504,7 +504,11 @@ def test_mixed_terminal_source_rejects_stopped_run_without_reason(tmp_path: Path
         {"step_id": "train-age", "run_id": "run-000"},
         {"step_id": "train-age", "run_id": "run-001"},
     ]
-    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: {"runs": runs})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda _source_id, source: [(Path(source["plan"]), {"runs": runs})],
+    )
     monkeypatch.setattr(
         experiment_pipeline,
         "read_run_manifest",
@@ -520,7 +524,11 @@ def test_active_source_waits_for_terminal_status(tmp_path: Path, monkeypatch, st
     root = tmp_path / "workspace"
     spec = _spec(root)
     run = {"step_id": "train-age", "run_id": "run-000"}
-    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: {"runs": [run]})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda _source_id, source: [(Path(source["plan"]), {"runs": [run]})],
+    )
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [{**run, "status": status}])
 
     states = experiment_pipeline._inspect_sources(root, spec, refresh=False)
@@ -536,7 +544,11 @@ def test_all_unsuccessful_terminal_source_fails(tmp_path: Path, monkeypatch):
         {"step_id": "train-age", "run_id": "run-000"},
         {"step_id": "train-age", "run_id": "run-001"},
     ]
-    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: {"runs": runs})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda _source_id, source: [(Path(source["plan"]), {"runs": runs})],
+    )
     monkeypatch.setattr(
         experiment_pipeline,
         "read_run_manifest",
@@ -557,7 +569,11 @@ def test_slurm_source_uncertainty_blocks_external_pipeline(tmp_path: Path, monke
     root = tmp_path / "workspace"
     spec = _spec(root)
     run = {"step_id": "train-age", "run_id": "run-000"}
-    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: {"runs": [run]})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda _source_id, source: [(Path(source["plan"]), {"runs": [run]})],
+    )
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [{**run, "status": status}])
 
     states = experiment_pipeline._inspect_sources(root, spec, refresh=False)
@@ -2279,6 +2295,8 @@ def test_orphan_checkpoint_selection_is_rederived_before_state_commit(tmp_path: 
     alternate.write_bytes(b"alternate")
     derived = {
         "source_id": "age",
+        "step_id": "train-age",
+        "run_id": "run-000",
         "plan": spec["checkpoint_sources"]["age"]["plan"],
         "selection_metric": "val_mae",
         "selection_mode": "min",
@@ -2309,6 +2327,11 @@ def test_orphan_checkpoint_selection_is_rederived_before_state_commit(tmp_path: 
     state_path = pipeline_dir / "pipeline.json"
     state_path.write_text(json.dumps({"status": "waiting_for_sources"}) + "\n")
     monkeypatch.setattr(experiment_pipeline, "_select_checkpoint_sources", lambda *_args: [derived])
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda _source_id, source: [(Path(source["plan"]), {"runs": [derived]})],
+    )
 
     if tamper:
         with pytest.raises(ValueError, match="differs from validation-derived selection"):
