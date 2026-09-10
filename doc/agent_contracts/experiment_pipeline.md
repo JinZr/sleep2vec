@@ -2,9 +2,9 @@
 
 `experiment-run` is the explicit, resumable owner for two focused workflows:
 an `external_matrix` evaluates one registered-ranking winner per source, while
-`cohort_selection` evaluates frozen candidates on internal selection cohorts,
-freezes one winner, and only then runs external report-only jobs. It is not a
-general command DAG and is not a monitoring command.
+`cohort_selection` evaluates frozen candidates on declared internal or external
+selection cohorts, freezes one winner, and then runs any declared external
+report-only jobs. It is not a general command DAG and is not a monitoring command.
 
 ## Invocation and frozen state
 
@@ -59,9 +59,9 @@ pipelines/<pipeline-id>/
 
 Multi-variant initial schedulers use the variant-specific snapshot paths.
 
-A `cohort_selection` uses the same managed-attempt owners under two isolated
-phase directories and adds only the decision artifacts needed to keep external
-results out of selection:
+A `cohort_selection` uses the same managed-attempt owners under isolated phase
+directories and binds the evidence used to select its winner. The report-only
+phase exists only when report-only jobs are declared:
 
 ```text
 pipelines/<pipeline-id>/
@@ -113,7 +113,9 @@ Selection reuses the managed hparam-ranking and candidate-resolution owner and
 requires an exact metric and mode match. An `external_matrix` freezes each
 selected score, config, checkpoint path, and content hash before external jobs
 start. A `cohort_selection` pipeline freezes the requested ranked candidates
-and the same evidence before internal selection jobs start.
+and the same evidence before selection jobs start. Test-selected source rankings
+provide one best checkpoint per successful run; `candidates: {kind: all}` selects
+all those per-run winners, not every epoch checkpoint.
 The managed evaluation controller has no remote source-artifact staging
 boundary, so it accepts only local source plans and rejects an SSH-owned source
 before creating pipeline state or other outputs.
@@ -124,8 +126,9 @@ never adopts the file by hashing its current bytes alone.
 
 Checkpoint policy is evaluated before the matrix is launched. It can require a
 non-averaged config, reject EMA state keys, require `avg_ckpts=1`, and require
-checkpoint-owned AHI threshold evidence for AHI jobs. External results never
-participate in checkpoint selection or tuning.
+checkpoint-owned AHI threshold evidence for AHI jobs. `external_matrix` results
+never change source checkpoint selection. In `cohort_selection`, only jobs
+explicitly declared with `role: selection` contribute to the winner decision.
 
 ## Cohort selection and report-only boundary
 
@@ -139,15 +142,15 @@ Its closed spec reuses the common `pipeline`, `runtime`, `execution`,
 sections. `pipeline.kind` is `cohort_selection`; `checkpoint_sources` contains
 exactly one source; `candidates` selects `top_k` or `all`; `selector` declares
 the fixed target-gate decision; and each job replaces `checkpoint_source` with
-one `role` and its matching `provenance`. No other top-level or job fields are
+one `role` and an explicit `provenance`. No other top-level or job fields are
 accepted.
 
-Every job template has one role and matching provenance:
+Every job template declares its use separately from its data origin:
 
-- `selection` jobs are `internal` and are expanded across every frozen
-  candidate;
+- `selection` jobs may have `internal` or `external` provenance and are expanded
+  across every frozen candidate;
 - `report_only` jobs are `external` and are not materialized until a winner is
-  frozen.
+  frozen. At least one selection job is required; report-only jobs are optional.
 
 A cohort, preset path, or identical preset bytes cannot occur in both roles.
 The selector is deliberately narrow: `target_gate` declares one or more finite
@@ -158,13 +161,25 @@ verified and every gate passes. Among feasible candidates, the best already
 frozen internal rank wins; selection-cohort metric values never silently create
 a new optimization objective.
 
+Each gate requires `job`, `metric`, `mode` (`min` or `max`), and a finite
+`threshold`. The optional boolean `strict` defaults to `false`, preserving
+the existing inclusive comparisons (`<=` for `min`, `>=` for `max`). With
+`strict: true`, the comparisons are `<` and `>`: equality does not pass. Gates
+use the original numeric result, without rounding or an epsilon adjustment.
+The authored comparison policy is frozen with the spec and selector; changing
+it cannot reinterpret a previously frozen decision.
+
 The controller writes and hash-binds `candidates.json`,
 `cohort_selection_ranking.csv`, and `cohort_selection_winner.json` before it
 creates any report-only plan. The winner artifact binds the contributing result
 manifest paths and hashes. If no candidate is feasible, the pipeline writes
 `selection_failure.md`, becomes terminally failed, and never creates the
-report-only phase. External/report-only metrics are summarized but can never
-change the winner.
+report-only phase. Report-only metrics are summarized but can never change the
+winner. External-origin selection metrics do participate in the target gate;
+reports identify that participation as external-test-selected and do not claim
+those cohorts are untouched external validation. Reports retain the source
+ranking and selected checkpoints, show gate values, thresholds, comparisons,
+and outcomes, and state when no separate report-only cohort was declared.
 
 Every declared inference recipe passes the normal `doctor` and `plan` gates,
 including the explicit final-test unlock and preset validation, before the
@@ -231,7 +246,11 @@ The pipeline succeeds only when every required logical job has one verified
 successful attempt and no attempt remains active. For an `external_matrix`,
 every authored job must complete. For `cohort_selection`, the full frozen
 candidate-by-selection-job matrix must complete before selection, followed by
-every report-only job for the frozen winner. The pipeline then writes
+every declared report-only job for the frozen winner. A selection-only pipeline
+with a feasible winner completes without creating an empty report-only phase.
+Both initial completion and resumed finalization verify the bound selection
+evidence and winner; optional reporting does not relax those checks. The pipeline
+then writes
 `results.csv`, `metrics.csv`, `summary.md`, and `final.md` from all scalar
 manifest metrics, preserving non-finite values explicitly, including the
 frozen checkpoint, preset, actual runtime commit, and result path for each job;
