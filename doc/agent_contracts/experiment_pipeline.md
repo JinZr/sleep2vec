@@ -105,9 +105,13 @@ Its closed sections are:
 
 ## Source and checkpoint gates
 
-All source plans must belong to the workspace and have only terminal runs
-before checkpoint selection. A source is ready when at least one run completed
-successfully; failed or stopped runs remain recorded but do not block selection
+Each source plan identifies its managed hparam step. Candidate selection and
+readiness cover all registered hparam plans in that step, including adaptive
+rounds, with the same frozen selection metric, mode, and split. All source plans
+must belong to the workspace and have only terminal runs before checkpoint
+selection. This covers rounds registered when candidates are frozen; it does
+not wait for future, unregistered rounds. A source is ready when at least one
+run completed successfully; failed or stopped runs remain recorded but do not block selection
 from the successful per-run winners. A source with no successful run fails.
 Selection reuses the managed hparam-ranking and candidate-resolution owner and
 requires an exact metric and mode match. An `external_matrix` freezes each
@@ -115,10 +119,20 @@ selected score, config, checkpoint path, and content hash before external jobs
 start. A `cohort_selection` pipeline freezes the requested ranked candidates
 and the same evidence before selection jobs start. Test-selected source rankings
 provide one best checkpoint per successful run; `candidates: {kind: all}` selects
-all those per-run winners, not every epoch checkpoint.
+all those per-run winners across registered rounds, not every epoch checkpoint.
+Each frozen candidate records its owning plan, which is checked again on resume.
+The canonical plan-registration lock covers the final source-readiness check,
+ranking, candidate resolution, and candidate manifest/hash publication. It is
+released before polling waits or evaluation-attempt registration.
+After the candidate manifest is hash-bound, resume continues the frozen evaluation
+matrix without monitoring or waiting for later training rounds; dry-run retains
+the recorded source readiness. Only the frozen owners are read at this stage.
 The managed evaluation controller has no remote source-artifact staging
-boundary, so it accepts only local source plans and rejects an SSH-owned source
-before creating pipeline state or other outputs.
+boundary, so it accepts only local source plans and rejects any SSH-owned plan
+in the current source scope before creating pipeline state or other outputs.
+Initial publication repeats this source check under the plan-registration lock
+before creating the staging directory, preventing an intervening registration
+from publishing an incompatible pipeline.
 If interruption leaves `checkpoints.json` or `candidates.json` before its hash
 reaches pipeline state, resume reruns the hparam-ranking and candidate-resolution
 owner and accepts the orphan only when every selected field still matches; it
