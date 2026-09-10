@@ -349,9 +349,9 @@ def test_pipeline_registration_recovery_error_does_not_mark_pipeline_failed(tmp_
     spec_path = tmp_path / "external.yaml"
     spec_path.write_text(yaml.safe_dump(_spec(root), sort_keys=False))
     monkeypatch.setattr(
-        experiment_pipeline.artifacts,
-        "read_hparam_plan",
-        lambda *_args, **_kwargs: {"recipe": {"execution": {"target": "local"}}},
+        experiment_pipeline,
+        "_source_hparam_plans",
+        lambda *_args: [],
     )
     monkeypatch.setattr(experiment_pipeline, "_validate_experiment", lambda *_args, **_kwargs: {"status": "active"})
     monkeypatch.setattr(
@@ -2329,8 +2329,8 @@ def test_orphan_checkpoint_selection_is_rederived_before_state_commit(tmp_path: 
     monkeypatch.setattr(experiment_pipeline, "_select_checkpoint_sources", lambda *_args: [derived])
     monkeypatch.setattr(
         experiment_pipeline,
-        "_source_hparam_plans",
-        lambda _source_id, source: [(Path(source["plan"]), {"runs": [derived]})],
+        "_validate_frozen_selection_owner",
+        lambda *_args: None,
     )
 
     if tamper:

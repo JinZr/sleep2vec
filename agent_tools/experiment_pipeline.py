@@ -246,23 +246,17 @@ def run_experiment_pipeline(
     pipeline_dir = root / "pipelines" / pipeline_id
     lock_path = pipeline_dir.parent / f".{pipeline_id}.runner.lock"
     exp_io.validate_managed_output_paths(root, [pipeline_dir / "pipeline.json", lock_path])
-    for source_id, source in spec["checkpoint_sources"].items():
-        source_plan = artifacts.read_hparam_plan(Path(source["plan"]))
-        source_recipe = source_plan["recipe"] if isinstance(source_plan.get("recipe"), dict) else {}
-        source_execution = source_recipe["execution"] if isinstance(source_recipe.get("execution"), dict) else {}
-        # Managed pipeline schemas read source artifacts on the manager and have no SSH staging boundary.
-        if str(source_execution.get("target") or "local") == "ssh":
-            raise ValueError(
-                f"checkpoint_sources.{source_id}.plan uses an SSH execution target; "
-                "managed experiment pipelines require local source plans."
-            )
+    existed = pipeline_dir.exists()
+    if not existed:
+        for source_id, source in spec["checkpoint_sources"].items():
+            _source_hparam_plans(source_id, source)
 
     if not execute:
         if resume:
             raise ValueError("--resume is only valid with --execute.")
-        if pipeline_dir.exists():
-            _validate_frozen_pipeline(pipeline_dir, source_text, spec)
-        sources = _inspect_sources(root, spec, refresh=False)
+        state = _validate_frozen_pipeline(pipeline_dir, source_text, spec) if existed else {}
+        selections_committed = state.get(_selection_hash_field(spec)) not in (None, "")
+        sources = state["source_states"] if selections_committed else _inspect_sources(root, spec, refresh=False)
         return {
             "status": _source_summary_status(sources),
             "dry_run": True,
@@ -275,7 +269,6 @@ def run_experiment_pipeline(
     if not unlock_final_test:
         raise ValueError("External pipeline execution requires --unlock-final-test.")
     pipeline_dir.parent.mkdir(parents=True, exist_ok=True)
-    existed = pipeline_dir.exists()
     experiment = _validate_experiment(root, spec, allow_completed=existed)
     if existed and not resume:
         raise ValueError("Pipeline state already exists; continue only with --resume --execute.")
@@ -292,6 +285,9 @@ def run_experiment_pipeline(
                 raise ValueError("A completed experiment cannot resume an incomplete pipeline.")
             if state.get("status") == "failed":
                 raise ValueError("Failed pipelines are immutable; create a new pipeline revision.")
+            if state.get(_selection_hash_field(spec)) in (None, ""):
+                for source_id, source in spec["checkpoint_sources"].items():
+                    _source_hparam_plans(source_id, source)
         else:
             staging_dir = pipeline_dir.parent / f".{pipeline_id}.{os.getpid()}.{time.time_ns()}.staging"
             staging_dir.mkdir()
@@ -772,6 +768,7 @@ def _preset_snapshots(spec: dict[str, Any]) -> list[dict[str, str]]:
 def _source_hparam_plans(source_id: str, source: dict[str, Any]) -> list[tuple[Path, plan_contract.HparamPlan]]:
     plan = artifacts.read_hparam_plan(Path(source["plan"]))
     recipe = plan["recipe"]
+    _assert_source_semantics(source_id, source, recipe)
     evaluation = recipe["evaluation_policy"]
     root = canonical_local_experiment_root(recipe["experiment"]["root"], Path.cwd())
     plans = list(
@@ -861,7 +858,7 @@ def _execute_pipeline(
     state = _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
     if state.get("status") == "completed":
         return _finalize_completed_pipeline(root, pipeline_dir, spec, finalize_callback)
-    while True:
+    while state.get(_selection_hash_field(spec)) in (None, ""):
         _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
         sources = _inspect_sources(root, spec, refresh=True)
         state_status = _source_summary_status(sources)
@@ -1523,21 +1520,13 @@ def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[
             raise ValueError("Frozen candidate ranks must be positive integers.")
         if len(set(ranks)) != len(ranks) or any(item.get("source_id") != source_id for item in selections):
             raise ValueError("Frozen candidate source identities or ranks are invalid.")
-    owner_dirs = {
-        source_id: {
-            managed_run_key(run): str(directory)
-            for directory, plan in _source_hparam_plans(source_id, source)
-            for run in plan["runs"]
-        }
-        for source_id, source in spec["checkpoint_sources"].items()
-    }
     for selection in selections:
         source_id = str(selection.get("source_id") or "")
         source = spec["checkpoint_sources"].get(source_id)
         if source is None:
             raise ValueError("Frozen checkpoint source identities differ from the pipeline spec.")
+        _validate_frozen_selection_owner(source_id, source, selection)
         expected = {
-            "plan": owner_dirs[source_id][validated_run_key(selection)],
             "selection_metric": source["selection_metric"],
             "selection_mode": source["selection_mode"],
         }
@@ -1559,6 +1548,23 @@ def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[
                 raise ValueError(f"Frozen selected {path_field} changed: {selected_path}")
         _assert_job_semantic_assertions(spec, source_id, selection)
     return by_id
+
+
+def _validate_frozen_selection_owner(source_id: str, source: dict[str, Any], selection: dict[str, Any]) -> None:
+    source_recipe = artifacts.read_hparam_plan(Path(source["plan"]))["recipe"]
+    owner_plan = artifacts.read_hparam_plan(Path(selection["plan"]))
+    recipe = owner_plan["recipe"]
+    _assert_source_semantics(source_id, source, recipe)
+    if (
+        any(recipe["experiment"][field] != source_recipe["experiment"][field] for field in ("id", "root"))
+        or recipe["step"]["id"] != source_recipe["step"]["id"]
+        or any(
+            recipe["evaluation_policy"][field] != source_recipe["evaluation_policy"][field]
+            for field in ("selection_metric", "selection_mode", "selection_split")
+        )
+        or validated_run_key(selection) not in {validated_run_key(run) for run in owner_plan["runs"]}
+    ):
+        raise ValueError(f"Frozen checkpoint source field drifted: {source_id}.plan")
 
 
 def _selection_manifest_path(pipeline_dir: Path, spec: dict[str, Any]) -> Path:
@@ -2750,6 +2756,12 @@ def _required_slug(payload: dict[str, Any], field: str, label: str) -> str:
 
 
 def _assert_source_semantics(source_id: str, source: dict[str, Any], recipe: dict[str, Any]) -> None:
+    # The controller reads source artifacts locally and has no SSH staging boundary.
+    if (recipe.get("execution") or {}).get("target") == "ssh":
+        raise ValueError(
+            f"checkpoint_sources.{source_id}.plan uses an SSH execution target; "
+            "managed experiment pipelines require local source plans."
+        )
     evaluation = recipe["evaluation_policy"] if isinstance(recipe.get("evaluation_policy"), dict) else {}
     if evaluation.get("selection_metric") != source["selection_metric"]:
         raise ValueError(f"Checkpoint source {source_id} selection metric differs from its plan.")

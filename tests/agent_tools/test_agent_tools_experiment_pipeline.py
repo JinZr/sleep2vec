@@ -359,6 +359,7 @@ def test_dry_run_does_not_freeze_or_mutate_workspace(tmp_path: Path, monkeypatch
     root.mkdir()
     spec_path = tmp_path / "external.yaml"
     spec_path.write_text(yaml.safe_dump(_spec(root), sort_keys=False))
+    monkeypatch.setattr(experiment_pipeline, "_source_hparam_plans", lambda *_args: [])
     before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
     monkeypatch.setattr(
         experiment_pipeline.artifacts,
@@ -551,6 +552,28 @@ def cross_round_source(tmp_path: Path, monkeypatch):
     return root, spec, registered, canonical
 
 
+@pytest.mark.parametrize("execute", [False, True])
+def test_pipeline_rejects_ssh_owner_in_another_round_before_outputs(cross_round_source, tmp_path, execute):
+    root, spec, registered, _canonical = cross_round_source
+    registered[0][1]["recipe"]["execution"] = {"target": "local"}
+    registered[1][1]["recipe"]["execution"] = {"target": "ssh", "host": "unit-host"}
+    spec_path = tmp_path / "external.yaml"
+    spec_path.write_text(yaml.safe_dump(spec, sort_keys=False))
+    before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="SSH execution target"):
+        experiment_pipeline.run_experiment_pipeline(
+            root,
+            spec_path,
+            unlock_final_test=execute,
+            execute=execute,
+        )
+
+    after = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    assert after == before
+    assert not (root / "pipelines").exists()
+
+
 @pytest.mark.parametrize("scope", ["all", "top_k", "external_matrix"])
 def test_checkpoint_selection_includes_other_rounds_and_preserves_owner(cross_round_source, scope):
     root, spec, registered, canonical = cross_round_source
@@ -570,6 +593,85 @@ def test_checkpoint_selection_includes_other_rounds_and_preserves_owner(cross_ro
         assert row["score"] == float(run["score"])
 
 
+@pytest.mark.parametrize("kind", ["external_matrix", "cohort_selection"])
+@pytest.mark.parametrize("execute", [False, True])
+@pytest.mark.parametrize("later_owner", ["local", "ssh", "corrupt"])
+def test_bound_selection_resume_ignores_new_running_round(cross_round_source, monkeypatch, kind, execute, later_owner):
+    root, spec, registered, canonical = cross_round_source
+    if kind == "cohort_selection":
+        spec.pop("schema_version")
+        spec["pipeline"]["kind"] = kind
+        spec["candidates"] = {"kind": "all"}
+        job = spec["jobs"][0]
+        job.pop("checkpoint_source")
+        job.update({"role": "selection", "provenance": "external"})
+        spec["selector"] = {
+            "strategy": "target_gate",
+            "gates": [{"job": job["id"], "metric": "mae", "mode": "min", "threshold": 5.0}],
+            "tie_breaker": "internal_rank",
+            "on_no_feasible": "no_winner",
+        }
+    pipeline_dir = root / "pipelines" / spec["pipeline"]["id"]
+    pipeline_dir.mkdir(parents=True)
+    source_states = [{"complete": True, "failed_runs": [], "uncertain_runs": []}]
+    (pipeline_dir / "pipeline.json").write_text(json.dumps({"status": "ready", "source_states": source_states}))
+    (pipeline_dir / "spec.source.yaml").write_text(yaml.safe_dump(spec))
+    frozen = experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
+    selection_path = experiment_pipeline._selection_manifest_path(pipeline_dir, spec)
+    frozen_bytes = selection_path.read_bytes()
+    state = json.loads((pipeline_dir / "pipeline.json").read_text())
+    assert state[experiment_pipeline._selection_hash_field(spec)] == file_sha256(selection_path)
+
+    later_run = {**registered[0][1]["runs"][0], "run_id": "run-003"}
+    later_recipe = {**registered[0][1]["recipe"], "execution": {"target": later_owner}}
+    later_plan = {} if later_owner == "corrupt" else {"recipe": later_recipe, "runs": [later_run]}
+    registered.append((root / "plans" / "round-003", later_plan))
+    canonical.append({**later_run, "status": "running"})
+    monkeypatch.setattr(
+        experiment_pipeline.artifacts,
+        "iter_registered_hparam_plans",
+        lambda *_args, **_kwargs: pytest.fail("bound selection must not expand to newly registered rounds"),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "monitor_hparam_runs",
+        lambda *_args, **_kwargs: pytest.fail("bound selection must not monitor later training rounds"),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline.time,
+        "sleep",
+        lambda *_args: pytest.fail("bound selection must not wait for later training rounds"),
+    )
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_frozen_pipeline",
+        lambda *_args: json.loads((pipeline_dir / "pipeline.json").read_text()),
+    )
+    evaluations = []
+
+    def execute_evaluation(_root, _directory, _spec, selections, *_args, **_kwargs):
+        evaluations.append(selections)
+        return {"status": "blocked", "jobs": []}
+
+    monkeypatch.setattr(experiment_pipeline, "_load_or_create_initial_attempts", lambda *_args: [])
+    monkeypatch.setattr(experiment_pipeline, "_run_attempts", execute_evaluation)
+    monkeypatch.setattr(experiment_pipeline, "_execute_cohort_phase", execute_evaluation)
+
+    monkeypatch.setattr(experiment_pipeline, "_validate_experiment", lambda *_args, **_kwargs: {"status": "active"})
+    result = experiment_pipeline.run_experiment_pipeline(
+        root,
+        pipeline_dir / "spec.source.yaml",
+        execute=execute,
+        resume=execute,
+        unlock_final_test=execute,
+        poll_seconds=0,
+    )
+
+    assert result["status"] == ("blocked" if execute else "ready")
+    assert evaluations == ([frozen] if execute else [])
+    assert selection_path.read_bytes() == frozen_bytes
+
+
 @pytest.mark.parametrize("wrong_owner", [False, True])
 def test_frozen_cross_round_winner_requires_its_registered_owner(cross_round_source, wrong_owner):
     root, spec, registered, _canonical = cross_round_source
@@ -584,6 +686,26 @@ def test_frozen_cross_round_winner_requires_its_registered_owner(cross_round_sou
             experiment_pipeline._read_frozen_selections(path, spec)
     else:
         assert experiment_pipeline._read_frozen_selections(path, spec)["age"] == selected[0]
+
+
+@pytest.mark.parametrize("field", ["experiment_id", "experiment_root", "step_id", "selection_split"])
+def test_frozen_cross_round_owner_must_match_anchor_contract(cross_round_source, field):
+    root, spec, registered, _canonical = cross_round_source
+    selected = experiment_pipeline._select_checkpoint_sources(root, spec)
+    owner_recipe = registered[1][1]["recipe"]
+    if field == "selection_split":
+        owner_recipe["evaluation_policy"]["selection_split"] = "test"
+    elif field == "step_id":
+        owner_recipe["step"]["id"] = "other-step"
+    elif field == "experiment_id":
+        owner_recipe["experiment"]["id"] = "other-experiment"
+    else:
+        owner_recipe["experiment"]["root"] = str(root / "other-workspace")
+    path = root / "checkpoints.json"
+    path.write_text(json.dumps({"pipeline_id": spec["pipeline"]["id"], "sources": selected}))
+
+    with pytest.raises(ValueError, match="source field drifted: age.plan"):
+        experiment_pipeline._read_frozen_selections(path, spec)
 
 
 def test_source_refresh_monitors_every_registered_round(cross_round_source, monkeypatch):
@@ -760,8 +882,8 @@ def test_frozen_checkpoint_selection_preserves_unknown_fields_and_decoded_identi
     selection.update({"step_id": "train-age", "run_id": "run-001"})
     monkeypatch.setattr(
         experiment_pipeline,
-        "_source_hparam_plans",
-        lambda _source_id, source: [(Path(source["plan"]), {"runs": [selection]})],
+        "_validate_frozen_selection_owner",
+        lambda *_args: None,
     )
     selection.update(
         {
@@ -795,8 +917,8 @@ def test_frozen_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Pat
     selection.update({"step_id": "train-age", "run_id": "run-001"})
     monkeypatch.setattr(
         experiment_pipeline,
-        "_source_hparam_plans",
-        lambda _source_id, source: [(Path(source["plan"]), {"runs": [selection]})],
+        "_validate_frozen_selection_owner",
+        lambda *_args: None,
     )
     checkpoint = Path(selection["checkpoint"])
     (tmp_path / "checkpoint-alias.ckpt").hardlink_to(checkpoint)
@@ -826,8 +948,8 @@ def test_retryable_attempt_creates_exactly_one_fresh_second_attempt(tmp_path: Pa
     selection.update({"step_id": "train-age", "run_id": "run-001"})
     monkeypatch.setattr(
         experiment_pipeline,
-        "_source_hparam_plans",
-        lambda _source_id, source: [(Path(source["plan"]), {"runs": [selection]})],
+        "_validate_frozen_selection_owner",
+        lambda *_args: None,
     )
 
     monkeypatch.setattr(
