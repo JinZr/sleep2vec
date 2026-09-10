@@ -124,7 +124,9 @@ def rank_candidates(
                 raise ValueError(
                     f"Cohort-selection metric must be finite: {candidate_id} / {gate['job']} / {gate['metric']}"
                 )
-            passed = value <= gate["threshold"] if gate["mode"] == "min" else value >= gate["threshold"]
+            passed = value < gate["threshold"] if gate["mode"] == "min" else value > gate["threshold"]
+            if not gate.get("strict", False):
+                passed = passed or value == gate["threshold"]
             gate_id = f"{gate['job']}:{gate['metric']}"
             values[gate_id] = value
             if not passed:

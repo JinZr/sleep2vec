@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 from . import experiment_io as exp_io, experiment_pipeline_cohort_selection as cohort_selection
-from .experiment_workspace import file_sha256
+from .experiment_workspace import file_sha256, read_managed_yaml_mapping
 from .manifests import read_json, read_rows
 
 UNCERTAIN_STATUSES = {"missing_pid", "unknown_remote"}
@@ -334,6 +334,8 @@ def write_cohort_result_summary(
     summary_rows = []
     metric_rows: list[MetricRow] = []
     for phase_name, phase_spec in (("selection", selection_spec), ("report_only", report_spec)):
+        if not phase_spec["jobs"]:
+            continue
         attempts = read_rows(pipeline_dir / "phases" / phase_name / "jobs.tsv", require_managed_identity=True)
         successful_rows = [row for row in attempts if str(row.get("verified") or "").lower() == "true"]
         successful = {str(row["job_id"]): row for row in successful_rows}
@@ -342,7 +344,12 @@ def write_cohort_result_summary(
         phase_summary, phase_metrics = build_result_rows(phase_spec, candidates, successful)
         summary_rows.extend(phase_summary)
         metric_rows.extend(phase_metrics)
+    snapshot = read_json(pipeline_dir / "pipeline.json")["source_plans"][0]
+    recipe_path = Path(snapshot["resolved_recipe_path"])
+    source_recipe = read_managed_yaml_mapping(recipe_path.read_text(), source=f"Source recipe {recipe_path}")
+    selection_split = (source_recipe.get("evaluation_policy") or {}).get("selection_split", "unspecified")
     for row in summary_rows:
+        row["selection_split"] = selection_split
         row["is_winner"] = row["candidate_id"] == winner["candidate_id"]
     for metric_row in metric_rows:
         metric_row["is_winner"] = metric_row["candidate_id"] == winner["candidate_id"]
@@ -372,23 +379,70 @@ def cohort_summary_markdown(
         "",
     ]
     lines.extend([f"Frozen winner: `{winner_path}` (`{file_sha256(winner_path)}`)", ""])
+    source_splits = sorted({str(row["selection_split"]) for row in summary_rows})
+    provenances = sorted({job["provenance"] for job in spec["jobs"] if job["role"] == "selection"})
+    selection_labels = {f"internal-{split}" for split in source_splits if split != "unspecified"}
+    selection_labels.update(f"{provenance}-test" for provenance in provenances)
+    selection_use = " + ".join(sorted(selection_labels, key=lambda label: (not label.startswith("internal-"), label)))
+    lines.extend([f"Selection use: {selection_use} selected.", ""])
+    if not any(job["role"] == "report_only" for job in spec["jobs"]):
+        lines.extend(["No report-only cohort: no additional evaluation set was held out from selection.", ""])
+    lines.extend(
+        [
+            "## Source candidate ranking",
+            "",
+            "| Candidate | Internal rank | Split | Metric | Score | Checkpoint |",
+            "|---|---:|---|---|---:|---|",
+        ]
+    )
+    candidate_rows = {row["candidate_id"]: row for row in summary_rows}
+    for row in sorted(candidate_rows.values(), key=lambda row: int(row["source_rank"])):
+        lines.append(
+            f"| {row['candidate_id']} | {row['source_rank']} | {row['selection_split']} | "
+            f"{row['selection_metric']} | {row['selection_score']} | `{row['checkpoint']}` |"
+        )
+    lines.extend(["", *cohort_gate_markdown(spec, read_json(pipeline_dir / "cohort_selection_winner.json"))])
     for role, title in (("selection", "Selection evidence"), ("report_only", "Report-only results")):
         lines.extend(
             [
                 f"## {title}",
                 "",
-                "| Job | Candidate | Cohort | Metric | Value |",
-                "|---|---|---|---|---:|",
+                "| Job | Candidate | Cohort | Provenance | Metric | Value |",
+                "|---|---|---|---|---|---:|",
             ]
         )
-        for row in metric_rows:
-            if row["role"] == role:
+        for metric_row in metric_rows:
+            if metric_row["role"] == role:
                 lines.append(
-                    f"| {row['job_template_id']} | {row['candidate_id']} | {row['cohort']} | "
-                    f"{row['metric']} | {row['value']} |"
+                    f"| {metric_row['job_template_id']} | {metric_row['candidate_id']} | {metric_row['cohort']} | "
+                    f"{metric_row['provenance']} | {metric_row['metric']} | {metric_row['value']} |"
                 )
         lines.append("")
     return "\n".join(lines)
+
+
+def cohort_gate_markdown(spec: dict[str, Any], decision: Mapping[str, Any]) -> list[str]:
+    gates = {(gate["job"], gate["metric"]): gate for gate in spec["selector"]["gates"]}
+    provenances = {job["id"]: job["provenance"] for job in spec["jobs"]}
+    lines = [
+        "## Target gates",
+        "",
+        "| Candidate | Cohort | Provenance | Metric | Actual value | Comparison | Threshold | Passed |",
+        "|---|---|---|---|---:|---|---:|---|",
+    ]
+    for candidate in decision["candidates"]:
+        for evidence in candidate["selection_evidence"]:
+            gate = gates[(evidence["job"], evidence["metric"])]
+            comparison = "<" if gate["mode"] == "min" else ">"
+            if not gate.get("strict", False):
+                comparison += "="
+            passed = f"{gate['job']}:{gate['metric']}" not in candidate["failed_gates"]
+            lines.append(
+                f"| {candidate['candidate_id']} | {evidence['cohort']} | {provenances[gate['job']]} | "
+                f"{gate['metric']} | "
+                f"{evidence['value']} | `{comparison}` | {gate['threshold']} | {passed} |"
+            )
+    return [*lines, ""]
 
 
 def render_scalar(value: int | float) -> int | float | str:
