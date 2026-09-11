@@ -964,11 +964,14 @@ def test_checkpoint_hash_uses_ssh_execution_target(monkeypatch):
     assert "hashlib.sha256" in calls[0][1]
 
 
-@pytest.mark.parametrize("selection_split", ["val", "test"])
+@pytest.mark.parametrize(
+    "selection_split,checkpoint_name", [("val", "epoch=1.ckpt"), ("test", "epoch=1.ckpt"), ("val", "best.ckpt")]
+)
 def test_hparam_select_uses_ssh_manifest_inventory_and_hash_evidence(
     tmp_path: Path,
     monkeypatch,
     selection_split: str,
+    checkpoint_name: str,
 ):
     metric = "test_ahi_pearson" if selection_split == "test" else "val_ahi_pearson"
     recipe = _hparam_recipe(
@@ -988,12 +991,20 @@ def test_hparam_select_uses_ssh_manifest_inventory_and_hash_evidence(
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     run = _first_run(plan_dir)
-    checkpoint = str(Path(run["checkpoint_dir"]) / "epoch=1.ckpt")
+    checkpoint = str(Path(run["checkpoint_dir"]) / checkpoint_name)
     manifest = {
         "epoch": 1,
         "best_model_path": str(Path(run["checkpoint_dir"]) / "best-epoch=1.ckpt"),
         "metrics": {metric: 0.8},
     }
+    if checkpoint_name == "best.ckpt":
+        manifest = {
+            "status": "completed",
+            "best_model_path": checkpoint,
+            "monitor": metric,
+            "best_model_score": 0.8,
+            "metrics": {},
+        }
     if selection_split == "test":
         manifest.update(
             {
@@ -1012,7 +1023,7 @@ def test_hparam_select_uses_ssh_manifest_inventory_and_hash_evidence(
 
     def fake_runtime_artifacts(row):
         runtime_calls.append(row)
-        return str(Path(run["runtime_dir"]) / "run_manifest.json"), manifest, ["epoch=1.ckpt"]
+        return str(Path(run["runtime_dir"]) / "run_manifest.json"), manifest, [checkpoint_name]
 
     def fake_checkpoint_hash(row, path):
         hash_calls.append((row, path))
@@ -2214,7 +2225,7 @@ def test_hparam_select_requires_checkpoint_evidence_for_finite_score(tmp_path: P
     (checkpoint_dir / "epoch=1.ckpt").write_text("unbound checkpoint")
     (runtime_dir / "run_manifest.json").write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
 
-    with pytest.raises(ValueError, match="No valid val_ahi_pearson scores"):
+    with pytest.raises(ValueError, match="Valid val_ahi_pearson score lacks resolvable checkpoint evidence"):
         hparam_selection.select_hparam_candidates(plan_dir)
 
     assert not _ranking_path(plan_dir).exists()
@@ -3304,3 +3315,44 @@ def test_hparam_checkpoint_scan_validates_existing_ranking_before_runtime_scan(
 
     assert runtime_reads == []
     assert ranking.read_bytes() == before
+
+
+@pytest.mark.parametrize("status", ["completed", "skipped_test", "running", "failed", None])
+def test_fixed_best_checkpoint_requires_successful_manifest(tmp_path: Path, status):
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    checkpoint = checkpoint_dir / "best.ckpt"
+    checkpoint.write_text("selected weights")
+    manifest = {"status": status, "best_model_path": str(checkpoint)}
+    expected = str(checkpoint) if status in {"completed", "skipped_test"} else ""
+    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == expected
+    assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, [checkpoint.name]) == expected
+    assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, []) == ""
+    checkpoint.unlink()
+    foreign = tmp_path / "foreign.ckpt"
+    foreign.write_text("foreign weights")
+    checkpoint.symlink_to(foreign)
+    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == ""
+
+
+def test_hparam_select_binds_terminal_best_checkpoint_and_monitor_score(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "best.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("selected weights")
+    manifest = {
+        "status": "completed",
+        "monitor": "val_ahi_pearson",
+        "best_model_score": 0.72,
+        "best_model_path": str(checkpoint),
+        "metrics": {"test_ahi_pearson": 0.81},
+    }
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(json.dumps(manifest))
+    ranking = hparam_selection.select_hparam_candidates(plan_dir)
+    row = _read_table(ranking)[0]
+    assert row["score"] == "0.72"
+    assert row["checkpoint_path"] == str(checkpoint)
+    assert row["checkpoint_sha256"] == hashlib.sha256(checkpoint.read_bytes()).hexdigest()
