@@ -658,6 +658,7 @@ def _rank_hparam_selection_candidates(
 ) -> _HparamSelectionBuild:
     rows = []
     unscored_rows = []
+    checkpoint_errors = []
     active_runs = []
     for run in inputs.step_runs:
         canonical = resolve_run_row(inputs.canonical_rows, run)
@@ -727,6 +728,13 @@ def _rank_hparam_selection_candidates(
         if valid_score and ckpt:
             tracking.validate_checkpoint_evidence_rows([artifact_row], [row])
             row["checkpoint_sha256"] = evidence.checkpoint_file_sha256(artifact_row, ckpt)
+        if valid_score and not ckpt:
+            checkpoint_errors.append(
+                f"Valid {inputs.metric} score lacks resolvable checkpoint evidence for "
+                f"{run['step_id']} / {run['run_id']}: "
+                f"best_model_path={manifest.get('best_model_path')!r}, "
+                f"checkpoint_path={manifest.get('checkpoint_path')!r}, epoch={manifest.get('epoch')!r}."
+            )
         if not valid_score or not ckpt:
             unscored_rows.append(row)
         else:
@@ -745,7 +753,9 @@ def _rank_hparam_selection_candidates(
         )
     ranked = artifacts.assign_ranks(rows, key="score", reverse=reverse)
     if not ranked:
-        raise ValueError(f"No valid {inputs.metric} scores are available for hparam selection.")
+        raise ValueError(
+            "; ".join(checkpoint_errors) or f"No valid {inputs.metric} scores are available for hparam selection."
+        )
     checkpoint_audits_to_write = []
     if inputs.selection_split == "test":
         validate_managed_run_rows(ranked, source="checkpoint test ranking", cardinality="many_per_run")
