@@ -444,7 +444,9 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
     )
     monitor_hparam_runs(round_dir)
     objective = _objective(workflow_root, recipe)
-    rows = adaptive_evidence.digest_rows(round_dir, round_index, workspace, objective)
+    rows = adaptive_evidence.digest_rows(
+        round_dir, round_index, workspace, objective, read_run_manifest=read_run_manifest
+    )
     write_rows(out, rows)
     write_text(out_dir / f"round_{round_index:03d}.md", _digest_markdown(rows, objective))
     _append_event(workflow_root, "digest", {"round": round_index, "path": str(out), "rows": len(rows)})
@@ -540,7 +542,9 @@ def _proposal_digest_rows(root: Path, workspace: Path) -> list[dict[str, Any]]:
             raise ValueError(f"Agent proposal history round {round_index:03d} is not terminal.")
         recipe = plan["recipe"]
         objective = _objective(root, recipe)
-        round_rows = adaptive_evidence.digest_rows(round_dir, round_index, workspace, objective)
+        round_rows = adaptive_evidence.digest_rows(
+            round_dir, round_index, workspace, objective, read_run_manifest=read_run_manifest
+        )
         if round_index:
             context = _proposal_round_context(root, workspace, round_index, events)
             for row in round_rows:

@@ -7,6 +7,7 @@ proposal history validation, digest publication, and incumbent/event writes.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 import math
 from pathlib import Path
@@ -23,7 +24,7 @@ from . import (
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
-from .experiment_workspace import managed_run_key, managed_run_parameters, read_run_manifest
+from .experiment_workspace import managed_run_key, managed_run_parameters
 
 
 def digest_rows(
@@ -31,6 +32,8 @@ def digest_rows(
     round_index: int,
     workspace: Path,
     objective: adaptive_proposals.ProposalObjective | dict[str, str],
+    *,
+    read_run_manifest: Callable[[Path], list[dict[str, str]]],
 ) -> list[dict[str, Any]]:
     plan = artifacts.read_hparam_plan(round_dir)
     recipe_value = plan.get("recipe")
