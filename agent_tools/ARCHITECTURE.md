@@ -29,7 +29,7 @@ ownership claims or accuracy. This section is the
 split a concern between them — that no single docstring can state. When the two
 disagree, the docstring is next to the code and wins; fix this document.
 
-### Kernel — reusable (36, zero domain signal)
+### Kernel — reusable (37, zero domain signal)
 decision_models, transport, python_programs, manifests, schema_map, gpu_rules, repo,
 runtime_lock, runtime_sync,
 experiment_io, research_log, experiment_workspace, experiment_sources,
@@ -37,7 +37,8 @@ experiment_tracking, experiments,
 run_artifacts, run_evidence, checkpoint_test_results, hparam, hparam_runtime, hparam_selection,
 adaptive_hparam, adaptive_proposals, recipes, progress, markdown, skills,
 decisions, plans, plan_contract, decision_rules, managed_scheduler, slurm,
-experiment_pipeline, experiment_pipeline_cohort_selection, experiment_pipeline_results.
+experiment_pipeline, experiment_pipeline_cohort_selection, experiment_pipeline_results,
+experiment_pipeline_spec.
 
 These must stay domain-free — the layering guard allows them **no** domain
 imports.
@@ -86,6 +87,8 @@ transport, machine-readable job and sidecar identity parsing, state
 normalization, compute-wrapper execution, and cancellation primitives.
 `experiment_pipeline` owns the managed external-matrix and cohort-selection
 state machines and exposes them through the `experiments` facade.
+`experiment_pipeline_spec` validates declared pipeline fields, runtime and execution
+settings, source-plan containment, and selection/report contracts before publication.
 `experiment_pipeline_cohort_selection` owns pure candidate-matrix expansion and
 the frozen target-gate decision. `experiment_pipeline_results` owns terminal
 job reduction, result-manifest validation, and final aggregation behind that

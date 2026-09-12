@@ -66,7 +66,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Adaptive agent proposal validation | [`agent_tools/adaptive_proposals.py`](../../agent_tools/adaptive_proposals.py) for canonical snapshots, parameter envelopes, and submission validation; [`agent_tools/adaptive_hparam.py`](../../agent_tools/adaptive_hparam.py) for orchestration | provider callbacks, latest-digest lookup during apply, or lifecycle mutation in the proposal kernel |
 | Experiment evidence acquisition | W&B and local/SSH checkpoint readers in [`agent_tools/experiment_sources.py`](../../agent_tools/experiment_sources.py), consumed by [`agent_tools/experiment_tracking.py`](../../agent_tools/experiment_tracking.py) | status-, ranking-, or CLI-local source readers |
 | Public experiment operations | [`agent_tools/experiments.py`](../../agent_tools/experiments.py) facade, including canonical-only `experiment_status`, with I/O/tracking owners behind it | skills or CLI handlers |
-| Resumable managed evaluation | [`agent_tools/experiment_pipeline.py`](../../agent_tools/experiment_pipeline.py) through the `experiments` facade, pure candidate expansion and target-gate selection in [`agent_tools/experiment_pipeline_cohort_selection.py`](../../agent_tools/experiment_pipeline_cohort_selection.py), and terminal result validation in [`agent_tools/experiment_pipeline_results.py`](../../agent_tools/experiment_pipeline_results.py) | shell loops that wait for training, select checkpoints, reselect from external metrics, launch inference, interpret terminal result manifests, or finalize |
+| Resumable managed evaluation | [`agent_tools/experiment_pipeline.py`](../../agent_tools/experiment_pipeline.py) through the `experiments` facade, declared-spec validation in [`agent_tools/experiment_pipeline_spec.py`](../../agent_tools/experiment_pipeline_spec.py), pure candidate expansion and target-gate selection in [`agent_tools/experiment_pipeline_cohort_selection.py`](../../agent_tools/experiment_pipeline_cohort_selection.py), and terminal result validation in [`agent_tools/experiment_pipeline_results.py`](../../agent_tools/experiment_pipeline_results.py) | shell loops that wait for training, select checkpoints, reselect from external metrics, launch inference, interpret terminal result manifests, or finalize |
 | Index/config/preset summaries | [`agent_tools/domain/`](../../agent_tools/domain/) through stable top-level facades | shell parsing templates |
 | MoE routing and experts | [`sleep2expert/backbones/roformer/moe.py`](../../sleep2expert/backbones/roformer/moe.py) | trainer-local routing branches |
 | MoE regularization | [`sleep2expert/losses/moe_regularization.py`](../../sleep2expert/losses/moe_regularization.py) | pretrain/finetune loops |
@@ -160,8 +160,9 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   not direct Markdown writes; see [research-log ownership](../agent_contracts/experiment_workspace.md#research-log).
 - Reuse `managed_scheduler` for backend lifecycle and `slurm` for resource, command, state,
   and sidecar primitives; [run-manifest evidence](../agent_contracts/run_manifest.md#slurm-scheduler-evidence)
-  owns their interpretation. Keep managed evaluation policy and orchestration in `experiment_pipeline`,
-  with reduction in `experiment_pipeline_results`; see [pipeline gates](../agent_contracts/experiment_pipeline.md#invocation-and-frozen-state).
+  owns their interpretation. Keep declared-spec validation in `experiment_pipeline_spec`,
+  managed evaluation orchestration in `experiment_pipeline`, and reduction in
+  `experiment_pipeline_results`; see [pipeline gates](../agent_contracts/experiment_pipeline.md#invocation-and-frozen-state).
 - Reuse `runtime-sync` for a clean in-place `origin/main` fast-forward and the shared runtime lock for
   launch/update coordination. Keep the planned commit in frozen artifacts and record the actual start commit
   in the canonical run manifest; do not clone or rewrite a published plan to follow HEAD. Its remote path sends
