@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, experiment_sources, run_evidence
+from agent_tools import adaptive_evidence, adaptive_hparam, experiment_sources, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -44,6 +44,41 @@ def terminal_workflow(tmp_path: Path):
         [{"step_id": run["step_id"], "run_id": run["run_id"], "wandb_run_id": "canonical-id"}],
     )
     return workflow, round_dir, run
+
+
+@pytest.mark.parametrize("entrypoint", ["digest", "proposal"])
+def test_adaptive_entrypoints_use_orchestrator_manifest_reader(
+    tmp_path: Path, terminal_workflow, monkeypatch, entrypoint: str
+):
+    workflow, round_dir, _run_row = terminal_workflow
+    _write_history(tmp_path, "epoch,val_loss\n3,0.75\n")
+    _write_history(tmp_path, "epoch,val_loss\n3,0.25\n", run_id="injected-id")
+    rows = [{**row, "wandb_run_id": "injected-id"} for row in adaptive_hparam.read_run_manifest(tmp_path)]
+    calls = []
+
+    def read_manifest(workspace):
+        assert workspace == tmp_path
+        calls.append("manifest")
+        return rows
+
+    def monitor(_round_dir):
+        calls.append("monitor")
+
+    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", read_manifest)
+    monkeypatch.setattr(adaptive_hparam, "monitor_hparam_runs", monitor)
+    if entrypoint == "digest":
+        row = _read_table(adaptive_hparam.digest_hparam_run(round_dir))[0]
+        history = json.loads(row["training_history"])
+    else:
+        input_path = adaptive_hparam.adaptive_step(workflow)
+        assert input_path is not None
+        history = json.loads(input_path.read_text())["input"]["digest_rows"][0]["training_history"]
+
+    assert "manifest" in calls
+    assert history["wandb_run_id"] == "injected-id"
+    assert history["observations"] == [{"epoch": 3, "metrics": {"val_loss": 0.25}}]
+    if entrypoint == "digest":
+        assert calls == ["manifest", "monitor", "manifest", "manifest"]
 
 
 def test_training_history_preserves_sparse_evidence_and_logged_learning_rate_ranges(tmp_path: Path, monkeypatch):
@@ -296,7 +331,13 @@ def test_incomplete_run_history_keeps_frozen_validation_monitor(
     monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
     _write_history(tmp_path, f"epoch,val_loss,{monitor},test_auroc\n0,0.4,0.73,0.99\n")
 
-    row = adaptive_hparam._digest_rows(tmp_path, 0, tmp_path, {"metric": "test_auroc", "mode": "max"})[0]
+    row = adaptive_evidence.digest_rows(
+        tmp_path,
+        0,
+        tmp_path,
+        {"metric": "test_auroc", "mode": "max"},
+        read_run_manifest=adaptive_hparam.read_run_manifest,
+    )[0]
 
     assert json.loads(row["training_history"])["observations"] == [
         {"epoch": 0, "metrics": {"val_loss": 0.4, monitor: 0.73}}

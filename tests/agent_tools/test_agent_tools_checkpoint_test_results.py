@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_tools import adaptive_hparam, checkpoint_test_results, hparam_selection
+from agent_tools import adaptive_evidence, checkpoint_test_results, hparam_selection
 
 
 def test_checkpoint_test_results_preserve_manifest_order_and_numeric_scores():
@@ -171,7 +171,7 @@ def test_adaptive_checkpoint_evidence_keeps_invalid_none_and_epoch_tie_break():
     objective = {"metric": "test_metric", "mode": "max"}
     checkpoint_names = ["epoch=1-step=10.ckpt", "epoch=2-step=20.ckpt"]
 
-    evidence = adaptive_hparam._test_checkpoint_evidence(
+    evidence = adaptive_evidence._test_checkpoint_evidence(
         manifest,
         objective,
         "/checkpoints",
@@ -181,7 +181,7 @@ def test_adaptive_checkpoint_evidence_keeps_invalid_none_and_epoch_tie_break():
     selected, trajectory = evidence
     assert trajectory == sorted(manifest["checkpoint_test_results"], key=lambda row: row["epoch"])
     manifest["checkpoint_test_results"].pop()
-    invalid = adaptive_hparam._test_checkpoint_evidence(
+    invalid = adaptive_evidence._test_checkpoint_evidence(
         manifest,
         objective,
         "/checkpoints",

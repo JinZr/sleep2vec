@@ -3,6 +3,7 @@
 Layer 2 kernel, exposed through the ``experiments`` facade. Drives a pipeline
 attempt by attempt: source plan snapshots, registration preflight, launch,
 terminal reduction, and retry preparation.
+Declared-spec validation belongs to ``experiment_pipeline_spec``.
 
 Registration and retry failures are distinct recoverable errors rather than one
 generic exception, so an interrupted attempt is reconciled on the next run
@@ -18,7 +19,6 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import time
@@ -30,6 +30,7 @@ from . import (
     experiment_io as exp_io,
     experiment_pipeline_cohort_selection as cohort_selection,
     experiment_pipeline_results as pipeline_results,
+    experiment_pipeline_spec as pipeline_spec,
     managed_scheduler,
     plan_contract,
     run_artifacts as artifacts,
@@ -57,11 +58,8 @@ from .experiment_workspace import (
 from .hparam_runtime import monitor_hparam_runs
 from .hparam_selection import resolve_hparam_candidates, select_hparam_candidates
 from .manifests import read_json, read_rows, utc_now
-from .models import is_full_git_object_id
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 
-PIPELINE_KIND = "external_matrix"
-COHORT_SELECTION_KIND = "cohort_selection"
 SOURCE_MANIFEST_SUCCESS_STATUSES = SUCCESS_STATUSES | {"skipped_test"}
 ACTIVE_STATUSES = {"launched", "running"}
 UNCERTAIN_STATUSES = pipeline_results.UNCERTAIN_STATUSES
@@ -162,62 +160,6 @@ class PipelineRegistrationRecoveryError(RuntimeError):
     pass
 
 
-_COMMON_TOP_LEVEL_FIELDS = {
-    "pipeline",
-    "runtime",
-    "execution",
-    "evaluation_policy",
-    "checkpoint_policy",
-    "checkpoint_sources",
-    "jobs",
-}
-_TOP_LEVEL_FIELDS = _COMMON_TOP_LEVEL_FIELDS | {"schema_version"}
-_COHORT_TOP_LEVEL_FIELDS = _COMMON_TOP_LEVEL_FIELDS | {"candidates", "selector"}
-_PIPELINE_FIELDS = {"id", "kind", "experiment_id", "step", "finalize"}
-_STEP_FIELDS = {"id", "phase", "purpose"}
-_RUNTIME_FIELDS = {
-    "workdir",
-    "python",
-    "runtime_commit",
-    "accelerator",
-    "device",
-    "precision",
-    "batch_size",
-    "seed",
-}
-_EXECUTION_FIELDS = {"gpu_pool", "gpus_per_run", "max_concurrent", "max_attempts", "scheduler"}
-_EVALUATION_FIELDS = {"external_test_locked", "final_test_unlocked"}
-_CHECKPOINT_POLICY_FIELDS = {
-    "avg_ckpts",
-    "require_no_model_averaging",
-    "forbidden_state_dict_prefixes",
-    "require_ahi_eval_threshold",
-}
-_CHECKPOINT_SOURCE_FIELDS = {
-    "plan",
-    "selection_metric",
-    "selection_mode",
-    "task",
-    "variant",
-    "label_name",
-}
-_JOB_FIELDS = {
-    "id",
-    "checkpoint_source",
-    "cohort",
-    "modality",
-    "inference_preset_path",
-    "num_workers",
-    "task",
-    "variant",
-    "label_name",
-}
-_COHORT_JOB_FIELDS = (_JOB_FIELDS - {"checkpoint_source"}) | {"role", "provenance"}
-_CANDIDATE_FIELDS = {"kind", "count"}
-_SELECTOR_FIELDS = {"strategy", "gates", "tie_breaker", "on_no_feasible"}
-_GATE_FIELDS = {"job", "metric", "mode", "threshold", "strict"}
-
-
 def run_experiment_pipeline(
     run_dir: str | Path,
     spec_path: str | Path,
@@ -241,7 +183,7 @@ def run_experiment_pipeline(
     runtime = spec.get("runtime")
     if isinstance(runtime, dict) and isinstance(runtime.get("runtime_commit"), str):
         runtime["runtime_commit"] = runtime["runtime_commit"].lower()
-    _validate_spec(spec, root, unlock_final_test=unlock_final_test if execute else None)
+    pipeline_spec.validate_spec(spec, root, unlock_final_test=unlock_final_test if execute else None)
     pipeline_id = str(spec["pipeline"]["id"])
     pipeline_dir = root / "pipelines" / pipeline_id
     lock_path = pipeline_dir.parent / f".{pipeline_id}.runner.lock"
@@ -313,264 +255,6 @@ def run_experiment_pipeline(
             raise
 
 
-def _validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool | None) -> None:
-    raw_pipeline = spec.get("pipeline")
-    kind = raw_pipeline.get("kind") if isinstance(raw_pipeline, dict) else None
-    legacy_version = spec.get("schema_version")
-    if kind == PIPELINE_KIND and (type(legacy_version) is not int or legacy_version != 1):
-        raise ValueError("Legacy external_matrix specs require schema_version: 1.")
-    _reject_unknown_fields(
-        spec,
-        _COHORT_TOP_LEVEL_FIELDS if kind == COHORT_SELECTION_KIND else _TOP_LEVEL_FIELDS,
-        "spec",
-    )
-    pipeline = _mapping(spec, "pipeline")
-    _reject_unknown_fields(pipeline, _PIPELINE_FIELDS, "pipeline")
-    pipeline_id = _required_slug(pipeline, "id", "pipeline")
-    if kind not in {PIPELINE_KIND, COHORT_SELECTION_KIND}:
-        raise ValueError(f"pipeline.kind must be {PIPELINE_KIND!r} or {COHORT_SELECTION_KIND!r}.")
-    _required_slug(pipeline, "experiment_id", "pipeline")
-    step = _mapping(pipeline, "step")
-    _reject_unknown_fields(step, _STEP_FIELDS, "pipeline.step")
-    _required_slug(step, "id", "pipeline.step")
-    if step.get("phase") != "evaluate":
-        raise ValueError("pipeline.step.phase must be 'evaluate'.")
-    if not str(step.get("purpose") or "").strip():
-        raise ValueError("pipeline.step.purpose is required.")
-    if pipeline.get("finalize") is not True:
-        raise ValueError("pipeline.finalize must be true.")
-
-    _validate_runtime_execution(spec)
-
-    evaluation = _mapping(spec, "evaluation_policy")
-    _reject_unknown_fields(evaluation, _EVALUATION_FIELDS, "evaluation_policy")
-    if evaluation.get("external_test_locked") is not False or evaluation.get("final_test_unlocked") is not True:
-        raise ValueError("External pipeline spec must explicitly unlock final test evaluation.")
-    if unlock_final_test is False:
-        raise ValueError("External pipeline execution also requires --unlock-final-test.")
-
-    checkpoint_policy = _mapping(spec, "checkpoint_policy")
-    _reject_unknown_fields(checkpoint_policy, _CHECKPOINT_POLICY_FIELDS, "checkpoint_policy")
-    if type(checkpoint_policy.get("avg_ckpts")) is not int or checkpoint_policy["avg_ckpts"] != 1:
-        raise ValueError("checkpoint_policy.avg_ckpts must be 1.")
-    if checkpoint_policy.get("require_no_model_averaging") is not True:
-        raise ValueError("checkpoint_policy.require_no_model_averaging must be true.")
-    prefixes = checkpoint_policy.get("forbidden_state_dict_prefixes")
-    if (
-        not isinstance(prefixes, list)
-        or not prefixes
-        or any(not isinstance(item, str) or not item for item in prefixes)
-    ):
-        raise ValueError("checkpoint_policy.forbidden_state_dict_prefixes must be a non-empty string list.")
-    if not {"ema_model.", "running_mean_model."}.issubset(prefixes):
-        raise ValueError("checkpoint_policy.forbidden_state_dict_prefixes must include EMA and running-mean keys.")
-    if checkpoint_policy.get("require_ahi_eval_threshold") is not True:
-        raise ValueError("checkpoint_policy.require_ahi_eval_threshold must be true.")
-
-    _validate_pipeline_sources_and_jobs(spec, root=root, kind=kind)
-    if kind == COHORT_SELECTION_KIND:
-        _validate_cohort_selection_contract(spec)
-    if not pipeline_id:
-        raise AssertionError("validated pipeline id is empty")
-
-
-def _validate_runtime_execution(spec: dict[str, Any]) -> None:
-    runtime = _mapping(spec, "runtime")
-    _reject_unknown_fields(runtime, _RUNTIME_FIELDS, "runtime")
-    for field in ("workdir", "runtime_commit"):
-        value = runtime.get(field)
-        if not isinstance(value, str) or not value.strip() or value == "ASK_USER":
-            raise ValueError(f"runtime.{field} must be an explicit non-empty string.")
-    python_command = runtime.get("python")
-    if (
-        not isinstance(python_command, str)
-        or not python_command.strip()
-        or python_command == "ASK_USER"
-        or python_command.startswith("~")
-        or re.search(r"\s", python_command) is not None
-    ):
-        raise ValueError(
-            "runtime.python must be a single executable name or path without whitespace, arguments, or ~ shorthand."
-        )
-    for field in ("accelerator", "device", "precision"):
-        if runtime.get(field) in (None, ""):
-            raise ValueError(f"runtime.{field} is required.")
-    if not Path(runtime["workdir"]).is_absolute():
-        raise ValueError("runtime.workdir must be absolute.")
-    if not is_full_git_object_id(runtime["runtime_commit"]):
-        raise ValueError("runtime.runtime_commit must be a full lowercase 40-character Git commit ID.")
-    if runtime.get("accelerator") != "gpu" or runtime.get("device") != "cuda":
-        raise ValueError("Managed evaluation pipelines require GPU/CUDA runtime.")
-    if str(runtime.get("precision")) not in {"32", "32-true"}:
-        raise ValueError("Managed evaluation pipelines require FP32 precision.")
-    if type(runtime.get("batch_size")) is not int or runtime["batch_size"] != 128:
-        raise ValueError("Managed evaluation pipelines require runtime.batch_size=128.")
-    if isinstance(runtime.get("seed"), bool) or not isinstance(runtime.get("seed"), int):
-        raise ValueError("runtime.seed must be an integer.")
-
-    execution = _mapping(spec, "execution")
-    _reject_unknown_fields(execution, _EXECUTION_FIELDS, "execution")
-    if "scheduler" in execution:
-        scheduler = _mapping(execution, "scheduler")
-        _reject_unknown_fields(scheduler, {"type"}, "execution.scheduler")
-        if scheduler.get("type") != "direct":
-            raise ValueError("Managed evaluation pipeline supports only execution.scheduler.type=direct.")
-    gpu_pool = execution.get("gpu_pool")
-    if (
-        not isinstance(gpu_pool, list)
-        or not gpu_pool
-        or any(isinstance(item, bool) or not isinstance(item, int) for item in gpu_pool)
-    ):
-        raise ValueError("execution.gpu_pool must be a non-empty list of GPU integers.")
-    if len(gpu_pool) != len(set(gpu_pool)):
-        raise ValueError("execution.gpu_pool contains duplicate GPUs.")
-    if type(execution.get("gpus_per_run")) is not int or execution["gpus_per_run"] != 1:
-        raise ValueError("Managed evaluation pipelines require execution.gpus_per_run=1.")
-    max_concurrent = execution.get("max_concurrent")
-    if (
-        isinstance(max_concurrent, bool)
-        or not isinstance(max_concurrent, int)
-        or not 1 <= max_concurrent <= len(gpu_pool)
-    ):
-        raise ValueError("execution.max_concurrent must be between 1 and the GPU pool size.")
-    if type(execution.get("max_attempts")) is not int or execution["max_attempts"] != 2:
-        raise ValueError("Managed evaluation pipelines require execution.max_attempts=2.")
-
-
-def _validate_pipeline_sources_and_jobs(spec: dict[str, Any], *, root: Path, kind: str) -> None:
-    sources = _mapping(spec, "checkpoint_sources")
-    if not sources:
-        raise ValueError("checkpoint_sources must not be empty.")
-    for source_id, source in sources.items():
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", str(source_id)):
-            raise ValueError(f"Invalid checkpoint source id: {source_id}")
-        if not isinstance(source, dict):
-            raise ValueError(f"checkpoint_sources.{source_id} must be a mapping.")
-        _reject_unknown_fields(source, _CHECKPOINT_SOURCE_FIELDS, f"checkpoint_sources.{source_id}")
-        plan = Path(str(source.get("plan") or ""))
-        if not plan.is_absolute():
-            raise ValueError(f"checkpoint_sources.{source_id}.plan must be absolute.")
-        try:
-            plan.resolve().relative_to(root)
-        except ValueError as exc:
-            raise ValueError(f"checkpoint_sources.{source_id}.plan must be inside the experiment root.") from exc
-        if not str(source.get("selection_metric") or ""):
-            raise ValueError(f"checkpoint_sources.{source_id}.selection_metric is required.")
-        if source.get("selection_mode") not in {"min", "max"}:
-            raise ValueError(f"checkpoint_sources.{source_id}.selection_mode must be min or max.")
-
-    if kind == COHORT_SELECTION_KIND and len(sources) != 1:
-        raise ValueError("cohort_selection requires exactly one checkpoint source.")
-
-    jobs = spec.get("jobs")
-    if not isinstance(jobs, list) or not jobs:
-        raise ValueError("jobs must be a non-empty list.")
-    seen = set()
-    for index, job in enumerate(jobs):
-        if not isinstance(job, dict):
-            raise ValueError(f"jobs[{index}] must be a mapping.")
-        _reject_unknown_fields(
-            job,
-            _COHORT_JOB_FIELDS if kind == COHORT_SELECTION_KIND else _JOB_FIELDS,
-            f"jobs[{index}]",
-        )
-        job_id = _required_slug(job, "id", f"jobs[{index}]")
-        if job_id in seen:
-            raise ValueError(f"Duplicate external job id: {job_id}")
-        seen.add(job_id)
-        if kind == PIPELINE_KIND:
-            source_id = str(job.get("checkpoint_source") or "")
-            if source_id not in sources:
-                raise ValueError(f"jobs[{index}].checkpoint_source is unknown: {source_id}")
-        else:
-            if job.get("role") not in {"selection", "report_only"}:
-                raise ValueError(f"jobs[{index}].role must be selection or report_only.")
-            if job.get("provenance") not in {"internal", "external"}:
-                raise ValueError(f"jobs[{index}].provenance must be internal or external.")
-            if job["role"] == "report_only" and job["provenance"] != "external":
-                raise ValueError(f"jobs[{index}].provenance must be external for report_only jobs.")
-        for field in ("cohort", "modality"):
-            if not str(job.get(field) or "").strip():
-                raise ValueError(f"jobs[{index}].{field} is required.")
-        preset = Path(str(job.get("inference_preset_path") or ""))
-        if not preset.is_absolute():
-            raise ValueError(f"jobs[{index}].inference_preset_path must be absolute.")
-        workers = job.get("num_workers")
-        if isinstance(workers, bool) or not isinstance(workers, int) or workers < 0:
-            raise ValueError(f"jobs[{index}].num_workers must be a non-negative integer.")
-        expected_workers = {"psg": 8, "bcg": 16}.get(str(job["modality"]).lower())
-        if expected_workers is not None and workers != expected_workers:
-            raise ValueError(f"jobs[{index}].num_workers must be {expected_workers} for {job['modality']} inference.")
-
-
-def _validate_cohort_selection_contract(spec: dict[str, Any]) -> None:
-    candidates = _mapping(spec, "candidates")
-    _reject_unknown_fields(candidates, _CANDIDATE_FIELDS, "candidates")
-    if candidates.get("kind") == "top_k":
-        count = candidates.get("count")
-        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
-            raise ValueError("candidates.count must be a positive integer for candidates.kind=top_k.")
-    elif candidates.get("kind") == "all":
-        if "count" in candidates:
-            raise ValueError("candidates.count is not allowed for candidates.kind=all.")
-    else:
-        raise ValueError("candidates.kind must be top_k or all.")
-
-    roles = {job["role"] for job in spec["jobs"]}
-    if "selection" not in roles:
-        raise ValueError("cohort_selection requires at least one selection job.")
-    for first_index, first in enumerate(spec["jobs"]):
-        for second in spec["jobs"][first_index + 1 :]:
-            if first["role"] == second["role"]:
-                continue
-            if first["cohort"] == second["cohort"]:
-                raise ValueError("The same cohort cannot be both selection and report_only.")
-            if first["inference_preset_path"] == second["inference_preset_path"]:
-                raise ValueError("The same preset cannot be both selection and report_only.")
-
-    selector = _mapping(spec, "selector")
-    _reject_unknown_fields(selector, _SELECTOR_FIELDS, "selector")
-    expected = {
-        "strategy": "target_gate",
-        "tie_breaker": "internal_rank",
-        "on_no_feasible": "no_winner",
-    }
-    for field, value in expected.items():
-        if selector.get(field) != value:
-            raise ValueError(f"selector.{field} must be {value!r}.")
-    gates = selector.get("gates")
-    if not isinstance(gates, list) or not gates:
-        raise ValueError("selector.gates must be a non-empty list.")
-    jobs = {job["id"]: job for job in spec["jobs"]}
-    seen_gates = set()
-    referenced_jobs = set()
-    for index, gate in enumerate(gates):
-        if not isinstance(gate, dict):
-            raise ValueError(f"selector.gates[{index}] must be a mapping.")
-        _reject_unknown_fields(gate, _GATE_FIELDS, f"selector.gates[{index}]")
-        job_id = str(gate.get("job") or "")
-        metric = str(gate.get("metric") or "")
-        if job_id not in jobs or jobs[job_id]["role"] != "selection":
-            raise ValueError(f"selector.gates[{index}].job must identify a selection job.")
-        if not metric:
-            raise ValueError(f"selector.gates[{index}].metric is required.")
-        if gate.get("mode") not in {"min", "max"}:
-            raise ValueError(f"selector.gates[{index}].mode must be min or max.")
-        if "strict" in gate and not isinstance(gate["strict"], bool):
-            raise ValueError(f"selector.gates[{index}].strict must be a boolean.")
-        threshold = gate.get("threshold")
-        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold):
-            raise ValueError(f"selector.gates[{index}].threshold must be finite.")
-        identity = (job_id, metric)
-        if identity in seen_gates:
-            raise ValueError(f"Duplicate selector gate: {job_id} / {metric}")
-        seen_gates.add(identity)
-        referenced_jobs.add(job_id)
-    selection_jobs = {job["id"] for job in spec["jobs"] if job["role"] == "selection"}
-    if referenced_jobs != selection_jobs:
-        raise ValueError("Every selection job must contribute at least one selector gate.")
-
-
 def _validate_experiment(root: Path, spec: dict[str, Any], *, allow_completed: bool = False) -> dict[str, Any]:
     path = root / "experiment.yaml"
     manifest = read_managed_yaml_mapping(path.read_text(), source=f"Managed experiment manifest {path}")
@@ -604,7 +288,7 @@ def _freeze_pipeline(root: Path, pipeline_dir: Path, spec_file: Path, source_tex
         "created_at": utc_now(),
         "updated_at": utc_now(),
     }
-    if spec["pipeline"]["kind"] == PIPELINE_KIND:
+    if spec["pipeline"]["kind"] == pipeline_spec.PIPELINE_KIND:
         state = {"schema_version": spec["schema_version"], **state}
     # Reserve controller ownership first so an interrupted freeze remains an unmaterialized pipeline blocker.
     commit_step_manifest(
@@ -665,7 +349,7 @@ def _validate_frozen_pipeline(pipeline_dir: Path, source_text: str, spec: dict[s
         "spec_resolved_sha256": _text_sha256(resolved_text),
         "runtime_commit": spec["runtime"]["runtime_commit"],
     }
-    if spec["pipeline"]["kind"] == PIPELINE_KIND:
+    if spec["pipeline"]["kind"] == pipeline_spec.PIPELINE_KIND:
         expected = {"schema_version": spec["schema_version"], **expected}
     elif "schema_version" in state:
         raise ValueError("cohort_selection state must not contain schema_version.")
@@ -709,7 +393,7 @@ def _validate_frozen_pipeline(pipeline_dir: Path, source_text: str, spec: dict[s
         _read_frozen_selections(selections_path, spec)
     elif state.get(selection_hash_field) not in (None, ""):
         raise ValueError("Frozen checkpoint selection manifest is missing.")
-    if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
+    if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND:
         decision_artifacts = {
             "cohort_ranking_sha256": pipeline_dir / "cohort_selection_ranking.csv",
             "cohort_winner_sha256": pipeline_dir / "cohort_selection_winner.json",
@@ -755,7 +439,7 @@ def _preset_snapshots(spec: dict[str, Any]) -> list[dict[str, str]]:
         if preset.is_symlink() or not preset.is_file():
             raise ValueError(f"External preset is missing or aliased: {preset}")
         snapshots.append({"job_id": job["id"], "path": str(preset), "sha256": file_sha256(preset)})
-    if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
+    if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND:
         jobs = {job["id"]: job for job in spec["jobs"]}
         for first_index, first in enumerate(snapshots):
             for second in snapshots[first_index + 1 :]:
@@ -873,7 +557,7 @@ def _execute_pipeline(
                 break
         time.sleep(poll_seconds)
 
-    if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
+    if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND:
         return _execute_cohort_selection(
             root,
             pipeline_dir,
@@ -948,7 +632,7 @@ def _finalize_completed_pipeline(
             raise ValueError(f"Completed pipeline artifact is outside its pipeline directory: {path}") from exc
         if path.is_symlink() or not path.is_file() or file_sha256(path) != expected_hash:
             raise ValueError(f"Completed pipeline artifact changed: {path}")
-    if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
+    if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND:
         return _finalize_completed_cohort_selection(
             root,
             pipeline_dir,
@@ -1340,7 +1024,7 @@ def _validated_completed_phase(
 def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, Any]) -> Mapping[str, Mapping[str, Any]]:
     path = _selection_manifest_path(pipeline_dir, spec)
     hash_field = _selection_hash_field(spec)
-    cohort_kind = spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
+    cohort_kind = spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND
     event_type = "pipeline_candidates_frozen" if cohort_kind else "pipeline_checkpoints_frozen"
     count_field = "candidate_count" if cohort_kind else "source_count"
     if path.exists():
@@ -1352,7 +1036,7 @@ def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, A
                 raise ValueError("Uncommitted checkpoint selection differs from validation-derived selection.")
             selected_at_field = (
                 "candidates_selected_at"
-                if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
+                if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND
                 else "checkpoint_selected_at"
             )
             _update_state(
@@ -1408,7 +1092,7 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[FrozenC
         owner_dirs = {managed_run_key(run): directory for directory, plan in plans for run in plan["runs"]}
         runs = [run for _directory, plan in plans for run in plan["runs"]]
         select_hparam_candidates(plan_dir, source["selection_metric"], source["selection_mode"])
-        if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
+        if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND:
             candidate_scope = spec["candidates"]
             resolver_args = (
                 {"top_k": candidate_scope["count"]} if candidate_scope["kind"] == "top_k" else {"all_candidates": True}
@@ -1423,7 +1107,7 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[FrozenC
             selection = _freeze_checkpoint_candidate(
                 spec, source_id, source, owner_dirs[key], step_id, recipe, row, policy
             )
-            if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND:
+            if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND:
                 source_rank = int(row["rank"])
                 selection = {
                     **selection,
@@ -1499,7 +1183,7 @@ def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[
     payload = read_json(path)
     if not isinstance(payload, dict) or payload.get("pipeline_id") != spec["pipeline"]["id"]:
         raise ValueError(f"Frozen checkpoint selection manifest has the wrong pipeline id: {path}")
-    cohort_kind = spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
+    cohort_kind = spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND
     selections = payload.get("candidates" if cohort_kind else "sources")
     if not isinstance(selections, list) or any(not isinstance(item, dict) for item in selections):
         raise ValueError(f"Frozen checkpoint selections are malformed: {path}")
@@ -1572,14 +1256,14 @@ def _validate_frozen_selection_owner(source_id: str, source: dict[str, Any], sel
 
 
 def _selection_manifest_path(pipeline_dir: Path, spec: dict[str, Any]) -> Path:
-    name = "candidates.json" if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND else "checkpoints.json"
+    name = "candidates.json" if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND else "checkpoints.json"
     return pipeline_dir / name
 
 
 def _selection_hash_field(spec: dict[str, Any]) -> str:
     return (
         "candidate_selection_sha256"
-        if spec["pipeline"]["kind"] == COHORT_SELECTION_KIND
+        if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND
         else "checkpoint_selection_sha256"
     )
 
@@ -1616,7 +1300,7 @@ def _assert_job_semantic_assertions(spec: dict[str, Any], source_id: str, select
         "label_name": selection["label_name"],
     }
     for job in spec["jobs"]:
-        if spec["pipeline"]["kind"] == PIPELINE_KIND and job["checkpoint_source"] != source_id:
+        if spec["pipeline"]["kind"] == pipeline_spec.PIPELINE_KIND and job["checkpoint_source"] != source_id:
             continue
         for field, value in expected.items():
             assertion = job.get(field)
@@ -2737,26 +2421,6 @@ def _mapping_key_paths(payload: Any, target: str, prefix: str = "") -> list[str]
         for index, value in enumerate(payload):
             paths.extend(_mapping_key_paths(value, target, f"{prefix}[{index}]"))
     return paths
-
-
-def _mapping(payload: dict[str, Any], field: str) -> dict[str, Any]:
-    value = payload.get(field)
-    if not isinstance(value, dict):
-        raise ValueError(f"{field} must be a mapping.")
-    return value
-
-
-def _reject_unknown_fields(payload: dict[str, Any], allowed: set[str], label: str) -> None:
-    unknown = sorted(set(payload) - allowed)
-    if unknown:
-        raise ValueError(f"Unknown {label} field(s): {', '.join(unknown)}")
-
-
-def _required_slug(payload: dict[str, Any], field: str, label: str) -> str:
-    value = payload.get(field)
-    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", value):
-        raise ValueError(f"{label}.{field} must use lowercase letters, digits, hyphens, and underscores.")
-    return value
 
 
 def _assert_source_semantics(source_id: str, source: dict[str, Any], recipe: dict[str, Any]) -> None:
