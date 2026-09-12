@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, experiment_sources, run_evidence
+from agent_tools import adaptive_evidence, adaptive_hparam, experiment_sources, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -292,11 +292,11 @@ def test_incomplete_run_history_keeps_frozen_validation_monitor(
         "evaluation_policy": {"selection_split": "test"},
     }
     monkeypatch.setattr(adaptive_hparam.artifacts, "read_hparam_plan", lambda _path: {"recipe": recipe, "runs": [run]})
-    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _path: [canonical])
+    monkeypatch.setattr(adaptive_evidence, "read_run_manifest", lambda _path: [canonical])
     monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
     _write_history(tmp_path, f"epoch,val_loss,{monitor},test_auroc\n0,0.4,0.73,0.99\n")
 
-    row = adaptive_hparam._digest_rows(tmp_path, 0, tmp_path, {"metric": "test_auroc", "mode": "max"})[0]
+    row = adaptive_evidence.digest_rows(tmp_path, 0, tmp_path, {"metric": "test_auroc", "mode": "max"})[0]
 
     assert json.loads(row["training_history"])["observations"] == [
         {"epoch": 0, "metrics": {"val_loss": 0.4, monitor: 0.73}}

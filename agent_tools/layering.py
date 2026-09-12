@@ -55,6 +55,7 @@ KERNEL_MODULES: frozenset[str] = frozenset(
         "slurm",
         "hparam_selection",
         "adaptive_hparam",
+        "adaptive_evidence",
         "adaptive_proposals",
         "recipes",
         "progress",

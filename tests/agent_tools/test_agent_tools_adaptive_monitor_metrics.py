@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam
+from agent_tools import adaptive_evidence, adaptive_hparam
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -24,7 +24,7 @@ _stub_execution_snapshot_preflight = test_support._stub_execution_snapshot_prefl
     [({}, None), ({"val_ahi_pearson": 0.42}, 0.42), ({"val_ahi_pearson": None}, None)],
 )
 def test_manifest_metrics_preserves_monitor_score_without_synthesizing_a_named_metric(metrics, expected):
-    row = adaptive_hparam._manifest_metrics(
+    row = adaptive_evidence.manifest_metrics(
         {"monitor": "val_ahi_pearson", "best_model_score": 0.73, "metrics": metrics}
     )
 
