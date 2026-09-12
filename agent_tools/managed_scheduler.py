@@ -578,64 +578,7 @@ def _launch_managed_runs(
             missing_pid_blocker = MissingPidCapacityError(*blockers[0])
 
     target = str(execution.get("target", "local") or "local")
-    launch_identity_by_key: dict[RunKey, DirectLaunchIdentity] = {}
-    rows: list[dict[str, Any]] = []
-    for run in runs:
-        key = validated_run_key(run)
-        previous = refreshed[key]
-        script = Path(str(run["script"]))
-        semantic_run_dir = Path(str(run.get("run_dir") or script.parent))
-        launch_identity: DirectLaunchIdentity = {
-            "target": target,
-            "host": execution.get("host", ""),
-            "workdir": execution.get("workdir") or str(REPO_ROOT),
-            "gpus": "",
-            "log_path": str(semantic_run_dir / "stdout.log"),
-            "pid_path": str(semantic_run_dir / "pid"),
-            "command": "",
-        }
-        for field in PROCESS_IDENTITY_FIELDS:
-            launch_identity[field] = ""
-        launch_identity_by_key[key] = launch_identity
-        execution_identity = (
-            {field: previous.get(field, "") for field in launch_identity_by_key[key]}
-            if previous.get("target") not in (None, "")
-            else {field: "" for field in launch_identity_by_key[key]}
-        )
-        row = {
-            **previous,
-            **execution_identity,
-            "status": previous.get("status") or "planned",
-            "launched_at": previous.get("launched_at", ""),
-        }
-        rows.append(row)
-        planned_semantics = {
-            field: run[field]
-            for field in (
-                "experiment_id",
-                "step_id",
-                "run_id",
-                "run_name",
-                "parameter_summary",
-                "version",
-                "config",
-                "config_sha256",
-                "script",
-                "script_sha256",
-                "run_dir",
-                "artifacts",
-                "runtime_dir",
-                "checkpoint_dir",
-                "pipeline_id",
-                "job_id",
-                "attempt",
-                "result_root",
-                "terminal_status_owner",
-            )
-            if field in run
-        }
-        hooks.validate_run_update(previous, planned_semantics, allow_execution_identity_fill=True)
-        hooks.validate_run_update(previous, row, allow_execution_identity_fill=True)
+    rows, launch_identity_by_key = _prepare_direct_launch_rows(runs, execution, refreshed, target=target, hooks=hooks)
 
     launchable = [(index, row) for index, row in enumerate(rows) if row["status"] in LAUNCHABLE_STATUSES]
     output_path_fields: tuple[Literal["log_path", "pid_path"], ...] = ("log_path", "pid_path")
@@ -700,31 +643,9 @@ def _launch_managed_runs(
         hooks=hooks,
     )
 
-    commit_rows = []
-    for row in rows:
-        committed_row = dict(row)
-        if dry_run and workspace_by_key[validated_run_key(row)].get("target") in (None, ""):
-            committed_row.update({field: "" for field in EXECUTION_IDENTITY_FIELDS})
-        commit_rows.append(committed_row)
-    committed = hooks.merge_manifest(workspace, commit_rows, lock_held=True)
-    committed_by_key = {validated_run_key(row): row for row in committed}
-    committed_rows = [committed_by_key[validated_run_key(run)] for run in runs]
-    if dry_run:
-        preview_by_key = {validated_run_key(row): row for row in rows}
-        launch_rows = []
-        for committed_row in committed_rows:
-            preview = preview_by_key[validated_run_key(committed_row)]
-            if committed_row.get("target") in (None, ""):
-                launch_rows.append(
-                    {
-                        **committed_row,
-                        **{field: preview.get(field, "") for field in EXECUTION_IDENTITY_FIELDS},
-                    }
-                )
-            else:
-                launch_rows.append(committed_row)
-    else:
-        launch_rows = committed_rows
+    committed_rows, launch_rows = _commit_direct_launch_rows(
+        workspace, runs, rows, workspace_by_key, dry_run=dry_run, hooks=hooks
+    )
     result = LaunchResult(
         committed_rows=committed_rows,
         launch_rows=launch_rows,
@@ -753,6 +674,112 @@ def _launch_managed_runs(
     if missing_pid_blocker is not None:
         raise missing_pid_blocker
     return result
+
+
+def _prepare_direct_launch_rows(
+    runs: list[dict[str, Any]],
+    execution: dict[str, Any],
+    refreshed: dict[RunKey, dict[str, Any]],
+    *,
+    target: str,
+    hooks: SchedulerHooks,
+) -> tuple[list[dict[str, Any]], dict[RunKey, DirectLaunchIdentity]]:
+    launch_identity_by_key: dict[RunKey, DirectLaunchIdentity] = {}
+    rows: list[dict[str, Any]] = []
+    for run in runs:
+        key = validated_run_key(run)
+        previous = refreshed[key]
+        script = Path(str(run["script"]))
+        semantic_run_dir = Path(str(run.get("run_dir") or script.parent))
+        launch_identity: DirectLaunchIdentity = {
+            "target": target,
+            "host": execution.get("host", ""),
+            "workdir": execution.get("workdir") or str(REPO_ROOT),
+            "gpus": "",
+            "log_path": str(semantic_run_dir / "stdout.log"),
+            "pid_path": str(semantic_run_dir / "pid"),
+            "command": "",
+        }
+        for field in PROCESS_IDENTITY_FIELDS:
+            launch_identity[field] = ""
+        launch_identity_by_key[key] = launch_identity
+        execution_identity = (
+            {field: previous.get(field, "") for field in launch_identity_by_key[key]}
+            if previous.get("target") not in (None, "")
+            else {field: "" for field in launch_identity_by_key[key]}
+        )
+        row = {
+            **previous,
+            **execution_identity,
+            "status": previous.get("status") or "planned",
+            "launched_at": previous.get("launched_at", ""),
+        }
+        rows.append(row)
+        planned_semantics = {
+            field: run[field]
+            for field in (
+                "experiment_id",
+                "step_id",
+                "run_id",
+                "run_name",
+                "parameter_summary",
+                "version",
+                "config",
+                "config_sha256",
+                "script",
+                "script_sha256",
+                "run_dir",
+                "artifacts",
+                "runtime_dir",
+                "checkpoint_dir",
+                "pipeline_id",
+                "job_id",
+                "attempt",
+                "result_root",
+                "terminal_status_owner",
+            )
+            if field in run
+        }
+        hooks.validate_run_update(previous, planned_semantics, allow_execution_identity_fill=True)
+        hooks.validate_run_update(previous, row, allow_execution_identity_fill=True)
+    return rows, launch_identity_by_key
+
+
+def _commit_direct_launch_rows(
+    workspace: Path,
+    runs: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    workspace_by_key: dict[RunKey, dict[str, Any]],
+    *,
+    dry_run: bool,
+    hooks: SchedulerHooks,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    commit_rows = []
+    for row in rows:
+        committed_row = dict(row)
+        if dry_run and workspace_by_key[validated_run_key(row)].get("target") in (None, ""):
+            committed_row.update({field: "" for field in EXECUTION_IDENTITY_FIELDS})
+        commit_rows.append(committed_row)
+    committed = hooks.merge_manifest(workspace, commit_rows, lock_held=True)
+    committed_by_key = {validated_run_key(row): row for row in committed}
+    committed_rows = [committed_by_key[validated_run_key(run)] for run in runs]
+    if dry_run:
+        preview_by_key = {validated_run_key(row): row for row in rows}
+        launch_rows = []
+        for committed_row in committed_rows:
+            preview = preview_by_key[validated_run_key(committed_row)]
+            if committed_row.get("target") in (None, ""):
+                launch_rows.append(
+                    {
+                        **committed_row,
+                        **{field: preview.get(field, "") for field in EXECUTION_IDENTITY_FIELDS},
+                    }
+                )
+            else:
+                launch_rows.append(committed_row)
+    else:
+        launch_rows = committed_rows
+    return committed_rows, launch_rows
 
 
 def _refresh_external_capacity_runs(

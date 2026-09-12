@@ -1593,6 +1593,87 @@ def _stage_and_publish_round(
         raise
 
 
+def _preflight_adaptive_source(workflow: dict[str, Any], next_dir: Path) -> dict[str, Any]:
+    recipe, _, source_preflight = preflight_plan(
+        recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
+    )
+    _require_preflight_pass(source_preflight, "Adaptive source recipe")
+    _validate_adaptive_recipe(recipe)
+    recipe = _with_workflow_execution(recipe, workflow)
+    return recipe
+
+
+def _publish_proposal_receipt(
+    workspace: Path,
+    next_round: int,
+    validated: adaptive_proposals.ValidatedProposal,
+    proposal_file: Path,
+    proposal_sha256: str,
+    accepted: _AcceptedProposalArtifacts,
+) -> AdaptiveProposalAcceptedEvent:
+    _write_exact_bytes(accepted.accepted_path, accepted.accepted_bytes, managed_root=workspace)
+    _write_exact_bytes(accepted.suggestion_path, accepted.suggestion_bytes, managed_root=workspace)
+    _write_exact_bytes(accepted.rationale_path, accepted.rationale_bytes, managed_root=workspace)
+    agent_proposal_event: AdaptiveProposalAcceptedEvent = {
+        "round": next_round,
+        "request_id": validated["request_id"],
+        "proposal_path": str(proposal_file),
+        "proposal_sha256": proposal_sha256,
+        "suggestion": str(accepted.suggestion_path),
+        "suggestion_sha256": hashlib.sha256(accepted.suggestion_bytes).hexdigest(),
+    }
+    _reconcile_event(
+        workspace,
+        "agent_proposal_accepted",
+        agent_proposal_event,
+        identity_field="request_id",
+    )
+    return agent_proposal_event
+
+
+def _launch_replacement_round(
+    root: Path,
+    workspace: Path,
+    round_dir: Path,
+    recipe: dict[str, Any],
+    next_round: int,
+    next_dir: Path,
+) -> None:
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
+    scheduler_value = execution.get("scheduler")
+    scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
+    if scheduler.get("type") == "slurm":
+        monitor_hparam_runs(round_dir)
+    current_plan = artifacts.read_hparam_plan(round_dir)
+    bad_run_keys = _bad_running_run_keys(root, round_dir, recipe)
+    ordered_bad_run_keys = [
+        validated_run_key(run) for run in current_plan["runs"] if validated_run_key(run) in bad_run_keys
+    ]
+    next_plan_keys = {validated_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
+    canonical_rows = read_run_manifest(workspace)
+    state = _ReplacementState(
+        next_round=next_round,
+        next_dir=next_dir,
+        next_plan_keys=next_plan_keys,
+        started_keys=_accepted_start_keys([row for row in canonical_rows if validated_run_key(row) in next_plan_keys]),
+        launch_failed_keys={
+            validated_run_key(row)
+            for row in canonical_rows
+            if validated_run_key(row) in next_plan_keys and row.get("status") == "launch_failed"
+        },
+    )
+    next_round_rows = _launch_initial_replacement(root, workspace, state, round_dir)
+    next_round_rows = _drain_bad_runs(root, workspace, state, round_dir, recipe, ordered_bad_run_keys, next_round_rows)
+
+    if not state.round_committed:
+        statuses = ", ".join(sorted({str(row.get("status") or "") for row in next_round_rows})) or "none"
+        raise RuntimeError(
+            f"Round {next_round:03d} started no runs (statuses: {statuses}); the round was not committed and "
+            f"current runs were not retired. Prospective run states were preserved at {next_dir}."
+        )
+
+
 def _adaptive_step(
     root: Path,
     *,
@@ -1602,12 +1683,7 @@ def _adaptive_step(
     workflow = _workflow(root)
     next_round = _next_round_index(root)
     next_dir = _round_dir(root, next_round)
-    recipe, _, source_preflight = preflight_plan(
-        recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
-    )
-    _require_preflight_pass(source_preflight, "Adaptive source recipe")
-    _validate_adaptive_recipe(recipe)
-    recipe = _with_workflow_execution(recipe, workflow)
+    recipe = _preflight_adaptive_source(workflow, next_dir)
     strategy = _suggest_strategy(recipe)
     if strategy == "agent_proposal" and execute and proposal_path is None:
         raise ValueError("agent_proposal execute requires --proposal.")
@@ -1641,12 +1717,7 @@ def _adaptive_step(
             yaml.safe_dump(candidate_payload, sort_keys=False).encode(), next_dir, "Agent proposal"
         )
         workflow = _workflow(root)
-        recipe, _, current_preflight = preflight_plan(
-            recipe_path=workflow["recipe_path"], output_dir=next_dir, allow_adaptive_workflow=True
-        )
-        _require_preflight_pass(current_preflight, "Adaptive source recipe")
-        _validate_adaptive_recipe(recipe)
-        recipe = _with_workflow_execution(recipe, workflow)
+        recipe = _preflight_adaptive_source(workflow, next_dir)
         workspace = experiment_root(recipe)
         if workspace is None:
             raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
@@ -1724,22 +1795,8 @@ def _adaptive_step(
             rationale_bytes=rationale_bytes,
         )
         _write_exact_bytes(bound_config_path, bound_config_bytes, managed_root=workspace)
-        _write_exact_bytes(accepted.accepted_path, accepted.accepted_bytes, managed_root=workspace)
-        _write_exact_bytes(accepted.suggestion_path, accepted.suggestion_bytes, managed_root=workspace)
-        _write_exact_bytes(accepted.rationale_path, accepted.rationale_bytes, managed_root=workspace)
-        agent_proposal_event = {
-            "round": next_round,
-            "request_id": validated["request_id"],
-            "proposal_path": str(proposal_file),
-            "proposal_sha256": proposal_sha256,
-            "suggestion": str(suggestion),
-            "suggestion_sha256": hashlib.sha256(suggestion_bytes).hexdigest(),
-        }
-        _reconcile_event(
-            workspace,
-            "agent_proposal_accepted",
-            agent_proposal_event,
-            identity_field="request_id",
+        agent_proposal_event = _publish_proposal_receipt(
+            workspace, next_round, validated, proposal_file, proposal_sha256, accepted
         )
     else:
         if execute:
@@ -1801,39 +1858,7 @@ def _adaptive_step(
         expected_base_recipe=expected_base_recipe,
         bound_config_path=bound_config_path,
     )
-    execution_value = recipe.get("execution")
-    execution = execution_value if isinstance(execution_value, dict) else {}
-    scheduler_value = execution.get("scheduler")
-    scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
-    if scheduler.get("type") == "slurm":
-        monitor_hparam_runs(round_dir)
-    current_plan = artifacts.read_hparam_plan(round_dir)
-    bad_run_keys = _bad_running_run_keys(root, round_dir, recipe)
-    ordered_bad_run_keys = [
-        validated_run_key(run) for run in current_plan["runs"] if validated_run_key(run) in bad_run_keys
-    ]
-    next_plan_keys = {validated_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
-    canonical_rows = read_run_manifest(workspace)
-    state = _ReplacementState(
-        next_round=next_round,
-        next_dir=next_dir,
-        next_plan_keys=next_plan_keys,
-        started_keys=_accepted_start_keys([row for row in canonical_rows if validated_run_key(row) in next_plan_keys]),
-        launch_failed_keys={
-            validated_run_key(row)
-            for row in canonical_rows
-            if validated_run_key(row) in next_plan_keys and row.get("status") == "launch_failed"
-        },
-    )
-    next_round_rows = _launch_initial_replacement(root, workspace, state, round_dir)
-    next_round_rows = _drain_bad_runs(root, workspace, state, round_dir, recipe, ordered_bad_run_keys, next_round_rows)
-
-    if not state.round_committed:
-        statuses = ", ".join(sorted({str(row.get("status") or "") for row in next_round_rows})) or "none"
-        raise RuntimeError(
-            f"Round {next_round:03d} started no runs (statuses: {statuses}); the round was not committed and "
-            f"current runs were not retired. Prospective run states were preserved at {next_dir}."
-        )
+    _launch_replacement_round(root, workspace, round_dir, recipe, next_round, next_dir)
     if agent_proposal_event is not None:
         # The replay receipt is terminal: any earlier launch or replacement failure must remain failed.
         _reconcile_event(
