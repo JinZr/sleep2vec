@@ -540,6 +540,24 @@ def _evaluate_config_consultation(
                 )
             ],
         )
+    report = _evaluate_required_channels_decision(report, cfg, recipe_adapter, user_decisions, recipe_decisions)
+    report, override_issues = _evaluate_config_override_decisions(report, recipe, cfg, recipe_adapter)
+    report = _evaluate_selected_config_decision(report, cfg, recipe_adapter, user_decisions, config_error)
+    report = _append_issues(
+        report, context.index_summary_issues(recipe, cfg, validated_sidecar_keys=validated_sidecar_keys)
+    )
+    if override_issues:
+        report = _append_issues(report, override_issues)
+    return cfg, report
+
+
+def _evaluate_required_channels_decision(
+    report: DecisionReport,
+    cfg: ConfigSummaryInput | None,
+    recipe_adapter: TaskAdapter | None,
+    user_decisions: dict[str, Any],
+    recipe_decisions: dict[str, Any],
+) -> DecisionReport:
     if (
         recipe_adapter is not None
         and recipe_adapter.enforces_required_channels
@@ -573,6 +591,15 @@ def _evaluate_config_consultation(
                     )
                 ],
             )
+    return report
+
+
+def _evaluate_config_override_decisions(
+    report: DecisionReport,
+    recipe: dict[str, Any],
+    cfg: ConfigSummaryInput | None,
+    recipe_adapter: TaskAdapter | None,
+) -> tuple[DecisionReport, list[DecisionIssue] | None]:
     override_issues = None
     accepts_config = cfg is not None and (
         (cfg.get("is_finetune") is True and not cfg.get("blocking_issues"))
@@ -622,6 +649,16 @@ def _evaluate_config_consultation(
                     )
                 )
         report = _append_issues(report, contract_issues)
+    return report, override_issues
+
+
+def _evaluate_selected_config_decision(
+    report: DecisionReport,
+    cfg: ConfigSummaryInput | None,
+    recipe_adapter: TaskAdapter | None,
+    user_decisions: dict[str, Any],
+    config_error: str | None,
+) -> DecisionReport:
     raw_config_decision = user_decisions.get("config")
     selected_config_value = (
         raw_config_decision.get("value") if isinstance(raw_config_decision, dict) else raw_config_decision
@@ -680,12 +717,7 @@ def _evaluate_config_consultation(
                     )
                 ],
             )
-    report = _append_issues(
-        report, context.index_summary_issues(recipe, cfg, validated_sidecar_keys=validated_sidecar_keys)
-    )
-    if override_issues:
-        report = _append_issues(report, override_issues)
-    return cfg, report
+    return report
 
 
 def write_questions(output_dir: str | Path, report: DecisionReport) -> None:
