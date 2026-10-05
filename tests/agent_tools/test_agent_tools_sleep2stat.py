@@ -9,8 +9,7 @@ from agent_tool_test_helpers import write_yaml
 import pytest
 import yaml
 
-from agent_tools.adapters.sleep2stat import SLEEP2STAT_ADAPTER
-from agent_tools.configs import sleep2stat_config_summary
+from agent_tools.adapters.sleep2stat import SLEEP2STAT_ADAPTER, sleep2stat_config_summary
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import build_context, build_plan, evaluate_recipe
 from agent_tools.skills import validate_skills

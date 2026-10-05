@@ -74,9 +74,9 @@ from .experiment_workspace import (
 )
 from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, stop_hparam_run
 from .manifests import read_json, read_rows, utc_now, validate_managed_header, write_rows, write_text
-from .models import REPO_ROOT, is_full_git_object_id, resolve_repo_path
+from .models import REPO_ROOT, is_full_git_object_id, recipe_name, resolve_repo_path
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
-from .recipes import load_recipe_with_base, recipe_name
+from .recipes import load_recipe_with_base
 
 _EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
 _FROZEN_EXECUTION_IDENTITY_FIELDS = ("python",)

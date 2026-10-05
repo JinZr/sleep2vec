@@ -5,7 +5,7 @@ from pathlib import Path
 from agent_tool_test_helpers import config_payload, survival_config_payload, write_survival_sidecars, write_yaml
 import pandas as pd
 
-from agent_tools.index_csv import index_summary
+from agent_tools.domain.index_csv import index_summary
 
 
 def test_index_summary_counts_splits_masks_and_labels(tmp_path: Path):

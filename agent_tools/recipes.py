@@ -2,8 +2,7 @@
 
 Layer 0 leaf. Authored recipes may not carry reserved top-level ``_``-prefixed
 keys: those spellings belong to the ``_base_recipe`` / ``_local_recipe`` layers
-this module merges. ``recipe_name`` is re-exported from ``models`` on a
-test-frozen import path.
+this module merges.
 """
 
 from __future__ import annotations
@@ -12,11 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .experiment_workspace import read_managed_yaml_mapping
-from .models import (  # noqa: F401 -- recipe_name re-exported for existing importers
-    recipe_name,
-    repo_relative,
-    resolve_repo_path,
-)
+from .models import repo_relative, resolve_repo_path
 
 
 def load_yaml_file(path: str | Path) -> dict[str, Any]:

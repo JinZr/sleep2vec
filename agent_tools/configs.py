@@ -3,10 +3,6 @@
 Mixed bridge: dispatches through ``adapters.config_providers`` for variants
 that claim a config by shape, and otherwise delegates the summary body to
 ``domain.finetune_summary``.
-
-Two frozen re-export paths run through here --
-``configs.sleep2stat_config_summary`` and ``configs.load_yaml`` -- so importers
-outside the package keep working.
 """
 
 from __future__ import annotations
@@ -18,14 +14,8 @@ import yaml
 
 from .adapters import all_adapters
 from .adapters.config_providers import CONFIG_SUMMARY_PROVIDERS
-from .adapters.sleep2stat import sleep2stat_config_summary  # noqa: F401 -- test-frozen import path
 from .domain.finetune_summary import finetune_summary_body, guess_variant
-from .models import (  # noqa: F401 -- load_yaml re-exported for importers
-    ConfigSummary,
-    load_yaml,
-    repo_relative,
-    resolve_repo_path,
-)
+from .models import ConfigSummary, load_yaml, repo_relative, resolve_repo_path
 
 
 def config_summary(
