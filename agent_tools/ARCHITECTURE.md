@@ -29,13 +29,14 @@ ownership claims or accuracy. This section is the
 split a concern between them — that no single docstring can state. When the two
 disagree, the docstring is next to the code and wins; fix this document.
 
-### Kernel — reusable (40, zero domain signal)
+### Kernel — reusable (41, zero domain signal)
 decision_models, transport, python_programs, manifests, schema_map, gpu_rules, repo,
 runtime_lock, runtime_sync,
 experiment_io, research_log, experiment_workspace, experiment_sources,
 experiment_tracking, experiments,
 run_artifacts, run_evidence, checkpoint_test_results, hparam, hparam_runtime, hparam_selection,
-adaptive_hparam, adaptive_evidence, adaptive_proposals, adaptive_state, recipes, progress, markdown, skills,
+adaptive_hparam, adaptive_evidence, adaptive_proposals, adaptive_replacement, adaptive_state, recipes, progress,
+markdown, skills,
 decisions, plans, plan_contract, decision_rules, managed_scheduler, slurm,
 experiment_pipeline, experiment_pipeline_attempts, experiment_pipeline_cohort_selection,
 experiment_pipeline_results, experiment_pipeline_spec.
@@ -55,9 +56,11 @@ submission-validation contract. `adaptive_evidence` reads canonical round eviden
 and ranks candidates, reusing runtime/checkpoint readers and already-synced training
 history. `adaptive_state` owns the workflow's durable state: round layout, frozen
 `workflow.json`, `run_registry.tsv`, workflow events, and recovery of a launch
-interrupted before its round committed. `adaptive_hparam` owns monitoring,
-digest/proposal/incumbent publication, preflight, round registration, launch, and
-lifecycle orchestration over that state.
+interrupted before its round committed. `adaptive_replacement` launches a
+replacement round: it stops failing or trailing current-round runs past their grace
+period, supersedes pending ones, and commits the round once a replacement start is
+confirmed. `adaptive_hparam` owns monitoring, digest/proposal/incumbent publication,
+preflight, round registration, launch, and lifecycle orchestration over that state.
 
 `checkpoint_test_results` owns pure saved-epoch expectation and checkpoint-test
 result validation shared by hparam selection and adaptive objective extraction.

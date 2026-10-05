@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, manifests, plans
+from agent_tools import adaptive_hparam, adaptive_replacement, manifests, plans
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import _agent_recipe
@@ -138,7 +138,7 @@ def test_next_proposal_can_use_unsampled_domain_after_exact_initial_points(
         )
         return launch_manifest
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     adaptive_hparam.adaptive_step(workflow, proposal_path=proposal_path, execute=True)
     next_plan = json.loads((workflow / "adaptive" / "rounds" / "round_001" / "plan.json").read_text())
     assert len(next_plan["runs"]) == 1

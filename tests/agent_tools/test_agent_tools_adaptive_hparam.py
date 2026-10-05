@@ -7,7 +7,7 @@ from agent_tool_test_helpers import write_yaml
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, adaptive_state, plan_hparam, slurm
+from agent_tools import adaptive_hparam, adaptive_replacement, adaptive_state, plan_hparam, slurm
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _run
 
@@ -116,7 +116,7 @@ def test_adaptive_slurm_grace_uses_allocation_start_not_submission_time():
     replacement = {"grace_minutes": 1}
 
     assert (
-        adaptive_hparam._grace_satisfied(
+        adaptive_replacement._grace_satisfied(
             {
                 "scheduler_type": "slurm",
                 "launched_at": old,
@@ -127,10 +127,12 @@ def test_adaptive_slurm_grace_uses_allocation_start_not_submission_time():
         )
         is False
     )
-    assert adaptive_hparam._grace_satisfied(
+    assert adaptive_replacement._grace_satisfied(
         {"scheduler_type": "slurm", "launched_at": recent, "scheduler_started_at": old}, {}, replacement
     )
-    assert adaptive_hparam._grace_satisfied({"scheduler_type": "slurm", "launched_at": old}, {}, replacement) is False
+    assert (
+        adaptive_replacement._grace_satisfied({"scheduler_type": "slurm", "launched_at": old}, {}, replacement) is False
+    )
 
 
 def test_adaptive_retirement_skips_slurm_run_with_verified_terminal_sidecar(tmp_path: Path, monkeypatch):
@@ -153,19 +155,19 @@ def test_adaptive_retirement_skips_slurm_run_with_verified_terminal_sidecar(tmp_
         "read_hparam_plan",
         lambda _round_dir: {"recipe": {"experiment": {"root": str(tmp_path)}}, "runs": [run]},
     )
-    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [run])
-    monkeypatch.setattr(adaptive_hparam, "_latest_incumbent_score", lambda _root: 1.0)
+    monkeypatch.setattr(adaptive_replacement, "read_run_manifest", lambda _workspace: [run])
+    monkeypatch.setattr(adaptive_replacement, "_latest_incumbent_score", lambda _root: 1.0)
     monkeypatch.setattr(
-        adaptive_hparam.evidence,
+        adaptive_replacement.evidence,
         "log_has_failure",
         lambda *_args, **_kwargs: pytest.fail("terminal Slurm work must not be considered for retirement"),
     )
 
-    assert adaptive_hparam._bad_running_run_keys(tmp_path, tmp_path / "round", recipe) == set()
+    assert adaptive_replacement._bad_running_run_keys(tmp_path, tmp_path / "round", recipe) == set()
 
 
 def test_adaptive_minutes_since_accepts_slurm_sidecar_timestamp():
-    minutes = adaptive_hparam._minutes_since(slurm._utc_now())
+    minutes = adaptive_replacement._minutes_since(slurm._utc_now())
 
     assert minutes is not None
     assert 0 <= minutes < 1
@@ -208,7 +210,7 @@ def test_adaptive_runtime_never_stops_runs_for_non_boolean_replacement_flags(
 ):
     recipe = {"adaptive": {"replacement": {"enabled": enabled, "allow_running_stop": allow_running_stop}}}
 
-    assert adaptive_hparam._bad_running_run_keys(tmp_path, tmp_path / "missing-round", recipe) == set()
+    assert adaptive_replacement._bad_running_run_keys(tmp_path, tmp_path / "missing-round", recipe) == set()
 
 
 @pytest.mark.parametrize(

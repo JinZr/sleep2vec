@@ -3,7 +3,8 @@
 Owns the ``adaptive/`` layout under a workflow root: round directories, the
 frozen ``workflow.json`` payload, the append-only ``run_registry.tsv``, the
 workflow's experiment events, and reconciliation of a launch that was
-interrupted before its round was committed. ``adaptive_hparam`` drives the
+interrupted before its round was committed, plus the recipe's adaptive settings
+and workflow objective accessors. ``adaptive_hparam`` drives the
 digest, proposal, registration and launch steps on top of this state.
 """
 
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict, TypeVar
 
 from . import (
+    adaptive_proposals,
     experiment_io as exp_io,
     hparam_runtime,
     managed_scheduler,
@@ -114,6 +116,20 @@ def read_workflow(root: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"Missing adaptive workflow: {path}")
     workflow = read_json(path)
     return validate_workflow_payload(root, workflow)
+
+
+def adaptive_settings(recipe: dict[str, Any]) -> dict[str, Any]:
+    adaptive = recipe.get("adaptive")
+    return adaptive if isinstance(adaptive, dict) else {}
+
+
+def workflow_objective(root: Path, recipe: dict[str, Any]) -> adaptive_proposals.ProposalObjective:
+    workflow = read_workflow(root) if (root / "adaptive" / "workflow.json").exists() else {}
+    adaptive = adaptive_settings(recipe)
+    return {
+        "metric": str(workflow.get("objective_metric") or adaptive.get("objective_metric") or "test_auroc"),
+        "mode": str(workflow.get("objective_mode") or adaptive.get("objective_mode") or "max"),
+    }
 
 
 def validate_workflow_payload(

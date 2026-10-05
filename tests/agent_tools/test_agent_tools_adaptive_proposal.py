@@ -8,7 +8,15 @@ import threading
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, adaptive_proposals, adaptive_state, hparam_runtime, manifests, run_evidence
+from agent_tools import (
+    adaptive_hparam,
+    adaptive_proposals,
+    adaptive_replacement,
+    adaptive_state,
+    hparam_runtime,
+    manifests,
+    run_evidence,
+)
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -408,7 +416,7 @@ def test_agent_proposal_preview_is_read_only_and_execute_uses_bound_snapshot(tmp
         )
         return launch_manifest
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
 
     suggestion = adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
 
@@ -469,7 +477,7 @@ def test_agent_proposal_recovers_exact_published_unregistered_round_after_runtim
         return Path(run_dir) / "launch_manifest.tsv"
 
     monkeypatch.setattr(adaptive_hparam.plan_hparam, "commit_hparam_plan", interrupt_first_commit)
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
 
     with pytest.raises(RuntimeError, match="registration interrupted"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
@@ -552,7 +560,7 @@ def test_concurrent_agent_proposal_execute_serializes_round_projections(tmp_path
         return Path(run_dir) / "launch_manifest.tsv"
 
     monkeypatch.setattr(adaptive_hparam, "_stage_round", pause_first_stage)
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     results = []
     errors = []
 
@@ -609,7 +617,7 @@ def test_agent_proposal_execute_does_not_replay_post_commit_failure(tmp_path: Pa
         )
         return launch_manifest
 
-    commit_round = adaptive_hparam._commit_round
+    commit_round = adaptive_replacement._commit_round
     commit_calls = 0
 
     def lose_receipt_after_commit(*args, **kwargs):
@@ -618,8 +626,8 @@ def test_agent_proposal_execute_does_not_replay_post_commit_failure(tmp_path: Pa
         commit_round(*args, **kwargs)
         raise RuntimeError("client receipt lost")
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
-    monkeypatch.setattr(adaptive_hparam, "_commit_round", lose_receipt_after_commit)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "_commit_round", lose_receipt_after_commit)
 
     with pytest.raises(RuntimeError, match="client receipt lost"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
@@ -668,7 +676,7 @@ def test_agent_proposal_execute_does_not_replay_partial_launch_failure(tmp_path:
         merge_run_manifest(tmp_path, updates)
         return Path(run_dir) / "launch_manifest.tsv"
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
 
     with pytest.raises(RuntimeError, match="launch failed.*already committed"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
@@ -703,7 +711,7 @@ def test_agent_proposal_execute_replay_blocks_later_uncommitted_launch(tmp_path:
         )
         return Path(run_dir) / "launch_manifest.tsv"
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
     evidence_before = {
         "events": (tmp_path / "events.jsonl").read_bytes(),
@@ -752,7 +760,7 @@ def test_agent_proposal_execute_replay_blocks_later_committed_failure(
         )
         return Path(run_dir) / "launch_manifest.tsv"
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
 
     registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
@@ -822,7 +830,7 @@ def test_agent_proposal_execute_replay_requires_terminal_event_order(tmp_path: P
         )
         return Path(run_dir) / "launch_manifest.tsv"
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
     events_path = tmp_path / "events.jsonl"
     events = [json.loads(line) for line in events_path.read_text().splitlines()]
@@ -862,7 +870,7 @@ def test_agent_proposal_execute_replay_requires_complete_target_registry(tmp_pat
         )
         return Path(run_dir) / "launch_manifest.tsv"
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
     registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
     registry_rows = adaptive_hparam.read_rows(registry_path, require_managed_identity=True)
@@ -895,7 +903,7 @@ def test_agent_proposal_execute_replay_rejects_changed_projection(tmp_path: Path
         )
         return launch_manifest
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
 
     if projection == "accepted":
@@ -932,7 +940,7 @@ def test_agent_proposal_execute_replay_rechecks_protocol_files(tmp_path: Path, m
         )
         return launch_manifest
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
     load_input = adaptive_hparam._load_agent_proposal_input
 
@@ -971,7 +979,7 @@ def test_agent_proposal_execute_replay_requires_committed_launch_event(tmp_path:
         )
         return launch_manifest
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
     events = [
         json.loads(line)
@@ -1201,7 +1209,7 @@ def test_agent_proposal_refreshes_source_contract_after_candidate_preflight(tmp_
 
     launches = []
     monkeypatch.setattr(adaptive_hparam, "preflight_plan", narrow_bounds_after_candidate_preflight)
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", lambda *_args, **_kwargs: launches.append(True))
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", lambda *_args, **_kwargs: launches.append(True))
 
     with pytest.raises(ValueError, match="source recipe changed"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
@@ -1252,7 +1260,7 @@ def test_agent_proposal_rebuilds_candidate_from_refreshed_base_and_local_pair(tm
         return launch_manifest
 
     monkeypatch.setattr(adaptive_hparam, "preflight_plan", offset_base_and_local_after_candidate_preflight)
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
 
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
 
@@ -1297,7 +1305,7 @@ def test_agent_proposal_materializes_bound_recipe_and_config_bytes(tmp_path: Pat
         )
         return launch_manifest
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
 
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
 
@@ -1334,7 +1342,7 @@ def test_agent_proposal_rejects_frozen_config_replacement_inside_plan_builder(tm
 
     launches = []
     monkeypatch.setattr(adaptive_hparam, "build_plan", replace_frozen_config_before_builder_read)
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", lambda *_args, **_kwargs: launches.append(True))
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", lambda *_args, **_kwargs: launches.append(True))
 
     with pytest.raises(ValueError, match="bound SHA-256"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
@@ -1372,7 +1380,7 @@ def test_agent_proposal_recipe_binding_is_json_type_strict(tmp_path: Path, monke
 
     launches = []
     monkeypatch.setattr(adaptive_hparam, "build_plan", replace_boolean_with_integer)
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", lambda *_args, **_kwargs: launches.append(True))
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", lambda *_args, **_kwargs: launches.append(True))
 
     with pytest.raises(ValueError, match="bound adaptive recipe"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
@@ -1411,7 +1419,7 @@ def test_agent_proposal_rejects_recipe_replacement_inside_plan_builder(tmp_path:
 
     launches = []
     monkeypatch.setattr(adaptive_hparam, "build_plan", replace_recipe_before_builder_read)
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", lambda *_args, **_kwargs: launches.append(True))
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", lambda *_args, **_kwargs: launches.append(True))
 
     with pytest.raises(ValueError, match="bound adaptive recipe"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
@@ -1740,7 +1748,7 @@ def test_agent_proposal_configuration_points_execute_as_exact_runs(tmp_path: Pat
         )
         return launch_manifest
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
 
     suggestion = adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
 
@@ -1808,7 +1816,7 @@ def test_agent_proposal_rejects_envelope_valid_joint_config_before_acceptance(
     events_before = (tmp_path / "events.jsonl").read_bytes()
     manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
     monkeypatch.setattr(
-        adaptive_hparam,
+        adaptive_replacement,
         "launch_hparam_runs",
         lambda *_args, **_kwargs: pytest.fail("Invalid agent candidate reached launch"),
     )

@@ -6,7 +6,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, adaptive_state, experiments, hparam_runtime, managed_scheduler, manifests
+from agent_tools import (
+    adaptive_hparam,
+    adaptive_replacement,
+    adaptive_state,
+    experiments,
+    hparam_runtime,
+    managed_scheduler,
+    manifests,
+)
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _read_table, _run, _write_fake_manifest
@@ -71,7 +79,7 @@ def test_execute_supersedes_canonical_pending_run_and_prevents_old_round_launch(
         )
         return launch_manifest
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: digest)
 
     adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -86,7 +94,7 @@ def test_execute_supersedes_canonical_pending_run_and_prevents_old_round_launch(
     before = [json.loads(line) for line in events_path.read_text().splitlines()]
     assert [event["event_type"] for event in before].count("supersede_pending_run") == 1
 
-    adaptive_hparam._supersede_pending_runs(workflow_dir, round_dir)
+    adaptive_replacement._supersede_pending_runs(workflow_dir, round_dir)
 
     after = [json.loads(line) for line in events_path.read_text().splitlines()]
     assert [event["event_type"] for event in after].count("supersede_pending_run") == 1
@@ -115,7 +123,7 @@ def test_supersede_uses_canonical_status_and_repairs_stale_round_mirrors(tmp_pat
     events_path = tmp_path / "events.jsonl"
     before = events_path.read_bytes()
 
-    adaptive_hparam._supersede_pending_runs(workflow_dir, round_dir)
+    adaptive_replacement._supersede_pending_runs(workflow_dir, round_dir)
 
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
     assert _read_table(round_dir / "run_status.tsv")[0]["status"] == "failed"
@@ -136,11 +144,11 @@ def test_supersede_event_uses_the_status_committed_by_the_canonical_owner(tmp_pa
         real_merge(root, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "failed"}])
         return real_merge(root, rows)
 
-    monkeypatch.setattr(adaptive_hparam, "merge_run_manifest", merge_after_wandb_update)
+    monkeypatch.setattr(adaptive_replacement, "merge_run_manifest", merge_after_wandb_update)
     events_path = tmp_path / "events.jsonl"
     before = events_path.read_bytes()
 
-    adaptive_hparam._supersede_pending_runs(workflow_dir, round_dir)
+    adaptive_replacement._supersede_pending_runs(workflow_dir, round_dir)
 
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
     assert _read_table(round_dir / "run_status.tsv")[0]["status"] == "failed"
@@ -161,11 +169,11 @@ def test_supersede_does_not_override_run_launched_after_eligibility_check(tmp_pa
         real_merge(root, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "running"}])
         return real_merge(root, rows)
 
-    monkeypatch.setattr(adaptive_hparam, "merge_run_manifest", merge_after_launch)
+    monkeypatch.setattr(adaptive_replacement, "merge_run_manifest", merge_after_launch)
     events_path = tmp_path / "events.jsonl"
     before = events_path.read_bytes()
 
-    adaptive_hparam._supersede_pending_runs(workflow_dir, round_dir)
+    adaptive_replacement._supersede_pending_runs(workflow_dir, round_dir)
 
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
     assert _read_table(round_dir / "run_status.tsv")[0]["status"] == "running"
@@ -189,7 +197,7 @@ def test_supersede_preflights_round_mirrors_before_canonical_commit(tmp_path: Pa
     before = manifest_path.read_bytes()
 
     with pytest.raises(ValueError, match="Managed file is missing or aliased"):
-        adaptive_hparam._supersede_pending_runs(workflow_dir, round_dir)
+        adaptive_replacement._supersede_pending_runs(workflow_dir, round_dir)
 
     assert manifest_path.read_bytes() == before
 
@@ -227,7 +235,7 @@ def test_adaptive_step_execute_resolves_relative_base_recipe_for_next_round(tmp_
         )
         return launch_manifest
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
 
     adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
@@ -261,8 +269,8 @@ def test_adaptive_step_preflights_next_round_before_stop_or_supersede(tmp_path: 
 
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: digest)
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: invalid)
-    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", lambda *_args, **_kwargs: calls.append("stop"))
-    monkeypatch.setattr(adaptive_hparam, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
+    monkeypatch.setattr(adaptive_replacement, "_stop_bad_running_runs", lambda *_args, **_kwargs: calls.append("stop"))
+    monkeypatch.setattr(adaptive_replacement, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
 
     for execute in (False, True):
         try:
@@ -311,8 +319,8 @@ def test_adaptive_step_keeps_current_runs_when_replacement_stage_raises(
     calls = []
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
-    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", lambda *_args, **_kwargs: calls.append("stop"))
-    monkeypatch.setattr(adaptive_hparam, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
+    monkeypatch.setattr(adaptive_replacement, "_stop_bad_running_runs", lambda *_args, **_kwargs: calls.append("stop"))
+    monkeypatch.setattr(adaptive_replacement, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
 
     if failure_stage == "build":
         monkeypatch.setattr(
@@ -328,7 +336,7 @@ def test_adaptive_step_keeps_current_runs_when_replacement_stage_raises(
         )
     else:
         monkeypatch.setattr(
-            adaptive_hparam,
+            adaptive_replacement,
             "launch_hparam_runs",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("launch failed")),
         )
@@ -363,7 +371,7 @@ def test_adaptive_step_commits_canonical_start_when_initial_launcher_raises(tmp_
     calls = []
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
-    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", lambda *_args, **_kwargs: calls.append("stop"))
+    monkeypatch.setattr(adaptive_replacement, "_stop_bad_running_runs", lambda *_args, **_kwargs: calls.append("stop"))
 
     def launch_then_raise(run_dir, *, dry_run=True):
         calls.append("launch")
@@ -374,7 +382,7 @@ def test_adaptive_step_commits_canonical_start_when_initial_launcher_raises(tmp_
         )
         raise RuntimeError("launch report failed")
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", launch_then_raise)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", launch_then_raise)
 
     with pytest.raises(
         RuntimeError,
@@ -420,7 +428,7 @@ def test_adaptive_round_commit_marker_follows_predecessor_supersede(tmp_path: Pa
             raise RuntimeError("round commit marker failed")
         real_append_event(root, event_type, payload)
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     monkeypatch.setattr(adaptive_state, "append_event", fail_round_commit)
 
     with pytest.raises(RuntimeError, match="round commit marker failed"):
@@ -595,8 +603,8 @@ def test_zero_start_replacement_rejects_aliased_round_commit(tmp_path: Path, mon
     calls = []
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
-    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", lambda *_args, **_kwargs: calls.append("stop"))
-    monkeypatch.setattr(adaptive_hparam, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
+    monkeypatch.setattr(adaptive_replacement, "_stop_bad_running_runs", lambda *_args, **_kwargs: calls.append("stop"))
+    monkeypatch.setattr(adaptive_replacement, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
 
     def fake_launch(run_dir, *, dry_run=True):
         launch_manifest = Path(run_dir) / "launch_manifest.tsv"
@@ -608,7 +616,7 @@ def test_zero_start_replacement_rejects_aliased_round_commit(tmp_path: Path, mon
         )
         return launch_manifest
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
 
     expected = (
         r"launch failed for .*was not committed"
@@ -742,7 +750,7 @@ def test_adaptive_step_blocks_uncommitted_execution_evidence(tmp_path: Path, mon
             )
             raise RuntimeError("launcher failed after execution observation")
 
-        monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fail_with_terminal_status)
+        monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fail_with_terminal_status)
         error = "launch failed"
 
     with pytest.raises(RuntimeError, match=error):
@@ -755,7 +763,7 @@ def test_adaptive_step_blocks_uncommitted_execution_evidence(tmp_path: Path, mon
         )
     elif uncommitted_evidence == "pid_read_error":
         monkeypatch.setattr(
-            adaptive_hparam.evidence,
+            adaptive_replacement.evidence,
             "read_process_identity",
             lambda *_args: (_ for _ in ()).throw(RuntimeError("PID read uncertain")),
         )
@@ -863,7 +871,7 @@ def test_published_unregistered_round_is_recovered_without_skipping_index(tmp_pa
         return Path(run_dir) / "launch_manifest.tsv"
 
     monkeypatch.setattr(adaptive_hparam.plan_hparam, "commit_hparam_plan", interrupt_first_commit)
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
 
     with pytest.raises(RuntimeError, match="registration interrupted"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -909,7 +917,7 @@ def test_published_unregistered_round_rejects_full_tree_drift(tmp_path: Path, mo
     (next_dir / "run_all.sh").write_text((next_dir / "run_all.sh").read_text() + "# drift\n")
     monkeypatch.setattr(adaptive_hparam.plan_hparam, "commit_hparam_plan", commit_plan)
     launches = []
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", lambda *_args, **_kwargs: launches.append(True))
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", lambda *_args, **_kwargs: launches.append(True))
 
     with pytest.raises(ValueError, match="differs from"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -1082,7 +1090,7 @@ def test_adaptive_step_mixed_initial_launch_failure_commits_the_live_replacement
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
     monkeypatch.setattr(
-        adaptive_hparam,
+        adaptive_replacement,
         "_bad_running_run_keys",
         lambda *_args: {adaptive_hparam.managed_run_key(run) for run in current_runs},
     )
@@ -1109,8 +1117,8 @@ def test_adaptive_step_mixed_initial_launch_failure_commits_the_live_replacement
         calls.append(f"stop:{run_id}")
         return Path(run_dir) / "run_status.tsv"
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
-    monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "stop_hparam_run", fake_stop)
 
     with pytest.raises(RuntimeError, match=r"launch failed.*already committed"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
