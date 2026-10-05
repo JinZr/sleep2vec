@@ -3,8 +3,9 @@
 Owns the ``adaptive/`` layout under a workflow root: round directories, the
 frozen ``workflow.json`` payload, the append-only ``run_registry.tsv``, the
 workflow's experiment events, and reconciliation of a launch that was
-interrupted before its round was committed, plus the recipe's adaptive settings
-and workflow objective accessors. ``adaptive_hparam`` drives the
+interrupted before its round was committed, plus the recipe's adaptive settings,
+suggest strategy and workflow objective accessors and the round-terminal and
+budget-exhausted checks over that state. ``adaptive_hparam`` drives the
 digest, proposal, registration and launch steps on top of this state.
 """
 
@@ -27,7 +28,9 @@ from . import (
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
+from .decision_hparam import DEFAULT_ADAPTIVE_SUGGEST_STRATEGY
 from .experiment_workspace import (
+    TERMINAL_STATUSES,
     AdaptiveEventPayload,
     AdaptiveInitEvent,
     PlanCreatedEvent,
@@ -130,6 +133,32 @@ def workflow_objective(root: Path, recipe: dict[str, Any]) -> adaptive_proposals
         "metric": str(workflow.get("objective_metric") or adaptive.get("objective_metric") or "test_auroc"),
         "mode": str(workflow.get("objective_mode") or adaptive.get("objective_mode") or "max"),
     }
+
+
+def suggest_strategy(recipe: dict[str, Any]) -> str:
+    suggest = adaptive_settings(recipe).get("suggest")
+    if not isinstance(suggest, dict):
+        return DEFAULT_ADAPTIVE_SUGGEST_STRATEGY
+    return str(suggest.get("strategy", DEFAULT_ADAPTIVE_SUGGEST_STRATEGY))
+
+
+def round_is_terminal(round_dir: Path, workspace: Path) -> bool:
+    plan = artifacts.read_hparam_plan(round_dir)
+    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    run_keys = [managed_run_key(run) for run in plan.get("runs", [])]
+    return bool(run_keys) and all(canonical_by_key.get(key, {}).get("status") in TERMINAL_STATUSES for key in run_keys)
+
+
+def budget_exhausted(root: Path, recipe: dict[str, Any], *, prospective_runs: int = 0) -> bool:
+    adaptive = adaptive_settings(recipe)
+    max_rounds = int(adaptive.get("max_rounds") or 1)
+    max_runs = int(adaptive.get("max_runs_total") or 10**9)
+    current_runs = len(read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True))
+    return (
+        len(committed_round_indexes(root)) >= max_rounds
+        or current_runs >= max_runs
+        or current_runs + prospective_runs > max_runs
+    )
 
 
 def validate_workflow_payload(
