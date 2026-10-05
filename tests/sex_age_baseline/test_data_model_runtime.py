@@ -12,7 +12,7 @@ import yaml
 
 from data.default_dataset import SampleIndex
 from sex_age_baseline.config import load_config
-from sex_age_baseline.data import load_split_dataset, make_dataloader
+from sex_age_baseline.data import _collate_records, load_split_dataset, make_dataloader
 from sex_age_baseline.model import SexAgeMLP
 import sex_age_baseline.runtime as baseline_runtime
 from sex_age_baseline.runtime import evaluate_model, masked_multilabel_bce
@@ -83,6 +83,7 @@ def _write_multilabel_sidecars(tmp_path: Path, keys: list[str], disease_count: i
 
 
 def _base_payload(index: Path, sidecars: dict[str, str], task_type: str) -> dict:
+    task_block = {"key_column": "eid", **sidecars, "covariates": ["age", "sex"], "covariate_embedding_dim": 4}
     finetune = {
         "task": {
             "type": task_type,
@@ -93,16 +94,13 @@ def _base_payload(index: Path, sidecars: dict[str, str], task_type: str) -> dict
         }
     }
     if task_type == "survival":
-        finetune["survival"] = {"key_column": "eid", **sidecars}
+        finetune["survival"] = task_block
     else:
-        finetune["multilabel"] = {"key_column": "eid", **sidecars}
+        finetune["multilabel"] = task_block
         finetune["loss"] = {"pos_weight": None}
     return {
         "model": {
             "name": "sex_age_mlp",
-            "features": ["age", "sex"],
-            "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4, "initialization": "default"},
-            "sex": {"encoding": "binary", "embedding_dim": 4, "initialization": "default"},
             "head": {
                 "name": "classification",
                 "hidden_dim": 8,
@@ -117,9 +115,8 @@ def _base_payload(index: Path, sidecars: dict[str, str], task_type: str) -> dict
             "finetune_preset_path": None,
             "kaldi_data_root": None,
             "kaldi_manifest": None,
-            "split_column": "split",
-            "key_column": "eid",
-            "deduplicate_by_key": True,
+            "train_dataset_names": None,
+            "test_dataset_names": None,
         },
         "finetune": finetune,
     }
@@ -145,8 +142,10 @@ def _parse_metadata_rows(rows: list[str]) -> list[dict[str, str]]:
 
 
 def _write_preset(path: Path, rows: list[str]) -> Path:
+    # A signal preset embeds the survival labels of each window next to its metadata.
+    labels = {"event_time": [10.0, 11.0], "is_event": [1.0, 1.0], "has_label": [1.0, 1.0]}
     samples = [
-        SampleIndex(id=row["eid"], path="ignored.npz", start=0, end=1, metadata=row)
+        SampleIndex(id=row["eid"], path="ignored.npz", start=0, end=1, metadata={**row, **labels})
         for row in _parse_metadata_rows(rows)
     ]
     with path.open("wb") as file_obj:
@@ -217,6 +216,14 @@ def _backend_data_config(tmp_path: Path, rows: list[str], backend: str) -> dict:
     raise ValueError(f"Unsupported test backend: {backend}")
 
 
+def _subjects(dataset) -> list[tuple[str, float, int]]:
+    """(key, age, sex) per record, encoded exactly as the batches the model receives."""
+    if not len(dataset):
+        return []
+    batch = _collate_records(dataset.records)
+    return list(zip(batch["key"], batch["metadata"]["age"].tolist(), batch["metadata"]["sex"].tolist()))
+
+
 def _runtime_args(config: Path, tmp_path: Path, *, version_name: str, epochs: int = 1, test_after_fit: bool = False):
     return Namespace(
         config=config,
@@ -251,134 +258,57 @@ def test_split_filtering_and_deduplication(tmp_path: Path):
             "003,test,55,1",
         ],
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
 
-    train = load_split_dataset(cfg, "train")
-    val = load_split_dataset(cfg, "val")
+    train = load_split_dataset(cfg, "train", sources=None)
+    val = load_split_dataset(cfg, "val", sources=None)
 
-    assert len(train) == 1
-    assert train[0].key == "001"
-    assert len(val) == 1
+    assert _subjects(train) == [("001", 50.0, 0)]
+    assert _subjects(val) == [("002", 60.0, 1)]
 
 
-def test_metadata_backends_produce_identical_subject_records(tmp_path: Path):
+@pytest.mark.parametrize("backend", ["npz_index", "npz_preset", "kaldi"])
+def test_metadata_backends_produce_identical_subject_records(tmp_path: Path, backend: str):
     rows = ["001,train,50,0", "001,train,50,0", "002,val,60,1", "003,test,55,0"]
-    index = _write_index(tmp_path / "index.csv", rows)
-    preset = _write_preset(tmp_path / "preset.pkl", rows)
-    kaldi_root, kaldi_manifest = _write_kaldi_root(tmp_path / "kaldi", rows)
-    configs = [
-        _write_config_for_data(
-            tmp_path / "npz-index",
-            rows,
-            {
-                "backend": "npz",
-                "finetune_data_index": str(index),
-                "finetune_preset_path": None,
-                "kaldi_data_root": None,
-                "kaldi_manifest": None,
-            },
-        ),
-        _write_config_for_data(
-            tmp_path / "npz-preset",
-            rows,
-            {
-                "backend": "npz",
-                "finetune_data_index": None,
-                "finetune_preset_path": str(preset),
-                "kaldi_data_root": None,
-                "kaldi_manifest": None,
-            },
-        ),
-        _write_config_for_data(
-            tmp_path / "kaldi-config",
-            rows,
-            {
-                "backend": "kaldi",
-                "finetune_data_index": None,
-                "finetune_preset_path": None,
-                "kaldi_data_root": str(kaldi_root),
-                "kaldi_manifest": str(kaldi_manifest),
-            },
-        ),
-    ]
+    data = _backend_data_config(tmp_path, rows, backend)
+    cfg = load_config(_write_config_for_data(tmp_path, rows, data))
 
-    records = []
-    for config in configs:
-        cfg = load_config(config, validate_sidecars=True)
-        records.append(
-            [
-                (record.key, record.features["age"], record.features["sex"])
-                for record in load_split_dataset(cfg, "train")
-            ]
-        )
+    dataset = load_split_dataset(cfg, "train", sources=None)
 
-    assert records == [[("001", 50.0, 0)], [("001", 50.0, 0)], [("001", 50.0, 0)]]
+    assert _subjects(dataset) == [("001", 50.0, 0)]
+    assert dataset.records[0].event_time.tolist() == [10.0, 11.0]
 
 
-def test_kaldi_manifest_split_key_fills_missing_split_column(tmp_path: Path):
-    rows = ["001,train,50,0", "002,val,60,1"]
+def test_kaldi_rows_belong_to_the_split_whose_manifest_lists_them(tmp_path: Path):
+    # KaldiPSGDataset reads only the requested split's manifest CSV and keeps the rows whose split column names it.
     kaldi_root = tmp_path / "kaldi"
     kaldi_root.mkdir()
-    (kaldi_root / "train.csv").write_text("eid,age,sex\n001,50,0\n")
-    (kaldi_root / "val.csv").write_text("eid,age,sex\n002,60,1\n")
+    (kaldi_root / "train.csv").write_text("eid,split,age,sex\n001,train,50,0\n002,val,60,1\n")
+    (kaldi_root / "val.csv").write_text("eid,split,age,sex\n003,val,55,0\n")
     kaldi_manifest = kaldi_root / "manifest.json"
     kaldi_manifest.write_text(
         json.dumps({"splits": {"train": {"manifest": "train.csv"}, "val": {"manifest": "val.csv"}}})
     )
-    config = _write_config_for_data(
-        tmp_path,
-        rows,
-        {
-            "backend": "kaldi",
-            "finetune_data_index": None,
-            "finetune_preset_path": None,
-            "kaldi_data_root": str(kaldi_root),
-            "kaldi_manifest": str(kaldi_manifest),
-        },
-    )
-    cfg = load_config(config, validate_sidecars=True)
+    data = {
+        "backend": "kaldi",
+        "finetune_data_index": None,
+        "kaldi_data_root": str(kaldi_root),
+        "kaldi_manifest": str(kaldi_manifest),
+    }
+    cfg = load_config(_write_config_for_data(tmp_path, ["001,train,50,0", "002,val,60,1", "003,val,55,0"], data))
 
-    train = load_split_dataset(cfg, "train")
-    val = load_split_dataset(cfg, "val")
-
-    assert [(record.key, record.features["age"], record.features["sex"]) for record in train] == [("001", 50.0, 0)]
-    assert [(record.key, record.features["age"], record.features["sex"]) for record in val] == [("002", 60.0, 1)]
+    assert _subjects(load_split_dataset(cfg, "train", sources=None)) == [("001", 50.0, 0)]
+    assert _subjects(load_split_dataset(cfg, "val", sources=None)) == [("003", 55.0, 0)]
 
 
-def test_conflicting_duplicate_metadata_fails(tmp_path: Path):
-    config = _write_config(tmp_path, ["001,train,50,female", "001,train,51,female"])
-    cfg = load_config(config, validate_sidecars=True)
-
-    with pytest.raises(ValueError, match="conflicting age"):
-        load_split_dataset(cfg, "train")
-
-
-@pytest.mark.parametrize("backend", ["npz_preset", "kaldi"])
-def test_conflicting_duplicate_metadata_fails_for_non_index_backends(tmp_path: Path, backend: str):
+@pytest.mark.parametrize("backend", ["npz_index", "npz_preset", "kaldi"])
+def test_conflicting_duplicate_metadata_fails(tmp_path: Path, backend: str):
     rows = ["001,train,50,0", "001,train,51,0"]
-    if backend == "npz_preset":
-        preset = _write_preset(tmp_path / "preset.pkl", rows)
-        data = {
-            "backend": "npz",
-            "finetune_data_index": None,
-            "finetune_preset_path": str(preset),
-            "kaldi_data_root": None,
-            "kaldi_manifest": None,
-        }
-    else:
-        kaldi_root, kaldi_manifest = _write_kaldi_root(tmp_path / "kaldi", rows)
-        data = {
-            "backend": "kaldi",
-            "finetune_data_index": None,
-            "finetune_preset_path": None,
-            "kaldi_data_root": str(kaldi_root),
-            "kaldi_manifest": str(kaldi_manifest),
-        }
-    config = _write_config_for_data(tmp_path, rows, data)
-    cfg = load_config(config, validate_sidecars=True)
+    data = _backend_data_config(tmp_path, rows, backend)
+    cfg = load_config(_write_config_for_data(tmp_path, rows, data))
 
     with pytest.raises(ValueError, match="conflicting age"):
-        load_split_dataset(cfg, "train")
+        load_split_dataset(cfg, "train", sources=None)
 
 
 @pytest.mark.parametrize("backend", ["npz_preset", "kaldi"])
@@ -389,13 +319,7 @@ def test_missing_metadata_columns_fail_for_non_index_backends(tmp_path: Path, ba
         preset = tmp_path / "preset.pkl"
         with preset.open("wb") as file_obj:
             pickle.dump([sample], file_obj)
-        data = {
-            "backend": "npz",
-            "finetune_data_index": None,
-            "finetune_preset_path": str(preset),
-            "kaldi_data_root": None,
-            "kaldi_manifest": None,
-        }
+        data = {"backend": "npz", "finetune_data_index": None, "finetune_preset_path": str(preset)}
     else:
         kaldi_root = tmp_path / "kaldi"
         kaldi_root.mkdir()
@@ -405,74 +329,53 @@ def test_missing_metadata_columns_fail_for_non_index_backends(tmp_path: Path, ba
         data = {
             "backend": "kaldi",
             "finetune_data_index": None,
-            "finetune_preset_path": None,
             "kaldi_data_root": str(kaldi_root),
             "kaldi_manifest": str(kaldi_manifest),
         }
-    config = _write_config_for_data(tmp_path, rows, data)
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(_write_config_for_data(tmp_path, rows, data))
 
-    with pytest.raises(ValueError, match="missing|required|Invalid selected covariates"):
-        load_split_dataset(cfg, "train")
-
-
-def test_invalid_sex_fails(tmp_path: Path):
-    config = _write_config(tmp_path, ["001,train,50,unknown"])
-    cfg = load_config(config, validate_sidecars=True)
-
-    with pytest.raises(ValueError, match="Invalid selected covariates.*sex"):
-        load_split_dataset(cfg, "train")
+    with pytest.raises(ValueError, match=r"missing required columns: \['age', 'sex'\]"):
+        load_split_dataset(cfg, "train", sources=None)
 
 
 @pytest.mark.parametrize("backend", ["npz_index", "npz_preset", "kaldi"])
-def test_unused_split_metadata_values_do_not_block_selected_split(tmp_path: Path, backend: str):
-    rows = ["001,train,50,0", "002,val,60,1", "003,test,,unknown"]
+def test_rows_with_invalid_covariates_are_dropped_from_the_selected_split(tmp_path: Path, backend: str):
+    # The signal loader's required-metadata filter drops these rows; the baseline keeps the same cohort.
+    rows = ["001,train,50,0", "004,train,61,unknown", "002,val,60,1", "003,test,,unknown"]
     data = _backend_data_config(tmp_path, rows, backend)
-    config = _write_config_for_data(tmp_path, rows, data)
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(_write_config_for_data(tmp_path, rows, data))
 
-    assert [
-        (record.key, record.features["age"], record.features["sex"]) for record in load_split_dataset(cfg, "train")
-    ] == [("001", 50.0, 0)]
-    assert [
-        (record.key, record.features["age"], record.features["sex"]) for record in load_split_dataset(cfg, "val")
-    ] == [("002", 60.0, 1)]
-
-    with pytest.raises(ValueError, match="age"):
-        load_split_dataset(cfg, "test")
+    assert _subjects(load_split_dataset(cfg, "train", sources=None)) == [("001", 50.0, 0)]
+    assert _subjects(load_split_dataset(cfg, "val", sources=None)) == [("002", 60.0, 1)]
+    assert _subjects(load_split_dataset(cfg, "test", sources=None)) == []
 
 
 def test_unused_split_duplicate_metadata_does_not_block_selected_split(tmp_path: Path):
     config = _write_config(tmp_path, ["001,train,50,0", "002,val,60,1", "001,test,55,1"])
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
 
-    assert [
-        (record.key, record.features["age"], record.features["sex"])
-        for record in load_split_dataset(cfg, "train", loaded_splits=["train", "val"])
-    ] == [("001", 50.0, 0)]
-    assert [
-        (record.key, record.features["age"], record.features["sex"])
-        for record in load_split_dataset(cfg, "val", loaded_splits=["train", "val"])
-    ] == [("002", 60.0, 1)]
+    assert _subjects(load_split_dataset(cfg, "train", sources=None, loaded_splits=["train", "val"])) == [
+        ("001", 50.0, 0)
+    ]
+    assert _subjects(load_split_dataset(cfg, "val", sources=None, loaded_splits=["train", "val"])) == [("002", 60.0, 1)]
 
     with pytest.raises(ValueError, match="multiple loaded splits"):
-        load_split_dataset(cfg, "train", loaded_splits=["train", "val", "test"])
+        load_split_dataset(cfg, "train", sources=None, loaded_splits=["train", "val", "test"])
 
 
 @pytest.mark.parametrize("backend", ["npz_index", "npz_preset", "kaldi"])
 def test_loaded_split_key_reuse_fails_before_metadata_parsing(tmp_path: Path, backend: str):
     rows = ["001,train,50,0", "001,val,bad,unknown", "002,test,,unknown"]
     data = _backend_data_config(tmp_path, rows, backend)
-    config = _write_config_for_data(tmp_path, rows, data)
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(_write_config_for_data(tmp_path, rows, data))
 
     with pytest.raises(ValueError, match="multiple loaded splits"):
-        load_split_dataset(cfg, "train", loaded_splits=["train", "val"])
+        load_split_dataset(cfg, "train", sources=None, loaded_splits=["train", "val"])
 
 
 def test_train_rejects_key_reused_across_train_val(tmp_path: Path, monkeypatch):
     config = _write_config(tmp_path, ["001,train,50,0", "001,val,50,0"])
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(ValueError, match="multiple loaded splits"):
@@ -482,7 +385,7 @@ def test_train_rejects_key_reused_across_train_val(tmp_path: Path, monkeypatch):
 @pytest.mark.parametrize("task_type", ["survival", "multilabel_classification"])
 def test_model_forward_shape(tmp_path: Path, task_type: str):
     config = _write_config(tmp_path, ["001,train,50,0", "002,train,60,1"], task_type=task_type)
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     model = SexAgeMLP(cfg)
 
     logits = model({"age": torch.tensor([50.0, 60.0]), "sex": torch.tensor([0, 1])})
@@ -497,8 +400,8 @@ def test_cox_eval_reports_val_c_index(tmp_path: Path):
         ["001,val,50,0", "002,val,60,1", "003,val,55,0"],
         task_type="survival",
     )
-    cfg = load_config(config, validate_sidecars=True)
-    dataset = load_split_dataset(cfg, "val")
+    cfg = load_config(config)
+    dataset = load_split_dataset(cfg, "val", sources=None)
     loader = make_dataloader(dataset, batch_size=3, num_workers=0, shuffle=False)
     model = SexAgeMLP(cfg)
 
@@ -506,8 +409,9 @@ def test_cox_eval_reports_val_c_index(tmp_path: Path):
 
     assert "val_c_index" in result.metrics
     assert result.survival_per_disease_rows
-    assert [row["paths"] for row in result.prediction_rows] == [["001"], ["002"], ["003"]]
+    assert [row["path"] for row in result.prediction_rows] == ["001", "002", "003"]
     assert all(row["path"] == row["survival_key"] for row in result.prediction_rows)
+    assert all(row["n_windows"] == 1 and row["token_starts"] == [0] for row in result.prediction_rows)
 
 
 def test_multilabel_masked_bce_ignores_invalid_cells():
@@ -531,8 +435,8 @@ def test_multilabel_eval_reports_macro_and_micro_metrics(tmp_path: Path):
         ["001,val,50,0", "002,val,60,1", "003,val,55,0", "004,val,65,1"],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
-    dataset = load_split_dataset(cfg, "val")
+    cfg = load_config(config)
+    dataset = load_split_dataset(cfg, "val", sources=None)
     loader = make_dataloader(dataset, batch_size=4, num_workers=0, shuffle=False)
     model = SexAgeMLP(cfg)
 
@@ -547,7 +451,7 @@ def test_multilabel_eval_reports_macro_and_micro_metrics(tmp_path: Path):
 
 def test_train_rejects_non_empty_run_dir_before_loading_data(tmp_path: Path, monkeypatch):
     config = _write_config(tmp_path, ["001,train,50,0"], task_type="multilabel_classification")
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     run_dir = tmp_path / "log-finetune" / "reused"
     run_dir.mkdir(parents=True)
@@ -559,7 +463,7 @@ def test_train_rejects_non_empty_run_dir_before_loading_data(tmp_path: Path, mon
 
 def test_train_rejects_run_directory_symlink_before_loading_data(tmp_path: Path, monkeypatch):
     config = _write_config(tmp_path, ["001,train,50,0"], task_type="multilabel_classification")
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     target = tmp_path / "empty-target"
     target.mkdir()
@@ -582,7 +486,7 @@ def test_train_fails_when_configured_monitor_is_missing(tmp_path: Path, monkeypa
     payload = yaml.safe_load(config.read_text())
     payload["finetune"]["task"]["monitor"] = "val_missing_metric"
     _write_yaml(config, payload)
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(ValueError, match="val_missing_metric.*Available metrics"):
@@ -595,7 +499,7 @@ def test_train_fails_without_finite_best_checkpoint(tmp_path: Path, monkeypatch)
         ["001,train,50,0", "002,val,60,1"],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(ValueError, match="No finite best checkpoint"):
@@ -613,7 +517,7 @@ def test_zero_epoch_train_requires_checkpoint(tmp_path: Path, monkeypatch, test_
         ["001,train,50,0", "002,val,60,1"],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     version_name = f"zero-epoch-no-ckpt-{test_after_fit}"
     monkeypatch.chdir(tmp_path)
 
@@ -639,7 +543,7 @@ def test_negative_epochs_fail_before_run_directory(tmp_path: Path, monkeypatch, 
         ["001,train,50,0", "002,val,60,1"],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     version_name = f"negative-epochs-{test_after_fit}"
     monkeypatch.chdir(tmp_path)
 
@@ -689,7 +593,7 @@ def test_nonpositive_checkpoint_interval_fails_before_run_directory(
         ["001,train,50,0", "002,val,60,1"],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     version_name = f"bad-ckpt-interval-{ckpt_every_n_epochs}"
     args = _runtime_args(config, tmp_path, version_name=version_name)
     args.ckpt_every_n_epochs = ckpt_every_n_epochs
@@ -712,7 +616,7 @@ def test_zero_epoch_checkpoint_eval_skips_train_val_splits(tmp_path: Path, monke
         ],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     ckpt = tmp_path / "model.ckpt"
     baseline_runtime.save_checkpoint(ckpt, SexAgeMLP(cfg), cfg, epoch=0, global_step=0, metrics={})
     monkeypatch.chdir(tmp_path)
@@ -745,8 +649,8 @@ def test_checkpoint_rejects_incompatible_label_order(tmp_path: Path):
             "survival",
         ),
     )
-    saved_cfg = load_config(saved_config, validate_sidecars=True)
-    current_cfg = load_config(current_config, validate_sidecars=True)
+    saved_cfg = load_config(saved_config)
+    current_cfg = load_config(current_config)
     ckpt = tmp_path / "model.ckpt"
     baseline_runtime.save_checkpoint(ckpt, SexAgeMLP(saved_cfg), saved_cfg, epoch=0, global_step=0, metrics={})
 
@@ -760,10 +664,11 @@ def test_checkpoint_rejects_incompatible_model_contract(tmp_path: Path):
     sidecars = _write_survival_sidecars(tmp_path / "sidecars", ["001", "002"])
     saved_config = _write_yaml(tmp_path / "saved.yaml", _base_payload(index, sidecars, "survival"))
     current_payload = _base_payload(index, sidecars, "survival")
-    current_payload["model"]["age"]["scale"] = 10.0
+    # Same parameter shapes, different frozen covariate scaling.
+    current_payload["finetune"]["survival"]["covariate_normalization"] = {"age": {"mean": 50.0, "std": 10.0}}
     current_config = _write_yaml(tmp_path / "current.yaml", current_payload)
-    saved_cfg = load_config(saved_config, validate_sidecars=True)
-    current_cfg = load_config(current_config, validate_sidecars=True)
+    saved_cfg = load_config(saved_config)
+    current_cfg = load_config(current_config)
     ckpt = tmp_path / "model.ckpt"
     baseline_runtime.save_checkpoint(ckpt, SexAgeMLP(saved_cfg), saved_cfg, epoch=0, global_step=0, metrics={})
 
@@ -784,7 +689,7 @@ def test_test_after_fit_writers_receive_test_eval_split(tmp_path: Path, monkeypa
         ],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     seen_splits = []
 
@@ -817,7 +722,7 @@ def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_me
         ],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "lexical").mkdir()
     frozen_checkpoint_dir = tmp_path / "lexical" / ".." / "log-finetune" / "all-checkpoints" / "checkpoints"
@@ -921,7 +826,7 @@ def test_finetune_writes_predictions_only_with_export_flag(tmp_path: Path, monke
         ],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
 
     baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="no-export", test_after_fit=True), cfg)
@@ -949,7 +854,7 @@ def test_all_checkpoint_test_rejects_missing_validation_best_periodic_checkpoint
         ],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     args = _runtime_args(config, tmp_path, version_name="missing-best-periodic", epochs=2, test_after_fit=True)
     args.test_all_checkpoints_after_fit = True
@@ -979,7 +884,7 @@ def test_all_checkpoint_test_failure_preserves_existing_results_csv(tmp_path: Pa
         ],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     args = _runtime_args(config, tmp_path, version_name="failed-all-checkpoints", epochs=2, test_after_fit=True)
     args.test_all_checkpoints_after_fit = True
@@ -1030,7 +935,7 @@ def test_all_checkpoint_artifact_failure_preserves_existing_results_csv(
         ],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     args = _runtime_args(config, tmp_path, version_name=f"failed-{artifact_writer}", epochs=2, test_after_fit=True)
     args.test_all_checkpoints_after_fit = True
@@ -1069,8 +974,8 @@ def test_infer_run_inference_callable_validates_and_delegates(tmp_path: Path, mo
     cfg = object()
     calls = []
 
-    def fake_load_config(path, *, validate_sidecars):
-        calls.append(("load_config", path, validate_sidecars))
+    def fake_load_config(path):
+        calls.append(("load_config", path))
         return cfg
 
     def fake_run_inference_and_save(args, loaded_cfg):
@@ -1101,7 +1006,7 @@ def test_infer_run_inference_callable_validates_and_delegates(tmp_path: Path, mo
     infer_mod.run_inference(args)
 
     assert calls == [
-        ("load_config", config, True),
+        ("load_config", config),
         ("run", str(ckpt), "cpu", cfg),
     ]
 
@@ -1118,11 +1023,15 @@ def test_inference_runtime_passes_custom_results_root(tmp_path: Path, monkeypatc
         device="cpu",
         seed=4523,
         inference_preset_path=None,
+        override_dataset_names=None,
         results_root=results_root,
         avg_ckpts=1,
         wandb=False,
     )
-    cfg = Namespace(finetune=Namespace(task=Namespace(type="regression")))
+    cfg = Namespace(
+        finetune=Namespace(task=Namespace(type="regression")),
+        data=Namespace(train_dataset_names=None, test_dataset_names=None),
+    )
     result = baseline_runtime.EvaluationResult(
         metrics={"test_mae": 1.0},
         prediction_rows=[],
@@ -1184,7 +1093,7 @@ def test_validation_and_checkpoint_cadence_preserve_actual_last_state(tmp_path: 
         ["001,train,50,0", "002,train,60,1", "003,val,55,0", "004,val,65,1"],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     args = _runtime_args(config, tmp_path, version_name="cadence", epochs=3)
     args.check_val_every_n_epoch = 2
@@ -1268,7 +1177,7 @@ def test_trainer_maps_cuda_device_index_to_gpu_devices_and_forwards_logger(monke
 )
 def test_finetune_creates_wandb_logger_like_sleep2vec(tmp_path: Path, monkeypatch, project, mode, expected_project):
     config = _write_config(tmp_path, ["001,train,50,0", "002,val,60,1"], task_type="multilabel_classification")
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     calls = []
     monkeypatch.setattr(baseline_runtime, "WandbLogger", lambda **kwargs: calls.append(kwargs) or "logger")
@@ -1307,7 +1216,7 @@ def test_accumulation_uses_actual_optimizer_step_budget(tmp_path: Path, monkeypa
         ["001,train,50,0", "002,train,60,1", "003,val,55,0", "004,val,65,1"],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     args = _runtime_args(config, tmp_path, version_name="accumulation", epochs=2)
     args.batch_size = 1
@@ -1339,7 +1248,7 @@ def test_wsd_scheduler_holds_lr_until_final_decay_steps(tmp_path: Path, monkeypa
         ["001,train,50,0", "002,train,60,1", "003,val,55,0", "004,val,65,1"],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     args = _scheduler_training_args(config, tmp_path, "wsd", lr_scheduler="wsd", lr_decay_ratio=0.25)
 
@@ -1359,7 +1268,7 @@ def test_plateau_scheduler_steps_once_per_validation_with_task_monitor(tmp_path:
         ["001,train,50,0", "002,train,60,1", "003,val,55,0", "004,val,65,1"],
         task_type="multilabel_classification",
     )
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     args = _scheduler_training_args(
         config, tmp_path, "plateau", lr_scheduler="plateau", lr_plateau_factor=0.5, lr_plateau_patience=0
@@ -1386,7 +1295,7 @@ def test_plateau_scheduler_steps_once_per_validation_with_task_monitor(tmp_path:
 )
 def test_scheduler_arguments_are_validated_before_run_directory(tmp_path: Path, monkeypatch, scheduler, message):
     config = _write_config(tmp_path, ["001,train,50,0", "002,val,60,1"], task_type="multilabel_classification")
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(config)
     monkeypatch.chdir(tmp_path)
     args = _scheduler_training_args(config, tmp_path, "bad-scheduler", **scheduler)
 
@@ -1421,7 +1330,7 @@ def _inference_ckpt_args(ckpt_path: str, avg_ckpts: int, avg_ckpt_dir: Path | No
 
 
 def test_inference_averages_epoch_checkpoints_ending_at_ckpt_path(tmp_path: Path):
-    cfg = load_config(_write_config(tmp_path, ["001,test,50,0", "002,test,60,1"]), validate_sidecars=True)
+    cfg = load_config(_write_config(tmp_path, ["001,test,50,0", "002,test,60,1"]))
     root = tmp_path / "checkpoints"
     models = _save_epoch_checkpoints(root, cfg)
     model = SexAgeMLP(cfg)
@@ -1438,7 +1347,7 @@ def test_inference_averages_epoch_checkpoints_ending_at_ckpt_path(tmp_path: Path
 
 @pytest.mark.parametrize("alias", ["best", "last"])
 def test_inference_alias_selects_latest_epoch_checkpoints_in_avg_dir(tmp_path: Path, alias: str):
-    cfg = load_config(_write_config(tmp_path, ["001,test,50,0", "002,test,60,1"]), validate_sidecars=True)
+    cfg = load_config(_write_config(tmp_path, ["001,test,50,0", "002,test,60,1"]))
     root = tmp_path / "checkpoints"
     models = _save_epoch_checkpoints(root, cfg)
     model = SexAgeMLP(cfg)
@@ -1456,7 +1365,7 @@ def test_inference_alias_selects_latest_epoch_checkpoints_in_avg_dir(tmp_path: P
     [(1, True, "only with --avg-ckpts > 1"), (2, False, "Use --avg-ckpt-dir")],
 )
 def test_inference_alias_requires_averaging_directory(tmp_path: Path, avg_ckpts: int, with_dir: bool, message: str):
-    cfg = load_config(_write_config(tmp_path, ["001,test,50,0", "002,test,60,1"]), validate_sidecars=True)
+    cfg = load_config(_write_config(tmp_path, ["001,test,50,0", "002,test,60,1"]))
     root = tmp_path / "checkpoints"
     _save_epoch_checkpoints(root, cfg)
 
@@ -1470,12 +1379,11 @@ def test_inference_averaging_rejects_incompatible_model_contract(tmp_path: Path)
     rows = ["001,test,50,0", "002,test,60,1"]
     index = _write_index(tmp_path / "index.csv", rows)
     sidecars = _write_survival_sidecars(tmp_path / "sidecars", ["001", "002"])
-    saved_cfg = load_config(
-        _write_yaml(tmp_path / "saved.yaml", _base_payload(index, sidecars, "survival")), validate_sidecars=True
-    )
+    saved_cfg = load_config(_write_yaml(tmp_path / "saved.yaml", _base_payload(index, sidecars, "survival")))
     current_payload = _base_payload(index, sidecars, "survival")
-    current_payload["model"]["age"]["scale"] = 10.0
-    current_cfg = load_config(_write_yaml(tmp_path / "current.yaml", current_payload), validate_sidecars=True)
+    # Same parameter shapes, different frozen covariate scaling.
+    current_payload["finetune"]["survival"]["covariate_normalization"] = {"age": {"mean": 50.0, "std": 10.0}}
+    current_cfg = load_config(_write_yaml(tmp_path / "current.yaml", current_payload))
     root = tmp_path / "checkpoints"
     _save_epoch_checkpoints(root, saved_cfg)
 

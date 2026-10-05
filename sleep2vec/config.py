@@ -435,8 +435,8 @@ def _build_model_config(model_block: t.Any, *, require_head: bool) -> ModelConfi
         raise ValueError("model.cls is required in YAML.")
 
     channels = _require_channels(model_block)
-    backbone = BackboneConfig(**model_block.get("backbone"))
-    projection = ProjectionConfig(**model_block.get("projection"))
+    backbone = BackboneConfig(**model_block["backbone"])
+    projection = ProjectionConfig(**model_block["projection"])
     cls_cfg = _build_cls_config(model_block)
     head = _build_head_config(model_block, required=require_head)
     return ModelConfig(
@@ -899,6 +899,8 @@ def _build_finetune_tuning_config(raw: t.Any) -> FinetuneTuningConfig:
             elif lr_scale is None:
                 lr_scale = base[name][1] if base is not None else 1.0
         else:
+            # Only the custom preset has no base table, and it was required to override every group.
+            assert base is not None
             train, lr_scale = base[name]
         groups[name] = FinetuneGroupConfig(train=train, lr_scale=float(lr_scale))
 
@@ -1042,9 +1044,9 @@ def _validate_adapt_config(adapt_cfg: AdaptConfig | None, model_cfg: ModelConfig
 
 def validate_model_config(model_cfg: ModelConfig) -> int:
     """Checks model config sanity and returns the shared channel feature dim."""
-    out_dims = {ch.tokenizer.out_dim for ch in model_cfg.channels}
-    if None in out_dims:
+    if any(ch.tokenizer.out_dim is None for ch in model_cfg.channels):
         raise ValueError("All channels must specify tokenizer.out_dim.")
+    out_dims = {ch.tokenizer.out_dim for ch in model_cfg.channels if ch.tokenizer.out_dim is not None}
     if len(out_dims) != 1:
         raise ValueError("All channels must share the same out_dim for now. " f"Got: {sorted(out_dims)}")
 

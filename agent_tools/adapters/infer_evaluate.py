@@ -52,22 +52,6 @@ def _recipe_preset_field(recipe: dict[str, Any]) -> str | None:
     return "inference_preset_path" if str(recipe.get("task")) in _INFER_EVALUATE_TASKS else None
 
 
-def sex_age_override_dataset_names_issue(task: str, recipe: dict) -> DecisionIssue | None:
-    if recipe.get("variant") != "sex_age_baseline" or task not in _INFER_EVALUATE_TASKS:
-        return None
-    inputs = recipe_inputs(recipe)
-    value = inputs.get("override_dataset_names")
-    if value in (None, "", "ASK_USER"):
-        return None
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        "override_dataset_names",
-        "sex_age_baseline does not support override_dataset_names.",
-        None,
-        {"variant": "sex_age_baseline", "override_dataset_names": value},
-    )
-
-
 class InferEvaluateAdapter(TaskAdapter):
     recipe_extra_fields = frozenset({"artifacts", "evaluation_policy", "execution", "inputs", "runtime"})
     artifact_fields = frozenset({"overwrite"})
@@ -166,9 +150,6 @@ class InferEvaluateAdapter(TaskAdapter):
         averaging_issue = inference_checkpoint_averaging_issue(recipe, inputs.get("ckpt_path"))
         if averaging_issue is not None:
             issues.append(averaging_issue)
-        override_issue = sex_age_override_dataset_names_issue(str(recipe.get("task")), recipe)
-        if override_issue is not None:
-            issues.append(override_issue)
         survival_issue = survival_sidecar_issue(
             str(recipe.get("task")),
             recipe,
@@ -207,7 +188,7 @@ class InferEvaluateAdapter(TaskAdapter):
                     "--eval-split",
                     inputs.get("eval_split"),
                     *infer_runtime_cli_args(runtime),
-                    *infer_input_cli_args(inputs, variant=str(recipe.get("variant"))),
+                    *infer_input_cli_args(inputs),
                 ]
             )
         ]

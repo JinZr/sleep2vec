@@ -63,6 +63,13 @@ def parse_args() -> argparse.Namespace:
         help="Dataset split to evaluate.",
     )
     parser.add_argument(
+        "--override-dataset-names",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Optional dataset name list to override YAML train/test lists.",
+    )
+    parser.add_argument(
         "--inference-preset-path",
         type=Path,
         default=None,
@@ -138,7 +145,7 @@ def run_inference(args: argparse.Namespace) -> None:
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
         args.ckpt_path = str(ckpt_path)
-    cfg = load_config(args.config, validate_sidecars=True)
+    cfg = load_config(args.config)
     run_inference_and_save(args, cfg)
 
 

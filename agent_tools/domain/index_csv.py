@@ -1,4 +1,4 @@
-"""Dataset index CSV summaries: coverage, labels, covariates, and sampled path checks.
+"""Dataset index CSV summaries: coverage, labels, task covariates, and sampled path checks.
 
 Domain module, but a config-summary *consumer* rather than a leaf: it imports
 ``configs`` and ``configs`` never imports it back, so the edge stays one-way and
@@ -11,11 +11,7 @@ That import is also why this module must not be aggregated in
 
 from __future__ import annotations
 
-import json
-import math
-from numbers import Integral, Real
 from pathlib import Path
-import pickle
 from typing import Any, TypedDict
 
 import pandas as pd
@@ -88,7 +84,7 @@ class IndexSummary(IndexStatistics):
     source_counts: dict[Any, int]
     survival_key: KeySummary | None
     multilabel_key: KeySummary | None
-    survival_covariates: dict[str, CovariateSummary]
+    covariates: dict[str, CovariateSummary]
     sample_path_check: SamplePathCheck
     warnings: list[str]
     blocking_issues: list[str]
@@ -187,7 +183,6 @@ def index_summary(
     local_path_base: str | Path | None = None,
     label_name: str | None = None,
     split_values: list[str] | None = None,
-    preset_path: str | Path | None = None,
     sample_path_check: int = 0,
     sample_npz_check: int = 0,
     validated_summary: tuple[ConfigSummaryInput, dict[str, set[str]]] | None = None,
@@ -204,43 +199,18 @@ def index_summary(
         survival_sidecar_keys = validated_sidecar_keys.get("survival")
         multilabel_sidecar_keys = validated_sidecar_keys.get("multilabel")
     survival_key_column = _survival_key_column(cfg)
-    survival_covariate_names = _survival_covariates(cfg)
+    covariate_names = _task_covariates(cfg)
     multilabel_key_column = _multilabel_key_column(cfg)
-    data_summary: Any = (cfg or {}).get("data") or {}
-    split_column = str(data_summary.get("split_column") or "split")
+    split_column = "split"
     read_csv_kwargs: dict[str, Any] = {"low_memory": False}
     converters = {key_column: str for key_column in (survival_key_column, multilabel_key_column) if key_column}
     if converters:
         read_csv_kwargs["converters"] = converters
-    source_issues: list[str] = []
-    if not paths and _uses_sex_age_preset_metadata(cfg, preset_path):
-        frames, paths, missing_inputs, source_issues = _sex_age_preset_frames(
-            cfg,
-            preset_path,
-            local_path_base=local_path_base,
-        )
-    elif not paths and _uses_sex_age_kaldi_manifest(cfg):
-        frames, paths, missing_inputs, source_issues = _kaldi_manifest_frames(
-            cfg,
-            split_column=split_column,
-            read_csv_kwargs=read_csv_kwargs,
-            local_path_base=local_path_base,
-        )
-    else:
-        missing_inputs = [str(path) for path in paths if not path.exists()]
-        frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
+    missing_inputs = [str(path) for path in paths if not path.exists()]
+    frames = [pd.read_csv(path, **read_csv_kwargs) for path in paths if path.exists()]
     df = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
     df = _filter_splits(df, split_values, split_column=split_column)
-    if cfg and cfg.get("authoritative_variant") == "sex_age_baseline":
-        summary: Any = cfg
-        required_names: tuple[str, ...] = (
-            data_summary.get("key_column") or "eid",
-            split_column,
-            *((summary.get("model") or {}).get("features") or []),
-            *(("path", "token_start") if data_summary.get("deduplicate_by_key") is False else ()),
-        )
-    else:
-        required_names = ("path", "split", "duration")
+    required_names = ("path", "split", "duration")
     required_columns = {name: name in df.columns for name in required_names}
     statistics = _index_statistics(df, cfg, label_name=label_name, split_column=split_column)
 
@@ -255,28 +225,9 @@ def index_summary(
 
     warnings: list[str] = []
     blocking_issues = [f"Index CSV not found: {path}" for path in missing_inputs]
-    blocking_issues.extend(source_issues)
     for column, exists in required_columns.items():
         if not exists:
             blocking_issues.append(f"Index CSV missing required column: {column}")
-    if cfg and cfg.get("authoritative_variant") == "sex_age_baseline":
-        summary = cfg
-        blocking_issues.extend(
-            _sex_age_metadata_value_issues(
-                df,
-                key_column=str(data_summary.get("key_column") or "eid"),
-                split_column=split_column,
-                features=(summary.get("model") or {}).get("features", []),
-            )
-        )
-        blocking_issues.extend(_sex_age_requested_split_issues(df, split_values, split_column=split_column))
-        if data_summary.get("deduplicate_by_key") is False:
-            if "path" in df and _blank_values(df["path"]).any():
-                blocking_issues.append("Window mode requires a non-empty path for every sample.")
-            if "token_start" in df:
-                starts = pd.to_numeric(df["token_start"], errors="coerce")
-                if (~starts.map(math.isfinite) | (starts < 0) | (starts % 1 != 0)).any():
-                    blocking_issues.append("Window token_start must be a finite non-negative integer.")
     survival_key = _key_summary(df, survival_key_column, sidecar_keys=survival_sidecar_keys)
     if survival_key is not None and not survival_key["exists"]:
         blocking_issues.append(f"Index CSV missing required survival key column: {survival_key_column}")
@@ -299,12 +250,12 @@ def index_summary(
             f"Index CSV contains multilabel key values missing from sidecars in column {multilabel_key_column}: "
             f"{multilabel_key['missing_from_sidecars']} missing (examples: {examples})"
         )
-    survival_covariates = _survival_covariate_summary(df, survival_covariate_names)
-    for covariate, details in survival_covariates.items():
+    covariates = _covariate_summary(df, covariate_names)
+    for covariate, details in covariates.items():
         if not details["exists"]:
-            blocking_issues.append(f"Index CSV missing required survival covariate column: {covariate}")
+            blocking_issues.append(f"Index CSV missing required covariate column: {covariate}")
         elif details["missing_rows"]:
-            blocking_issues.append(f"Index CSV contains empty survival covariate values in column: {covariate}")
+            blocking_issues.append(f"Index CSV contains empty covariate values in column: {covariate}")
     if sample_npz_check:
         warnings.append("--sample-npz-check is accepted but only path existence is checked by this lightweight tool.")
 
@@ -325,7 +276,7 @@ def index_summary(
         "channel_coverage_from_config": statistics["channel_coverage_from_config"],
         "survival_key": survival_key,
         "multilabel_key": multilabel_key,
-        "survival_covariates": survival_covariates,
+        "covariates": covariates,
         "split_source_label_counts": statistics["split_source_label_counts"],
         "channel_mask_coverage_by_split_source": statistics["channel_mask_coverage_by_split_source"],
         "numeric_shift_metrics": statistics["numeric_shift_metrics"],
@@ -348,180 +299,19 @@ def _survival_key_column(cfg: ConfigSummaryInput | None) -> str | None:
     return str(key_column)
 
 
-def _uses_sex_age_kaldi_manifest(cfg: ConfigSummaryInput | None) -> bool:
-    data: Any = (cfg or {}).get("data") or {}
-    return bool(cfg and cfg.get("authoritative_variant") == "sex_age_baseline" and data.get("backend") == "kaldi")
-
-
-def _uses_sex_age_preset_metadata(cfg: ConfigSummaryInput | None, preset_path: str | Path | None) -> bool:
-    data: Any = (cfg or {}).get("data") or {}
-    return bool(
-        cfg
-        and cfg.get("authoritative_variant") == "sex_age_baseline"
-        and data.get("backend") == "npz"
-        and preset_path not in (None, "", "ASK_USER")
-    )
-
-
-def _sex_age_preset_frames(
-    cfg: ConfigSummaryInput | None,
-    preset_path: str | Path | None,
-    *,
-    local_path_base: str | Path | None = None,
-) -> tuple[list[pd.DataFrame], list[Path], list[str], list[str]]:
-    resolved = resolve_repo_path(preset_path, relative_to=local_path_base)
-    if resolved is None or not resolved.exists():
-        return [], [], [], [f"Preset not found: {preset_path}"]
-
-    try:
-        with resolved.open("rb") as file_obj:
-            samples = pickle.load(file_obj)
-    except Exception as exc:
-        return [], [resolved], [], [f"Failed to read preset: {exc}"]
-
-    data: Any = (cfg or {}).get("data") or {}
-    key_column = str(data.get("key_column") or "eid")
-    split_column = str(data.get("split_column") or "split")
-    rows = []
-    for sample in samples:
-        metadata = getattr(sample, "metadata", None)
-        if not isinstance(metadata, dict):
-            return [], [resolved], [], ["Sex/age baseline preset entries must expose a metadata mapping."]
-        summary: Any = cfg
-        rows.append(
-            {
-                key_column: metadata.get(key_column),
-                split_column: metadata.get(split_column),
-                **{name: metadata.get(name) for name in ((summary or {}).get("model") or {}).get("features", [])},
-                "path": getattr(sample, "path", None),
-                "token_start": getattr(sample, "start", None),
-            }
-        )
-    return [pd.DataFrame(rows)], [resolved], [], []
-
-
-def _sex_age_metadata_value_issues(
-    df: pd.DataFrame, *, key_column: str, split_column: str, features: list[str]
-) -> list[str]:
-    issues: list[str] = []
-    for column, label in ((key_column, "key"), (split_column, "split")):
-        if column not in df.columns:
-            continue
-        missing = _blank_values(df[column])
-        if missing.any():
-            issues.append(
-                f"Index CSV contains empty sex-age {label} values in column {column}: {int(missing.sum())} rows"
-            )
-
-    for feature in (name for name in features if name in {"age", "bmi"} and name in df.columns):
-        missing = _blank_values(df[feature])
-        values = pd.to_numeric(df[feature], errors="coerce")
-        invalid = (~missing) & ~values.map(math.isfinite)
-        if missing.any():
-            issues.append(
-                f"Index CSV contains empty sex-age {feature} values in column {feature}: {int(missing.sum())} rows"
-            )
-        if invalid.any():
-            issues.append(
-                f"Index CSV contains invalid sex-age {feature} values in column {feature}: {int(invalid.sum())} rows"
-            )
-
-    if "sex" in features and "sex" in df.columns:
-        missing = _blank_values(df["sex"])
-        invalid = (~missing) & df["sex"].map(lambda value: not _is_valid_sex_value(value))
-        if missing.any():
-            issues.append(f"Index CSV contains empty sex-age sex values in column sex: {int(missing.sum())} rows")
-        if invalid.any():
-            issues.append(f"Index CSV contains invalid sex-age sex values in column sex: {int(invalid.sum())} rows")
-    return issues
-
-
-def _is_valid_sex_value(value: Any) -> bool:
-    if isinstance(value, str):
-        return value.strip().lower() in {"male", "1", "1.0", "x", "female", "0", "0.0"}
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, Integral):
-        return int(value) in {0, 1}
-    if isinstance(value, Real):
-        numeric = float(value)
-        return math.isfinite(numeric) and numeric in {0.0, 1.0}
-    return False
-
-
-def _sex_age_requested_split_issues(
-    df: pd.DataFrame,
-    split_values: list[str] | None,
-    *,
-    split_column: str,
-) -> list[str]:
-    if split_column not in df.columns:
-        return []
-    requested = list(dict.fromkeys(str(value) for value in split_values or [] if value not in (None, "", "ASK_USER")))
-    if not requested:
-        return []
-    present = set(df[split_column].dropna().astype(str))
-    return [f"Index CSV contains no rows for sex-age split {split!r}." for split in requested if split not in present]
-
-
-def _blank_values(values: pd.Series) -> pd.Series:
-    return values.isna() | values.astype(str).str.strip().eq("")
-
-
-def _kaldi_manifest_frames(
-    cfg: ConfigSummaryInput | None,
-    *,
-    split_column: str,
-    read_csv_kwargs: dict[str, Any],
-    local_path_base: str | Path | None = None,
-) -> tuple[list[pd.DataFrame], list[Path], list[str], list[str]]:
-    data: Any = (cfg or {}).get("data") or {}
-    root = resolve_repo_path(data.get("kaldi_data_root"), relative_to=local_path_base)
-    manifest_path = resolve_repo_path(data.get("kaldi_manifest"), relative_to=local_path_base)
-    issues: list[str] = []
-    if root is None or not root.exists():
-        issues.append(f"Kaldi data root not found: {data.get('kaldi_data_root')}")
-    if manifest_path is None or not manifest_path.exists():
-        issues.append(f"Kaldi manifest not found: {data.get('kaldi_manifest')}")
-    if root is None or manifest_path is None or issues:
-        return [], [], [], issues
-
-    try:
-        manifest = json.loads(manifest_path.read_text())
-    except Exception as exc:
-        return [], [manifest_path], [], [f"Failed to read Kaldi manifest: {exc}"]
-    splits = manifest.get("splits")
-    if not isinstance(splits, dict) or not splits:
-        return [], [manifest_path], [], ["Kaldi manifest must contain a non-empty 'splits' mapping."]
-
-    frames: list[pd.DataFrame] = []
-    paths: list[Path] = []
-    missing_inputs: list[str] = []
-    for split_name, split_spec in splits.items():
-        if not isinstance(split_spec, dict) or not split_spec.get("manifest"):
-            issues.append(f"Kaldi manifest split {split_name!r} must define a manifest CSV.")
-            continue
-        split_path = root / Path(str(split_spec["manifest"]))
-        paths.append(split_path)
-        if not split_path.exists():
-            missing_inputs.append(str(split_path))
-            continue
-        frame = pd.read_csv(split_path, **read_csv_kwargs)
-        if split_column not in frame.columns:
-            frame[split_column] = str(split_name)
-        frames.append(frame)
-    return frames, paths, missing_inputs, issues
-
-
-def _survival_covariates(cfg: ConfigSummaryInput | None) -> list[str]:
+def _task_covariates(cfg: ConfigSummaryInput | None) -> list[str]:
     if not cfg:
         return []
     finetune_value: Any = cfg.get("finetune") or {}
-    task = finetune_value.get("task") or {}
-    finetune_value = cfg.get("finetune") or {}
-    survival = finetune_value.get("survival") or {}
-    covariates = survival.get("covariates")
-    if task.get("type") != "survival" or not isinstance(covariates, list):
+    task_type = (finetune_value.get("task") or {}).get("type")
+    if task_type == "survival":
+        task_block = finetune_value.get("survival") or {}
+    elif task_type == "multilabel_classification":
+        task_block = finetune_value.get("multilabel") or {}
+    else:
+        return []
+    covariates = task_block.get("covariates")
+    if not isinstance(covariates, list):
         return []
     return [item for item in covariates if isinstance(item, str) and item]
 
@@ -597,7 +387,7 @@ def _normalized_split_value(value: Any) -> str:
     return "" if pd.isna(value) else str(value).strip()
 
 
-def _survival_covariate_summary(df: pd.DataFrame, covariates: list[str]) -> dict[str, CovariateSummary]:
+def _covariate_summary(df: pd.DataFrame, covariates: list[str]) -> dict[str, CovariateSummary]:
     summary: dict[str, CovariateSummary] = {}
     for covariate in covariates:
         if covariate not in df.columns:

@@ -12,8 +12,6 @@ import sex_age_baseline.infer as baseline_infer
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Parser semantics that must match; help text may name the baseline model instead of sleep2vec.
 COMPARED_KEYWORDS = ("default", "choices", "nargs", "type", "action", "dest", "required")
-# The shared-data contract change removes this exemption by giving the baseline dataset-name overrides.
-INFER_EXEMPT_OPTIONS = {"--override-dataset-names"}
 
 
 def _parser_options(relative_path: str) -> dict[str, dict[str, str]]:
@@ -28,19 +26,11 @@ def _parser_options(relative_path: str) -> dict[str, dict[str, str]]:
 
 
 @pytest.mark.parametrize(
-    ("reference", "baseline", "exempt"),
-    [
-        ("sleep2vec/finetune.py", "sex_age_baseline/finetune.py", set()),
-        ("sleep2vec/infer.py", "sex_age_baseline/infer.py", INFER_EXEMPT_OPTIONS),
-    ],
+    ("reference", "baseline"),
+    [("sleep2vec/finetune.py", "sex_age_baseline/finetune.py"), ("sleep2vec/infer.py", "sex_age_baseline/infer.py")],
 )
-def test_baseline_cli_matches_sleep2vec_options(reference: str, baseline: str, exempt: set[str]):
-    expected = _parser_options(reference)
-    actual = _parser_options(baseline)
-
-    assert exempt <= set(expected)
-    assert set(actual) == set(expected) - exempt
-    assert actual == {option: expected[option] for option in actual}
+def test_baseline_cli_matches_sleep2vec_options(reference: str, baseline: str):
+    assert _parser_options(baseline) == _parser_options(reference)
 
 
 def _parse(module, monkeypatch: pytest.MonkeyPatch, argv: list[str]):
@@ -114,10 +104,14 @@ def test_infer_accepts_sleep2vec_averaging_and_wandb_flags(monkeypatch: pytest.M
             "--wandb-name",
             "eval",
             "--no-wandb-artifact",
+            "--override-dataset-names",
+            "shhs",
+            "mesa",
         ],
     )
 
     assert (args.ckpt_path, args.avg_ckpts, args.avg_ckpt_dir) == ("last", 3, Path("checkpoints"))
+    assert args.override_dataset_names == ["shhs", "mesa"]
     assert (args.wandb, args.wandb_name, args.wandb_artifact, args.seed) == (True, "eval", False, 4523)
 
 

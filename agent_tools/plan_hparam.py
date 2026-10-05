@@ -762,7 +762,7 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
             "--eval-split",
             "test",
             *rendering.infer_runtime_cli_args(runtime),
-            *rendering.infer_input_cli_args(inputs, variant=str(recipe.get("variant"))),
+            *rendering.infer_input_cli_args(inputs),
         ]
     )
 
@@ -1143,8 +1143,6 @@ def render_hparam_preflight_card(
             details.append(f"hidden_size={model['hidden_size']}")
         if model.get("backbone_depth") not in (None, ""):
             details.append(f"layers={model['backbone_depth']}")
-        if isinstance(model.get("features"), list) and model["features"]:
-            details.append(f"features={', '.join(str(feature) for feature in model['features'])}")
         architecture_text = str(architecture)
         if details:
             architecture_text += f" ({', '.join(details)})"

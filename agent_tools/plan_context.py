@@ -149,7 +149,7 @@ def validation_commands(recipe: dict) -> list[str]:
         # loader than the run will call -- validation passes, the run fails at config load.
         variant = recipe.get("variant")
         check = ["python", "utils/check_configs.py"]
-        if variant in SUPPORTED_VARIANTS and variant != "sex_age_baseline":
+        if variant in SUPPORTED_VARIANTS:
             check += ["--variant", variant]
         commands.append(rendering.render_command([*check, inputs["config"]]))
     commands.append(rendering.render_command(["python", "-m", "agent_tools", "skills", "--validate"]))
@@ -173,11 +173,6 @@ def context_index_summary(
     validated_sidecar_keys: dict[str, set[str]] | None = None,
 ) -> IndexSummary | SummaryFailure | None:
     paths, config, split_values = index_summary_inputs(recipe, cfg)
-    data: Any = (cfg or {}).get("data") or {}
-    uses_kaldi_manifest = bool(
-        cfg and cfg.get("authoritative_variant") == "sex_age_baseline" and data.get("backend") == "kaldi"
-    )
-    preset_path = effective_preset_path(recipe, cfg)
     finetune: Any = (cfg or {}).get(CONFIG_FINETUNE_SECTION) or {}
     task_type = (finetune.get("task") or {}).get("type")
     label_sidecars_valid = False
@@ -185,22 +180,7 @@ def context_index_summary(
         label_sidecars_valid = (finetune.get("survival") or {}).get("valid") is True
     elif task_type == "multilabel_classification":
         label_sidecars_valid = (finetune.get("multilabel") or {}).get("valid") is True
-    uses_sex_age_preset = bool(
-        cfg
-        and cfg.get("authoritative_variant") == "sex_age_baseline"
-        and data.get("backend") == "npz"
-        and preset_path not in (None, "", "ASK_USER")
-        and label_sidecars_valid
-    )
-    if not paths:
-        if not uses_kaldi_manifest and not uses_sex_age_preset:
-            return None
-        path_values = (
-            [data.get("kaldi_data_root"), data.get("kaldi_manifest")] if uses_kaldi_manifest else [preset_path]
-        )
-        if skips_local_path_validation(recipe, path_values):
-            return None
-    elif skips_local_path_validation(recipe, paths):
+    if not paths or skips_local_path_validation(recipe, paths):
         return None
     validated_summary = None
     if (
@@ -221,7 +201,6 @@ def context_index_summary(
             config_bytes=(cfg or {}).get("_source_config_bytes"),
             local_path_base=_runtime_path_base(recipe),
             split_values=split_values,
-            preset_path=preset_path,
             validated_summary=validated_summary,
         )
     except Exception as exc:

@@ -48,6 +48,8 @@ class SidecarDiagnostics(TypedDict):
     key_column: Any
     disease_columns_index: Any
     has_label_index: Any
+    covariates: Any
+    covariate_embedding_dim: Any
     output_dim: Any
     valid: bool
     disease_count: int | None
@@ -58,8 +60,6 @@ class SidecarDiagnostics(TypedDict):
 class SurvivalSummary(SidecarDiagnostics):
     event_time_index: Any
     is_event_index: Any
-    covariates: Any
-    covariate_embedding_dim: Any
 
 
 class MultilabelSummary(SidecarDiagnostics):
@@ -170,13 +170,11 @@ class EmptySummary(TypedDict):
 
 
 class _SexAgeModelDetails(TypedDict, total=False):
-    encodings: dict[str, dict[str, Any]]
     head_details: dict[str, Any]
 
 
 class SexAgeModelSummary(_SexAgeModelDetails):
     name: str
-    features: list[str]
 
 
 class SexAgeDataSummary(TypedDict):
@@ -185,10 +183,6 @@ class SexAgeDataSummary(TypedDict):
     finetune_preset_path: str | None
     kaldi_data_root: str | None
     kaldi_manifest: str | None
-    split_column: str
-    key_column: str
-    deduplicate_by_key: bool
-    sample_unit: str
 
 
 class SexAgeConfigSummary(ConfigDiagnostics):

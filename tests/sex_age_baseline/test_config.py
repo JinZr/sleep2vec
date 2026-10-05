@@ -8,6 +8,8 @@ import yaml
 
 from sex_age_baseline.config import load_config
 
+BMI_NORMALIZATION = {"bmi": {"mean": 25.0, "std": 5.0}}
+
 
 def _write_yaml(path: Path, payload: dict) -> Path:
     path.write_text(yaml.safe_dump(payload))
@@ -15,13 +17,9 @@ def _write_yaml(path: Path, payload: dict) -> Path:
 
 
 def _cox_payload(tmp_path: Path) -> dict:
-    sidecars = _write_survival_sidecars(tmp_path)
     return {
         "model": {
             "name": "sex_age_mlp",
-            "features": ["age", "sex"],
-            "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4, "initialization": "default"},
-            "sex": {"encoding": "binary", "embedding_dim": 4, "initialization": "default"},
             "head": {
                 "name": "classification",
                 "hidden_dim": 8,
@@ -36,9 +34,8 @@ def _cox_payload(tmp_path: Path) -> dict:
             "finetune_preset_path": None,
             "kaldi_data_root": None,
             "kaldi_manifest": None,
-            "split_column": "split",
-            "key_column": "eid",
-            "deduplicate_by_key": True,
+            "train_dataset_names": [],
+            "test_dataset_names": [],
         },
         "finetune": {
             "task": {
@@ -48,13 +45,20 @@ def _cox_payload(tmp_path: Path) -> dict:
                 "monitor": "val_c_index",
                 "monitor_mod": "max",
             },
-            "survival": {"key_column": "eid", **sidecars},
+            "survival": {
+                "key_column": "eid",
+                "disease_columns_index": "disease_columns.txt",
+                "event_time_index": "event_time.csv",
+                "is_event_index": "is_event.csv",
+                "has_label_index": "has_label.csv",
+                "covariates": ["age", "sex"],
+                "covariate_embedding_dim": 4,
+            },
         },
     }
 
 
 def _multilabel_payload(tmp_path: Path) -> dict:
-    sidecars = _write_multilabel_sidecars(tmp_path)
     payload = _cox_payload(tmp_path)
     payload["finetune"] = {
         "task": {
@@ -64,187 +68,175 @@ def _multilabel_payload(tmp_path: Path) -> dict:
             "monitor": "val_macro_auroc",
             "monitor_mod": "max",
         },
-        "multilabel": {"key_column": "eid", **sidecars},
+        "multilabel": {
+            "key_column": "eid",
+            "disease_columns_index": "disease_columns.txt",
+            "label_index": "disease_label.csv",
+            "has_label_index": "has_label.csv",
+            "covariates": ["age", "sex"],
+            "covariate_embedding_dim": 4,
+        },
         "loss": {"pos_weight": None},
     }
     return payload
 
 
-def _write_survival_sidecars(tmp_path: Path) -> dict[str, str]:
-    disease_columns = tmp_path / "disease_columns.txt"
-    event_time = tmp_path / "event_time.csv"
-    is_event = tmp_path / "is_event.csv"
-    has_label = tmp_path / "has_label.csv"
-    disease_columns.write_text("d1\nd2\n")
-    header = "eid,d1,d2\n"
-    event_time.write_text(header + "001,5,6\n002,3,4\n")
-    is_event.write_text(header + "001,1,0\n002,0,1\n")
-    has_label.write_text(header + "001,1,1\n002,1,1\n")
-    return {
-        "disease_columns_index": str(disease_columns),
-        "event_time_index": str(event_time),
-        "is_event_index": str(is_event),
-        "has_label_index": str(has_label),
-    }
-
-
-def _write_multilabel_sidecars(tmp_path: Path) -> dict[str, str]:
-    disease_columns = tmp_path / "disease_columns.txt"
-    label_index = tmp_path / "disease_label.csv"
-    has_label = tmp_path / "has_label.csv"
-    disease_columns.write_text("d1\nd2\n")
-    header = "eid,d1,d2\n"
-    label_index.write_text(header + "001,1,0\n002,0,1\n")
-    has_label.write_text(header + "001,1,1\n002,1,1\n")
-    return {
-        "disease_columns_index": str(disease_columns),
-        "label_index": str(label_index),
-        "has_label_index": str(has_label),
-    }
-
-
 @pytest.mark.parametrize("path", ["configs/sex_age_baseline/cox.yaml", "configs/sex_age_baseline/multilabel.yaml"])
 def test_checked_in_configs_load(path: str):
     cfg = load_config(path)
+    task_cfg = cfg.finetune.survival or cfg.finetune.multilabel
 
-    assert cfg.model.features == ["age", "sex"]
-    assert cfg.data.key_column == "eid"
+    assert task_cfg.covariates == ["age", "sex"]
+    assert task_cfg.key_column == "eid"
     assert cfg.data.backend == "npz"
+    # Like the signal templates, the data source is bound by the recipe or CLI rather than the repo config.
+    assert cfg.data.finetune_data_index is None and cfg.data.finetune_preset_path is None
 
 
-@pytest.mark.parametrize("features", [list(c) for n in (1, 2, 3) for c in combinations(("age", "sex", "bmi"), n)])
+@pytest.mark.parametrize(
+    "covariates", [list(c) for n in (1, 2, 4) for c in combinations(("age", "sex", "bmi", "bmi_missing"), n)]
+)
 @pytest.mark.parametrize("num_layers", [1, 2, 3])
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2"])
-def test_feature_subsets_and_dense_head_match_shared_builder(tmp_path, features, num_layers, variant):
+def test_covariate_subsets_and_dense_head_match_the_shared_builders(tmp_path, covariates, num_layers, variant):
     import importlib
 
     import torch
     from torch import nn
 
-    from sex_age_baseline.config import validate_model_config
     from sex_age_baseline.model import SexAgeMLP
+    from sleep2vec.modules.covariates import embed_covariates
 
     ClassificationHead = importlib.import_module(f"{variant}.downstreams.heads.classification").ClassificationHead
 
     payload = _cox_payload(tmp_path)
-    model = payload["model"]
-    model["bmi"] = dict(model["age"], scale=40.0)
-    model["features"] = list(reversed(features))
-    for feature in set(("age", "sex", "bmi")) - set(features):
-        del model[feature]
-    model["head"]["kwargs"]["num_layers"] = num_layers
+    survival = payload["finetune"]["survival"]
+    survival["covariates"] = list(reversed(covariates))
+    if "bmi" in covariates:
+        survival["covariate_normalization"] = BMI_NORMALIZATION
+    payload["model"]["head"]["kwargs"]["num_layers"] = num_layers
     cfg = load_config(_write_yaml(tmp_path / "subset.yaml", payload))
     network = SexAgeMLP(cfg).eval()
-    values = {"age": torch.tensor([40.0, 60.0]), "bmi": torch.tensor([20.0, 30.0]), "sex": torch.tensor([0, 1])}
-    encoded = []
-    for feature in cfg.model.features:
-        value = (
-            values[feature]
-            if feature == "sex"
-            else (values[feature] / getattr(cfg.model, feature).scale).reshape(-1, 1)
-        )
-        encoded.append(network.encoders[feature](value))
+    with torch.no_grad():
+        for parameter in network.embeddings.parameters():
+            parameter.normal_()
+    metadata = {
+        "age": torch.tensor([40.0, 60.0]),
+        "sex": torch.tensor([0, 1]),
+        "bmi": torch.tensor([20.0, 30.0]),
+        "bmi_missing": torch.tensor([1, 0]),
+    }
+    embedded = embed_covariates(network.embeddings, metadata, network.covariate_normalization, torch.device("cpu"))
     reference = ClassificationHead(
-        validate_model_config(cfg), 1, 2, agg="mean", hidden_dim=8, dropout=0.1, act=nn.ELU, num_layers=num_layers
+        4 * len(covariates), 1, 2, agg="mean", hidden_dim=8, dropout=0.1, act=nn.ELU, num_layers=num_layers
     ).mlp.eval()
     reference.load_state_dict(network.head.state_dict())
-    torch.testing.assert_close(network(values), reference(torch.cat(encoded, dim=-1)))
-    assert set(network.encoders) == set(features)
+
+    torch.testing.assert_close(network(metadata), reference(embedded))
+    assert set(network.embeddings) == set(covariates)
     assert sum(isinstance(m, nn.Linear) for m in network.head) == num_layers
 
 
-def test_zero_encoding_and_window_mode(tmp_path):
+@pytest.mark.parametrize("act", ["elu", "gelu", "silu"])
+@pytest.mark.parametrize("num_layers", [1, 2, 3])
+def test_zero_initialized_embeddings_receive_gradients(tmp_path, act, num_layers):
     import torch
 
     from sex_age_baseline.model import SexAgeMLP
 
     payload = _cox_payload(tmp_path)
-    payload["data"]["deduplicate_by_key"] = False
-    for feature in payload["model"]["features"]:
-        payload["model"][feature]["initialization"] = "zeros"
-    cfg = load_config(_write_yaml(tmp_path / "zero.yaml", payload))
-    assert not cfg.data.deduplicate_by_key
-    assert all(torch.count_nonzero(p) == 0 for p in SexAgeMLP(cfg).encoders.parameters())
-
-
-@pytest.mark.parametrize("zero_feature", ["age", "sex", "bmi"])
-@pytest.mark.parametrize("num_layers", [1, 2, 3])
-@pytest.mark.parametrize("mixed", [False, True])
-def test_relu_rejects_any_selected_zero_encoder(tmp_path, zero_feature, num_layers, mixed):
-    payload = _cox_payload(tmp_path)
-    model = payload["model"]
-    model["bmi"] = dict(model["age"], scale=40.0)
-    model["features"] = ["age", "sex", "bmi"] if mixed else [zero_feature]
-    for feature in set(("age", "sex", "bmi")) - set(model["features"]):
-        del model[feature]
-    model[zero_feature]["initialization"] = "zeros"
-    model["head"]["act"] = "relu"
-    model["head"]["kwargs"]["num_layers"] = num_layers
-
-    with pytest.raises(ValueError, match=f"blocks gradients.*{zero_feature}"):
-        load_config(_write_yaml(tmp_path / "relu_zero.yaml", payload))
-
-
-@pytest.mark.parametrize(
-    "act,initialization", [("relu", "default"), ("elu", "zeros"), ("gelu", "zeros"), ("silu", "zeros")]
-)
-@pytest.mark.parametrize("num_layers", [1, 2, 3])
-def test_compatible_initialization_activation_encoders_receive_gradients(tmp_path, act, initialization, num_layers):
-    import torch
-
-    from sex_age_baseline.model import SexAgeMLP
-
-    payload = _cox_payload(tmp_path)
-    model = payload["model"]
-    model["features"] = ["age", "sex", "bmi"]
-    model["bmi"] = dict(model["age"], scale=40.0)
-    for feature in model["features"]:
-        model[feature]["initialization"] = initialization
-    model["head"].update(act=act, dropout=0.0)
-    model["head"]["kwargs"]["num_layers"] = num_layers
+    survival = payload["finetune"]["survival"]
+    survival.update(covariates=["age", "sex", "bmi", "bmi_missing"], covariate_normalization=BMI_NORMALIZATION)
+    payload["model"]["head"].update(act=act, dropout=0.0)
+    payload["model"]["head"]["kwargs"]["num_layers"] = num_layers
     network = SexAgeMLP(load_config(_write_yaml(tmp_path / "compatible.yaml", payload)))
     with torch.no_grad():
         for parameter in network.head.parameters():
             parameter.fill_(0.1)
-        if initialization == "default":
-            for parameter in network.encoders.parameters():
-                parameter.fill_(0.1)
-    network(
-        {"age": torch.tensor([40.0, 60.0]), "sex": torch.tensor([0, 1]), "bmi": torch.tensor([20.0, 30.0])}
-    ).sum().backward()
+    metadata = {
+        "age": torch.tensor([40.0, 60.0]),
+        "sex": torch.tensor([0, 1]),
+        # Not symmetric around the mean: the identical zero-init rows would otherwise cancel the bmi gradient.
+        "bmi": torch.tensor([20.0, 35.0]),
+        "bmi_missing": torch.tensor([0, 1]),
+    }
+
+    network(metadata).sum().backward()
+
     assert all(
         parameter.grad is not None and torch.count_nonzero(parameter.grad)
-        for parameter in network.encoders.parameters()
+        for name, parameter in network.embeddings.named_parameters()
+        if name.endswith("weight")
     )
 
 
 @pytest.mark.parametrize(
-    "mutate",
+    ("mutate", "match"),
     [
-        lambda m: m["age"].pop("initialization"),
-        lambda m: m["age"].update(scale=float("nan")),
-        lambda m: m["age"].update(initialization="other"),
-        lambda m: m["head"].update(activation="elu"),
-        lambda m: m["head"]["kwargs"].update(num_layers=4),
-        lambda m: m.update(features=[]),
-        lambda m: m.update(features=["age", "age"]),
-        lambda m: m.update(features=["height"]),
+        (lambda p: p["model"]["head"].update(act="relu"), "elu, gelu, or silu"),
+        (lambda p: p["model"]["head"].update(activation="elu"), "unsupported fields"),
+        (lambda p: p["model"]["head"]["kwargs"].update(num_layers=4), "num_layers"),
+        # The removed per-covariate encoder blocks must not linger as inert model fields.
+        (lambda p: p["model"].update(features=["age", "sex"]), "covariates belong in finetune"),
+        (lambda p: p["model"].update(age={"transform": "divide", "scale": 100.0}), "covariates belong in finetune"),
+        (lambda p: p["finetune"]["survival"].update(covariates=[]), "non-empty"),
+        (lambda p: p["finetune"]["survival"].pop("covariates"), "non-empty"),
+        (lambda p: p["finetune"]["survival"].update(covariates=["age", "age"]), "duplicates"),
+        (lambda p: p["finetune"]["survival"].update(covariates=["height"]), "only supports"),
+        (lambda p: p["finetune"]["survival"].update(covariates=["age", "bmi"]), "BMI requires"),
+        (
+            lambda p: p["finetune"]["survival"].update(covariate_normalization={"bmi": {"mean": 25.0, "std": 5.0}}),
+            "selected age and bmi",
+        ),
+        (
+            lambda p: p["finetune"]["survival"].update(covariate_normalization={"age": {"mean": 50.0}}),
+            "requires mean and std",
+        ),
+        (
+            lambda p: p["finetune"]["survival"].update(covariate_normalization={"age": {"mean": 50.0, "std": 0.0}}),
+            "std must be positive",
+        ),
     ],
 )
-def test_explicit_model_contract_rejects_invalid_fields(tmp_path, mutate):
+def test_model_and_covariate_contract_rejects_invalid_fields(tmp_path, mutate, match):
     payload = _cox_payload(tmp_path)
-    mutate(payload["model"])
-    with pytest.raises(ValueError):
+    mutate(payload)
+    with pytest.raises(ValueError, match=match):
         load_config(_write_yaml(tmp_path / "invalid.yaml", payload))
 
 
-def test_validates_sidecar_output_dim(tmp_path: Path):
-    payload = _cox_payload(tmp_path)
-    config = _write_yaml(tmp_path / "cox.yaml", payload)
+@pytest.mark.parametrize("payload_factory", [_cox_payload, _multilabel_payload])
+def test_task_block_carries_the_signal_covariate_fields(tmp_path, payload_factory):
+    payload = payload_factory(tmp_path)
+    block = "survival" if "survival" in payload["finetune"] else "multilabel"
+    payload["finetune"][block].update(
+        covariates=["age", "sex", "bmi", "bmi_missing"],
+        covariate_normalization={"age": {"mean": 50, "std": 20}, **BMI_NORMALIZATION},
+    )
 
-    cfg = load_config(config, validate_sidecars=True)
+    cfg = load_config(_write_yaml(tmp_path / "bmi.yaml", payload))
+    task_cfg = getattr(cfg.finetune, block)
 
-    assert cfg.finetune.task.output_dim == 2
+    assert task_cfg.covariates == ["age", "sex", "bmi", "bmi_missing"]
+    assert task_cfg.covariate_embedding_dim == 4
+    assert task_cfg.covariate_normalization == {"age": {"mean": 50.0, "std": 20.0}, **BMI_NORMALIZATION}
+
+
+def test_model_contract_freezes_the_covariate_pathway(tmp_path):
+    from sex_age_baseline.runtime import _model_contract
+
+    payload = _multilabel_payload(tmp_path)
+    payload["finetune"]["multilabel"].update(
+        covariates=["bmi", "age", "bmi_missing"], covariate_normalization=BMI_NORMALIZATION
+    )
+    cfg = load_config(_write_yaml(tmp_path / "contract.yaml", payload))
+
+    assert _model_contract(cfg) == {
+        "covariates": ["age", "bmi", "bmi_missing"],
+        "covariate_embedding_dim": 4,
+        "covariate_normalization": BMI_NORMALIZATION,
+        "head": payload["model"]["head"],
+    }
 
 
 @pytest.mark.parametrize("loss", [{"pos_weight": 2.0}, {"pos_weigth": 2.0}])
@@ -297,7 +289,7 @@ def test_config_rejects_top_level_fields_outside_model_data_finetune(tmp_path, f
 def test_model_rejects_runtime_learning_rate(tmp_path):
     payload = _cox_payload(tmp_path)
     payload["model"]["lr"] = 0.001
-    with pytest.raises(ValueError, match="unsupported or inactive"):
+    with pytest.raises(ValueError, match="unsupported fields"):
         load_config(_write_yaml(tmp_path / "model-lr.yaml", payload))
 
 
@@ -371,7 +363,6 @@ def test_multilabel_loss_accepts_valid_pos_weight(tmp_path: Path, pos_weight, ex
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda payload: payload["model"].update({"features": ["age"]}),
         lambda payload: payload["finetune"]["task"].update({"type": "regression"}),
         lambda payload: payload["finetune"]["task"].update({"is_seq": True}),
     ],
@@ -385,85 +376,39 @@ def test_invalid_semantics_fail(tmp_path: Path, mutate):
         load_config(config)
 
 
-def test_bad_output_dim_sidecar_mismatch_fails(tmp_path: Path):
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"finetune_data_index": None},
+        {"finetune_data_index": None, "finetune_preset_path": "preset.pkl"},
+        {"backend": "kaldi", "finetune_data_index": None, "kaldi_data_root": "/k", "kaldi_manifest": "/k/m.json"},
+        {"train_dataset_names": ["shhs"], "test_dataset_names": None},
+    ],
+)
+def test_data_block_uses_the_signal_spellings_and_leaves_the_source_to_the_loader(tmp_path: Path, data: dict):
     payload = _cox_payload(tmp_path)
-    payload["finetune"]["task"]["output_dim"] = 3
-    config = _write_yaml(tmp_path / "bad_dim.yaml", payload)
+    payload["data"].update(data)
 
-    with pytest.raises(ValueError, match="output_dim"):
-        load_config(config, validate_sidecars=True)
+    cfg = load_config(_write_yaml(tmp_path / "data.yaml", payload))
 
-
-def test_multilabel_config_validates_sidecars(tmp_path: Path):
-    payload = _multilabel_payload(tmp_path)
-    config = _write_yaml(tmp_path / "multilabel.yaml", payload)
-
-    cfg = load_config(config, validate_sidecars=True)
-
-    assert cfg.finetune.multilabel.label_index.endswith("disease_label.csv")
-
-
-def test_npz_preset_config_loads(tmp_path: Path):
-    payload = _cox_payload(tmp_path)
-    payload["data"]["finetune_data_index"] = None
-    payload["data"]["finetune_preset_path"] = str(tmp_path / "preset.pkl")
-    config = _write_yaml(tmp_path / "preset.yaml", payload)
-
-    cfg = load_config(config)
-
-    assert cfg.data.backend == "npz"
-    assert cfg.data.finetune_preset_path.endswith("preset.pkl")
-
-
-def test_kaldi_config_loads(tmp_path: Path):
-    payload = _cox_payload(tmp_path)
-    payload["data"].update(
-        {
-            "backend": "kaldi",
-            "finetune_data_index": None,
-            "finetune_preset_path": None,
-            "kaldi_data_root": str(tmp_path / "kaldi"),
-            "kaldi_manifest": str(tmp_path / "kaldi" / "manifest.json"),
-        }
-    )
-    config = _write_yaml(tmp_path / "kaldi.yaml", payload)
-
-    cfg = load_config(config)
-
-    assert cfg.data.backend == "kaldi"
-    assert cfg.data.kaldi_manifest.endswith("manifest.json")
+    for key, value in data.items():
+        assert getattr(cfg.data, key) == value
 
 
 @pytest.mark.parametrize(
-    "mutate,match",
+    ("data", "match"),
     [
-        (lambda payload: payload["data"].update({"finetune_preset_path": "preset.pkl"}), "exactly one"),
-        (lambda payload: payload["data"].update({"finetune_data_index": None}), "exactly one"),
-        (lambda payload: payload["data"].update({"backend": "bad"}), "data.backend"),
-        (
-            lambda payload: payload["data"].update(
-                {"backend": "kaldi", "finetune_data_index": None, "kaldi_data_root": None}
-            ),
-            "kaldi_data_root",
-        ),
-        (
-            lambda payload: payload["data"].update(
-                {
-                    "backend": "kaldi",
-                    "finetune_data_index": None,
-                    "finetune_preset_path": "preset.pkl",
-                    "kaldi_data_root": "/kaldi",
-                    "kaldi_manifest": "/kaldi/manifest.json",
-                }
-            ),
-            "must not set",
-        ),
+        ({"backend": "bad"}, "data.backend"),
+        # The private participant-index semantics are gone: the split column is fixed and rows always collapse by key.
+        ({"split_column": "split"}, "unsupported fields"),
+        ({"key_column": "eid"}, "unsupported fields"),
+        ({"deduplicate_by_key": True}, "unsupported fields"),
+        ({"train_dataset_names": "shhs"}, "train_dataset_names"),
     ],
 )
-def test_backend_input_validation_fails(tmp_path: Path, mutate, match: str):
+def test_data_block_rejects_invalid_and_removed_fields(tmp_path: Path, data: dict, match: str):
     payload = _cox_payload(tmp_path)
-    mutate(payload)
-    config = _write_yaml(tmp_path / "bad_backend.yaml", payload)
+    payload["data"].update(data)
 
     with pytest.raises(ValueError, match=match):
-        load_config(config)
+        load_config(_write_yaml(tmp_path / "bad_data.yaml", payload))
