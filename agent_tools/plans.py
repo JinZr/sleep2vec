@@ -16,6 +16,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 import copy
 import csv
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -1384,6 +1385,27 @@ def _materialize_single_run_plan(
     return report
 
 
+@dataclass(frozen=True)
+class PlanBuildRequest:
+    """Caller arguments of one ``build_plan`` call, as ``_build_plan`` consumes them."""
+
+    recipe_path: str | Path
+    output_dir: str | Path
+    user_decisions_path: str | Path | None
+    allow_unresolved: bool
+    unlock_final_test: bool
+    source_config_sha256: str | None
+    expected_recipe: dict[str, Any] | None
+    expected_base_recipe: dict[str, Any] | None
+    staging_dir: str | Path | None
+    defer_commit: bool
+    registered_recipe_path: str | Path | None
+    allow_adaptive_workflow: bool
+    plan_controller: str | None
+    run_index_offset: int | None
+    validate_only: bool
+
+
 def build_plan(
     *,
     recipe_path: str | Path,
@@ -1430,26 +1452,25 @@ def build_plan(
     else:
         root = experiment_root(load_recipe_with_base(recipe_path))
         build_lock = plan_registration_lock(root) if root is not None else nullcontext()
+    request = PlanBuildRequest(
+        recipe_path=recipe_path,
+        output_dir=output_dir,
+        user_decisions_path=user_decisions_path,
+        allow_unresolved=allow_unresolved,
+        unlock_final_test=unlock_final_test,
+        source_config_sha256=source_config_sha256,
+        expected_recipe=expected_recipe,
+        expected_base_recipe=expected_base_recipe,
+        staging_dir=staging_dir,
+        defer_commit=defer_commit,
+        registered_recipe_path=registered_recipe_path,
+        allow_adaptive_workflow=allow_adaptive_workflow,
+        plan_controller=plan_controller,
+        run_index_offset=run_index_offset,
+        validate_only=validate_only,
+    )
     with build_lock:
-        return _build_plan(
-            recipe_path=recipe_path,
-            output_dir=output_dir,
-            user_decisions_path=user_decisions_path,
-            allow_unresolved=allow_unresolved,
-            unlock_final_test=unlock_final_test,
-            source_config_sha256=source_config_sha256,
-            expected_recipe=expected_recipe,
-            expected_base_recipe=expected_base_recipe,
-            staging_dir=staging_dir,
-            defer_commit=defer_commit,
-            registered_recipe_path=registered_recipe_path,
-            allow_adaptive_workflow=allow_adaptive_workflow,
-            plan_controller=plan_controller,
-            run_index_offset=run_index_offset,
-            validate_only=validate_only,
-            locked_root=root,
-            check_locked_root=not (defer_commit or validate_only),
-        )
+        return _build_plan(request=request, locked_root=root, check_locked_root=not (defer_commit or validate_only))
 
 
 def _prepare_plan_staging(
@@ -1488,33 +1509,19 @@ def _prepare_plan_staging(
 
 def _build_plan(
     *,
-    recipe_path: str | Path,
-    output_dir: str | Path,
-    user_decisions_path: str | Path | None,
-    allow_unresolved: bool,
-    unlock_final_test: bool,
-    source_config_sha256: str | None,
-    expected_recipe: dict[str, Any] | None,
-    expected_base_recipe: dict[str, Any] | None,
-    staging_dir: str | Path | None,
-    defer_commit: bool,
-    registered_recipe_path: str | Path | None,
-    allow_adaptive_workflow: bool,
-    plan_controller: str | None,
-    run_index_offset: int | None,
-    validate_only: bool,
+    request: PlanBuildRequest,
     locked_root: Path | None,
     check_locked_root: bool,
 ) -> DecisionReport:
-    out = canonical_local_experiment_root(output_dir, Path.cwd())
+    out = canonical_local_experiment_root(request.output_dir, Path.cwd())
     recipe, cfg, report = preflight_plan(
-        recipe_path=recipe_path,
+        recipe_path=request.recipe_path,
         output_dir=out,
-        user_decisions_path=user_decisions_path,
-        allow_unresolved=allow_unresolved,
-        unlock_final_test=unlock_final_test,
-        allow_existing_output_artifacts=defer_commit,
-        allow_adaptive_workflow=allow_adaptive_workflow,
+        user_decisions_path=request.user_decisions_path,
+        allow_unresolved=request.allow_unresolved,
+        unlock_final_test=request.unlock_final_test,
+        allow_existing_output_artifacts=request.defer_commit,
+        allow_adaptive_workflow=request.allow_adaptive_workflow,
     )
     if check_locked_root and experiment_root(recipe) != locked_root:
         raise ValueError("Experiment root changed while acquiring the plan registration lock.")
@@ -1523,15 +1530,15 @@ def _build_plan(
         cfg,
         report,
         out,
-        expected_recipe=expected_recipe,
-        expected_base_recipe=expected_base_recipe,
-        registered_recipe_path=registered_recipe_path,
-        source_config_sha256=source_config_sha256,
+        expected_recipe=request.expected_recipe,
+        expected_base_recipe=request.expected_base_recipe,
+        registered_recipe_path=request.registered_recipe_path,
+        source_config_sha256=request.source_config_sha256,
     )
     plan_adapter = get_adapter(recipe.get("task"))
     if _has_output_artifact_issue(report):
         return report
-    if validate_only and not (plan_adapter is not None and plan_adapter.materializes_plan):
+    if request.validate_only and not (plan_adapter is not None and plan_adapter.materializes_plan):
         report = _append_issues(
             report,
             [
@@ -1545,7 +1552,7 @@ def _build_plan(
             ],
         )
     if report.exit_code != 0 or bound_config is None:
-        if validate_only:
+        if request.validate_only:
             return report
         preflight_failed_before_workspace = bool(experiment_metadata_issues(recipe)) or any(
             issue.field in {"experiment", "step", "execution.workdir"}
@@ -1561,8 +1568,8 @@ def _build_plan(
                 report,
                 recipe,
                 out,
-                allow_unresolved=allow_unresolved,
-                unlock_final_test=unlock_final_test,
+                allow_unresolved=request.allow_unresolved,
+                unlock_final_test=request.unlock_final_test,
             )
             if _has_output_artifact_issue(report):
                 return report
@@ -1570,7 +1577,7 @@ def _build_plan(
                 recipe,
                 out,
                 register_step=False,
-                plan_controller=plan_controller,
+                plan_controller=request.plan_controller,
             )
             write_questions(out, report)
             template = write_user_decision_template(out, recipe, report, preserve_existing=False)
@@ -1579,9 +1586,9 @@ def _build_plan(
                 report.published_user_decisions_path = str(template_path)
             write_text(
                 out / "plan.blocked.md",
-                context.blocked_plan_markdown(report, allow_unresolved, user_decisions_path=template_path),
+                context.blocked_plan_markdown(report, request.allow_unresolved, user_decisions_path=template_path),
             )
-            if allow_unresolved and report.exit_code == 2:
+            if request.allow_unresolved and report.exit_code == 2:
                 write_json(
                     out / "plan.draft.json",
                     {"status": report.status.value, "recipe": recipe, "questions": questions_payload(report)},
@@ -1589,7 +1596,7 @@ def _build_plan(
             if not artifacts.is_registered_blocked_plan(out, workspace=workspace):
                 raise ValueError(f"Blocked plan publication did not produce a complete control bundle: {out}")
             # step.yaml is canonical ownership; expose the plan only after its blocked bundle is complete.
-            ensure_experiment_workspace(recipe, out, plan_controller=plan_controller)
+            ensure_experiment_workspace(recipe, out, plan_controller=request.plan_controller)
         return report
 
     validated_config_bytes, validated_config_sha256 = bound_config
@@ -1652,11 +1659,12 @@ def _build_plan(
     ensure_experiment_workspace(
         recipe,
         out,
-        plan_controller=plan_controller,
+        plan_controller=request.plan_controller,
         validate_only=True,
     )
-    if not defer_commit and not validate_only:
+    if not request.defer_commit and not request.validate_only:
         _assert_no_incomplete_step_registration(recipe, out)
+    run_index_offset = request.run_index_offset
     if run_index_offset is None:
         run_index_offset = _registered_plan_run_index(recipe, out)
 
@@ -1664,13 +1672,13 @@ def _build_plan(
     if plan_adapter is not None and os.path.lexists(out):
         output_stat = out.lstat()
         output_identity = (output_stat.st_dev, output_stat.st_ino)
-    if defer_commit and staging_dir is None:
+    if request.defer_commit and request.staging_dir is None:
         raise ValueError("Deferred plan commit requires a staging directory.")
     write_out, generated_staging = _prepare_plan_staging(
         out=out,
         root=root,
-        staging_dir=staging_dir,
-        defer_commit=defer_commit,
+        staging_dir=request.staging_dir,
+        defer_commit=request.defer_commit,
         plan_adapter=plan_adapter,
     )
 
@@ -1683,12 +1691,12 @@ def _build_plan(
             write_out=write_out,
             output_identity=output_identity,
             generated_staging=generated_staging,
-            staging_dir=staging_dir,
-            defer_commit=defer_commit,
-            plan_controller=plan_controller,
+            staging_dir=request.staging_dir,
+            defer_commit=request.defer_commit,
+            plan_controller=request.plan_controller,
             run_index_offset=run_index_offset,
-            validate_only=validate_only,
-            unlock_final_test=unlock_final_test,
+            validate_only=request.validate_only,
+            unlock_final_test=request.unlock_final_test,
             validated_config_bytes=validated_config_bytes,
             validated_config_sha256=validated_config_sha256,
         )
@@ -1700,11 +1708,11 @@ def _build_plan(
         write_out=write_out,
         output_identity=output_identity,
         generated_staging=generated_staging,
-        staging_dir=staging_dir,
-        defer_commit=defer_commit,
-        plan_controller=plan_controller,
+        staging_dir=request.staging_dir,
+        defer_commit=request.defer_commit,
+        plan_controller=request.plan_controller,
         run_index_offset=run_index_offset,
-        unlock_final_test=unlock_final_test,
+        unlock_final_test=request.unlock_final_test,
         validated_config_bytes=validated_config_bytes,
     )
 

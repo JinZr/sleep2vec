@@ -11,6 +11,7 @@ import pytest
 
 from agent_tools import cli, managed_scheduler, models, plans
 from agent_tools.decisions import evaluate_consultation_gates
+from agent_tools.hparam_postprocess import LogitExportRequest
 from agent_tools.manifests import write_rows
 from agent_tools.recipes import load_consultation_policy
 
@@ -651,9 +652,8 @@ def test_hparam_export_logits_cli_delegates_writes_to_postprocess(tmp_path: Path
     result = cli.main(["hparam-export-logits", "--run-dir", str(tmp_path), "--selected", "selected.csv", "--skip-test"])
 
     assert result == 0
-    assert calls[0][0] == (str(tmp_path), "selected.csv")
-    assert calls[0][1]["skip_test"] is True
-    assert calls[0][1]["execute"] is False
+    # Parser defaults and request defaults must agree field for field.
+    assert calls == [((str(tmp_path), "selected.csv", LogitExportRequest(unlock_final_test=False, skip_test=True)), {})]
     assert capsys.readouterr().out.splitlines() == [
         f"Wrote {manifest}",
         f"Wrote {tmp_path / 'logits_export.sh'}",
