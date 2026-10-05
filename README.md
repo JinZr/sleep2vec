@@ -253,6 +253,29 @@ finetune:
 - `finetune.loss.pos_weight` is for multilabel classification only; for built-in `ahi`, a scalar expands across the 30 BCE outputs.
 - `finetune.sampler.weighted_random` affects only the train loader for binary non-sequence classification labels, such as `sex` or a custom binary metadata target.
 
+Survival and multilabel tasks in `sleep2vec` and `sleep2vec2` accept
+`finetune.survival.covariates` or `finetune.multilabel.covariates` drawn from
+`age`, `sex`, `bmi`, and `bmi_missing`. Their zero-initialized embeddings join
+the pooled signal features; `sleep2vec2` also offers
+`covariate_fusion: risk | token_concat`. Keep age and imputed BMI in their
+original units in the index/preset and supply `bmi_missing` as 0 or 1. Freeze
+scaling fitted on training patients only:
+```yaml
+finetune:
+  multilabel:
+    covariates: [age, sex, bmi, bmi_missing]
+    covariate_normalization:
+      age: {mean: 52.3, std: 14.1}
+      bmi: {mean: 24.8, std: 3.9}
+```
+The mapping is optional for age/sex recipes, whose age keeps the historical
+`age / 100` scaling, but its `bmi` entry is required whenever `bmi` is
+selected, and every standard deviation must be positive. The loader and model
+do not fit imputation or scaling. Samples whose selected covariates are missing
+or invalid are dropped at load time, so an index or preset without `bmi` and
+`bmi_missing` columns fails fast; regenerate presets built before those columns
+existed. `sleep2expert` keeps the `age`/`sex` covariate contract.
+
 The managed `finetune_balanced` search also compares bounded gradient-norm
 clipping levels and couples early-stopping patience to the candidate's epochs
 and validation cadence. Patience counts validation checks without improvement,

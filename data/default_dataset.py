@@ -11,12 +11,11 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
 from data.metadata import (
-    _encode_binary_label,
     build_w_h_age_sex_center,
     extract_binary_labels,
     make_weighted_sampler_from_labels,
     process_metadata,
-    safe_cast,
+    required_covariate_is_valid,
 )
 from data.multilabel import stack_multilabel_metadata
 from data.survival import stack_survival_metadata
@@ -263,13 +262,11 @@ class DefaultDataset(BaseDataset):
                 if value is None or (isinstance(value, float) and math.isnan(value)):
                     keep = False
                     break
-                if meta_data_name in self.required_metadata_names:
-                    if meta_data_name == "age" and safe_cast(value, -1) < 0:
-                        keep = False
-                        break
-                    if meta_data_name == "sex" and _encode_binary_label(value) not in {0, 1}:
-                        keep = False
-                        break
+                if meta_data_name in self.required_metadata_names and not required_covariate_is_valid(
+                    meta_data_name, value
+                ):
+                    keep = False
+                    break
 
             if self.sources:
                 source_path = d.metadata.get("source", None)

@@ -309,6 +309,7 @@ class SurvivalConfig:
     covariates: t.List[str] = field(default_factory=list)
     covariate_embedding_dim: int = 16
     covariate_fusion: str = "feature_concat"
+    covariate_normalization: t.Dict[str, t.Dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -320,6 +321,7 @@ class MultilabelConfig:
     covariates: t.List[str] = field(default_factory=list)
     covariate_embedding_dim: int = 16
     covariate_fusion: str = "feature_concat"
+    covariate_normalization: t.Dict[str, t.Dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -676,6 +678,52 @@ def _build_finetune_sampler_config(raw: t.Any) -> FinetuneSamplerConfig:
     return FinetuneSamplerConfig(weighted_random=weighted_random)
 
 
+# Covariates the downstream heads consume, in their fixed feature order. age and bmi are continuous; sex and
+# bmi_missing are 0/1 indicators.
+SUPPORTED_COVARIATES = ("age", "sex", "bmi", "bmi_missing")
+COVARIATE_FIELDS = {"covariates", "covariate_embedding_dim", "covariate_normalization"}
+
+
+def parse_covariate_fields(raw: t.Mapping[str, t.Any], prefix: str) -> t.Dict[str, t.Any]:
+    """Validate the covariate keys shared by finetune.survival and finetune.multilabel."""
+    covariates = raw.get("covariates", [])
+    if not isinstance(covariates, list) or not all(isinstance(item, str) and item for item in covariates):
+        raise ValueError(f"{prefix}.covariates must be a list of non-empty strings.")
+    if len(set(covariates)) != len(covariates):
+        raise ValueError(f"{prefix}.covariates must not contain duplicates.")
+    unsupported = sorted(set(covariates) - set(SUPPORTED_COVARIATES))
+    if unsupported:
+        raise ValueError(f"{prefix}.covariates only supports {list(SUPPORTED_COVARIATES)}, got {unsupported}.")
+
+    embedding_dim = raw.get("covariate_embedding_dim", 16)
+    if not isinstance(embedding_dim, int) or isinstance(embedding_dim, bool) or embedding_dim < 1:
+        raise ValueError(f"{prefix}.covariate_embedding_dim must be a positive integer.")
+
+    # Optional for age/sex recipes, whose age keeps the age / 100 scaling; BMI must freeze training-fitted scaling.
+    normalization = raw.get("covariate_normalization", {})
+    if not isinstance(normalization, dict):
+        raise ValueError(f"{prefix}.covariate_normalization must be a mapping.")
+    if set(normalization) - (set(covariates) & {"age", "bmi"}):
+        raise ValueError(f"{prefix}.covariate_normalization only supports selected age and bmi covariates.")
+    for name, stats in normalization.items():
+        if not isinstance(stats, dict) or set(stats) != {"mean", "std"}:
+            raise ValueError(f"{prefix}.covariate_normalization.{name} requires mean and std.")
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in stats.values()):
+            raise ValueError(f"{prefix}.covariate_normalization.{name} requires finite numeric mean and std.")
+        if stats["std"] <= 0:
+            raise ValueError(f"{prefix}.covariate_normalization.{name}.std must be positive.")
+    if "bmi" in covariates and "bmi" not in normalization:
+        raise ValueError(f"BMI requires training-fitted {prefix}.covariate_normalization.bmi.")
+
+    return {
+        "covariates": list(covariates),
+        "covariate_embedding_dim": embedding_dim,
+        "covariate_normalization": {
+            name: {"mean": float(stats["mean"]), "std": float(stats["std"])} for name, stats in normalization.items()
+        },
+    }
+
+
 def _build_survival_config(raw: t.Any, task_cfg: TaskConfig | None) -> SurvivalConfig | None:
     if raw is None:
         if task_cfg is not None and task_cfg.type == "survival":
@@ -687,7 +735,7 @@ def _build_survival_config(raw: t.Any, task_cfg: TaskConfig | None) -> SurvivalC
         raise ValueError("finetune.survival must be a mapping when provided.")
 
     required = {"key_column", "disease_columns_index", "event_time_index", "is_event_index", "has_label_index"}
-    optional = {"covariates", "covariate_embedding_dim", "covariate_fusion"}
+    optional = COVARIATE_FIELDS | {"covariate_fusion"}
     missing = sorted(required - set(raw.keys()))
     if missing:
         raise ValueError(f"finetune.survival missing required fields: {missing}")
@@ -699,20 +747,8 @@ def _build_survival_config(raw: t.Any, task_cfg: TaskConfig | None) -> SurvivalC
         if not isinstance(value, str) or not value:
             raise ValueError(f"finetune.survival.{field_name} must be a non-empty string.")
 
-    covariates = raw.get("covariates", [])
-    if not isinstance(covariates, list) or not all(isinstance(item, str) and item for item in covariates):
-        raise ValueError("finetune.survival.covariates must be a list of non-empty strings.")
-    if len(set(covariates)) != len(covariates):
-        raise ValueError("finetune.survival.covariates must not contain duplicates.")
-    unsupported = sorted(set(covariates) - {"age", "sex"})
-    if unsupported:
-        raise ValueError(f"finetune.survival.covariates only supports ['age', 'sex'], got {unsupported}.")
-
-    covariate_embedding_dim = raw.get("covariate_embedding_dim", 16)
-    if not isinstance(covariate_embedding_dim, int) or isinstance(covariate_embedding_dim, bool):
-        raise ValueError("finetune.survival.covariate_embedding_dim must be a positive integer.")
-    if covariate_embedding_dim < 1:
-        raise ValueError("finetune.survival.covariate_embedding_dim must be a positive integer.")
+    covariate_fields = parse_covariate_fields(raw, "finetune.survival")
+    covariates = covariate_fields["covariates"]
 
     covariate_fusion = raw.get("covariate_fusion", "feature_concat")
     if covariate_fusion not in {"feature_concat", "risk", "token_concat"}:
@@ -723,8 +759,7 @@ def _build_survival_config(raw: t.Any, task_cfg: TaskConfig | None) -> SurvivalC
         )
 
     values = {field_name: raw[field_name] for field_name in required}
-    values["covariates"] = list(covariates)
-    values["covariate_embedding_dim"] = covariate_embedding_dim
+    values.update(covariate_fields)
     values["covariate_fusion"] = covariate_fusion
     return SurvivalConfig(**values)
 
@@ -740,7 +775,7 @@ def _build_multilabel_config(raw: t.Any, task_cfg: TaskConfig | None) -> Multila
         raise ValueError("finetune.multilabel must be a mapping when provided.")
 
     required = {"key_column", "disease_columns_index", "label_index", "has_label_index"}
-    optional = {"covariates", "covariate_embedding_dim", "covariate_fusion"}
+    optional = COVARIATE_FIELDS | {"covariate_fusion"}
     missing = sorted(required - set(raw.keys()))
     if missing:
         raise ValueError(f"finetune.multilabel missing required fields: {missing}")
@@ -752,20 +787,8 @@ def _build_multilabel_config(raw: t.Any, task_cfg: TaskConfig | None) -> Multila
         if not isinstance(value, str) or not value:
             raise ValueError(f"finetune.multilabel.{field_name} must be a non-empty string.")
 
-    covariates = raw.get("covariates", [])
-    if not isinstance(covariates, list) or not all(isinstance(item, str) and item for item in covariates):
-        raise ValueError("finetune.multilabel.covariates must be a list of non-empty strings.")
-    if len(set(covariates)) != len(covariates):
-        raise ValueError("finetune.multilabel.covariates must not contain duplicates.")
-    unsupported = sorted(set(covariates) - {"age", "sex"})
-    if unsupported:
-        raise ValueError(f"finetune.multilabel.covariates only supports ['age', 'sex'], got {unsupported}.")
-
-    covariate_embedding_dim = raw.get("covariate_embedding_dim", 16)
-    if not isinstance(covariate_embedding_dim, int) or isinstance(covariate_embedding_dim, bool):
-        raise ValueError("finetune.multilabel.covariate_embedding_dim must be a positive integer.")
-    if covariate_embedding_dim < 1:
-        raise ValueError("finetune.multilabel.covariate_embedding_dim must be a positive integer.")
+    covariate_fields = parse_covariate_fields(raw, "finetune.multilabel")
+    covariates = covariate_fields["covariates"]
 
     covariate_fusion = raw.get("covariate_fusion", "feature_concat")
     if covariate_fusion not in {"feature_concat", "risk", "token_concat"}:
@@ -776,8 +799,7 @@ def _build_multilabel_config(raw: t.Any, task_cfg: TaskConfig | None) -> Multila
         )
 
     values = {field_name: raw[field_name] for field_name in required}
-    values["covariates"] = list(covariates)
-    values["covariate_embedding_dim"] = covariate_embedding_dim
+    values.update(covariate_fields)
     values["covariate_fusion"] = covariate_fusion
     return MultilabelConfig(**values)
 

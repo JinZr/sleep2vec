@@ -140,6 +140,17 @@ def _encode_binary_label(v):
     return -1
 
 
+def required_covariate_is_valid(name: str, value: t.Any) -> bool:
+    """Whether a raw metadata value can feed covariate ``name``; other names only need a value."""
+    if name == "age":
+        return safe_cast(value, -1) >= 0
+    if name in {"sex", "bmi_missing"}:
+        return _encode_binary_label(value) in {0, 1}
+    if name == "bmi":
+        return math.isfinite(safe_cast_float(value, math.nan))
+    return value is not None and not (isinstance(value, float) and math.isnan(value))
+
+
 def process_metadata(samples, disease_names, regression_names: t.Sequence[str] | None = None):
     regression_names = set(regression_names or [])
     batch_metadata = {
@@ -163,6 +174,13 @@ def process_metadata(samples, disease_names, regression_names: t.Sequence[str] |
     processed = {}
     processed["age"] = torch.tensor([safe_cast(v, -1) for v in batch_metadata["age"]], dtype=torch.float)
     processed["sex"] = torch.tensor([_encode_binary_label(v) for v in batch_metadata["sex"]], dtype=torch.long)
+    # bmi is imputed upstream and stays continuous; NaN marks a value the covariate path must reject.
+    processed["bmi"] = torch.tensor(
+        [safe_cast_float(s.metadata.get("bmi"), math.nan) for s in samples], dtype=torch.float
+    )
+    processed["bmi_missing"] = torch.tensor(
+        [_encode_binary_label(s.metadata.get("bmi_missing", "nan")) for s in samples], dtype=torch.long
+    )
     for disease_name in disease_names:
         values = batch_metadata[disease_name]
         if disease_name in regression_names:

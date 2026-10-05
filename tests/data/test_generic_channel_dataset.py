@@ -127,8 +127,7 @@ def test_psg_dataset_allows_stage5_index_without_age_or_sex(tmp_path: Path):
     )
 
     batch = next(iter(dataset.dataloader(device="cpu")))
-    assert "age" not in dataset.data[0].metadata
-    assert "sex" not in dataset.data[0].metadata
+    assert not {"age", "sex", "bmi", "bmi_missing"} & set(dataset.data[0].metadata)
     assert torch.equal(batch["tokens"]["stage5"], torch.tensor([[[0.0], [1.0]]]))
 
 
@@ -165,8 +164,7 @@ def test_psg_dataset_allows_ahi_index_without_age_or_sex(tmp_path: Path):
     )
 
     batch = next(iter(dataset.dataloader(device="cpu")))
-    assert "age" not in dataset.data[0].metadata
-    assert "sex" not in dataset.data[0].metadata
+    assert not {"age", "sex", "bmi", "bmi_missing"} & set(dataset.data[0].metadata)
     assert batch["metadata"]["ahi"].tolist() == [9.5]
     assert batch["metadata"]["tst"].tolist() == [3.5]
 
