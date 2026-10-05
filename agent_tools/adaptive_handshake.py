@@ -13,6 +13,7 @@ suggestion, receipt, or round: ``adaptive_hparam`` owns that publication, and
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import copy
 import hashlib
 import json
@@ -28,7 +29,6 @@ from .experiment_workspace import (
     file_sha256,
     managed_run_key,
     read_experiment_events,
-    read_run_manifest,
     validate_managed_run_rows,
     validated_run_key,
 )
@@ -45,7 +45,9 @@ class AcceptedProposalPayload(adaptive_proposals.ValidatedProposal):
     proposal_sha256: str
 
 
-def proposal_digest_rows(root: Path, workspace: Path) -> list[dict[str, Any]]:
+def proposal_digest_rows(
+    root: Path, workspace: Path, *, read_run_manifest: Callable[[Path], list[dict[str, str]]]
+) -> list[dict[str, Any]]:
     registry = read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True)
     events = read_experiment_events(workspace)
     rows: list[dict[str, Any]] = []
@@ -53,7 +55,7 @@ def proposal_digest_rows(root: Path, workspace: Path) -> list[dict[str, Any]]:
         round_dir = adaptive_state.round_path(root, round_index)
         plan = artifacts.read_hparam_plan(round_dir)
         adaptive_state.validate_round_registry(root, round_index, plan, registry)
-        if not adaptive_state.round_is_terminal(round_dir, workspace):
+        if not adaptive_state.round_is_terminal(round_dir, workspace, read_run_manifest=read_run_manifest):
             raise ValueError(f"Agent proposal history round {round_index:03d} is not terminal.")
         recipe = plan["recipe"]
         objective = adaptive_state.workflow_objective(root, recipe)
@@ -338,6 +340,7 @@ def validated_agent_proposal_input(
     proposal_path: Path,
     *,
     expected_sha256: str | None = None,
+    read_run_manifest: Callable[[Path], list[dict[str, str]]],
 ) -> tuple[adaptive_proposals.ProposalInputDocument, str]:
     proposal_input, input_sha256 = _load_agent_proposal_input(
         workspace,
@@ -357,9 +360,13 @@ def validated_agent_proposal_input(
         "target_round"
     ] != adaptive_state.next_round_index(root):
         raise ValueError("Agent proposal round binding is stale.")
-    if not adaptive_state.round_is_terminal(adaptive_state.round_path(root, snapshot["source_round"]), workspace):
+    if not adaptive_state.round_is_terminal(
+        adaptive_state.round_path(root, snapshot["source_round"]), workspace, read_run_manifest=read_run_manifest
+    ):
         raise ValueError("Agent proposal source round is no longer terminal.")
-    authoritative = _agent_proposal_input_payload(root, workflow, recipe, proposal_digest_rows(root, workspace))
+    authoritative = _agent_proposal_input_payload(
+        root, workflow, recipe, proposal_digest_rows(root, workspace, read_run_manifest=read_run_manifest)
+    )
     if snapshot != authoritative:
         raise ValueError("Agent proposal input does not match the current authoritative snapshot.")
     return proposal_input, input_sha256
@@ -400,12 +407,14 @@ def load_agent_proposal(
     recipe: dict[str, Any],
     workspace: Path,
     proposal_path: str | Path,
+    *,
+    read_run_manifest: Callable[[Path], list[dict[str, str]]],
 ) -> tuple[Path, Path, adaptive_proposals.ValidatedProposal, str, str]:
     proposal_file, input_path, expected_proposal_path, proposal, proposal_sha256 = _load_agent_proposal_binding(
         root, workspace, proposal_path
     )
     proposal_input, input_sha256 = validated_agent_proposal_input(
-        root, workflow, recipe, workspace, input_path, expected_proposal_path
+        root, workflow, recipe, workspace, input_path, expected_proposal_path, read_run_manifest=read_run_manifest
     )
     if proposal_file != expected_proposal_path:
         raise ValueError("Proposal path does not match the bound input snapshot.")
@@ -415,7 +424,9 @@ def load_agent_proposal(
     return proposal_file, input_path, validated, proposal_sha256, input_sha256
 
 
-def applied_agent_proposal(root: Path, workspace: Path, proposal_path: str | Path) -> Path | None:
+def applied_agent_proposal(
+    root: Path, workspace: Path, proposal_path: str | Path, *, read_run_manifest: Callable[[Path], list[dict[str, str]]]
+) -> Path | None:
     initial_plan = artifacts.read_hparam_plan(adaptive_state.round_path(root, 0))
     initial_recipe_value = initial_plan.get("recipe")
     initial_recipe = initial_recipe_value if isinstance(initial_recipe_value, dict) else {}

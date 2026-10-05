@@ -11,7 +11,7 @@ digest, proposal, registration and launch steps on top of this state.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import csv
 import io
 import json
@@ -142,7 +142,9 @@ def suggest_strategy(recipe: dict[str, Any]) -> str:
     return str(suggest.get("strategy", DEFAULT_ADAPTIVE_SUGGEST_STRATEGY))
 
 
-def round_is_terminal(round_dir: Path, workspace: Path) -> bool:
+def round_is_terminal(
+    round_dir: Path, workspace: Path, *, read_run_manifest: Callable[[Path], list[dict[str, str]]]
+) -> bool:
     plan = artifacts.read_hparam_plan(round_dir)
     canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
     run_keys = [managed_run_key(run) for run in plan.get("runs", [])]

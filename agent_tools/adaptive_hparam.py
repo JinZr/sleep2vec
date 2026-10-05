@@ -425,10 +425,14 @@ def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | No
     if strategy == "agent_proposal":
         current_round = adaptive_state.latest_round_index(root)
         round_dir = adaptive_state.round_path(root, current_round)
-        if not adaptive_state.round_is_terminal(round_dir, workspace):
+        if not adaptive_state.round_is_terminal(round_dir, workspace, read_run_manifest=read_run_manifest):
             raise ValueError("agent_proposal requires the current adaptive round to be terminal.")
         return adaptive_handshake.write_agent_proposal_input(
-            root, workflow, recipe, digest, adaptive_handshake.proposal_digest_rows(root, workspace)
+            root,
+            workflow,
+            recipe,
+            digest,
+            adaptive_handshake.proposal_digest_rows(root, workspace, read_run_manifest=read_run_manifest),
         )
 
     ranked = adaptive_evidence.rank_rows(rows, objective)
@@ -626,7 +630,9 @@ def adaptive_step(
     workspace = adaptive_state.workflow_workspace(root)
     with plan_registration_lock(workspace):
         if proposal_path is not None:
-            applied = adaptive_handshake.applied_agent_proposal(root, workspace, proposal_path)
+            applied = adaptive_handshake.applied_agent_proposal(
+                root, workspace, proposal_path, read_run_manifest=read_run_manifest
+            )
             if applied is not None:
                 return applied
         return _adaptive_step(root, proposal_path=proposal_path, execute=True)
@@ -791,13 +797,13 @@ def _adaptive_step(
 
     if strategy == "agent_proposal" and proposal_path is None:
         digest = digest_hparam_run(round_dir)
-        if not adaptive_state.round_is_terminal(round_dir, workspace):
+        if not adaptive_state.round_is_terminal(round_dir, workspace, read_run_manifest=read_run_manifest):
             return None
         return suggest_next_round(root, digest_path=digest)
 
     if proposal_path is not None:
         proposal_file, input_path, validated, proposal_sha256, input_sha256 = adaptive_handshake.load_agent_proposal(
-            root, workflow, recipe, workspace, proposal_path
+            root, workflow, recipe, workspace, proposal_path, read_run_manifest=read_run_manifest
         )
         candidate_payload = _agent_suggestion_payload(recipe, workflow, next_round, validated)
         next_recipe = _preflight_candidate(
@@ -825,6 +831,7 @@ def _adaptive_step(
             input_path,
             proposal_file,
             expected_sha256=input_sha256,
+            read_run_manifest=read_run_manifest,
         )
         if file_sha256(proposal_file) != proposal_sha256:
             raise ValueError("Agent proposal submission changed during validation.")
