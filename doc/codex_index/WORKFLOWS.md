@@ -138,14 +138,14 @@ Direct finetune cannot select checkpoints on test; the supported route is a
 New tuning requests default to terminal-only agent proposals: design the bounded
 domain in `search.parameters` and exact opening points in `search.configurations`,
 initialize, launch the authorized batch, then use the
-[proposal handshake](../agent_contracts/task_recipe.md#proposal-handshake) after
+[proposal handshake](../agent_contracts/hparam_workflow.md#proposal-handshake) after
 complete results. Inputs bind all committed terminal rounds, prior proposal
 rationales and available checkpoint trajectories. Existing authored plans retain
 their chosen workflow. Explicit static searches follow
-[search-space authorization](../agent_contracts/task_recipe.md#search-space),
-[registration preflight](../agent_contracts/task_recipe.md#registration-preflight),
-[launch and queue](../agent_contracts/task_recipe.md#launch-and-queue), then
-[selection](../agent_contracts/task_recipe.md#selection-and-selected-candidate-consumers).
+[search-space authorization](../agent_contracts/hparam_workflow.md#search-space),
+[registration preflight](../agent_contracts/hparam_workflow.md#registration-preflight),
+[launch and queue](../agent_contracts/hparam_workflow.md#launch-and-queue), then
+[selection](../agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers).
 For an explicitly chosen static profile, the hparam adapter delegates expansion to
 [`finetune_hparam_profile.py`](../../agent_tools/domain/finetune_hparam_profile.py).
 The recipe contract owns candidate/config/argv validation and its evidence
@@ -243,13 +243,13 @@ carry those choices into launch and recovery.
    [`context`](../agent_contracts/context_bundle.md) is diagnostic, not execution authority.
 2. Freeze ordinary plans with `plan` through
    [plan registration](../agent_contracts/experiment_workspace.md#publication-and-registration).
-   Hparam [registration preflight](../agent_contracts/task_recipe.md#registration-preflight)
+   Hparam [registration preflight](../agent_contracts/hparam_workflow.md#registration-preflight)
    owns final-config/argv checks and provenance limits.
 3. Before a new launch wave, inspect or explicitly fast-forward the one runtime checkout with
    `runtime-sync`; this never clones, resets, or changes an already running process. Frozen plan commits remain
    baseline provenance while each new run records the checkout commit seen at start.
-4. Execute through [launch and queue](../agent_contracts/task_recipe.md#launch-and-queue),
-   with [snapshot revalidation](../agent_contracts/task_recipe.md#execution-snapshot-and-launch-revalidation).
+4. Execute through [launch and queue](../agent_contracts/hparam_workflow.md#launch-and-queue),
+   with [snapshot revalidation](../agent_contracts/hparam_workflow.md#execution-snapshot-and-launch-revalidation).
    A rolling checkout may use a newer commit, but it must expose the current managed launch protocol before a direct
    claim or Slurm submission. Direct and Slurm starts use point-in-time identity and artifact checks under the short
    runtime lock; the self-contained Slurm bootstrap forwards signals and records checkout-local import/start failures.
@@ -267,13 +267,13 @@ carry those choices into launch and recovery.
    and [Slurm evidence](../agent_contracts/run_manifest.md#slurm-scheduler-evidence)
    own lifecycle interpretation.
 6. Select and consume candidates through the
-   [selection and consumer workflow](../agent_contracts/task_recipe.md#selection-and-selected-candidate-consumers),
+   [selection and consumer workflow](../agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers),
    append meaningful [research notes](../agent_contracts/experiment_workspace.md#research-log),
    then follow [finalization](../agent_contracts/experiment_workspace.md#finalization).
 
 Adaptive recipes enter through
-[`hparam-adaptive-init`](../agent_contracts/task_recipe.md#initialization-readiness)
-and follow the [proposal handshake](../agent_contracts/task_recipe.md#proposal-handshake).
+[`hparam-adaptive-init`](../agent_contracts/hparam_workflow.md#initialization-readiness)
+and follow the [proposal handshake](../agent_contracts/hparam_workflow.md#proposal-handshake).
 An exact committed agent-proposal execute is safe to retry after a lost client
 receipt only when successful completion is recorded; incomplete, conflicting,
 or uncommitted launch evidence remains fail closed, and monitors never gain

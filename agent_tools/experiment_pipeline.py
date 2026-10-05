@@ -131,7 +131,7 @@ class AttemptExecutionResult(_AttemptResultDetails):
 
 
 class PipelineReportResult(AttemptExecutionResult):
-    pipeline_id: Any
+    pipeline_id: str
     pipeline_dir: str
     report: str
 

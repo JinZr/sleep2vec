@@ -1,7 +1,7 @@
 # External Test Locking
 
 This contract owns test-access authorization and final-test boundaries. The
-[selection contract](task_recipe.md#selection-and-selected-candidate-consumers)
+[selection contract](hparam_workflow.md#selection-and-selected-candidate-consumers)
 owns source ranking, checkpoint choice, and selected-candidate consumers; the
 [pipeline contract](experiment_pipeline.md) owns managed evaluation workflows
 and retries.
@@ -39,14 +39,14 @@ The planner renders `--test-all-checkpoints-after-fit`; after fitting, the run
 evaluates every regular non-alias `epoch=*.ckpt` in its frozen checkpoint
 directory and commits complete `checkpoint_test_results` to the terminal
 runtime manifest. Its [evidence shape](run_manifest.md#runtime-artifact-evidence)
-and [selection algorithm](task_recipe.md#selection-and-selected-candidate-consumers)
+and [selection algorithm](hparam_workflow.md#selection-and-selected-candidate-consumers)
 remain separately owned.
 
 Direct `finetune` plans cannot use `selection_split=test` because they do not
 own all-checkpoint test ranking. Represent a fixed configuration as
 `task=hparam_tune` with one configuration and `max_runs: 1`.
 Adaptive test/external feedback also needs the explicit authorization in
-[adaptive strategy](task_recipe.md#strategy-and-budget); tuning access alone
+[adaptive strategy](hparam_workflow.md#strategy-and-budget); tuning access alone
 does not select an adaptive protocol.
 
 ## Final external-test boundary

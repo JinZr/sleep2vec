@@ -33,11 +33,7 @@ from typing import Any, Iterator, Literal, TypedDict, overload
 from . import transport
 from .manifests import read_rows, utc_now, validate_managed_header, write_rows, write_text
 from .models import json_ready
-from .transport import (  # noqa: F401 -- SSH_TIMEOUT_SECONDS re-exported for existing importers/tests
-    REMOTE_CONFLICT_RETURN_CODE,
-    REMOTE_MISSING_RETURN_CODE,
-    SSH_TIMEOUT_SECONDS,
-)
+from .transport import REMOTE_CONFLICT_RETURN_CODE, REMOTE_MISSING_RETURN_CODE
 
 
 def _run_remote_text_program(remote: str, name: str, payload: str) -> subprocess.CompletedProcess:

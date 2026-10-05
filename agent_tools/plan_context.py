@@ -1,8 +1,10 @@
 """Diagnostic context bundles: what an agent is shown before any plan exists.
 
-Layer 2 kernel, mixed bridge -- it imports ``domain.presets`` and the
-``index_csv`` shim directly, both of which should eventually route through an
-adapter hook.
+Layer 2 kernel, mixed bridge -- it imports ``domain.presets`` and
+``domain.index_csv`` directly. Both summaries run for every task with one
+implementation, so they stay direct imports rather than per-task adapter hooks;
+adapters only vary their inputs (``effective_preset_path``,
+``index_summary_inputs_override``).
 
 Everything it emits is diagnostic. A context bundle never authorizes a runnable
 command; only ``plans`` publication does.
@@ -17,11 +19,11 @@ import yaml
 
 from . import plan_rendering as rendering
 from .adapters import all_adapters, get_adapter
-from .configs import config_summary, load_yaml
+from .configs import config_summary
 from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
 from .decision_paths import path_context, path_validation
+from .domain.index_csv import IndexSummary, index_summary
 from .domain.presets import PresetSummary, preset_summary
-from .index_csv import IndexSummary, index_summary
 from .markdown import ConsultationQuestion
 from .models import (
     CONFIG_FINETUNE_SECTION,
@@ -30,6 +32,7 @@ from .models import (
     ConfigSummary,
     ConfigSummaryInput,
     coerce_list,
+    load_yaml,
     resolve_repo_path,
 )
 from .repo import RepoSummary

@@ -74,12 +74,12 @@ class BoundFinalEvalConfigSnapshot(TypedDict):
 class FinalEvalConfigDescriptor(TypedDict):
     path: str
     sha256: str
-    source_path: Any
+    source_path: str
 
 
 class _GenericRunCore(RunIdentity):
-    experiment_id: Any
-    step_id: Any
+    experiment_id: str
+    step_id: str
     config: str
     script: str
     run_dir: str
@@ -283,8 +283,9 @@ def generic_run_contract(
     runtime_dir = adapter.managed_runtime_dir(runtime_recipe, identity["version"])
     checkpoint_dir = runtime_dir / "checkpoints" if runtime_dir is not None else None
     run: GenericRunContract = {
-        "experiment_id": (recipe.get("experiment") or {}).get("id"),
-        "step_id": (recipe.get("step") or {}).get("id"),
+        # Plans compile only after consultation resolved experiment.id and step.id as strings.
+        "experiment_id": recipe["experiment"]["id"],
+        "step_id": recipe["step"]["id"],
         **identity,
         "config": str(run_dir / "config.yaml"),
         "script": str(run_dir / "launch.sh"),

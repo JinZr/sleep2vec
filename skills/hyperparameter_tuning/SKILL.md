@@ -16,21 +16,15 @@ Use the authorized experiment/step, base recipe, search domain or explicitly
 requested static profile/grid, budget, selection metric/mode/split, test/final-evaluation policy and
 execution identity. Read the relevant detailed owners before preparing work:
 
-- [Search space](../../doc/agent_contracts/task_recipe.md#search-space) for the default adaptive workflow, frozen domains, initial joint points and explicitly requested static `finetune_balanced` searches.
+- [Search space](../../doc/agent_contracts/hparam_workflow.md#search-space) for the default adaptive workflow, frozen domains, initial joint points and explicitly requested static `finetune_balanced` searches.
 - [Test-access policy](../../doc/agent_contracts/external_test_locking.md#selection-and-test-access-policy) for selection split, test-after-fit and unlock requirements.
-- [Launch and queue](../../doc/agent_contracts/task_recipe.md#launch-and-queue) for local/SSH identity, direct/Slurm resources and capacity.
-- [Adaptive workflow](../../doc/agent_contracts/task_recipe.md#adaptive-workflow) when enabled; it owns initialization, frozen Python/route/scientific identity, per-round commit provenance, strategy and budget.
+- [Launch and queue](../../doc/agent_contracts/hparam_workflow.md#launch-and-queue) for local/SSH identity, direct/Slurm resources and capacity.
+- [Adaptive workflow](../../doc/agent_contracts/hparam_workflow.md#adaptive-workflow) when enabled; it owns initialization, frozen Python/route/scientific identity, per-round commit provenance, strategy and budget.
 
 ## Interaction stages
 
-Keep concept planning, publication, and launch distinct. Concept planning
-discusses scientific choices, candidate scope and budget without running
-`doctor` or `plan`, publishing recipe bytes, inspecting live resources or
-producing runnable commands. Publication may write the authorized recipe or
-decisions, run `doctor` and `plan`, and freeze artifacts, but it does not launch.
-Launch requires an explicit request to execute or complete the run. One request
-may authorize all three stages when it explicitly asks for design and execution;
-otherwise stop at the requested stage.
+Keep concept planning, publication and launch as the separate stages that the
+[stop-and-consult policy](../../AGENTS.md#agent-stop-and-consult-policy) defines.
 
 ## First information-gathering commands
 
@@ -55,25 +49,18 @@ Collect unresolved scientific decisions once. Reuse the same authorized
 `decisions.yaml` for later doctor checks and fresh plan publication; resolved
 plan artifacts carry those choices into launch and recovery. Ask only for new
 unresolved decisions introduced by validation, input drift or an expanded
-scope. If doctor exposes a new decision absent from its existing template, use a
-fresh doctor output directory. Use a fresh directory as well when a currently
-resolved concrete value differs from the preserved template; doctor neither
-merges nor overwrites the old file. The decision file records intent but does
-not itself authorize a later interaction stage.
+scope. The [decision contract](../../doc/agent_contracts/user_decisions.md) owns
+doctor-directory reuse; the decision file does not authorize a later stage.
 
-For a new recipe with no authored search, an ordinary tuning request defaults
-to terminal-only `adaptive.suggest.strategy: agent_proposal`. Static profile/grid
-search requires an explicit request. Existing authored or frozen searches must
-not be rewritten. Explain at the outset that the agent will use completed results
-to choose later rounds; do not preplan the whole budget and call it adaptive.
-
-Use the default 12-run search budget only when the user has not specified a total
-budget. Default to `round_size: 2` and `max_rounds: 6`; a smaller concurrency or
-total-run cap reduces round size to `min(2, permitted concurrent runs, total
-budget)`, with `max_rounds = ceil(total budget / round_size)`. Translate GPU limits
-using the authorized GPUs per run. A concurrency cap does not fix epochs. Author
-these fields, the explicit objective and `replacement: {enabled: false}` in the
-recipe; they are not automatic parser defaults.
+The [stop-and-consult policy](../../AGENTS.md#agent-stop-and-consult-policy) owns
+the terminal-only `agent_proposal` default for a new recipe with no authored
+search, the protection of existing searches, and the default search budget in
+[`hparam_search_defaults`](../../agent_policies/consultation_policy.yaml).
+Explain at the outset that the agent will use completed results to choose later
+rounds; do not preplan the whole budget and call it adaptive.
+A concurrency cap does not fix epochs. Author these fields, the explicit
+objective and `replacement: {enabled: false}` in the recipe; they are
+not automatic parser defaults.
 
 Before initialization, inspect the effective base/runtime config and available
 prior experiments. Choose a bounded domain and first-round points using:
@@ -109,12 +96,8 @@ compute judgment when throughput is unknown. Use the
 it does not prescribe numerical ranges.
 
 The templates are starting examples to adjust to the actual base config, runtime
-and evidence. Choose technical values within the authorized domain without asking
-for each learning rate, training length, scheduler, dropout or LoRA level. Unknown
-scientific choices still require consultation. Budget/domain expansion, test
-unlock, changed data/label/split/checkpoint, an existing protocol change or a later
-interaction stage needs its own authority. Do not modify active frozen workflows
-to accommodate a newly noticed search limitation.
+and evidence. Do not modify active frozen workflows to accommodate a newly
+noticed search limitation.
 
 ## Result-to-proposal reasoning
 
@@ -127,7 +110,7 @@ accepted prior proposal rationale; inspect `checkpoint_test_results` trajectorie
 `monitor_checkpoint_path` and `stop_reason` when present. Keep validation-monitor
 and test-objective checkpoint identities distinct, and use test feedback only
 under its frozen authorization. Use the exact evidence identities and submission format
-in the [proposal handshake](../../doc/agent_contracts/task_recipe.md#proposal-handshake).
+in the [proposal handshake](../../doc/agent_contracts/hparam_workflow.md#proposal-handshake).
 
 Use `training_history.observations` when present to compare the logged training
 loss and validation trajectory, not just each run's best score. Its source path
@@ -139,7 +122,7 @@ observed extrema, not schedule order. Read the cited history for a needed detail
 within the frozen split policy; do not infer an early-stopping cause or silently
 sync new evidence while applying an already-issued proposal.
 If an absent curve would change the next decision, the existing
-`experiment-sync-wandb` can refresh authorized workspace evidence before
+`experiment-wandb-sync` can refresh authorized workspace evidence before
 requesting a proposal input. Missing optional history does not itself block a
 proposal; explain what can and cannot be concluded from the available evidence.
 
@@ -196,16 +179,14 @@ checkout code bytes remain fixed for the whole job.
 
 For explicitly static tuning, follow doctor → `plan` → `hparam-launch` dry-run →
 authorized `hparam-run-queue --execute` → terminal monitoring → `hparam-select`
-→ report/finalization. Once launch is explicitly authorized, continue the chosen
-workflow without another question about technical levels or each execute step.
-Use variant-local runtime commands generated by the planner, not hand-written
+→ report/finalization. Use variant-local runtime commands generated by the planner, not hand-written
 training scripts. Stop via `hparam-stop --run-id <id> --reason <text>` under the
 existing [direct/Slurm evidence contract](../../doc/agent_contracts/run_manifest.md).
 
 For the default adaptive workflow, complete doctor, `hparam-adaptive-init`,
 initial launch dry-run and the authorized initial launch, then terminal monitoring
 and the next-round proposals. Adaptive recipes do not enter through generic `plan`.
-Follow the exact [proposal handshake](../../doc/agent_contracts/task_recipe.md#proposal-handshake):
+Follow the exact [proposal handshake](../../doc/agent_contracts/hparam_workflow.md#proposal-handshake):
 the tool issues the input, the external agent writes only its named submission,
 and the tool preflights/registers/launches. `hparam-adaptive-loop` is only for
 explicit `best_neighborhood`, not an LLM driver for `agent_proposal`.
@@ -224,15 +205,15 @@ not an experimental arm, and never rewrite earlier plan or snapshot bytes.
 
 Use the [workspace layout](../../doc/agent_contracts/experiment_workspace.md),
 [canonical run evidence](../../doc/agent_contracts/run_manifest.md), and
-[adaptive readiness](../../doc/agent_contracts/task_recipe.md#initialization-readiness)
+[adaptive readiness](../../doc/agent_contracts/hparam_workflow.md#initialization-readiness)
 as the artifact owners. Hparam execution snapshots are frozen during
 registration preflight, not first execute. Output existence alone is not
 completion evidence.
 
 ## Validation gates
 
-Read [registration preflight](../../doc/agent_contracts/task_recipe.md#registration-preflight)
-and [launch revalidation](../../doc/agent_contracts/task_recipe.md#execution-snapshot-and-launch-revalidation).
+Read [registration preflight](../../doc/agent_contracts/hparam_workflow.md#registration-preflight)
+and [launch revalidation](../../doc/agent_contracts/hparam_workflow.md#execution-snapshot-and-launch-revalidation).
 All candidate sources validate final config bytes through the canonical variant
 owner. The frozen domain permits values; it does not certify every cross-axis
 combination. Choose jointly valid points and correct rejected, unaccepted
@@ -249,7 +230,7 @@ means the current module remains inside the current repository with the same
 module name; it does not require the exact frozen origin path. Dry-run does not
 replace the live eligible-execute checks.
 
-After terminal runs, follow [selection and selected-candidate consumers](../../doc/agent_contracts/task_recipe.md#selection-and-selected-candidate-consumers)
+After terminal runs, follow [selection and selected-candidate consumers](../../doc/agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers)
 and [finalization](../../doc/agent_contracts/experiment_workspace.md#finalization).
 Use final external evaluation only under the explicit unlock. Report the best
 observed candidate within the frozen domain, metric, split and budget, not a

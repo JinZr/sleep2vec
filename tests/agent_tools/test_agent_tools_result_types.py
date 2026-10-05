@@ -10,7 +10,8 @@ def test_result_types_reach_callers(tmp_path: Path):
         textwrap.dedent("""\
             from pathlib import Path
             from agent_tools import (
-                adaptive_evidence, adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
+                adaptive_evidence, adaptive_hparam, adaptive_state, checkpoint_test_results, experiment_tracking,
+                experiments,
                 experiment_io, experiment_sources, experiment_workspace, hparam_runtime, hparam_selection,
                 managed_scheduler, models, experiment_pipeline, experiment_pipeline_results,
                 experiment_pipeline_cohort_selection,
@@ -142,7 +143,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                     {}, Path("script"), "log", "pid", [], execution_snapshot=execution_snapshot,
                 )
 
-            from agent_tools.index_csv import index_summary
+            from agent_tools.domain.index_csv import index_summary
             from agent_tools.domain.presets import preset_summary
             from agent_tools import plan_context, markdown
             from agent_tools.decision_models import DecisionReport, DecisionStatus
@@ -337,7 +338,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 binding: experiment_workspace.AdaptiveProposalRequestBinding,
                 requested: experiment_workspace.AdaptiveProposalRequestedEvent,
                 accepted: experiment_workspace.AdaptiveProposalAcceptedEvent,
-                workflow: adaptive_hparam.InitialAdaptiveWorkflow,
+                workflow: adaptive_state.InitialAdaptiveWorkflow,
                 accepted_payload: adaptive_hparam.AcceptedProposalPayload,
             ) -> None:
                 snapshot = adaptive_hparam._agent_proposal_input_payload(Path("/workflow"), {}, {}, [])
@@ -352,7 +353,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 binding["input_sha256"] = None  # type: ignore[typeddict-item]
                 requested["digest"] = Path("/digest")  # type: ignore[typeddict-item]
                 accepted["suggestion_sha256"] = None  # type: ignore[typeddict-item]
-                created = adaptive_hparam._plan_event(Path("/round"), {"recipe": {"step": {"id": None}}})
+                created = adaptive_state.plan_created_payload(Path("/round"), {"recipe": {"step": {"id": None}}})
                 created["step_id"] = None
                 created["run_count"] = "1"  # type: ignore[typeddict-item]
                 for event_payload in (initialized, requested, accepted, created):
@@ -363,11 +364,11 @@ def test_result_types_reach_callers(tmp_path: Path):
                 readonly_event = MappingProxyType(raw_event)
                 experiment_workspace.event_matches({}, "event", readonly_event)
                 experiment_workspace.append_event(Path("/workspace"), "event", readonly_event)  # type: ignore[arg-type]
-                typed_workflow = adaptive_hparam._validate_workflow_payload(Path("/workflow"), workflow)
+                typed_workflow = adaptive_state.validate_workflow_payload(Path("/workflow"), workflow)
                 typed_workflow["external_optimized"] = False  # type: ignore[typeddict-item]
                 typed_workflow["recipe_path"] = None  # type: ignore[typeddict-item]
                 raw_workflow: dict[str, Any] = {"custom": None, "objective_metric": None}
-                retained_workflow: dict[str, Any] = adaptive_hparam._validate_workflow_payload(
+                retained_workflow: dict[str, Any] = adaptive_state.validate_workflow_payload(
                     Path("/workflow"), raw_workflow,
                 )
                 retained_workflow["unknown"] = {"nested": None}
@@ -437,8 +438,8 @@ def test_result_types_reach_callers(tmp_path: Path):
             final_descriptor: plan_contract.FinalEvalConfigDescriptor = {
                 "path": "/plan/config.final_eval.yaml", "sha256": "a" * 64, "source_path": "relative.yaml",
             }
-            final_descriptor["source_path"] = None
-            final_descriptor["source_path"] = {"raw": [None, 1]}
+            final_descriptor["source_path"] = None  # type: ignore[typeddict-item]
+            final_descriptor["source_path"] = {"raw": [None, 1]}  # type: ignore[typeddict-item]
             bound_final: plan_contract.BoundFinalEvalConfigSnapshot = {
                 "source_path": "relative.yaml", "bytes": b"config", "sha256": "a" * 64,
             }
@@ -452,8 +453,8 @@ def test_result_types_reach_callers(tmp_path: Path):
             generic_run["config"] = Path("/config")  # type: ignore[typeddict-item]
             generic_run["run_id"] = 7  # type: ignore[typeddict-item]
             generic_run["scheduler_type"] = "unknown"  # type: ignore[typeddict-item]
-            generic_run["experiment_id"] = None
-            generic_run["step_id"] = {"raw": None}
+            generic_run["experiment_id"] = None  # type: ignore[typeddict-item]
+            generic_run["step_id"] = {"raw": None}  # type: ignore[typeddict-item]
             del generic_run["script"]  # type: ignore[misc]
 
             generic_compiled: plan_contract.GenericCompiledPlanContract = {

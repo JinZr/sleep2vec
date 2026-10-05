@@ -33,6 +33,7 @@ from .adaptive_hparam import (
     suggest_next_round,
 )
 from .configs import config_summary
+from .domain.index_csv import index_summary
 from .domain.presets import preset_summary
 from .experiment_tracking import format_experiment_status
 from .experiments import (
@@ -52,6 +53,7 @@ from .experiments import (
     sync_wandb_runs,
 )
 from .hparam import (
+    LogitExportRequest,
     ensemble_hparam_outputs,
     export_hparam_logits,
     generate_external_eval,
@@ -63,7 +65,6 @@ from .hparam import (
     stop_hparam_run,
     threshold_hparam_outputs,
 )
-from .index_csv import index_summary
 from .manifests import read_rows
 from .markdown import report_text
 from .models import json_ready
@@ -1033,9 +1034,7 @@ def _cmd_hparam_external_eval(args: argparse.Namespace) -> int:
 
 
 def _cmd_hparam_export_logits(args: argparse.Namespace) -> int:
-    manifest = export_hparam_logits(
-        args.run_dir,
-        args.selected,
+    request = LogitExportRequest(
         unlock_final_test=args.unlock_final_test,
         val_split=args.val_split,
         test_split=args.test_split,
@@ -1058,6 +1057,7 @@ def _cmd_hparam_export_logits(args: argparse.Namespace) -> int:
         all_candidates=args.all_candidates,
         execute=args.execute,
     )
+    manifest = export_hparam_logits(args.run_dir, args.selected, request)
     print(f"Wrote {manifest}")
     if not args.execute:
         print(f"Wrote {manifest.parent / 'logits_export.sh'}")

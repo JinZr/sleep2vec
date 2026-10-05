@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_tools import experiment_io, manifests, python_programs
+from agent_tools import experiment_io, manifests, python_programs, transport
 
 
 @pytest.fixture
@@ -417,7 +417,7 @@ def test_remote_path_probe_distinguishes_existing_from_missing(monkeypatch, retu
     command, kwargs = calls[0]
     assert "os.lstat" in command[-1]
     assert "[ -e" not in command[-1]
-    assert kwargs["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
+    assert kwargs["timeout"] == transport.SSH_TIMEOUT_SECONDS
     assert kwargs["text"] is True
     assert "check" not in kwargs
     assert "input" not in kwargs
@@ -453,7 +453,7 @@ def test_remote_read_distinguishes_contents_from_missing(monkeypatch, returncode
     assert "os.lstat" in command[-1]
     assert "open(path" in command[-1]
     assert "[ -f" not in command[-1]
-    assert kwargs["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
+    assert kwargs["timeout"] == transport.SSH_TIMEOUT_SECONDS
 
 
 def test_remote_read_preserves_exact_line_endings(monkeypatch):
@@ -1662,7 +1662,7 @@ def test_remote_directory_probe_distinguishes_empty_from_missing(monkeypatch, re
     assert "os.lstat" in command[-1]
     assert "os.listdir" in command[-1]
     assert "find " not in command[-1]
-    assert kwargs["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
+    assert kwargs["timeout"] == transport.SSH_TIMEOUT_SECONDS
 
 
 @pytest.mark.parametrize("returncode", [1, 255])
@@ -1687,7 +1687,7 @@ def test_remote_directory_probe_fails_closed_on_nonmissing_error(monkeypatch, re
 )
 def test_remote_authoritative_reads_propagate_timeout(monkeypatch, operation):
     def timeout(command, **_kwargs):
-        raise subprocess.TimeoutExpired(command, experiment_io.SSH_TIMEOUT_SECONDS)
+        raise subprocess.TimeoutExpired(command, transport.SSH_TIMEOUT_SECONDS)
 
     monkeypatch.setattr(experiment_io.subprocess, "run", timeout)
 
@@ -1824,7 +1824,7 @@ def test_remote_managed_output_preflight_fails_closed(monkeypatch):
     with pytest.raises(ValueError, match="aliased output"):
         experiment_io.validate_managed_output_paths("/remote/root", ["/remote/root/reports/final.md"], remote="host")
 
-    assert calls[0][1]["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
+    assert calls[0][1]["timeout"] == transport.SSH_TIMEOUT_SECONDS
 
 
 @pytest.mark.parametrize("returncode", [1, 255])
@@ -1841,7 +1841,7 @@ def test_remote_managed_output_preflight_propagates_transport_failure(monkeypatc
 
 def test_remote_managed_output_preflight_propagates_timeout(monkeypatch):
     def timeout(command, **_kwargs):
-        raise subprocess.TimeoutExpired(command, experiment_io.SSH_TIMEOUT_SECONDS)
+        raise subprocess.TimeoutExpired(command, transport.SSH_TIMEOUT_SECONDS)
 
     monkeypatch.setattr(experiment_io.subprocess, "run", timeout)
 

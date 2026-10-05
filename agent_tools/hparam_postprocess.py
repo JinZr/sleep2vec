@@ -8,6 +8,7 @@ attribute name is part of the CLI contract.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import importlib
 from itertools import combinations
 import json
@@ -153,48 +154,57 @@ def generate_external_eval(
     return script_path
 
 
+@dataclass(frozen=True)
+class LogitExportRequest:
+    """Split, data-path, candidate, and inference settings of one logit export.
+
+    ``unlock_final_test`` has no default: every caller states test access explicitly.
+    """
+
+    unlock_final_test: bool
+    val_split: str = "val"
+    test_split: str = "test"
+    skip_test: bool = False
+    label_name: str | None = None
+    val_kaldi_data_root: str | None = None
+    val_kaldi_manifest: str | None = None
+    val_finetune_data_index: str | None = None
+    test_kaldi_data_root: str | None = None
+    test_kaldi_manifest: str | None = None
+    test_finetune_data_index: str | None = None
+    batch_size: int = 12
+    num_workers: int = 8
+    devices: list[int] | None = None
+    accelerator: str = "gpu"
+    device: str = "cuda"
+    precision: str = "bf16-mixed"
+    seed: int = 4523
+    top_k: int = 1
+    all_candidates: bool = False
+    execute: bool = False
+
+
 def export_hparam_logits(
     run_dir: str | Path,
     selected_csv: str | Path,
-    *,
-    unlock_final_test: bool,
-    val_split: str = "val",
-    test_split: str = "test",
-    skip_test: bool = False,
-    label_name: str | None = None,
-    val_kaldi_data_root: str | None = None,
-    val_kaldi_manifest: str | None = None,
-    val_finetune_data_index: str | None = None,
-    test_kaldi_data_root: str | None = None,
-    test_kaldi_manifest: str | None = None,
-    test_finetune_data_index: str | None = None,
-    batch_size: int = 12,
-    num_workers: int = 8,
-    devices: list[int] | None = None,
-    accelerator: str = "gpu",
-    device: str = "cuda",
-    precision: str = "bf16-mixed",
-    seed: int = 4523,
-    top_k: int = 1,
-    all_candidates: bool = False,
-    execute: bool = False,
+    request: LogitExportRequest,
 ) -> Path:
-    if not skip_test and not unlock_final_test:
+    if not request.skip_test and not request.unlock_final_test:
         raise ValueError("hparam-export-logits requires --unlock-final-test unless --skip-test is used.")
 
     root = canonical_local_experiment_root(run_dir, Path.cwd())
     rows, owner_plans = resolve_hparam_candidates(
         root,
         read_rows(selected_csv, require_managed_identity=True),
-        top_k=top_k,
-        all_candidates=all_candidates,
+        top_k=request.top_k,
+        all_candidates=request.all_candidates,
     )
     _require_local_postprocess_execution(rows, owner_plans, "hparam-export-logits")
     config_dir = root / "logits_export_configs"
     output_dir = root / "logits_exports"
     manifest = root / "logits_export_manifest.tsv"
     output_paths = [manifest]
-    if not execute:
+    if not request.execute:
         # Dry-run writes a replay script alongside the manifest.
         output_paths.append(root / "logits_export.sh")
     prepared = []
@@ -207,7 +217,7 @@ def export_hparam_logits(
         recipe = recipe_value if isinstance(recipe_value, dict) else {}
         inputs_value = recipe.get("inputs")
         inputs = inputs_value if isinstance(inputs_value, dict) else {}
-        resolved_label = label_name or inputs.get("label_name")
+        resolved_label = request.label_name or inputs.get("label_name")
         if not resolved_label:
             raise ValueError(
                 f"hparam-export-logits requires --label-name when the owning hparam plan has no label_name: "
@@ -215,14 +225,14 @@ def export_hparam_logits(
             )
         candidate = _candidate_id(row)
         paths = {
-            "val_config": config_dir / f"{candidate}_{index:03d}_{val_split}.yaml",
-            "val_logits_path": output_dir / f"{candidate}_{index:03d}_{val_split}_logits.csv",
+            "val_config": config_dir / f"{candidate}_{index:03d}_{request.val_split}.yaml",
+            "val_logits_path": output_dir / f"{candidate}_{index:03d}_{request.val_split}_logits.csv",
         }
-        if not skip_test:
+        if not request.skip_test:
             paths.update(
                 {
-                    "test_config": config_dir / f"{candidate}_{index:03d}_{test_split}.yaml",
-                    "test_logits_path": output_dir / f"{candidate}_{index:03d}_{test_split}_logits.csv",
+                    "test_config": config_dir / f"{candidate}_{index:03d}_{request.test_split}.yaml",
+                    "test_logits_path": output_dir / f"{candidate}_{index:03d}_{request.test_split}_logits.csv",
                 }
             )
         prepared.append((row, checkpoint_path, paths, recipe, resolved_label))
@@ -239,16 +249,16 @@ def export_hparam_logits(
         _copy_config_with_data_paths(
             source_config,
             val_config,
-            kaldi_data_root=val_kaldi_data_root,
-            kaldi_manifest=val_kaldi_manifest,
-            finetune_data_index=val_finetune_data_index,
+            kaldi_data_root=request.val_kaldi_data_root,
+            kaldi_manifest=request.val_kaldi_manifest,
+            finetune_data_index=request.val_finetune_data_index,
         )
         val_logits_path = paths["val_logits_path"]
         manifest_row = {
             **row,
             "checkpoint_path": checkpoint_path,
             "label_name": resolved_label,
-            "val_split": val_split,
+            "val_split": request.val_split,
             "val_config": str(val_config),
             "val_logits_path": str(val_logits_path),
             "val_infer_command": _infer_command(
@@ -256,30 +266,24 @@ def export_hparam_logits(
                 val_config,
                 checkpoint_path,
                 resolved_label,
-                val_split,
-                batch_size=batch_size,
-                num_workers=num_workers,
-                devices=devices,
-                accelerator=accelerator,
-                device=device,
-                precision=precision,
-                seed=seed,
+                request.val_split,
+                request,
             ),
         }
 
-        if not skip_test:
+        if not request.skip_test:
             test_config = paths["test_config"]
             _copy_config_with_data_paths(
                 source_config,
                 test_config,
-                kaldi_data_root=test_kaldi_data_root,
-                kaldi_manifest=test_kaldi_manifest,
-                finetune_data_index=test_finetune_data_index,
+                kaldi_data_root=request.test_kaldi_data_root,
+                kaldi_manifest=request.test_kaldi_manifest,
+                finetune_data_index=request.test_finetune_data_index,
             )
             test_logits_path = paths["test_logits_path"]
             manifest_row.update(
                 {
-                    "test_split": test_split,
+                    "test_split": request.test_split,
                     "test_config": str(test_config),
                     "test_logits_path": str(test_logits_path),
                     "test_infer_command": _infer_command(
@@ -287,32 +291,15 @@ def export_hparam_logits(
                         test_config,
                         checkpoint_path,
                         resolved_label,
-                        test_split,
-                        batch_size=batch_size,
-                        num_workers=num_workers,
-                        devices=devices,
-                        accelerator=accelerator,
-                        device=device,
-                        precision=precision,
-                        seed=seed,
+                        request.test_split,
+                        request,
                     ),
                 }
             )
         manifest_rows.append(manifest_row)
 
-    if execute:
-        _execute_logit_exports(
-            manifest_rows,
-            owner_plans,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            devices=devices,
-            accelerator=accelerator,
-            device=device,
-            precision=precision,
-            seed=seed,
-            skip_test=skip_test,
-        )
+    if request.execute:
+        _execute_logit_exports(manifest_rows, owner_plans, request)
     else:
         command = [
             "python",
@@ -324,45 +311,45 @@ def export_hparam_logits(
             "--selected",
             str(Path(selected_csv).expanduser().resolve()),
             "--val-split",
-            val_split,
+            request.val_split,
             "--test-split",
-            test_split,
+            request.test_split,
             "--batch-size",
-            batch_size,
+            request.batch_size,
             "--num-workers",
-            num_workers,
+            request.num_workers,
             "--accelerator",
-            accelerator,
+            request.accelerator,
             "--device",
-            device,
+            request.device,
             "--precision",
-            precision,
+            request.precision,
             "--seed",
-            seed,
+            request.seed,
             "--top-k",
-            top_k,
+            request.top_k,
             "--execute",
         ]
-        if unlock_final_test:
+        if request.unlock_final_test:
             command.append("--unlock-final-test")
-        if skip_test:
+        if request.skip_test:
             command.append("--skip-test")
-        if label_name:
-            command.extend(["--label-name", label_name])
+        if request.label_name:
+            command.extend(["--label-name", request.label_name])
         for flag, value in (
-            ("--val-kaldi-data-root", val_kaldi_data_root),
-            ("--val-kaldi-manifest", val_kaldi_manifest),
-            ("--val-finetune-data-index", val_finetune_data_index),
-            ("--test-kaldi-data-root", test_kaldi_data_root),
-            ("--test-kaldi-manifest", test_kaldi_manifest),
-            ("--test-finetune-data-index", test_finetune_data_index),
+            ("--val-kaldi-data-root", request.val_kaldi_data_root),
+            ("--val-kaldi-manifest", request.val_kaldi_manifest),
+            ("--val-finetune-data-index", request.val_finetune_data_index),
+            ("--test-kaldi-data-root", request.test_kaldi_data_root),
+            ("--test-kaldi-manifest", request.test_kaldi_manifest),
+            ("--test-finetune-data-index", request.test_finetune_data_index),
         ):
             if value:
                 command.extend([flag, value])
-        if devices:
+        if request.devices:
             command.append("--devices")
-            command.extend(devices)
-        if all_candidates:
+            command.extend(request.devices)
+        if request.all_candidates:
             command.append("--all-candidates")
         repo_root = shlex.quote(str(REPO_ROOT))
         write_text(
@@ -510,14 +497,7 @@ def _infer_command(
     checkpoint_path: str,
     label_name: str,
     eval_split: str,
-    *,
-    batch_size: int,
-    num_workers: int,
-    devices: list[int] | None,
-    accelerator: str,
-    device: str,
-    precision: str,
-    seed: int,
+    request: LogitExportRequest,
 ) -> str:
     variant = str(recipe.get("variant"))
     command = [
@@ -533,37 +513,29 @@ def _infer_command(
         "--eval-split",
         eval_split,
         "--batch-size",
-        batch_size,
+        request.batch_size,
         "--num-workers",
-        num_workers,
+        request.num_workers,
         "--accelerator",
-        accelerator,
+        request.accelerator,
         "--device",
-        device,
+        request.device,
         "--precision",
-        precision,
+        request.precision,
         "--seed",
-        seed,
+        request.seed,
     ]
-    if devices:
-        command.extend(["--devices", *devices])
+    if request.devices:
+        command.extend(["--devices", *request.devices])
     return render_command(command)
 
 
 def _execute_logit_exports(
     rows: list[dict[str, Any]],
     owner_plans: dict[tuple[str, str], plan_contract.HparamPlan],
-    *,
-    batch_size: int,
-    num_workers: int,
-    devices: list[int] | None,
-    accelerator: str,
-    device: str,
-    precision: str,
-    seed: int,
-    skip_test: bool,
+    request: LogitExportRequest,
 ) -> None:
-    splits = ["val"] if skip_test else ["val", "test"]
+    splits = ["val"] if request.skip_test else ["val", "test"]
     for row in rows:
         owner_plan = owner_plans[validated_run_key(row)]
         recipe_value = owner_plan.get("recipe")
@@ -576,13 +548,13 @@ def _execute_logit_exports(
                 label_name=str(row["label_name"]),
                 eval_split=str(row[f"{split}_split"]),
                 output_path=Path(str(row[f"{split}_logits_path"])),
-                batch_size=batch_size,
-                num_workers=num_workers,
-                devices=devices,
-                accelerator=accelerator,
-                device=device,
-                precision=precision,
-                seed=seed,
+                batch_size=request.batch_size,
+                num_workers=request.num_workers,
+                devices=request.devices,
+                accelerator=request.accelerator,
+                device=request.device,
+                precision=request.precision,
+                seed=request.seed,
             )
 
 

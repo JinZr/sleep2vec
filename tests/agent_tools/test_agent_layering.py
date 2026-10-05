@@ -99,7 +99,7 @@ def _reverse_import_offenders(module: str, source: str) -> list[tuple[str, str, 
 
 def _scanned_modules() -> set[str]:
     # Kernel + mixed, plus any module that is the source of an exemption (so the
-    # exemption is actually exercised, e.g. the index_csv shim).
+    # exemption is actually exercised).
     return (
         set(layering.KERNEL_MODULES)
         | set(layering.MIXED_MODULES)
@@ -264,3 +264,15 @@ def test_docstring_guard_catches_missing_and_empty():
     assert _module_summary("from __future__ import annotations\n", "x") is None
     assert _module_summary('"""   """\n', "x") is None
     assert _module_summary('"""Owns the thing.\n\nDetail.\n"""\n', "x") == "Owns the thing."
+
+
+def test_retired_compatibility_paths_stay_removed():
+    # Each name is imported from its defining module; the old spellings must not return.
+    import agent_tools.configs
+    import agent_tools.experiment_io
+    import agent_tools.recipes
+
+    assert not (_package_dir() / "index_csv.py").exists()
+    assert not hasattr(agent_tools.configs, "sleep2stat_config_summary")
+    assert not hasattr(agent_tools.recipes, "recipe_name")
+    assert not hasattr(agent_tools.experiment_io, "SSH_TIMEOUT_SECONDS")

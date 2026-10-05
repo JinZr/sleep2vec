@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, experiments, hparam_runtime, managed_scheduler, manifests
+from agent_tools import adaptive_hparam, adaptive_state, experiments, hparam_runtime, managed_scheduler, manifests
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _read_table, _run, _write_fake_manifest
@@ -322,8 +322,8 @@ def test_adaptive_step_keeps_current_runs_when_replacement_stage_raises(
         )
     elif failure_stage == "registry":
         monkeypatch.setattr(
-            adaptive_hparam,
-            "_append_registry_rows",
+            adaptive_state,
+            "append_registry_rows",
             lambda *_args: (_ for _ in ()).throw(RuntimeError("registry failed")),
         )
     else:
@@ -345,7 +345,7 @@ def test_adaptive_step_keeps_current_runs_when_replacement_stage_raises(
         assert {row["status"] for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] in next_ids} == {
             "planned"
         }
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    assert adaptive_state.latest_round_index(workflow_dir) == 0
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert "launch_round" not in [event["event_type"] for event in events]
 
@@ -386,7 +386,7 @@ def test_adaptive_step_commits_canonical_start_when_initial_launcher_raises(tmp_
     assert next(row["status"] for row in rows if row["run_id"] == current_run["run_id"]) == "superseded"
     assert any(row["status"] == "launched" and row["run_id"] != current_run["run_id"] for row in rows)
     assert calls == ["launch"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_state.latest_round_index(workflow_dir) == 1
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("launch_round") == 1
 
@@ -413,7 +413,7 @@ def test_adaptive_round_commit_marker_follows_predecessor_supersede(tmp_path: Pa
         )
         return Path(run_dir) / "launch_manifest.tsv"
 
-    real_append_event = adaptive_hparam._append_event
+    real_append_event = adaptive_state.append_event
 
     def fail_round_commit(root, event_type, payload):
         if event_type == "launch_round":
@@ -421,7 +421,7 @@ def test_adaptive_round_commit_marker_follows_predecessor_supersede(tmp_path: Pa
         real_append_event(root, event_type, payload)
 
     monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
-    monkeypatch.setattr(adaptive_hparam, "_append_event", fail_round_commit)
+    monkeypatch.setattr(adaptive_state, "append_event", fail_round_commit)
 
     with pytest.raises(RuntimeError, match="round commit marker failed"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -429,7 +429,7 @@ def test_adaptive_round_commit_marker_follows_predecessor_supersede(tmp_path: Pa
     rows = _read_table(tmp_path / "run_manifest.tsv")
     assert next(row["status"] for row in rows if row["run_id"] == current_run["run_id"]) == "superseded"
     assert any(row["status"] == "launched" and row["run_id"] != current_run["run_id"] for row in rows)
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    assert adaptive_state.latest_round_index(workflow_dir) == 0
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert "supersede_pending_run" in [event["event_type"] for event in events]
     assert "launch_round" not in [event["event_type"] for event in events]
@@ -482,7 +482,7 @@ def test_adaptive_step_reconciles_pid_after_initial_post_start_commit_failure(tm
     assert prospective["process_group_id"] == "123"
     assert prospective["process_start_token"] == "proc:unit-start"
     assert prospective["pid_path"] == str(Path(prospective["run_dir"]) / "pid")
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_state.latest_round_index(workflow_dir) == 1
     assert (
         next(row["status"] for row in _read_table(next_dir / "launch_manifest.tsv") if row["run_id"] == "run-001")
         == "launched"
@@ -534,7 +534,7 @@ def test_adaptive_step_blocks_retry_when_post_start_reconciliation_fails(
             raise RuntimeError("post-start canonical commit failed")
         return real_runtime_merge(*args, **kwargs)
 
-    real_adaptive_merge = adaptive_hparam.merge_run_manifest
+    real_adaptive_merge = adaptive_state.merge_run_manifest
 
     def fail_reconciliation(root, rows, **kwargs):
         if any(row.get("status") == "launched" and row.get("pid") for row in rows):
@@ -544,12 +544,12 @@ def test_adaptive_step_blocks_retry_when_post_start_reconciliation_fails(
     monkeypatch.setattr(hparam_runtime, "_start_process", start_with_pid)
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", fail_post_start_commit)
     if recovery_failure == "canonical":
-        monkeypatch.setattr(adaptive_hparam, "merge_run_manifest", fail_reconciliation)
+        monkeypatch.setattr(adaptive_state, "merge_run_manifest", fail_reconciliation)
         error = "launch evidence could not be committed"
         expected_status = "planned"
     else:
         monkeypatch.setattr(
-            adaptive_hparam.hparam_runtime,
+            hparam_runtime,
             "reconcile_hparam_launch_artifacts",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("mirror reconciliation failed")),
         )
@@ -562,7 +562,7 @@ def test_adaptive_step_blocks_retry_when_post_start_reconciliation_fails(
     prospective = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == "run-001")
     assert prospective["status"] == expected_status
     assert prospective["target"] == "local"
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    assert adaptive_state.latest_round_index(workflow_dir) == 0
     digest_calls.clear()
 
     assert adaptive_hparam.adaptive_step(workflow_dir, execute=False) == recipe
@@ -623,7 +623,7 @@ def test_zero_start_replacement_rejects_aliased_round_commit(tmp_path: Path, mon
     prospective = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] != run["run_id"])
     assert prospective["status"] == launch_status
     assert calls == []
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    assert adaptive_state.latest_round_index(workflow_dir) == 0
     assert len(_read_table(workflow_dir / "adaptive" / "run_registry.tsv")) == 2
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert "launch_round" not in [event["event_type"] for event in events]
@@ -637,7 +637,7 @@ def test_zero_start_replacement_rejects_aliased_round_commit(tmp_path: Path, mon
     events_path.symlink_to(forged_events)
 
     with pytest.raises(ValueError, match="Managed output"):
-        adaptive_hparam._workflow(workflow_dir)
+        adaptive_state.read_workflow(workflow_dir)
 
 
 @pytest.mark.parametrize(
@@ -662,7 +662,7 @@ def test_zero_start_replacement_uses_a_fresh_round_on_the_next_step(
 
     first_attempt = workflow_dir / "adaptive" / "rounds" / "round_001"
     assert first_attempt.exists()
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    assert adaptive_state.latest_round_index(workflow_dir) == 0
     first_attempt_bytes = {
         path.relative_to(first_attempt): path.read_bytes() for path in first_attempt.rglob("*") if path.is_file()
     }
@@ -671,7 +671,7 @@ def test_zero_start_replacement_uses_a_fresh_round_on_the_next_step(
 
     second_attempt = workflow_dir / "adaptive" / "rounds" / "round_002"
     assert second_attempt.exists()
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 2
+    assert adaptive_state.latest_round_index(workflow_dir) == 2
     assert {
         path.relative_to(first_attempt): path.read_bytes() for path in first_attempt.rglob("*") if path.is_file()
     } == first_attempt_bytes
@@ -779,8 +779,8 @@ def test_adaptive_step_blocks_uncommitted_active_status(tmp_path: Path, monkeypa
     )
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
     monkeypatch.setattr(
-        adaptive_hparam,
-        "_append_registry_rows",
+        adaptive_state,
+        "append_registry_rows",
         lambda *_args: (_ for _ in ()).throw(RuntimeError("registry failed")),
     )
 
@@ -833,7 +833,7 @@ def test_build_failure_retries_the_same_unpublished_round(tmp_path: Path, monkey
     assert not (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
     registry = _read_table(workflow_dir / "adaptive" / "run_registry.tsv")
     assert [row["round"] for row in registry] == ["0", "1"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_state.latest_round_index(workflow_dir) == 1
     statuses = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
     assert statuses == {"run-000": "superseded", "run-001": "launched"}
 
@@ -887,7 +887,7 @@ def test_published_unregistered_round_is_recovered_without_skipping_index(tmp_pa
         )
         == 1
     )
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_state.latest_round_index(workflow_dir) == 1
 
 
 def test_published_unregistered_round_rejects_full_tree_drift(tmp_path: Path, monkeypatch):
@@ -980,7 +980,7 @@ def test_registry_failure_recovers_the_same_published_round(tmp_path: Path, monk
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
     monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
-    append_registry = adaptive_hparam._append_registry_rows
+    append_registry = adaptive_state.append_registry_rows
     append_calls = 0
 
     def fail_first_append(*args):
@@ -990,7 +990,7 @@ def test_registry_failure_recovers_the_same_published_round(tmp_path: Path, monk
             raise RuntimeError("registry failed")
         return append_registry(*args)
 
-    monkeypatch.setattr(adaptive_hparam, "_append_registry_rows", fail_first_append)
+    monkeypatch.setattr(adaptive_state, "append_registry_rows", fail_first_append)
 
     with pytest.raises(RuntimeError, match="registry failed"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -1004,7 +1004,7 @@ def test_registry_failure_recovers_the_same_published_round(tmp_path: Path, monk
     adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
     assert not (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_state.latest_round_index(workflow_dir) == 1
     assert (first_attempt / "plan.json").read_bytes() == first_attempt_bytes[Path("plan.json")]
     registry = _read_table(workflow_dir / "adaptive" / "run_registry.tsv")
     assert [row["round"] for row in registry] == ["0", "1"]
@@ -1048,7 +1048,7 @@ def test_abandoned_supersede_race_blocks_before_fresh_round(tmp_path: Path, monk
         )
         return real_merge(root, rows)
 
-    monkeypatch.setattr(adaptive_hparam, "merge_run_manifest", merge_after_launch)
+    monkeypatch.setattr(adaptive_state, "merge_run_manifest", merge_after_launch)
 
     with pytest.raises(RuntimeError, match="state changed before supersede"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -1122,6 +1122,6 @@ def test_adaptive_step_mixed_initial_launch_failure_commits_the_live_replacement
     }
     assert [current_by_id[f"run-{index:03d}"]["status"] for index in range(2)] == ["running", "running"]
     assert calls == ["launch"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_state.latest_round_index(workflow_dir) == 1
     prospective = [row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] not in current_by_id]
     assert {row["status"] for row in prospective} == {"launch_failed", "launched"}
