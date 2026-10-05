@@ -12,10 +12,62 @@ from .runtime import run_inference_and_save
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run YAML-selected age/sex/BMI covariate baseline inference.")
-    parser.add_argument("--config", type=Path, required=True, help="Sex/age baseline YAML config.")
-    parser.add_argument("--ckpt-path", type=str, required=True, help="Sex/age baseline checkpoint path.")
-    parser.add_argument("--label-name", type=str, required=True, help="Downstream label namespace for result files.")
-    parser.add_argument("--inference-preset-path", type=Path, default=None, help="NPZ preset metadata for inference.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="YAML config used for downstream finetuning.",
+    )
+    parser.add_argument(
+        "--ckpt-path",
+        type=str,
+        required=True,
+        help="Checkpoint (.ckpt) path; 'best'/'last' only select the end of a --avg-ckpt-dir average.",
+    )
+    parser.add_argument(
+        "--label-name",
+        type=str,
+        required=True,
+        help="downstream label name for result files; task semantics come from finetune.task in the YAML config",
+    )
+    parser.add_argument("--batch-size", type=int, default=12, help="Batch size for inference dataloader.")
+    parser.add_argument("--num-workers", type=int, default=8, help="Number of dataloader workers.")
+    parser.add_argument(
+        "--devices",
+        type=int,
+        nargs="+",
+        default=[0],
+        help="Device ids passed to Lightning Trainer; with --device cpu, their count sets the CPU processes.",
+    )
+    parser.add_argument(
+        "--accelerator",
+        type=str,
+        default="gpu",
+        choices=["cpu", "gpu", "auto"],
+        help="Device accelerator used by Lightning.",
+    )
+    parser.add_argument("--device", type=str, default="cuda", help="Torch device string passed into models.")
+    parser.add_argument("--lr", type=float, default=1e-6, help="Learning rate placeholder used by optimizer init.")
+    parser.add_argument(
+        "--weight-decay",
+        dest="weight_decay",
+        type=float,
+        default=1e-5,
+        help="Weight decay placeholder used by optimizer init.",
+    )
+    parser.add_argument(
+        "--eval-split",
+        type=str,
+        default="test",
+        choices=["train", "val", "test"],
+        help="Dataset split to evaluate.",
+    )
+    parser.add_argument(
+        "--inference-preset-path",
+        type=Path,
+        default=None,
+        help="Optional preset pickle path for this inference run; overrides data.finetune_preset_path from YAML.",
+    )
     parser.add_argument(
         "--results-root",
         type=Path,
@@ -23,52 +75,69 @@ def parse_args() -> argparse.Namespace:
         help="Root directory for inference result artifacts.",
     )
     parser.add_argument(
-        "--eval-split", type=str, default="test", choices=["train", "val", "test"], help="Split to evaluate."
-    )
-    parser.add_argument("--batch-size", type=int, default=12, help="Batch size.")
-    parser.add_argument("--num-workers", type=int, default=8, help="DataLoader workers.")
-    parser.add_argument(
-        "--devices", type=int, nargs="+", default=[0], help="GPU IDs; CPU mode uses this many processes."
+        "--precision",
+        type=str,
+        default="bf16-mixed",
+        help="Precision flag forwarded to Lightning Trainer.",
     )
     parser.add_argument(
-        "--accelerator", type=str, default="gpu", choices=["cpu", "gpu", "auto"], help="Runtime accelerator hint."
+        "--avg-ckpts",
+        type=int,
+        default=1,
+        help="Average this many checkpoints before inference (1 disables averaging).",
     )
     parser.add_argument(
-        "--device", choices=["cpu", "cuda"], default="cuda", help="Compute device; GPU IDs use --devices."
+        "--avg-ckpt-dir",
+        type=Path,
+        default=None,
+        help="Optional checkpoint directory for averaging (defaults to ckpt_path parent).",
     )
-    parser.add_argument("--precision", type=str, default="bf16-mixed", help="Lightning computation precision.")
-    parser.add_argument("--lr", type=float, default=1e-6, help="Training learning-rate metadata recorded in results.")
+    parser.add_argument("--seed", type=int, default=4523, help="Random seed for dataloader shuffling.")
     parser.add_argument(
-        "--weight-decay", type=float, default=1e-5, help="Training weight-decay metadata recorded in results."
+        "--pretrained-backbone-path",
+        type=str,
+        default=None,
+        help="Unsupported by sex_age_baseline (no pretrained backbone); setting it fails.",
     )
     parser.add_argument(
-        "--avg-ckpts", type=int, default=1, help="Checkpoint averaging is not supported for this baseline."
+        "--wandb",
+        action="store_true",
+        help="Enable Weights & Biases logging of inference metrics and result files.",
     )
-    parser.add_argument(
-        "--avg-ckpt-dir", type=Path, default=None, help="Unsupported checkpoint averaging directory; must be omitted."
-    )
-    parser.add_argument("--seed", type=int, default=4523, help="Random seed.")
-    parser.add_argument("--wandb-project", default="sex-age-baseline", help="W&B project for metric logging.")
-    parser.add_argument("--wandb-group", default=None, help="W&B group for metric logging.")
+    parser.add_argument("--wandb-project", type=str, default=None, help="W&B project name.")
+    parser.add_argument("--wandb-name", type=str, default=None, help="W&B run name.")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="W&B entity/team.")
+    parser.add_argument("--wandb-group", type=str, default=None, help="W&B group name.")
+    parser.add_argument("--wandb-id", type=str, default=None, help="W&B run id (for resume).")
     parser.add_argument(
         "--wandb-mode",
         type=str,
         default=None,
         choices=["online", "offline", "disabled"],
-        help="Optional W&B metric logging mode; omitted disables W&B logging.",
+        help="W&B mode override (online/offline/disabled).",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--no-wandb-artifact",
+        dest="wandb_artifact",
+        action="store_false",
+        default=True,
+        help="Log inference metrics to W&B without uploading CSV artifacts.",
+    )
+    args = parser.parse_args()
+    if args.pretrained_backbone_path is not None:
+        # Accepted so the variant CLI matches sleep2vec; the covariate MLP has no backbone.
+        raise ValueError("sex_age_baseline inference does not support --pretrained-backbone-path.")
+    return args
 
 
 def run_inference(args: argparse.Namespace) -> None:
-    if args.avg_ckpts != 1 or getattr(args, "avg_ckpt_dir", None) is not None:
-        raise ValueError("sex_age_baseline inference does not support checkpoint averaging.")
     if args.accelerator == "cpu" and args.device == "cuda":
         args.device = "cpu"
-    ckpt_path = Path(args.ckpt_path)
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-    args.ckpt_path = str(ckpt_path)
+    if args.ckpt_path not in {"best", "last"}:
+        ckpt_path = Path(args.ckpt_path)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+        args.ckpt_path = str(ckpt_path)
     cfg = load_config(args.config, validate_sidecars=True)
     run_inference_and_save(args, cfg)
 

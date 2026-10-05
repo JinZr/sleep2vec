@@ -186,7 +186,7 @@ _PREFLIGHT_VARIANT_CASES = [
         "sex_age_baseline",
         "configs/sex_age_baseline/cox.yaml",
         "sex_age_baseline.finetune",
-        "sex_age_baseline.config.load_finetune_config (load_config with default validate_sidecars=False)",
+        "sex_age_baseline.config.load_finetune_config",
         "sex_age_mlp (features=age, sex)",
         None,
     ),

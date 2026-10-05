@@ -130,7 +130,7 @@ runtime identity.
 |---|---|
 | `models` | Hardcodes `SUPPORTED_VARIANTS` (incl. `sex_age_baseline`) and `VARIANTLESS_TASKS`. Root anchor imported everywhere. |
 | `configs` | Thin shell, but hard-imports `domain.finetune_summary`. |
-| `plan_rendering` | `preset_cli_args` (sleep preset fields) + `if variant != "sex_age_baseline"` branch. |
+| `plan_rendering` | `preset_cli_args` (sleep preset fields) + `infer_input_cli_args` omits dataset-name overrides for `sex_age_baseline`. |
 | `decision_paths` | survival / multilabel / sex_age sidecar validation (highest domain signal among L0). |
 | `decision_hparam` | hparam decision contract; depends on decision_paths' multilabel. |
 | `plan_hparam` | hparam plan materialization over the domain-aware primitives. |

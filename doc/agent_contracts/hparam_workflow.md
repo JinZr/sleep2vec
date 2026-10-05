@@ -52,18 +52,16 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   `hparam_search_space` decision updates the domain and revalidates the same points.
   Derived proposal rounds use the accepted proposal's own search and run count;
   source search-space and search-budget decisions are not reapplied to them.
-- For `sleep2vec`, `sleep2vec2`, and `sleep2expert`, managed finetune runtime
-  fields and explicit search keys include `lr_scheduler`, `lr_decay_floor`,
-  `lr_decay_shape`, `lr_decay_ratio`, `lr_plateau_factor`, and
-  `lr_plateau_patience` under `runtime`. They retain the training CLI meanings:
+- For `sleep2vec`, `sleep2vec2`, `sleep2expert`, and `sex_age_baseline`,
+  managed finetune runtime fields and explicit search keys include
+  `lr_scheduler`, `lr_decay_floor`, `lr_decay_shape`, `lr_decay_ratio`,
+  `lr_plateau_factor`, and `lr_plateau_patience` under `runtime`. They retain the training CLI meanings:
   `decay|wsd|plateau`, a per-group relative floor, `cosine|linear`, a WSD-only
   final decay fraction, and Plateau-only factor/patience. Use complete joint
   configurations with `null` resets for inapplicable fields when switching
   scheduler families. Candidate validation checks each effective combination
   before publishing a runnable plan; WSD's exact phase lengths additionally
-  require the training runtime's optimizer-update count. `sex_age_baseline`
-  supports `lr_decay_shape` and `lr_decay_floor`; scheduler selection, WSD
-  ratio and Plateau fields do not apply to that variant.
+  require the training runtime's optimizer-update count.
 - `search.profile: finetune_balanced` is the alternative authored intent for
   `sleep2vec` and `sleep2vec2` finetuning labels `ahi`, `arousal`, `stage4`,
   `age`, and `sex`, plus custom labels whose resolved `finetune.task.type`
@@ -261,8 +259,7 @@ argv checks and planner-local final-config checks, including total runs and
 unique config bytes. Target CLI preflight proves argument parsing, not config
 execution on that target. Neither check proves model construction, checkpoint
 compatibility, forward/backward, GPU execution, or complete candidate-specific
-dataset validation; those operations are not performed. The
-sex-age canonical finetune wrapper uses `load_config(validate_sidecars=False)`.
+dataset validation; those operations are not performed.
 The card distinguishes the control transport from the validated preflight host and shows the actual
 Python executable/version reported by that target. Variant, runtime module,
 actual config loader, architecture, and channels come from each final generated

@@ -86,9 +86,20 @@ Distributed training drops the sampler tail before forming local batches,
 then drops incomplete local batches, so no padding copies contribute to loss;
 validation and test retain all samples before distributed-padding deduplication.
 AdamW uses betas `(0.9, 0.95)`, epsilon `1e-8`, and production decay/no-decay
-grouping. `warmup_steps`, `lr_decay_shape: cosine|linear`, and `lr_decay_floor`
-control the shared scheduler, updated per optimizer step using the actual
-trainer step budget. An omitted warmup uses the scheduler's 3% default.
+grouping. `lr_scheduler: decay|wsd|plateau` and its warmup, decay and Plateau
+fields select the shared `sleep2vec` scheduler with the same defaults and
+validation; step schedules use the actual trainer step budget.
+
+`python -m sex_age_baseline.finetune` and `python -m sex_age_baseline.infer`
+take the same options as their `sleep2vec` counterparts, so recipes and
+`agent_tools` render one command shape for every variant. Training seeds from
+the fixed `sleep2vec` finetune seed; inference keeps `--seed`. W&B routing,
+`--device`, version naming, `--export-predictions` and inference checkpoint
+averaging (including `best`/`last` aliases with `--avg-ckpt-dir`) follow
+`sleep2vec`. Prediction CSVs are written only when the CLI requests them; the
+YAML has no output switches. The baseline has no backbone or diagnostics mode:
+`--pretrained-backbone-path`, `--print-diagnostics` and `--diagnostics-steps`
+fail at launch. Inference does not offer `--override-dataset-names`.
 
 Keep the existing choice of best-checkpoint test, explicit all-saved-epoch test,
 or `test_after_fit: false`. Independent inference loads the same strict model

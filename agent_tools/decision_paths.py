@@ -118,8 +118,7 @@ def execution_contract_issues(
                     source_layer,
                 )
             )
-        devices = {"cuda"} if recipe.get("variant") == "sex_age_baseline" else {"cuda", "cuda:0"}
-        for field, allowed in (("accelerator", {"gpu", "auto"}), ("device", devices)):
+        for field, allowed in (("accelerator", {"gpu", "auto"}), ("device", {"cuda", "cuda:0"})):
             if field in runtime and runtime[field] not in allowed:
                 issues.append(
                     _execution_contract_issue(
@@ -790,22 +789,6 @@ def inference_checkpoint_averaging_issue(recipe: dict, ckpt_path: Any) -> Decisi
     runtime = recipe["runtime"] if isinstance(recipe.get("runtime"), dict) else {}
     avg_ckpts_value = runtime.get("avg_ckpts", 1)
     avg_ckpts = avg_ckpts_value if type(avg_ckpts_value) is int and avg_ckpts_value > 0 else 1
-    if recipe.get("variant") == "sex_age_baseline" and avg_ckpts != 1:
-        return DecisionIssue(
-            DecisionStatus.FAIL,
-            "runtime.avg_ckpts",
-            "sex_age_baseline inference does not support checkpoint averaging.",
-            None,
-            {"avg_ckpts": runtime.get("avg_ckpts")},
-        )
-    if recipe.get("variant") == "sex_age_baseline" and runtime.get("avg_ckpt_dir") is not None:
-        return DecisionIssue(
-            DecisionStatus.FAIL,
-            "runtime.avg_ckpt_dir",
-            "sex_age_baseline inference does not support checkpoint averaging directories.",
-            None,
-            {"avg_ckpt_dir": runtime["avg_ckpt_dir"]},
-        )
     if avg_ckpts <= 1:
         return None
     if inputs.get("label_name") == "ahi":
@@ -834,22 +817,6 @@ def inference_checkpoint_averaging_issue(recipe: dict, ckpt_path: Any) -> Decisi
             require_directory=True,
         )
     return None
-
-
-def sex_age_pretrained_backbone_issue(recipe: dict) -> DecisionIssue | None:
-    if recipe.get("variant") != "sex_age_baseline":
-        return None
-    inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
-    value = inputs.get("pretrained_backbone_path")
-    if value in (None, "", "ASK_USER"):
-        return None
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        "pretrained_backbone_path",
-        "sex_age_baseline does not support pretrained_backbone_path.",
-        None,
-        {"variant": "sex_age_baseline", "pretrained_backbone_path": value},
-    )
 
 
 def _path_label(configured: bool) -> str:

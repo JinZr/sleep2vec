@@ -250,9 +250,9 @@ it never substitutes the status reader's host environment.
   or multilabel sidecars. `preset_prepare` always validates the sidecar files
   needed to build that preset.
 - Checkpoint and pretrained-backbone inputs must be files.
-- Checkpoint averaging rejects AHI and `sex_age_baseline`. `avg_ckpts` must be a
-  positive integer, `best`/`last` aliases require an explicit `avg_ckpt_dir`,
-  and any explicit averaging directory is validated from the runtime cwd.
+- Checkpoint averaging rejects AHI. `avg_ckpts` must be a positive integer,
+  `best`/`last` aliases require an explicit `avg_ckpt_dir`, and any explicit
+  averaging directory is validated from the runtime cwd.
 
 ## Non-hparam runtime identity
 

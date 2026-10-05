@@ -279,7 +279,6 @@ def test_index_summary_blocks_sex_age_multilabel_keys_missing_from_sidecars(tmp_
                     "has_label_index": str(has_label),
                 },
             },
-            "outputs": {"prediction_csv": True, "per_disease_metrics_csv": True},
         },
     )
 
@@ -347,7 +346,6 @@ def test_index_summary_uses_sex_age_configured_split_column_for_filtering(tmp_pa
                     "has_label_index": str(has_label),
                 },
             },
-            "outputs": {"prediction_csv": True, "per_disease_metrics_csv": True},
         },
     )
 

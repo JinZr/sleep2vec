@@ -91,12 +91,12 @@ The closed section fields are:
   - `sleep2stat`: `config`, `split`.
   - `embedding_extraction`: `config`, `ckpt_path`, `data_index`, `eval_split`.
 - `runtime`:
-  - `finetune`: `accumulate_grad_batches`, `batch_size`, `check_val_every_n_epoch`, `ckpt_every_n_epochs`, `device`, `devices`, `epochs`, `gradient_clip_val`, `lr`, `lr_scheduler`, `lr_decay_floor`, `lr_decay_shape`, `lr_decay_ratio`, `lr_plateau_factor`, `lr_plateau_patience`, `num_workers`, `patience`, `precision`, `warmup_steps`, `wandb_mode`, `weight_decay`. `sex_age_baseline` supports `wandb_mode`, `lr_decay_shape`, and `lr_decay_floor`, but omits `lr_scheduler`, `lr_decay_ratio`, `lr_plateau_factor`, and `lr_plateau_patience` because its runtime does not consume them.
+  - `finetune`: `accumulate_grad_batches`, `batch_size`, `check_val_every_n_epoch`, `ckpt_every_n_epochs`, `device`, `devices`, `epochs`, `gradient_clip_val`, `lr`, `lr_scheduler`, `lr_decay_floor`, `lr_decay_shape`, `lr_decay_ratio`, `lr_plateau_factor`, `lr_plateau_patience`, `num_workers`, `patience`, `precision`, `warmup_steps`, `wandb_mode`, `weight_decay`.
   - `infer` / `evaluate`: `accelerator`, `avg_ckpt_dir`, `avg_ckpts`, `batch_size`, `device`, `devices`, `lr`, `num_workers`, `precision`, `results_root`, `seed`, `wandb_mode`, `weight_decay`.
   - `hparam_tune`: the explicit union of finetune and inference runtime fields, because managed runs use the former and final evaluation uses the latter.
   - `sleep2stat`: `batch_size`, `device`, `dry_run`, `limit_records`, `num_workers`, `plot_adjust_covariates`, `plot_cohort_after_run`, `plot_group_column`, `plot_stage_source`, `summarize_after_run`.
   - `embedding_extraction`: `device`, `num_workers`.
-- `infer` / `evaluate` checkpoint averaging rejects AHI and `sex_age_baseline`; `avg_ckpts` is a positive integer and `ckpt_path=best/last` requires `avg_ckpt_dir`, whose explicit directory is resolved from the runtime workdir.
+- `infer` / `evaluate` checkpoint averaging rejects AHI; `avg_ckpts` is a positive integer and `ckpt_path=best/last` requires `avg_ckpt_dir`, whose explicit directory is resolved from the runtime workdir.
 - Checkpoint, pretrained-backbone, index, manifest, preset, and sidecar inputs are files. Kaldi finetune/inference additionally requires `kaldi_data_root` as a directory and rejects effective NPZ preset paths. NPZ runtime presets suppress sidecar reopening, while `preset_prepare` requires survival or multilabel sidecars to build them. Runtime-semantic input paths reject leading `~`; use an absolute or workdir-relative path.
 - `artifacts`:
   - `finetune`: `overwrite`, `results_csv_path`, `version_name`.

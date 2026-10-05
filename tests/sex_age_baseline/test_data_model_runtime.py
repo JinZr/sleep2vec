@@ -122,7 +122,6 @@ def _base_payload(index: Path, sidecars: dict[str, str], task_type: str) -> dict
             "deduplicate_by_key": True,
         },
         "finetune": finetune,
-        "outputs": {"prediction_csv": True, "per_disease_metrics_csv": True},
     }
 
 
@@ -234,10 +233,11 @@ def _runtime_args(config: Path, tmp_path: Path, *, version_name: str, epochs: in
         ckpt_path=None,
         version_name=version_name,
         results_csv_path=tmp_path / "results.csv",
-        seed=4523,
         test_after_fit=test_after_fit,
         test_all_checkpoints_after_fit=False,
         ckpt_every_n_epochs=1,
+        export_predictions=False,
+        wandb_mode="disabled",
     )
 
 
@@ -824,6 +824,7 @@ def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_me
     monkeypatch.setenv("_SLEEP2VEC_FROZEN_CHECKPOINT_DIR", str(frozen_checkpoint_dir))
     args = _runtime_args(config, tmp_path, version_name="all-checkpoints", epochs=2, test_after_fit=True)
     args.test_all_checkpoints_after_fit = True
+    args.export_predictions = True
     events = []
     original_save_prediction = baseline_runtime.save_prediction_csv
     original_save_survival = baseline_runtime.save_survival_per_disease_metrics_csv
@@ -888,7 +889,51 @@ def test_all_checkpoint_test_after_fit_records_every_epoch_and_preserves_best_me
     result_rows = pd.read_csv(args.results_csv_path)
     assert len(result_rows) == 2
     assert set(result_rows["ckpt_path"]) == {row["checkpoint_path"] for row in checkpoint_results}
-    assert events == ["prediction", "survival", "multilabel", "matrix", "manifest"]
+    # Like sleep2vec, every evaluated checkpoint contributes prediction and per-disease rows.
+    prediction_rows = pd.read_csv(run_dir / "predictions.csv")
+    assert manifest["prediction_csv_path"] == str(Path("log-finetune") / "all-checkpoints" / "predictions.csv")
+    assert len(prediction_rows) == 4
+    assert set(prediction_rows["ckpt_path"]) == {row["checkpoint_path"] for row in checkpoint_results}
+    per_disease_rows = pd.read_csv(run_dir / "multilabel_per_disease_metrics.csv")
+    assert set(per_disease_rows["ckpt_path"]) == {row["checkpoint_path"] for row in checkpoint_results}
+    assert events == [
+        "prediction",
+        "prediction",
+        "survival",
+        "multilabel",
+        "survival",
+        "multilabel",
+        "matrix",
+        "manifest",
+    ]
+
+
+def test_finetune_writes_predictions_only_with_export_flag(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        [
+            "001,train,50,0",
+            "002,train,60,1",
+            "003,val,55,0",
+            "004,val,65,1",
+            "005,test,58,0",
+            "006,test,68,1",
+        ],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+
+    baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="no-export", test_after_fit=True), cfg)
+    exported_args = _runtime_args(config, tmp_path, version_name="export", test_after_fit=True)
+    exported_args.export_predictions = True
+    baseline_runtime.train_and_save(exported_args, cfg)
+
+    default_dir = tmp_path / "log-finetune" / "no-export"
+    assert not (default_dir / "predictions.csv").exists()
+    assert json.loads((default_dir / "run_manifest.json").read_text())["prediction_csv_path"] == ""
+    assert (default_dir / "multilabel_per_disease_metrics.csv").is_file()
+    assert len(pd.read_csv(tmp_path / "log-finetune" / "export" / "predictions.csv")) == 2
 
 
 def test_all_checkpoint_test_rejects_missing_validation_best_periodic_checkpoint(tmp_path: Path, monkeypatch):
@@ -989,6 +1034,7 @@ def test_all_checkpoint_artifact_failure_preserves_existing_results_csv(
     monkeypatch.chdir(tmp_path)
     args = _runtime_args(config, tmp_path, version_name=f"failed-{artifact_writer}", epochs=2, test_after_fit=True)
     args.test_all_checkpoints_after_fit = True
+    args.export_predictions = True
     args.results_csv_path.write_text("experiment_version,test_loss\nold,1.0\n")
     results_before = args.results_csv_path.read_bytes()
 
@@ -1073,47 +1119,62 @@ def test_inference_runtime_passes_custom_results_root(tmp_path: Path, monkeypatc
         seed=4523,
         inference_preset_path=None,
         results_root=results_root,
+        avg_ckpts=1,
+        wandb=False,
     )
-    cfg = Namespace(
-        finetune=Namespace(task=Namespace(type="regression")),
-        outputs=Namespace(prediction_csv=False, per_disease_metrics_csv=False),
+    cfg = Namespace(finetune=Namespace(task=Namespace(type="regression")))
+    result = baseline_runtime.EvaluationResult(
+        metrics={"test_mae": 1.0},
+        prediction_rows=[],
+        survival_per_disease_rows=[],
+        multilabel_per_disease_rows=[],
     )
 
-    class _DummyModel:
-        def to(self, device):
-            return self
+    class _DummyTrainer:
+        is_global_zero = True
 
-    def _prepare_paths(runtime_args, *, namespace, root):
+        def test(self, module, *, dataloaders, verbose):
+            captured["stage"] = module.evaluation_stage
+            module.evaluation_result = result
+
+    def _prepare_paths(runtime_args, *, namespace, root, checkpoint_paths):
         captured["namespace"] = namespace
         captured["root"] = root
-        runtime_args.inference_metrics_csv_path = root / "metrics.csv"
-        runtime_args.inference_overview_csv_path = root / "overview.csv"
-        runtime_args.manifest_path = root / "run_manifest.json"
+        captured["checkpoint_paths"] = checkpoint_paths
+        for name in (
+            "inference_metrics_csv_path",
+            "inference_overview_csv_path",
+            "inference_prediction_csv_path",
+            "inference_survival_per_disease_metrics_csv_path",
+            "inference_multilabel_per_disease_metrics_csv_path",
+        ):
+            setattr(runtime_args, name, root / f"{name}.csv")
 
     monkeypatch.setattr(baseline_runtime, "configure_result_args", lambda *args: None)
     monkeypatch.setattr(baseline_runtime, "_seed_everything", lambda *args: None)
-    monkeypatch.setattr(baseline_runtime, "BaselineModule", lambda cfg, args: _DummyModel())
-    monkeypatch.setattr(baseline_runtime, "_trainer", lambda args: Namespace(is_global_zero=True))
-    monkeypatch.setattr(baseline_runtime, "load_checkpoint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(baseline_runtime, "BaselineModule", lambda cfg, args: Namespace(model="model"))
+    monkeypatch.setattr(baseline_runtime, "_trainer", lambda args: _DummyTrainer())
+    monkeypatch.setattr(baseline_runtime, "_load_inference_checkpoint", lambda *args: None)
     monkeypatch.setattr(baseline_runtime, "prepare_inference_result_paths", _prepare_paths)
     monkeypatch.setattr(baseline_runtime, "_required_dataset", lambda *args, **kwargs: "dataset")
     monkeypatch.setattr(baseline_runtime, "make_dataloader", lambda *args, **kwargs: "loader")
-    monkeypatch.setattr(
-        baseline_runtime,
-        "_test",
-        lambda *args, **kwargs: baseline_runtime.EvaluationResult(
-            metrics={"test_mae": 1.0},
-            prediction_rows=[],
-            survival_per_disease_rows=[],
-            multilabel_per_disease_rows=[],
-        ),
-    )
-    monkeypatch.setattr(baseline_runtime, "save_result_csv", lambda *args, **kwargs: None)
-    monkeypatch.setattr(baseline_runtime, "save_inference_manifest", lambda *args, **kwargs: None)
+    for writer in (
+        "save_result_csv",
+        "save_prediction_csv",
+        "save_survival_per_disease_metrics_csv",
+        "save_multilabel_per_disease_metrics_csv",
+        "save_inference_manifest",
+    ):
+        monkeypatch.setattr(baseline_runtime, writer, lambda *args, **kwargs: None)
 
     baseline_runtime.run_inference_and_save(args, cfg)
 
-    assert captured == {"namespace": "sex_age_baseline", "root": results_root}
+    assert captured == {
+        "namespace": "sex_age_baseline",
+        "root": results_root,
+        "checkpoint_paths": None,
+        "stage": "test",
+    }
 
 
 @pytest.mark.parametrize("checkpoint_cadence", [1, 2])
@@ -1189,26 +1250,55 @@ def test_trainer_forwards_runtime_settings_and_resolves_auto_cpu(monkeypatch):
     assert settings["check_val_every_n_epoch"] == 2
 
 
-@pytest.mark.parametrize("mode", ["online", "offline", "disabled"])
-def test_trainer_preserves_wandb_routing(monkeypatch, mode):
-    calls = []
-    monkeypatch.setattr(baseline_runtime, "WandbLogger", lambda **kwargs: calls.append(kwargs) or kwargs)
+def test_trainer_maps_cuda_device_index_to_gpu_devices_and_forwards_logger(monkeypatch):
     monkeypatch.setattr(baseline_runtime.pl, "Trainer", lambda **kwargs: kwargs)
-    args = Namespace(
-        device="cpu",
-        devices=[0],
-        wandb_mode=mode,
-        wandb_project="frozen-project",
-        wandb_group="frozen-group",
-        version="run-name",
+    logger = object()
+    settings = baseline_runtime._trainer(
+        Namespace(device="cuda:1", devices=[1], precision="bf16", epochs=1), training=True, logger=logger
     )
-    settings = baseline_runtime._trainer(args)
-    if mode == "disabled":
-        assert calls == []
-        assert settings["logger"] is False
-    else:
-        assert calls == [{"project": "frozen-project", "group": "frozen-group", "name": "run-name", "mode": mode}]
-        assert settings["logger"] == calls[0]
+    assert settings["accelerator"] == "gpu"
+    assert settings["devices"] == [1]
+    assert settings["strategy"] == "auto"
+    assert settings["logger"] is logger
+
+
+@pytest.mark.parametrize(
+    ("project", "mode", "expected_project"),
+    [("frozen-project", "offline", "frozen-project"), (None, "disabled", "sex-age-baseline")],
+)
+def test_finetune_creates_wandb_logger_like_sleep2vec(tmp_path: Path, monkeypatch, project, mode, expected_project):
+    config = _write_config(tmp_path, ["001,train,50,0", "002,val,60,1"], task_type="multilabel_classification")
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    monkeypatch.setattr(baseline_runtime, "WandbLogger", lambda **kwargs: calls.append(kwargs) or "logger")
+
+    def stop_before_fit(args, **kwargs):
+        calls.append(kwargs["logger"])
+        raise RuntimeError("stop before fit")
+
+    monkeypatch.setattr(baseline_runtime, "_trainer", stop_before_fit)
+    args = _runtime_args(config, tmp_path, version_name=None)
+    args.version_prefix = "psg-finetune"
+    args.version_tag = "tag"
+    args.wandb_project = project
+    args.wandb_group = "frozen-group"
+    args.wandb_mode = mode
+
+    with pytest.raises(RuntimeError, match="stop before fit"):
+        baseline_runtime.train_and_save(args, cfg)
+
+    assert calls == [
+        {
+            "project": expected_project,
+            "name": "psg-finetune-sex-age-baseline-multilabel-unit-tag",
+            "group": "frozen-group",
+            "mode": mode,
+            "save_dir": "./wandb_logs",
+            "log_model": False,
+        },
+        "logger",
+    ]
 
 
 def test_accumulation_uses_actual_optimizer_step_budget(tmp_path: Path, monkeypatch):
@@ -1232,3 +1322,164 @@ def test_accumulation_uses_actual_optimizer_step_budget(tmp_path: Path, monkeypa
     assert checkpoint["global_step"] == 2
     assert checkpoint["lr_schedulers"][0]["last_epoch"] == 2
     assert checkpoint["optimizer_states"][0]["param_groups"][0]["lr"] == pytest.approx(args.lr * 0.2)
+
+
+def _scheduler_training_args(config: Path, tmp_path: Path, version_name: str, **scheduler) -> Namespace:
+    args = _runtime_args(config, tmp_path, version_name=version_name, epochs=2)
+    args.batch_size = 1
+    args.lr_decay_floor = 0.2
+    for name, value in scheduler.items():
+        setattr(args, name, value)
+    return args
+
+
+def test_wsd_scheduler_holds_lr_until_final_decay_steps(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        ["001,train,50,0", "002,train,60,1", "003,val,55,0", "004,val,65,1"],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    args = _scheduler_training_args(config, tmp_path, "wsd", lr_scheduler="wsd", lr_decay_ratio=0.25)
+
+    baseline_runtime.train_and_save(args, cfg)
+
+    root = tmp_path / "log-finetune" / "wsd" / "checkpoints"
+    stable = torch.load(root / "epoch=00.ckpt", weights_only=False)
+    final = torch.load(root / "last.ckpt", weights_only=False)
+    # Four optimizer steps with one final decay step: the plain decay schedule would already be at 0.6 here.
+    assert stable["optimizer_states"][0]["param_groups"][0]["lr"] == pytest.approx(args.lr)
+    assert final["optimizer_states"][0]["param_groups"][0]["lr"] == pytest.approx(args.lr * 0.2)
+
+
+def test_plateau_scheduler_steps_once_per_validation_with_task_monitor(tmp_path: Path, monkeypatch):
+    config = _write_config(
+        tmp_path,
+        ["001,train,50,0", "002,train,60,1", "003,val,55,0", "004,val,65,1"],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    args = _scheduler_training_args(
+        config, tmp_path, "plateau", lr_scheduler="plateau", lr_plateau_factor=0.5, lr_plateau_patience=0
+    )
+
+    baseline_runtime.train_and_save(args, cfg)
+
+    final = torch.load(tmp_path / "log-finetune" / "plateau" / "checkpoints" / "last.ckpt", weights_only=False)
+    scheduler = final["lr_schedulers"][0]
+    assert scheduler["mode"] == "max"
+    assert scheduler["factor"] == 0.5
+    assert scheduler["patience"] == 0
+    assert scheduler["min_lrs"] == [pytest.approx(args.lr * 0.2)] * len(scheduler["min_lrs"])
+    assert scheduler["last_epoch"] == 2
+
+
+@pytest.mark.parametrize(
+    ("scheduler", "message"),
+    [
+        ({"lr_scheduler": "wsd"}, "WSD requires lr_decay_ratio"),
+        ({"lr_scheduler": "decay", "lr_decay_ratio": 0.5}, "lr_decay_ratio"),
+        ({"lr_scheduler": "decay", "lr_plateau_patience": 3}, "lr_plateau"),
+    ],
+)
+def test_scheduler_arguments_are_validated_before_run_directory(tmp_path: Path, monkeypatch, scheduler, message):
+    config = _write_config(tmp_path, ["001,train,50,0", "002,val,60,1"], task_type="multilabel_classification")
+    cfg = load_config(config, validate_sidecars=True)
+    monkeypatch.chdir(tmp_path)
+    args = _scheduler_training_args(config, tmp_path, "bad-scheduler", **scheduler)
+
+    with pytest.raises(ValueError, match=message):
+        baseline_runtime.train_and_save(args, cfg)
+
+    assert not (tmp_path / "log-finetune" / "bad-scheduler").exists()
+
+
+def _save_epoch_checkpoints(root: Path, cfg, count: int = 3) -> list[SexAgeMLP]:
+    models = []
+    for epoch in range(count):
+        torch.manual_seed(epoch)
+        model = SexAgeMLP(cfg)
+        baseline_runtime.save_checkpoint(
+            root / f"epoch={epoch:02d}.ckpt", model, cfg, epoch=epoch, global_step=epoch, metrics={}
+        )
+        models.append(model)
+    # Lightning aliases are not epoch files, so sleep2vec selection never averages them.
+    baseline_runtime.save_checkpoint(root / "best.ckpt", models[0], cfg, epoch=0, global_step=0, metrics={})
+    baseline_runtime.save_checkpoint(root / "last.ckpt", models[0], cfg, epoch=0, global_step=0, metrics={})
+    return models
+
+
+def _average_state(models: list[SexAgeMLP]) -> dict[str, torch.Tensor]:
+    states = [model.state_dict() for model in models]
+    return {name: sum(state[name] for state in states) / len(states) for name in states[0]}
+
+
+def _inference_ckpt_args(ckpt_path: str, avg_ckpts: int, avg_ckpt_dir: Path | None) -> Namespace:
+    return Namespace(ckpt_path=ckpt_path, avg_ckpts=avg_ckpts, avg_ckpt_dir=avg_ckpt_dir)
+
+
+def test_inference_averages_epoch_checkpoints_ending_at_ckpt_path(tmp_path: Path):
+    cfg = load_config(_write_config(tmp_path, ["001,test,50,0", "002,test,60,1"]), validate_sidecars=True)
+    root = tmp_path / "checkpoints"
+    models = _save_epoch_checkpoints(root, cfg)
+    model = SexAgeMLP(cfg)
+
+    selected = baseline_runtime._load_inference_checkpoint(
+        model, _inference_ckpt_args(str(root / "epoch=01.ckpt"), 2, None), cfg
+    )
+
+    assert selected == [root / "epoch=00.ckpt", root / "epoch=01.ckpt"]
+    expected = _average_state(models[:2])
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, expected[name])
+
+
+@pytest.mark.parametrize("alias", ["best", "last"])
+def test_inference_alias_selects_latest_epoch_checkpoints_in_avg_dir(tmp_path: Path, alias: str):
+    cfg = load_config(_write_config(tmp_path, ["001,test,50,0", "002,test,60,1"]), validate_sidecars=True)
+    root = tmp_path / "checkpoints"
+    models = _save_epoch_checkpoints(root, cfg)
+    model = SexAgeMLP(cfg)
+
+    selected = baseline_runtime._load_inference_checkpoint(model, _inference_ckpt_args(alias, 2, root), cfg)
+
+    assert selected == [root / "epoch=01.ckpt", root / "epoch=02.ckpt"]
+    expected = _average_state(models[1:])
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, expected[name])
+
+
+@pytest.mark.parametrize(
+    ("avg_ckpts", "with_dir", "message"),
+    [(1, True, "only with --avg-ckpts > 1"), (2, False, "Use --avg-ckpt-dir")],
+)
+def test_inference_alias_requires_averaging_directory(tmp_path: Path, avg_ckpts: int, with_dir: bool, message: str):
+    cfg = load_config(_write_config(tmp_path, ["001,test,50,0", "002,test,60,1"]), validate_sidecars=True)
+    root = tmp_path / "checkpoints"
+    _save_epoch_checkpoints(root, cfg)
+
+    with pytest.raises(ValueError, match=message):
+        baseline_runtime._load_inference_checkpoint(
+            SexAgeMLP(cfg), _inference_ckpt_args("best", avg_ckpts, root if with_dir else None), cfg
+        )
+
+
+def test_inference_averaging_rejects_incompatible_model_contract(tmp_path: Path):
+    rows = ["001,test,50,0", "002,test,60,1"]
+    index = _write_index(tmp_path / "index.csv", rows)
+    sidecars = _write_survival_sidecars(tmp_path / "sidecars", ["001", "002"])
+    saved_cfg = load_config(
+        _write_yaml(tmp_path / "saved.yaml", _base_payload(index, sidecars, "survival")), validate_sidecars=True
+    )
+    current_payload = _base_payload(index, sidecars, "survival")
+    current_payload["model"]["age"]["scale"] = 10.0
+    current_cfg = load_config(_write_yaml(tmp_path / "current.yaml", current_payload), validate_sidecars=True)
+    root = tmp_path / "checkpoints"
+    _save_epoch_checkpoints(root, saved_cfg)
+
+    with pytest.raises(ValueError, match="model contract"):
+        baseline_runtime._load_inference_checkpoint(
+            SexAgeMLP(current_cfg), _inference_ckpt_args("last", 2, root), current_cfg
+        )

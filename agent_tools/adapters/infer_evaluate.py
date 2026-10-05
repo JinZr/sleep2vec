@@ -15,12 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
-from ..decision_paths import (
-    inference_checkpoint_averaging_issue,
-    multilabel_sidecar_issue,
-    sex_age_pretrained_backbone_issue,
-    survival_sidecar_issue,
-)
+from ..decision_paths import inference_checkpoint_averaging_issue, multilabel_sidecar_issue, survival_sidecar_issue
 from ..models import ConfigSummaryInput, coerce_list
 from ..plan_rendering import (
     INFER_RUNTIME_FIELDS,
@@ -32,11 +27,6 @@ from ..plan_rendering import (
 from .base import TaskAdapter, config_summary_issues, recipe_inputs
 
 _INFER_EVALUATE_TASKS = frozenset({"infer", "evaluate"})
-# Byte-compat guard for sex_age_pretrained_backbone_issue: the pre-adapter
-# kernel gated this helper on the recipe's own task string being one of the
-# model tasks (a finetune recipe dispatched as infer still produced the
-# issue; a task-less recipe did not).
-_SEX_AGE_PRETRAINED_GUARD_TASKS = frozenset({"finetune", "infer", "evaluate"})
 # Byte-compat guard for the sidecar helpers' finetune-config membership, keyed
 # on the recipe's own task string like the pre-adapter kernel sets were.
 _FINETUNE_CONFIG_GUARD_TASKS = frozenset({"finetune", "hparam_tune", "infer", "evaluate"})
@@ -124,8 +114,6 @@ class InferEvaluateAdapter(TaskAdapter):
         averages_checkpoints = type(avg_ckpts) is int and avg_ckpts > 1
         required: list[tuple[str, Any]] = []
         for input_field in ("ckpt_path", "pretrained_backbone_path"):
-            if recipe.get("variant") == "sex_age_baseline" and input_field == "pretrained_backbone_path":
-                continue
             value = inputs.get(input_field)
             if input_field == "ckpt_path" and averages_checkpoints and value in ("best", "last"):
                 continue
@@ -178,10 +166,6 @@ class InferEvaluateAdapter(TaskAdapter):
         averaging_issue = inference_checkpoint_averaging_issue(recipe, inputs.get("ckpt_path"))
         if averaging_issue is not None:
             issues.append(averaging_issue)
-        if str(recipe.get("task")) in _SEX_AGE_PRETRAINED_GUARD_TASKS:
-            pretrained_issue = sex_age_pretrained_backbone_issue(recipe)
-            if pretrained_issue is not None:
-                issues.append(pretrained_issue)
         override_issue = sex_age_override_dataset_names_issue(str(recipe.get("task")), recipe)
         if override_issue is not None:
             issues.append(override_issue)

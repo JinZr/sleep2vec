@@ -22,12 +22,11 @@ from sex_age_baseline.config import (
     HeadConfig,
     ModelConfig,
     MultilabelConfig,
-    OutputsConfig,
     SurvivalConfig,
     TaskConfig,
 )
 from sex_age_baseline.data import BaselineRecord, SexAgeDataset, make_dataloader
-from sex_age_baseline.runtime import BaselineModule, _batch_loss, _evaluate_records, _evaluation_record
+from sex_age_baseline.runtime import FINETUNE_SEED, BaselineModule, _batch_loss, _evaluate_records, _evaluation_record
 from sleep2vec.losses.cox import CoxPHLossVectorized
 
 
@@ -47,7 +46,6 @@ def _config(root):
             SurvivalConfig("eid", str(root / "columns.txt"), "unused", "unused", "unused"),
             loss=FinetuneLossConfig(),
         ),
-        OutputsConfig(True, True),
     )
 
 
@@ -132,7 +130,7 @@ def _worker(root):
         lr_decay_floor=0.1,
         batch_size=2,
         num_workers=0,
-        seed=42,
+        inference_prediction_csv_path=str(root / "predictions.csv"),
     )
     module = BaselineModule(cfg, args)
     dataset = _dataset()
@@ -199,7 +197,7 @@ def test_two_cpu_rank_training_and_padding_aggregation(tmp_path):
         actual = [tuple(pair) for rank in ranks for batch in rank["batches"][epoch : epoch + 1] for pair in batch]
         assert len(actual) == len(set(actual)) == 4
         identities = [("0", 0), ("0", 10), ("1", 0), ("2", 0), ("3", 0), ("4", 0), ("5", 0)]
-        generator = torch.Generator().manual_seed(42 + epoch)
+        generator = torch.Generator().manual_seed(FINETUNE_SEED + epoch)
         expected = torch.randperm(7, generator=generator).tolist()[:4]
         assert set(actual) == {identities[index] for index in expected}
 
@@ -378,6 +376,7 @@ def test_two_rank_training_and_independent_inference_cli(tmp_path, task):
             "ddp-cli",
             "--results-csv-path",
             str(tmp_path / "results.csv"),
+            "--export-predictions",
         ],
         cwd=tmp_path,
         env=env,
