@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import experiment_pipeline, experiment_pipeline_cohort_selection as cohort_selection
+from agent_tools import (
+    experiment_pipeline,
+    experiment_pipeline_cohort_selection as cohort_selection,
+    experiment_pipeline_spec as pipeline_spec,
+)
 from agent_tools.experiment_workspace import file_sha256
 
 
@@ -161,12 +165,12 @@ def test_cohort_selection_uses_kind_without_schema_marker(tmp_path: Path):
     root = tmp_path / "workspace"
     spec = _spec(root)
 
-    experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+    pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
 
     marked = copy.deepcopy(spec)
     marked["schema_version"] = 2
     with pytest.raises(ValueError, match="Unknown spec field.*schema_version"):
-        experiment_pipeline._validate_spec(marked, root, unlock_final_test=True)
+        pipeline_spec.validate_spec(marked, root, unlock_final_test=True)
 
 
 def test_cohort_selection_frozen_state_has_no_schema_marker(tmp_path: Path, monkeypatch):
@@ -210,17 +214,17 @@ def test_cohort_selection_rejects_cross_role_cohort_and_preset_reuse(tmp_path: P
     spec = _spec(root)
     spec["jobs"][1]["cohort"] = spec["jobs"][0]["cohort"]
     with pytest.raises(ValueError, match="same cohort"):
-        experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+        pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
 
     spec = _spec(root)
     spec["jobs"][1]["inference_preset_path"] = spec["jobs"][0]["inference_preset_path"]
     with pytest.raises(ValueError, match="same preset"):
-        experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+        pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
 
     spec = _spec(root)
     spec["jobs"][1]["provenance"] = "internal"
     with pytest.raises(ValueError, match="must be external for report_only"):
-        experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+        pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
 
 
 def test_cohort_selection_rejects_identical_preset_bytes_across_roles(tmp_path: Path):
@@ -663,16 +667,16 @@ def test_external_selection_is_accepted_with_explicit_test_unlock(tmp_path: Path
     spec["jobs"][0]["provenance"] = "external"
     if not with_report:
         spec["jobs"] = spec["jobs"][:1]
-    experiment_pipeline._validate_spec(spec, tmp_path, unlock_final_test=True)
+    pipeline_spec.validate_spec(spec, tmp_path, unlock_final_test=True)
     with pytest.raises(ValueError, match="unlock"):
-        experiment_pipeline._validate_spec(spec, tmp_path, unlock_final_test=False)
+        pipeline_spec.validate_spec(spec, tmp_path, unlock_final_test=False)
 
 
 def test_cohort_selection_requires_selection_jobs(tmp_path: Path):
     spec = _spec(tmp_path)
     spec["jobs"] = spec["jobs"][1:]
     with pytest.raises(ValueError, match="selection"):
-        experiment_pipeline._validate_spec(spec, tmp_path, unlock_final_test=True)
+        pipeline_spec.validate_spec(spec, tmp_path, unlock_final_test=True)
 
 
 @pytest.mark.parametrize("strict", [None, False, True])
@@ -683,7 +687,7 @@ def test_target_gate_comparison_uses_raw_values_and_explicit_strictness(tmp_path
     gate["mode"] = mode
     if strict is not None:
         gate["strict"] = strict
-    experiment_pipeline._validate_spec(spec, tmp_path, unlock_final_test=True)
+    pipeline_spec.validate_spec(spec, tmp_path, unlock_final_test=True)
     adjacent = math.nextafter(5.0, -math.inf if mode == "min" else math.inf)
     ranking, decision = cohort_selection.rank_candidates(
         spec, _candidates(tmp_path), _evidence(tmp_path, {"age-rank-001": 5.0, "age-rank-002": adjacent})
@@ -698,7 +702,7 @@ def test_gate_strict_rejects_nonboolean_values(tmp_path: Path, strict):
     spec = _spec(tmp_path)
     spec["selector"]["gates"][0]["strict"] = strict
     with pytest.raises(ValueError, match="strict.*bool"):
-        experiment_pipeline._validate_spec(spec, tmp_path, unlock_final_test=True)
+        pipeline_spec.validate_spec(spec, tmp_path, unlock_final_test=True)
 
 
 @pytest.mark.parametrize("with_report", [True, False])

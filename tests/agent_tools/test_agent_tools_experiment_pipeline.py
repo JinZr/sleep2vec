@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from agent_tools import experiment_pipeline, hparam_selection
+from agent_tools import experiment_pipeline, experiment_pipeline_spec as pipeline_spec, hparam_selection
 from agent_tools.experiment_workspace import commit_step_manifest, file_sha256, plan_registration_lock
 from agent_tools.manifests import read_rows, write_rows
 
@@ -220,20 +220,20 @@ def _result_manifest_context(tmp_path: Path) -> tuple[dict, dict, dict, Path, di
 def test_schema_rejects_duplicate_job_ids_illegal_phase_and_missing_unlock(tmp_path: Path):
     root = tmp_path / "workspace"
     spec = _spec(root)
-    experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+    pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
 
     duplicate = copy.deepcopy(spec)
     duplicate["jobs"].append(copy.deepcopy(duplicate["jobs"][0]))
     with pytest.raises(ValueError, match="Duplicate external job id"):
-        experiment_pipeline._validate_spec(duplicate, root, unlock_final_test=True)
+        pipeline_spec.validate_spec(duplicate, root, unlock_final_test=True)
 
     illegal_phase = copy.deepcopy(spec)
     illegal_phase["pipeline"]["step"]["phase"] = "external_test"
     with pytest.raises(ValueError, match="phase must be 'evaluate'"):
-        experiment_pipeline._validate_spec(illegal_phase, root, unlock_final_test=True)
+        pipeline_spec.validate_spec(illegal_phase, root, unlock_final_test=True)
 
     with pytest.raises(ValueError, match="requires --unlock-final-test"):
-        experiment_pipeline._validate_spec(spec, root, unlock_final_test=False)
+        pipeline_spec.validate_spec(spec, root, unlock_final_test=False)
 
 
 def test_freeze_pipeline_rejects_step_controller_conflict_before_writing_state(tmp_path: Path, monkeypatch):
@@ -275,7 +275,7 @@ def test_schema_rejects_non_string_runtime_identity(tmp_path: Path, field: str):
     spec["runtime"][field] = []
 
     with pytest.raises(ValueError, match=rf"runtime\.{field}"):
-        experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+        pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
 
 
 @pytest.mark.parametrize("python_command", ["conda run -n exp python", "~/miniconda/bin/python"])
@@ -285,7 +285,7 @@ def test_schema_rejects_non_executable_runtime_python(tmp_path: Path, python_com
     spec["runtime"]["python"] = python_command
 
     with pytest.raises(ValueError, match=r"runtime\.python must be a single executable"):
-        experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+        pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
 
 
 def test_schema_rejects_sha256_runtime_commit(tmp_path: Path):
@@ -294,7 +294,7 @@ def test_schema_rejects_sha256_runtime_commit(tmp_path: Path):
     spec["runtime"]["runtime_commit"] = "b" * 64
 
     with pytest.raises(ValueError, match="full lowercase 40-character"):
-        experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+        pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
 
 
 def test_external_pipeline_explicitly_rejects_slurm_before_state_creation(tmp_path: Path):
@@ -316,7 +316,7 @@ def test_external_pipeline_accepts_explicit_direct_scheduler(tmp_path: Path):
     spec = _spec(root)
     spec["execution"]["scheduler"] = {"type": "direct"}
 
-    experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+    pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
 
 
 @pytest.mark.parametrize(
@@ -352,7 +352,7 @@ def test_schema_rejects_non_integer_or_wrong_fixed_values(
     target[field] = value
 
     with pytest.raises(ValueError, match=message):
-        experiment_pipeline._validate_spec(spec, root, unlock_final_test=True)
+        pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
 
 
 def test_dry_run_does_not_freeze_or_mutate_workspace(tmp_path: Path, monkeypatch):

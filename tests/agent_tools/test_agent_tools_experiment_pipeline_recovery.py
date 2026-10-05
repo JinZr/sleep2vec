@@ -16,6 +16,7 @@ import yaml
 from agent_tools import (
     experiment_pipeline,
     experiment_pipeline_results,
+    experiment_pipeline_spec as pipeline_spec,
     experiments,
     managed_scheduler,
     plan_contract,
@@ -451,7 +452,7 @@ def test_schema_requires_both_model_averaging_prefixes(tmp_path: Path, prefixes:
     spec["checkpoint_policy"]["forbidden_state_dict_prefixes"] = prefixes
 
     with pytest.raises(ValueError, match="forbidden_state_dict_prefixes"):
-        experiment_pipeline._validate_spec(spec, tmp_path, unlock_final_test=True)
+        pipeline_spec.validate_spec(spec, tmp_path, unlock_final_test=True)
 
 
 @pytest.mark.parametrize("failed_status", ["failed", "stopped"])
