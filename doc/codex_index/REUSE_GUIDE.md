@@ -171,7 +171,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Reuse `python_programs.source` and `transport.remote_python_program_command` for embedded kernels;
   keep byte-preserving sources under `agent_tools/python_program_sources`, not inline copies.
 - Keep proposal snapshots/envelopes and shared initial/proposal point validation in
-  `adaptive_proposals`, and preflight/lifecycle orchestration in `adaptive_hparam`.
+  `adaptive_proposals`, preflight/lifecycle orchestration in `adaptive_hparam`, and round,
+  registry, workflow-event, and interrupted-launch state in `adaptive_state`.
   Reuse its canonical round evidence for complete-history proposal
   inputs and `checkpoint_test_results` for checkpoint attribution; do not reconstruct
   historical evidence from digest CSVs. `experiment_sources.read_wandb_training_history`

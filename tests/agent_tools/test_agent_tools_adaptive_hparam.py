@@ -7,7 +7,7 @@ from agent_tool_test_helpers import write_yaml
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, plan_hparam, slurm
+from agent_tools import adaptive_hparam, adaptive_state, plan_hparam, slurm
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _run
 
@@ -39,7 +39,7 @@ def test_adaptive_accepted_starts_are_backend_aware():
         },
     ]
 
-    assert adaptive_hparam._accepted_start_keys(rows) == {("direct", "run-000"), ("slurm", "run-001")}
+    assert adaptive_state.accepted_start_keys(rows) == {("direct", "run-000"), ("slurm", "run-001")}
 
 
 @pytest.mark.parametrize(("observed_status", "expected_unresolved"), [("queued", False), ("submitting", True)])
@@ -68,7 +68,7 @@ def test_adaptive_interrupted_slurm_launch_reconciles_by_scheduler_identity(
     merged = []
     observed_executions = []
     monkeypatch.setattr(
-        adaptive_hparam.artifacts,
+        adaptive_state.artifacts,
         "read_hparam_plan",
         lambda _plan_dir: {
             "recipe": {
@@ -79,24 +79,24 @@ def test_adaptive_interrupted_slurm_launch_reconciles_by_scheduler_identity(
             }
         },
     )
-    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [row])
+    monkeypatch.setattr(adaptive_state, "read_run_manifest", lambda _workspace: [row])
     monkeypatch.setattr(
-        adaptive_hparam.managed_scheduler,
+        adaptive_state.managed_scheduler,
         "observe_slurm_run",
         lambda owner_dir, execution, current: observed_executions.append(execution) or observed,
     )
     monkeypatch.setattr(
-        adaptive_hparam,
+        adaptive_state,
         "merge_run_manifest",
         lambda _workspace, updates: merged.extend(updates) or updates,
     )
     monkeypatch.setattr(
-        adaptive_hparam.evidence,
+        adaptive_state.evidence,
         "read_process_identity",
         lambda *_args, **_kwargs: pytest.fail("Slurm recovery must not read PID identity"),
     )
 
-    rows, unresolved, reconciled = adaptive_hparam._reconcile_interrupted_launch(
+    rows, unresolved, reconciled = adaptive_state.reconcile_interrupted_launch(
         tmp_path, tmp_path / "round", {("train-model", "run-000")}
     )
 
