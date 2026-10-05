@@ -251,6 +251,31 @@ def test_cli_folds_multiline_errors_into_one_line(monkeypatch, capsys):
     assert capsys.readouterr().err == "error: remote command failed: | Traceback (most recent call last): | boom\n"
 
 
+def test_cli_reports_failed_subprocesses_as_expected_errors(monkeypatch, capsys):
+    def failed_remote_command():
+        raise subprocess.CalledProcessError(255, ["ssh", "host", "mkdir"])
+
+    monkeypatch.setattr(cli, "repo_summary", failed_remote_command)
+
+    assert cli.main(["repo-summary", "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: Command '['ssh', 'host', 'mkdir']' returned non-zero exit status 255.\n"
+
+
+def test_doctor_refusal_ends_stderr_with_the_error_line(tmp_path: Path, capsys):
+    missing = tmp_path / "missing.yaml"
+
+    assert cli.main(["doctor", "--recipe", str(missing), "--output-dir", str(tmp_path / "doctor")]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    lines = captured.err.splitlines()
+    assert lines[0].startswith("Doctor started:")
+    assert lines[-1].startswith("error: ") and str(missing) in lines[-1]
+    assert sum(line.startswith("error: ") for line in lines) == 1
+
+
 def test_cli_lets_programming_errors_raise(monkeypatch):
     def broken_summary():
         raise KeyError("missing field")

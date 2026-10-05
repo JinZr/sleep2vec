@@ -94,9 +94,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return args.func(args)
-    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired, yaml.YAMLError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, yaml.YAMLError) as exc:
         # Expected refusals (validation, missing artifacts, remote/scheduler failures) end as one
         # stderr line instead of a traceback, even under --json; programming errors such as KeyError still raise.
+        # Progress lines a command already wrote (doctor's phases) may precede it; the error line comes last.
         # Remote stderr can be multiline, so line breaks are folded to keep the single-line contract.
         message = " | ".join(line.strip() for line in str(exc).splitlines() if line.strip())
         print(f"error: {message}", file=sys.stderr)
