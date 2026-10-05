@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import adaptive_evidence, adaptive_hparam, experiment_sources, run_evidence
+from agent_tools import adaptive_evidence, adaptive_hparam, adaptive_state, experiment_sources, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -65,6 +65,7 @@ def test_adaptive_entrypoints_use_orchestrator_manifest_reader(
         calls.append("monitor")
 
     monkeypatch.setattr(adaptive_hparam, "read_run_manifest", read_manifest)
+    monkeypatch.setattr(adaptive_state, "read_run_manifest", read_manifest)
     monkeypatch.setattr(adaptive_hparam, "monitor_hparam_runs", monitor)
     if entrypoint == "digest":
         row = _read_table(adaptive_hparam.digest_hparam_run(round_dir))[0]
