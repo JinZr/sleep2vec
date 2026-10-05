@@ -90,7 +90,13 @@ def main(argv: list[str] | None = None) -> int:
     if not hasattr(args, "func"):
         parser.print_help()
         return 2
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        # Expected refusals (validation, missing artifacts, remote/scheduler failures) end as one
+        # stderr line instead of a traceback, even under --json; programming errors such as KeyError still raise.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 def _command(sub: argparse._SubParsersAction, name: str, summary: str) -> argparse.ArgumentParser:
@@ -956,17 +962,13 @@ def _cmd_experiment_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_experiment_wandb_sync(args: argparse.Namespace) -> int:
-    try:
-        output = sync_wandb_runs(
-            args.run_dir,
-            entity=args.entity,
-            project=args.project,
-            group=args.group,
-            remote=args.remote,
-        )
-    except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+    output = sync_wandb_runs(
+        args.run_dir,
+        entity=args.entity,
+        project=args.project,
+        group=args.group,
+        remote=args.remote,
+    )
     print(f"Wrote {output}")
     return 0
 
@@ -987,11 +989,7 @@ def _cmd_experiment_monitor(args: argparse.Namespace) -> int:
 
 
 def _cmd_experiment_status(args: argparse.Namespace) -> int:
-    try:
-        snapshot = experiment_status(args.run_dir, remote=args.remote)
-    except (OSError, UnicodeError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+    snapshot = experiment_status(args.run_dir, remote=args.remote)
     if args.json:
         _emit(snapshot, as_json=True)
     else:
