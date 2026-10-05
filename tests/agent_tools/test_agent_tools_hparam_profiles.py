@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import shlex
 
-from agent_tool_test_helpers import run_execution_preflight_fixture, write_survival_sidecars
+from agent_tool_test_helpers import hparam_search_defaults, run_execution_preflight_fixture, write_survival_sidecars
 import pytest
 import yaml
 
@@ -407,6 +407,20 @@ def test_profile_requires_explicit_tuning_mapping(mutate):
     assert issues[0].evidence["preflight_before_workspace"] is True
 
 
+def test_profile_default_budget_comes_from_the_consultation_policy(monkeypatch):
+    from agent_tools.domain import finetune_hparam_profile
+    from agent_tools.recipes import load_consultation_policy
+
+    policy = load_consultation_policy()
+    policy["hparam_search_defaults"]["max_runs_total"]["value"] = 16
+    monkeypatch.setattr(finetune_hparam_profile, "load_consultation_policy", lambda: policy)
+
+    compiled = _compile()
+
+    assert compiled["max_runs"] == 16
+    assert len(compiled["configurations"]) == 16
+
+
 def test_legacy_explicit_search_is_not_a_profile_compilation_request():
     recipe = _recipe()
     recipe["search"] = {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}}
@@ -657,9 +671,8 @@ def test_checked_in_templates_use_bounded_terminal_agent_proposals(template_name
     assert adaptive["enabled"] is True
     assert adaptive["suggest"]["strategy"] == "agent_proposal"
     assert adaptive["replacement"] == {"enabled": False}
-    assert adaptive["max_runs_total"] == 12
-    assert adaptive["round_size"] == search["max_runs"] == 2
-    assert adaptive["max_rounds"] * adaptive["round_size"] == adaptive["max_runs_total"]
+    assert {key: adaptive[key] for key in hparam_search_defaults()} == hparam_search_defaults()
+    assert search["max_runs"] == adaptive["round_size"]
     assert adaptive["objective_metric"] == template["evaluation_policy"]["selection_metric"]
     assert adaptive["objective_mode"] == template["evaluation_policy"]["selection_mode"]
     envelopes = validate_parameter_envelopes(search["parameters"], adaptive["suggest"]["bounds"])
@@ -707,7 +720,8 @@ def test_task_recipe_schema_adaptive_skeleton_keeps_test_locked():
     assert "profile" not in skeleton["search"]
     assert skeleton["adaptive"]["suggest"]["strategy"] == "agent_proposal"
     assert skeleton["adaptive"]["replacement"] == {"enabled": False}
-    assert skeleton["search"]["max_runs"] == skeleton["adaptive"]["round_size"] == 2
+    assert {key: skeleton["adaptive"][key] for key in hparam_search_defaults()} == hparam_search_defaults()
+    assert skeleton["search"]["max_runs"] == skeleton["adaptive"]["round_size"]
     policy = skeleton["evaluation_policy"]
     assert policy["selection_metric"] == "val_ahi_pearson"
     assert policy["selection_split"] == "val"

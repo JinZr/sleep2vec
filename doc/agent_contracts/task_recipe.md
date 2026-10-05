@@ -419,9 +419,10 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   `age`, and `sex`, plus custom labels whose resolved `finetune.task.type`
   is `survival` or `multilabel_classification`. It is mutually exclusive with authored `parameters` or
   `configurations`. The hparam adapter resolves config facts and materializes
-  `method: grid`, a default `max_runs: 12`, and deterministic complete joint
-  configurations before consultation. An explicit budget override must be in
-  `[4, 32]` and cover every generated level.
+  `method: grid`, a default `max_runs` taken from `max_runs_total` in the
+  consultation policy's [`hparam_search_defaults`](../../agent_policies/consultation_policy.yaml),
+  and deterministic complete joint configurations before consultation. An
+  explicit budget override must be in `[4, 32]` and cover every generated level.
 - The profile compiler, owned by
   `agent_tools/domain/finetune_hparam_profile.py`, searches bounded technical
   levels for learning rate, weight decay, joint training length/LR schedules, the full LayerMix block,
@@ -463,8 +464,8 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   updates for decay/WSD; Plateau has no warmup. A source explicit warmup
   step count remains fixed in candidates that retain it, so its fraction may
   change with epochs. Exact warmup fractions require runtime update counts.
-  The run budget must cover every distinct joint schedule level; the default
-  remains 12. Coverage does not isolate the effect of each schedule field or
+  The run budget must cover every distinct joint schedule level. Coverage
+  does not isolate the effect of each schedule field or
   exhaust all combinations with the other families. The audit records this
   limitation and the fixed batch/accumulation settings.
 - Gradient-norm clipping is a separate bounded family. The first level preserves
@@ -534,12 +535,11 @@ is no automatic profile-to-adaptive compiler. A source value is not by itself a
 reason to freeze a technical axis, and a concurrency cap does not fix epochs.
 See the [proposal reasoning workflow](../../skills/hyperparameter_tuning/SKILL.md#result-to-proposal-reasoning).
 
-If the user did not specify a total budget, use the default 12-run search budget.
-The default round size is 2 and the default maximum is 6 rounds. With a smaller
-authorized concurrency or total-run cap, set `round_size` to the minimum of 2,
-the permitted concurrent runs and the total budget; set `max_rounds` to
-`ceil(total budget / round_size)`. If only a GPU cap is specified, account for
-GPUs per run before deriving concurrent runs. These are agent authoring defaults,
+If the user did not specify a total budget, use the default search budget, round
+size and round limit in
+[`hparam_search_defaults`](../../agent_policies/consultation_policy.yaml); a
+smaller authorized concurrency, GPU or total-run cap lowers `round_size` and
+`max_rounds` as that section derives. These are agent authoring defaults,
 not parser fallbacks: write the explicit objective, budget, strategy and
 `replacement: {enabled: false}` before consultation. Prefer explicit initial
 `search.configurations` to spend the opening batch on informative comparisons

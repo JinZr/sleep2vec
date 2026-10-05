@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agent_tool_test_helpers import hparam_search_defaults
 import yaml
 
 from agent_tools.adaptive_proposals import validate_configurations, validate_parameter_envelopes
@@ -101,19 +102,31 @@ def test_the_readme_scopes_its_tuning_section_the_way_the_skill_does():
 
 
 def test_hparam_guidance_separates_search_budget_from_launch_authority():
-    agents = (REPO_ROOT / "AGENTS.md").read_text()
-    contract = (REPO_ROOT / "doc/agent_contracts/task_recipe.md").read_text()
-    skill = (REPO_ROOT / "skills/hyperparameter_tuning/SKILL.md").read_text()
+    agents_text = (REPO_ROOT / "AGENTS.md").read_text()
+    agents = " ".join(agents_text.split())
+    contract = " ".join((REPO_ROOT / "doc/agent_contracts/task_recipe.md").read_text().split())
+    skill = " ".join((REPO_ROOT / "skills/hyperparameter_tuning/SKILL.md").read_text().split())
 
     for guidance in (agents, contract, skill):
-        assert "default 12-run search budget" in guidance
-        assert "default 12-run launch budget" not in guidance
+        assert "default search budget" in guidance
+        assert "launch budget" not in guidance
     assert "Launch requires an explicit request" in agents
-    assert "Launch requires an explicit request" in skill
     assert "does not authorize publication or launch" in contract
+    # AGENTS.md alone defines the interaction stages; the skill links to them.
+    assert "\n## Agent Stop-And-Consult Policy\n" in agents_text
+    assert "(../../AGENTS.md#agent-stop-and-consult-policy)" in skill
+    assert "Concept planning discusses" not in skill
 
 
 def test_hparam_guidance_defaults_to_adaptive_without_rewriting_authored_searches():
+    defaults = hparam_search_defaults()
+    restated = (
+        f"{defaults['max_runs_total']}-run",
+        f"`round_size: {defaults['round_size']}`",
+        f"`max_rounds: {defaults['max_rounds']}`",
+        f"min({defaults['round_size']},",
+        "ceil(total",
+    )
     for name in (
         "AGENTS.md",
         "skills/hyperparameter_tuning/SKILL.md",
@@ -125,7 +138,9 @@ def test_hparam_guidance_defaults_to_adaptive_without_rewriting_authored_searche
         assert "agent_proposal" in guidance
         assert "Static profile/grid search requires an explicit request." in guidance
         assert "Existing authored or frozen searches must not be rewritten." in guidance
-        assert "ceil(total" in guidance
+        # The consultation policy owns the default search size and how a cap lowers it.
+        assert "hparam_search_defaults" in guidance
+        assert [phrase for phrase in restated if phrase in guidance] == [], name
     skill = (REPO_ROOT / "skills/hyperparameter_tuning/SKILL.md").read_text()
     assert "A concurrency cap does not fix epochs." in skill
     assert "not automatic parser defaults" in skill
@@ -144,6 +159,7 @@ def test_hparam_skill_links_a_result_to_proposal_example_and_preserves_uncertain
 
 
 def test_hparam_skill_recipe_examples_include_terminal_proposal_domains():
+    defaults = hparam_search_defaults()
     examples = REPO_ROOT / "skills/hyperparameter_tuning/examples"
     for path in sorted(examples.glob("*.yaml")):
         recipe = yaml.safe_load(path.read_text())
@@ -151,9 +167,8 @@ def test_hparam_skill_recipe_examples_include_terminal_proposal_domains():
         assert adaptive["enabled"] is True
         assert adaptive["suggest"]["strategy"] == "agent_proposal"
         assert adaptive["replacement"] == {"enabled": False}
-        assert adaptive["max_runs_total"] == 12
-        assert adaptive["round_size"] == recipe["search"]["max_runs"] == 2
-        assert adaptive["max_rounds"] * adaptive["round_size"] == adaptive["max_runs_total"]
+        assert {key: adaptive[key] for key in defaults} == defaults
+        assert recipe["search"]["max_runs"] == adaptive["round_size"]
         assert adaptive["objective_metric"] == recipe["evaluation_policy"]["selection_metric"]
         assert adaptive["test_feedback_for_selection"] is True
         assert recipe["evaluation_policy"]["test_after_fit"] is True

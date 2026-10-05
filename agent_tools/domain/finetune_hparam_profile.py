@@ -8,7 +8,8 @@ Requires a complete explicit LayerMix block and an explicit ``finetune.tuning``
 preset, preserves the exact source config as candidate zero, and expands only
 its registered technical axes. Omitted ``finetune.tuning.lora``
 hyper-parameters retain the canonical variant loader defaults frozen by config
-and runtime identity.
+and runtime identity. An omitted ``search.max_runs`` takes the consultation
+policy's ``hparam_search_defaults.max_runs_total``.
 """
 
 from __future__ import annotations
@@ -21,9 +22,9 @@ from typing import Any, TypeGuard
 from ..decision_models import DecisionIssue, DecisionStatus
 from ..models import ConfigSummaryInput
 from ..plan_rendering import DEFAULT_FINETUNE_LR, DEFAULT_FINETUNE_WEIGHT_DECAY
+from ..recipes import load_consultation_policy
 
 PROFILE_ID = "finetune_balanced"
-DEFAULT_MAX_RUNS = 12
 MAX_RUNS = 32
 _SUPPORTED_VARIANTS = {"sleep2vec", "sleep2vec2"}
 _SUPPORTED_LABELS = {"ahi", "arousal", "stage4", "age", "sex"}
@@ -107,7 +108,8 @@ def compile_finetune_balanced_profile(
     except ValueError as exc:
         return None, [_issue(DecisionStatus.FAIL, str(exc), {})]
     minimum_runs = max(4, *(len(axis["levels"]) for axis in axes))
-    requested_runs = search.get("max_runs", DEFAULT_MAX_RUNS)
+    default_max_runs = load_consultation_policy()["hparam_search_defaults"]["max_runs_total"]["value"]
+    requested_runs = search.get("max_runs", default_max_runs)
     if type(requested_runs) is not int or not minimum_runs <= requested_runs <= MAX_RUNS:
         return None, [
             _issue(
@@ -116,7 +118,7 @@ def compile_finetune_balanced_profile(
                 {
                     "max_runs": requested_runs,
                     "minimum_runs": minimum_runs,
-                    "default_max_runs": DEFAULT_MAX_RUNS,
+                    "default_max_runs": default_max_runs,
                     "maximum_runs": MAX_RUNS,
                     "profile_level_counts": {axis["id"]: len(axis["levels"]) for axis in axes},
                 },

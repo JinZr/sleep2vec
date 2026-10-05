@@ -37,13 +37,14 @@ adaptive:
 ```
 
 An ordinary tuning request with no authored search defaults to terminal-only
-`agent_proposal`, with a default 12-run search budget, round size 2 and 6 rounds.
-The agent authors these fields explicitly after reviewing source config, prior
-evidence, parameter bounds and fixed axes; templates are starting examples,
-not an adaptive compiler. A smaller user concurrency/total-run cap reduces the
-round size, and `max_rounds = ceil(total budget / round_size)`; account for GPUs
-per run when translating a GPU cap. Static profile/grid search requires an
-explicit request. Existing authored or frozen searches must not be rewritten.
+`agent_proposal`, sized by
+[`hparam_search_defaults`](../../agent_policies/consultation_policy.yaml) when
+the user names no total budget; that section also derives the round size and
+round limit under a smaller concurrency, GPU or total-run cap. The agent
+authors these fields explicitly after reviewing source config, prior evidence,
+parameter bounds and fixed axes; templates are starting examples, not an
+adaptive compiler. Static profile/grid search requires an explicit request.
+Existing authored or frozen searches must not be rewritten.
 See [search-space guidance](../../doc/agent_contracts/task_recipe.md#search-space).
 
 [`recipes/examples/tiny_fixture_hparam.yaml`](../examples/tiny_fixture_hparam.yaml)

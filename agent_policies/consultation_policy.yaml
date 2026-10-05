@@ -10,6 +10,20 @@ task_defaults:
       source: policy_default
       meaning: Run the configured test split after each trial unless the recipe or user explicitly opts out.
 
+# Agents write these sizes into a new hparam recipe when the user names no total
+# budget; the adaptive parser has no fallback for them. Only the static
+# finetune_balanced profile reads max_runs_total, as its default search.max_runs.
+hparam_search_defaults:
+  max_runs_total:
+    value: 12
+    meaning: Total runs a search may spend when the user names no total budget. It sizes the search and does not authorize launch.
+  round_size:
+    value: 2
+    meaning: Adaptive runs per round. A smaller authorized cap lowers it to min(this value, permitted concurrent runs, total runs); a GPU cap permits floor(authorized GPUs / GPUs per run) concurrent runs.
+  max_rounds:
+    value: 6
+    meaning: Adaptive round limit, ceil(total runs / round_size). Recompute it whenever a cap changes either input.
+
 high_impact_fields:
   - id: task
     required_for_tasks: ["preset_prepare", "finetune", "infer", "evaluate", "hparam_tune", "sleep2stat", "embedding_extraction"]
