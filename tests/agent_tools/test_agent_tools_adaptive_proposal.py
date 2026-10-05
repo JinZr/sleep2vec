@@ -381,8 +381,8 @@ def test_agent_proposal_preview_is_read_only_and_execute_uses_bound_snapshot(tmp
 
     with monkeypatch.context() as preview:
         preview.setattr(
-            adaptive_handshake,
-            "bound_source_config_bytes",
+            adaptive_hparam,
+            "_bound_source_config_bytes",
             lambda *_args: pytest.fail("Proposal dry-run must not bind source config bytes"),
         )
         assert adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path) == proposal_path
@@ -1508,7 +1508,7 @@ def test_agent_proposal_rechecks_live_budget_after_snapshot(tmp_path: Path, monk
     input_path = adaptive_hparam.adaptive_step(workflow_dir)
     assert input_path is not None
     proposal_path = _write_agent_submission(input_path)
-    monkeypatch.setattr(adaptive_state, "budget_exhausted", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(adaptive_hparam, "_budget_exhausted", lambda *_args, **_kwargs: True)
 
     with pytest.raises(ValueError, match="no longer fits"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path)

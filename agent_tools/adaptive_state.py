@@ -4,8 +4,8 @@ Owns the ``adaptive/`` layout under a workflow root: round directories, the
 frozen ``workflow.json`` payload, the append-only ``run_registry.tsv``, the
 workflow's experiment events, and reconciliation of a launch that was
 interrupted before its round was committed, plus the recipe's adaptive settings,
-suggest strategy and workflow objective accessors and the round-terminal and
-budget-exhausted checks over that state. ``adaptive_hparam`` drives the
+suggest strategy and workflow objective accessors and the round-terminal check
+over that state. ``adaptive_hparam`` drives the
 digest, proposal, registration and launch steps on top of this state.
 """
 
@@ -149,18 +149,6 @@ def round_is_terminal(
     canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
     run_keys = [managed_run_key(run) for run in plan.get("runs", [])]
     return bool(run_keys) and all(canonical_by_key.get(key, {}).get("status") in TERMINAL_STATUSES for key in run_keys)
-
-
-def budget_exhausted(root: Path, recipe: dict[str, Any], *, prospective_runs: int = 0) -> bool:
-    adaptive = adaptive_settings(recipe)
-    max_rounds = int(adaptive.get("max_rounds") or 1)
-    max_runs = int(adaptive.get("max_runs_total") or 10**9)
-    current_runs = len(read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True))
-    return (
-        len(committed_round_indexes(root)) >= max_rounds
-        or current_runs >= max_runs
-        or current_runs + prospective_runs > max_runs
-    )
 
 
 def validate_workflow_payload(

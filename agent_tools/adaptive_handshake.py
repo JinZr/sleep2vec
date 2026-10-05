@@ -127,17 +127,6 @@ def source_config_sha256(recipe: dict[str, Any]) -> str:
     return file_sha256(config_path)
 
 
-def bound_source_config_bytes(recipe: dict[str, Any], expected_sha256: str) -> bytes:
-    source_config = (recipe.get("inputs") or {}).get("config")
-    config_path = resolve_repo_path(source_config)
-    if config_path is None or not config_path.exists():
-        raise ValueError(f"Cannot read missing source config: {source_config}")
-    config_bytes = config_path.read_bytes()
-    if hashlib.sha256(config_bytes).hexdigest() != expected_sha256:
-        raise ValueError("Adaptive source config changed after the proposal input was created.")
-    return config_bytes
-
-
 def _agent_proposal_input_payload(
     root: Path,
     workflow: dict[str, Any],
@@ -419,8 +408,6 @@ def load_agent_proposal(
     if proposal_file != expected_proposal_path:
         raise ValueError("Proposal path does not match the bound input snapshot.")
     validated = adaptive_proposals.validate_proposal(proposal, proposal_input)
-    if adaptive_state.budget_exhausted(root, recipe, prospective_runs=validated["max_runs"]):
-        raise ValueError("Agent proposal no longer fits the remaining adaptive budget.")
     return proposal_file, input_path, validated, proposal_sha256, input_sha256
 
 

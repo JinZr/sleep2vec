@@ -767,6 +767,17 @@ def _publish_proposal_receipt(
     return agent_proposal_event
 
 
+def _bound_source_config_bytes(recipe: dict[str, Any], expected_sha256: str) -> bytes:
+    source_config = (recipe.get("inputs") or {}).get("config")
+    config_path = resolve_repo_path(source_config)
+    if config_path is None or not config_path.exists():
+        raise ValueError(f"Cannot read missing source config: {source_config}")
+    config_bytes = config_path.read_bytes()
+    if hashlib.sha256(config_bytes).hexdigest() != expected_sha256:
+        raise ValueError("Adaptive source config changed after the proposal input was created.")
+    return config_bytes
+
+
 def _adaptive_step(
     root: Path,
     *,
@@ -805,6 +816,8 @@ def _adaptive_step(
         proposal_file, input_path, validated, proposal_sha256, input_sha256 = adaptive_handshake.load_agent_proposal(
             root, workflow, recipe, workspace, proposal_path, read_run_manifest=read_run_manifest
         )
+        if _budget_exhausted(root, recipe, prospective_runs=validated["max_runs"]):
+            raise ValueError("Agent proposal no longer fits the remaining adaptive budget.")
         candidate_payload = _agent_suggestion_payload(recipe, workflow, next_round, validated)
         next_recipe = _preflight_candidate(
             yaml.safe_dump(candidate_payload, sort_keys=False).encode(), next_dir, "Agent proposal"
@@ -838,10 +851,10 @@ def _adaptive_step(
         if not execute:
             return proposal_file
 
-        if adaptive_state.budget_exhausted(root, recipe, prospective_runs=_round_run_count(next_recipe)):
+        if _budget_exhausted(root, recipe, prospective_runs=_round_run_count(next_recipe)):
             raise ValueError("Agent proposal no longer fits the remaining adaptive budget.")
         bound_config_sha256 = proposal_input["input"]["source_config_sha256"]
-        bound_config_bytes = adaptive_handshake.bound_source_config_bytes(recipe, bound_config_sha256)
+        bound_config_bytes = _bound_source_config_bytes(recipe, bound_config_sha256)
         bound_config_path = next_dir / "source_config.yaml"
         candidate_payload.setdefault("inputs", {})["config"] = str(bound_config_path)
         if file_sha256(proposal_file) != proposal_sha256 or file_sha256(input_path) != input_sha256:
@@ -908,7 +921,7 @@ def _adaptive_step(
             raise RuntimeError(f"Round {next_round:03d} plan failed preflight with exit code {preflight.exit_code}.")
         next_run_count = _round_run_count(next_recipe)
         # Retiring current runs is allowed only when the complete replacement round fits the remaining budget.
-        if execute and adaptive_state.budget_exhausted(root, recipe, prospective_runs=next_run_count):
+        if execute and _budget_exhausted(root, recipe, prospective_runs=next_run_count):
             adaptive_state.append_event(
                 root,
                 "adaptive_budget_exhausted",
@@ -988,7 +1001,7 @@ def adaptive_loop(workflow_dir: str | Path, *, execute: bool = False) -> Path:
         raise ValueError("Adaptive source experiment.root differs from the frozen workflow workspace.")
     exp_io.validate_managed_output_paths(workspace, [workspace / "events.jsonl"])
     last = root
-    while not adaptive_state.budget_exhausted(root, recipe):
+    while not _budget_exhausted(root, recipe):
         previous_round = adaptive_state.latest_round_index(root)
         step = adaptive_step(root, execute=execute)
         # Only agent_proposal can return None, and this loop rejects that strategy.
@@ -1508,6 +1521,18 @@ def _suggestion_rationale(
     ]
     lines.extend(f"- {key}: {value}" for key, value in params.items())
     return "\n".join(lines) + "\n"
+
+
+def _budget_exhausted(root: Path, recipe: dict[str, Any], *, prospective_runs: int = 0) -> bool:
+    adaptive = adaptive_state.adaptive_settings(recipe)
+    max_rounds = int(adaptive.get("max_rounds") or 1)
+    max_runs = int(adaptive.get("max_runs_total") or 10**9)
+    current_runs = len(read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True))
+    return (
+        len(adaptive_state.committed_round_indexes(root)) >= max_rounds
+        or current_runs >= max_runs
+        or current_runs + prospective_runs > max_runs
+    )
 
 
 def _adaptive_readme(workflow: Mapping[str, Any]) -> str:

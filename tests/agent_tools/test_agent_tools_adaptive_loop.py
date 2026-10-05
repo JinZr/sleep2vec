@@ -812,7 +812,7 @@ def test_adaptive_loop_materializes_source_before_budget_check(tmp_path: Path, m
         observed.append(effective_recipe["evaluation_policy"]["test_after_fit"])
         return True
 
-    monkeypatch.setattr(adaptive_state, "budget_exhausted", budget_exhausted)
+    monkeypatch.setattr(adaptive_hparam, "_budget_exhausted", budget_exhausted)
 
     assert adaptive_hparam.adaptive_loop(workflow_dir) == workflow_dir
     assert observed == [True]
@@ -822,8 +822,8 @@ def test_adaptive_loop_materializes_source_before_budget_check(tmp_path: Path, m
     payload["adaptive"]["max_runs_total"] += 1
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     monkeypatch.setattr(
-        adaptive_state,
-        "budget_exhausted",
+        adaptive_hparam,
+        "_budget_exhausted",
         lambda *_args, **_kwargs: pytest.fail("budget check must not run"),
     )
 
