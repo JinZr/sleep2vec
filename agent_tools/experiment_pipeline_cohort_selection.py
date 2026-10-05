@@ -13,9 +13,9 @@ from typing import Any, Literal, Mapping, Sequence, TypedDict
 
 
 class SelectionEvidence(TypedDict):
-    job_id: Any
-    job_template_id: Any
-    candidate_id: Any
+    job_id: str
+    job_template_id: str
+    candidate_id: str
     cohort: Any
     metrics: dict[str, Any]
     result_manifest: str
@@ -36,19 +36,19 @@ class GateContributingEvidence(TypedDict):
 class DecisionCandidate(TypedDict):
     candidate_id: str
     source_rank: int
-    step_id: Any
-    run_id: Any
-    checkpoint: Any
-    checkpoint_sha256: Any
-    config: Any
-    config_sha256: Any
+    step_id: str
+    run_id: str
+    checkpoint: str
+    checkpoint_sha256: str
+    config: str
+    config_sha256: str
     feasible: bool
     failed_gates: list[str]
     selection_evidence: list[GateContributingEvidence]
 
 
 class CohortDecision(TypedDict):
-    pipeline_id: Any
+    pipeline_id: str
     source_id: Any
     selector: dict[str, Any]
     candidates: list[DecisionCandidate]

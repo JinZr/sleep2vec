@@ -437,8 +437,8 @@ def test_result_types_reach_callers(tmp_path: Path):
             final_descriptor: plan_contract.FinalEvalConfigDescriptor = {
                 "path": "/plan/config.final_eval.yaml", "sha256": "a" * 64, "source_path": "relative.yaml",
             }
-            final_descriptor["source_path"] = None
-            final_descriptor["source_path"] = {"raw": [None, 1]}
+            final_descriptor["source_path"] = None  # type: ignore[typeddict-item]
+            final_descriptor["source_path"] = {"raw": [None, 1]}  # type: ignore[typeddict-item]
             bound_final: plan_contract.BoundFinalEvalConfigSnapshot = {
                 "source_path": "relative.yaml", "bytes": b"config", "sha256": "a" * 64,
             }
@@ -452,8 +452,8 @@ def test_result_types_reach_callers(tmp_path: Path):
             generic_run["config"] = Path("/config")  # type: ignore[typeddict-item]
             generic_run["run_id"] = 7  # type: ignore[typeddict-item]
             generic_run["scheduler_type"] = "unknown"  # type: ignore[typeddict-item]
-            generic_run["experiment_id"] = None
-            generic_run["step_id"] = {"raw": None}
+            generic_run["experiment_id"] = None  # type: ignore[typeddict-item]
+            generic_run["step_id"] = {"raw": None}  # type: ignore[typeddict-item]
             del generic_run["script"]  # type: ignore[misc]
 
             generic_compiled: plan_contract.GenericCompiledPlanContract = {

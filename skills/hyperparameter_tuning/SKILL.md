@@ -23,14 +23,8 @@ execution identity. Read the relevant detailed owners before preparing work:
 
 ## Interaction stages
 
-Keep concept planning, publication, and launch distinct. Concept planning
-discusses scientific choices, candidate scope and budget without running
-`doctor` or `plan`, publishing recipe bytes, inspecting live resources or
-producing runnable commands. Publication may write the authorized recipe or
-decisions, run `doctor` and `plan`, and freeze artifacts, but it does not launch.
-Launch requires an explicit request to execute or complete the run. One request
-may authorize all three stages when it explicitly asks for design and execution;
-otherwise stop at the requested stage.
+Keep concept planning, publication and launch as the separate stages that the
+[stop-and-consult policy](../../AGENTS.md#agent-stop-and-consult-policy) defines.
 
 ## First information-gathering commands
 
@@ -67,13 +61,13 @@ search requires an explicit request. Existing authored or frozen searches must
 not be rewritten. Explain at the outset that the agent will use completed results
 to choose later rounds; do not preplan the whole budget and call it adaptive.
 
-Use the default 12-run search budget only when the user has not specified a total
-budget. Default to `round_size: 2` and `max_rounds: 6`; a smaller concurrency or
-total-run cap reduces round size to `min(2, permitted concurrent runs, total
-budget)`, with `max_rounds = ceil(total budget / round_size)`. Translate GPU limits
-using the authorized GPUs per run. A concurrency cap does not fix epochs. Author
-these fields, the explicit objective and `replacement: {enabled: false}` in the
-recipe; they are not automatic parser defaults.
+Use the default search budget, round size and round limit in
+[`hparam_search_defaults`](../../agent_policies/consultation_policy.yaml) only
+when the user has not specified a total budget, and lower them for a smaller
+concurrency, GPU or total-run cap as that section derives.
+A concurrency cap does not fix epochs. Author these fields, the explicit
+objective and `replacement: {enabled: false}` in the recipe; they are
+not automatic parser defaults.
 
 Before initialization, inspect the effective base/runtime config and available
 prior experiments. Choose a bounded domain and first-round points using:

@@ -257,7 +257,9 @@ The managed `finetune_balanced` search also compares bounded gradient-norm
 clipping levels and couples early-stopping patience to the candidate's epochs
 and validation cadence. Patience counts validation checks without improvement,
 not epochs. Batch size and gradient accumulation stay fixed, and the default
-search budget remains 12 runs; see the [search-space contract](doc/agent_contracts/task_recipe.md#search-space).
+search budget comes from `hparam_search_defaults` in the
+[consultation policy](agent_policies/consultation_policy.yaml); see the
+[search-space contract](doc/agent_contracts/task_recipe.md#search-space).
 
 ### Finetune learning-rate schedules
 

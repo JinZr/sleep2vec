@@ -28,14 +28,14 @@ RETRYABLE_STATUSES = {"failed", "launch_failed"}
 
 
 class _CohortJobFields(TypedDict, total=False):
-    candidate_id: Any
-    job_template_id: Any
+    candidate_id: str
+    job_template_id: str
     role: Literal["selection", "report_only"]
     provenance: Literal["internal", "external"]
 
 
 class LogicalJobState(_CohortJobFields):
-    job_id: Any
+    job_id: str
     status: Literal["completed", "blocked", "failed", "running"]
     attempt_count: int
     successful_run_id: Any
@@ -52,7 +52,7 @@ class _MetricCohortFields(_CohortJobFields, total=False):
 
 
 class MetricRow(_MetricCohortFields):
-    job_id: Any
+    job_id: str
     cohort: Any
     modality: Any
     label_name: Any

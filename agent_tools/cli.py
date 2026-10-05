@@ -52,6 +52,7 @@ from .experiments import (
     sync_wandb_runs,
 )
 from .hparam import (
+    LogitExportRequest,
     ensemble_hparam_outputs,
     export_hparam_logits,
     generate_external_eval,
@@ -1033,9 +1034,7 @@ def _cmd_hparam_external_eval(args: argparse.Namespace) -> int:
 
 
 def _cmd_hparam_export_logits(args: argparse.Namespace) -> int:
-    manifest = export_hparam_logits(
-        args.run_dir,
-        args.selected,
+    request = LogitExportRequest(
         unlock_final_test=args.unlock_final_test,
         val_split=args.val_split,
         test_split=args.test_split,
@@ -1058,6 +1057,7 @@ def _cmd_hparam_export_logits(args: argparse.Namespace) -> int:
         all_candidates=args.all_candidates,
         execute=args.execute,
     )
+    manifest = export_hparam_logits(args.run_dir, args.selected, request)
     print(f"Wrote {manifest}")
     if not args.execute:
         print(f"Wrote {manifest.parent / 'logits_export.sh'}")

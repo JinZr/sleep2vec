@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import subprocess
 import sys
 
-from agent_tool_test_helpers import config_payload, survival_config_payload, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import (
+    config_payload,
+    hparam_search_defaults,
+    survival_config_payload,
+    write_finetune_recipe,
+    write_yaml,
+)
 import pytest
 import yaml
 
@@ -13,6 +20,13 @@ from agent_tools.decision_paths import path_issues, validate_input_path
 from agent_tools.decisions import DecisionStatus, evaluate_consultation_gates
 from agent_tools.plans import evaluate_recipe
 from agent_tools.recipes import load_consultation_policy
+
+
+def test_hparam_search_default_round_limit_spends_the_default_budget():
+    defaults = hparam_search_defaults()
+
+    assert defaults["round_size"] <= defaults["max_runs_total"]
+    assert defaults["max_rounds"] == math.ceil(defaults["max_runs_total"] / defaults["round_size"])
 
 
 def test_selection_split_and_test_access_questions_are_distinct():

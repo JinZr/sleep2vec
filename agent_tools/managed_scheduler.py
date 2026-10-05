@@ -4,10 +4,11 @@ Layer 0 leaf. Owns the reusable direct GPU-capacity and process lifecycle, the
 Slurm submit/observe lifecycle, the managed run lock, and the frozen execution
 snapshot each launch commits.
 
-``_launch_managed_runs`` selects the direct or Slurm backend; ``SchedulerHooks``
-supplies persistence and execution callbacks. ``experiments.launch_preset_run``
-separately sequences execution, manifest updates, and ``start_process`` using
-this module's primitives without the shared launch dispatcher.
+``_launch_managed_runs`` selects the direct or Slurm backend for one frozen
+``LaunchOptions``; ``SchedulerHooks`` inside it supplies persistence and
+execution callbacks. ``experiments.launch_preset_run`` separately sequences
+execution, manifest updates, and ``start_process`` using this module's
+primitives without the shared launch dispatcher.
 """
 
 from __future__ import annotations
@@ -243,6 +244,19 @@ class SchedulerHooks:
     start_process: Callable[..., str] | None = None
 
 
+@dataclass(frozen=True)
+class LaunchOptions:
+    """Per-call launch settings shared by the direct and Slurm backends."""
+
+    dry_run: bool
+    fail_on_missing_pid_blocker: bool
+    default_script_commits_terminal_status: bool
+    runtime_output_fields: tuple[str, ...]
+    runtime_output_root: str | Path | None
+    projection_writer: Callable[[LaunchResult], None] | None
+    hooks: SchedulerHooks
+
+
 @contextmanager
 def managed_run_lock(workspace: str | Path):
     root = Path(workspace)
@@ -466,36 +480,19 @@ def launch_managed_runs(
 ) -> LaunchResult:
     root = Path(workspace)
     managed_dir = Path(owner_dir)
+    options = LaunchOptions(
+        dry_run=dry_run,
+        fail_on_missing_pid_blocker=fail_on_missing_pid_blocker,
+        default_script_commits_terminal_status=default_script_commits_terminal_status,
+        runtime_output_fields=runtime_output_fields,
+        runtime_output_root=runtime_output_root,
+        projection_writer=projection_writer,
+        hooks=hooks or SchedulerHooks(),
+    )
     if lock_held:
-        return _launch_managed_runs(
-            root,
-            managed_dir,
-            runs,
-            execution,
-            runtime,
-            dry_run=dry_run,
-            fail_on_missing_pid_blocker=fail_on_missing_pid_blocker,
-            default_script_commits_terminal_status=default_script_commits_terminal_status,
-            runtime_output_fields=runtime_output_fields,
-            runtime_output_root=runtime_output_root,
-            projection_writer=projection_writer,
-            hooks=hooks or SchedulerHooks(),
-        )
+        return _launch_managed_runs(root, managed_dir, runs, execution, runtime, options)
     with managed_run_lock(root):
-        return _launch_managed_runs(
-            root,
-            managed_dir,
-            runs,
-            execution,
-            runtime,
-            dry_run=dry_run,
-            fail_on_missing_pid_blocker=fail_on_missing_pid_blocker,
-            default_script_commits_terminal_status=default_script_commits_terminal_status,
-            runtime_output_fields=runtime_output_fields,
-            runtime_output_root=runtime_output_root,
-            projection_writer=projection_writer,
-            hooks=hooks or SchedulerHooks(),
-        )
+        return _launch_managed_runs(root, managed_dir, runs, execution, runtime, options)
 
 
 def _launch_managed_runs(
@@ -504,32 +501,15 @@ def _launch_managed_runs(
     runs: list[dict[str, Any]],
     execution: dict[str, Any],
     runtime: dict[str, Any],
-    *,
-    dry_run: bool,
-    fail_on_missing_pid_blocker: bool,
-    default_script_commits_terminal_status: bool,
-    runtime_output_fields: tuple[str, ...],
-    runtime_output_root: str | Path | None,
-    projection_writer: Callable[[LaunchResult], None] | None,
-    hooks: SchedulerHooks,
+    options: LaunchOptions,
 ) -> LaunchResult:
     backend = _managed_scheduler_type(execution, runs)
     if backend == "slurm":
-        return _launch_slurm_runs(
-            workspace,
-            owner_dir,
-            runs,
-            execution,
-            dry_run=dry_run,
-            runtime_output_fields=runtime_output_fields,
-            runtime_output_root=runtime_output_root,
-            projection_writer=projection_writer,
-            hooks=hooks,
-        )
+        return _launch_slurm_runs(workspace, owner_dir, runs, execution, options)
     planned_by_key = {validated_run_key(run): run for run in runs}
     snapshot_path, expected_keys, workspace_by_key = _managed_launch_preflight(workspace, owner_dir, runs)
     if (
-        not dry_run
+        not options.dry_run
         and not snapshot_path.exists()
         and any(
             workspace_by_key[validated_run_key(run)].get("target") not in (None, "")
@@ -538,15 +518,15 @@ def _launch_managed_runs(
             for run in runs
         )
     ):
-        validated_snapshot = hooks.validated_snapshot or validated_execution_snapshot
+        validated_snapshot = options.hooks.validated_snapshot or validated_execution_snapshot
         validated_snapshot(owner_dir, execution, runs, workspace_by_key)
 
     observed = observe_runs(
         owner_dir,
         workspace_by_key,
         expected_keys,
-        dry_run=dry_run,
-        default_script_commits_terminal_status=default_script_commits_terminal_status,
+        dry_run=options.dry_run,
+        default_script_commits_terminal_status=options.default_script_commits_terminal_status,
     )
     refreshed = observed.rows_by_key
     groups = gpu_groups(execution, runtime)
@@ -557,8 +537,8 @@ def _launch_managed_runs(
         expected_keys=expected_keys,
         groups=groups,
         execution=execution,
-        dry_run=dry_run,
-        hooks=hooks,
+        dry_run=options.dry_run,
+        hooks=options.hooks,
     )
 
     capacity = capacity_state(
@@ -569,7 +549,7 @@ def _launch_managed_runs(
         expected_keys=expected_keys,
     )
     missing_pid_blocker = None
-    if not dry_run and fail_on_missing_pid_blocker:
+    if not options.dry_run and options.fail_on_missing_pid_blocker:
         current_missing_pid = [key for key, row in refreshed.items() if row.get("status") == "missing_pid"]
         capacity_needed = any(row.get("status") in ACTIVE_STATUSES | LAUNCHABLE_STATUSES for row in refreshed.values())
         external_missing_pid = capacity.external_missing_pid if capacity_needed else []
@@ -578,7 +558,9 @@ def _launch_managed_runs(
             missing_pid_blocker = MissingPidCapacityError(*blockers[0])
 
     target = str(execution.get("target", "local") or "local")
-    rows, launch_identity_by_key = _prepare_direct_launch_rows(runs, execution, refreshed, target=target, hooks=hooks)
+    rows, launch_identity_by_key = _prepare_direct_launch_rows(
+        runs, execution, refreshed, target=target, hooks=options.hooks
+    )
 
     launchable = [(index, row) for index, row in enumerate(rows) if row["status"] in LAUNCHABLE_STATUSES]
     output_path_fields: tuple[Literal["log_path", "pid_path"], ...] = ("log_path", "pid_path")
@@ -586,13 +568,13 @@ def _launch_managed_runs(
         Path(str(launch_identity_by_key[validated_run_key(row)][field])) for row in rows for field in output_path_fields
     ]
     if target == "ssh":
-        if not dry_run:
+        if not options.dry_run:
             exp_io.validate_managed_output_paths(workspace, run_output_paths, remote=str(execution["host"]))
     else:
         exp_io.validate_managed_output_paths(workspace, run_output_paths)
 
     execution_snapshot = None
-    if not dry_run and missing_pid_blocker is None:
+    if not options.dry_run and missing_pid_blocker is None:
         has_launch_candidate = False
         if capacity.slots > 0:
             has_launch_candidate = capacity.next_allocation(launchable) is not None
@@ -600,17 +582,17 @@ def _launch_managed_runs(
             runtime_roots = [
                 Path(str(row[field]))
                 for _index, row in launchable
-                for field in runtime_output_fields
+                for field in options.runtime_output_fields
                 if row.get(field) not in (None, "")
             ]
             runtime_root = (
-                Path(runtime_output_root)
-                if runtime_output_root is not None
+                Path(options.runtime_output_root)
+                if options.runtime_output_root is not None
                 else Path(str(execution.get("workdir") or REPO_ROOT))
             )
             remote_host = str(execution["host"]) if target == "ssh" else None
             exp_io.validate_managed_output_paths(runtime_root, runtime_roots, remote=remote_host)
-            validated_snapshot = hooks.validated_snapshot or validated_execution_snapshot
+            validated_snapshot = options.hooks.validated_snapshot or validated_execution_snapshot
             snapshot_result = validated_snapshot(
                 owner_dir,
                 execution,
@@ -624,8 +606,8 @@ def _launch_managed_runs(
         for row in rows:
             Path(str(row["run_dir"])).mkdir(parents=True, exist_ok=True)
 
-    build_command = hooks.build_command or build_launch_command
-    start = hooks.start_process or start_process
+    build_command = options.hooks.build_command or build_launch_command
+    start = options.hooks.start_process or start_process
     started_keys = _start_direct_launch_rows(
         workspace=workspace,
         rows=rows,
@@ -637,14 +619,14 @@ def _launch_managed_runs(
         planned_by_key=planned_by_key,
         execution_snapshot=execution_snapshot,
         missing_pid_blocker=missing_pid_blocker,
-        dry_run=dry_run,
+        dry_run=options.dry_run,
         build_command=build_command,
         start=start,
-        hooks=hooks,
+        hooks=options.hooks,
     )
 
     committed_rows, launch_rows = _commit_direct_launch_rows(
-        workspace, runs, rows, workspace_by_key, dry_run=dry_run, hooks=hooks
+        workspace, runs, rows, workspace_by_key, dry_run=options.dry_run, hooks=options.hooks
     )
     result = LaunchResult(
         committed_rows=committed_rows,
@@ -653,24 +635,24 @@ def _launch_managed_runs(
         status_changes=observed.changes,
         external_status_changes=external_status_changes,
     )
-    if projection_writer is not None:
-        projection_writer(result)
+    if options.projection_writer is not None:
+        options.projection_writer(result)
     for row in committed_rows:
         key = validated_run_key(row)
         if key in observed.changes:
             before, after = observed.changes[key]
-            hooks.append_event(
+            options.hooks.append_event(
                 workspace,
                 "run_status_changed",
                 {"step_id": key[0], "run_id": key[1], "from": before, "to": after},
             )
         if key in started_keys:
-            hooks.append_event(
+            options.hooks.append_event(
                 workspace,
                 "run_launched",
                 {"step_id": key[0], "run_id": key[1], "gpus": row.get("gpus", "")},
             )
-    hooks.write_status_report(workspace)
+    options.hooks.write_status_report(workspace)
     if missing_pid_blocker is not None:
         raise missing_pid_blocker
     return result
@@ -1043,17 +1025,14 @@ def _launch_slurm_runs(
     owner_dir: Path,
     runs: list[dict[str, Any]],
     execution: dict[str, Any],
-    *,
-    dry_run: bool,
-    runtime_output_fields: tuple[str, ...],
-    runtime_output_root: str | Path | None,
-    projection_writer: Callable[[LaunchResult], None] | None,
-    hooks: SchedulerHooks,
+    options: LaunchOptions,
 ) -> LaunchResult:
-    snapshot_path, workspace_by_key = _preflight_slurm_launch(workspace, owner_dir, runs, dry_run=dry_run, hooks=hooks)
+    snapshot_path, workspace_by_key = _preflight_slurm_launch(
+        workspace, owner_dir, runs, dry_run=options.dry_run, hooks=options.hooks
+    )
 
     status_changes: dict[RunKey, tuple[Any, Any]] = {}
-    if not dry_run:
+    if not options.dry_run:
         observed_rows = []
         previous_statuses = {}
         for run in runs:
@@ -1066,7 +1045,7 @@ def _launch_slurm_runs(
                 else previous
             )
             observed_rows.append(observed)
-        committed = hooks.merge_manifest(workspace, observed_rows, lock_held=True)
+        committed = options.hooks.merge_manifest(workspace, observed_rows, lock_held=True)
         workspace_by_key = {validated_run_key(row): row for row in committed}
         status_changes = {
             key: (before, workspace_by_key[key].get("status"))
@@ -1079,7 +1058,7 @@ def _launch_slurm_runs(
         key = validated_run_key(run)
         previous = workspace_by_key[key]
         identity = _slurm_execution_identity(execution, run)
-        if dry_run and previous.get("target") in (None, ""):
+        if options.dry_run and previous.get("target") in (None, ""):
             preview_rows.append({**previous, **identity})
         else:
             preview_rows.append(previous)
@@ -1091,17 +1070,17 @@ def _launch_slurm_runs(
         and previous_status in LAUNCHABLE_STATUSES
     ]
     execution_snapshot_sha256 = ""
-    if launchable and not dry_run:
+    if launchable and not options.dry_run:
         remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
         runtime_roots = [
             Path(str(run[field]))
             for run in launchable
-            for field in runtime_output_fields
+            for field in options.runtime_output_fields
             if run.get(field) not in (None, "")
         ]
         runtime_root = (
-            Path(runtime_output_root)
-            if runtime_output_root is not None
+            Path(options.runtime_output_root)
+            if options.runtime_output_root is not None
             else Path(str(execution.get("workdir") or REPO_ROOT))
         )
         exp_io.validate_managed_output_paths(runtime_root, runtime_roots, remote=remote)
@@ -1115,7 +1094,7 @@ def _launch_slurm_runs(
             script_text = exp_io.read_text_at(run["scheduler_script"], remote=remote)
             if hashlib.sha256(script_text.encode()).hexdigest() != run["scheduler_script_sha256"]:
                 raise ValueError(f"Frozen Slurm script changed before submission: {run['scheduler_script']}")
-        validated_snapshot = hooks.validated_snapshot or validated_execution_snapshot
+        validated_snapshot = options.hooks.validated_snapshot or validated_execution_snapshot
         snapshot_result = validated_snapshot(
             owner_dir,
             execution,
@@ -1132,12 +1111,12 @@ def _launch_slurm_runs(
             }
             for run in runs
         ]
-        committed = hooks.merge_manifest(workspace, snapshot_rows, lock_held=True)
+        committed = options.hooks.merge_manifest(workspace, snapshot_rows, lock_held=True)
         workspace_by_key = {validated_run_key(row): row for row in committed}
 
     started_keys: set[RunKey] = set()
     uncertain_error: RuntimeError | None = None
-    if not dry_run:
+    if not options.dry_run:
         for run in launchable:
             key = validated_run_key(run)
             previous = workspace_by_key[key]
@@ -1149,7 +1128,7 @@ def _launch_slurm_runs(
                 "scheduler_cluster": cluster,
                 "scheduler_observed_at": utc_now(),
             }
-            committed = hooks.merge_manifest(workspace, [submitting], lock_held=True)
+            committed = options.hooks.merge_manifest(workspace, [submitting], lock_held=True)
             workspace_by_key = {validated_run_key(row): row for row in committed}
             submitting = workspace_by_key[key]
             if submitting.get("status") != "submitting":
@@ -1183,13 +1162,13 @@ def _launch_slurm_runs(
                         "scheduler_reason": str(exc),
                         "scheduler_observed_at": utc_now(),
                     }
-                    committed = hooks.merge_manifest(workspace, [failed], lock_held=True)
+                    committed = options.hooks.merge_manifest(workspace, [failed], lock_held=True)
                     workspace_by_key = {validated_run_key(row): row for row in committed}
                     continue
                 submitted, uncertain_error = _reconcile_slurm_submission(owner_dir, execution, submitting, exc)
             except (subprocess.TimeoutExpired, ValueError) as exc:
                 submitted, uncertain_error = _reconcile_slurm_submission(owner_dir, execution, submitting, exc)
-            committed = hooks.merge_manifest(workspace, [submitted], lock_held=True)
+            committed = options.hooks.merge_manifest(workspace, [submitted], lock_held=True)
             workspace_by_key = {validated_run_key(row): row for row in committed}
             if workspace_by_key[key].get("scheduler_job_id") not in (None, ""):
                 started_keys.add(key)
@@ -1197,7 +1176,7 @@ def _launch_slurm_runs(
                 break
 
     committed_rows = [workspace_by_key[validated_run_key(run)] for run in runs]
-    launch_rows = preview_rows if dry_run else committed_rows
+    launch_rows = preview_rows if options.dry_run else committed_rows
     result = LaunchResult(
         committed_rows=committed_rows,
         launch_rows=launch_rows,
@@ -1205,17 +1184,17 @@ def _launch_slurm_runs(
         status_changes=status_changes,
         external_status_changes={},
     )
-    if projection_writer is not None:
-        projection_writer(result)
+    if options.projection_writer is not None:
+        options.projection_writer(result)
     for key, (before, after) in status_changes.items():
-        hooks.append_event(
+        options.hooks.append_event(
             workspace,
             "run_status_changed",
             {"step_id": key[0], "run_id": key[1], "from": before, "to": after},
         )
     for key in started_keys:
         row = workspace_by_key[key]
-        hooks.append_event(
+        options.hooks.append_event(
             workspace,
             "run_launched",
             {
@@ -1224,7 +1203,7 @@ def _launch_slurm_runs(
                 "scheduler_job_id": row["scheduler_job_id"],
             },
         )
-    hooks.write_status_report(workspace)
+    options.hooks.write_status_report(workspace)
     if uncertain_error is not None:
         raise uncertain_error
     return result

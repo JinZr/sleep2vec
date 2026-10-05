@@ -15,6 +15,7 @@ import yaml
 
 from agent_tools import cli, hparam_postprocess, hparam_selection
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest
+from agent_tools.hparam_postprocess import LogitExportRequest
 from agent_tools.models import REPO_ROOT
 
 _RUNTIME_COMMIT = subprocess.run(
@@ -551,7 +552,7 @@ def test_postprocess_relative_plan_dir_persists_absolute_management_paths(tmp_pa
     monkeypatch.chdir(tmp_path)
 
     external = hparam_postprocess.generate_external_eval("plan", selected, unlock_final_test=True)
-    logits = hparam_postprocess.export_hparam_logits("plan", selected, unlock_final_test=True)
+    logits = hparam_postprocess.export_hparam_logits("plan", selected, LogitExportRequest(unlock_final_test=True))
     threshold = hparam_postprocess.threshold_hparam_outputs("plan", selected)
     ensemble = hparam_postprocess.ensemble_hparam_outputs("plan", selected)
 
@@ -620,10 +621,7 @@ def test_hparam_postprocess_preflights_outputs_before_side_effects(tmp_path: Pat
             hparam_postprocess.generate_external_eval(plan_dir, selected, unlock_final_test=True)
         elif mutation in {"logits_ancestor", "logits_script"}:
             hparam_postprocess.export_hparam_logits(
-                plan_dir,
-                selected,
-                unlock_final_test=True,
-                execute=mutation == "logits_ancestor",
+                plan_dir, selected, LogitExportRequest(unlock_final_test=True, execute=mutation == "logits_ancestor")
             )
         elif mutation == "threshold_leaf":
             hparam_postprocess.threshold_hparam_outputs(plan_dir, selected)
@@ -988,10 +986,7 @@ def test_test_selected_postprocess_manifests_use_frozen_ranking_provenance(tmp_p
 
     hparam_postprocess.generate_external_eval(plan_dir, selected, unlock_final_test=True)
     logits_manifest = hparam_postprocess.export_hparam_logits(
-        plan_dir,
-        selected,
-        unlock_final_test=True,
-        skip_test=True,
+        plan_dir, selected, LogitExportRequest(unlock_final_test=True, skip_test=True)
     )
 
     for row in (
@@ -1109,9 +1104,7 @@ def test_test_selected_top_k_rehashes_only_retained_checkpoints(tmp_path: Path):
     ranking_path = _ranking_path(plan_dir)
     hparam_postprocess.generate_external_eval(plan_dir, ranking_path, unlock_final_test=True)
     logits_manifest = hparam_postprocess.export_hparam_logits(
-        plan_dir,
-        ranking_path,
-        unlock_final_test=True,
+        plan_dir, ranking_path, LogitExportRequest(unlock_final_test=True)
     )
     assert [row["run_id"] for row in _read_table(plan_dir / "external_eval_manifest.tsv")] == [
         frozen_by_rank["1"]["run_id"]
@@ -1201,10 +1194,7 @@ def test_hparam_export_logits_rejects_ssh_execution_before_writing(
 
     with pytest.raises(ValueError, match="hparam-export-logits does not support SSH execution targets"):
         hparam_postprocess.export_hparam_logits(
-            plan_dir,
-            selected,
-            unlock_final_test=True,
-            execute=execute,
+            plan_dir, selected, LogitExportRequest(unlock_final_test=True, execute=execute)
         )
 
     assert execution_calls == []
@@ -1933,12 +1923,7 @@ def test_hparam_export_logits_execute_uses_manifest_paths(tmp_path: Path, monkey
     monkeypatch.setattr(hparam_postprocess, "_run_logit_export", _fake_run_logit_export)
 
     manifest = hparam_postprocess.export_hparam_logits(
-        plan_dir,
-        selected,
-        unlock_final_test=True,
-        execute=True,
-        batch_size=4,
-        devices=[0],
+        plan_dir, selected, LogitExportRequest(unlock_final_test=True, execute=True, batch_size=4, devices=[0])
     )
 
     rows = _read_table(manifest)
@@ -1972,7 +1957,9 @@ def test_hparam_export_logits_does_not_commit_manifest_after_execution_failure(t
     monkeypatch.setattr(hparam_postprocess, "_run_logit_export", _fake_run_logit_export)
 
     with pytest.raises(RuntimeError, match="test export failed"):
-        hparam_postprocess.export_hparam_logits(plan_dir, selected, unlock_final_test=True, execute=True)
+        hparam_postprocess.export_hparam_logits(
+            plan_dir, selected, LogitExportRequest(unlock_final_test=True, execute=True)
+        )
 
     assert [call["eval_split"] for call in calls] == ["val", "test"]
     assert Path(calls[0]["output_path"]).exists()
