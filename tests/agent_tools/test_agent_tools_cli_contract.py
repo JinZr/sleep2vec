@@ -229,6 +229,28 @@ def test_cli_reports_expected_errors_as_one_line_and_exit_one(tmp_path: Path, ca
     assert captured.err == f"error: Missing hparam plan: {tmp_path / 'plan.json'}\n"
 
 
+def test_cli_reports_malformed_yaml_as_an_expected_error(tmp_path: Path, capsys):
+    config = tmp_path / "broken.yaml"
+    config.write_text("model: [unclosed\n")
+
+    assert cli.main(["config-summary", "--config", str(config)]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("error: ")
+    assert captured.err.count("\n") == 1
+
+
+def test_cli_folds_multiline_errors_into_one_line(monkeypatch, capsys):
+    def remote_failure():
+        raise RuntimeError("remote command failed:\nTraceback (most recent call last):\n  boom\n")
+
+    monkeypatch.setattr(cli, "repo_summary", remote_failure)
+
+    assert cli.main(["repo-summary", "--json"]) == 1
+    assert capsys.readouterr().err == "error: remote command failed: | Traceback (most recent call last): | boom\n"
+
+
 def test_cli_lets_programming_errors_raise(monkeypatch):
     def broken_summary():
         raise KeyError("missing field")

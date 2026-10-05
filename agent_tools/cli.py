@@ -24,6 +24,8 @@ import subprocess
 import sys
 from typing import Any
 
+import yaml
+
 from .adaptive_hparam import (
     AdaptivePreflightError,
     adaptive_loop,
@@ -92,10 +94,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return args.func(args)
-    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired, yaml.YAMLError) as exc:
         # Expected refusals (validation, missing artifacts, remote/scheduler failures) end as one
         # stderr line instead of a traceback, even under --json; programming errors such as KeyError still raise.
-        print(f"error: {exc}", file=sys.stderr)
+        # Remote stderr can be multiline, so line breaks are folded to keep the single-line contract.
+        message = " | ".join(line.strip() for line in str(exc).splitlines() if line.strip())
+        print(f"error: {message}", file=sys.stderr)
         return 1
 
 
@@ -925,11 +929,7 @@ def _cmd_experiment_init(args: argparse.Namespace) -> int:
 
 def _cmd_experiment_note(args: argparse.Namespace) -> int:
     if not Path(args.entry).is_file():
-        print(
-            "error: --entry must be an existing local YAML file path; inline text and stdin are not accepted.",
-            file=sys.stderr,
-        )
-        return 2
+        raise ValueError("--entry must be an existing local YAML file path; inline text and stdin are not accepted.")
     result = append_experiment_note(args.run_dir, args.entry, remote=args.remote)
     status = "appended" if result["appended"] else "already present"
     print(f"Research log {result['path']}: {result['entry_id']} {status}")
