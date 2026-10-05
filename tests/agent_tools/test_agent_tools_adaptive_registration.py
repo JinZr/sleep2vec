@@ -11,6 +11,7 @@ import yaml
 
 from agent_tools import (
     adaptive_hparam,
+    adaptive_replacement,
     adaptive_state,
     hparam_runtime,
     managed_scheduler,
@@ -1974,6 +1975,6 @@ def test_adaptive_stop_scan_ignores_header_only_legacy_projection(tmp_path: Path
     status_path.write_text("trial_id\tstatus\n")
     recipe = adaptive_hparam.load_recipe_with_base(recipe_path)
 
-    adaptive_hparam._stop_bad_running_runs(workflow_dir, round_dir, recipe)
+    adaptive_replacement._stop_bad_running_runs(workflow_dir, round_dir, recipe)
 
     assert status_path.read_text() == "trial_id\tstatus\n"

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import adaptive_hparam, hparam_runtime, manifests
+from agent_tools import adaptive_hparam, adaptive_replacement, hparam_runtime, manifests
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -42,7 +42,7 @@ def completed_history(tmp_path: Path, monkeypatch):
         )
         return launch_manifest
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     adaptive_hparam.adaptive_step(workflow, proposal_path=first_proposal, execute=True)
     second_run = json.loads((workflow / "adaptive" / "rounds" / "round_001" / "plan.json").read_text())["runs"][0]
     checkpoint_dir = Path(second_run["checkpoint_dir"])

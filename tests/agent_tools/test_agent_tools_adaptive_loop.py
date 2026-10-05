@@ -7,7 +7,15 @@ import shlex
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, adaptive_state, hparam_runtime, manifests, python_programs, run_evidence
+from agent_tools import (
+    adaptive_hparam,
+    adaptive_replacement,
+    adaptive_state,
+    hparam_runtime,
+    manifests,
+    python_programs,
+    run_evidence,
+)
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -81,8 +89,8 @@ def test_best_neighborhood_step_replaces_bad_running_run_before_round_terminal(t
             call_order.append("commit")
         real_append_event(root, event_type, payload)
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
-    monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "stop_hparam_run", fake_stop)
     monkeypatch.setattr(adaptive_state, "append_event", record_launch_round)
 
     adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -139,7 +147,7 @@ def test_adaptive_step_refreshes_terminal_blocker_before_launching_replacement_o
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: digest)
     stopped = []
     call_order = []
-    real_launch = adaptive_hparam.launch_hparam_runs
+    real_launch = adaptive_replacement.launch_hparam_runs
     real_append_event = adaptive_state.append_event
 
     def record_launch(run_dir, *, dry_run=True):
@@ -170,8 +178,8 @@ def test_adaptive_step_refreshes_terminal_blocker_before_launching_replacement_o
             call_order.append("launch_round")
         real_append_event(root, event_type, payload)
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", record_launch)
-    monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", record_launch)
+    monkeypatch.setattr(adaptive_replacement, "stop_hparam_run", fake_stop)
     monkeypatch.setattr(adaptive_state, "append_event", record_event)
 
     adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -217,7 +225,7 @@ def test_adaptive_step_zero_start_after_drain_keeps_old_round_authoritative(
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
     monkeypatch.setattr(
-        adaptive_hparam,
+        adaptive_replacement,
         "_bad_running_run_keys",
         lambda *_args: {adaptive_hparam.managed_run_key(run) for run in current_runs},
     )
@@ -251,8 +259,8 @@ def test_adaptive_step_zero_start_after_drain_keeps_old_round_authoritative(
         )
         return Path(run_dir) / "run_status.tsv"
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
-    monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "stop_hparam_run", fake_stop)
 
     error = (
         r"launch failed after the stop attempt for run-000.*was not committed"
@@ -304,7 +312,7 @@ def test_adaptive_step_mixed_launch_failure_after_drain_stops_no_additional_run(
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
     monkeypatch.setattr(
-        adaptive_hparam,
+        adaptive_replacement,
         "_bad_running_run_keys",
         lambda *_args: {adaptive_hparam.managed_run_key(run) for run in current_runs},
     )
@@ -341,8 +349,8 @@ def test_adaptive_step_mixed_launch_failure_after_drain_stops_no_additional_run(
         )
         return Path(run_dir) / "run_status.tsv"
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
-    monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "stop_hparam_run", fake_stop)
 
     with pytest.raises(RuntimeError, match=r"launch failed.*already committed"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -371,7 +379,7 @@ def test_adaptive_step_commits_canonical_start_when_drain_launcher_raises(tmp_pa
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
     monkeypatch.setattr(
-        adaptive_hparam,
+        adaptive_replacement,
         "_bad_running_run_keys",
         lambda *_args: {adaptive_hparam.managed_run_key(current_run)},
     )
@@ -404,8 +412,8 @@ def test_adaptive_step_commits_canonical_start_when_drain_launcher_raises(tmp_pa
         )
         return Path(run_dir) / "run_status.tsv"
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
-    monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "stop_hparam_run", fake_stop)
 
     with pytest.raises(RuntimeError, match=r"launch failed after the stop attempt.*already committed"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -433,7 +441,7 @@ def test_adaptive_step_reconciles_pid_after_post_drain_commit_failure(tmp_path: 
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
     monkeypatch.setattr(
-        adaptive_hparam,
+        adaptive_replacement,
         "_bad_running_run_keys",
         lambda *_args: {adaptive_hparam.managed_run_key(current_run)},
     )
@@ -480,8 +488,8 @@ def test_adaptive_step_reconciles_pid_after_post_drain_commit_failure(tmp_path: 
     monkeypatch.setattr(hparam_runtime, "_start_process", start_with_pid)
     monkeypatch.setattr(hparam_runtime.evidence, "process_identity_running", lambda *_args: True)
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", fail_post_start_commit)
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", launch_after_drain)
-    monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", launch_after_drain)
+    monkeypatch.setattr(adaptive_replacement, "stop_hparam_run", fake_stop)
 
     with pytest.raises(RuntimeError, match=r"launch failed after the stop attempt.*already committed"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -541,7 +549,7 @@ def test_adaptive_step_second_handoff_failure_does_not_stop_third_bad_run(tmp_pa
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
     monkeypatch.setattr(
-        adaptive_hparam,
+        adaptive_replacement,
         "_bad_running_run_keys",
         lambda *_args: {adaptive_hparam.managed_run_key(run) for run in current_runs},
     )
@@ -590,8 +598,8 @@ def test_adaptive_step_second_handoff_failure_does_not_stop_third_bad_run(tmp_pa
         )
         return Path(run_dir) / "run_status.tsv"
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
-    monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "stop_hparam_run", fake_stop)
 
     with pytest.raises(RuntimeError, match=r"started no additional runs after stopping run-001.*already committed"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -635,7 +643,7 @@ def test_adaptive_step_stop_failure_does_not_relaunch_or_stop_another_run(
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
     monkeypatch.setattr(
-        adaptive_hparam,
+        adaptive_replacement,
         "_bad_running_run_keys",
         lambda *_args: {adaptive_hparam.managed_run_key(run) for run in current_runs},
     )
@@ -667,8 +675,8 @@ def test_adaptive_step_stop_failure_does_not_relaunch_or_stop_another_run(
             )
         raise RuntimeError("stop failed")
 
-    monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
-    monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", failing_stop)
+    monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
+    monkeypatch.setattr(adaptive_replacement, "stop_hparam_run", failing_stop)
 
     with pytest.raises(
         RuntimeError,
@@ -711,8 +719,8 @@ def test_adaptive_step_execute_at_budget_keeps_current_runs_unchanged(tmp_path: 
     calls = []
 
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: digest)
-    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", lambda *_args, **_kwargs: calls.append("stop"))
-    monkeypatch.setattr(adaptive_hparam, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
+    monkeypatch.setattr(adaptive_replacement, "_stop_bad_running_runs", lambda *_args, **_kwargs: calls.append("stop"))
+    monkeypatch.setattr(adaptive_replacement, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
     before = (tmp_path / "run_manifest.tsv").read_bytes()
 
     suggestion = adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -748,8 +756,8 @@ def test_adaptive_step_checks_prospective_round_size_against_run_budget(tmp_path
     manifests.write_rows(digest, [{**run, "test_auroc": 0.73}])
     calls = []
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: digest)
-    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", lambda *_args, **_kwargs: calls.append("stop"))
-    monkeypatch.setattr(adaptive_hparam, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
+    monkeypatch.setattr(adaptive_replacement, "_stop_bad_running_runs", lambda *_args, **_kwargs: calls.append("stop"))
+    monkeypatch.setattr(adaptive_replacement, "_supersede_pending_runs", lambda *_args: calls.append("supersede"))
     registry = workflow_dir / "adaptive" / "run_registry.tsv"
     registry_before = registry.read_bytes()
 
@@ -863,9 +871,9 @@ def test_running_stop_passes_remote_status_row_to_failure_log_check(tmp_path: Pa
         return Path(run_dir) / "run_status.tsv"
 
     monkeypatch.setattr(run_evidence, "log_has_failure", fake_log_has_failure)
-    monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
+    monkeypatch.setattr(adaptive_replacement, "stop_hparam_run", fake_stop)
 
-    confirmed = adaptive_hparam._stop_bad_running_runs(
+    confirmed = adaptive_replacement._stop_bad_running_runs(
         workflow_dir, round_dir, adaptive_hparam.load_recipe_with_base(recipe)
     )
 
@@ -887,7 +895,7 @@ def test_async_slurm_stop_consumes_credit_without_launching_before_confirmation(
         {"step_id": step_id, "run_id": run_id, "status": "running", "scheduler_type": "slurm"}
         for step_id, run_id in bad_keys
     ]
-    state = adaptive_hparam._ReplacementState(
+    state = adaptive_replacement._ReplacementState(
         next_round=1,
         next_dir=tmp_path / "round_001",
         next_plan_keys={pending_key},
@@ -910,15 +918,15 @@ def test_async_slurm_stop_consumes_credit_without_launching_before_confirmation(
         )
         return []
 
-    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: [pending_row, *bad_rows])
-    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", request_stop)
+    monkeypatch.setattr(adaptive_replacement, "read_run_manifest", lambda _workspace: [pending_row, *bad_rows])
+    monkeypatch.setattr(adaptive_replacement, "_stop_bad_running_runs", request_stop)
     monkeypatch.setattr(
-        adaptive_hparam,
+        adaptive_replacement,
         "_launch_with_recovery",
         lambda *_args, **_kwargs: pytest.fail("replacement must wait for scheduler cancellation confirmation"),
     )
 
-    rows = adaptive_hparam._drain_bad_runs(
+    rows = adaptive_replacement._drain_bad_runs(
         tmp_path,
         tmp_path,
         state,
@@ -940,7 +948,7 @@ def test_async_slurm_stop_consumes_credit_without_launching_before_confirmation(
 def test_async_slurm_stop_dispatch_error_does_not_request_later_runs(tmp_path: Path, monkeypatch):
     bad_keys = [("train-model", f"run-{index:03d}") for index in range(2)]
     bad_rows = [{"step_id": step_id, "run_id": run_id, "status": "running"} for step_id, run_id in bad_keys]
-    state = adaptive_hparam._ReplacementState(
+    state = adaptive_replacement._ReplacementState(
         next_round=1,
         next_dir=tmp_path / "round_001",
         next_plan_keys=set(),
@@ -964,11 +972,11 @@ def test_async_slurm_stop_dispatch_error_does_not_request_later_runs(tmp_path: P
         )
         raise RuntimeError("scancel failed")
 
-    monkeypatch.setattr(adaptive_hparam, "read_run_manifest", lambda _workspace: bad_rows)
-    monkeypatch.setattr(adaptive_hparam, "_stop_bad_running_runs", fail_after_intent)
+    monkeypatch.setattr(adaptive_replacement, "read_run_manifest", lambda _workspace: bad_rows)
+    monkeypatch.setattr(adaptive_replacement, "_stop_bad_running_runs", fail_after_intent)
 
     with pytest.raises(RuntimeError, match="failed while stopping run-000"):
-        adaptive_hparam._drain_bad_runs(
+        adaptive_replacement._drain_bad_runs(
             tmp_path,
             tmp_path,
             state,
@@ -1005,7 +1013,7 @@ def test_metric_based_running_stop_honors_grace(tmp_path: Path, monkeypatch):
         stopped.append((Path(run_dir), run_id))
         return Path(run_dir) / "run_status.tsv"
 
-    monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
+    monkeypatch.setattr(adaptive_replacement, "stop_hparam_run", fake_stop)
 
     (run_dir / "run_manifest.json").write_text(json.dumps({"epoch": 0, "metrics": {"test_auroc": 0.6}}))
     merge_run_manifest(
@@ -1028,7 +1036,7 @@ def test_metric_based_running_stop_honors_grace(tmp_path: Path, monkeypatch):
     )
     recipe_data = adaptive_hparam.load_recipe_with_base(recipe)
 
-    adaptive_hparam._stop_bad_running_runs(workflow_dir, round_dir, recipe_data)
+    adaptive_replacement._stop_bad_running_runs(workflow_dir, round_dir, recipe_data)
 
     assert stopped == []
     (run_dir / "run_manifest.json").write_text(json.dumps({"epoch": 2, "metrics": {"test_auroc": 0.6}}))
@@ -1044,7 +1052,7 @@ def test_metric_based_running_stop_honors_grace(tmp_path: Path, monkeypatch):
         ],
     )
 
-    adaptive_hparam._stop_bad_running_runs(workflow_dir, round_dir, recipe_data)
+    adaptive_replacement._stop_bad_running_runs(workflow_dir, round_dir, recipe_data)
 
     assert stopped == [(round_dir, "run-000")]
 
@@ -1121,7 +1129,7 @@ def test_test_selected_running_replacement_ignores_checkpoint_objective_until_su
         ],
     )
 
-    bad_keys = adaptive_hparam._bad_running_run_keys(
+    bad_keys = adaptive_replacement._bad_running_run_keys(
         workflow_dir,
         round_dir,
         adaptive_hparam.load_recipe_with_base(recipe),
@@ -1200,7 +1208,7 @@ def test_test_selected_running_replacement_distinguishes_checkpoint_and_run_leve
         ],
     )
 
-    bad_keys = adaptive_hparam._bad_running_run_keys(
+    bad_keys = adaptive_replacement._bad_running_run_keys(
         workflow_dir,
         round_dir,
         adaptive_hparam.load_recipe_with_base(recipe),
