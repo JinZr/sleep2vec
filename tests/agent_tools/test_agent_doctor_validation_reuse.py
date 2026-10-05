@@ -216,7 +216,9 @@ def test_valid_user_search_override_reaches_normal_config_validation(tmp_path, c
 
 @pytest.mark.parametrize("entrypoint", ["doctor", "plan"])
 @pytest.mark.parametrize("value", [date(2026, 8, 31), datetime(2026, 8, 31, tzinfo=timezone.utc), b"binary metadata"])
-def test_non_json_yaml_values_fail_before_config_or_outputs(tmp_path, monkeypatch, csv_reads, entrypoint, value):
+def test_non_json_yaml_values_fail_before_config_or_outputs(
+    tmp_path, monkeypatch, capsys, csv_reads, entrypoint, value
+):
     recipe_path = _sidecar_recipe(tmp_path, "survival")
     payload = yaml.safe_load(recipe_path.read_text())
     payload["experiment"]["baseline"]["note"] = value
@@ -226,11 +228,12 @@ def test_non_json_yaml_values_fail_before_config_or_outputs(tmp_path, monkeypatc
 
     with monkeypatch.context() as guarded:
         _forbid_config_reads(guarded, tmp_path / "config.yaml")
-        with pytest.raises(ValueError, match="JSON") as caught:
-            cli.main(args)
+        assert cli.main(args) == 1
 
-    assert str(recipe_path) in str(caught.value)
-    assert "quot" in str(caught.value).lower()
+    _, marker, error = ("\n" + capsys.readouterr().err).partition("\nerror: ")
+    assert marker and "JSON" in error
+    assert str(recipe_path) in error
+    assert "quot" in error.lower()
     assert not csv_reads
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 

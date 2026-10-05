@@ -221,6 +221,71 @@ def test_experiment_status_cli_contract():
     assert args.json is False
 
 
+def test_cli_reports_expected_errors_as_one_line_and_exit_one(tmp_path: Path, capsys):
+    assert cli.main(["hparam-monitor", "--run-dir", str(tmp_path)]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"error: Missing hparam plan: {tmp_path / 'plan.json'}\n"
+
+
+def test_cli_reports_malformed_yaml_as_an_expected_error(tmp_path: Path, capsys):
+    config = tmp_path / "broken.yaml"
+    config.write_text("model: [unclosed\n")
+
+    assert cli.main(["config-summary", "--config", str(config)]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("error: ")
+    assert captured.err.count("\n") == 1
+
+
+def test_cli_folds_multiline_errors_into_one_line(monkeypatch, capsys):
+    def remote_failure():
+        raise RuntimeError("remote command failed:\nTraceback (most recent call last):\n  boom\n")
+
+    monkeypatch.setattr(cli, "repo_summary", remote_failure)
+
+    assert cli.main(["repo-summary", "--json"]) == 1
+    assert capsys.readouterr().err == "error: remote command failed: | Traceback (most recent call last): | boom\n"
+
+
+def test_cli_reports_failed_subprocesses_as_expected_errors(monkeypatch, capsys):
+    def failed_remote_command():
+        raise subprocess.CalledProcessError(255, ["ssh", "host", "mkdir"])
+
+    monkeypatch.setattr(cli, "repo_summary", failed_remote_command)
+
+    assert cli.main(["repo-summary", "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: Command '['ssh', 'host', 'mkdir']' returned non-zero exit status 255.\n"
+
+
+def test_doctor_refusal_ends_stderr_with_the_error_line(tmp_path: Path, capsys):
+    missing = tmp_path / "missing.yaml"
+
+    assert cli.main(["doctor", "--recipe", str(missing), "--output-dir", str(tmp_path / "doctor")]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    lines = captured.err.splitlines()
+    assert lines[0].startswith("Doctor started:")
+    assert lines[-1].startswith("error: ") and str(missing) in lines[-1]
+    assert sum(line.startswith("error: ") for line in lines) == 1
+
+
+def test_cli_lets_programming_errors_raise(monkeypatch):
+    def broken_summary():
+        raise KeyError("missing field")
+
+    monkeypatch.setattr(cli, "repo_summary", broken_summary)
+
+    with pytest.raises(KeyError, match="missing field"):
+        cli.main(["repo-summary", "--json"])
+
+
 def test_runtime_sync_cli_defaults_to_dry_run_and_documents_in_place_fast_forward(monkeypatch):
     parser, subcommands = _parser_contract()
     runtime_sync = subcommands["runtime-sync"]

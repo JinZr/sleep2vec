@@ -144,7 +144,7 @@ def test_experiment_note_cli_rejects_non_file_entry_without_mutation(
 
     result = _run(*args)
 
-    assert result.returncode == 2
+    assert result.returncode == 1
     assert "--entry must be an existing local YAML file path" in result.stderr
     assert "Traceback" not in result.stdout
     assert "Traceback" not in result.stderr

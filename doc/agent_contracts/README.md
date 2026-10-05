@@ -20,6 +20,14 @@ Monitors (`experiment-monitor`, `hparam-monitor`) refresh observations and never
 [stop-and-consult policy](../../AGENTS.md#agent-stop-and-consult-policy) separates concept
 planning, publication (steps 3–4) and launch (step 5).
 
+An expected refusal (validation, malformed YAML, a missing artifact, a remote, subprocess or
+scheduler failure) ends the command with exit 1 and one `error: <message>` line as the last stderr
+line, also under `--json`, so stdout carries only results; embedded line breaks are folded into
+` | `. Progress lines a command already printed to stderr, such as `doctor`'s phases, may precede
+it. Exit 2 means
+only `NEEDS_USER_INPUT` from a consultation command, or an argparse usage error (or no subcommand).
+Other exceptions are bugs and keep their traceback.
+
 ## Find the next action
 
 | Question | Read |
