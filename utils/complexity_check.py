@@ -31,10 +31,8 @@ audit at once, since both read the same configured flake8 -- the file-level
 blindness this check exists to rule out, arriving through the config instead.
 
 Growth still needs a human to extend ``SUPPRESSION_LEDGER`` or
-``PROGRAM_LEDGER``, which is a reviewed diff rather than a silent comment --
-weaker than the base-revision diff in ``utils/type_check.py``, and deliberately
-so, since that ratchet needs CI to pass a base sha and this check runs in the
-style job, which has no such plumbing.
+``PROGRAM_LEDGER``, which is a reviewed diff rather than a silent comment, as
+with the ``Any`` ledger in ``utils/type_check.py``.
 """
 
 from __future__ import annotations

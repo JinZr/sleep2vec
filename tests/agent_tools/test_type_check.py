@@ -1,4 +1,4 @@
-"""Guard the unsuppressed, single-pass mypy wrapper contract."""
+"""Guard the unsuppressed, single-pass mypy wrapper and its shrink-only Any ledger."""
 
 from __future__ import annotations
 
@@ -37,6 +37,8 @@ def test_runs_mypy_once_with_explicit_config_and_preserves_exit_status(tmp_path,
         '[tool.mypy]\nfiles = ["agent_tools"]\nignore_errors = false\n'
         '[[tool.mypy.overrides]]\nmodule = "yaml.*"\nignore_missing_imports = true\nignore_errors = false\n'
     )
+    (tmp_path / "agent_tools").mkdir()
+    monkeypatch.setattr(type_check, "ANY_LEDGER", {"Any": 0, "dict[str, Any]": 0})
     calls = []
 
     def run(args, **kwargs):
@@ -47,6 +49,48 @@ def test_runs_mypy_once_with_explicit_config_and_preserves_exit_status(tmp_path,
 
     assert type_check.main([]) == returncode
     assert calls == [([sys.executable, "-m", "mypy", "--config-file", str(type_check.PYPROJECT)], {})]
+
+
+SPELLINGS = """\
+from typing import Any, Mapping
+import typing
+
+counted: Any
+attribute: typing.Any
+payload: dict[str, Any]
+read_only: Mapping[str, Any]
+narrow: dict[str, int]
+text = "Any"  # Any in a string or a comment is not a spelling.
+"""
+
+
+@pytest.mark.parametrize(
+    ("ledger", "returncode", "report"),
+    [
+        ({"Any": 4, "dict[str, Any]": 1}, 0, "Any ledger: 4 Any, 1 dict[str, Any], as recorded."),
+        ({"Any": 3, "dict[str, Any]": 1}, 1, "Any: found 4, ledger 3. The ledger only shrinks"),
+        ({"Any": 4, "dict[str, Any]": 2}, 1, "Lower ANY_LEDGER['dict[str, Any]'] to 1 in this commit."),
+    ],
+)
+def test_any_ledger_must_match_the_explicit_spellings_and_mypy_still_runs(
+    tmp_path, monkeypatch, capsys, ledger, returncode, report
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pyproject.toml").write_text('[tool.mypy]\nfiles = ["agent_tools"]\n')
+    (tmp_path / "agent_tools" / "nested").mkdir(parents=True)
+    (tmp_path / "agent_tools" / "nested" / "module.py").write_text(SPELLINGS)
+    monkeypatch.setattr(type_check, "ANY_LEDGER", ledger)
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(type_check.subprocess, "run", run)
+
+    assert type_check.main([]) == returncode
+    assert calls == [[sys.executable, "-m", "mypy", "--config-file", str(type_check.PYPROJECT)]]
+    assert report in capsys.readouterr().out
 
 
 def test_removed_base_option_is_rejected_before_mypy(monkeypatch, capsys):
