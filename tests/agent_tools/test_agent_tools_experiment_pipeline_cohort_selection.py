@@ -10,6 +10,7 @@ import yaml
 
 from agent_tools import (
     experiment_pipeline,
+    experiment_pipeline_attempts as pipeline_attempts,
     experiment_pipeline_cohort_selection as cohort_selection,
     experiment_pipeline_spec as pipeline_spec,
 )
@@ -341,7 +342,7 @@ def test_frozen_winner_is_hash_bound_and_tamper_evident(tmp_path: Path, monkeypa
     spec = _spec(tmp_path)
     candidates = _candidates(tmp_path)
     evidence = _evidence(tmp_path, {"age-rank-001": 4.9, "age-rank-002": 4.1})
-    monkeypatch.setattr(experiment_pipeline, "_reconcile_pipeline_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_attempts, "reconcile_pipeline_event", lambda *_args, **_kwargs: None)
 
     _ranking, decision = experiment_pipeline._load_or_freeze_cohort_decision(
         tmp_path,
@@ -548,8 +549,8 @@ def test_report_only_phase_is_built_from_the_frozen_winner(tmp_path: Path, monke
     monkeypatch.setattr(experiment_pipeline.pipeline_results, "write_cohort_result_summary", write_summary)
     monkeypatch.setattr(experiment_pipeline, "_update_state", lambda *_args, **kwargs: states.append(kwargs))
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_reconcile_pipeline_event",
+        pipeline_attempts,
+        "reconcile_pipeline_event",
         lambda _root, event_type, _payload, **_kwargs: completion_order.append(event_type),
     )
 
@@ -620,7 +621,7 @@ def test_completed_cohort_pipeline_reconciles_completion_event_before_finalizati
     def finalize(_root, _report):
         events = [
             event
-            for event in experiment_pipeline.read_experiment_events(root)
+            for event in pipeline_attempts.read_experiment_events(root)
             if event.get("event_type") == "pipeline_completed"
         ]
         assert len(events) == 1
