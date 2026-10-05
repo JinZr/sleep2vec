@@ -152,8 +152,8 @@ The same guard scans every `adapters/` module and rejects imports into the
 | Source → Target | Layer | Why tolerated | Future removal |
 |---|---|---|---|
 | `configs → domain.finetune_summary` | L2 → domain | configs shell delegates the generic finetune summary body | Would need a registry/provider indirection for the finetune-family summary |
-| `plan_context → domain.presets` | L2 → domain | preset summary in plan context | Route through an adapter hook |
-| `plan_context → domain.index_csv` | L2 → domain | index summary in plan context | Route through an adapter hook |
+| `plan_context → domain.presets` | L2 → domain | preset summary in plan context; task-independent with one implementation, adapters vary only its inputs via `effective_preset_path` | None planned: a per-task hook would only forward to the same function |
+| `plan_context → domain.index_csv` | L2 → domain | index summary in plan context; task-independent with one implementation, adapters vary only its inputs via `index_summary_inputs_override` | None planned: a per-task hook would only forward to the same function |
 | `cli → domain.presets` | mixed → domain | `preset-summary` command | Domain CLI split |
 | `cli → domain.index_csv` | mixed → domain | `index-summary` command | Domain CLI split |
 | `domain.index_csv → configs` | domain → L2 | index_csv is a config-summary consumer, not a leaf; configs never imports it back, so the edge is one-way | Would need index summary to take config_summary as an argument |
