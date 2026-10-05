@@ -10,7 +10,8 @@ def test_result_types_reach_callers(tmp_path: Path):
         textwrap.dedent("""\
             from pathlib import Path
             from agent_tools import (
-                adaptive_evidence, adaptive_hparam, adaptive_state, checkpoint_test_results, experiment_tracking,
+                adaptive_evidence, adaptive_handshake, adaptive_hparam, adaptive_state,
+                checkpoint_test_results, experiment_tracking,
                 experiments,
                 experiment_io, experiment_sources, experiment_workspace, hparam_runtime, hparam_selection,
                 managed_scheduler, models, experiment_pipeline, experiment_pipeline_results,
@@ -339,11 +340,11 @@ def test_result_types_reach_callers(tmp_path: Path):
                 requested: experiment_workspace.AdaptiveProposalRequestedEvent,
                 accepted: experiment_workspace.AdaptiveProposalAcceptedEvent,
                 workflow: adaptive_state.InitialAdaptiveWorkflow,
-                accepted_payload: adaptive_hparam.AcceptedProposalPayload,
+                accepted_payload: adaptive_handshake.AcceptedProposalPayload,
             ) -> None:
-                snapshot = adaptive_hparam._agent_proposal_input_payload(Path("/workflow"), {}, {}, [])
+                snapshot = adaptive_handshake._agent_proposal_input_payload(Path("/workflow"), {}, {}, [])
                 snapshot["source_config_sha256"] = None  # type: ignore[typeddict-item]
-                generated_binding = adaptive_hparam._proposal_request_event_fields(
+                generated_binding = adaptive_handshake._proposal_request_event_fields(
                     proposal_document, Path("/input"), "a" * 64, Path("/proposal"),
                 )
                 generated_binding["target_round"] = "1"  # type: ignore[typeddict-item]

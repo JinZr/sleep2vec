@@ -3,14 +3,15 @@
 Owns the ``adaptive/`` layout under a workflow root: round directories, the
 frozen ``workflow.json`` payload, the append-only ``run_registry.tsv``, the
 workflow's experiment events, and reconciliation of a launch that was
-interrupted before its round was committed, plus the recipe's adaptive settings
-and workflow objective accessors. ``adaptive_hparam`` drives the
+interrupted before its round was committed, plus the recipe's adaptive settings,
+suggest strategy and workflow objective accessors and the round-terminal check
+over that state. ``adaptive_hparam`` drives the
 digest, proposal, registration and launch steps on top of this state.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import csv
 import io
 import json
@@ -27,7 +28,9 @@ from . import (
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
+from .decision_hparam import DEFAULT_ADAPTIVE_SUGGEST_STRATEGY
 from .experiment_workspace import (
+    TERMINAL_STATUSES,
     AdaptiveEventPayload,
     AdaptiveInitEvent,
     PlanCreatedEvent,
@@ -130,6 +133,22 @@ def workflow_objective(root: Path, recipe: dict[str, Any]) -> adaptive_proposals
         "metric": str(workflow.get("objective_metric") or adaptive.get("objective_metric") or "test_auroc"),
         "mode": str(workflow.get("objective_mode") or adaptive.get("objective_mode") or "max"),
     }
+
+
+def suggest_strategy(recipe: dict[str, Any]) -> str:
+    suggest = adaptive_settings(recipe).get("suggest")
+    if not isinstance(suggest, dict):
+        return DEFAULT_ADAPTIVE_SUGGEST_STRATEGY
+    return str(suggest.get("strategy", DEFAULT_ADAPTIVE_SUGGEST_STRATEGY))
+
+
+def round_is_terminal(
+    round_dir: Path, workspace: Path, *, read_run_manifest: Callable[[Path], list[dict[str, str]]]
+) -> bool:
+    plan = artifacts.read_hparam_plan(round_dir)
+    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    run_keys = [managed_run_key(run) for run in plan.get("runs", [])]
+    return bool(run_keys) and all(canonical_by_key.get(key, {}).get("status") in TERMINAL_STATUSES for key in run_keys)
 
 
 def validate_workflow_payload(

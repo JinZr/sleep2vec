@@ -77,6 +77,10 @@ def merge_recipe_layers(base: dict[str, Any], override: dict[str, Any]) -> dict[
     return merged
 
 
+def strip_internal_recipe_keys(recipe: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in recipe.items() if not str(key).startswith("_")}
+
+
 def _resolve_base_recipe_path(base_path: str | Path, recipe_path: Path | None) -> Path | str:
     candidate = Path(base_path).expanduser()
     if candidate.is_absolute() or recipe_path is None:

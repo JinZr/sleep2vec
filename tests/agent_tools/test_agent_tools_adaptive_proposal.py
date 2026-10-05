@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from agent_tools import (
+    adaptive_handshake,
     adaptive_hparam,
     adaptive_proposals,
     adaptive_replacement,
@@ -17,7 +18,7 @@ from agent_tools import (
     manifests,
     run_evidence,
 )
-from agent_tools.experiment_workspace import merge_run_manifest
+from agent_tools.experiment_workspace import append_event, merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
     _adaptive_recipe,
@@ -796,14 +797,14 @@ def test_agent_proposal_execute_replay_blocks_later_committed_failure(
         "suggestion": str(workflow_dir / "adaptive" / "suggestions" / "round_002.yaml"),
         "suggestion_sha256": "4" * 64,
     }
-    adaptive_hparam._write_experiment_event(tmp_path, "agent_proposal_accepted", later_event)
-    adaptive_hparam._write_experiment_event(
+    append_event(tmp_path, "agent_proposal_accepted", later_event)
+    append_event(
         tmp_path,
         "launch_round",
         {"round": 2, "round_dir": str(later_dir)},
     )
     if write_completion:
-        adaptive_hparam._write_experiment_event(tmp_path, "agent_proposal_execute_completed", later_event)
+        append_event(tmp_path, "agent_proposal_execute_completed", later_event)
 
     with pytest.raises(ValueError, match=error):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
@@ -942,7 +943,7 @@ def test_agent_proposal_execute_replay_rechecks_protocol_files(tmp_path: Path, m
 
     monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
-    load_input = adaptive_hparam._load_agent_proposal_input
+    load_input = adaptive_handshake._load_agent_proposal_input
 
     def change_proposal_after_input_validation(*args, **kwargs):
         result = load_input(*args, **kwargs)
@@ -951,7 +952,7 @@ def test_agent_proposal_execute_replay_rechecks_protocol_files(tmp_path: Path, m
         proposal_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
         return result
 
-    monkeypatch.setattr(adaptive_hparam, "_load_agent_proposal_input", change_proposal_after_input_validation)
+    monkeypatch.setattr(adaptive_handshake, "_load_agent_proposal_input", change_proposal_after_input_validation)
 
     with pytest.raises(ValueError, match="changed during replay validation"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
