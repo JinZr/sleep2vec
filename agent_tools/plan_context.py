@@ -1,8 +1,10 @@
 """Diagnostic context bundles: what an agent is shown before any plan exists.
 
-Layer 2 kernel, mixed bridge -- it imports ``domain.presets`` and the
-``index_csv`` shim directly, both of which should eventually route through an
-adapter hook.
+Layer 2 kernel, mixed bridge -- it imports ``domain.presets`` and
+``domain.index_csv`` directly. Both summaries run for every task with one
+implementation, so they stay direct imports rather than per-task adapter hooks;
+adapters only vary their inputs (``effective_preset_path``,
+``index_summary_inputs_override``).
 
 Everything it emits is diagnostic. A context bundle never authorizes a runnable
 command; only ``plans`` publication does.

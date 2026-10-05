@@ -10,7 +10,7 @@ def test_result_types_reach_callers(tmp_path: Path):
         textwrap.dedent("""\
             from pathlib import Path
             from agent_tools import (
-                adaptive_hparam, checkpoint_test_results, experiment_tracking, experiments,
+                adaptive_hparam, adaptive_state, checkpoint_test_results, experiment_tracking, experiments,
                 experiment_io, experiment_sources, experiment_workspace, hparam_runtime, hparam_selection,
                 managed_scheduler, models, experiment_pipeline, experiment_pipeline_results,
                 experiment_pipeline_cohort_selection,
@@ -337,7 +337,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 binding: experiment_workspace.AdaptiveProposalRequestBinding,
                 requested: experiment_workspace.AdaptiveProposalRequestedEvent,
                 accepted: experiment_workspace.AdaptiveProposalAcceptedEvent,
-                workflow: adaptive_hparam.InitialAdaptiveWorkflow,
+                workflow: adaptive_state.InitialAdaptiveWorkflow,
                 accepted_payload: adaptive_hparam.AcceptedProposalPayload,
             ) -> None:
                 snapshot = adaptive_hparam._agent_proposal_input_payload(Path("/workflow"), {}, {}, [])
@@ -352,7 +352,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 binding["input_sha256"] = None  # type: ignore[typeddict-item]
                 requested["digest"] = Path("/digest")  # type: ignore[typeddict-item]
                 accepted["suggestion_sha256"] = None  # type: ignore[typeddict-item]
-                created = adaptive_hparam._plan_event(Path("/round"), {"recipe": {"step": {"id": None}}})
+                created = adaptive_state.plan_created_payload(Path("/round"), {"recipe": {"step": {"id": None}}})
                 created["step_id"] = None
                 created["run_count"] = "1"  # type: ignore[typeddict-item]
                 for event_payload in (initialized, requested, accepted, created):
@@ -363,11 +363,11 @@ def test_result_types_reach_callers(tmp_path: Path):
                 readonly_event = MappingProxyType(raw_event)
                 experiment_workspace.event_matches({}, "event", readonly_event)
                 experiment_workspace.append_event(Path("/workspace"), "event", readonly_event)  # type: ignore[arg-type]
-                typed_workflow = adaptive_hparam._validate_workflow_payload(Path("/workflow"), workflow)
+                typed_workflow = adaptive_state.validate_workflow_payload(Path("/workflow"), workflow)
                 typed_workflow["external_optimized"] = False  # type: ignore[typeddict-item]
                 typed_workflow["recipe_path"] = None  # type: ignore[typeddict-item]
                 raw_workflow: dict[str, Any] = {"custom": None, "objective_metric": None}
-                retained_workflow: dict[str, Any] = adaptive_hparam._validate_workflow_payload(
+                retained_workflow: dict[str, Any] = adaptive_state.validate_workflow_payload(
                     Path("/workflow"), raw_workflow,
                 )
                 retained_workflow["unknown"] = {"nested": None}

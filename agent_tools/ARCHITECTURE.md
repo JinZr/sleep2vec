@@ -29,13 +29,13 @@ ownership claims or accuracy. This section is the
 split a concern between them — that no single docstring can state. When the two
 disagree, the docstring is next to the code and wins; fix this document.
 
-### Kernel — reusable (36, zero domain signal)
+### Kernel — reusable (37, zero domain signal)
 decision_models, transport, python_programs, manifests, schema_map, gpu_rules, repo,
 runtime_lock, runtime_sync,
 experiment_io, research_log, experiment_workspace, experiment_sources,
 experiment_tracking, experiments,
 run_artifacts, run_evidence, checkpoint_test_results, hparam, hparam_runtime, hparam_selection,
-adaptive_hparam, adaptive_proposals, recipes, progress, markdown, skills,
+adaptive_hparam, adaptive_proposals, adaptive_state, recipes, progress, markdown, skills,
 decisions, plans, plan_contract, decision_rules, managed_scheduler, slurm,
 experiment_pipeline, experiment_pipeline_cohort_selection, experiment_pipeline_results.
 
@@ -50,8 +50,11 @@ one existing checkout. It shares `runtime_lock` with launch paths so an update
 cannot cross the short HEAD-observation-to-process-start critical section.
 
 `adaptive_proposals` owns the pure snapshot, parameter-envelope, and external
-submission-validation contract. `adaptive_hparam` owns the surrounding digest,
-preflight, round registration, launch, and lifecycle orchestration.
+submission-validation contract. `adaptive_state` owns the workflow's durable
+state: round layout, frozen `workflow.json`, `run_registry.tsv`, workflow events,
+and recovery of a launch interrupted before its round committed.
+`adaptive_hparam` owns the surrounding digest, preflight, round registration,
+launch, and lifecycle orchestration over that state.
 
 `checkpoint_test_results` owns pure saved-epoch expectation and checkpoint-test
 result validation shared by hparam selection and adaptive objective extraction.
@@ -152,8 +155,8 @@ The same guard scans every `adapters/` module and rejects imports into the
 | Source → Target | Layer | Why tolerated | Future removal |
 |---|---|---|---|
 | `configs → domain.finetune_summary` | L2 → domain | configs shell delegates the generic finetune summary body | Would need a registry/provider indirection for the finetune-family summary |
-| `plan_context → domain.presets` | L2 → domain | preset summary in plan context | Route through an adapter hook |
-| `plan_context → domain.index_csv` | L2 → domain | index summary in plan context | Route through an adapter hook |
+| `plan_context → domain.presets` | L2 → domain | preset summary in plan context; task-independent with one implementation, adapters vary only its inputs via `effective_preset_path` | None planned: a per-task hook would only forward to the same function |
+| `plan_context → domain.index_csv` | L2 → domain | index summary in plan context; task-independent with one implementation, adapters vary only its inputs via `index_summary_inputs_override` | None planned: a per-task hook would only forward to the same function |
 | `cli → domain.presets` | mixed → domain | `preset-summary` command | Domain CLI split |
 | `cli → domain.index_csv` | mixed → domain | `index-summary` command | Domain CLI split |
 | `domain.index_csv → configs` | domain → L2 | index_csv is a config-summary consumer, not a leaf; configs never imports it back, so the edge is one-way | Would need index summary to take config_summary as an argument |
