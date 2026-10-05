@@ -5,7 +5,7 @@
 This contract owns identity, state reduction, evidence, and atomic commits.
 Command choice, status advice, and finalization belong to
 [the workspace contract](experiment_workspace.md); hparam selection and adaptive
-protocols belong to [the recipe contract](task_recipe.md).
+protocols belong to [the hparam workflow contract](hparam_workflow.md).
 
 ## Contents
 
@@ -122,7 +122,7 @@ Missing rows must not fall back to another checkpoint. Prediction output that
 was not enabled is unavailable, and historical missing outputs require separate
 authorized evaluation rather than inference from aggregate scores.
 
-The [selection owner](task_recipe.md#selection-and-selected-candidate-consumers)
+The [selection owner](hparam_workflow.md#selection-and-selected-candidate-consumers)
 keeps a many-checkpoint audit separate from this table's one lifecycle row per
 run, which projects only that run's best test-ranked checkpoint.
 
@@ -446,9 +446,9 @@ non-launching monitors that write fresh observations.
 Every hparam mutation first validates workspace ownership, step registration, frozen run hashes, the independent `recipe.resolved.yaml` byte digest recorded by `plan.json`, and equality between the two complete effective recipe copies. Missing or partial canonical state fails rather than being repaired by launch, selection, collection, or postprocess.
 
 Selected-candidate consumers obey the canonical ownership checks here and the
-[selection/postprocessing contract](task_recipe.md#selection-and-selected-candidate-consumers).
+[selection/postprocessing contract](hparam_workflow.md#selection-and-selected-candidate-consumers).
 
 Adaptive lifecycle entrypoints also require the independent workflow readiness
-marker and ordered evidence in [initialization readiness](task_recipe.md#initialization-readiness).
+marker and ordered evidence in [initialization readiness](hparam_workflow.md#initialization-readiness).
 
 `collect-runs` requires a valid canonical table, distinguishes a header-only current table from missing/corrupt input, and cannot write to or alias the canonical manifest. Optional non-managed summaries may remain best-effort evidence.

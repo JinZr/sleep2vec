@@ -259,7 +259,7 @@ and validation cadence. Patience counts validation checks without improvement,
 not epochs. Batch size and gradient accumulation stay fixed, and the default
 search budget comes from `hparam_search_defaults` in the
 [consultation policy](agent_policies/consultation_policy.yaml); see the
-[search-space contract](doc/agent_contracts/task_recipe.md#search-space).
+[search-space contract](doc/agent_contracts/hparam_workflow.md#search-space).
 
 ### Finetune learning-rate schedules
 

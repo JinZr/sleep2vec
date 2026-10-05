@@ -104,8 +104,8 @@ combinations, and required final-evaluation snapshots. Synchronized edits to a
 manifest and its artifacts cannot redefine the frozen recipe. Resolved recipes
 retain the source-config snapshot and hparam recipes retain the explicit
 final-evaluation config snapshot when applicable. Task-specific gates belong to
-[hparam registration preflight](task_recipe.md#registration-preflight) and
-[adaptive initialization readiness](task_recipe.md#initialization-readiness).
+[hparam registration preflight](hparam_workflow.md#registration-preflight) and
+[adaptive initialization readiness](hparam_workflow.md#initialization-readiness).
 
 ## Takeover and continue execution
 
@@ -129,7 +129,7 @@ the entrypoint-specific checks and the current authorization.
 | Registered plan, no credible submission evidence | Perform that entrypoint's launch checks; launch only within existing authorization. | `planned` alone proves a historical manually wrapped job was never submitted. |
 | Credible queued/running scheduler or process evidence | Continue monitoring the same frozen run. | Queue delay, missing output or SSH disconnection permits duplicate submission. |
 | Training terminal, required checkpoint tests incomplete | Follow the task's remaining test phase or diagnose missing evidence. | Fit completion or a log message permits test ranking. |
-| Current adaptive round terminal, required results complete, budget remains | Follow the [proposal handshake](task_recipe.md#proposal-handshake), including tool-issued input, exact proposal, preflight and authorized execute. | A generic continue instruction expands the envelope or bypasses an evidence blocker. |
+| Current adaptive round terminal, required results complete, budget remains | Follow the [proposal handshake](hparam_workflow.md#proposal-handshake), including tool-issued input, exact proposal, preflight and authorized execute. | A generic continue instruction expands the envelope or bypasses an evidence blocker. |
 | Declared work complete, no active runs, selection/report requirements met | Apply [finalization](#finalization), including controller-owned completion checks. | One completed phase closes every assigned obligation, or a result directory proves success. |
 
 Distinguish normal waiting (queue, training, checkpoint testing) from diagnosis
@@ -173,7 +173,7 @@ manual wrappers remain historical and are not repaired or adopted by this flow.
 | Frozen execution host/workdir/Python and planned commit | Target route whose owner-specific identity and CLI gates are verified for launch; the actual launch-boundary HEAD observation is recorded separately and is not a checkout pin. Diagnostic package metadata is not model-execution proof or a new environment policy. |
 | Slurm allocation node | Where the scheduler actually runs the workload; compute hostname may differ from the submission host. |
 
-See the [preflight evidence limits](task_recipe.md#registration-preflight) before
+See the [preflight evidence limits](hparam_workflow.md#registration-preflight) before
 interpreting a card as target config validation, checkpoint compatibility or
 forward/backward validation.
 
@@ -293,7 +293,7 @@ evidence without copying canonical lifecycle rows.
 `experiment-finalize` requires registered materialized work, no active runs,
 non-empty reasons for stopped rows, and a non-empty final report. For ordinary
 hparam steps, `ready_to_select` advice after terminal success is not permission
-to finalize. Complete [selection](task_recipe.md#selection-and-selected-candidate-consumers)
+to finalize. Complete [selection](hparam_workflow.md#selection-and-selected-candidate-consumers)
 before interpreting a report as accepted final evidence. Pure
 ordinary-hparam experiments may finalize directly from the verified selection
 report only when every hparam step has a selected winner. Mixed experiments and
@@ -393,13 +393,13 @@ fact should not create an entry.
 | `doctor`, `context` | Consultation/diagnostics and diagnostic bundles, not execution authority; [diagnostic contract](task_recipe.md#consultation-and-diagnostics). |
 | `runtime-sync` | Inspect `origin/main` by default; with `--execute`, fast-forward one clean existing checkout in place under the short runtime lock. It does not clone, reset, or launch work. |
 | `plan` | Freeze and register recipe, config, commands, hashes and planned runs; [publication](#publication-and-registration). |
-| `hparam-launch`, `hparam-run-queue` | Explicit launch/queue advancement; dry-run default; [launch and queue](task_recipe.md#launch-and-queue). CLI names preview/execute and projects recorded state counts. |
+| `hparam-launch`, `hparam-run-queue` | Explicit launch/queue advancement; dry-run default; [launch and queue](hparam_workflow.md#launch-and-queue). CLI names preview/execute and projects recorded state counts. |
 | `infer-launch`, `infer-stop` | Managed ordinary Slurm inference launch/stop; [ordinary inference](task_recipe.md#managed-ordinary-inference). |
 | `preset-launch`, `preset-stop` | Execution-host local detached preset launch/stop; launch defaults to dry-run, stop requires a reason; [managed preset preparation](task_recipe.md#managed-preset-preparation). |
 | `hparam-monitor`, `experiment-monitor` | Observe and write canonical evidence/projections, never launch pending work. |
-| `hparam-stop` | Reasoned stop under authenticated identity rules; [prelaunch stop](task_recipe.md#launch-and-queue), [direct process evidence](run_manifest.md#pid-and-runtime-evidence), [Slurm stopping](run_manifest.md#stopping-and-uncertain-states). |
-| `hparam-select` | Commit step-scoped ranking/selection; [selection and consumers](task_recipe.md#selection-and-selected-candidate-consumers). |
-| `hparam-adaptive-*` | Tool-owned round publication and advancement; [adaptive workflow](task_recipe.md#adaptive-workflow). |
+| `hparam-stop` | Reasoned stop under authenticated identity rules; [prelaunch stop](hparam_workflow.md#launch-and-queue), [direct process evidence](run_manifest.md#pid-and-runtime-evidence), [Slurm stopping](run_manifest.md#stopping-and-uncertain-states). |
+| `hparam-select` | Commit step-scoped ranking/selection; [selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers). |
+| `hparam-adaptive-*` | Tool-owned round publication and advancement; [adaptive workflow](hparam_workflow.md#adaptive-workflow). |
 | `experiment-note` | Append an evidence-backed [research note](#research-log), no lifecycle change. |
 | `experiment-run` | Explicit resumable [managed evaluation pipeline](experiment_pipeline.md); dry-run starts nothing. |
 | `experiment-status` | Validate and display the [read-only snapshot](#read-only-status-and-advisory-actions). |
@@ -488,8 +488,8 @@ changes permissions, or falls back to unpinned path observations.
 
 Runtime identity and defaults belong to the
 [non-hparam identity](task_recipe.md#non-hparam-runtime-identity) and
-[hparam launch](task_recipe.md#launch-and-queue) contracts. The
-[execution snapshot contract](task_recipe.md#execution-snapshot-and-launch-revalidation)
+[hparam launch](hparam_workflow.md#launch-and-queue) contracts. The
+[execution snapshot contract](hparam_workflow.md#execution-snapshot-and-launch-revalidation)
 owns registration-time creation, live launch revalidation and the restricted
 missing-snapshot boundary; this workspace layout does not authorize rebinding
 historical plans.

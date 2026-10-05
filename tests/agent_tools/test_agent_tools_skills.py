@@ -104,7 +104,7 @@ def test_the_readme_scopes_its_tuning_section_the_way_the_skill_does():
 def test_hparam_guidance_separates_search_budget_from_launch_authority():
     agents_text = (REPO_ROOT / "AGENTS.md").read_text()
     agents = " ".join(agents_text.split())
-    contract = " ".join((REPO_ROOT / "doc/agent_contracts/task_recipe.md").read_text().split())
+    contract = " ".join((REPO_ROOT / "doc/agent_contracts/hparam_workflow.md").read_text().split())
     skill = " ".join((REPO_ROOT / "skills/hyperparameter_tuning/SKILL.md").read_text().split())
 
     for guidance in (agents, contract, skill):
@@ -130,17 +130,22 @@ def test_hparam_guidance_defaults_to_adaptive_without_rewriting_authored_searche
     for name in (
         "AGENTS.md",
         "skills/hyperparameter_tuning/SKILL.md",
-        "doc/agent_contracts/task_recipe.md",
+        "doc/agent_contracts/hparam_workflow.md",
         "recipes/schemas/task_recipe.schema.md",
     ):
         guidance = " ".join((REPO_ROOT / name).read_text().split())
         assert "terminal-only" in guidance
         assert "agent_proposal" in guidance
-        assert "Static profile/grid search requires an explicit request." in guidance
-        assert "Existing authored or frozen searches must not be rewritten." in guidance
         # The consultation policy owns the default search size and how a cap lowers it.
         assert "hparam_search_defaults" in guidance
         assert [phrase for phrase in restated if phrase in guidance] == [], name
+        if name.startswith("skills/"):
+            # The skill links to AGENTS.md for these rules instead of restating them.
+            assert "(../../AGENTS.md#agent-stop-and-consult-policy)" in guidance
+            assert "Static profile/grid search requires an explicit request." not in guidance
+        else:
+            assert "Static profile/grid search requires an explicit request." in guidance
+            assert "Existing authored or frozen searches must not be rewritten." in guidance
     skill = (REPO_ROOT / "skills/hyperparameter_tuning/SKILL.md").read_text()
     assert "A concurrency cap does not fix epochs." in skill
     assert "not automatic parser defaults" in skill

@@ -45,7 +45,7 @@ authors these fields explicitly after reviewing source config, prior evidence,
 parameter bounds and fixed axes; templates are starting examples, not an
 adaptive compiler. Static profile/grid search requires an explicit request.
 Existing authored or frozen searches must not be rewritten.
-See [search-space guidance](../../doc/agent_contracts/task_recipe.md#search-space).
+See [search-space guidance](../../doc/agent_contracts/hparam_workflow.md#search-space).
 
 [`recipes/examples/tiny_fixture_hparam.yaml`](../examples/tiny_fixture_hparam.yaml)
 is a complete static command-generation fixture; it does not select the default
