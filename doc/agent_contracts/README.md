@@ -33,6 +33,7 @@ planning, publication (steps 3–4) and launch (step 5).
 | Is test-selected tuning allowed? | [Selection and test-access policy](external_test_locking.md#selection-and-test-access-policy) |
 | How do I launch or queue a frozen plan? | [Hparam launch and queue](hparam_workflow.md#launch-and-queue), [ordinary inference](task_recipe.md#managed-ordinary-inference), or [managed preset preparation](task_recipe.md#managed-preset-preparation) |
 | When is the execution snapshot frozen and rechecked? | [Execution snapshot and launch revalidation](hparam_workflow.md#execution-snapshot-and-launch-revalidation) |
+| Which `.tsv` owns lifecycle state, and what are the others? | [Table index](run_manifest.md#table-index) |
 | What establishes Slurm job/cluster identity? | [Submission and routing](run_manifest.md#submission-and-routing) |
 | Did SSH loss mean no submission, or may I stop/retry? | [Stopping and uncertain states](run_manifest.md#stopping-and-uncertain-states) |
 | Can a purged job finish when accounting is disabled? | [Terminal evidence](run_manifest.md#terminal-evidence) |
