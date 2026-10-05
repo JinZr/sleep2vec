@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from agent_tool_test_helpers import hparam_search_defaults
 import yaml
 
@@ -104,7 +106,7 @@ def test_the_readme_scopes_its_tuning_section_the_way_the_skill_does():
 def test_hparam_guidance_separates_search_budget_from_launch_authority():
     agents_text = (REPO_ROOT / "AGENTS.md").read_text()
     agents = " ".join(agents_text.split())
-    contract = " ".join((REPO_ROOT / "doc/agent_contracts/task_recipe.md").read_text().split())
+    contract = " ".join((REPO_ROOT / "doc/agent_contracts/hparam_workflow.md").read_text().split())
     skill = " ".join((REPO_ROOT / "skills/hyperparameter_tuning/SKILL.md").read_text().split())
 
     for guidance in (agents, contract, skill):
@@ -130,20 +132,35 @@ def test_hparam_guidance_defaults_to_adaptive_without_rewriting_authored_searche
     for name in (
         "AGENTS.md",
         "skills/hyperparameter_tuning/SKILL.md",
-        "doc/agent_contracts/task_recipe.md",
+        "doc/agent_contracts/hparam_workflow.md",
         "recipes/schemas/task_recipe.schema.md",
     ):
         guidance = " ".join((REPO_ROOT / name).read_text().split())
         assert "terminal-only" in guidance
         assert "agent_proposal" in guidance
-        assert "Static profile/grid search requires an explicit request." in guidance
-        assert "Existing authored or frozen searches must not be rewritten." in guidance
         # The consultation policy owns the default search size and how a cap lowers it.
         assert "hparam_search_defaults" in guidance
         assert [phrase for phrase in restated if phrase in guidance] == [], name
+        if name.startswith("skills/"):
+            # The skill links to AGENTS.md for these rules instead of restating them.
+            assert "(../../AGENTS.md#agent-stop-and-consult-policy)" in guidance
+            assert "Static profile/grid search requires an explicit request." not in guidance
+        else:
+            assert "Static profile/grid search requires an explicit request." in guidance
+            assert "Existing authored or frozen searches must not be rewritten." in guidance
     skill = (REPO_ROOT / "skills/hyperparameter_tuning/SKILL.md").read_text()
     assert "A concurrency cap does not fix epochs." in skill
     assert "not automatic parser defaults" in skill
+
+
+def test_run_manifest_table_index_lists_every_managed_tsv():
+    contract = (REPO_ROOT / "doc/agent_contracts/run_manifest.md").read_text()
+    index = contract.split("\n### Table index\n", 1)[1].split("\n## ", 1)[0]
+    names = set()
+    for path in (REPO_ROOT / "agent_tools").rglob("*.py"):
+        names.update(re.findall(r"\b([a-z_]+\.tsv)\b", path.read_text()))
+    assert "run_manifest.tsv" in names
+    assert sorted(name for name in names if f"{name}`" not in index) == []
 
 
 def test_hparam_skill_links_a_result_to_proposal_example_and_preserves_uncertainty():

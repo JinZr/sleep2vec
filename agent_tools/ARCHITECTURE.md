@@ -93,7 +93,7 @@ orchestrator.
 
 ### Domain — sleep2vec-specific
 `domain/` (sidecar_summaries, finetune_summary, finetune_hparam_profile,
-sex_age_summary, presets, index_csv), the top-level `index_csv` re-export shim, and the per-task adapters
+sex_age_summary, presets, index_csv) and the per-task adapters
 sleep2stat / preset_prepare / finetune / infer_evaluate / hparam_tune /
 embedding_extraction.
 
@@ -111,12 +111,12 @@ runtime identity.
 | Module | Domain coupling (tolerated) |
 |---|---|
 | `models` | Hardcodes `SUPPORTED_VARIANTS` (incl. `sex_age_baseline`) and `VARIANTLESS_TASKS`. Root anchor imported everywhere. |
-| `configs` | Thin shell, but hard-imports `domain.finetune_summary` + `adapters.sleep2stat`. |
+| `configs` | Thin shell, but hard-imports `domain.finetune_summary`. |
 | `plan_rendering` | `preset_cli_args` (sleep preset fields) + `if variant != "sex_age_baseline"` branch. |
 | `decision_paths` | survival / multilabel / sex_age sidecar validation (highest domain signal among L0). |
 | `decision_hparam` | hparam decision contract; depends on decision_paths' multilabel. |
 | `plan_hparam` | hparam plan materialization over the domain-aware primitives. |
-| `plan_context` | Imports `domain.presets` + `index_csv`. |
+| `plan_context` | Imports `domain.presets` + `domain.index_csv`. |
 | `hparam_postprocess` | kaldi / label_name / torch logit post-processing. |
 | `cli` | Forwards domain commands. |
 
@@ -152,12 +152,10 @@ The same guard scans every `adapters/` module and rejects imports into the
 | Source → Target | Layer | Why tolerated | Future removal |
 |---|---|---|---|
 | `configs → domain.finetune_summary` | L2 → domain | configs shell delegates the generic finetune summary body | Would need a registry/provider indirection for the finetune-family summary |
-| `configs → adapters.sleep2stat` | L2 → L1 | frozen `sleep2stat_config_summary` re-export path | Drop when the re-export is retired |
 | `plan_context → domain.presets` | L2 → domain | preset summary in plan context | Route through an adapter hook |
-| `plan_context → index_csv` | L2 → domain(shim) | index summary in plan context | Route through an adapter hook |
+| `plan_context → domain.index_csv` | L2 → domain | index summary in plan context | Route through an adapter hook |
 | `cli → domain.presets` | mixed → domain | `preset-summary` command | Domain CLI split |
-| `cli → index_csv` | mixed → domain(shim) | `index-summary` command | Domain CLI split |
-| `index_csv → domain.index_csv` | shim → domain | frozen top-level import path | Drop when the shim is retired |
+| `cli → domain.index_csv` | mixed → domain | `index-summary` command | Domain CLI split |
 | `domain.index_csv → configs` | domain → L2 | index_csv is a config-summary consumer, not a leaf; configs never imports it back, so the edge is one-way | Would need index summary to take config_summary as an argument |
 
 Legal edges outside the reverse-edge table:
@@ -177,9 +175,9 @@ Legal edges outside the reverse-edge table:
 - Module ownership docstrings: every `.py` in the package carries one, with a
   non-empty summary line. A new module without one fails
   `test_every_module_has_nonempty_docstring`; content accuracy needs code review.
-- Frozen re-exports: `index_csv.index_summary`,
-  `configs.sleep2stat_config_summary`, `configs.load_yaml`,
-  `recipes.recipe_name`, `experiment_io.SSH_TIMEOUT_SECONDS`.
+- No compatibility re-exports: import a name from the module that defines it.
+  The former `index_csv` shim and the `configs`, `recipes` and `experiment_io`
+  re-exports were removed, and `test_agent_layering.py` rejects their return.
 - External importers: 22+ preprocess/util scripts import `agent_tools.progress`;
   `agent_tools.models` is imported outside the package too. Moving either would
   break them, so they stay at the package top level.

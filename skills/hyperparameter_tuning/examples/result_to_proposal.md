@@ -60,7 +60,7 @@ It neither separates the two possible explanations nor acknowledges uncertainty.
 
 Use two complete `configurations` points; independent lists for learning rate and
 epochs would accidentally request four combinations. Copy the issued request and
-evidence identities using the current [proposal handshake](../../../doc/agent_contracts/task_recipe.md#proposal-handshake),
+evidence identities using the current [proposal handshake](../../../doc/agent_contracts/hparam_workflow.md#proposal-handshake),
 not the illustrative A/B labels above. For example, the existing `rationale`
 string could contain:
 

@@ -76,7 +76,6 @@ DOMAIN_MODULES: frozenset[str] = frozenset(
         "domain.sex_age_summary",
         "domain.presets",
         "domain.index_csv",
-        "index_csv",  # top-level re-export shim for domain.index_csv
         "adapters.embedding_extraction",
         "adapters.sleep2stat",
         "adapters.preset_prepare",
@@ -116,12 +115,10 @@ L2_MODULES: frozenset[str] = frozenset(
 KNOWN_DOMAIN_IMPORT_EXEMPTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("configs", "domain.finetune_summary"),
-        ("configs", "adapters.sleep2stat"),
         ("plan_context", "domain.presets"),
-        ("plan_context", "index_csv"),
+        ("plan_context", "domain.index_csv"),
         ("cli", "domain.presets"),
-        ("cli", "index_csv"),
-        ("index_csv", "domain.index_csv"),
+        ("cli", "domain.index_csv"),
         ("domain.index_csv", "configs"),  # domain leaf re-entering configs (partial-import break)
     }
 )

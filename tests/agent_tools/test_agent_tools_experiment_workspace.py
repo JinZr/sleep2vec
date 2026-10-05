@@ -19,7 +19,16 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import experiment_io, experiment_workspace, experiments, hparam, hparam_runtime, plans, run_artifacts
+from agent_tools import (
+    experiment_io,
+    experiment_workspace,
+    experiments,
+    hparam,
+    hparam_runtime,
+    plans,
+    run_artifacts,
+    transport,
+)
 from agent_tools.experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     MANAGED_RUN_PATH_FIELDS,
@@ -2111,7 +2120,7 @@ def test_remote_output_validation_checks_root_itself_before_targets(monkeypatch)
     assert command[:2] == ["ssh", "unit-host"]
     assert command[-1].index("for part in root.split(os.sep)[1:-1]") < command[-1].index("os.lstat(root)")
     assert command[-1].index("os.lstat(root)") < command[-1].index("for raw_target in targets")
-    assert kwargs["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
+    assert kwargs["timeout"] == transport.SSH_TIMEOUT_SECONDS
 
 
 @pytest.mark.parametrize(

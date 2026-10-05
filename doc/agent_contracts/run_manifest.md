@@ -5,12 +5,12 @@
 This contract owns identity, state reduction, evidence, and atomic commits.
 Command choice, status advice, and finalization belong to
 [the workspace contract](experiment_workspace.md); hparam selection and adaptive
-protocols belong to [the recipe contract](task_recipe.md).
+protocols belong to [the hparam workflow contract](hparam_workflow.md).
 
 ## Contents
 
 - [Identity and frozen fields](#identity-and-frozen-fields)
-- [Canonical state and projections](#canonical-state-and-projections) and [runtime artifact evidence](#runtime-artifact-evidence)
+- [Canonical state and projections](#canonical-state-and-projections), its [table index](#table-index), and [runtime artifact evidence](#runtime-artifact-evidence)
 - [Status reducer](#status-reducer), [evidence ownership](#evidence-ownership), and [atomic commit](#atomic-commit)
 - [PID and runtime evidence](#pid-and-runtime-evidence)
 - [Slurm evidence](#slurm-scheduler-evidence): [submission/routing](#submission-and-routing),
@@ -98,6 +98,25 @@ remote operation, preserving their independent failures. An invalid paired
 response falls back once to the existing separate probes. Direct-process health
 keeps its probe order; no log evidence is cached across observations.
 
+### Table index
+
+Each managed `.tsv` has one role. Only `run_manifest.tsv` owns
+lifecycle state; every other table is a registration record, a projection, or
+observed evidence, and none of them restores run status.
+
+| File | Location | Written by | Lifecycle role |
+| --- | --- | --- | --- |
+| `run_manifest.tsv` | `<experiment.root>/` | Canonical [atomic commit](#atomic-commit) from plan registration, launch, monitor and stop | Only mutable lifecycle and execution-identity owner; one row per run |
+| `launch_manifest.tsv`, `run_status.tsv` | Plan directory; adaptive `adaptive/rounds/round_NNN/` | Rewritten from the rows of each successful canonical commit | Projections; never read to restore state |
+| `run_registry.tsv` | `<workflow>/adaptive/` | `hparam-adaptive-init` (round 000), then each registered proposal round | Append-only registration record of adaptive runs and their rounds; one row per run |
+| `incumbents.tsv` | `<workflow>/adaptive/` | `hparam-digest` and `hparam-adaptive-step`, once per digested round | Derived history of each round's best successful run; feeds the optional replacement margin only |
+| `jobs.tsv` | `pipelines/<pipeline-id>/`, `phases/<phase>/` | `experiment-run` | Projection of pipeline job attempts, reconciled on resume; attempt runs remain in `run_manifest.tsv` |
+| `metrics_manifest.tsv`, `wandb/runs.tsv` | `<experiment.root>/` | `experiment-wandb-sync` | Observed W&B evidence; metrics are many rows per run |
+| `checkpoint_manifest.tsv` | `<experiment.root>/` | `experiment-index-checkpoints` | Observed checkpoint evidence; many rows per run; read by `experiment-rank` |
+| `experiment_manifest.tsv` | `<experiment.root>/` | `experiment-init`; `experiment-wandb-sync` fills W&B fields | Optional one-row index that must match `experiment.yaml` |
+| `external_eval_manifest.tsv`, `logits_export_manifest.tsv` | `--run-dir` of the command | `hparam-external-eval`, `hparam-export-logits` | Generated alongside the evaluation or export script; not run state |
+| `trial_status.tsv`, `adaptive/trial_registry.tsv` | Historical trees | None | Removed formats; managed commands refuse a tree that contains them |
+
 ## Runtime artifact evidence
 
 Runtime `run_manifest.json` supplies metrics and checkpoint evidence only. It does not own lifecycle status. A truly missing runtime manifest means evidence is not yet available; an existing alias, non-regular file, invalid encoding/JSON, or non-mapping payload is corrupt.
@@ -122,7 +141,7 @@ Missing rows must not fall back to another checkpoint. Prediction output that
 was not enabled is unavailable, and historical missing outputs require separate
 authorized evaluation rather than inference from aggregate scores.
 
-The [selection owner](task_recipe.md#selection-and-selected-candidate-consumers)
+The [selection owner](hparam_workflow.md#selection-and-selected-candidate-consumers)
 keeps a many-checkpoint audit separate from this table's one lifecycle row per
 run, which projects only that run's best test-ranked checkpoint.
 
@@ -446,9 +465,9 @@ non-launching monitors that write fresh observations.
 Every hparam mutation first validates workspace ownership, step registration, frozen run hashes, the independent `recipe.resolved.yaml` byte digest recorded by `plan.json`, and equality between the two complete effective recipe copies. Missing or partial canonical state fails rather than being repaired by launch, selection, collection, or postprocess.
 
 Selected-candidate consumers obey the canonical ownership checks here and the
-[selection/postprocessing contract](task_recipe.md#selection-and-selected-candidate-consumers).
+[selection/postprocessing contract](hparam_workflow.md#selection-and-selected-candidate-consumers).
 
 Adaptive lifecycle entrypoints also require the independent workflow readiness
-marker and ordered evidence in [initialization readiness](task_recipe.md#initialization-readiness).
+marker and ordered evidence in [initialization readiness](hparam_workflow.md#initialization-readiness).
 
 `collect-runs` requires a valid canonical table, distinguishes a header-only current table from missing/corrupt input, and cannot write to or alias the canonical manifest. Optional non-managed summaries may remain best-effort evidence.

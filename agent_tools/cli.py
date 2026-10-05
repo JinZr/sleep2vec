@@ -33,6 +33,7 @@ from .adaptive_hparam import (
     suggest_next_round,
 )
 from .configs import config_summary
+from .domain.index_csv import index_summary
 from .domain.presets import preset_summary
 from .experiment_tracking import format_experiment_status
 from .experiments import (
@@ -64,7 +65,6 @@ from .hparam import (
     stop_hparam_run,
     threshold_hparam_outputs,
 )
-from .index_csv import index_summary
 from .manifests import read_rows
 from .markdown import report_text
 from .models import json_ready

@@ -140,8 +140,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   [consultation and diagnostics](../agent_contracts/task_recipe.md#consultation-and-diagnostics)
   owns decision gates and per-call validation reuse.
 - Reuse the profile compiler, `plan_contract`, adapter compilation hooks, and `plan_hparam`
-  for [search expansion](../agent_contracts/task_recipe.md#search-space) and
-  [frozen candidate/registration checks](../agent_contracts/task_recipe.md#registration-preflight),
+  for [search expansion](../agent_contracts/hparam_workflow.md#search-space) and
+  [frozen candidate/registration checks](../agent_contracts/hparam_workflow.md#registration-preflight),
   not caller-local schemas or frozen-plan validators. The profile owns joint
   training-length/schedule/early-stopping levels and bounded gradient clipping,
   keeps batch and accumulation fixed, and uses resolved task semantics
@@ -155,7 +155,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   see [canonical state](../agent_contracts/run_manifest.md#canonical-state-and-projections)
   and the [status read-set](../agent_contracts/experiment_workspace.md#read-only-status-and-advisory-actions).
 - Reuse `hparam_selection` and `checkpoint_test_results` for
-  [selection and selected-candidate consumers](../agent_contracts/task_recipe.md#selection-and-selected-candidate-consumers).
+  [selection and selected-candidate consumers](../agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers).
   Append semantic notes through `experiments.append_experiment_note` and `research_log`,
   not direct Markdown writes; see [research-log ownership](../agent_contracts/experiment_workspace.md#research-log).
 - Reuse `managed_scheduler` for backend lifecycle and `slurm` for resource, command, state,
@@ -177,8 +177,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   historical evidence from digest CSVs. `experiment_sources.read_wandb_training_history`
   reads already-synced, canonical-run-bound history for sparse training/validation
   observations; it neither syncs W&B nor establishes training completion.
-  See the [adaptive workflow](../agent_contracts/task_recipe.md#adaptive-workflow)
-  and [proposal handshake](../agent_contracts/task_recipe.md#proposal-handshake).
+  See the [adaptive workflow](../agent_contracts/hparam_workflow.md#adaptive-workflow)
+  and [proposal handshake](../agent_contracts/hparam_workflow.md#proposal-handshake).
 
 ### Standalone variants
 
