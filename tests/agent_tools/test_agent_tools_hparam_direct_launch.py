@@ -26,7 +26,15 @@ from test_agent_tools_hparam_runtime import (
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
 
-from agent_tools import hparam_runtime, managed_scheduler, manifests, plan_rendering, python_programs, run_evidence
+from agent_tools import (
+    hparam_runtime,
+    managed_scheduler,
+    manifests,
+    plan_rendering,
+    python_programs,
+    run_evidence,
+    transport,
+)
 from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256, merge_run_manifest, merge_run_row
 
 
@@ -461,7 +469,7 @@ def test_hparam_ssh_launch_validates_run_outputs_remotely_before_start(tmp_path:
 
     assert started == []
     assert remote_calls[0][0][:2] == ["ssh", "unit-host"]
-    assert remote_calls[0][1]["timeout"] == hparam_runtime.exp_io.SSH_TIMEOUT_SECONDS
+    assert remote_calls[0][1]["timeout"] == transport.SSH_TIMEOUT_SECONDS
 
 
 def test_hparam_runtime_rejects_tampered_relative_workdir_before_start(tmp_path: Path, monkeypatch):

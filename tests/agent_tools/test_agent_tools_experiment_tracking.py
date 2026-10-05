@@ -2214,7 +2214,7 @@ def test_remote_checkpoint_scan_skips_confirmed_missing_run_and_indexes_other_ru
     command, kwargs = commands[0]
     assert missing["checkpoint_dir"] not in command[-1]
     assert ready["checkpoint_dir"] in command[-1]
-    assert kwargs["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
+    assert kwargs["timeout"] == transport.SSH_TIMEOUT_SECONDS
 
 
 def test_remote_checkpoint_scan_rejects_hardlinked_checkpoint(monkeypatch):
@@ -2411,7 +2411,7 @@ def test_experiment_remote_checkpoint_scan_fails_closed_without_writing(tmp_path
     command, kwargs = next((command, kwargs) for command, kwargs in calls if "find " in command[-1])
     assert command[:2] == ["ssh", "baichuan3"]
     assert "/remote/runtime/run_a/checkpoints" in command[-1]
-    assert kwargs["timeout"] == experiment_io.SSH_TIMEOUT_SECONDS
+    assert kwargs["timeout"] == transport.SSH_TIMEOUT_SECONDS
     assert "checkpoint_manifest.tsv" not in writes
     assert checkpoint_manifest.read_bytes() == original_manifest
 
