@@ -15,6 +15,7 @@ import yaml
 
 from agent_tools import (
     experiment_pipeline,
+    experiment_pipeline_attempts as pipeline_attempts,
     experiment_pipeline_results,
     experiment_pipeline_spec as pipeline_spec,
     experiments,
@@ -45,10 +46,10 @@ def test_attempt_materialization_enters_plan_publication_lock(tmp_path: Path, mo
         assert lock_active
         return {"status": "planned"}
 
-    monkeypatch.setattr(experiment_pipeline, "plan_publication_lock", publication_lock)
-    monkeypatch.setattr(experiment_pipeline, "_materialize_attempt_locked", materialize_locked)
+    monkeypatch.setattr(pipeline_attempts, "plan_publication_lock", publication_lock)
+    monkeypatch.setattr(pipeline_attempts, "_materialize_attempt_locked", materialize_locked)
 
-    result = experiment_pipeline._materialize_attempt(
+    result = pipeline_attempts._materialize_attempt(
         tmp_path,
         {},
         {},
@@ -91,17 +92,17 @@ def test_pipeline_group_registration_waits_for_ordinary_plan(tmp_path: Path, mon
         return {item[0]["id"]: item[4] for item in items}
 
     monkeypatch.setattr(plans, "_assert_no_incomplete_step_registration", pause_ordinary)
-    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
-    monkeypatch.setattr(experiment_pipeline, "_ensure_initial_preflight", lambda *_args: None)
-    monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_registration_groups", prepare_registration)
+    monkeypatch.setattr(pipeline_attempts, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(pipeline_attempts, "_ensure_initial_preflight", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "_prepare_attempt_registration_groups", prepare_registration)
     monkeypatch.setattr(
-        experiment_pipeline,
+        pipeline_attempts,
         "_materialize_attempt",
         lambda _root, _spec, job, _selection, attempt, **_paths: {"job_id": job["id"], "attempt": attempt},
     )
-    monkeypatch.setattr(experiment_pipeline, "_write_jobs", lambda *_args: None)
-    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_pipeline, "_reconcile_pipeline_jobs_planned_event", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "write_jobs", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_attempts, "_reconcile_pipeline_jobs_planned_event", lambda *_args: None)
     ordinary_reports = []
     errors = []
     pipeline_rows = []
@@ -115,7 +116,7 @@ def test_pipeline_group_registration_waits_for_ordinary_plan(tmp_path: Path, mon
     def run_pipeline():
         try:
             pipeline_rows.extend(
-                experiment_pipeline._load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
+                pipeline_attempts.load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
             )
         except BaseException as exc:
             errors.append(exc)
@@ -149,26 +150,26 @@ def test_initial_jobs_projection_failure_is_recoverable(tmp_path: Path, monkeypa
         base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
         return {"name": job["id"]}, base / "recipe.yaml", base / "plan", base / "results"
 
-    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
-    monkeypatch.setattr(experiment_pipeline, "_ensure_initial_preflight", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(pipeline_attempts, "_ensure_initial_preflight", lambda *_args: None)
     monkeypatch.setattr(
-        experiment_pipeline,
+        pipeline_attempts,
         "_prepare_attempt_registration_groups",
         lambda _root, _spec, items, **_kwargs: {item[0]["id"]: item[4] for item in items},
     )
     monkeypatch.setattr(
-        experiment_pipeline,
+        pipeline_attempts,
         "_materialize_attempt",
         lambda _root, _spec, job, _selection, attempt, **_paths: {"job_id": job["id"], "attempt": attempt},
     )
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_write_jobs",
+        pipeline_attempts,
+        "write_jobs",
         lambda *_args: (_ for _ in ()).throw(OSError("jobs projection interrupted")),
     )
 
-    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
-        experiment_pipeline._load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
+    with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        pipeline_attempts.load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
 
 
 def test_registered_jobs_retry_cleans_interrupted_atomic_temp(tmp_path: Path, monkeypatch):
@@ -186,11 +187,11 @@ def test_registered_jobs_retry_cleans_interrupted_atomic_temp(tmp_path: Path, mo
 
     monkeypatch.setattr(experiment_pipeline_results.os, "replace", fail_once)
 
-    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
-        experiment_pipeline._write_registered_jobs(jobs_path, rows)
+    with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        pipeline_attempts._write_registered_jobs(jobs_path, rows)
 
     assert not list(tmp_path.glob(".jobs.tsv.*.tmp"))
-    experiment_pipeline._write_registered_jobs(jobs_path, rows)
+    pipeline_attempts._write_registered_jobs(jobs_path, rows)
     assert experiment_pipeline.read_rows(jobs_path) == rows
 
 
@@ -204,17 +205,18 @@ def test_pipeline_jobs_planned_event_is_reconciled_after_append_failure(tmp_path
         "append_event",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("event append interrupted")),
     )
+    monkeypatch.setattr(pipeline_attempts, "append_event", experiment_pipeline.append_event)
 
-    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
-        experiment_pipeline._reconcile_pipeline_jobs_planned_event(root, spec)
+    with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        pipeline_attempts._reconcile_pipeline_jobs_planned_event(root, spec)
 
-    monkeypatch.setattr(experiment_pipeline, "append_event", original_append)
-    experiment_pipeline._reconcile_pipeline_jobs_planned_event(root, spec)
-    experiment_pipeline._reconcile_pipeline_jobs_planned_event(root, spec)
+    monkeypatch.setattr(pipeline_attempts, "append_event", original_append)
+    pipeline_attempts._reconcile_pipeline_jobs_planned_event(root, spec)
+    pipeline_attempts._reconcile_pipeline_jobs_planned_event(root, spec)
 
     events = [
         event
-        for event in experiment_pipeline.read_experiment_events(root)
+        for event in pipeline_attempts.read_experiment_events(root)
         if event.get("event_type") == "pipeline_jobs_planned"
     ]
     assert len(events) == 1
@@ -236,11 +238,11 @@ def test_pipeline_jobs_planned_event_read_failure_is_recoverable(tmp_path: Path,
             raise OSError("event read interrupted")
         return []
 
-    monkeypatch.setattr(experiment_pipeline, "read_experiment_events", read_events)
+    monkeypatch.setattr(pipeline_attempts, "read_experiment_events", read_events)
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
 
-    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
-        experiment_pipeline._reconcile_pipeline_jobs_planned_event(root, spec)
+    with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        pipeline_attempts._reconcile_pipeline_jobs_planned_event(root, spec)
 
 
 def test_pipeline_retry_planned_event_is_reconciled_after_append_failure(tmp_path: Path, monkeypatch):
@@ -254,17 +256,18 @@ def test_pipeline_retry_planned_event_is_reconciled_after_append_failure(tmp_pat
         "append_event",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("event append interrupted")),
     )
+    monkeypatch.setattr(pipeline_attempts, "append_event", experiment_pipeline.append_event)
 
-    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
-        experiment_pipeline._reconcile_pipeline_retry_planned_event(root, spec, attempt)
+    with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        pipeline_attempts._reconcile_pipeline_retry_planned_event(root, spec, attempt)
 
-    monkeypatch.setattr(experiment_pipeline, "append_event", original_append)
-    experiment_pipeline._reconcile_pipeline_retry_planned_event(root, spec, attempt)
-    experiment_pipeline._reconcile_pipeline_retry_planned_event(root, spec, attempt)
+    monkeypatch.setattr(pipeline_attempts, "append_event", original_append)
+    pipeline_attempts._reconcile_pipeline_retry_planned_event(root, spec, attempt)
+    pipeline_attempts._reconcile_pipeline_retry_planned_event(root, spec, attempt)
 
     events = [
         event
-        for event in experiment_pipeline.read_experiment_events(root)
+        for event in pipeline_attempts.read_experiment_events(root)
         if event.get("event_type") == "pipeline_job_retry_planned"
     ]
     assert len(events) == 1
@@ -314,8 +317,9 @@ def test_selection_event_is_reconciled_after_committed_hash(
         "append_event",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("event append interrupted")),
     )
+    monkeypatch.setattr(pipeline_attempts, "append_event", experiment_pipeline.append_event)
 
-    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+    with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="reconciled on resume"):
         experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
 
     selection_path = experiment_pipeline._selection_manifest_path(pipeline_dir, spec)
@@ -323,7 +327,7 @@ def test_selection_event_is_reconciled_after_committed_hash(
     assert state[experiment_pipeline._selection_hash_field(spec)] == file_sha256(selection_path)
     assert state["status"] == "ready"
 
-    monkeypatch.setattr(experiment_pipeline, "append_event", original_append)
+    monkeypatch.setattr(pipeline_attempts, "append_event", original_append)
     state["status"] = "completed"
     (pipeline_dir / "pipeline.json").write_text(json.dumps(state) + "\n")
     experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
@@ -335,7 +339,7 @@ def test_selection_event_is_reconciled_after_committed_hash(
     experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
 
     events = [
-        event for event in experiment_pipeline.read_experiment_events(root) if event.get("event_type") == event_type
+        event for event in pipeline_attempts.read_experiment_events(root) if event.get("event_type") == event_type
     ]
     assert len(events) == 1
     assert events[0]["pipeline_id"] == "external-v1"
@@ -364,11 +368,11 @@ def test_pipeline_registration_recovery_error_does_not_mark_pipeline_failed(tmp_
         experiment_pipeline,
         "_execute_pipeline",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            experiment_pipeline.PipelineRegistrationRecoveryError("resume registration")
+            pipeline_attempts.PipelineRegistrationRecoveryError("resume registration")
         ),
     )
 
-    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="resume registration"):
+    with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="resume registration"):
         experiment_pipeline.run_experiment_pipeline(
             root,
             spec_path,
@@ -600,25 +604,25 @@ def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path
     def retry_preflight(_pipeline_dir, job_id, _attempt, _recipe_path, _plan_dir):
         order.append(f"preflight:{job_id}")
         if job_id == "age-hsp-i2-psg":
-            raise experiment_pipeline.RetryPreparationError("preflight failed")
+            raise pipeline_attempts.RetryPreparationError("preflight failed")
 
     def materialize(_root, _spec, job, _selection, attempt, **_paths):
         order.append(f"materialize:{job['id']}")
         return {"job_id": job["id"], "attempt": attempt, "status": "planned", "verified": "false"}
 
-    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
-    monkeypatch.setattr(experiment_pipeline, "_ensure_retry_preflight", retry_preflight)
+    monkeypatch.setattr(pipeline_attempts, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(pipeline_attempts, "_ensure_retry_preflight", retry_preflight)
     monkeypatch.setattr(
-        experiment_pipeline,
+        pipeline_attempts,
         "_prepare_attempt_registration_groups",
         lambda _root, _spec, items, **_kwargs: {item[0]["id"]: None for item in items},
     )
-    monkeypatch.setattr(experiment_pipeline, "_materialize_attempt", materialize)
+    monkeypatch.setattr(pipeline_attempts, "_materialize_attempt", materialize)
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_pipeline, "_reconcile_pipeline_retry_planned_event", lambda *_args: None)
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
+    monkeypatch.setattr(pipeline_attempts, "_reconcile_pipeline_retry_planned_event", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "read_run_manifest", lambda _root: [])
 
-    updated, created = experiment_pipeline._create_needed_retries(
+    updated, created = pipeline_attempts.create_needed_retries(
         root,
         pipeline_dir,
         spec,
@@ -658,22 +662,22 @@ def test_retry_registration_preflight_failure_does_not_block_independent_retry(t
         job_id = items[0][0]["id"]
         order.append(f"prepare:{job_id}")
         if job_id == "age-hsp-i2-psg":
-            raise experiment_pipeline.AttemptRegistrationPreflightError("target argv rejected")
+            raise pipeline_attempts.AttemptRegistrationPreflightError("target argv rejected")
         return {job_id: None}
 
     def materialize(_root, _spec, job, _selection, attempt, **_paths):
         order.append(f"materialize:{job['id']}")
         return {"job_id": job["id"], "attempt": attempt, "status": "planned", "verified": "false"}
 
-    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
-    monkeypatch.setattr(experiment_pipeline, "_ensure_retry_preflight", lambda *_args: None)
-    monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_registration_groups", prepare_registration)
-    monkeypatch.setattr(experiment_pipeline, "_materialize_attempt", materialize)
+    monkeypatch.setattr(pipeline_attempts, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(pipeline_attempts, "_ensure_retry_preflight", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "_prepare_attempt_registration_groups", prepare_registration)
+    monkeypatch.setattr(pipeline_attempts, "_materialize_attempt", materialize)
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_pipeline, "_reconcile_pipeline_retry_planned_event", lambda *_args: None)
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
+    monkeypatch.setattr(pipeline_attempts, "_reconcile_pipeline_retry_planned_event", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "read_run_manifest", lambda _root: [])
 
-    updated, created = experiment_pipeline._create_needed_retries(
+    updated, created = pipeline_attempts.create_needed_retries(
         root,
         pipeline_dir,
         spec,
@@ -703,22 +707,22 @@ def test_retry_registration_failure_is_not_recorded_as_preflight_failure(tmp_pat
         base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
         return {"job": job["id"]}, base.with_suffix(".yaml"), base / "plan", base / "results"
 
-    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
-    monkeypatch.setattr(experiment_pipeline, "_ensure_retry_preflight", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(pipeline_attempts, "_ensure_retry_preflight", lambda *_args: None)
     monkeypatch.setattr(
-        experiment_pipeline,
+        pipeline_attempts,
         "_prepare_attempt_registration_groups",
         lambda _root, _spec, items, **_kwargs: {items[0][0]["id"]: None},
     )
     monkeypatch.setattr(
-        experiment_pipeline,
+        pipeline_attempts,
         "_materialize_attempt",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("canonical commit failed")),
     )
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
+    monkeypatch.setattr(pipeline_attempts, "read_run_manifest", lambda _root: [])
 
     with pytest.raises(RuntimeError, match="canonical commit failed"):
-        experiment_pipeline._create_needed_retries(
+        pipeline_attempts.create_needed_retries(
             root,
             pipeline_dir,
             spec,
@@ -741,15 +745,15 @@ def test_retry_jobs_projection_failure_is_recoverable(tmp_path: Path, monkeypatc
         base = pipeline_dir / job["id"] / f"attempt-{attempt:03d}"
         return {"job": job["id"]}, base.with_suffix(".yaml"), base / "plan", base / "results"
 
-    monkeypatch.setattr(experiment_pipeline, "_attempt_recipe", attempt_recipe)
-    monkeypatch.setattr(experiment_pipeline, "_ensure_retry_preflight", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "_attempt_recipe", attempt_recipe)
+    monkeypatch.setattr(pipeline_attempts, "_ensure_retry_preflight", lambda *_args: None)
     monkeypatch.setattr(
-        experiment_pipeline,
+        pipeline_attempts,
         "_prepare_attempt_registration_groups",
         lambda _root, _spec, items, **_kwargs: {items[0][0]["id"]: None},
     )
     monkeypatch.setattr(
-        experiment_pipeline,
+        pipeline_attempts,
         "_materialize_attempt",
         lambda _root, _spec, job, _selection, attempt, **_paths: {
             "job_id": job["id"],
@@ -759,14 +763,14 @@ def test_retry_jobs_projection_failure_is_recoverable(tmp_path: Path, monkeypatc
         },
     )
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_write_jobs",
+        pipeline_attempts,
+        "write_jobs",
         lambda *_args: (_ for _ in ()).throw(OSError("jobs projection interrupted")),
     )
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [])
+    monkeypatch.setattr(pipeline_attempts, "read_run_manifest", lambda _root: [])
 
-    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
-        experiment_pipeline._create_needed_retries(
+    with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        pipeline_attempts.create_needed_retries(
             root,
             pipeline_dir,
             spec,
@@ -868,14 +872,14 @@ def test_initial_registration_preflight_groups_variants_before_publishing_any_at
             raise ValueError("frozen argv rejected")
         return {"runtime_commit": "a" * 40}
 
-    monkeypatch.setattr(experiment_pipeline, "_ensure_initial_preflight", lambda *_args: None)
-    monkeypatch.setattr(experiment_pipeline, "build_plan", build_staged_plan)
+    monkeypatch.setattr(pipeline_attempts, "_ensure_initial_preflight", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "build_plan", build_staged_plan)
     monkeypatch.setattr(experiment_pipeline.exp_io, "validate_managed_output_paths", reject_unsafe_group)
     monkeypatch.setattr(experiment_pipeline.managed_scheduler, "inspect_execution_target", reject_second_group)
 
     expected_error = "frozen output topology rejected" if failure_kind == "topology" else "frozen argv rejected"
-    with pytest.raises(experiment_pipeline.AttemptRegistrationPreflightError, match=expected_error):
-        experiment_pipeline._load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
+    with pytest.raises(pipeline_attempts.AttemptRegistrationPreflightError, match=expected_error):
+        pipeline_attempts.load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
 
     assert [len(paths) for paths in topology_calls] == [3, 5]
     expected_target_calls = [["run-002"]] if failure_kind == "topology" else [["run-002"], ["run-000", "run-001"]]
@@ -966,15 +970,16 @@ def test_registration_preflight_freezes_complete_group_and_rejects_drift(tmp_pat
         "read_run_manifest",
         lambda _root: [{"step_id": "external-evaluate", "run_id": "run-000"}],
     )
-    monkeypatch.setattr(experiment_pipeline, "next_run_index", lambda _recipe: 1)
-    monkeypatch.setattr(experiment_pipeline, "_validate_new_attempt_paths", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_plan", prepare_plan)
+    monkeypatch.setattr(pipeline_attempts, "read_run_manifest", experiment_pipeline.read_run_manifest)
+    monkeypatch.setattr(pipeline_attempts, "next_run_index", lambda _recipe: 1)
+    monkeypatch.setattr(pipeline_attempts, "_validate_new_attempt_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline_attempts, "_prepare_attempt_plan", prepare_plan)
     monkeypatch.setattr(experiment_pipeline.exp_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_pipeline.managed_scheduler, "inspect_execution_target", inspect)
 
     snapshot_owner = pipeline_dir / "initial_schedulers" / "sleep2vec2"
     assert not snapshot_owner.exists()
-    prepared = experiment_pipeline._prepare_attempt_registration_groups(
+    prepared = pipeline_attempts._prepare_attempt_registration_groups(
         root,
         spec,
         attempts,
@@ -989,8 +994,8 @@ def test_registration_preflight_freezes_complete_group_and_rejects_drift(tmp_pat
     shutil.rmtree(prepared[second["id"]])
 
     target_snapshot["validated_argv_sha256"] = "b" * 64
-    with pytest.raises(experiment_pipeline.AttemptRegistrationPreflightError, match="snapshot changed"):
-        experiment_pipeline._prepare_attempt_registration_groups(
+    with pytest.raises(pipeline_attempts.AttemptRegistrationPreflightError, match="snapshot changed"):
+        pipeline_attempts._prepare_attempt_registration_groups(
             root,
             spec,
             attempts,
@@ -1027,13 +1032,13 @@ def test_unsafe_process_identity_is_blocked_and_never_retried(
     }
     write_rows(root / "run_manifest.tsv", [{**attempt, "process_identity_error": identity_error}])
     monkeypatch.setattr(
-        experiment_pipeline,
+        pipeline_attempts,
         "_attempt_recipe",
         lambda *_args, **_kwargs: pytest.fail("unsafe process identity must not be retried"),
     )
     monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
 
-    updated, created = experiment_pipeline._create_needed_retries(
+    updated, created = pipeline_attempts.create_needed_retries(
         root,
         pipeline_dir,
         _spec(root),
@@ -1106,7 +1111,7 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     assert plan["recipe"]["execution"] == recipe["execution"]
     canonical = read_run_manifest(workspace)[0]
     assert canonical.get("command") in (None, "")
-    experiment_pipeline._validate_attempt_plan(
+    pipeline_attempts._validate_attempt_plan(
         {
             "step_id": planned["step_id"],
             "run_id": planned["run_id"],
@@ -1201,7 +1206,7 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
         "label_name": "age",
     }
     pipeline_dir = root / "pipelines" / "external-v1"
-    recipe, recipe_path, plan_dir, result_root = experiment_pipeline._attempt_recipe(
+    recipe, recipe_path, plan_dir, result_root = pipeline_attempts._attempt_recipe(
         pipeline_dir,
         spec,
         spec["jobs"][0],
@@ -1241,7 +1246,7 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
         physical_launch = staging_dir / semantic_launch.relative_to(plan_dir)
         physical_launch.write_text("tampered\n")
         with pytest.raises(ValueError, match="attempt script changed"):
-            experiment_pipeline._materialize_attempt(
+            pipeline_attempts._materialize_attempt(
                 root,
                 spec,
                 spec["jobs"][0],
@@ -1277,7 +1282,7 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
     if outcome == "tamper":
         (plan_dir / "plan.md").write_text("tampered\n")
         with pytest.raises(ValueError, match="differs from deterministic regeneration"):
-            experiment_pipeline._materialize_attempt(
+            pipeline_attempts._materialize_attempt(
                 root,
                 spec,
                 spec["jobs"][0],
@@ -1292,15 +1297,15 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
         return
 
     if outcome == "interrupt_after_commit":
-        real_merge = experiment_pipeline.merge_run_manifest
+        real_merge = pipeline_attempts.merge_run_manifest
 
         def merge_then_interrupt(*args, **kwargs):
             real_merge(*args, **kwargs)
             raise RuntimeError("simulated interruption after canonical commit")
 
-        monkeypatch.setattr(experiment_pipeline, "merge_run_manifest", merge_then_interrupt)
+        monkeypatch.setattr(pipeline_attempts, "merge_run_manifest", merge_then_interrupt)
         with pytest.raises(RuntimeError, match="simulated interruption"):
-            experiment_pipeline._materialize_attempt(
+            pipeline_attempts._materialize_attempt(
                 root,
                 spec,
                 spec["jobs"][0],
@@ -1329,14 +1334,14 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
         assert terminal["decision"]["blocked_actions"] == ["finalize", "pipeline_advance"]
         return
 
-    original_prepare = experiment_pipeline._prepare_attempt_plan
+    original_prepare = pipeline_attempts._prepare_attempt_plan
     if outcome == "prepared_public":
         monkeypatch.setattr(
-            experiment_pipeline,
+            pipeline_attempts,
             "_prepare_attempt_plan",
             lambda *_args, **_kwargs: pytest.fail("validated public plan must not be rebuilt"),
         )
-    row = experiment_pipeline._materialize_attempt(
+    row = pipeline_attempts._materialize_attempt(
         root,
         spec,
         spec["jobs"][0],
@@ -1365,8 +1370,8 @@ def test_uncommitted_attempt_plan_is_deterministically_validated(
         [{key: value for key, value in canonical[0].items() if key not in ownership_fields}],
     )
 
-    monkeypatch.setattr(experiment_pipeline, "_prepare_attempt_plan", original_prepare)
-    experiment_pipeline._materialize_attempt(
+    monkeypatch.setattr(pipeline_attempts, "_prepare_attempt_plan", original_prepare)
+    pipeline_attempts._materialize_attempt(
         root,
         spec,
         spec["jobs"][0],
@@ -1417,7 +1422,7 @@ def test_attempt_config_drift_fails_before_plan_publication(tmp_path: Path):
         "label_name": "age",
     }
     pipeline_dir = root / "pipelines" / "external-v1"
-    recipe, recipe_path, plan_dir, result_root = experiment_pipeline._attempt_recipe(
+    recipe, recipe_path, plan_dir, result_root = pipeline_attempts._attempt_recipe(
         pipeline_dir,
         spec,
         spec["jobs"][0],
@@ -1429,7 +1434,7 @@ def test_attempt_config_drift_fails_before_plan_publication(tmp_path: Path):
     config.write_text(config.read_text() + "\n# drifted after checkpoint selection\n")
 
     with pytest.raises(ValueError, match="externally bound SHA-256"):
-        experiment_pipeline._materialize_attempt(
+        pipeline_attempts._materialize_attempt(
             root,
             spec,
             spec["jobs"][0],
@@ -1563,10 +1568,10 @@ def test_run_attempts_waits_when_capacity_blocks_before_execution_snapshot(tmp_p
     write_rows(pipeline_dir / "jobs.tsv", [attempt])
 
     monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_planned_runs",
+        pipeline_attempts,
+        "planned_runs",
         lambda _rows: [{"step_id": "external-evaluate", "run_id": "run-001"}],
     )
     launches = []
@@ -1577,6 +1582,7 @@ def test_run_attempts_waits_when_capacity_blocks_before_execution_snapshot(tmp_p
 
     monkeypatch.setattr(experiment_pipeline.managed_scheduler, "launch_managed_runs", capacity_blocked)
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(attempt)])
+    monkeypatch.setattr(pipeline_attempts, "read_run_manifest", experiment_pipeline.read_run_manifest)
     monkeypatch.setattr(experiment_pipeline.time, "sleep", lambda _seconds: (_ for _ in ()).throw(WaitObserved()))
 
     with pytest.raises(WaitObserved):
@@ -1630,16 +1636,17 @@ def test_run_attempts_terminal_attempt_projects_only_canonical_runtime_commit(
 
     monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_attempt_rows",
+        pipeline_attempts,
+        "validate_attempt_rows",
         lambda *_args: validations.append("attempts"),
     )
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_planned_runs",
+        pipeline_attempts,
+        "planned_runs",
         lambda _rows: [{"step_id": "external-evaluate", "run_id": "run-001"}],
     )
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(canonical_attempt)])
+    monkeypatch.setattr(pipeline_attempts, "read_run_manifest", experiment_pipeline.read_run_manifest)
     monkeypatch.setattr(
         experiment_pipeline.managed_scheduler,
         "validated_execution_snapshot",
@@ -1692,16 +1699,17 @@ def test_run_attempts_result_validation_failure_is_terminal_without_changing_can
     validations = []
 
     monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_planned_runs",
+        pipeline_attempts,
+        "planned_runs",
         lambda _rows: [{"step_id": "external-evaluate", "run_id": "run-001"}],
     )
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(canonical)])
+    monkeypatch.setattr(pipeline_attempts, "read_run_manifest", experiment_pipeline.read_run_manifest)
     monkeypatch.setattr(experiment_pipeline.time, "sleep", lambda *_args: pytest.fail("must not poll"))
     monkeypatch.setattr(
-        experiment_pipeline,
+        pipeline_attempts,
         "merge_run_manifest",
         lambda *_args, **_kwargs: pytest.fail("result verification must not change canonical lifecycle status"),
     )
@@ -1711,7 +1719,7 @@ def test_run_attempts_result_validation_failure_is_terminal_without_changing_can
         lambda *_args, **_kwargs: SimpleNamespace(committed_rows=[dict(canonical)]),
     )
     monkeypatch.setattr(
-        experiment_pipeline,
+        pipeline_attempts,
         "_attempt_recipe",
         lambda *_args, **_kwargs: pytest.fail("result verification failures must not be retried"),
     )
@@ -1806,10 +1814,10 @@ def test_run_attempts_mixed_group_validates_live_snapshot_before_launch(tmp_path
     calls = []
 
     monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_planned_runs",
+        pipeline_attempts,
+        "planned_runs",
         lambda rows: [{"step_id": row["step_id"], "run_id": row["run_id"]} for row in rows],
     )
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(row) for row in attempts])
@@ -1891,10 +1899,10 @@ def test_run_attempts_blocks_on_external_missing_pid_capacity_blocker(tmp_path: 
     }
 
     monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_planned_runs",
+        pipeline_attempts,
+        "planned_runs",
         lambda rows: [{"step_id": row["step_id"], "run_id": row["run_id"]} for row in rows],
     )
     monkeypatch.setattr(
@@ -1910,8 +1918,8 @@ def test_run_attempts_blocks_on_external_missing_pid_capacity_blocker(tmp_path: 
 
     monkeypatch.setattr(experiment_pipeline.managed_scheduler, "launch_managed_runs", blocked_launch)
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_create_needed_retries",
+        pipeline_attempts,
+        "create_needed_retries",
         lambda *_args, **_kwargs: pytest.fail("a missing_pid capacity blocker must not create retries"),
     )
     monkeypatch.setattr(
@@ -1970,10 +1978,10 @@ def test_run_attempts_blocks_before_retry_when_external_run_has_missing_pid(tmp_
     write_rows(pipeline_dir / "jobs.tsv", [attempt])
 
     monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_planned_runs",
+        pipeline_attempts,
+        "planned_runs",
         lambda rows: [{"step_id": row["step_id"], "run_id": row["run_id"]} for row in rows],
     )
     monkeypatch.setattr(
@@ -1987,8 +1995,8 @@ def test_run_attempts_blocks_before_retry_when_external_run_has_missing_pid(tmp_
         lambda *_args, **_kwargs: SimpleNamespace(committed_rows=[dict(attempt)]),
     )
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_create_needed_retries",
+        pipeline_attempts,
+        "create_needed_retries",
         lambda *_args, **_kwargs: pytest.fail("capacity blocker must be handled before retry creation"),
     )
     monkeypatch.setattr(
@@ -2060,10 +2068,10 @@ def test_run_attempts_syncs_owned_missing_pid_and_blocks_pending_sibling(tmp_pat
     canonical = [{**attempts[0], "status": "missing_pid"}, dict(attempts[1])]
 
     monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_planned_runs",
+        pipeline_attempts,
+        "planned_runs",
         lambda rows: [{"step_id": row["step_id"], "run_id": row["run_id"]} for row in rows],
     )
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(row) for row in canonical])
@@ -2075,8 +2083,8 @@ def test_run_attempts_syncs_owned_missing_pid_and_blocks_pending_sibling(tmp_pat
 
     monkeypatch.setattr(experiment_pipeline.managed_scheduler, "launch_managed_runs", blocked_launch)
     monkeypatch.setattr(
-        experiment_pipeline,
-        "_create_needed_retries",
+        pipeline_attempts,
+        "create_needed_retries",
         lambda *_args, **_kwargs: pytest.fail("an owned missing_pid attempt must not create retries"),
     )
     monkeypatch.setattr(
@@ -2134,7 +2142,7 @@ def test_execute_pipeline_persists_and_clears_missing_pid_blocker_on_resume(tmp_
         lambda *_args, **_kwargs: [{"failed_runs": [], "uncertain_runs": [], "complete": True}],
     )
     monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: {})
-    monkeypatch.setattr(experiment_pipeline, "_load_or_create_initial_attempts", lambda *_args: [])
+    monkeypatch.setattr(pipeline_attempts, "load_or_create_initial_attempts", lambda *_args: [])
     monkeypatch.setattr(experiment_pipeline, "_run_attempts", lambda *_args, **_kwargs: blocked_result)
 
     result = experiment_pipeline._execute_pipeline(
@@ -2200,7 +2208,7 @@ def test_planned_runs_rejects_managed_key_drift(tmp_path: Path, field: str, drif
     }
 
     with pytest.raises(ValueError, match="drift"):
-        experiment_pipeline._planned_runs([attempt])
+        pipeline_attempts.planned_runs([attempt])
 
 
 def test_planned_runs_carries_frozen_checkpoint_evidence_to_scheduler(tmp_path: Path):
@@ -2219,7 +2227,7 @@ def test_planned_runs_carries_frozen_checkpoint_evidence_to_scheduler(tmp_path: 
         "checkpoint_sha256": "a" * 64,
     }
 
-    run = experiment_pipeline._planned_runs([attempt])[0]
+    run = pipeline_attempts.planned_runs([attempt])[0]
 
     assert run["checkpoint"] == attempt["checkpoint"]
     assert run["checkpoint_sha256"] == attempt["checkpoint_sha256"]
@@ -2345,7 +2353,7 @@ def test_orphan_checkpoint_selection_is_rederived_before_state_commit(tmp_path: 
         experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
         events = [
             event
-            for event in experiment_pipeline.read_experiment_events(root)
+            for event in pipeline_attempts.read_experiment_events(root)
             if event.get("event_type") == "pipeline_checkpoints_frozen"
         ]
         assert len(events) == 1
@@ -2374,7 +2382,7 @@ def test_completed_pipeline_resume_validates_and_finalizes_without_reexecution(t
     )
     monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: {"age": {}})
     monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: [attempt])
-    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
     monkeypatch.setattr(
         experiment_pipeline,
         "_logical_job_states",
@@ -2448,14 +2456,14 @@ def test_completed_event_append_failure_resumes_before_finalization(tmp_path: Pa
         lambda *_args, **_kwargs: [{"complete": True, "failed_runs": [], "uncertain_runs": []}],
     )
     monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: {"age": {}})
-    monkeypatch.setattr(experiment_pipeline, "_load_or_create_initial_attempts", lambda *_args: [attempt])
+    monkeypatch.setattr(pipeline_attempts, "load_or_create_initial_attempts", lambda *_args: [attempt])
     monkeypatch.setattr(
         experiment_pipeline,
         "_run_attempts",
         lambda *_args, **_kwargs: {"status": "completed", "jobs": [job]},
     )
     monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: [attempt])
-    monkeypatch.setattr(experiment_pipeline, "_validate_attempt_rows", lambda *_args: None)
+    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
     monkeypatch.setattr(experiment_pipeline, "_logical_job_states", lambda *_args: [job])
 
     def aggregate(*_args):
@@ -2470,8 +2478,9 @@ def test_completed_event_append_failure_resumes_before_finalization(tmp_path: Pa
         "append_event",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("event append interrupted")),
     )
+    monkeypatch.setattr(pipeline_attempts, "append_event", experiment_pipeline.append_event)
 
-    with pytest.raises(experiment_pipeline.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+    with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="reconciled on resume"):
         experiment_pipeline._execute_pipeline(
             root,
             pipeline_dir,
@@ -2489,7 +2498,7 @@ def test_completed_event_append_failure_resumes_before_finalization(tmp_path: Pa
         order.append("event")
         original_append(root_path, event_type, payload)
 
-    monkeypatch.setattr(experiment_pipeline, "append_event", append)
+    monkeypatch.setattr(pipeline_attempts, "append_event", append)
     monkeypatch.setattr(
         experiment_pipeline,
         "_inspect_sources",

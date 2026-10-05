@@ -11,7 +11,8 @@ Layering (import direction is one-way: L2 -> L1 -> L0, with domain/ a L0-level
 domain leaf):
   L0 leaves      -- models, decision_models, transport, ...
   L1 adapters/   -- TaskAdapter protocol + registry (generic) + per-task plugins
-  L2 kernel      -- configs, decision_rules, decisions, plan_context, plans, experiment_pipeline
+  L2 kernel      -- configs, decision_rules, decisions, plan_context, plans, experiment_pipeline,
+                    experiment_pipeline_attempts
   domain/        -- sleep2vec summary/validator leaves
 
 The guard scans KERNEL_MODULES | MIXED_MODULES for imports that reach into
@@ -42,6 +43,7 @@ KERNEL_MODULES: frozenset[str] = frozenset(
         "experiment_sources",
         "experiment_tracking",
         "experiment_pipeline",
+        "experiment_pipeline_attempts",
         "experiment_pipeline_cohort_selection",
         "experiment_pipeline_results",
         "experiment_pipeline_spec",
@@ -108,7 +110,15 @@ MIXED_MODULES: frozenset[str] = frozenset(
 #: L2 orchestration modules. The adapter guard uses this subset to enforce the
 #: documented L2 -> L1 direction without forbidding legal adapter imports of L0 leaves.
 L2_MODULES: frozenset[str] = frozenset(
-    {"configs", "decision_rules", "decisions", "experiment_pipeline", "plan_context", "plans"}
+    {
+        "configs",
+        "decision_rules",
+        "decisions",
+        "experiment_pipeline",
+        "experiment_pipeline_attempts",
+        "plan_context",
+        "plans",
+    }
 )
 
 #: Grandfathered (source, target) import edges from a scanned module into a
