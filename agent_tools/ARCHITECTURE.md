@@ -29,13 +29,13 @@ ownership claims or accuracy. This section is the
 split a concern between them — that no single docstring can state. When the two
 disagree, the docstring is next to the code and wins; fix this document.
 
-### Kernel — reusable (36, zero domain signal)
+### Kernel — reusable (37, zero domain signal)
 decision_models, transport, python_programs, manifests, schema_map, gpu_rules, repo,
 runtime_lock, runtime_sync,
 experiment_io, research_log, experiment_workspace, experiment_sources,
 experiment_tracking, experiments,
 run_artifacts, run_evidence, checkpoint_test_results, hparam, hparam_runtime, hparam_selection,
-adaptive_hparam, adaptive_proposals, recipes, progress, markdown, skills,
+adaptive_hparam, adaptive_proposals, adaptive_state, recipes, progress, markdown, skills,
 decisions, plans, plan_contract, decision_rules, managed_scheduler, slurm,
 experiment_pipeline, experiment_pipeline_cohort_selection, experiment_pipeline_results.
 
@@ -50,8 +50,11 @@ one existing checkout. It shares `runtime_lock` with launch paths so an update
 cannot cross the short HEAD-observation-to-process-start critical section.
 
 `adaptive_proposals` owns the pure snapshot, parameter-envelope, and external
-submission-validation contract. `adaptive_hparam` owns the surrounding digest,
-preflight, round registration, launch, and lifecycle orchestration.
+submission-validation contract. `adaptive_state` owns the workflow's durable
+state: round layout, frozen `workflow.json`, `run_registry.tsv`, workflow events,
+and recovery of a launch interrupted before its round committed.
+`adaptive_hparam` owns the surrounding digest, preflight, round registration,
+launch, and lifecycle orchestration over that state.
 
 `checkpoint_test_results` owns pure saved-epoch expectation and checkpoint-test
 result validation shared by hparam selection and adaptive objective extraction.

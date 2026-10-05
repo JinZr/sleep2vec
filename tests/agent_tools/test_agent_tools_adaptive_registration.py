@@ -9,7 +9,16 @@ from agent_tool_test_helpers import write_finetune_recipe
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, hparam_runtime, managed_scheduler, manifests, plan_hparam, plans, run_artifacts
+from agent_tools import (
+    adaptive_hparam,
+    adaptive_state,
+    hparam_runtime,
+    managed_scheduler,
+    manifests,
+    plan_hparam,
+    plans,
+    run_artifacts,
+)
 from agent_tools.experiment_workspace import append_event, file_sha256, read_run_manifest, read_step_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _agent_recipe, _read_table, _run
@@ -605,7 +614,7 @@ def test_adaptive_init_reconciles_plan_event_after_append_failure(
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
     workflow_path = workflow_dir / "adaptive" / "workflow.json"
-    original_write_event = adaptive_hparam._write_experiment_event
+    original_write_event = adaptive_state._write_experiment_event
     failed = False
 
     def fail_plan_event(workspace, event_type, payload):
@@ -617,13 +626,13 @@ def test_adaptive_init_reconciles_plan_event_after_append_failure(
             raise OSError("injected plan event failure")
         return original_write_event(workspace, event_type, payload)
 
-    monkeypatch.setattr(adaptive_hparam, "_write_experiment_event", fail_plan_event)
+    monkeypatch.setattr(adaptive_state, "_write_experiment_event", fail_plan_event)
     with pytest.raises(OSError, match="injected plan event failure"):
         adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
 
     assert len(read_run_manifest(tmp_path)) == 1
     assert not workflow_path.exists()
-    monkeypatch.setattr(adaptive_hparam, "_write_experiment_event", original_write_event)
+    monkeypatch.setattr(adaptive_state, "_write_experiment_event", original_write_event)
 
     adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
     adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
@@ -642,7 +651,7 @@ def test_adaptive_init_reconciles_ready_event_after_append_failure(
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
     workflow_path = workflow_dir / "adaptive" / "workflow.json"
-    original_write_event = adaptive_hparam._write_experiment_event
+    original_write_event = adaptive_state._write_experiment_event
     failed = False
 
     def fail_ready_event(workspace, event_type, payload):
@@ -654,12 +663,12 @@ def test_adaptive_init_reconciles_ready_event_after_append_failure(
             raise OSError("injected adaptive event failure")
         return original_write_event(workspace, event_type, payload)
 
-    monkeypatch.setattr(adaptive_hparam, "_write_experiment_event", fail_ready_event)
+    monkeypatch.setattr(adaptive_state, "_write_experiment_event", fail_ready_event)
     with pytest.raises(OSError, match="injected adaptive event failure"):
         adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
 
     assert workflow_path.is_file()
-    monkeypatch.setattr(adaptive_hparam, "_write_experiment_event", original_write_event)
+    monkeypatch.setattr(adaptive_state, "_write_experiment_event", original_write_event)
 
     adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
     adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
@@ -674,7 +683,7 @@ def test_adaptive_consumers_reject_marker_before_ready_event(tmp_path: Path, mon
     workflow_dir = tmp_path / "workflow"
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     workflow_path = workflow_dir / "adaptive" / "workflow.json"
-    original_reconcile = adaptive_hparam._reconcile_event
+    original_reconcile = adaptive_state.reconcile_event
     marker_published = threading.Event()
     release_initializer = threading.Event()
     errors = []
@@ -690,7 +699,7 @@ def test_adaptive_consumers_reject_marker_before_ready_event(tmp_path: Path, mon
             identity_field=identity_field,
         )
 
-    monkeypatch.setattr(adaptive_hparam, "_reconcile_event", pause_ready_event)
+    monkeypatch.setattr(adaptive_state, "reconcile_event", pause_ready_event)
 
     def initialize():
         try:
@@ -1056,7 +1065,7 @@ def test_adaptive_init_rejects_registry_alias_before_public_readiness(
     registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
     workflow_path = workflow_dir / "adaptive" / "workflow.json"
     outside = tmp_path / "outside.tsv"
-    original_ensure_registry = adaptive_hparam._ensure_initial_registry
+    original_ensure_registry = adaptive_state.ensure_initial_registry
 
     def alias_registry_after_ensure(root, round_dir, plan):
         original_ensure_registry(root, round_dir, plan)
@@ -1068,7 +1077,7 @@ def test_adaptive_init_rejects_registry_alias_before_public_readiness(
         else:
             registry_path.hardlink_to(outside)
 
-    monkeypatch.setattr(adaptive_hparam, "_ensure_initial_registry", alias_registry_after_ensure)
+    monkeypatch.setattr(adaptive_state, "ensure_initial_registry", alias_registry_after_ensure)
 
     with pytest.raises(ValueError, match="missing or aliased"):
         adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
@@ -1165,7 +1174,7 @@ def test_adaptive_init_does_not_repair_valid_registry_mismatch(tmp_path: Path, m
     workflow_dir = tmp_path / "workflow"
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     workflow_path = workflow_dir / "adaptive" / "workflow.json"
-    original_registry_writer = adaptive_hparam._ensure_initial_registry
+    original_registry_writer = adaptive_state.ensure_initial_registry
 
     def write_invalid_registry(root, initial_round_dir, plan):
         original_registry_writer(root, initial_round_dir, plan)
@@ -1174,7 +1183,7 @@ def test_adaptive_init_does_not_repair_valid_registry_mismatch(tmp_path: Path, m
         rows[0]["config"] = str(tmp_path / "other-config.yaml")
         manifests.write_rows(registry_path, rows)
 
-    monkeypatch.setattr(adaptive_hparam, "_ensure_initial_registry", write_invalid_registry)
+    monkeypatch.setattr(adaptive_state, "ensure_initial_registry", write_invalid_registry)
 
     with pytest.raises(ValueError, match="Frozen run field differs"):
         adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
@@ -1185,7 +1194,7 @@ def test_adaptive_init_does_not_repair_valid_registry_mismatch(tmp_path: Path, m
     registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
     registry_before = registry_path.read_bytes()
 
-    monkeypatch.setattr(adaptive_hparam, "_ensure_initial_registry", original_registry_writer)
+    monkeypatch.setattr(adaptive_state, "ensure_initial_registry", original_registry_writer)
     with pytest.raises(ValueError, match="differs from the frozen round"):
         adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
 
@@ -1230,7 +1239,7 @@ def test_adaptive_rounds_keep_frozen_route_and_python_and_allow_commit_and_capac
     round_zero = workflow_dir / "adaptive" / "rounds" / "round_000"
     first_plan = json.loads((round_zero / "plan.json").read_text())
     frozen_identity = {field: first_plan["recipe"]["execution"][field] for field in ("python", "runtime_commit")}
-    frozen_route = adaptive_hparam._execution_route(first_plan["recipe"]["execution"])
+    frozen_route = adaptive_state.execution_route(first_plan["recipe"]["execution"])
     next_commit = "b" * 40
     assert next_commit != frozen_identity["runtime_commit"]
     run = first_plan["runs"][0]
@@ -1267,7 +1276,7 @@ def test_adaptive_rounds_keep_frozen_route_and_python_and_allow_commit_and_capac
     second_plan = json.loads((next_dir / "plan.json").read_text())
     assert second_plan["recipe"]["execution"]["python"] == frozen_identity["python"]
     assert second_plan["recipe"]["execution"]["runtime_commit"] == next_commit
-    assert adaptive_hparam._execution_route(second_plan["recipe"]["execution"]) == frozen_route
+    assert adaptive_state.execution_route(second_plan["recipe"]["execution"]) == frozen_route
     assert workflow_path.read_bytes() == workflow_bytes
 
 
@@ -1833,7 +1842,7 @@ def test_adaptive_events_use_frozen_workspace_after_source_root_changes(tmp_path
     payload["experiment"]["root"] = str(redirected_root)
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    adaptive_hparam._append_event(workflow_dir, "ownership_probe", {})
+    adaptive_state.append_event(workflow_dir, "ownership_probe", {})
 
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert events[-1]["event_type"] == "ownership_probe"
@@ -1936,7 +1945,7 @@ def test_adaptive_registry_ownership_fails_before_workflow_mutation(tmp_path: Pa
     before = {path.relative_to(workflow_dir): path.read_bytes() for path in workflow_dir.rglob("*") if path.is_file()}
 
     with pytest.raises(ValueError, match="canonical manifest|Frozen run field differs"):
-        adaptive_hparam._workflow(workflow_dir)
+        adaptive_state.read_workflow(workflow_dir)
 
     assert {
         path.relative_to(workflow_dir): path.read_bytes() for path in workflow_dir.rglob("*") if path.is_file()
@@ -1951,7 +1960,7 @@ def test_adaptive_registry_rejects_header_only_legacy_identity(tmp_path: Path):
     registry_path.write_text("trial_id\tround\n")
 
     with pytest.raises(ValueError, match="Historical trial_id fields"):
-        adaptive_hparam._workflow(workflow_dir)
+        adaptive_state.read_workflow(workflow_dir)
 
     assert registry_path.read_text() == "trial_id\tround\n"
 

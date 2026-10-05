@@ -8,7 +8,7 @@ import threading
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, adaptive_proposals, hparam_runtime, manifests, run_evidence
+from agent_tools import adaptive_hparam, adaptive_proposals, adaptive_state, hparam_runtime, manifests, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -417,7 +417,7 @@ def test_agent_proposal_preview_is_read_only_and_execute_uses_bound_snapshot(tmp
     assert suggestion_payload["search"]["parameters"]["runtime.lr"] == [5e-7]
     assert suggestion_payload["search"]["max_runs"] == 1
     assert accepted["request_id"] == json.loads(input_path.read_text())["request_id"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_state.latest_round_index(workflow_dir) == 1
     assert "agent_proposal_accepted" in events_path.read_text()
     assert "agent_proposal_execute_completed" in events_path.read_text()
     replay_evidence = {
@@ -710,7 +710,7 @@ def test_agent_proposal_execute_replay_blocks_later_uncommitted_launch(tmp_path:
         "registry": (workflow_dir / "adaptive" / "run_registry.tsv").read_bytes(),
         "manifest": (tmp_path / "run_manifest.tsv").read_bytes(),
     }
-    monkeypatch.setattr(adaptive_hparam, "_uncommitted_launch_attempts", lambda *_args: ([(2, "run-999")], []))
+    monkeypatch.setattr(adaptive_state, "uncommitted_launch_attempts", lambda *_args: ([(2, "run-999")], []))
 
     with pytest.raises(RuntimeError, match="round 002 run-999.*exact committed replay is blocked"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
@@ -869,7 +869,7 @@ def test_agent_proposal_execute_replay_requires_complete_target_registry(tmp_pat
     round_one_rows = [row for row in registry_rows if row["round"] == "1"]
     assert len(round_one_rows) == 2
     manifests.write_rows(registry_path, [row for row in registry_rows if row != round_one_rows[1]])
-    monkeypatch.setattr(adaptive_hparam, "_workflow", lambda *_args: {})
+    monkeypatch.setattr(adaptive_state, "read_workflow", lambda *_args: {})
 
     with pytest.raises(ValueError, match="Adaptive registry is missing the current plan run"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=proposal_path, execute=True)
@@ -1525,7 +1525,7 @@ def test_agent_proposal_zero_start_recovery_uses_a_fresh_target_round(tmp_path: 
 
     first_attempt = workflow_dir / "adaptive" / "rounds" / "round_001"
     assert first_attempt.exists()
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    assert adaptive_state.latest_round_index(workflow_dir) == 0
     second_input = adaptive_hparam.adaptive_step(workflow_dir)
     assert second_input is not None
     second_snapshot = json.loads(second_input.read_text())
@@ -1550,7 +1550,7 @@ def test_agent_proposal_zero_start_recovery_uses_a_fresh_target_round(tmp_path: 
 
     adaptive_hparam.adaptive_step(workflow_dir, proposal_path=second_proposal, execute=True)
 
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 2
+    assert adaptive_state.latest_round_index(workflow_dir) == 2
     assert (workflow_dir / "adaptive" / "rounds" / "round_002").exists()
     statuses = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
     assert statuses == {"run-000": "finished", "run-001": "superseded", "run-002": "launched"}

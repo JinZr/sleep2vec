@@ -7,7 +7,7 @@ import shlex
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, hparam_runtime, manifests, python_programs, run_evidence
+from agent_tools import adaptive_hparam, adaptive_state, hparam_runtime, manifests, python_programs, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -46,7 +46,7 @@ def test_best_neighborhood_step_replaces_bad_running_run_before_round_terminal(t
     )
     stopped = []
     call_order = []
-    real_append_event = adaptive_hparam._append_event
+    real_append_event = adaptive_state.append_event
 
     def fake_launch(run_dir, *, dry_run=True):
         call_order.append("launch")
@@ -83,13 +83,13 @@ def test_best_neighborhood_step_replaces_bad_running_run_before_round_terminal(t
 
     monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", fake_launch)
     monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
-    monkeypatch.setattr(adaptive_hparam, "_append_event", record_launch_round)
+    monkeypatch.setattr(adaptive_state, "append_event", record_launch_round)
 
     adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
     assert stopped == [(round_dir, "run-000")]
     assert call_order == ["launch", "commit", "stop"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_state.latest_round_index(workflow_dir) == 1
     assert "stop_bad_running_run" in (tmp_path / "events.jsonl").read_text()
 
 
@@ -140,7 +140,7 @@ def test_adaptive_step_refreshes_terminal_blocker_before_launching_replacement_o
     stopped = []
     call_order = []
     real_launch = adaptive_hparam.launch_hparam_runs
-    real_append_event = adaptive_hparam._append_event
+    real_append_event = adaptive_state.append_event
 
     def record_launch(run_dir, *, dry_run=True):
         result = real_launch(run_dir, dry_run=dry_run)
@@ -172,7 +172,7 @@ def test_adaptive_step_refreshes_terminal_blocker_before_launching_replacement_o
 
     monkeypatch.setattr(adaptive_hparam, "launch_hparam_runs", record_launch)
     monkeypatch.setattr(adaptive_hparam, "stop_hparam_run", fake_stop)
-    monkeypatch.setattr(adaptive_hparam, "_append_event", record_event)
+    monkeypatch.setattr(adaptive_state, "append_event", record_event)
 
     adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
@@ -277,7 +277,7 @@ def test_adaptive_step_zero_start_after_drain_keeps_old_round_authoritative(
     }
     assert set(next_statuses.values()) == {"pending"}
     assert calls == ["launch", "stop:run-000", "launch"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    assert adaptive_state.latest_round_index(workflow_dir) == 0
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert "launch_round" not in [event["event_type"] for event in events]
 
@@ -354,7 +354,7 @@ def test_adaptive_step_mixed_launch_failure_after_drain_stops_no_additional_run(
     }
     assert [current_by_id[f"run-{index:03d}"]["status"] for index in range(2)] == ["stopped", "running"]
     assert calls == ["launch", "stop:run-000", "launch"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_state.latest_round_index(workflow_dir) == 1
 
 
 def test_adaptive_step_commits_canonical_start_when_drain_launcher_raises(tmp_path: Path, monkeypatch):
@@ -414,7 +414,7 @@ def test_adaptive_step_commits_canonical_start_when_drain_launcher_raises(tmp_pa
     assert next(row["status"] for row in rows if row["run_id"] == current_run["run_id"]) == "stopped"
     assert any(row["status"] == "launched" and row["run_id"] != current_run["run_id"] for row in rows)
     assert calls == ["launch", "stop:run-000", "launch"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_state.latest_round_index(workflow_dir) == 1
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("launch_round") == 1
 
@@ -495,7 +495,7 @@ def test_adaptive_step_reconciles_pid_after_post_drain_commit_failure(tmp_path: 
     assert prospective["process_group_id"] == "123"
     assert prospective["process_start_token"] == "proc:unit-start"
     assert calls == ["launch", "stop:run-000", "launch"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_state.latest_round_index(workflow_dir) == 1
     assert (
         next(
             row["status"]
@@ -603,7 +603,7 @@ def test_adaptive_step_second_handoff_failure_does_not_stop_third_bad_run(tmp_pa
     }
     assert [current_by_id[f"run-{index:03d}"]["status"] for index in range(3)] == ["stopped", "stopped", "running"]
     assert calls == ["launch", "stop:run-000", "launch", "stop:run-001", "launch"]
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 1
+    assert adaptive_state.latest_round_index(workflow_dir) == 1
 
 
 @pytest.mark.parametrize(
@@ -696,7 +696,7 @@ def test_adaptive_step_stop_failure_does_not_relaunch_or_stop_another_run(
         if row["run_id"] in {run["run_id"] for run in next_runs}
     }
     assert set(next_statuses.values()) == {"pending"}
-    assert adaptive_hparam._latest_round_index(workflow_dir) == 0
+    assert adaptive_state.latest_round_index(workflow_dir) == 0
 
 
 def test_adaptive_step_execute_at_budget_keeps_current_runs_unchanged(tmp_path: Path, monkeypatch):
