@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import os
 from pathlib import Path
 
@@ -40,7 +41,7 @@ def test_select_checkpoints_validates_input_directory(tmp_path: Path):
 
     empty_dir = tmp_path / "empty"
     empty_dir.mkdir()
-    with pytest.raises(ValueError, match="No .ckpt files found"):
+    with pytest.raises(ValueError, match=r"Not enough epoch=\*\.ckpt checkpoints .* requested 1, found 0"):
         select_checkpoints(empty_dir, end_ckpt=None, num_ckpts=1)
 
 
@@ -60,27 +61,38 @@ def test_select_checkpoints_prefers_epoch_ordering(tmp_path: Path):
     assert [p.name for p in selected] == ["epoch=1-step=10.ckpt", "epoch=2-step=20.ckpt"]
 
 
-def test_select_checkpoints_falls_back_to_mtime_when_epochs_absent(tmp_path: Path):
-    ckpt_dir = tmp_path / "mtime_ckpts"
+@pytest.mark.parametrize("namespace", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_select_checkpoints_never_widens_to_aliases_or_mtime_order(tmp_path: Path, namespace: str):
+    select = importlib.import_module(f"{namespace}.checkpoints").select_checkpoints
+    ckpt_dir = tmp_path / "ckpts"
     ckpt_dir.mkdir()
     state = {"w": torch.tensor([1.0])}
+    # Aliases and unnamed checkpoints are written last, so an mtime fallback would pick them first.
+    names = ["epoch=00.ckpt", "epoch=01.ckpt", "best-epoch=01.ckpt", "best.ckpt", "last.ckpt", "other.ckpt"]
+    for i, name in enumerate(names):
+        _save_ckpt(ckpt_dir / name, state)
+        os.utime(ckpt_dir / name, (100 + i, 100 + i))
 
-    files = [ckpt_dir / "a.ckpt", ckpt_dir / "b.ckpt", ckpt_dir / "c.ckpt"]
-    for i, path in enumerate(files):
-        _save_ckpt(path, state)
-        mtime = 100 + i
-        os.utime(path, (mtime, mtime))
+    selected = select(ckpt_dir, end_ckpt=None, num_ckpts=2)
+    assert [p.name for p in selected] == ["epoch=00.ckpt", "epoch=01.ckpt"]
 
-    selected = select_checkpoints(ckpt_dir, end_ckpt=None, num_ckpts=2)
-    assert [p.name for p in selected] == ["b.ckpt", "c.ckpt"]
+    # The best alias still bounds the range by its epoch, without becoming a candidate itself.
+    selected = select(ckpt_dir, end_ckpt=ckpt_dir / "best-epoch=01.ckpt", num_ckpts=2)
+    assert [p.name for p in selected] == ["epoch=00.ckpt", "epoch=01.ckpt"]
+
+    with pytest.raises(ValueError, match=r"Not enough epoch=\*\.ckpt checkpoints .* requested 3, found 2"):
+        select(ckpt_dir, end_ckpt=None, num_ckpts=3)
+    with pytest.raises(ValueError, match="carries no epoch"):
+        select(ckpt_dir, end_ckpt=ckpt_dir / "last.ckpt", num_ckpts=2)
 
 
-def test_select_checkpoints_rejects_when_not_enough_candidates(tmp_path: Path):
-    ckpt_dir = tmp_path / "few_ckpts"
+def test_select_checkpoints_rejects_duplicate_epochs(tmp_path: Path):
+    ckpt_dir = tmp_path / "dup_ckpts"
     ckpt_dir.mkdir()
-    _save_ckpt(ckpt_dir / "only.ckpt", {"w": torch.tensor([1.0])})
+    for name in ["epoch=1-step=10.ckpt", "epoch=1-step=20.ckpt", "epoch=2-step=30.ckpt"]:
+        _save_ckpt(ckpt_dir / name, {"w": torch.tensor([1.0])})
 
-    with pytest.raises(ValueError, match="Not enough checkpoints to average"):
+    with pytest.raises(ValueError, match="Duplicate epoch 1 checkpoints"):
         select_checkpoints(ckpt_dir, end_ckpt=None, num_ckpts=2)
 
 
