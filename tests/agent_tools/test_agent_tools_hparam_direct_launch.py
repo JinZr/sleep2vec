@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -91,7 +92,8 @@ def test_hparam_launch_rejects_unregistered_plan_copy_before_start(tmp_path: Pat
         hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
     )
 
-    with pytest.raises(ValueError, match="not registered"):
+    # The frozen contract is checked before locking, so the copy's stale run paths fail ahead of registration.
+    with pytest.raises(ValueError, match="differs from canonical expected runs field run_dir"):
         hparam_runtime.launch_hparam_runs(copied_plan, dry_run=False)
 
     assert started == []
@@ -206,8 +208,12 @@ def test_hparam_launch_serializes_concurrent_execute_calls(tmp_path: Path, monke
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     entered = threading.Event()
     release = threading.Event()
+    second_parked = threading.Event()
+    first_done = threading.Event()
     started = []
     failures = []
+    real_lstat = os.lstat
+    real_run_lock = managed_scheduler.managed_run_lock
 
     def start(_execution, command):
         started.append(command)
@@ -215,18 +221,39 @@ def test_hparam_launch_serializes_concurrent_execute_calls(tmp_path: Path, monke
         assert release.wait(timeout=5)
         return "launched"
 
-    def launch():
+    def lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if threading.current_thread() is second and os.fspath(path).endswith("run_manifest.tsv"):
+            # Keep a managed read between its stat and open until the first launch commits its manifest replacement.
+            second_parked.set()
+            assert first_done.wait(timeout=5)
+        return info
+
+    @contextlib.contextmanager
+    def run_lock(workspace):
+        if threading.current_thread() is second:
+            second_parked.set()
+        with real_run_lock(workspace):
+            yield
+
+    def launch(done=None):
         try:
             hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
         except Exception as exc:
             failures.append(exc)
+        finally:
+            if done is not None:
+                done.set()
 
-    monkeypatch.setattr(hparam_runtime, "_start_process", start)
-    first = threading.Thread(target=launch)
+    first = threading.Thread(target=launch, args=(first_done,))
     second = threading.Thread(target=launch)
+    monkeypatch.setattr(hparam_runtime, "_start_process", start)
+    monkeypatch.setattr(os, "lstat", lstat)
+    monkeypatch.setattr(managed_scheduler, "managed_run_lock", run_lock)
     first.start()
     assert entered.wait(timeout=5)
     second.start()
+    assert second_parked.wait(timeout=5)
     lock_probe = subprocess.run(
         [
             sys.executable,

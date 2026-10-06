@@ -67,7 +67,9 @@ def launch_hparam_runs(
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
-    plan = artifacts.read_hparam_plan(run_dir)
+    # Only the frozen workspace binding is needed to lock; a concurrent lock holder may replace run_manifest.tsv
+    # and events.jsonl, so _launch_hparam_runs repeats the full workspace-state validation under the lock.
+    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False, require_adaptive_commit=False)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
