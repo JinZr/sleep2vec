@@ -38,7 +38,7 @@ def _sidecar_recipe(tmp_path: Path, kind: str, *, variant: str = "sleep2vec", hp
     else:
         payload = survival_config_payload(index, sidecars)
     if kind == "multilabel":
-        payload["finetune"].pop("survival")
+        survival = payload["finetune"].pop("survival")
         if variant == "sex_age_baseline":
             payload["finetune"]["loss"] = {"pos_weight": None}
         payload["finetune"]["task"]["type"] = "multilabel_classification"
@@ -47,6 +47,8 @@ def _sidecar_recipe(tmp_path: Path, kind: str, *, variant: str = "sleep2vec", hp
             "disease_columns_index": sidecars["disease_columns_index"],
             "label_index": sidecars["is_event_index"],
             "has_label_index": sidecars["has_label_index"],
+            # The baseline's required covariates move with the task block; the signal source declares none.
+            **{key: value for key, value in survival.items() if key.startswith("covariate")},
         }
     write_yaml(tmp_path / "config.yaml", payload)
     payload = yaml.safe_load(recipe.read_text())

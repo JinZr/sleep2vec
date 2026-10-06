@@ -115,7 +115,7 @@ class TaskAdapter:
     #: recipe-level preset override and the kernel's config fallback applies.
     preset_path_recipe_field: str | None = None
     #: True enables path_issues' dataset-source existence checks (npz
-    #: effective preset/index; sex_age kaldi data root/manifest).
+    #: effective preset/index; kaldi data root/manifest).
     validates_dataset_paths: bool = False
     #: Composite task's base-layer task name; non-None means recipes may
     #: carry two layers (_base_recipe/_local_recipe), the base layer closes

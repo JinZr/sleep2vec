@@ -60,7 +60,7 @@ from .experiment_workspace import (
     run_identity,
 )
 from .manifests import read_json, write_json, write_text
-from .models import REPO_ROOT, ConfigSummaryInput, coerce_list, resolve_repo_path
+from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, ConfigSummaryInput, coerce_list, resolve_repo_path
 from .repo import repo_summary
 
 FROZEN_FINAL_EVAL_CONFIG_NAME = plan_contract.FROZEN_FINAL_EVAL_CONFIG_NAME
@@ -762,7 +762,7 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
             "--eval-split",
             "test",
             *rendering.infer_runtime_cli_args(runtime),
-            *rendering.infer_input_cli_args(inputs, variant=str(recipe.get("variant"))),
+            *rendering.infer_input_cli_args(inputs),
         ]
     )
 
@@ -1124,17 +1124,18 @@ def render_hparam_preflight_card(
     config_module = rendering.variant_module(recipe, "config")
     loader = f"{config_module}.load_finetune_config"
     routes: dict[tuple[str, str, str, str, tuple[str, ...]], list[str]] = {}
-    models: dict[bytes, dict[str, Any]] = {}
+    summaries: dict[bytes, Mapping[str, Any]] = {}
     for run, config_bytes in run_configs:
-        if config_bytes not in models:
-            summary: Mapping[str, Any] = configs.config_summary(
+        if config_bytes not in summaries:
+            summaries[config_bytes] = configs.config_summary(
                 recipe["inputs"]["config"],
                 variant=variant,
                 validate_survival_local_paths=False,
                 config_bytes=config_bytes,
             )
-            models[config_bytes] = summary.get("model") or {}
-        model = models[config_bytes]
+        model = summaries[config_bytes].get("model") or {}
+        finetune = summaries[config_bytes].get(CONFIG_FINETUNE_SECTION) or {}
+        label_task = finetune.get("survival") or finetune.get("multilabel") or {}
         architecture = model.get("backbone") or model.get("name")
         if architecture in (None, ""):
             raise ValueError(f"Generated hparam config lacks architecture provenance: {run['run_id']}")
@@ -1143,8 +1144,11 @@ def render_hparam_preflight_card(
             details.append(f"hidden_size={model['hidden_size']}")
         if model.get("backbone_depth") not in (None, ""):
             details.append(f"layers={model['backbone_depth']}")
-        if isinstance(model.get("features"), list) and model["features"]:
-            details.append(f"features={', '.join(str(feature) for feature in model['features'])}")
+        if label_task.get("covariates"):
+            details.append(
+                f"covariates={', '.join(str(name) for name in label_task['covariates'])}, "
+                f"covariate_dim={label_task.get('covariate_embedding_dim')}"
+            )
         architecture_text = str(architecture)
         if details:
             architecture_text += f" ({', '.join(details)})"
@@ -1207,7 +1211,8 @@ def render_hparam_preflight_card(
         f"- Total planned runs: {len(run_configs)}",
         f"- Target CLI argv checks: {len(run_configs)}",
         f"- Target CLI argv SHA-256: `{snapshot['validated_argv_sha256']}`",
-        f"- Planner-local final-config checks: {len(run_configs)} runs; {len(models)} unique exact YAML byte sequences",
+        f"- Planner-local final-config checks: {len(run_configs)} runs; "
+        f"{len(summaries)} unique exact YAML byte sequences",
         f"- Planner-local validators: `{config_module}.load_finetune_config` + `{config_module}.validate_model_config`",
         "- Final-config checks run in the planner's current Python/code environment; "
         "target CLI preflight proves argument parsing only.",

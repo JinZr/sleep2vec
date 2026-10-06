@@ -187,7 +187,7 @@ _PREFLIGHT_VARIANT_CASES = [
         "configs/sex_age_baseline/cox.yaml",
         "sex_age_baseline.finetune",
         "sex_age_baseline.config.load_finetune_config",
-        "sex_age_mlp (features=age, sex)",
+        "sex_age_mlp (covariates=age, sex, covariate_dim=16)",
         None,
     ),
 ]
@@ -304,32 +304,6 @@ def test_hparam_preflight_card_requires_architecture_provenance():
         )
 
 
-def test_hparam_preflight_card_keeps_sex_age_structural_loader(monkeypatch):
-    import sex_age_baseline.config as baseline_config
-
-    config_path = "configs/sex_age_baseline/cox.yaml"
-    config_bytes = (REPO_ROOT / config_path).read_bytes()
-    load_config = baseline_config.load_config
-    calls = []
-
-    def tracked_load(path, *, validate_sidecars=False):
-        calls.append((Path(path).read_bytes(), validate_sidecars))
-        return load_config(path, validate_sidecars=validate_sidecars)
-
-    monkeypatch.setattr(baseline_config, "load_config", tracked_load)
-    validate_finetune_config_bytes({"variant": "sex_age_baseline"}, config_bytes)
-    assert calls == [(config_bytes, False)]
-    calls.clear()
-    card = render_hparam_preflight_card(
-        {"variant": "sex_age_baseline", "inputs": {"config": config_path}},
-        _snapshot("sex_age_baseline.finetune"),
-        [({"run_id": "run-000"}, config_bytes)],
-    )
-
-    assert calls == [(config_bytes, False)]
-    assert "sex_age_mlp (features=age, sex)" in card
-
-
 @pytest.mark.parametrize(("variant", "config_path", "module"), [case[:3] for case in _PREFLIGHT_VARIANT_CASES])
 @pytest.mark.parametrize("sidecar_kind", ["survival", "multilabel"])
 def test_hparam_card_skips_sidecar_tables_without_weakening_validation(
@@ -345,7 +319,9 @@ def test_hparam_card_skips_sidecar_tables_without_weakening_validation(
     bad_table.write_text("eid,wrong_column\n001,1\n")
     payload = yaml.safe_load((REPO_ROOT / config_path).read_bytes())
     payload["data"]["finetune_data_index"] = str(index)
-    payload["finetune"].pop("survival", None)
+    source_task = payload["finetune"].pop("survival", None) or {}
+    # The baseline's required covariates stay; the signal sources declare none.
+    covariates = {key: value for key, value in source_task.items() if key.startswith("covariate")}
     if variant == "sex_age_baseline" and sidecar_kind == "multilabel":
         payload["finetune"].pop("loss", None)
     payload["finetune"]["task"] = {
@@ -364,6 +340,7 @@ def test_hparam_card_skips_sidecar_tables_without_weakening_validation(
         "key_column": "eid",
         "disease_columns_index": str(disease_columns),
         **{field: str(bad_table) for field in table_fields},
+        **covariates,
     }
     config = tmp_path / "config.yaml"
     config_bytes = yaml.safe_dump(payload).encode()

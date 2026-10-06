@@ -19,7 +19,8 @@ if str(REPO_ROOT) not in sys.path:
 @dataclass(frozen=True)
 class ConfigVariant:
     config_module: str
-    preset_module: str
+    # None for a variant without signal channels, whose configs have no preset build to check.
+    preset_module: str | None
 
 
 @dataclass(frozen=True)
@@ -37,12 +38,12 @@ BASE_VARIANT = ConfigVariant("sleep2vec.config", "preprocess.save_dataset_preset
 CONFIG_VARIANTS = {
     "sleep2expert": ConfigVariant("sleep2expert.config", "sleep2expert.preprocess.save_dataset_presets"),
     "sleep2vec2": ConfigVariant("sleep2vec2.config", "sleep2vec2.preprocess.save_dataset_presets"),
+    "sex_age_baseline": ConfigVariant("sex_age_baseline.config", None),
 }
 # `CONFIG_VARIANTS` is keyed by the path segment that names a fork, so it has no entry for
 # the base variant. Declaring a variant explicitly has to be able to name it.
 DECLARABLE_VARIANTS = {"sleep2vec": BASE_VARIANT, **CONFIG_VARIANTS}
 SLEEP2STAT_CONFIG_DIR = "sleep2stat"
-SEX_AGE_BASELINE_CONFIG_DIR = "sex_age_baseline"
 
 
 def parse_args() -> argparse.Namespace:
@@ -123,6 +124,10 @@ def _resolve_config_variant(
             return DECLARABLE_VARIANTS[variant]
         except KeyError:
             raise ValueError(f"Unknown variant {variant!r}. Expected one of {sorted(DECLARABLE_VARIANTS)}.") from None
+    # The baseline's model name is unique to its schema, so it outranks the path heuristics.
+    model_block = config_data.get("model") if config_data is not None else None
+    if isinstance(model_block, dict) and model_block.get("name") == "sex_age_mlp":
+        return CONFIG_VARIANTS["sex_age_baseline"]
     try:
         rel_path = path.resolve().relative_to(CONFIG_ROOT.resolve())
     except ValueError:
@@ -141,7 +146,6 @@ def _resolve_config_variant(
         if path.name.startswith(f"{name}_") or path.name.startswith(f"{name}-"):
             return variant
 
-    model_block = config_data.get("model") if config_data is not None else None
     backbone_block = model_block.get("backbone") if isinstance(model_block, dict) else None
     finetune_block = config_data.get("finetune") if config_data is not None else None
     has_moe_backbone = isinstance(backbone_block, dict) and "moe" in backbone_block
@@ -167,36 +171,24 @@ def _is_sleep2stat_config(path: Path, config_data: dict[str, t.Any]) -> bool:
     return set(config_data) >= {"run", "data", "signals", "analyzers", "reducers", "outputs"}
 
 
-def _is_sex_age_baseline_config(path: Path, config_data: dict[str, t.Any]) -> bool:
-    try:
-        rel_path = path.resolve().relative_to(CONFIG_ROOT.resolve())
-    except ValueError:
-        rel_path = None
-    if rel_path is not None and rel_path.parts and rel_path.parts[0] == SEX_AGE_BASELINE_CONFIG_DIR:
-        return True
-    model_block = config_data.get("model") if isinstance(config_data.get("model"), dict) else {}
-    return model_block.get("name") == "sex_age_mlp"
-
-
 def _reject_declared_variant_for(variant: str | None, family: str) -> None:
-    """`--variant` can only name a sleep2vec-family loader, so any other family contradicts it.
+    """`--variant` can only name a model-variant loader, so any other family contradicts it.
 
-    Honouring the declaration here would validate a `sleep2stat` or `sex_age_baseline` config
-    through a loader that has never seen its schema; ignoring it would report success under a
-    loader the declared run never calls. Both answers are about the wrong command, so say which
-    two things disagree instead.
+    Honouring the declaration here would validate a `sleep2stat` config through a loader that
+    has never seen its schema; ignoring it would report success under a loader the declared run
+    never calls. Both answers are about the wrong command, so say which two things disagree
+    instead.
     """
     if variant is None:
         return
     raise ValueError(
-        f"--variant {variant} declares a sleep2vec-family loader, but this config is a {family} "
+        f"--variant {variant} declares a model-variant loader, but this config is a {family} "
         f"config, and {family} is not declarable. Drop --variant to validate it under its own "
         "loader, or point the declaration at the config that run will load."
     )
 
 
-def _load_config_tools(path: Path, config_data: dict[str, t.Any], declared_variant: str | None = None) -> ConfigTools:
-    variant = _resolve_config_variant(path, config_data, declared_variant)
+def _load_config_tools(variant: ConfigVariant) -> ConfigTools:
     config_module = import_module(variant.config_module)
     preset_module = import_module(variant.preset_module)
     return ConfigTools(
@@ -300,14 +292,13 @@ def check_config_file(path: Path, variant: str | None = None) -> None:
 
         load_config(path)
         return
-    if _is_sex_age_baseline_config(path, config_data):
-        _reject_declared_variant_for(variant, SEX_AGE_BASELINE_CONFIG_DIR)
-        from sex_age_baseline.config import load_finetune_config, validate_model_config
-
-        bundle = load_finetune_config(path)
-        validate_model_config(bundle.model)
+    resolved = _resolve_config_variant(path, config_data, variant)
+    if resolved.preset_module is None:
+        # Without signal channels the config loader is the whole contract.
+        config_module = import_module(resolved.config_module)
+        config_module.validate_model_config(config_module.load_finetune_config(path).model)
         return
-    tools = _load_config_tools(path, config_data, variant)
+    tools = _load_config_tools(resolved)
     _validate_runtime_loader_contract(path, config_data, tools)
     _validate_repo_policy(path, config_data, tools)
     _validate_preset_build_contract(config_data, tools)

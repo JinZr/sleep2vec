@@ -17,7 +17,7 @@ Confirm checkpoint identity, eval split, averaging policy, external-test unlock,
 The agent must stop and ask the user before continuing if any high-impact decision is missing, ambiguous, conflicting, or marked as `ASK_USER`.
 
 ## Canonical commands
-Use the recipe `variant` to choose the module: `python -m sleep2vec.infer`, `python -m sleep2vec2.infer`, `python -m sleep2expert.infer`, or `python -m sex_age_baseline.infer`. When runtime identity is declared, use its frozen Python. `sex_age_baseline.infer` takes the same options as `sleep2vec.infer`, including checkpoint averaging, except `--override-dataset-names`; it fails at launch when `--pretrained-backbone-path` is set.
+Use the recipe `variant` to choose the module: `python -m sleep2vec.infer`, `python -m sleep2vec2.infer`, `python -m sleep2expert.infer`, or `python -m sex_age_baseline.infer`. When runtime identity is declared, use its frozen Python. `sex_age_baseline.infer` takes the same options as `sleep2vec.infer`, including checkpoint averaging and `--override-dataset-names`; it fails at launch when `--pretrained-backbone-path` is set.
 
 For rolling latest-main maintenance, use one existing checkout. Run
 `python -m agent_tools runtime-sync --workdir <checkout> [--host <host>]` first;

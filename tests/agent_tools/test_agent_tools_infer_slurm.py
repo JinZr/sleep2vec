@@ -86,7 +86,7 @@ def _infer_slurm_recipe(tmp_path: Path, *, variant: str, task: str, runtime_comm
     workdir.mkdir()
     if variant == "sex_age_baseline":
         index = inputs_dir / "index.csv"
-        index.write_text("eid,split,age,sex\n001,train,50,0\n002,val,60,1\n")
+        index.write_text("path,split,duration,eid,age,sex\nx.npz,train,60,001,50,0\ny.npz,val,60,002,60,1\n")
         config_values = yaml.safe_load((REPO_ROOT / "configs" / "sex_age_baseline" / "cox.yaml").read_text())
         config_values["data"]["finetune_data_index"] = str(index)
         config_values["finetune"]["task"]["output_dim"] = 2

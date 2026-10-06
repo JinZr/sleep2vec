@@ -7,20 +7,7 @@ from typing import Any
 
 import yaml
 
-
-@dataclass(frozen=True)
-class AgeConfig:
-    transform: str
-    scale: float
-    embedding_dim: int
-    initialization: str
-
-
-@dataclass(frozen=True)
-class SexConfig:
-    encoding: str
-    embedding_dim: int
-    initialization: str
+from sleep2vec.config import COVARIATE_FIELDS, parse_covariate_fields
 
 
 @dataclass(frozen=True)
@@ -35,23 +22,20 @@ class HeadConfig:
 @dataclass(frozen=True)
 class ModelConfig:
     name: str
-    features: list[str]
-    age: AgeConfig | None
-    sex: SexConfig | None
-    bmi: AgeConfig | None
     head: HeadConfig
 
 
 @dataclass(frozen=True)
 class DataConfig:
+    """The signal model's data inputs, with the same spellings and dataset-name substring semantics."""
+
     backend: str
     finetune_data_index: str | None
     finetune_preset_path: str | None
     kaldi_data_root: str | None
     kaldi_manifest: str | None
-    split_column: str
-    key_column: str
-    deduplicate_by_key: bool
+    train_dataset_names: list[str] | None
+    test_dataset_names: list[str] | None
 
 
 @dataclass(frozen=True)
@@ -70,6 +54,9 @@ class SurvivalConfig:
     event_time_index: str
     is_event_index: str
     has_label_index: str
+    covariates: list[str]
+    covariate_embedding_dim: int
+    covariate_normalization: dict[str, dict[str, float]]
 
 
 @dataclass(frozen=True)
@@ -78,6 +65,9 @@ class MultilabelConfig:
     disease_columns_index: str
     label_index: str
     has_label_index: str
+    covariates: list[str]
+    covariate_embedding_dim: int
+    covariate_normalization: dict[str, dict[str, float]]
 
 
 @dataclass(frozen=True)
@@ -101,14 +91,11 @@ class BaselineConfig:
     finetune: FinetuneConfig
 
 
-def load_config(path: str | Path, *, validate_sidecars: bool = False) -> BaselineConfig:
+def load_config(path: str | Path) -> BaselineConfig:
     raw = yaml.safe_load(Path(path).read_text())
     if not isinstance(raw, dict):
         raise ValueError("Sex/age baseline config must contain a YAML mapping.")
-    cfg = _build_config(raw)
-    if validate_sidecars:
-        validate_sidecar_shapes(cfg)
-    return cfg
+    return _build_config(raw)
 
 
 def load_finetune_config(path: str | Path) -> BaselineConfig:
@@ -120,21 +107,16 @@ def load_pretrain_config(path: str | Path):
 
 
 def validate_model_config(model_cfg: ModelConfig | BaselineConfig) -> int:
+    """Loading already validates the model block; returns the head width for the shared variant contract."""
     model = model_cfg.model if isinstance(model_cfg, BaselineConfig) else model_cfg
-    return sum(getattr(model, feature).embedding_dim for feature in model.features)
+    return model.head.hidden_dim
 
 
-def validate_sidecar_shapes(cfg: BaselineConfig) -> None:
-    task = cfg.finetune.task
-    if task.type == "survival":
-        from data.survival import load_survival_label_table
-
-        load_survival_label_table(cfg.finetune.survival, expected_output_dim=task.output_dim)
-        return
-    if task.type == "multilabel_classification":
-        from data.multilabel import load_multilabel_label_table
-
-        load_multilabel_label_table(cfg.finetune.multilabel, expected_output_dim=task.output_dim)
+def covariate_task_config(cfg: BaselineConfig) -> SurvivalConfig | MultilabelConfig:
+    """The task block that owns the label sidecars, key column and covariates."""
+    task_cfg = cfg.finetune.survival if cfg.finetune.task.type == "survival" else cfg.finetune.multilabel
+    assert task_cfg is not None
+    return task_cfg
 
 
 def _build_config(raw: dict[str, Any]) -> BaselineConfig:
@@ -144,66 +126,21 @@ def _build_config(raw: dict[str, Any]) -> BaselineConfig:
         raise ValueError(f"config contains unsupported top-level fields: {extra}")
     model = _build_model(_mapping(raw, "model"))
     data = _build_data(_mapping(raw, "data"))
-    finetune = _build_finetune(_mapping(raw, "finetune"), data)
+    finetune = _build_finetune(_mapping(raw, "finetune"))
     return BaselineConfig(model=model, data=data, finetune=finetune)
 
 
 def _build_model(raw: dict[str, Any]) -> ModelConfig:
+    extra = sorted(set(raw) - {"name", "head"})
+    if extra:
+        raise ValueError(
+            f"model contains unsupported fields: {extra}; covariates belong in finetune.survival or "
+            "finetune.multilabel."
+        )
     name = _string(raw, "name")
     if name != "sex_age_mlp":
         raise ValueError("model.name must be 'sex_age_mlp'.")
-    features = _list_of_strings(raw, "features")
-    if len(set(features)) != len(features):
-        raise ValueError("model.features contains duplicate entries.")
-    if set(features) - {"age", "sex", "bmi"}:
-        raise ValueError("model.features supports only age, sex, bmi.")
-    extra = set(raw) - {"name", "features", "head", *features}
-    if extra:
-        raise ValueError(f"model contains unsupported or inactive feature blocks: {sorted(extra)}")
-    age = _build_age(_mapping(raw, "age")) if "age" in features else None
-    bmi = _build_age(_mapping(raw, "bmi")) if "bmi" in features else None
-    sex = _build_sex(_mapping(raw, "sex")) if "sex" in features else None
-    head = _build_head(_mapping(raw, "head"))
-    zero_features = [feature for feature in features if raw[feature]["initialization"] == "zeros"]
-    if head.act == "relu" and zero_features:
-        raise ValueError(
-            f"model.head.act=relu blocks gradients to zero-initialized encoders: {zero_features}. "
-            "Use initialization=default or a different head activation."
-        )
-    return ModelConfig(name=name, features=features, age=age, sex=sex, bmi=bmi, head=head)
-
-
-def _build_age(raw: dict[str, Any]) -> AgeConfig:
-    transform = _string(raw, "transform")
-    if transform != "divide":
-        raise ValueError("model.age.transform must be 'divide'.")
-    scale = _positive_float(raw, "scale")
-    if set(raw) - {"transform", "scale", "embedding_dim", "initialization"}:
-        raise ValueError("Continuous encoding contains unsupported fields.")
-    return AgeConfig(
-        transform=transform,
-        scale=scale,
-        embedding_dim=_positive_int(raw, "embedding_dim"),
-        initialization=_initialization(raw),
-    )
-
-
-def _build_sex(raw: dict[str, Any]) -> SexConfig:
-    encoding = _string(raw, "encoding")
-    if encoding != "binary":
-        raise ValueError("model.sex.encoding must be 'binary'.")
-    if set(raw) - {"encoding", "embedding_dim", "initialization"}:
-        raise ValueError("Sex encoding contains unsupported fields.")
-    return SexConfig(
-        encoding=encoding, embedding_dim=_positive_int(raw, "embedding_dim"), initialization=_initialization(raw)
-    )
-
-
-def _initialization(raw: dict[str, Any]) -> str:
-    value = _string(raw, "initialization")
-    if value not in {"zeros", "default"}:
-        raise ValueError("initialization must be zeros or default.")
-    return value
+    return ModelConfig(name=name, head=_build_head(_mapping(raw, "head")))
 
 
 def _build_head(raw: dict[str, Any]) -> HeadConfig:
@@ -213,8 +150,9 @@ def _build_head(raw: dict[str, Any]) -> HeadConfig:
     if name != "classification":
         raise ValueError("model.head.name must be classification (raw logits/log-risk).")
     activation = _string(raw, "act")
-    if activation not in {"elu", "gelu", "relu", "silu"}:
-        raise ValueError("model.head.act must be one of elu, gelu, relu, or silu.")
+    if activation not in {"elu", "gelu", "silu"}:
+        # The head applies its activation to the zero-initialized covariate embeddings first; relu would block them.
+        raise ValueError("model.head.act must be one of elu, gelu, or silu.")
     dropout = _float(raw, "dropout")
     if dropout < 0.0 or dropout >= 1.0:
         raise ValueError("model.head.dropout must be in [0, 1).")
@@ -227,38 +165,39 @@ def _build_head(raw: dict[str, Any]) -> HeadConfig:
 
 
 def _build_data(raw: dict[str, Any]) -> DataConfig:
+    extra = sorted(
+        set(raw)
+        - {
+            "backend",
+            "finetune_data_index",
+            "finetune_preset_path",
+            "kaldi_data_root",
+            "kaldi_manifest",
+            "train_dataset_names",
+            "test_dataset_names",
+        }
+    )
+    if extra:
+        raise ValueError(
+            f"data contains unsupported fields: {extra}; the baseline reads the signal model's split column and "
+            "always collapses rows by the task key column."
+        )
     backend = _string(raw, "backend")
     if backend not in {"npz", "kaldi"}:
         raise ValueError("data.backend must be 'npz' or 'kaldi'.")
-    finetune_data_index = _optional_string(raw, "finetune_data_index")
-    finetune_preset_path = _optional_string(raw, "finetune_preset_path")
-    kaldi_data_root = _optional_string(raw, "kaldi_data_root")
-    kaldi_manifest = _optional_string(raw, "kaldi_manifest")
-    if backend == "npz":
-        sources = [value for value in (finetune_data_index, finetune_preset_path) if value]
-        if len(sources) != 1:
-            raise ValueError("data.backend=npz requires exactly one of finetune_data_index or finetune_preset_path.")
-        if kaldi_data_root or kaldi_manifest:
-            raise ValueError("data.backend=npz must not set kaldi_data_root or kaldi_manifest.")
-    if backend == "kaldi":
-        if finetune_data_index or finetune_preset_path:
-            raise ValueError("data.backend=kaldi must not set finetune_data_index or finetune_preset_path.")
-        if not kaldi_data_root or not kaldi_manifest:
-            raise ValueError("data.backend=kaldi requires kaldi_data_root and kaldi_manifest.")
-    deduplicate_by_key = _bool(raw, "deduplicate_by_key")
+    # Like the signal configs, the data source may stay null here; the loader requires one after CLI overrides.
     return DataConfig(
         backend=backend,
-        finetune_data_index=finetune_data_index,
-        finetune_preset_path=finetune_preset_path,
-        kaldi_data_root=kaldi_data_root,
-        kaldi_manifest=kaldi_manifest,
-        split_column=_string(raw, "split_column"),
-        key_column=_string(raw, "key_column"),
-        deduplicate_by_key=deduplicate_by_key,
+        finetune_data_index=_optional_string(raw, "finetune_data_index"),
+        finetune_preset_path=_optional_string(raw, "finetune_preset_path"),
+        kaldi_data_root=_optional_string(raw, "kaldi_data_root"),
+        kaldi_manifest=_optional_string(raw, "kaldi_manifest"),
+        train_dataset_names=_optional_list_of_strings(raw, "train_dataset_names"),
+        test_dataset_names=_optional_list_of_strings(raw, "test_dataset_names"),
     )
 
 
-def _build_finetune(raw: dict[str, Any], data: DataConfig) -> FinetuneConfig:
+def _build_finetune(raw: dict[str, Any]) -> FinetuneConfig:
     extra = sorted(set(raw) - {"task", "survival", "multilabel", "loss"})
     if extra:
         raise ValueError(f"finetune contains unsupported fields: {extra}; training options belong in recipe runtime.")
@@ -267,8 +206,6 @@ def _build_finetune(raw: dict[str, Any], data: DataConfig) -> FinetuneConfig:
         if "multilabel" in raw:
             raise ValueError("finetune.multilabel is only supported for multilabel_classification tasks.")
         survival = _build_survival(_mapping(raw, "survival"))
-        if survival.key_column != data.key_column:
-            raise ValueError("finetune.survival.key_column must match data.key_column.")
         loss = FinetuneLossConfig()
         if "loss" in raw:
             loss_raw = _mapping(raw, "loss")
@@ -281,8 +218,6 @@ def _build_finetune(raw: dict[str, Any], data: DataConfig) -> FinetuneConfig:
         if "survival" in raw:
             raise ValueError("finetune.survival is only supported for survival tasks.")
         multilabel = _build_multilabel(_mapping(raw, "multilabel"))
-        if multilabel.key_column != data.key_column:
-            raise ValueError("finetune.multilabel.key_column must match data.key_column.")
         loss = _build_loss(_mapping(raw, "loss"), task.output_dim) if "loss" in raw else FinetuneLossConfig()
         return FinetuneConfig(task=task, multilabel=multilabel, loss=loss)
     raise ValueError(f"Unsupported sex_age_baseline task type: {task.type}")
@@ -308,22 +243,36 @@ def _build_task(raw: dict[str, Any]) -> TaskConfig:
 
 
 def _build_survival(raw: dict[str, Any]) -> SurvivalConfig:
-    return SurvivalConfig(
-        key_column=_string(raw, "key_column"),
-        disease_columns_index=_string(raw, "disease_columns_index"),
-        event_time_index=_string(raw, "event_time_index"),
-        is_event_index=_string(raw, "is_event_index"),
-        has_label_index=_string(raw, "has_label_index"),
-    )
+    sidecars = ("key_column", "disease_columns_index", "event_time_index", "is_event_index")
+    fields: dict[str, Any] = {
+        **_sidecar_fields(raw, "finetune.survival", sidecars),
+        **_covariate_fields(raw, "finetune.survival"),
+    }
+    return SurvivalConfig(**fields)
 
 
 def _build_multilabel(raw: dict[str, Any]) -> MultilabelConfig:
-    return MultilabelConfig(
-        key_column=_string(raw, "key_column"),
-        disease_columns_index=_string(raw, "disease_columns_index"),
-        label_index=_string(raw, "label_index"),
-        has_label_index=_string(raw, "has_label_index"),
-    )
+    sidecars = ("key_column", "disease_columns_index", "label_index")
+    fields: dict[str, Any] = {
+        **_sidecar_fields(raw, "finetune.multilabel", sidecars),
+        **_covariate_fields(raw, "finetune.multilabel"),
+    }
+    return MultilabelConfig(**fields)
+
+
+def _sidecar_fields(raw: dict[str, Any], prefix: str, names: tuple[str, ...]) -> dict[str, str]:
+    required = {*names, "has_label_index"}
+    extra = sorted(set(raw) - required - COVARIATE_FIELDS)
+    if extra:
+        raise ValueError(f"{prefix} contains unsupported fields: {extra}")
+    return {name: _string(raw, name) for name in sorted(required)}
+
+
+def _covariate_fields(raw: dict[str, Any], prefix: str) -> dict[str, Any]:
+    fields = parse_covariate_fields(raw, prefix)
+    if not fields["covariates"]:
+        raise ValueError(f"sex_age_baseline requires a non-empty {prefix}.covariates list.")
+    return fields
 
 
 def _build_loss(raw: dict[str, Any], output_dim: int) -> FinetuneLossConfig:
@@ -375,10 +324,12 @@ def _optional_string(raw: dict[str, Any], key: str) -> str | None:
     return value
 
 
-def _list_of_strings(raw: dict[str, Any], key: str) -> list[str]:
+def _optional_list_of_strings(raw: dict[str, Any], key: str) -> list[str] | None:
     value = raw.get(key)
-    if not isinstance(value, list) or not value or not all(isinstance(item, str) for item in value):
-        raise ValueError(f"{key} must be a non-empty list of strings.")
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"{key} must be a list of non-empty strings or null.")
     return list(value)
 
 

@@ -222,7 +222,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parse_args()
-    cfg = load_config(args.config, validate_sidecars=True)
+    cfg = load_config(args.config)
     if args.wandb_mode not in {"offline", "disabled"}:
         wandb.login()
     train_and_save(args, cfg)

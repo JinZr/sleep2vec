@@ -106,21 +106,6 @@ class FinetuneAdapter(TaskAdapter):
                         {"config": data},
                     )
                 )
-        if (
-            config_summary
-            and config_summary.get("authoritative_variant") == "sex_age_baseline"
-            and config_summary.get("data_backend") == "kaldi"
-        ):
-            if not data.get("kaldi_data_root") or not data.get("kaldi_manifest"):
-                issues.append(
-                    DecisionIssue(
-                        DecisionStatus.NEEDS_USER_INPUT,
-                        "data_input",
-                        "Kaldi-backed sex_age_baseline finetune requires kaldi_data_root and kaldi_manifest.",
-                        "Which Kaldi data root and manifest should this sex/age baseline use?",
-                        {"config": data},
-                    )
-                )
         # self.task, not the recipe's own task string: the pre-adapter kernel
         # hard-coded "finetune" for these helpers.
         survival_issue = survival_sidecar_issue(self.task, recipe, config_summary, uses_finetune_config=True)

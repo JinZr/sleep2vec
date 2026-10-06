@@ -31,6 +31,7 @@ from sleep2vec.metrics.core import (
     compute_multilabel_metrics_by_disease,
     compute_survival_c_index_by_disease,
 )
+from sleep2vec.modules.covariates import ordered_covariates
 from sleep2vec.results import (
     DEFAULT_INFERENCE_RESULTS_ROOT,
     prepare_inference_result_paths,
@@ -46,8 +47,8 @@ from sleep2vec.schedulers import build_warmup_cosine_scheduler, validate_finetun
 from sleep2vec.sleep2vec_inference import prediction_export_enabled
 
 from .common import apply_task_flags
-from .config import BaselineConfig
-from .data import SexAgeDataset, load_split_dataset, make_dataloader
+from .config import BaselineConfig, covariate_task_config
+from .data import SexAgeDataset, load_split_dataset, make_dataloader, validate_disjoint_split_keys
 from .model import SexAgeMLP
 
 # Like sleep2vec finetuning, training seeds from a fixed value; only inference exposes --seed.
@@ -83,8 +84,8 @@ class BaselineModule(pl.LightningModule):
         self.evaluation_stage = "test"
         self._validation_epoch = None
 
-    def forward(self, features):
-        return self.model(features)
+    def forward(self, metadata):
+        return self.model(metadata)
 
     def train_dataloader(self):
         # Build after rank setup; drop the global tail instead of padding training identities.
@@ -108,7 +109,7 @@ class BaselineModule(pl.LightningModule):
         )
 
     def training_step(self, batch, batch_idx):
-        logits = self(batch["features"])
+        logits = self(batch["metadata"])
         loss = _batch_loss(logits, batch, self.cfg)
         if self.cfg.finetune.task.type == "multilabel_classification" and self.trainer.world_size > 1:
             valid_count = (batch["has_label"] > 0.5).sum()
@@ -123,7 +124,7 @@ class BaselineModule(pl.LightningModule):
         self.records = []
 
     def validation_step(self, batch, batch_idx):
-        self.records.append(_evaluation_record(batch, self(batch["features"])))
+        self.records.append(_evaluation_record(batch, self(batch["metadata"])))
 
     def on_validation_epoch_end(self):
         result = _evaluate_records(self.records, self.cfg, "val", False)
@@ -154,7 +155,7 @@ class BaselineModule(pl.LightningModule):
         self.records = []
 
     def test_step(self, batch, batch_idx):
-        self.records.append(_evaluation_record(batch, self(batch["features"])))
+        self.records.append(_evaluation_record(batch, self(batch["metadata"])))
 
     def on_test_epoch_end(self):
         self.evaluation_result = _evaluate_records(
@@ -299,7 +300,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
 
     run_dir = Path("log-finetune") / args.version
     checkpoint_dir = run_dir / "checkpoints"
-    # DDP subprocesses re-enter the CLI; only the original rank creates the single-use root.
+    # DDP subprocesses re-enter the CLI; only the original rank checks and creates the single-use root.
     if is_rank_zero_process():
         if run_dir.is_symlink():
             raise FileExistsError(f"sex_age_baseline run directory must not be a symlink: {run_dir}.")
@@ -307,6 +308,20 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             raise FileExistsError(
                 f"sex_age_baseline run directory already exists and is not empty: {run_dir}. Use a new --version-name."
             )
+    loaded_splits = ["train", "val"] if epochs > 0 else []
+    if args.test_after_fit:
+        loaded_splits.append("test")
+    # Load every split before the run root exists, so data, sidecar and cohort errors leave nothing behind.
+    datasets = {
+        split: _required_dataset(
+            cfg,
+            split,
+            sources=cfg.data.test_dataset_names if split == "test" else cfg.data.train_dataset_names,
+        )
+        for split in loaded_splits
+    }
+    validate_disjoint_split_keys(datasets)
+    if is_rank_zero_process():
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         persist_run_config_and_args(args, run_dir)
 
@@ -314,14 +329,10 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     model = module.model
     if args.ckpt_path:
         load_checkpoint(model, args.ckpt_path, device=torch.device("cpu"), cfg=cfg)
-    loaded_splits = ["train", "val"] if epochs > 0 else []
-    if args.test_after_fit:
-        loaded_splits.append("test")
     if epochs > 0:
-        module.train_set = _required_dataset(cfg, "train", loaded_splits=loaded_splits)
-        val_set = _required_dataset(cfg, "val", loaded_splits=loaded_splits)
+        module.train_set = datasets["train"]
         val_loader = make_dataloader(
-            val_set,
+            datasets["val"],
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             shuffle=False,
@@ -402,8 +413,9 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             )
             return
 
-        test_set = _required_dataset(cfg, "test", loaded_splits=loaded_splits)
-        test_loader = make_dataloader(test_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
+        test_loader = make_dataloader(
+            datasets["test"], batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False
+        )
         args.eval_split = "test"
         checkpoint_test_results = []
         original_ckpt_path = args.ckpt_path
@@ -522,7 +534,10 @@ def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     module = BaselineModule(cfg, args)
     selected_ckpt_paths = _load_inference_checkpoint(module.model, args, cfg)
 
-    dataset = _required_dataset(cfg, args.eval_split, loaded_splits=[args.eval_split])
+    # sleep2vec inference's source selection: an override, else the YAML list for the evaluated split.
+    yaml_sources = cfg.data.test_dataset_names if args.eval_split == "test" else cfg.data.train_dataset_names
+    sources = args.override_dataset_names or yaml_sources
+    dataset = _required_dataset(cfg, args.eval_split, sources=sources)
     loader = make_dataloader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
     trainer = _trainer(args)
     prepare_inference_result_paths(
@@ -623,16 +638,13 @@ def evaluate_model(
     records = []
     with torch.no_grad():
         for batch in loader:
-            features = {name: value.to(device) for name, value in batch["features"].items()}
-            records.append(_evaluation_record(batch, model(features)))
+            records.append(_evaluation_record(batch, model(batch["metadata"])))
     return _evaluate_records(records, cfg, stage, export_predictions)
 
 
 def _evaluation_record(batch, logits):
     return {
         "key": list(batch["key"]),
-        "path": list(batch["path"]),
-        "token_start": [int(value) for value in batch["token_start"]],
         "sample_index": [int(value) for value in batch["sample_index"]],
         "logits": logits.detach().float().cpu(),
         **{
@@ -648,35 +660,24 @@ def _evaluate_records(records, cfg, stage, export_predictions):
         gathered = [None] * torch.distributed.get_world_size()
         torch.distributed.all_gather_object(gathered, records)
         records = [record for rank_records in gathered for record in rank_records]
-    grouped = {}
-    seen = set()
     labels = (
         ["has_label", "event_time", "is_event"]
         if cfg.finetune.task.type == "survival"
         else ["has_label", "disease_label"]
     )
-    samples = [(sample_index, record, i) for record in records for i, sample_index in enumerate(record["sample_index"])]
-    for sample_index, record, i in sorted(samples, key=lambda sample: sample[0]):
-        if sample_index in seen:
-            continue
-        seen.add(sample_index)
-        key = record["key"][i]
-        identity = (str(key), str(record["path"][i]), int(record["token_start"][i]))
-        if key not in grouped:
-            grouped[key] = {"preds": [], "identities": [], **{name: record[name][i] for name in labels}}
-        item = grouped[key]
-        for name in labels:
-            if not torch.allclose(item[name], record[name][i], equal_nan=True):
-                raise ValueError(f"{name} differs across records for key {key!r}.")
-        item["preds"].append(record["logits"][i])
-        item["identities"].append(identity)
-    if not grouped:
+    # The dataset holds one record per key; distributed evaluation samplers pad by repeating dataset rows.
+    rows = {}
+    for record in records:
+        for i, sample_index in enumerate(record["sample_index"]):
+            rows.setdefault(sample_index, (record, i))
+    if not rows:
         raise ValueError(f"Sex/age baseline split {stage!r} has no rows.")
-    keys = list(grouped)
-    logits = torch.stack([torch.stack(item["preds"]).mean(0) for item in grouped.values()])
-    tensors = {name: torch.stack([item[name] for item in grouped.values()]) for name in labels}
+    ordered = [rows[sample_index] for sample_index in sorted(rows)]
+    keys = [record["key"][i] for record, i in ordered]
+    logits = torch.stack([record["logits"][i] for record, i in ordered])
+    tensors = {name: torch.stack([record[name][i] for record, i in ordered]) for name in labels}
     if cfg.finetune.task.type == "survival":
-        result = _evaluate_survival(
+        return _evaluate_survival(
             cfg,
             stage,
             keys,
@@ -686,16 +687,9 @@ def _evaluate_records(records, cfg, stage, export_predictions):
             tensors["has_label"],
             export_predictions,
         )
-    else:
-        result = _evaluate_multilabel(
-            cfg, stage, keys, logits, tensors["disease_label"], tensors["has_label"], export_predictions
-        )
-    for row, item in zip(result.prediction_rows, grouped.values()):
-        row["n_windows"] = len(item["identities"])
-        row["token_starts"] = [identity[2] for identity in item["identities"]]
-        row["paths"] = list(dict.fromkeys(identity[1] or identity[0] for identity in item["identities"]))
-        row["path"] = item["identities"][0][1] or row["path"]
-    return result
+    return _evaluate_multilabel(
+        cfg, stage, keys, logits, tensors["disease_label"], tensors["has_label"], export_predictions
+    )
 
 
 def _batch_loss(logits, batch, cfg):
@@ -792,10 +786,14 @@ def _validate_checkpoint_contracts(checkpoint: Any, cfg: BaselineConfig, path: s
         )
 
 
-def _model_contract(cfg: BaselineConfig | Mapping[str, Any]) -> dict[str, Any]:
-    if isinstance(cfg, BaselineConfig):
-        return asdict(cfg.model)
-    return dict(cfg["model"])
+def _model_contract(cfg: BaselineConfig) -> dict[str, Any]:
+    task_cfg = covariate_task_config(cfg)
+    return {
+        "covariates": list(ordered_covariates(task_cfg.covariates)),
+        "covariate_embedding_dim": task_cfg.covariate_embedding_dim,
+        "covariate_normalization": dict(task_cfg.covariate_normalization),
+        "head": asdict(cfg.model.head),
+    }
 
 
 def _label_contract(cfg: BaselineConfig | Mapping[str, Any]) -> dict[str, Any]:
@@ -981,8 +979,8 @@ def _multilabel_disease_names(cfg: BaselineConfig) -> list[str]:
     return load_multilabel_disease_columns(cfg.finetune.multilabel.disease_columns_index)
 
 
-def _required_dataset(cfg: BaselineConfig, split: str, *, loaded_splits: list[str] | None = None) -> SexAgeDataset:
-    dataset = load_split_dataset(cfg, split, loaded_splits=loaded_splits)
+def _required_dataset(cfg: BaselineConfig, split: str, *, sources: list[str] | None) -> SexAgeDataset:
+    dataset = load_split_dataset(cfg, split, sources=sources)
     if len(dataset) == 0:
         raise ValueError(f"Sex/age baseline split {split!r} has no rows.")
     return dataset

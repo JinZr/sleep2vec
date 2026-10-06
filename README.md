@@ -525,9 +525,9 @@ finetune:
 
 **Trainability (`finetune.tuning`)**
 - This section describes `sleep2vec`, `sleep2vec2` and `sleep2expert`. `sex_age_baseline`
-  trains its own [YAML-selected age/sex/BMI model](sex_age_baseline/README.md)
+  trains [the covariate pathway without a backbone](sex_age_baseline/README.md)
   rather than adapting a pretrained backbone. Its config rejects `finetune.tuning`;
-  choose active covariates and their initialization under `model` instead.
+  choose covariates in the task block as for the signal variants.
 - On those three variants every finetune config must declare a required `finetune.tuning`
   block. It is the single source of truth for which parameters train and at what
   learning-rate scale:

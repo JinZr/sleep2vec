@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-import pickle
 import shlex
 import subprocess
 import sys
@@ -14,7 +13,6 @@ import yaml
 from agent_tools import managed_scheduler
 from agent_tools.configs import config_summary
 from agent_tools.plans import build_plan, evaluate_recipe
-from data.default_dataset import SampleIndex
 from tests.agent_tool_test_helpers import run_execution_preflight_fixture, write_yaml as _write_yaml
 
 
@@ -23,13 +21,24 @@ def _stub_execution_target(monkeypatch):
     monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
 
 
+# The baseline reads the signal run's window index; repeated subject keys collapse at load time.
+SIGNAL_INDEX = (
+    "path,split,duration,eid,age,sex\n"
+    "001_a.npz,train,100,001,50,0\n"
+    "001_b.npz,train,100,001,50,0\n"
+    "002_a.npz,val,100,002,60,1\n"
+    "003_a.npz,test,100,003,55,0\n"
+)
+COVARIATES = {"covariates": ["age", "sex"], "covariate_embedding_dim": 4}
+
+
 def _write_survival_config(tmp_path: Path) -> Path:
     index = tmp_path / "index.csv"
     disease_columns = tmp_path / "disease_columns.txt"
     event_time = tmp_path / "event_time.csv"
     is_event = tmp_path / "is_event.csv"
     has_label = tmp_path / "has_label.csv"
-    index.write_text("eid,split,age,sex\n" "001,train,50,0\n" "002,val,60,1\n" "003,test,55,0\n")
+    index.write_text(SIGNAL_INDEX)
     disease_columns.write_text("d1\nd2\n")
     header = "eid,d1,d2\n"
     event_time.write_text(header + "001,10,20\n002,30,40\n003,50,60\n")
@@ -40,9 +49,6 @@ def _write_survival_config(tmp_path: Path) -> Path:
         {
             "model": {
                 "name": "sex_age_mlp",
-                "features": ["age", "sex"],
-                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4, "initialization": "default"},
-                "sex": {"encoding": "binary", "embedding_dim": 4, "initialization": "default"},
                 "head": {
                     "name": "classification",
                     "hidden_dim": 8,
@@ -57,9 +63,8 @@ def _write_survival_config(tmp_path: Path) -> Path:
                 "finetune_preset_path": None,
                 "kaldi_data_root": None,
                 "kaldi_manifest": None,
-                "split_column": "split",
-                "key_column": "eid",
-                "deduplicate_by_key": True,
+                "train_dataset_names": [],
+                "test_dataset_names": [],
             },
             "finetune": {
                 "task": {
@@ -75,48 +80,11 @@ def _write_survival_config(tmp_path: Path) -> Path:
                     "event_time_index": str(event_time),
                     "is_event_index": str(is_event),
                     "has_label_index": str(has_label),
+                    **COVARIATES,
                 },
             },
         },
     )
-
-
-def _write_kaldi_survival_config(tmp_path: Path, *, split_key: str = "003") -> Path:
-    config = _write_survival_config(tmp_path)
-    kaldi_root = tmp_path / "kaldi"
-    kaldi_root.mkdir()
-    (kaldi_root / "val.csv").write_text(f"eid,age,sex\n{split_key},55,0\n")
-    manifest = tmp_path / "kaldi_manifest.json"
-    manifest.write_text(json.dumps({"splits": {"val": {"manifest": "val.csv"}}}))
-    payload = yaml.safe_load(config.read_text())
-    payload["data"].update(
-        {
-            "backend": "kaldi",
-            "finetune_data_index": None,
-            "finetune_preset_path": None,
-            "kaldi_data_root": str(kaldi_root),
-            "kaldi_manifest": str(manifest),
-        }
-    )
-    return _write_yaml(config, payload)
-
-
-def _write_metadata_preset(path: Path, rows: list[dict]) -> Path:
-    with path.open("wb") as file_obj:
-        pickle.dump(
-            [
-                SampleIndex(
-                    id=str(row["eid"]),
-                    path="ignored.npz",
-                    start=0,
-                    end=1,
-                    metadata=row,
-                )
-                for row in rows
-            ],
-            file_obj,
-        )
-    return path
 
 
 def _write_multilabel_config(
@@ -130,7 +98,7 @@ def _write_multilabel_config(
     label = tmp_path / "label.csv"
     has_label = tmp_path / "has_label.csv"
     if index_path is None:
-        index.write_text("eid,split,age,sex\n" "001,train,50,0\n" "002,val,60,1\n" "003,test,55,0\n")
+        index.write_text(SIGNAL_INDEX)
         index_path = index
     if sidecars is None:
         disease_columns.write_text("d1\nd2\n")
@@ -147,9 +115,6 @@ def _write_multilabel_config(
         {
             "model": {
                 "name": "sex_age_mlp",
-                "features": ["age", "sex"],
-                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4, "initialization": "default"},
-                "sex": {"encoding": "binary", "embedding_dim": 4, "initialization": "default"},
                 "head": {
                     "name": "classification",
                     "hidden_dim": 8,
@@ -164,9 +129,8 @@ def _write_multilabel_config(
                 "finetune_preset_path": None,
                 "kaldi_data_root": None,
                 "kaldi_manifest": None,
-                "split_column": "split",
-                "key_column": "eid",
-                "deduplicate_by_key": True,
+                "train_dataset_names": [],
+                "test_dataset_names": [],
             },
             "finetune": {
                 "task": {
@@ -176,7 +140,7 @@ def _write_multilabel_config(
                     "monitor": "val_loss",
                     "monitor_mod": "min",
                 },
-                "multilabel": {"key_column": "eid", **sidecars},
+                "multilabel": {"key_column": "eid", **sidecars, **COVARIATES},
             },
         },
     )
@@ -277,6 +241,47 @@ def test_sex_age_baseline_config_summary_reports_backend_and_variant(tmp_path: P
     assert summary["authoritative_variant"] == "sex_age_baseline"
     assert summary["data_backend"] == "npz"
     assert summary["data"]["finetune_data_index"]
+
+
+def test_sex_age_baseline_config_summary_blocks_kaldi_without_paths(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    payload["data"].update({"backend": "kaldi", "finetune_data_index": None})
+    _write_yaml(config, payload)
+
+    summary = config_summary(config)
+
+    assert summary["blocking_issues"] == [
+        "data.backend=kaldi but data.kaldi_data_root is missing.",
+        "data.backend=kaldi but data.kaldi_manifest is missing.",
+    ]
+
+
+def test_sex_age_baseline_config_summary_blocks_npz_without_a_source(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    payload["data"].update({"finetune_data_index": None, "finetune_preset_path": None})
+    _write_yaml(config, payload)
+
+    summary = config_summary(config)
+
+    assert summary["blocking_issues"] == [
+        "data.backend=npz but both finetune_data_index and finetune_preset_path are missing."
+    ]
+
+
+def test_sex_age_baseline_preset_survival_still_requires_label_names(tmp_path: Path):
+    # The survival preset exemption covers the label sidecars, not the names in the baseline's label contract.
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    missing = tmp_path / "missing_disease_columns.txt"
+    payload["data"].update({"finetune_data_index": None, "finetune_preset_path": str(tmp_path / "shared.pkl")})
+    payload["finetune"]["survival"]["disease_columns_index"] = str(missing)
+    _write_yaml(config, payload)
+
+    summary = config_summary(config)
+
+    assert f"finetune.survival.disease_columns_index does not exist: {missing}" in summary["blocking_issues"]
 
 
 def test_sex_age_config_family_blocks_root_finetune_variant(tmp_path: Path):
@@ -453,20 +458,6 @@ def test_sex_age_baseline_variant_routes_invalid_config_to_strict_loader(tmp_pat
         issue.field == "config" and "model.name must be 'sex_age_mlp'" in issue.message for issue in report.issues
     )
     assert not (tmp_path / "plan-invalid-config" / "run.sh").exists()
-
-
-def test_sex_age_baseline_kaldi_finetune_blocks_survival_keys_missing_from_sidecars(tmp_path: Path):
-    config = _write_kaldi_survival_config(tmp_path, split_key="004")
-    recipe = _finetune_recipe(tmp_path, config)
-
-    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-kaldi-missing-sidecar-key")
-
-    assert report.exit_code == 1
-    assert any(
-        issue.field == "data_input" and "survival key values missing from sidecars" in issue.message
-        for issue in report.issues
-    )
-    assert not (tmp_path / "plan-kaldi-missing-sidecar-key" / "run.sh").exists()
 
 
 def test_sex_age_baseline_finetune_val_only_ignores_unloaded_test_sidecar_keys(tmp_path: Path):
@@ -662,11 +653,12 @@ def test_sex_age_baseline_slurm_multi_gpu_plan(tmp_path: Path):
 def test_covariate_baseline_bmi_only_and_decay_plan(tmp_path: Path, wandb_mode):
     config = _write_survival_config(tmp_path)
     payload = yaml.safe_load(config.read_text())
-    payload["model"]["features"] = ["bmi"]
-    payload["model"].pop("age")
-    payload["model"].pop("sex")
-    payload["model"]["bmi"] = {"transform": "divide", "scale": 1.0, "embedding_dim": 4, "initialization": "default"}
-    Path(payload["data"]["finetune_data_index"]).write_text("eid,split,bmi\n001,train,24\n002,val,25\n003,test,26\n")
+    payload["finetune"]["survival"].update(
+        {"covariates": ["bmi"], "covariate_normalization": {"bmi": {"mean": 25.0, "std": 5.0}}}
+    )
+    Path(payload["data"]["finetune_data_index"]).write_text(
+        "path,split,duration,eid,bmi\na.npz,train,100,001,24\nb.npz,val,100,002,25\nc.npz,test,100,003,26\n"
+    )
     _write_yaml(config, payload)
     recipe = _finetune_recipe(tmp_path, config)
     recipe_payload = yaml.safe_load(recipe.read_text())
@@ -682,10 +674,8 @@ def test_covariate_baseline_bmi_only_and_decay_plan(tmp_path: Path, wandb_mode):
     assert "--lr-decay-floor 0.2" in commands
     assert f"--wandb-mode {wandb_mode}" in commands
     summary = config_summary(config)
-    assert summary["model"]["features"] == ["bmi"]
-    assert summary["model"]["encodings"] == {"bmi": payload["model"]["bmi"]}
-    assert summary["model"]["head_details"]["kwargs"] == {"num_layers": 2}
-    assert summary["data"]["sample_unit"] == "participant"
+    assert summary["model"] == {"name": "sex_age_mlp", "head_details": {**payload["model"]["head"]}}
+    assert summary["finetune"]["survival"]["covariates"] == ["bmi"]
 
 
 def test_covariate_hparam_preserves_wandb_routing(tmp_path: Path, monkeypatch):
@@ -750,45 +740,27 @@ def test_covariate_hparam_preserves_wandb_routing(tmp_path: Path, monkeypatch):
         assert infer_args.wandb_mode == "offline"
 
 
-def test_covariate_baseline_window_plan_rejects_missing_identity(tmp_path: Path):
-    config = _write_survival_config(tmp_path)
-    payload = yaml.safe_load(config.read_text())
-    payload["data"]["deduplicate_by_key"] = False
-    _write_yaml(config, payload)
-    _recipe, _cfg, report = evaluate_recipe(_finetune_recipe(tmp_path, config))
-    assert report.exit_code != 0
-    assert any("token_start" in issue.message for issue in report.issues)
-
-
 def test_covariate_baseline_window_index_passes_doctor_without_signal_files(tmp_path: Path):
-    config = _write_survival_config(tmp_path)
-    payload = yaml.safe_load(config.read_text())
-    payload["data"]["deduplicate_by_key"] = False
-    Path(payload["data"]["finetune_data_index"]).write_text(
-        "eid,split,age,sex,path,token_start\n"
-        "001,train,50,0,absent.npz,0\n001,train,50,0,absent.npz,10\n"
-        "002,val,60,1,absent-val.npz,0\n003,test,55,0,absent-test.npz,0\n"
-    )
-    _write_yaml(config, payload)
-    _recipe, _cfg, report = evaluate_recipe(_finetune_recipe(tmp_path, config))
+    # SIGNAL_INDEX names NPZ windows that do not exist; the baseline reads only their metadata columns.
+    _recipe, _cfg, report = evaluate_recipe(_finetune_recipe(tmp_path, _write_survival_config(tmp_path)))
     assert report.exit_code == 0, report.issues
-    assert config_summary(config)["data"]["sample_unit"] == "window"
+    assert not any(Path(row.split(",")[0]).exists() for row in SIGNAL_INDEX.splitlines()[1:])
 
 
-@pytest.mark.parametrize("bmi", ["", "nan", "inf"])
-def test_covariate_baseline_selected_bmi_invalid_fails_doctor(tmp_path: Path, bmi: str):
+@pytest.mark.parametrize("bmi", ["", "nan"])
+def test_covariate_baseline_selected_bmi_empty_fails_doctor(tmp_path: Path, bmi: str):
     config = _write_survival_config(tmp_path)
     payload = yaml.safe_load(config.read_text())
-    payload["model"]["features"] = ["bmi"]
-    payload["model"]["bmi"] = payload["model"].pop("age")
-    payload["model"].pop("sex")
+    payload["finetune"]["survival"].update(
+        {"covariates": ["bmi"], "covariate_normalization": {"bmi": {"mean": 25.0, "std": 5.0}}}
+    )
     Path(payload["data"]["finetune_data_index"]).write_text(
-        f"eid,split,bmi\n001,train,{bmi}\n002,val,24\n003,test,25\n"
+        f"path,split,duration,eid,bmi\na.npz,train,100,001,{bmi}\nb.npz,val,100,002,24\nc.npz,test,100,003,25\n"
     )
     _write_yaml(config, payload)
     _recipe, _cfg, report = evaluate_recipe(_finetune_recipe(tmp_path, config))
     assert report.exit_code != 0
-    assert any("bmi" in issue.message for issue in report.issues)
+    assert any("empty covariate values in column: bmi" in issue.message for issue in report.issues)
 
 
 def test_covariate_baseline_explicit_scheduler_search_renders_each_arm(tmp_path: Path):
@@ -815,49 +787,22 @@ def test_covariate_baseline_explicit_scheduler_search_renders_each_arm(tmp_path:
     assert sum("--lr-decay-shape linear" in script for script in scripts) == 1
 
 
-def test_sex_age_baseline_finetune_blocks_invalid_metadata_values(tmp_path: Path):
-    config = _write_survival_config(tmp_path)
-    payload = yaml.safe_load(config.read_text())
-    Path(payload["data"]["finetune_data_index"]).write_text(
-        "eid,split,age,sex\n001,train,,0\n002,val,60,unknown\n003,test,55,0\n"
-    )
+def test_sex_age_baseline_multilabel_blocks_missing_covariate_columns(tmp_path: Path):
+    index = tmp_path / "signal_index.csv"
+    index.write_text("path,split,duration,eid,age\na.npz,train,100,001,\nb.npz,val,100,002,60\nc.npz,test,100,003,55\n")
+    config = _write_multilabel_config(tmp_path, index_path=index)
     recipe = _finetune_recipe(tmp_path, config)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["evaluation_policy"].update({"selection_metric": "val_loss", "selection_mode": "min"})
+    _write_yaml(recipe, payload)
 
-    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-invalid-metadata")
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-missing-covariates")
 
     assert report.exit_code == 1
     messages = [issue.message for issue in report.issues if issue.field == "data_input"]
-    assert any("empty sex-age age values" in message for message in messages)
-    assert any("invalid sex-age sex values" in message for message in messages)
-    assert not (tmp_path / "plan-invalid-metadata" / "run.sh").exists()
-
-
-def test_sex_age_baseline_finetune_blocks_missing_loaded_split_rows(tmp_path: Path):
-    config = _write_survival_config(tmp_path)
-    payload = yaml.safe_load(config.read_text())
-    Path(payload["data"]["finetune_data_index"]).write_text("eid,split,age,sex\n001,train,50,0\n003,test,55,0\n")
-    recipe = _finetune_recipe(tmp_path, config)
-
-    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-missing-val-split")
-
-    assert report.exit_code == 1
-    assert any(
-        issue.field == "data_input" and "no rows for sex-age split 'val'" in issue.message for issue in report.issues
-    )
-    assert not (tmp_path / "plan-missing-val-split" / "run.sh").exists()
-
-
-def test_sex_age_baseline_kaldi_infer_accepts_manifest_split_without_split_column(tmp_path: Path):
-    config = _write_kaldi_survival_config(tmp_path, split_key="003")
-    ckpt = tmp_path / "model.ckpt"
-    ckpt.write_text("placeholder")
-    recipe = _infer_recipe(tmp_path, config, ckpt)
-
-    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-kaldi-valid")
-
-    assert report.exit_code == 0
-    script = (tmp_path / "plan-kaldi-valid" / "run.sh").read_text()
-    assert "python -m sex_age_baseline.infer" in script
+    assert any("empty covariate values in column: age" in message for message in messages)
+    assert any("missing required covariate column: sex" in message for message in messages)
+    assert not (tmp_path / "plan-missing-covariates" / "run.sh").exists()
 
 
 def test_sex_age_baseline_finetune_plan_renders_pretrained_backbone_path(tmp_path: Path):
@@ -1026,72 +971,12 @@ def test_sex_age_baseline_hparam_renders_base_pretrained_backbone_path(tmp_path:
     assert argv[argv.index("--pretrained-backbone-path") + 1] == str(pretrained)
 
 
-def test_sex_age_baseline_finetune_preset_keeps_survival_sidecar_checks(tmp_path: Path):
-    config = _write_survival_config(tmp_path)
-    config_payload = yaml.safe_load(config.read_text())
-    preset = tmp_path / "preset.pkl"
-    preset.write_bytes(b"preset")
-    config_payload["data"]["finetune_data_index"] = None
-    config_payload["data"]["finetune_preset_path"] = str(preset)
-    config_payload["finetune"]["survival"]["event_time_index"] = str(tmp_path / "missing_event_time.csv")
-    _write_yaml(config, config_payload)
-    recipe = _finetune_recipe(tmp_path, config)
-
-    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-finetune-preset-bad-sidecars")
-
-    assert report.exit_code == 2
-    assert any(issue.field == "survival_sidecars" for issue in report.issues)
-    assert not (tmp_path / "plan-finetune-preset-bad-sidecars" / "run.sh").exists()
-
-
-def test_sex_age_baseline_finetune_preset_blocks_survival_keys_missing_from_sidecars(tmp_path: Path):
-    config = _write_survival_config(tmp_path)
-    config_payload = yaml.safe_load(config.read_text())
-    preset = _write_metadata_preset(
-        tmp_path / "preset_missing_sidecar_key.pkl",
-        [{"eid": "004", "split": "val", "age": 55, "sex": 0}],
-    )
-    config_payload["data"]["finetune_data_index"] = None
-    config_payload["data"]["finetune_preset_path"] = str(preset)
-    _write_yaml(config, config_payload)
-    recipe = _finetune_recipe(tmp_path, config)
-
-    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-preset-missing-sidecar-key")
-
-    assert report.exit_code == 1
-    assert any(
-        issue.field == "data_input" and "survival key values missing from sidecars" in issue.message
-        for issue in report.issues
-    )
-    assert not (tmp_path / "plan-preset-missing-sidecar-key" / "run.sh").exists()
-
-
-def test_sex_age_baseline_inference_preset_keeps_survival_sidecar_checks(tmp_path: Path):
-    config = _write_survival_config(tmp_path)
-    config_payload = yaml.safe_load(config.read_text())
-    config_payload["finetune"]["survival"]["event_time_index"] = str(tmp_path / "missing_event_time.csv")
-    _write_yaml(config, config_payload)
-    ckpt = tmp_path / "model.ckpt"
-    ckpt.write_text("placeholder")
-    preset = tmp_path / "preset.pkl"
-    preset.write_bytes(b"preset")
-    recipe = _infer_recipe(tmp_path, config, ckpt)
-    recipe_payload = yaml.safe_load(recipe.read_text())
-    recipe_payload["inputs"]["inference_preset_path"] = str(preset)
-    _write_yaml(recipe, recipe_payload)
-
-    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-preset-bad-sidecars")
-
-    assert report.exit_code == 2
-    assert any(issue.field == "survival_sidecars" for issue in report.issues)
-    assert not (tmp_path / "plan-infer-preset-bad-sidecars" / "run.sh").exists()
-
-
 def test_sex_age_baseline_infer_plan_can_render_inference_preset_path(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     ckpt = tmp_path / "model.ckpt"
     ckpt.write_text("placeholder")
-    preset = _write_metadata_preset(tmp_path / "preset.pkl", [{"eid": "002", "split": "val", "age": 60, "sex": 1}])
+    preset = tmp_path / "preset.pkl"
+    preset.write_bytes(b"preset")
     recipe = _infer_recipe(tmp_path, config, ckpt)
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"]["inference_preset_path"] = str(preset)
@@ -1103,48 +988,6 @@ def test_sex_age_baseline_infer_plan_can_render_inference_preset_path(tmp_path: 
     script = (tmp_path / "plan-infer-preset" / "run.sh").read_text()
     assert "python -m sex_age_baseline.infer" in script
     assert "--inference-preset-path" in script
-
-
-def test_sex_age_baseline_infer_preset_checks_only_eval_split_keys(tmp_path: Path):
-    config = _write_survival_config(tmp_path)
-    ckpt = tmp_path / "model.ckpt"
-    ckpt.write_text("placeholder")
-    preset = _write_metadata_preset(
-        tmp_path / "preset_split_filter.pkl",
-        [
-            {"eid": "002", "split": "val", "age": 60, "sex": 1},
-            {"eid": "004", "split": "test", "age": 55, "sex": 0},
-        ],
-    )
-    recipe = _infer_recipe(tmp_path, config, ckpt)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["inputs"]["inference_preset_path"] = str(preset)
-    _write_yaml(recipe, payload)
-
-    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-preset-split-filter")
-
-    assert report.exit_code == 0
-    assert (tmp_path / "plan-infer-preset-split-filter" / "run.sh").exists()
-
-
-def test_sex_age_baseline_infer_preset_blocks_invalid_metadata_values(tmp_path: Path):
-    config = _write_survival_config(tmp_path)
-    ckpt = tmp_path / "model.ckpt"
-    ckpt.write_text("placeholder")
-    preset = _write_metadata_preset(
-        tmp_path / "preset_invalid_metadata.pkl",
-        [{"eid": "002", "split": "val", "age": "not-a-number", "sex": 1}],
-    )
-    recipe = _infer_recipe(tmp_path, config, ckpt)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["inputs"]["inference_preset_path"] = str(preset)
-    _write_yaml(recipe, payload)
-
-    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-preset-invalid-metadata")
-
-    assert report.exit_code == 1
-    assert any(issue.field == "data_input" and "invalid sex-age age values" in issue.message for issue in report.issues)
-    assert not (tmp_path / "plan-infer-preset-invalid-metadata" / "run.sh").exists()
 
 
 def test_sex_age_baseline_infer_plan_renders_pretrained_backbone_path(tmp_path: Path):
@@ -1165,7 +1008,7 @@ def test_sex_age_baseline_infer_plan_renders_pretrained_backbone_path(tmp_path: 
     assert f"--pretrained-backbone-path {pretrained}" in script
 
 
-def test_sex_age_baseline_infer_blocks_override_dataset_names(tmp_path: Path):
+def test_sex_age_baseline_infer_plan_renders_override_dataset_names(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     ckpt = tmp_path / "model.ckpt"
     ckpt.write_text("placeholder")
@@ -1176,9 +1019,8 @@ def test_sex_age_baseline_infer_blocks_override_dataset_names(tmp_path: Path):
 
     report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-override-datasets")
 
-    assert report.exit_code == 1
-    assert any(issue.field == "override_dataset_names" for issue in report.issues)
-    assert not (tmp_path / "plan-infer-override-datasets" / "run.sh").exists()
+    assert report.exit_code == 0, report.issues
+    assert "--override-dataset-names ukb" in (tmp_path / "plan-infer-override-datasets" / "run.sh").read_text()
 
 
 def test_sex_age_baseline_infer_plan_renders_standalone_module(tmp_path: Path):

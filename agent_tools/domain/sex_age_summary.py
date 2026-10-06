@@ -12,7 +12,14 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from ..models import CONFIG_FINETUNE_SECTION, SexAgeConfigSummary, TaskConfigSummary, repo_relative, resolve_repo_path
+from ..models import (
+    CONFIG_FINETUNE_SECTION,
+    SexAgeConfigSummary,
+    SexAgeDataSummary,
+    TaskConfigSummary,
+    repo_relative,
+    resolve_repo_path,
+)
 from .sidecar_summaries import looks_like_placeholder_path, multilabel_summary, survival_summary
 
 
@@ -37,7 +44,7 @@ def sex_age_baseline_config_summary(
         raise FileNotFoundError("Config path is required.")
     data = load_yaml(resolved)
     try:
-        from sex_age_baseline.config import load_config
+        from sex_age_baseline.config import covariate_task_config, load_config
 
         cfg = load_config(resolved)
     except Exception as exc:
@@ -47,7 +54,7 @@ def sex_age_baseline_config_summary(
             "is_finetune": True,
             "is_pretrain": False,
             "data_backend": None,
-            "model": {"name": "sex_age_mlp", "features": []},
+            "model": {"name": "sex_age_mlp"},
             "data": {},
             CONFIG_FINETUNE_SECTION: {},
             "preset_build": {},
@@ -80,6 +87,31 @@ def sex_age_baseline_config_summary(
     finetune_preset_path = cfg.data.finetune_preset_path
     kaldi_data_root = cfg.data.kaldi_data_root
     kaldi_manifest = cfg.data.kaldi_manifest
+    data_summary: SexAgeDataSummary = {
+        "backend": cfg.data.backend,
+        "finetune_data_index": None if looks_like_placeholder_path(finetune_data_index) else finetune_data_index,
+        "finetune_preset_path": None if looks_like_placeholder_path(finetune_preset_path) else finetune_preset_path,
+        "kaldi_data_root": None if looks_like_placeholder_path(kaldi_data_root) else kaldi_data_root,
+        "kaldi_manifest": None if looks_like_placeholder_path(kaldi_manifest) else kaldi_manifest,
+    }
+    blocking_issues: list[str] = []
+    # The generic finetune summary's data-source rules, which this config family does not reach.
+    if cfg.data.backend == "kaldi":
+        if not data_summary["kaldi_data_root"]:
+            blocking_issues.append("data.backend=kaldi but data.kaldi_data_root is missing.")
+        if not data_summary["kaldi_manifest"]:
+            blocking_issues.append("data.backend=kaldi but data.kaldi_manifest is missing.")
+        if data_summary["finetune_preset_path"]:
+            blocking_issues.append("data.backend=kaldi does not support data.finetune_preset_path.")
+    elif not data_summary["finetune_data_index"] and not data_summary["finetune_preset_path"]:
+        blocking_issues.append("data.backend=npz but both finetune_data_index and finetune_preset_path are missing.")
+    if survival is not None and validate_survival_local_paths:
+        # Unlike the signal loaders, the baseline reads survival label names in preset mode too: they belong to its
+        # checkpoint label contract, so the preset exemption from survival sidecar checks does not cover this file.
+        names_path = covariate_task_config(cfg).disease_columns_index
+        resolved_names = resolve_repo_path(names_path, relative_to=local_path_base)
+        if resolved_names is None or not resolved_names.exists():
+            blocking_issues.append(f"finetune.survival.disease_columns_index does not exist: {names_path}")
     raw_loss = raw_finetune.get("loss")
     finetune_summary: TaskConfigSummary = {
         "task": {
@@ -101,28 +133,11 @@ def sex_age_baseline_config_summary(
         "is_finetune": True,
         "is_pretrain": False,
         "data_backend": cfg.data.backend,
-        "model": {
-            "name": cfg.model.name,
-            "features": list(cfg.model.features),
-            "encodings": {name: asdict(getattr(cfg.model, name)) for name in cfg.model.features},
-            "head_details": asdict(cfg.model.head),
-        },
-        "data": {
-            "backend": cfg.data.backend,
-            "finetune_data_index": None if looks_like_placeholder_path(finetune_data_index) else finetune_data_index,
-            "finetune_preset_path": (
-                None if looks_like_placeholder_path(finetune_preset_path) else finetune_preset_path
-            ),
-            "kaldi_data_root": None if looks_like_placeholder_path(kaldi_data_root) else kaldi_data_root,
-            "kaldi_manifest": None if looks_like_placeholder_path(kaldi_manifest) else kaldi_manifest,
-            "split_column": cfg.data.split_column,
-            "key_column": cfg.data.key_column,
-            "deduplicate_by_key": cfg.data.deduplicate_by_key,
-            "sample_unit": "participant" if cfg.data.deduplicate_by_key else "window",
-        },
+        "model": {"name": cfg.model.name, "head_details": asdict(cfg.model.head)},
+        "data": data_summary,
         CONFIG_FINETUNE_SECTION: finetune_summary,
         "preset_build": {},
         "plausible_labels": [],
         "warnings": [],
-        "blocking_issues": [],
+        "blocking_issues": blocking_issues,
     }

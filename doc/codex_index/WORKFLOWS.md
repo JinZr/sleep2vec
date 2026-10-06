@@ -303,7 +303,7 @@ Recipe `variant` determines the package-local runtime:
 - `sleep2vec` uses the root dense implementation;
 - `sleep2vec2` uses its standalone dense/RoFormer namespace;
 - `sleep2expert` uses its standalone MoE namespace;
-- `sex_age_baseline` uses its dedicated demographic baseline where supported;
+- `sex_age_baseline` uses its covariate-only baseline, which reads the signal run's data inputs;
 - `sleep2stat` is a task and has no model variant.
 
 Use package-local entrypoints. See the
