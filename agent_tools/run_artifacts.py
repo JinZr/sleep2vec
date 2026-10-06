@@ -1255,7 +1255,8 @@ def fixed_checkpoint_path(manifest: dict[str, Any], checkpoint_dir: Path) -> str
     Uses best_model_path before checkpoint_path, interpreting its basename in
     the supplied directory. Prefers epoch= files over best-epoch= aliases, uses
     a valid manifest epoch to resolve conflicts, and can retain a physical
-    best-epoch= file when its epoch matches and no fixed file was found. Epoch
+    best-epoch= file when no fixed file was found and either its epoch matches
+    or a completed or skipped-test manifest without an epoch names it. Epoch
     searches choose the first matching name in sorted order. A completed or
     skipped-test manifest without an epoch may explicitly bind physical best.ckpt.
 
@@ -1296,8 +1297,10 @@ def fixed_checkpoint_path(manifest: dict[str, Any], checkpoint_dir: Path) -> str
             if matched:
                 return str(matched)
             best = checkpoint_dir / path.name
+            # Training manifests carry no epoch; a successful one still binds the alias it names,
+            # e.g. after early stopping before any periodic epoch= checkpoint was saved.
             if (
-                manifest_epoch is not None
+                (manifest_epoch is not None or manifest.get("status") in {"completed", "skipped_test"})
                 and not best.is_symlink()
                 and best.is_file()
                 and best.resolve().parent == resolved_dir
@@ -1331,9 +1334,10 @@ def fixed_checkpoint_path_from_names(
 
     checkpoint_names must contain basenames from the caller's inventory. Uses
     best_model_path before checkpoint_path, prefers an inventoried epoch= name,
-    and requires agreement with a supplied valid manifest epoch. A matching
-    best-epoch= name is eligible when the fixed name is unavailable; otherwise
-    epoch fallback chooses the first matching fixed name in sorted order.
+    and requires agreement with a supplied valid manifest epoch. A best-epoch=
+    name is eligible when the fixed name is unavailable and either its epoch
+    matches or a completed or skipped-test manifest without an epoch names it;
+    otherwise epoch fallback chooses the first matching fixed name in sorted order.
     A completed or skipped-test manifest without an epoch may explicitly bind
     inventoried best.ckpt; callers must freeze its digest before selection.
     Returns an empty string for an absent/empty checkpoint_dir value, invalid
@@ -1368,10 +1372,13 @@ def fixed_checkpoint_path_from_names(
         ):
             return str(checkpoint_dir / name)
         if (
-            manifest_epoch is not None
-            and raw_name.startswith("best-epoch=")
+            raw_name.startswith("best-epoch=")
             and raw_name in names
-            and epoch_number_from_checkpoint_name(name) == manifest_epoch
+            and (
+                epoch_number_from_checkpoint_name(name) == manifest_epoch
+                if manifest_epoch is not None
+                else manifest.get("status") in {"completed", "skipped_test"}
+            )
         ):
             return str(checkpoint_dir / raw_name)
         if manifest_epoch is None:

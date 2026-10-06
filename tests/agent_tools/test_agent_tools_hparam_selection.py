@@ -2321,6 +2321,28 @@ def test_fixed_checkpoint_accepts_same_epoch_best_only_locally_and_remotely(tmp_
     )
 
 
+@pytest.mark.parametrize("status", ["completed", "skipped_test", "running", "failed", None])
+def test_fixed_checkpoint_binds_best_only_alias_from_successful_training_manifest(tmp_path: Path, status):
+    """Training manifests carry no epoch; early stopping can leave best-epoch= as the only epoch checkpoint."""
+    checkpoint_dir = tmp_path / "managed" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / "best-epoch=45.ckpt"
+    checkpoint.write_text("checkpoint")
+    (checkpoint_dir / "last.ckpt").write_text("last")
+    names = [checkpoint.name, "last.ckpt"]
+    manifest = {"status": status, "best_model_path": str(checkpoint), "best_model_score": 8.8}
+    expected = str(checkpoint) if status in {"completed", "skipped_test"} else ""
+
+    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == expected
+    assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, names) == expected
+    assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, ["last.ckpt"]) == ""
+
+    fixed = checkpoint_dir / "epoch=45.ckpt"
+    fixed.write_text("fixed")
+    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == str(fixed)
+    assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, [*names, fixed.name]) == str(fixed)
+
+
 def test_fixed_checkpoint_rejects_best_only_symlink(tmp_path: Path):
     foreign = tmp_path / "foreign" / "best-epoch=03.ckpt"
     foreign.parent.mkdir()
@@ -3343,6 +3365,31 @@ def test_hparam_select_binds_terminal_best_checkpoint_and_monitor_score(tmp_path
     checkpoint = Path(run["checkpoint_dir"]) / "best.ckpt"
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_text("selected weights")
+    manifest = {
+        "status": "completed",
+        "monitor": "val_ahi_pearson",
+        "best_model_score": 0.72,
+        "best_model_path": str(checkpoint),
+        "metrics": {"test_ahi_pearson": 0.81},
+    }
+    (Path(run["runtime_dir"]) / "run_manifest.json").write_text(json.dumps(manifest))
+    ranking = hparam_selection.select_hparam_candidates(plan_dir)
+    row = _read_table(ranking)[0]
+    assert row["score"] == "0.72"
+    assert row["checkpoint_path"] == str(checkpoint)
+    assert row["checkpoint_sha256"] == hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+
+
+def test_hparam_select_binds_early_stopped_best_alias_without_manifest_epoch(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "best-epoch=13.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("selected weights")
+    (checkpoint.parent / "best.ckpt").write_text("selected weights")
+    (checkpoint.parent / "last.ckpt").write_text("last weights")
     manifest = {
         "status": "completed",
         "monitor": "val_ahi_pearson",
