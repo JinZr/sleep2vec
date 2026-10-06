@@ -132,7 +132,7 @@ def parse_args() -> argparse.Namespace:
         "--diagnostics-steps",
         type=int,
         default=5,
-        help="Unsupported by sex_age_baseline; setting it fails.",
+        help="Inert in sex_age_baseline: it only applies with --print-diagnostics, which fails.",
     )
     parser.add_argument(
         "--label-name",
