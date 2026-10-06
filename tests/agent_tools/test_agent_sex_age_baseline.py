@@ -982,6 +982,44 @@ def test_sex_age_baseline_hparam_rejects_base_pretrained_backbone_path(tmp_path:
     assert not (output / "plan.json").exists()
 
 
+@pytest.mark.parametrize(
+    ("sidecar_field", "content", "blocked"),
+    [("label_index", None, False), ("disease_columns_index", "d1\nd2\nd3\n", True)],
+)
+def test_sex_age_baseline_inference_preset_requires_only_multilabel_disease_columns(
+    tmp_path: Path, sidecar_field: str, content: str | None, blocked: bool
+):
+    # Like the signal variants, the baseline takes preset-embedded labels and reads only the label names.
+    config = _write_multilabel_config(tmp_path)
+    config_payload = yaml.safe_load(config.read_text())
+    sidecar = tmp_path / f"replaced_{sidecar_field}.txt"
+    if content is not None:
+        sidecar.write_text(content)
+    config_payload["finetune"]["multilabel"][sidecar_field] = str(sidecar)
+    _write_yaml(config, config_payload)
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("placeholder")
+    preset = tmp_path / "preset.pkl"
+    preset.write_bytes(b"preset")
+    recipe = _infer_recipe(tmp_path, config, ckpt)
+    recipe_payload = yaml.safe_load(recipe.read_text())
+    recipe_payload["inputs"]["inference_preset_path"] = str(preset)
+    _write_yaml(recipe, recipe_payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-preset-multilabel")
+
+    issues = [issue for issue in report.issues if issue.field == "multilabel_sidecars"]
+    if not blocked:
+        assert report.exit_code == 0, report.issues
+        assert issues == []
+        return
+    assert report.exit_code == 2
+    [issue] = issues
+    assert "disease column count (3)" in " ".join(issue.evidence["multilabel"]["preset_issues"])
+    assert "label_index" not in issue.question
+    assert not (tmp_path / "plan-infer-preset-multilabel" / "run.sh").exists()
+
+
 def test_sex_age_baseline_infer_plan_can_render_inference_preset_path(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     ckpt = tmp_path / "model.ckpt"

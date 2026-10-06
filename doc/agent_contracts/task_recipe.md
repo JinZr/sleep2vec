@@ -247,8 +247,10 @@ it never substitutes the status reader's host environment.
 - Generic and variant-local Kaldi inference requires a `kaldi_data_root`
   directory plus a `kaldi_manifest` file and rejects NPZ preset overrides.
 - NPZ finetune/inference may consume a frozen preset without reopening survival
-  or multilabel sidecars. `preset_prepare` always validates the sidecar files
-  needed to build that preset.
+  sidecars or the multilabel `label_index` / `has_label_index`. Multilabel runs
+  still read `disease_columns_index` to name per-disease metrics and prediction
+  columns, so it stays required. `preset_prepare` always validates the sidecar
+  files needed to build that preset.
 - Checkpoint and pretrained-backbone inputs must be files.
 - Checkpoint averaging rejects AHI. `avg_ckpts` must be a positive integer,
   `best`/`last` aliases require an explicit `avg_ckpt_dir`, and any explicit

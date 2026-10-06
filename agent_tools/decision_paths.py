@@ -23,6 +23,7 @@ from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, ConfigSummaryInput, is_f
 _EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target", "workdir"}
 _RUNTIME_IDENTITY_FIELDS = {"python", "runtime_commit"}
 _RUNTIME_IDENTITY_REQUIRED_FIELDS = {*_RUNTIME_IDENTITY_FIELDS, "workdir"}
+_MULTILABEL_SIDECARS = ("disease_columns_index", "label_index", "has_label_index")
 
 
 def execution_contract_issues(
@@ -458,21 +459,26 @@ def multilabel_sidecar_issue(
     preset_path_recipe_field: str | None = None,
     uses_finetune_config: bool = False,
 ) -> DecisionIssue | None:
-    if not _requires_multilabel_sidecars(
+    sidecars = _required_multilabel_sidecars(
         task, recipe, config_summary, required, preset_path_recipe_field, uses_finetune_config
-    ):
-        return None
+    )
     multilabel = _config_finetune(config_summary).get("multilabel")
-    if not isinstance(multilabel, dict) or not multilabel.get("issues"):
+    if not sidecars or not isinstance(multilabel, dict):
+        return None
+    if sidecars == _MULTILABEL_SIDECARS:
+        issues_key, files = "issues", "valid disease_columns_index, label_index, and has_label_index files"
+    else:
+        issues_key, files = (
+            "preset_issues",
+            "a valid disease_columns_index file, non-empty key_column and label sidecar paths",
+        )
+    if not multilabel.get(issues_key):
         return None
     return DecisionIssue(
         DecisionStatus.NEEDS_USER_INPUT,
         "multilabel_sidecars",
         "Multilabel sidecar files are missing or inconsistent.",
-        (
-            "Please provide valid disease_columns_index, label_index, and has_label_index files, "
-            "and keep output_dim equal to the disease column count."
-        ),
+        f"Please provide {files}, and keep output_dim equal to the disease column count.",
         {"multilabel": multilabel},
     )
 
@@ -498,20 +504,29 @@ def _requires_survival_sidecars(
     return False
 
 
-def _requires_multilabel_sidecars(
+def _required_multilabel_sidecars(
     task: str,
     recipe: dict,
     config_summary: ConfigSummaryInput | None,
     required: bool | None = None,
     preset_path_recipe_field: str | None = None,
     uses_finetune_config: bool = False,
-) -> bool:
+) -> tuple[str, ...]:
     task_cfg = _config_finetune(config_summary).get("task")
     if not isinstance(task_cfg, dict) or task_cfg.get("type") != "multilabel_classification":
-        return False
+        return ()
     if required is not None:
-        return required
-    return uses_finetune_config
+        return _MULTILABEL_SIDECARS if required else ()
+    if not uses_finetune_config:
+        return ()
+    _field, preset_path = _effective_preset_path(
+        task, recipe, config_summary, preset_path_recipe_field, uses_finetune_config=uses_finetune_config
+    )
+    if preset_path in (None, ""):
+        return _MULTILABEL_SIDECARS
+    # Preset entries embed disease_label and has_label, but val/test finalization still reads
+    # disease_columns_index to name per-disease metrics and prediction columns.
+    return ("disease_columns_index",)
 
 
 def _append_remote_survival_sidecar_issues(
@@ -557,14 +572,13 @@ def _append_remote_multilabel_sidecar_issues(
     preset_path_recipe_field: str | None = None,
     uses_finetune_config: bool = False,
 ) -> None:
-    if not _requires_multilabel_sidecars(
+    sidecars = _required_multilabel_sidecars(
         task, recipe, config_summary, required, preset_path_recipe_field, uses_finetune_config
-    ):
-        return
+    )
     multilabel = _config_finetune(config_summary).get("multilabel")
     if not isinstance(multilabel, dict):
         return
-    for data_field in ("disease_columns_index", "label_index", "has_label_index"):
+    for data_field in sidecars:
         value = multilabel.get(data_field)
         if not value:
             continue

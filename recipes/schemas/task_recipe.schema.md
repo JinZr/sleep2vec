@@ -97,7 +97,7 @@ The closed section fields are:
   - `sleep2stat`: `batch_size`, `device`, `dry_run`, `limit_records`, `num_workers`, `plot_adjust_covariates`, `plot_cohort_after_run`, `plot_group_column`, `plot_stage_source`, `summarize_after_run`.
   - `embedding_extraction`: `device`, `num_workers`.
 - `infer` / `evaluate` checkpoint averaging rejects AHI; `avg_ckpts` is a positive integer and `ckpt_path=best/last` requires `avg_ckpt_dir`, whose explicit directory is resolved from the runtime workdir.
-- Checkpoint, pretrained-backbone, index, manifest, preset, and sidecar inputs are files. Kaldi finetune/inference additionally requires `kaldi_data_root` as a directory and rejects effective NPZ preset paths. NPZ runtime presets suppress sidecar reopening, while `preset_prepare` requires survival or multilabel sidecars to build them. Runtime-semantic input paths reject leading `~`; use an absolute or workdir-relative path.
+- Checkpoint, pretrained-backbone, index, manifest, preset, and sidecar inputs are files. Kaldi finetune/inference additionally requires `kaldi_data_root` as a directory and rejects effective NPZ preset paths. NPZ runtime presets suppress label-sidecar reopening except for multilabel `disease_columns_index`, which names per-disease outputs; `preset_prepare` requires survival or multilabel sidecars to build them. Runtime-semantic input paths reject leading `~`; use an absolute or workdir-relative path.
 - `artifacts`:
   - `finetune`: `overwrite`, `results_csv_path`, `version_name`.
   - `infer` / `evaluate`: `overwrite`.
