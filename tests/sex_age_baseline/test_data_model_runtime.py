@@ -882,8 +882,8 @@ def test_finetune_finishes_wandb_before_terminal_manifest(
         _runtime_args(config, tmp_path, version_name="ordered", test_after_fit=test_after_fit), cfg
     )
 
-    # W&B finalization can fail, so the terminal manifest is written only after it succeeds.
-    assert events[:2] == ["finish", f"manifest:{status}"]
+    # W&B finalization can fail, so the terminal manifest is written only after it succeeds; cleanup does not retry it.
+    assert events == ["finish", f"manifest:{status}"]
 
 
 def test_all_checkpoint_test_rejects_missing_validation_best_periodic_checkpoint(tmp_path: Path, monkeypatch):
@@ -1439,7 +1439,8 @@ def test_inference_withdraws_manifest_when_wandb_publication_fails(tmp_path: Pat
         with pytest.raises(RuntimeError, match=f"{failing_call} failure"):
             baseline_runtime.run_inference_and_save(args, cfg)
 
-    assert events[:2] == ["publish", "finish"]
+    # Finalization is attempted once, also when it fails.
+    assert events == ["publish", "finish"]
     # run_manifest.json is uploaded with the artifact, so it is written first and withdrawn on failure.
     assert args.manifest_path.exists() is (failing_call is None)
 

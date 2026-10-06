@@ -369,6 +369,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             )
         )
     preexisting_wandb_run = wandb.run
+    wandb_finish_attempted = False
     logger = WandbLogger(
         project=getattr(args, "wandb_project", None) or "sex-age-baseline",
         name=args.version,
@@ -401,6 +402,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             if not trainer.is_global_zero:
                 return
             # W&B finalization can still fail, so it precedes the terminal manifest.
+            wandb_finish_attempted = True
             _finish_wandb_run(preexisting_wandb_run, "finetune")
             save_training_run_manifest(
                 args,
@@ -508,6 +510,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         else:
             save_result_csv(test_result.metrics, str(args.results_csv_path), args)
         args.ckpt_path = original_ckpt_path
+        wandb_finish_attempted = True
         _finish_wandb_run(preexisting_wandb_run, "finetune")
         save_training_run_manifest(
             args,
@@ -526,8 +529,9 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             prediction_csv_path=prediction_csv_path,
         )
     finally:
-        # A no-op once a successful run has finished W&B before its terminal manifest.
-        _finish_wandb_run(preexisting_wandb_run, "finetune")
+        # Finalization is attempted once: a successful run already tried it before its terminal manifest.
+        if not wandb_finish_attempted:
+            _finish_wandb_run(preexisting_wandb_run, "finetune")
 
 
 def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
@@ -580,14 +584,14 @@ def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
                     len(result.survival_per_disease_rows),
                     len(result.multilabel_per_disease_rows),
                 )
+                # Finalization is attempted once; the cleanup below only handles runs that fail before this point.
+                wandb_run = None
                 _finish_wandb_run(preexisting_wandb_run, "inference")
             except BaseException:
                 # The W&B artifact uploads run_manifest.json, so it is written first; it must not survive as a
                 # terminal manifest when publication or finalization fails.
                 Path(args.manifest_path).unlink(missing_ok=True)
                 raise
-            # Finished: the cleanup below only handles runs that fail before this point.
-            wandb_run = None
     finally:
         if wandb_run is not None:
             _finish_wandb_run(preexisting_wandb_run, "inference")

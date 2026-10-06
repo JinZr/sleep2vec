@@ -228,6 +228,7 @@ def supervised(args, config_bundle):
     # logger and callbacks
     version = args.version
     preexisting_wandb_run = wandb.run
+    wandb_finish_attempted = False
     logger = WandbLogger(
         project=getattr(args, "wandb_project", None) or "sleep2expert-finetune",  # 相当于 TensorBoard 的 log dir
         name=version,  # run 名称
@@ -358,6 +359,7 @@ def supervised(args, config_bundle):
         if not args.test_after_fit:
             logging.info("Test-after-fit disabled; skipping trainer.test and results CSV append.")
             # W&B finalization can still fail, so it precedes the terminal manifest.
+            wandb_finish_attempted = True
             _finish_wandb_run(preexisting_wandb_run)
             save_training_run_manifest(
                 args,
@@ -495,6 +497,7 @@ def supervised(args, config_bundle):
         else:
             save_result_csv(pretrain_result, args.results_csv_path, args)
         args.ckpt_path = original_ckpt_path
+        wandb_finish_attempted = True
         _finish_wandb_run(preexisting_wandb_run)
         save_training_run_manifest(
             args,
@@ -531,8 +534,9 @@ def supervised(args, config_bundle):
                 logging.warning(f"Failed to write failed-run manifest: {exc}")
         raise
     finally:
-        # A no-op once a successful run has finished W&B before its terminal manifest.
-        _finish_wandb_run(preexisting_wandb_run)
+        # Finalization is attempted once: a successful run already tried it before its terminal manifest.
+        if not wandb_finish_attempted:
+            _finish_wandb_run(preexisting_wandb_run)
 
 
 def build_version_name(args) -> str:

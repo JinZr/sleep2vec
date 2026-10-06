@@ -1274,8 +1274,8 @@ def test_supervised_raises_wandb_finish_failure_after_success(monkeypatch: pytes
     with pytest.raises(RuntimeError, match="cleanup failure"):
         supervised(args_ns, _DummyBundle(model=_DummyModelConfig()))
 
-    assert events[:3] == ["csv", "finish", "manifest:failed"]
-    assert "manifest:completed" not in events
+    # Finalization is attempted once; cleanup must not retry the failed finish.
+    assert events == ["csv", "finish", "manifest:failed"]
 
 
 def test_supervised_preserves_primary_error_when_wandb_finish_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

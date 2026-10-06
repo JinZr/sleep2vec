@@ -239,14 +239,14 @@ def run_inference(args):
                     survival_per_disease_metric_count,
                     multilabel_per_disease_metric_count,
                 )
+                # Finalization is attempted once; the cleanup below only handles runs that fail before this point.
+                wandb_run = None
                 wandb.finish()
             except BaseException:
                 # The W&B artifact uploads run_manifest.json, so it is written first; it must not survive as a
                 # terminal manifest when publication or finalization fails.
                 Path(args.manifest_path).unlink(missing_ok=True)
                 raise
-            # Finished: the cleanup below only handles runs that fail before this point.
-            wandb_run = None
     finally:
         if wandb_run is not None:
             primary_exc_active = sys.exc_info()[0] is not None

@@ -457,10 +457,8 @@ def test_run_inference_withdraws_manifest_when_wandb_publication_fails(
 
     # run_manifest.json is uploaded with the artifact, so it is written first and withdrawn on failure.
     assert Path(args.manifest_path).exists() is (failing_call is None)
-    if failing_call is None:
-        assert events == ["log", "log_artifact", "finish"]
-    else:
-        assert events[:3] == ["log", "log_artifact", "finish"]
+    # Finalization is attempted once, also when it fails.
+    assert events == ["log", "log_artifact", "finish"]
 
 
 @pytest.mark.parametrize("avg_ckpts", [0, -1])
