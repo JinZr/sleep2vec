@@ -867,7 +867,8 @@ def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, 
     assert not (plan_dir / "run_status.tsv").exists()
 
 
-def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch):
+@pytest.mark.parametrize("target", ["local", "ssh"])
+def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch, target: str):
     calls = []
 
     def run(argv, **kwargs):
@@ -878,18 +879,41 @@ def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch):
     workdir = "/runtime checkout"
 
     hparam_runtime._run_execution_command(
-        {"workdir": workdir, "conda_env": "runtime", "env": {"TOKEN": "value"}},
+        {"target": target, "host": "unit-host", "workdir": workdir, "conda_env": "runtime", "env": {"TOKEN": "value"}},
         ["/runtime/bin/python", "-c", "pass"],
     )
 
     argv, kwargs = calls[0]
-    assert argv[:2] == ["bash", "-lc"]
-    shell = argv[2]
+    if target == "ssh":
+        assert argv[0] == "ssh"
+        assert argv[-2] == "unit-host"
+    else:
+        assert argv[:2] == ["bash", "-lc"]
+    shell = argv[-1]
     assert shell.index(f"cd {shlex.quote(workdir)}") < shell.index("conda run")
     assert "export PYTHONPATH=" in shell
     assert "${PYTHONPATH" not in shell
     assert "TOKEN=value" in shell
-    assert kwargs["timeout"] == hparam_runtime.LAUNCH_TIMEOUT_SECONDS
+    assert kwargs["timeout"] == 300
+
+
+@pytest.mark.parametrize("target", ["local", "ssh"])
+def test_execution_probe_timeout_propagates_without_retry(monkeypatch, target: str):
+    calls = []
+
+    def timeout(argv, **kwargs):
+        calls.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(hparam_runtime.subprocess, "run", timeout)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        hparam_runtime._run_execution_command(
+            {"target": target, "host": "unit-host", "workdir": "/runtime"},
+            ["/runtime/bin/python", "-c", "pass"],
+        )
+
+    assert calls == [300]
 
 
 def test_verified_launch_rechecks_snapshot_and_artifacts_immediately_before_process_start(tmp_path: Path):
@@ -1124,7 +1148,7 @@ def test_launch_timeout_is_uncertain_only_over_ssh(monkeypatch, target: str):
     execution = {"target": target, **({"host": "unit-host"} if target == "ssh" else {})}
     if target == "ssh":
         assert hparam_runtime._start_process(execution, "managed launch") == "launched"
-        assert calls == [hparam_runtime.LAUNCH_TIMEOUT_SECONDS]
+        assert calls == [60]
     else:
         with pytest.raises(subprocess.TimeoutExpired):
             hparam_runtime._start_process(execution, "managed launch")
