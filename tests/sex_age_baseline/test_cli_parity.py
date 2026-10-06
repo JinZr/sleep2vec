@@ -86,7 +86,6 @@ def test_finetune_accepts_sleep2vec_runtime_flags(monkeypatch: pytest.MonkeyPatc
     [
         ["--pretrained-backbone-path", "backbone.ckpt"],
         ["--print-diagnostics"],
-        ["--diagnostics-steps", "3"],
     ],
 )
 def test_finetune_rejects_sleep2vec_only_capabilities(monkeypatch: pytest.MonkeyPatch, unsupported: list[str]):

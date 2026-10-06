@@ -13,7 +13,6 @@ from .runtime import train_and_save
 _UNSUPPORTED_OPTIONS = (
     ("--pretrained-backbone-path", "pretrained_backbone_path"),
     ("--print-diagnostics", "print_diagnostics"),
-    ("--diagnostics-steps", "diagnostics_steps"),
 )
 
 

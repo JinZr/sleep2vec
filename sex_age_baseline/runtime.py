@@ -45,6 +45,7 @@ from sleep2vec.results import (
 from sleep2vec.schedulers import build_warmup_cosine_scheduler, validate_finetune_scheduler_args
 from sleep2vec.sleep2vec_inference import prediction_export_enabled
 
+from .common import apply_task_flags
 from .config import BaselineConfig
 from .data import SexAgeDataset, load_split_dataset, make_dataloader
 from .model import SexAgeMLP
@@ -254,13 +255,7 @@ def _test(trainer, module, loader, cfg, checkpoint_path, stage="test"):
 
 
 def configure_result_args(args: Namespace, cfg: BaselineConfig) -> None:
-    args.monitor = cfg.finetune.task.monitor
-    args.monitor_mod = cfg.finetune.task.monitor_mod
-    args.output_dim = cfg.finetune.task.output_dim
-    args.is_seq = False
-    args.is_survival = cfg.finetune.task.type == "survival"
-    args.is_multilabel = cfg.finetune.task.type == "multilabel_classification"
-    args.is_classification = False
+    apply_task_flags(args, cfg.finetune.task)
     args.channel_names = []
     args.finetune_preset_path = cfg.data.finetune_preset_path
     if not hasattr(args, "inference_preset_path"):

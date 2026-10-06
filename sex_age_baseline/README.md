@@ -98,8 +98,10 @@ the fixed `sleep2vec` finetune seed; inference keeps `--seed`. W&B routing,
 averaging (including `best`/`last` aliases with `--avg-ckpt-dir`) follow
 `sleep2vec`. Prediction CSVs are written only when the CLI requests them; the
 YAML has no output switches. The baseline has no backbone or diagnostics mode:
-`--pretrained-backbone-path`, `--print-diagnostics` and `--diagnostics-steps`
-fail at launch. Inference does not offer `--override-dataset-names`.
+`--pretrained-backbone-path` and `--print-diagnostics` fail at launch, and
+`--diagnostics-steps` is inert without the latter, as in `sleep2vec`. The YAML
+task alone sets task semantics; `--label-name` only names the result
+namespace. Inference does not offer `--override-dataset-names`.
 
 Keep the existing choice of best-checkpoint test, explicit all-saved-epoch test,
 or `test_after_fit: false`. Independent inference loads the same strict model

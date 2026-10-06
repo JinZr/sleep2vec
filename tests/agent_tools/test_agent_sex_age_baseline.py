@@ -1225,6 +1225,20 @@ def test_sex_age_baseline_renders_shared_scheduler_fields(tmp_path: Path, task, 
         assert argv[argv.index("--" + field.replace("_", "-")) + 1] == str(value)
 
 
+def test_sex_age_baseline_plateau_treats_builtin_label_name_as_namespace(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    recipe = _finetune_recipe(tmp_path, config)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["label_name"] = "age"
+    payload["decisions"]["label_name"]["value"] = "age"
+    payload["runtime"]["lr_scheduler"] = "plateau"
+    _write_yaml(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plateau-plan")
+
+    assert report.exit_code == 0, report.issues
+
+
 @pytest.mark.parametrize("task", ["finetune", "hparam_tune"])
 @pytest.mark.parametrize("field,value", [("lr_decay_ratio", 0.2), ("lr_plateau_patience", 2)])
 def test_sex_age_baseline_rejects_scheduler_fields_without_their_schedule(tmp_path: Path, task, field, value):
