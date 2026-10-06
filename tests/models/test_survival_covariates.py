@@ -131,6 +131,34 @@ def test_downstream_classification_head_accepts_covariates(package_name: str, mo
     assert model.head.extra_feature_dim == 6
 
 
+@pytest.mark.parametrize(
+    ("package_name", "fusion"),
+    [("sleep2vec", "feature_concat"), ("sleep2vec2", "feature_concat"), ("sleep2vec2", "token_concat")],
+)
+def test_downstream_classification_head_rejects_relu_with_covariates(package_name: str, fusion: str, monkeypatch):
+    module = _import_downstream_module(package_name, monkeypatch)
+    config = _model_config(package_name, head_name="classification")
+    config.head.act = "relu"
+    kwargs = {"survival_covariate_fusion": fusion} if package_name == "sleep2vec2" else {}
+
+    with pytest.raises(ValueError, match="do not support head.act 'relu'"):
+        module.Sleep2vecDownstreamModel(
+            target="disease",
+            backbone=_DummyBackbone(),
+            channel_names=["ppg"],
+            output_dim=2,
+            is_classification=True,
+            is_seq=False,
+            device="cpu",
+            model_config=config,
+            head_config=config.head,
+            survival_covariates=["bmi"],
+            survival_covariate_embedding_dim=3,
+            covariate_normalization=_NORMALIZATION,
+            **kwargs,
+        )
+
+
 def test_sleep2vec2_downstream_adds_survival_covariate_risk(monkeypatch):
     model = _downstream_model("sleep2vec2", monkeypatch, survival_covariate_fusion="risk")
     assert model.head.extra_feature_dim == 0
@@ -241,3 +269,123 @@ def test_classification_head_concats_extra_features(package_name: str):
 
     assert output.shape == (2, 2)
     assert head.mlp[1].in_features == 7
+
+
+_ALL_COVARIATES_SHUFFLED = ["bmi_missing", "sex", "bmi", "age"]
+_NORMALIZATION = {"age": {"mean": 50.0, "std": 25.0}, "bmi": {"mean": 25.0, "std": 5.0}}
+# Canonical order is age, sex, bmi, bmi_missing whatever order the covariates were listed in.
+_EXPECTED_VALUES = torch.tensor([[-2.0, 0.0, -1.0, 1.0], [1.0, 1.0, 1.0, 0.0]])
+
+
+def _bmi_model(package_name: str, monkeypatch, **kwargs):
+    module = _import_downstream_module(package_name, monkeypatch)
+    config = _model_config(package_name, head_name="classification")
+    return module.Sleep2vecDownstreamModel(
+        target="disease",
+        backbone=_DummyBackbone(),
+        channel_names=["ppg"],
+        output_dim=2,
+        is_classification=True,
+        is_seq=False,
+        device="cpu",
+        model_config=config,
+        head_config=config.head,
+        survival_covariates=_ALL_COVARIATES_SHUFFLED,
+        survival_covariate_embedding_dim=3,
+        covariate_normalization=_NORMALIZATION,
+        **kwargs,
+    )
+
+
+def _bmi_batch():
+    return {
+        "metadata": {
+            "age": torch.tensor([0.0, 75.0]),
+            "sex": torch.tensor([0, 1]),
+            "bmi": torch.tensor([20.0, 30.0]),
+            "bmi_missing": torch.tensor([1, 0]),
+        }
+    }
+
+
+def _set_identity_embeddings(model) -> None:
+    with torch.no_grad():
+        for embedding in (model.survival_age_embedding, model.survival_bmi_embedding):
+            embedding.weight.fill_(1.0)
+            embedding.bias.zero_()
+        for embedding in (model.survival_sex_embedding, model.survival_bmi_missing_embedding):
+            embedding.weight[0].zero_()
+            embedding.weight[1].fill_(1.0)
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2"])
+def test_bmi_covariates_keep_checkpoint_parameter_names(package_name: str, monkeypatch):
+    model = _bmi_model(package_name, monkeypatch)
+
+    covariate_keys = {key for key in model.state_dict() if key.startswith("survival_")}
+
+    assert covariate_keys == {
+        "survival_age_embedding.weight",
+        "survival_age_embedding.bias",
+        "survival_sex_embedding.weight",
+        "survival_bmi_embedding.weight",
+        "survival_bmi_embedding.bias",
+        "survival_bmi_missing_embedding.weight",
+    }
+    assert all(not value.any() for key, value in model.state_dict().items() if key in covariate_keys)
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2"])
+def test_bmi_covariate_features_are_normalized_in_canonical_order(package_name: str, monkeypatch):
+    model = _bmi_model(package_name, monkeypatch)
+    _set_identity_embeddings(model)
+
+    features = model._build_survival_extra_features(_bmi_batch(), torch.zeros(2, 8))
+
+    assert model.head.extra_feature_dim == 12
+    assert torch.equal(features, _EXPECTED_VALUES.repeat_interleave(3, dim=1))
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "pattern"),
+    [
+        ("bmi", float("nan"), "'bmi' requires finite imputed values"),
+        ("bmi_missing", -1, "'bmi_missing' must be 0 or 1"),
+        ("age", -1.0, "'age' is missing"),
+    ],
+)
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2"])
+def test_bmi_covariate_features_reject_invalid_metadata(package_name: str, name, value, pattern, monkeypatch):
+    model = _bmi_model(package_name, monkeypatch)
+    batch = _bmi_batch()
+    batch["metadata"][name][0] = value
+
+    with pytest.raises(ValueError, match=pattern):
+        model._build_survival_extra_features(batch, torch.zeros(2, 8))
+
+
+@pytest.mark.parametrize("fusion", ["feature_concat", "token_concat", "risk"])
+def test_sleep2vec2_bmi_covariates_normalize_across_fusions(fusion: str, monkeypatch):
+    model = _bmi_model("sleep2vec2", monkeypatch, survival_covariate_fusion=fusion)
+    batch = _bmi_batch()
+
+    assert torch.equal(model._build_survival_covariate_values(batch, torch.zeros(2, 8)), _EXPECTED_VALUES)
+    if fusion != "risk":
+        _set_identity_embeddings(model)
+        features = model._build_survival_covariate_embeddings(batch, torch.zeros(2, 8))
+        assert torch.equal(features, _EXPECTED_VALUES.repeat_interleave(3, dim=1))
+
+    batch["metadata"]["bmi_missing"] = torch.tensor([0.5, 0.0])
+    with pytest.raises(ValueError, match="bmi_missing"):
+        model._build_survival_covariate_values(batch, torch.zeros(2, 8))
+
+
+def test_sleep2vec2_risk_covariates_standardize_before_reduced_precision(monkeypatch):
+    model = _bmi_model("sleep2vec2", monkeypatch, survival_covariate_fusion="risk")
+    batch = _bmi_batch()
+    batch["metadata"]["bmi"] = torch.tensor([25.05, 30.0])
+
+    values = model._build_survival_covariate_values(batch, torch.zeros(2, 8, dtype=torch.bfloat16))
+
+    assert values.dtype == torch.bfloat16
+    assert values[0, 2].item() == pytest.approx(0.01, abs=1e-4)

@@ -150,8 +150,7 @@ def test_variant_psg_dataset_allows_stage5_index_without_age_or_sex(tmp_path: Pa
         num_workers=0,
     )
 
-    assert "age" not in dataset.data[0].metadata
-    assert "sex" not in dataset.data[0].metadata
+    assert not {"age", "sex", "bmi", "bmi_missing"} & set(dataset.data[0].metadata)
 
 
 @pytest.mark.parametrize("package_name", VARIANT_PACKAGES)
@@ -228,8 +227,7 @@ def test_variant_psg_dataset_allows_ahi_index_without_age_or_sex(tmp_path: Path,
         num_workers=0,
     )
 
-    assert "age" not in dataset.data[0].metadata
-    assert "sex" not in dataset.data[0].metadata
+    assert not {"age", "sex", "bmi", "bmi_missing"} & set(dataset.data[0].metadata)
     assert dataset.data[0].metadata["ahi"] == 9.5
     assert dataset.data[0].metadata["tst"] == 3.5
 

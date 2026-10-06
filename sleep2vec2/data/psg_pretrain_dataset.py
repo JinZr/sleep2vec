@@ -202,7 +202,7 @@ class PSGPretrainDataset(DefaultDataset):
                     "path": row["path"],
                     "split": row["split"],
                 }
-                for optional_meta_name in ("age", "sex"):
+                for optional_meta_name in ("age", "sex", "bmi", "bmi_missing"):
                     if optional_meta_name in row.index:
                         metadata[optional_meta_name] = row[optional_meta_name]
                 if survival_labels is not None:

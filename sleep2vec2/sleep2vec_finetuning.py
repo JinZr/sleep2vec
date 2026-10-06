@@ -96,6 +96,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             survival_covariates=getattr(covariate_cfg, "covariates", None),
             survival_covariate_embedding_dim=(getattr(covariate_cfg, "covariate_embedding_dim", 16)),
             survival_covariate_fusion=getattr(covariate_cfg, "covariate_fusion", "feature_concat"),
+            covariate_normalization=getattr(covariate_cfg, "covariate_normalization", None),
         ).to(args.device)
 
         if args.pretrained_backbone_path:

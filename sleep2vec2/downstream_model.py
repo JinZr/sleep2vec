@@ -7,7 +7,13 @@ import torch.nn as nn
 import yaml
 
 from sleep2vec2.checkpoints import backbone_init_prefixes, load_checkpoint, load_pretrain_init_weights
-from sleep2vec2.config import HeadConfig, LayerMixConfig, ModelConfig
+from sleep2vec2.config import SUPPORTED_COVARIATES, HeadConfig, LayerMixConfig, ModelConfig
+from sleep2vec2.modules.covariates import (
+    build_covariate_embedding,
+    covariate_values,
+    embed_covariates,
+    ordered_covariates,
+)
 from sleep2vec2.modules.layer_mix import LayerMix
 
 from .downstreams.head_registry import create_head
@@ -48,6 +54,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         survival_covariates: t.Sequence[str] | None = None,
         survival_covariate_embedding_dim: int = 16,
         survival_covariate_fusion: str = "feature_concat",
+        covariate_normalization: t.Mapping[str, t.Mapping[str, float]] | None = None,
     ):
         super().__init__()
         # core attributes
@@ -62,9 +69,11 @@ class Sleep2vecDownstreamModel(nn.Module):
         self.survival_covariates = tuple(survival_covariates or ())
         if len(set(self.survival_covariates)) != len(self.survival_covariates):
             raise ValueError("survival_covariates must not contain duplicates.")
-        unsupported_covariates = sorted(set(self.survival_covariates) - {"age", "sex"})
+        unsupported_covariates = sorted(set(self.survival_covariates) - set(SUPPORTED_COVARIATES))
         if unsupported_covariates:
-            raise ValueError(f"survival_covariates only supports ['age', 'sex'], got {unsupported_covariates}.")
+            raise ValueError(
+                f"survival_covariates only supports {list(SUPPORTED_COVARIATES)}, got {unsupported_covariates}."
+            )
         if self.survival_covariates and self.is_seq:
             raise ValueError("survival covariates are only supported for non-sequence downstream tasks.")
         if not isinstance(survival_covariate_embedding_dim, int) or isinstance(survival_covariate_embedding_dim, bool):
@@ -77,22 +86,22 @@ class Sleep2vecDownstreamModel(nn.Module):
         if survival_covariate_fusion in {"risk", "token_concat"} and not self.survival_covariates:
             raise ValueError(f"survival_covariate_fusion='{survival_covariate_fusion}' requires survival_covariates.")
         self.survival_covariate_fusion = survival_covariate_fusion
+        self.covariate_normalization = dict(covariate_normalization or {})
+        # The survival_<name>_embedding attribute names are part of the finetuned checkpoint contract.
         self.survival_age_embedding = None
         self.survival_sex_embedding = None
+        self.survival_bmi_embedding = None
+        self.survival_bmi_missing_embedding = None
         self.survival_covariate_risk = None
         covariate_feature_dim = len(self.survival_covariates) * survival_covariate_embedding_dim
         if self.survival_covariate_fusion == "risk":
             self.survival_covariate_risk = nn.Linear(len(self.survival_covariates), self.output_dim)
             nn.init.zeros_(self.survival_covariate_risk.weight)
             nn.init.zeros_(self.survival_covariate_risk.bias)
-        elif self.survival_covariates:
-            if "age" in self.survival_covariates:
-                self.survival_age_embedding = nn.Linear(1, survival_covariate_embedding_dim)
-                nn.init.zeros_(self.survival_age_embedding.weight)
-                nn.init.zeros_(self.survival_age_embedding.bias)
-            if "sex" in self.survival_covariates:
-                self.survival_sex_embedding = nn.Embedding(2, survival_covariate_embedding_dim)
-                nn.init.zeros_(self.survival_sex_embedding.weight)
+        else:
+            for name in ordered_covariates(self.survival_covariates):
+                embedding = build_covariate_embedding(name, survival_covariate_embedding_dim)
+                setattr(self, f"survival_{name}_embedding", embedding)
 
         self.n_channels = len(self.channel_names)
         self.cls_embedding = getattr(self.backbone, "cls_embedding", None)
@@ -117,6 +126,15 @@ class Sleep2vecDownstreamModel(nn.Module):
         inferred_head = head_config.name
         if self.survival_covariates and inferred_head not in {"classification", "regression"}:
             raise ValueError("covariates require the classification or regression head.")
+        # The classification head activates its input before the first Linear; ReLU has zero gradient at the
+        # zero-initialized covariate features, so those embeddings would never train.
+        if (
+            self.survival_covariate_fusion != "risk"
+            and self.survival_covariates
+            and inferred_head == "classification"
+            and (head_config.act or "").lower() == "relu"
+        ):
+            raise ValueError("covariates with the classification head do not support head.act 'relu'.")
         if head_config.act:
             head_kwargs.setdefault("act", _resolve_act(head_config.act))
         channel_cfg = head_config.channel_agg
@@ -292,24 +310,8 @@ class Sleep2vecDownstreamModel(nn.Module):
         if self.survival_covariate_fusion == "risk":
             return None
 
-        metadata = batch["metadata"]
-        extra_features = []
-        if "age" in self.survival_covariates:
-            if "age" not in metadata:
-                raise ValueError("Survival covariate 'age' requires batch metadata age.")
-            age = metadata["age"].to(device=reference.device, dtype=self.survival_age_embedding.weight.dtype)
-            if (age < 0).any():
-                raise ValueError("Survival covariate 'age' is missing for at least one sample.")
-            extra_features.append(self.survival_age_embedding(age.view(-1, 1) / 100.0))
-        if "sex" in self.survival_covariates:
-            if "sex" not in metadata:
-                raise ValueError("Survival covariate 'sex' requires batch metadata sex.")
-            sex = metadata["sex"].to(device=reference.device)
-            if ((sex != 0) & (sex != 1)).any():
-                raise ValueError("Survival covariate 'sex' must be 0 or 1 for every sample.")
-            extra_features.append(self.survival_sex_embedding(sex.long()))
-
-        return torch.cat(extra_features, dim=-1)
+        embeddings = {name: getattr(self, f"survival_{name}_embedding") for name in self.survival_covariates}
+        return embed_covariates(embeddings, batch["metadata"], self.covariate_normalization, reference.device)
 
     def _build_survival_extra_features(self, batch, reference: torch.Tensor) -> torch.Tensor | None:
         if self.survival_covariate_fusion != "feature_concat":
@@ -329,24 +331,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         if not self.survival_covariates:
             return None
 
-        metadata = batch["metadata"]
-        covariates = []
-        if "age" in self.survival_covariates:
-            if "age" not in metadata:
-                raise ValueError("Survival covariate 'age' requires batch metadata age.")
-            age = metadata["age"].to(device=reference.device, dtype=reference.dtype)
-            if (age < 0).any():
-                raise ValueError("Survival covariate 'age' is missing for at least one sample.")
-            covariates.append(age.view(-1, 1) / 100.0)
-        if "sex" in self.survival_covariates:
-            if "sex" not in metadata:
-                raise ValueError("Survival covariate 'sex' requires batch metadata sex.")
-            sex = metadata["sex"].to(device=reference.device)
-            if ((sex != 0) & (sex != 1)).any():
-                raise ValueError("Survival covariate 'sex' must be 0 or 1 for every sample.")
-            covariates.append(sex.to(dtype=reference.dtype).view(-1, 1))
-
-        return torch.cat(covariates, dim=-1)
+        return covariate_values(self.survival_covariates, batch["metadata"], self.covariate_normalization, reference)
 
     def forward(self, batch):
         tokens = batch["tokens"]
@@ -433,8 +418,8 @@ class Sleep2vecDownstreamModel(nn.Module):
         extra_features = self._build_survival_extra_features(batch, feature_of_different_mods[0])
         covariate_risk = None
         if self.survival_covariate_fusion == "risk":
-            covariate_values = self._build_survival_covariate_values(batch, feature_of_different_mods[0])
-            covariate_risk = self.survival_covariate_risk(covariate_values)
+            scaled_covariates = self._build_survival_covariate_values(batch, feature_of_different_mods[0])
+            covariate_risk = self.survival_covariate_risk(scaled_covariates)
         if self.is_seq and token_masks:
             merged_mask = token_masks[0]
             for mask in token_masks[1:]:
