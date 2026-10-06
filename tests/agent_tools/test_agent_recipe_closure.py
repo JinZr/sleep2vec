@@ -496,8 +496,29 @@ def test_infer_multilabel_preset_still_requires_disease_columns(
     report = _evaluate_payload(recipe, payload)
     assert report.exit_code == 2
     issue = _multilabel_sidecar_issue(report)
-    assert any(expected in text for text in issue.evidence["multilabel"]["disease_columns_issues"])
+    assert any(expected in text for text in issue.evidence["multilabel"]["preset_issues"])
     assert "label_index" not in issue.question
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("key_column", None), ("label_index", None), ("label_index", ""), ("has_label_index", 3)],
+)
+def test_infer_multilabel_preset_still_requires_loader_fields(tmp_path: Path, field: str, value: object):
+    # The variant config loader needs every multilabel field as a non-empty string, even ones the preset leaves unread.
+    recipe, payload = _multilabel_infer_payload(tmp_path, ["d1", "d2"], preset=True)
+    config_path = Path(payload["inputs"]["config"])
+    config = yaml.safe_load(config_path.read_text())
+    if value is None:
+        del config["finetune"]["multilabel"][field]
+    else:
+        config["finetune"]["multilabel"][field] = value
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 2
+    issue = _multilabel_sidecar_issue(report)
+    assert any(f"finetune.multilabel.{field} " in text for text in issue.evidence["multilabel"]["preset_issues"])
 
 
 def test_infer_multilabel_preset_rejects_tilde_disease_columns_path(tmp_path: Path):
@@ -547,7 +568,7 @@ def test_infer_multilabel_index_still_requires_label_sidecars(tmp_path: Path):
     assert report.exit_code == 1
     assert "finetune.multilabel.label_index" in {issue.field for issue in report.blocking_issues()}
     issue = _multilabel_sidecar_issue(report)
-    assert issue.evidence["multilabel"]["disease_columns_issues"] == []
+    assert issue.evidence["multilabel"]["preset_issues"] == []
     assert "label_index" in issue.question
 
 

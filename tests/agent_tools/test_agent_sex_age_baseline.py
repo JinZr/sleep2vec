@@ -1004,7 +1004,7 @@ def test_sex_age_baseline_inference_preset_requires_only_multilabel_disease_colu
         return
     assert report.exit_code == 2
     [issue] = issues
-    assert "disease column count (3)" in " ".join(issue.evidence["multilabel"]["disease_columns_issues"])
+    assert "disease column count (3)" in " ".join(issue.evidence["multilabel"]["preset_issues"])
     assert "label_index" not in issue.question
     assert not (tmp_path / "plan-infer-preset-multilabel" / "run.sh").exists()
 

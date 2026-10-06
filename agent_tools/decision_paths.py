@@ -467,7 +467,10 @@ def multilabel_sidecar_issue(
     if sidecars == _MULTILABEL_SIDECARS:
         issues_key, files = "issues", "valid disease_columns_index, label_index, and has_label_index files"
     else:
-        issues_key, files = "disease_columns_issues", "a valid disease_columns_index file"
+        issues_key, files = (
+            "preset_issues",
+            "a valid disease_columns_index file, non-empty key_column and label sidecar paths",
+        )
     if not multilabel.get(issues_key):
         return None
     return DecisionIssue(
