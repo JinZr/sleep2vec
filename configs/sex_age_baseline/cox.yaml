@@ -43,7 +43,3 @@ finetune:
     event_time_index: /path/to/event_time.csv
     is_event_index: /path/to/is_event.csv
     has_label_index: /path/to/has_label.csv
-
-outputs:
-  prediction_csv: true
-  per_disease_metrics_csv: true

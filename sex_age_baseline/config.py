@@ -95,17 +95,10 @@ class FinetuneConfig:
 
 
 @dataclass(frozen=True)
-class OutputsConfig:
-    prediction_csv: bool
-    per_disease_metrics_csv: bool
-
-
-@dataclass(frozen=True)
 class BaselineConfig:
     model: ModelConfig
     data: DataConfig
     finetune: FinetuneConfig
-    outputs: OutputsConfig
 
 
 def load_config(path: str | Path, *, validate_sidecars: bool = False) -> BaselineConfig:
@@ -145,11 +138,14 @@ def validate_sidecar_shapes(cfg: BaselineConfig) -> None:
 
 
 def _build_config(raw: dict[str, Any]) -> BaselineConfig:
+    extra = sorted(set(raw) - {"model", "data", "finetune"})
+    if extra:
+        # Artifact switches are CLI flags (e.g. --export-predictions) as for sleep2vec, not YAML blocks.
+        raise ValueError(f"config contains unsupported top-level fields: {extra}")
     model = _build_model(_mapping(raw, "model"))
     data = _build_data(_mapping(raw, "data"))
     finetune = _build_finetune(_mapping(raw, "finetune"), data)
-    outputs = _build_outputs(_mapping(raw, "outputs"))
-    return BaselineConfig(model=model, data=data, finetune=finetune, outputs=outputs)
+    return BaselineConfig(model=model, data=data, finetune=finetune)
 
 
 def _build_model(raw: dict[str, Any]) -> ModelConfig:
@@ -354,13 +350,6 @@ def _build_loss(raw: dict[str, Any], output_dim: int) -> FinetuneLossConfig:
             raise ValueError("finetune.loss.pos_weight must contain only positive numbers.")
         return FinetuneLossConfig(pos_weight=[float(item) for item in pos_weight])
     raise ValueError("finetune.loss.pos_weight must be a positive number or list of positive numbers.")
-
-
-def _build_outputs(raw: dict[str, Any]) -> OutputsConfig:
-    return OutputsConfig(
-        prediction_csv=_bool(raw, "prediction_csv"),
-        per_disease_metrics_csv=_bool(raw, "per_disease_metrics_csv"),
-    )
 
 
 def _mapping(raw: dict[str, Any], key: str) -> dict[str, Any]:

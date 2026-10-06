@@ -50,7 +50,6 @@ def _cox_payload(tmp_path: Path) -> dict:
             },
             "survival": {"key_column": "eid", **sidecars},
         },
-        "outputs": {"prediction_csv": True, "per_disease_metrics_csv": True},
     }
 
 
@@ -281,6 +280,18 @@ def test_finetune_rejects_unconsumed_training_fields(tmp_path, field, value):
     payload["finetune"][field] = value
     with pytest.raises(ValueError, match="finetune contains unsupported fields"):
         load_config(_write_yaml(tmp_path / "unconsumed.yaml", payload))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("outputs", {"prediction_csv": True, "per_disease_metrics_csv": True}), ("runtime", {"epochs": 8})],
+)
+def test_config_rejects_top_level_fields_outside_model_data_finetune(tmp_path, field, value):
+    # Prediction export is the CLI --export-predictions flag; a YAML outputs block must not linger as a switch.
+    payload = _cox_payload(tmp_path)
+    payload[field] = value
+    with pytest.raises(ValueError, match="unsupported top-level fields"):
+        load_config(_write_yaml(tmp_path / "top-level.yaml", payload))
 
 
 def test_model_rejects_runtime_learning_rate(tmp_path):

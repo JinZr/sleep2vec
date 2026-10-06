@@ -1,9 +1,9 @@
 """The ``finetune`` task adapter.
 
 Layer 1, domain. Declares the finetune runtime and scheduler fields, the
-sidecar checks the task requires (survival, multilabel, sex_age pretrained
-backbone), and the command rendering for a finetune run. ``hparam_tune``
-composes over it as its ``base_task``.
+sidecar checks the task requires (survival, multilabel), and the command
+rendering for a finetune run. ``hparam_tune`` composes over it as its
+``base_task``.
 """
 
 from __future__ import annotations
@@ -12,11 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status, needs_issue
-from ..decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
+from ..decision_paths import multilabel_sidecar_issue, survival_sidecar_issue
 from ..models import REPO_ROOT, ConfigSummaryInput, recipe_name
 from ..plan_rendering import (
     FINETUNE_RUNTIME_FIELDS,
-    FINETUNE_SCHEDULER_FIELDS,
     finetune_input_cli_args,
     render_command,
     runtime_cli_args,
@@ -43,10 +42,7 @@ class FinetuneAdapter(TaskAdapter):
     enforces_required_channels = True
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
-        fields = FINETUNE_RUNTIME_FIELDS
-        if variant == "sex_age_baseline":
-            fields = fields - (FINETUNE_SCHEDULER_FIELDS - {"lr_decay_shape", "lr_decay_floor"})
-        return fields
+        return FINETUNE_RUNTIME_FIELDS
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         return ("python", "-m", variant_module(recipe, "finetune"))
@@ -55,8 +51,6 @@ class FinetuneAdapter(TaskAdapter):
         inputs = recipe_inputs(recipe)
         required: list[tuple[str, Any]] = []
         for input_field in ("pretrained_backbone_path", "ckpt_path"):
-            if recipe.get("variant") == "sex_age_baseline" and input_field == "pretrained_backbone_path":
-                continue
             value = inputs.get(input_field)
             if value not in (None, "", "ASK_USER"):
                 required.append((input_field, value))
@@ -127,9 +121,6 @@ class FinetuneAdapter(TaskAdapter):
                         {"config": data},
                     )
                 )
-        pretrained_issue = sex_age_pretrained_backbone_issue(recipe)
-        if pretrained_issue is not None:
-            issues.append(pretrained_issue)
         # self.task, not the recipe's own task string: the pre-adapter kernel
         # hard-coded "finetune" for these helpers.
         survival_issue = survival_sidecar_issue(self.task, recipe, config_summary, uses_finetune_config=True)
@@ -203,11 +194,8 @@ class FinetuneAdapter(TaskAdapter):
             artifacts.get("version_name", recipe_name(recipe)),
             "--results-csv-path",
             artifacts.get("results_csv_path", "results/agent_results.csv"),
-            *runtime_cli_args(runtime, variant=str(recipe.get("variant"))),
-            *finetune_input_cli_args(
-                inputs,
-                variant=str(recipe.get("variant")),
-            ),
+            *runtime_cli_args(runtime),
+            *finetune_input_cli_args(inputs),
         ]
         if test_after_fit:
             pieces.append("--test-after-fit")

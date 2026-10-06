@@ -30,7 +30,7 @@ Stop and consult the user if:
 - `external_test_locked=true` conflicts with the default test-after-fit behavior and `test_after_fit: false` was not explicitly chosen.
 
 ## Canonical commands
-Use the recipe `variant` to choose the module: `python -m sleep2vec.finetune`, `python -m sleep2vec2.finetune`, `python -m sleep2expert.finetune`, or `python -m sex_age_baseline.finetune`.
+Use the recipe `variant` to choose the module: `python -m sleep2vec.finetune`, `python -m sleep2vec2.finetune`, `python -m sleep2expert.finetune`, or `python -m sex_age_baseline.finetune`. `sex_age_baseline.finetune` takes the same options as `sleep2vec.finetune`, including LR schedulers and W&B routing, but fails at launch when `--pretrained-backbone-path` or `--print-diagnostics` is set; `--diagnostics-steps` is inert without `--print-diagnostics`, as in `sleep2vec`.
 
 ## Expected artifacts
 `log-finetune/<version>/checkpoints/`, stable `best.ckpt`, run manifest, copied config/CLI snapshots, optional results CSV.

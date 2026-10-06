@@ -31,6 +31,7 @@ runtime:
   weight_decay: 1.0e-4
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
+  wandb_mode: offline
 
 artifacts:
   version_name: sex-age-multilabel-agent-example

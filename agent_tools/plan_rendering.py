@@ -1,9 +1,10 @@
 """Rendering of recipe fields into CLI argv and launch script text.
 
-Mixed bridge: ``preset_cli_args`` spells sleep preset fields, and one
-``sex_age_baseline`` branch survives here. Owns the shared runtime, scheduler,
-and input field lists together with the common option-appending helpers; task
-adapters retain ownership of task-specific flags before calling these helpers.
+Mixed bridge: ``preset_cli_args`` spells sleep preset fields, and
+``infer_input_cli_args`` still omits dataset-name overrides for
+``sex_age_baseline``. Owns the shared runtime, scheduler, and input field lists
+together with the common option-appending helpers; task adapters retain
+ownership of task-specific flags before calling these helpers.
 """
 
 from __future__ import annotations
@@ -172,20 +173,14 @@ def apply_finetune_task_flags(args: SimpleNamespace, recipe: dict[str, Any], tas
 def validate_finetune_runtime(recipe: dict[str, Any], runtime: dict[str, Any], task: dict[str, Any]) -> None:
     if not FINETUNE_SCHEDULER_FIELDS.intersection(runtime):
         return
-    if recipe.get("variant") == "sex_age_baseline" and (
-        FINETUNE_SCHEDULER_FIELDS - {"lr_decay_shape", "lr_decay_floor"}
-    ).intersection(runtime):
-        raise ValueError("Scheduler selection, WSD and Plateau fields are not supported by sex_age_baseline.")
     args = SimpleNamespace(**{key: value for key, value in runtime.items() if value is not None})
     if getattr(args, "lr_scheduler", "decay") == "plateau":
         apply_finetune_task_flags(args, recipe, task)
-    scheduler_module = import_module(
-        "sleep2vec.schedulers" if recipe.get("variant") == "sex_age_baseline" else variant_module(recipe, "schedulers")
-    )
+    scheduler_module = import_module(variant_module(recipe, "schedulers"))
     scheduler_module.validate_finetune_scheduler_args(args)
 
 
-def runtime_cli_args(runtime: dict[str, Any], *, variant: str | None = None) -> list[Any]:
+def runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:
     args: list[Any] = [
         "--devices",
         *[str(item) for item in coerce_list(runtime.get("devices", [0])) or [0]],
@@ -210,22 +205,16 @@ def infer_runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:
     return args
 
 
-def finetune_input_cli_args(
-    inputs: dict[str, Any],
-    *,
-    variant: str | None = None,
-) -> list[Any]:
+def finetune_input_cli_args(inputs: dict[str, Any]) -> list[Any]:
     args: list[Any] = []
-    if variant != "sex_age_baseline":
-        append_option(args, "--pretrained-backbone-path", inputs.get("pretrained_backbone_path"))
+    append_option(args, "--pretrained-backbone-path", inputs.get("pretrained_backbone_path"))
     append_option(args, "--ckpt-path", inputs.get("ckpt_path"))
     return args
 
 
 def infer_input_cli_args(inputs: dict[str, Any], *, variant: str | None = None) -> list[Any]:
     args: list[Any] = []
-    if variant != "sex_age_baseline":
-        append_option(args, "--pretrained-backbone-path", inputs.get("pretrained_backbone_path"))
+    append_option(args, "--pretrained-backbone-path", inputs.get("pretrained_backbone_path"))
     append_option(args, "--inference-preset-path", inputs.get("inference_preset_path"))
     if variant != "sex_age_baseline":
         append_list_option(args, "--override-dataset-names", inputs.get("override_dataset_names"))

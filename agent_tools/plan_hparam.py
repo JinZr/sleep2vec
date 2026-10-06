@@ -263,11 +263,7 @@ def validate_finetune_config_bytes(recipe: dict, config_bytes: bytes) -> None:
         label_name = inputs.get("label_name")
         search_value = recipe.get("search")
         search = search_value if isinstance(search_value, dict) else {}
-        if (
-            search.get("profile") == "finetune_balanced"
-            and recipe.get("variant") != "sex_age_baseline"
-            and label_name not in (None, "", "ASK_USER")
-        ):
+        if search.get("profile") == "finetune_balanced" and label_name not in (None, "", "ASK_USER"):
             # Match the final finetune entrypoint's task and imbalance validation before freezing candidate runs.
             common_module = import_module(rendering.variant_module(recipe, "common"))
             task_args = SimpleNamespace(label_name=label_name)
@@ -629,8 +625,8 @@ def compile_hparam_run_contracts(
             identity["version"],
             "--results-csv-path",
             plan_output_path(out, artifacts.get("results_csv_path"), "results/agent_hparam_results.csv"),
-            *rendering.runtime_cli_args(runtime, variant=str(recipe.get("variant"))),
-            *rendering.finetune_input_cli_args(run_inputs, variant=str(recipe.get("variant"))),
+            *rendering.runtime_cli_args(runtime),
+            *rendering.finetune_input_cli_args(run_inputs),
         ]
         rendering.append_option(command_parts, "--wandb-project", execution.get("wandb_project"))
         rendering.append_option(command_parts, "--wandb-group", execution.get("wandb_group"))
@@ -752,10 +748,6 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
     config_path = (
         out / FROZEN_FINAL_EVAL_CONFIG_NAME if has_explicit_final_eval_config(recipe) else out / "config.source.yaml"
     )
-    logging_args: list[Any] = []
-    if recipe.get("variant") == "sex_age_baseline":
-        rendering.append_option(logging_args, "--wandb-project", execution.get("wandb_project"))
-        rendering.append_option(logging_args, "--wandb-group", execution.get("wandb_group"))
     return rendering.render_command(
         [
             execution["python"],
@@ -770,7 +762,6 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
             "--eval-split",
             "test",
             *rendering.infer_runtime_cli_args(runtime),
-            *logging_args,
             *rendering.infer_input_cli_args(inputs, variant=str(recipe.get("variant"))),
         ]
     )
@@ -1132,8 +1123,6 @@ def render_hparam_preflight_card(
     variant = str(recipe["variant"])
     config_module = rendering.variant_module(recipe, "config")
     loader = f"{config_module}.load_finetune_config"
-    if variant == "sex_age_baseline":
-        loader += " (load_config with default validate_sidecars=False)"
     routes: dict[tuple[str, str, str, str, tuple[str, ...]], list[str]] = {}
     models: dict[bytes, dict[str, Any]] = {}
     for run, config_bytes in run_configs:

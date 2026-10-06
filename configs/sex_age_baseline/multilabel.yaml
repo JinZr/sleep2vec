@@ -42,7 +42,3 @@ finetune:
     has_label_index: /path/to/has_label.csv
   loss:
     pos_weight: null
-
-outputs:
-  prediction_csv: true
-  per_disease_metrics_csv: true

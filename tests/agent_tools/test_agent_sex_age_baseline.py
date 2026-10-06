@@ -77,7 +77,6 @@ def _write_survival_config(tmp_path: Path) -> Path:
                     "has_label_index": str(has_label),
                 },
             },
-            "outputs": {"prediction_csv": True, "per_disease_metrics_csv": True},
         },
     )
 
@@ -179,7 +178,6 @@ def _write_multilabel_config(
                 },
                 "multilabel": {"key_column": "eid", **sidecars},
             },
-            "outputs": {"prediction_csv": True, "per_disease_metrics_csv": True},
         },
     )
 
@@ -594,43 +592,43 @@ def test_sex_age_baseline_hparam_test_selection_requires_checkpoint_opportunity(
     assert "--wandb-mode" not in script
 
 
-@pytest.mark.parametrize("task", ["infer", "evaluate", "hparam_tune"])
-@pytest.mark.parametrize("avg_ckpts", [None, 1])
-def test_baseline_plan_rejects_standalone_averaging_directory(tmp_path: Path, task, avg_ckpts):
+@pytest.mark.parametrize("ckpt_name", ["epoch=02.ckpt", "last"])
+def test_baseline_infer_plan_renders_checkpoint_averaging_like_sleep2vec(tmp_path: Path, ckpt_name):
     config = _write_survival_config(tmp_path)
-    ckpt = tmp_path / "model.ckpt"
-    ckpt.write_text("placeholder")
-    recipe = _hparam_recipe(tmp_path, config) if task == "hparam_tune" else _infer_recipe(tmp_path, config, ckpt)
+    ckpt_dir = tmp_path / "checkpoints"
+    ckpt_dir.mkdir()
+    (ckpt_dir / "epoch=02.ckpt").write_text("placeholder")
+    ckpt_path = str(ckpt_dir / ckpt_name) if ckpt_name.endswith(".ckpt") else ckpt_name
+    recipe = _infer_recipe(tmp_path, config, ckpt_dir / "epoch=02.ckpt")
     payload = yaml.safe_load(recipe.read_text())
-    payload["task"] = task
-    payload["decisions"]["task"]["value"] = task
-    payload.setdefault("inputs", {})["ckpt_path"] = str(ckpt)
-    payload["runtime"] = {"avg_ckpt_dir": str(tmp_path)}
-    if avg_ckpts is not None:
-        payload["runtime"]["avg_ckpts"] = avg_ckpts
+    payload["inputs"]["ckpt_path"] = ckpt_path
+    payload["runtime"].update(avg_ckpts=3, avg_ckpt_dir=str(ckpt_dir))
     _write_yaml(recipe, payload)
-    output = tmp_path / "rejected-plan"
-    report = build_plan(recipe_path=recipe, output_dir=output, unlock_final_test=task == "hparam_tune")
-    assert report.exit_code != 0
-    assert any(issue.field == "runtime.avg_ckpt_dir" and issue.status.value == "FAIL" for issue in report.issues)
-    assert not (output / "plan.json").exists()
-    assert not (output / "run.sh").exists()
+    output = tmp_path / "averaging-plan"
+
+    report = build_plan(recipe_path=recipe, output_dir=output)
+
+    assert report.exit_code == 0, report.issues
+    (command,) = json.loads((output / "plan.json").read_text())["commands"]
+    argv = shlex.split(command)
+    assert argv[argv.index("--ckpt-path") + 1] == ckpt_path
+    assert argv[argv.index("--avg-ckpts") + 1] == "3"
+    assert argv[argv.index("--avg-ckpt-dir") + 1] == str(ckpt_dir)
 
 
-@pytest.mark.parametrize("device", ["cuda", "cuda:0"])
-def test_baseline_slurm_device_contract(device):
+@pytest.mark.parametrize("device", ["cuda", "cuda:0", "cuda:1"])
+def test_baseline_slurm_device_contract_matches_sleep2vec(device):
     from agent_tools.decision_paths import execution_contract_issues
 
-    recipe = {
-        "variant": "sex_age_baseline",
-        "runtime": {"device": device},
-        "execution": {"scheduler": {"type": "slurm"}},
-    }
-    issues = execution_contract_issues(
-        recipe, source_layer="recipe", supports_runtime_identity=True, supports_slurm=True
-    )
-    device_issues = [issue for issue in issues if issue.field == "runtime.device"]
-    assert bool(device_issues) == (device == "cuda:0")
+    def device_issues(variant: str) -> list[str]:
+        recipe = {"variant": variant, "runtime": {"device": device}, "execution": {"scheduler": {"type": "slurm"}}}
+        issues = execution_contract_issues(
+            recipe, source_layer="recipe", supports_runtime_identity=True, supports_slurm=True
+        )
+        return [issue.message for issue in issues if issue.field == "runtime.device"]
+
+    assert device_issues("sex_age_baseline") == device_issues("sleep2vec")
+    assert bool(device_issues("sex_age_baseline")) == (device == "cuda:1")
 
 
 def test_sex_age_baseline_slurm_multi_gpu_plan(tmp_path: Path):
@@ -746,8 +744,9 @@ def test_covariate_hparam_preserves_wandb_routing(tmp_path: Path, monkeypatch):
         parts = shlex.split(rendered)
         monkeypatch.setattr(sys, "argv", ["infer", *parts[parts.index("sex_age_baseline.infer") + 1 :]])
         infer_args = parse_infer_args()
-        assert infer_args.wandb_project == "frozen-project"
-        assert infer_args.wandb_group == "frozen-group"
+        # Like sleep2vec, evaluation commands keep inference W&B logging off and carry only the runtime mode.
+        assert infer_args.wandb is False
+        assert (infer_args.wandb_project, infer_args.wandb_group) == (None, None)
         assert infer_args.wandb_mode == "offline"
 
 
@@ -809,7 +808,7 @@ def test_covariate_baseline_explicit_scheduler_search_renders_each_arm(tmp_path:
     assert all("--lr-decay-floor 0.2" in script for script in scripts)
     from agent_tools.plan_rendering import runtime_cli_args
 
-    argv = runtime_cli_args({"lr_decay_floor": 0.2, "lr_decay_shape": "linear"}, variant="sex_age_baseline")
+    argv = runtime_cli_args({"lr_decay_floor": 0.2, "lr_decay_shape": "linear"})
     assert argv.count("--lr-decay-floor") == 1
     assert argv.count("--lr-decay-shape") == 1
     assert sum("--lr-decay-shape cosine" in script for script in scripts) == 1
@@ -861,7 +860,8 @@ def test_sex_age_baseline_kaldi_infer_accepts_manifest_split_without_split_colum
     assert "python -m sex_age_baseline.infer" in script
 
 
-def test_sex_age_baseline_finetune_blocks_pretrained_backbone_path(tmp_path: Path):
+def test_sex_age_baseline_finetune_plan_renders_pretrained_backbone_path(tmp_path: Path):
+    # The plan renders the shared variant CLI; the baseline entrypoint itself rejects the flag at launch.
     config = _write_survival_config(tmp_path)
     recipe = _finetune_recipe(tmp_path, config)
     pretrained = tmp_path / "pretrained.ckpt"
@@ -876,9 +876,8 @@ def test_sex_age_baseline_finetune_blocks_pretrained_backbone_path(tmp_path: Pat
 
     report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-pretrained")
 
-    assert report.exit_code == 1
-    assert any(issue.field == "pretrained_backbone_path" for issue in report.issues)
-    assert not (tmp_path / "plan-pretrained" / "run.sh").exists()
+    assert report.exit_code == 0, report.issues
+    assert f"--pretrained-backbone-path {pretrained}" in (tmp_path / "plan-pretrained" / "run.sh").read_text()
 
 
 def test_sex_age_baseline_remote_ssh_multilabel_checks_sidecar_paths(tmp_path: Path, monkeypatch):
@@ -1004,9 +1003,10 @@ def test_sex_age_baseline_hparam_blocks_local_multilabel_sidecar_issues(tmp_path
     assert any(issue.field == "multilabel_sidecars" for issue in report.issues)
 
 
-def test_sex_age_baseline_hparam_blocks_base_pretrained_backbone_path(tmp_path: Path):
+def test_sex_age_baseline_hparam_renders_base_pretrained_backbone_path(tmp_path: Path):
     config = _write_survival_config(tmp_path)
-    base = _finetune_recipe(tmp_path, config)
+    recipe = _hparam_recipe(tmp_path, config)
+    base = tmp_path / "finetune.yaml"
     pretrained = tmp_path / "pretrained.ckpt"
     pretrained.write_text("checkpoint")
     base_payload = yaml.safe_load(base.read_text())
@@ -1016,40 +1016,14 @@ def test_sex_age_baseline_hparam_blocks_base_pretrained_backbone_path(tmp_path: 
         "source": "explicit_recipe",
     }
     _write_yaml(base, base_payload)
-    recipe = _write_yaml(
-        tmp_path / "hparam_pretrained.yaml",
-        {
-            "name": "unit_sex_age_hparam_pretrained",
-            "task": "hparam_tune",
-            "variant": "sex_age_baseline",
-            "base_recipe": str(base),
-            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-3]}},
-            "evaluation_policy": {
-                "selection_metric": "val_c_index",
-                "selection_mode": "max",
-                "selection_split": "val",
-                "external_test_locked": True,
-                "test_after_fit": False,
-                "final_eval_split": "validation",
-                "final_test_unlocked": False,
-                "require_manual_unlock_for_final_test": True,
-            },
-            "decisions": {
-                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-                "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
-                "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
-                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-            },
-        },
-    )
+    output = tmp_path / "plan-hparam-pretrained"
 
-    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-hparam-pretrained")
+    report = build_plan(recipe_path=recipe, output_dir=output)
 
-    assert report.exit_code == 1
-    assert any(issue.field == "base_finetune.pretrained_backbone_path" for issue in report.issues)
-    assert not (tmp_path / "plan-hparam-pretrained" / "runs").exists()
+    assert report.exit_code == 0, report.issues
+    (run,) = json.loads((output / "plan.json").read_text())["runs"]
+    argv = shlex.split(run["command"])
+    assert argv[argv.index("--pretrained-backbone-path") + 1] == str(pretrained)
 
 
 def test_sex_age_baseline_finetune_preset_keeps_survival_sidecar_checks(tmp_path: Path):
@@ -1173,7 +1147,7 @@ def test_sex_age_baseline_infer_preset_blocks_invalid_metadata_values(tmp_path: 
     assert not (tmp_path / "plan-infer-preset-invalid-metadata" / "run.sh").exists()
 
 
-def test_sex_age_baseline_infer_blocks_pretrained_backbone_path(tmp_path: Path):
+def test_sex_age_baseline_infer_plan_renders_pretrained_backbone_path(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     ckpt = tmp_path / "model.ckpt"
     ckpt.write_text("placeholder")
@@ -1186,9 +1160,9 @@ def test_sex_age_baseline_infer_blocks_pretrained_backbone_path(tmp_path: Path):
 
     report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-pretrained")
 
-    assert report.exit_code == 1
-    assert any(issue.field == "pretrained_backbone_path" for issue in report.issues)
-    assert not (tmp_path / "plan-infer-pretrained" / "run.sh").exists()
+    assert report.exit_code == 0, report.issues
+    script = (tmp_path / "plan-infer-pretrained" / "run.sh").read_text()
+    assert f"--pretrained-backbone-path {pretrained}" in script
 
 
 def test_sex_age_baseline_infer_blocks_override_dataset_names(tmp_path: Path):
@@ -1224,20 +1198,55 @@ def test_sex_age_baseline_infer_plan_renders_standalone_module(tmp_path: Path):
 
 @pytest.mark.parametrize("task", ["finetune", "hparam_tune"])
 @pytest.mark.parametrize(
-    "field,value",
+    "runtime",
     [
-        ("lr_scheduler", "decay"),
-        ("lr_decay_ratio", 0.2),
-        ("lr_plateau_factor", 0.5),
-        ("lr_plateau_patience", 2),
+        {"lr_scheduler": "wsd", "lr_decay_ratio": 0.2},
+        {"lr_scheduler": "plateau", "lr_plateau_factor": 0.5, "lr_plateau_patience": 2},
     ],
+    ids=["wsd", "plateau"],
 )
-def test_sex_age_baseline_rejects_unconsumed_scheduler_fields(tmp_path: Path, task, field, value):
+def test_sex_age_baseline_renders_shared_scheduler_fields(tmp_path: Path, task, runtime):
     config = _write_survival_config(tmp_path)
     recipe = _finetune_recipe(tmp_path, config) if task == "finetune" else _hparam_recipe(tmp_path, config)
     payload = yaml.safe_load(recipe.read_text())
     if task == "finetune":
-        payload.setdefault("runtime", {})[field] = value
+        payload["runtime"].update(runtime)
+    else:
+        payload["search"]["parameters"] = {f"runtime.{field}": [value] for field, value in runtime.items()}
+    _write_yaml(recipe, payload)
+    output_dir = tmp_path / "scheduler-plan"
+
+    report = build_plan(recipe_path=recipe, output_dir=output_dir)
+
+    assert report.exit_code == 0, report.issues
+    plan = json.loads((output_dir / "plan.json").read_text())
+    argv = shlex.split(plan["runs"][0]["command"] if task == "hparam_tune" else plan["commands"][0])
+    for field, value in runtime.items():
+        assert argv[argv.index("--" + field.replace("_", "-")) + 1] == str(value)
+
+
+def test_sex_age_baseline_plateau_treats_builtin_label_name_as_namespace(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    recipe = _finetune_recipe(tmp_path, config)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["label_name"] = "age"
+    payload["decisions"]["label_name"]["value"] = "age"
+    payload["runtime"]["lr_scheduler"] = "plateau"
+    _write_yaml(recipe, payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plateau-plan")
+
+    assert report.exit_code == 0, report.issues
+
+
+@pytest.mark.parametrize("task", ["finetune", "hparam_tune"])
+@pytest.mark.parametrize("field,value", [("lr_decay_ratio", 0.2), ("lr_plateau_patience", 2)])
+def test_sex_age_baseline_rejects_scheduler_fields_without_their_schedule(tmp_path: Path, task, field, value):
+    config = _write_survival_config(tmp_path)
+    recipe = _finetune_recipe(tmp_path, config) if task == "finetune" else _hparam_recipe(tmp_path, config)
+    payload = yaml.safe_load(recipe.read_text())
+    if task == "finetune":
+        payload["runtime"][field] = value
     else:
         payload["search"]["parameters"] = {f"runtime.{field}": [value]}
     _write_yaml(recipe, payload)
@@ -1246,8 +1255,5 @@ def test_sex_age_baseline_rejects_unconsumed_scheduler_fields(tmp_path: Path, ta
     report = build_plan(recipe_path=recipe, output_dir=output_dir)
 
     assert report.exit_code == 1
-    assert any(
-        "scheduler" in issue.message.lower() or field in issue.message or field in issue.field
-        for issue in report.issues
-    )
+    assert any(field in issue.message or field in issue.field for issue in report.issues)
     assert not output_dir.exists()
