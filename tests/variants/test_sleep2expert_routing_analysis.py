@@ -796,6 +796,32 @@ def test_pretrained_only_requires_existing_pretrained_backbone_path(tmp_path):
         )
 
 
+@pytest.mark.parametrize("avg_ckpts", [0, -1])
+def test_routing_analysis_rejects_non_positive_avg_ckpts(tmp_path, avg_ckpts):
+    with pytest.raises(ValueError, match="--avg-ckpts must be a positive integer"):
+        run_routing_analysis(
+            Namespace(
+                config=tmp_path / "config.yaml",
+                ckpt_path=str(tmp_path / "finetuned.ckpt"),
+                label_name="age",
+                output=tmp_path / "routing.csv",
+                batch_size=1,
+                num_workers=0,
+                device="cpu",
+                eval_split="test",
+                analysis_tag="post_finetune",
+                pretrained_only=False,
+                override_dataset_names=None,
+                avg_ckpts=avg_ckpts,
+                avg_ckpt_dir=None,
+                seed=1,
+                lr=1e-6,
+                weight_decay=0.0,
+                pretrained_backbone_path=None,
+            )
+        )
+
+
 def test_parse_args_accepts_split_alias(monkeypatch, tmp_path):
     monkeypatch.setattr(
         routing_analysis.sys,

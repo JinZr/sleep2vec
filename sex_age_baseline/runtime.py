@@ -369,6 +369,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             )
         )
     preexisting_wandb_run = wandb.run
+    wandb_finish_attempted = False
     logger = WandbLogger(
         project=getattr(args, "wandb_project", None) or "sex-age-baseline",
         name=args.version,
@@ -400,6 +401,9 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         if not args.test_after_fit:
             if not trainer.is_global_zero:
                 return
+            # W&B finalization can still fail, so it precedes the terminal manifest.
+            wandb_finish_attempted = True
+            _finish_wandb_run(preexisting_wandb_run, "finetune")
             save_training_run_manifest(
                 args,
                 manifest_path=manifest_path,
@@ -506,6 +510,8 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         else:
             save_result_csv(test_result.metrics, str(args.results_csv_path), args)
         args.ckpt_path = original_ckpt_path
+        wandb_finish_attempted = True
+        _finish_wandb_run(preexisting_wandb_run, "finetune")
         save_training_run_manifest(
             args,
             manifest_path=manifest_path,
@@ -523,8 +529,9 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             prediction_csv_path=prediction_csv_path,
         )
     finally:
-        # Finish only the run this call created, and do not let teardown hide a primary error.
-        _finish_wandb_run(preexisting_wandb_run, "finetune")
+        # Finalization is attempted once: a successful run already tried it before its terminal manifest.
+        if not wandb_finish_attempted:
+            _finish_wandb_run(preexisting_wandb_run, "finetune")
 
 
 def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
@@ -569,13 +576,22 @@ def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         )
         save_inference_manifest(args, result.metrics, prediction_row_count=len(result.prediction_rows))
         if wandb_run is not None:
-            _log_inference_outputs_to_wandb(
-                args,
-                result.metrics,
-                len(result.prediction_rows),
-                len(result.survival_per_disease_rows),
-                len(result.multilabel_per_disease_rows),
-            )
+            try:
+                _log_inference_outputs_to_wandb(
+                    args,
+                    result.metrics,
+                    len(result.prediction_rows),
+                    len(result.survival_per_disease_rows),
+                    len(result.multilabel_per_disease_rows),
+                )
+                # Finalization is attempted once; the cleanup below only handles runs that fail before this point.
+                wandb_run = None
+                _finish_wandb_run(preexisting_wandb_run, "inference")
+            except BaseException:
+                # The W&B artifact uploads run_manifest.json, so it is written first; it must not survive as a
+                # terminal manifest when publication or finalization fails.
+                Path(args.manifest_path).unlink(missing_ok=True)
+                raise
     finally:
         if wandb_run is not None:
             _finish_wandb_run(preexisting_wandb_run, "inference")
@@ -583,7 +599,9 @@ def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
 
 def _load_inference_checkpoint(model: SexAgeMLP, args: Namespace, cfg: BaselineConfig) -> list[Path] | None:
     """Load --ckpt-path, or average the checkpoints ending there, with sleep2vec inference selection."""
-    if args.avg_ckpts <= 1:
+    if args.avg_ckpts < 1:
+        raise ValueError(f"--avg-ckpts must be a positive integer, got {args.avg_ckpts}.")
+    if args.avg_ckpts == 1:
         if args.ckpt_path in {"best", "last"}:
             raise ValueError("sex_age_baseline inference resolves best/last only with --avg-ckpts > 1.")
         load_checkpoint(model, args.ckpt_path, device=torch.device("cpu"), cfg=cfg)
