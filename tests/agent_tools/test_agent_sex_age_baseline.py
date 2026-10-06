@@ -1087,6 +1087,29 @@ def test_sex_age_baseline_inference_preset_keeps_survival_sidecar_checks(tmp_pat
     assert not (tmp_path / "plan-infer-preset-bad-sidecars" / "run.sh").exists()
 
 
+def test_sex_age_baseline_inference_preset_keeps_multilabel_label_sidecar_checks(tmp_path: Path):
+    # Unlike the signal variants, sex_age_baseline reads its labels from the sidecars even with a preset.
+    config = _write_multilabel_config(tmp_path)
+    config_payload = yaml.safe_load(config.read_text())
+    config_payload["finetune"]["multilabel"]["label_index"] = str(tmp_path / "missing_label.csv")
+    _write_yaml(config, config_payload)
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("placeholder")
+    preset = tmp_path / "preset.pkl"
+    preset.write_bytes(b"preset")
+    recipe = _infer_recipe(tmp_path, config, ckpt)
+    recipe_payload = yaml.safe_load(recipe.read_text())
+    recipe_payload["inputs"]["inference_preset_path"] = str(preset)
+    _write_yaml(recipe, recipe_payload)
+
+    report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-preset-bad-multilabel")
+
+    assert report.exit_code == 2
+    [issue] = [issue for issue in report.issues if issue.field == "multilabel_sidecars"]
+    assert "label_index" in issue.question
+    assert not (tmp_path / "plan-infer-preset-bad-multilabel" / "run.sh").exists()
+
+
 def test_sex_age_baseline_infer_plan_can_render_inference_preset_path(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     ckpt = tmp_path / "model.ckpt"

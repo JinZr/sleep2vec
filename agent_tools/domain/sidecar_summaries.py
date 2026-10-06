@@ -126,11 +126,14 @@ def multilabel_summary(
         "disease_count": None,
         "sidecar_key_count": None,
         "issues": [],
+        "disease_columns_issues": [],
     }
 
     issues = summary["issues"]
+    disease_columns_issues = summary["disease_columns_issues"]
     if not isinstance(finetune.get("multilabel"), dict):
         issues.append("finetune.multilabel must be a mapping for multilabel tasks.")
+        disease_columns_issues.extend(issues)
         return summary
     if not isinstance(raw.get("key_column"), str) or not raw.get("key_column"):
         issues.append("finetune.multilabel.key_column must be a non-empty string.")
@@ -138,15 +141,23 @@ def multilabel_summary(
     for field in path_fields:
         value = raw.get(field)
         if not isinstance(value, str) or looks_like_placeholder_path(value):
-            issues.append(f"finetune.multilabel.{field} must point to a real file.")
+            issue = f"finetune.multilabel.{field} must point to a real file."
+        elif not validate_local_paths:
             continue
-        if not validate_local_paths:
-            continue
-        resolved = resolve_repo_path(value, relative_to=local_path_base)
-        if resolved is None or not resolved.exists():
-            issues.append(f"finetune.multilabel.{field} does not exist: {value}")
         else:
-            resolved_paths[field] = str(resolved)
+            resolved = resolve_repo_path(value, relative_to=local_path_base)
+            if resolved is not None and resolved.exists():
+                resolved_paths[field] = str(resolved)
+                continue
+            issue = f"finetune.multilabel.{field} does not exist: {value}"
+        issues.append(issue)
+        if field == "disease_columns_index":
+            disease_columns_issues.append(issue)
+    if "disease_columns_index" in resolved_paths:
+        disease_columns_issue = _disease_columns_issue(resolved_paths["disease_columns_index"], task.get("output_dim"))
+        if disease_columns_issue is not None:
+            issues.append(disease_columns_issue)
+            disease_columns_issues.append(disease_columns_issue)
 
     if issues or not validate_local_paths:
         return summary
@@ -169,3 +180,16 @@ def multilabel_summary(
         if validated_sidecar_keys is not None:
             validated_sidecar_keys["multilabel"] = set(labels.disease_label)
     return summary
+
+
+def _disease_columns_issue(path: str, expected_output_dim: int | None) -> str | None:
+    """Check disease_columns_index alone, as a preset-backed run reads it to name metrics and predictions."""
+    try:
+        from data.multilabel import load_multilabel_disease_columns
+
+        disease_count = len(load_multilabel_disease_columns(path))
+        if expected_output_dim is not None and int(expected_output_dim) != disease_count:
+            return f"Multilabel output_dim ({expected_output_dim}) must match disease column count ({disease_count})."
+    except Exception as exc:
+        return str(exc)
+    return None

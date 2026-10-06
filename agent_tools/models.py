@@ -64,6 +64,8 @@ class SurvivalSummary(SidecarDiagnostics):
 
 class MultilabelSummary(SidecarDiagnostics):
     label_index: Any
+    #: The subset of ``issues`` about disease_columns_index, the only sidecar a preset-backed run reads.
+    disease_columns_issues: list[str]
 
 
 class ChannelSummary(TypedDict):
