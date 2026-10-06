@@ -62,7 +62,13 @@ def test_training_run_manifest_writer_serializes_checkpoint_and_score(tmp_path: 
     torch_module.distributed = distributed_module
     monkeypatch.setitem(sys.modules, "torch", torch_module)
     monkeypatch.setitem(sys.modules, "torch.distributed", distributed_module)
-    sys.modules.pop(f"{namespace}.results", None)
+    # Re-import results and its distributed helper under the fake torch. Recording each sys.modules entry and
+    # package attribute through monkeypatch, even when absent, lets teardown restore the real modules.
+    package = importlib.import_module(namespace)
+    for module_name in ("results", "distributed"):
+        monkeypatch.setitem(sys.modules, f"{namespace}.{module_name}", None)
+        del sys.modules[f"{namespace}.{module_name}"]
+        monkeypatch.setattr(package, module_name, None, raising=False)
     results = importlib.import_module(f"{namespace}.results")
 
     manifest_path = tmp_path / "run_manifest.json"
@@ -97,12 +103,11 @@ def test_training_run_manifest_writer_serializes_checkpoint_and_score(tmp_path: 
 
 @pytest.mark.parametrize("namespace", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 def test_failed_manifest_write_does_not_mask_primary_training_error(
-    monkeypatch, training_runtime_dependencies, namespace: str
+    tmp_path: Path, monkeypatch, training_runtime_dependencies, namespace: str
 ):
     importlib.import_module("torch")
     importlib.import_module("pytorch_lightning")
     importlib.import_module("wandb")
-    sys.modules.pop(f"{namespace}.finetune", None)
     finetune = importlib.import_module(f"{namespace}.finetune")
     args = argparse.Namespace(
         version="unit",
@@ -132,7 +137,11 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(
         def finetune_param_group_rows(self):
             return []
 
-    monkeypatch.setattr(finetune, "persist_run_config_and_args", lambda *args, **kwargs: None)
+    monkeypatch.chdir(tmp_path)
+    # Like the real rank-zero persist step, create the run directory for sleep2expert's finetune_status.json.
+    monkeypatch.setattr(
+        finetune, "persist_run_config_and_args", lambda args, exp_dir: exp_dir.mkdir(parents=True, exist_ok=True)
+    )
     monkeypatch.setattr(finetune, "prepare_dataloader", lambda args: ([], [], []))
     monkeypatch.setattr(finetune, "Sleep2vecFinetuning", lambda *args, **kwargs: DummyModel())
 
@@ -141,8 +150,6 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(
         return DummyLogger()
 
     monkeypatch.setattr(finetune, "WandbLogger", build_logger)
-    if hasattr(finetune, "is_rank_zero_process"):
-        monkeypatch.setattr(finetune, "is_rank_zero_process", lambda: False)
 
     def raise_primary_error(*args, **kwargs):
         raise RuntimeError("primary training failure")

@@ -941,6 +941,7 @@ def test_supervised_does_not_inject_ahi_test_search_thresholds(monkeypatch: pyte
         label_name="ahi",
     )
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
     monkeypatch.setattr("sleep2vec.finetune.prepare_dataloader", lambda args: ("train", "val", "test"))
     monkeypatch.setattr("sleep2vec.finetune.Sleep2vecFinetuning", lambda *args, **kwargs: object())
@@ -1023,7 +1024,11 @@ def test_supervised_separates_periodic_and_best_checkpoint_callbacks(
         label_name="custom",
     )
 
-    monkeypatch.setattr(finetune_mod, "persist_run_config_and_args", lambda *args, **kwargs: None)
+    monkeypatch.chdir(tmp_path)
+    # Like the real rank-zero persist step, create the run directory for sleep2expert's finetune_status.json.
+    monkeypatch.setattr(
+        finetune_mod, "persist_run_config_and_args", lambda args, exp_dir: exp_dir.mkdir(parents=True, exist_ok=True)
+    )
     monkeypatch.setattr(finetune_mod, "prepare_dataloader", lambda args: ("train", "val", "test"))
     monkeypatch.setattr(finetune_mod, "Sleep2vecFinetuning", lambda *args, **kwargs: _DummyModel())
     monkeypatch.setattr(finetune_mod, "WandbLogger", lambda *args, **kwargs: _DummyLogger())
@@ -1033,8 +1038,6 @@ def test_supervised_separates_periodic_and_best_checkpoint_callbacks(
     monkeypatch.setattr(finetune_mod.pl, "Trainer", _DummyTrainer)
     monkeypatch.setattr(finetune_mod.shutil, "copy2", lambda *args, **kwargs: copies.append((args[0], args[1])))
     monkeypatch.setattr(finetune_mod, "save_result_csv", lambda *args, **kwargs: None)
-    if hasattr(finetune_mod, "is_rank_zero_process"):
-        monkeypatch.setattr(finetune_mod, "is_rank_zero_process", lambda: False)
 
     finetune_mod.supervised(args_ns, _DummyBundle(model=_DummyModelConfig()))
 
@@ -1110,6 +1113,7 @@ def test_supervised_finishes_owned_wandb_run_before_terminal_manifest(
         finetune.wandb.run = created_run
         return object()
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
     monkeypatch.setattr("sleep2vec.finetune.prepare_dataloader", lambda args: ("train", "val", "test"))
     monkeypatch.setattr("sleep2vec.finetune.Sleep2vecFinetuning", lambda *args, **kwargs: object())
@@ -1181,6 +1185,7 @@ def test_supervised_does_not_finish_preexisting_wandb_run(monkeypatch: pytest.Mo
         label_name="ahi",
     )
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
     monkeypatch.setattr("sleep2vec.finetune.prepare_dataloader", lambda args: ("train", "val", "test"))
     monkeypatch.setattr("sleep2vec.finetune.Sleep2vecFinetuning", lambda *args, **kwargs: object())
@@ -1249,6 +1254,7 @@ def test_supervised_raises_wandb_finish_failure_after_success(monkeypatch: pytes
         events.append("finish")
         raise RuntimeError("cleanup failure")
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
     monkeypatch.setattr("sleep2vec.finetune.prepare_dataloader", lambda args: ("train", "val", "test"))
     monkeypatch.setattr("sleep2vec.finetune.Sleep2vecFinetuning", lambda *args, **kwargs: object())
@@ -1323,6 +1329,7 @@ def test_supervised_preserves_primary_error_when_wandb_finish_fails(monkeypatch:
         finetune.wandb.run = created_run
         return object()
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
     monkeypatch.setattr("sleep2vec.finetune.prepare_dataloader", lambda args: ("train", "val", "test"))
     monkeypatch.setattr("sleep2vec.finetune.Sleep2vecFinetuning", lambda *args, **kwargs: object())
@@ -1388,6 +1395,7 @@ def test_supervised_epochs_zero_preserves_ckpt_path_without_test_search_injectio
         label_name="ahi",
     )
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
     monkeypatch.setattr("sleep2vec.finetune.prepare_dataloader", lambda args: ("train", "val", "test"))
     monkeypatch.setattr("sleep2vec.finetune.Sleep2vecFinetuning", lambda *args, **kwargs: object())
@@ -1431,6 +1439,7 @@ def test_supervised_uses_custom_progress_bar_for_distributed_event_task(
             return None
 
         def test(self, *args, **kwargs):
+            self.ckpt_path = kwargs["ckpt_path"]
             return [{"ahi_pearson": 0.5}]
 
     args_ns = argparse.Namespace(
@@ -1450,6 +1459,9 @@ def test_supervised_uses_custom_progress_bar_for_distributed_event_task(
         label_name=label_name,
     )
 
+    monkeypatch.chdir(tmp_path)
+    # Four devices make the preflight claim a distributed launch; a pinned id keeps that claim out of os.environ.
+    monkeypatch.setenv("_SLEEP2VEC_FINETUNE_LAUNCH_ID", "unit-test-launch")
     monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
     monkeypatch.setattr("sleep2vec.finetune.prepare_dataloader", lambda args: ("train", "val", "test"))
     monkeypatch.setattr("sleep2vec.finetune.Sleep2vecFinetuning", lambda *args, **kwargs: object())
@@ -1490,6 +1502,7 @@ def test_supervised_leaves_non_event_task_on_default_progress_bar_path(monkeypat
             return None
 
         def test(self, *args, **kwargs):
+            self.ckpt_path = kwargs["ckpt_path"]
             return [{"accuracy": 0.5}]
 
     args_ns = argparse.Namespace(
@@ -1509,6 +1522,9 @@ def test_supervised_leaves_non_event_task_on_default_progress_bar_path(monkeypat
         label_name="stage5",
     )
 
+    monkeypatch.chdir(tmp_path)
+    # Four devices make the preflight claim a distributed launch; a pinned id keeps that claim out of os.environ.
+    monkeypatch.setenv("_SLEEP2VEC_FINETUNE_LAUNCH_ID", "unit-test-launch")
     monkeypatch.setattr("sleep2vec.finetune.persist_run_config_and_args", lambda *args, **kwargs: None)
     monkeypatch.setattr("sleep2vec.finetune.prepare_dataloader", lambda args: ("train", "val", "test"))
     monkeypatch.setattr("sleep2vec.finetune.Sleep2vecFinetuning", lambda *args, **kwargs: object())
@@ -1969,6 +1985,8 @@ def test_ahi_val_epoch_logs_reduced_eval_loss_before_event_metrics(monkeypatch: 
 
     monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_available", lambda: True)
     monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.is_initialized", lambda: True)
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.get_rank_world_size", lambda: (0, 1))
+    monkeypatch.setattr("sleep2vec.sleep2vec_finetuning.dist.broadcast_object_list", lambda payload, *, src: None)
 
     captured: dict[str, object] = {}
 
@@ -2063,7 +2081,9 @@ def test_run_inference_rejects_ahi_checkpoint_averaging(monkeypatch: pytest.Monk
     assert "args" not in captured
 
 
-def test_run_inference_uses_single_ahi_checkpoint_without_search_injection(monkeypatch: pytest.MonkeyPatch):
+def test_run_inference_uses_single_ahi_checkpoint_without_search_injection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     captured: dict[str, object] = {}
 
     @dataclass
@@ -2084,6 +2104,7 @@ def test_run_inference_uses_single_ahi_checkpoint_without_search_injection(monke
             captured["dataloaders"] = dataloaders
             return [{"ahi_pearson": 0.5}]
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sleep2vec.infer.apply_finetune_config", lambda args: (_DummyBundle(), _DummyModelConfig()))
     monkeypatch.setattr("sleep2vec.infer._build_inference_loader", lambda args: "loader")
     monkeypatch.setattr("sleep2vec.infer.Sleep2vecFinetuning", _DummyModule)
@@ -2163,6 +2184,7 @@ def test_run_inference_applies_inference_preset_override(monkeypatch: pytest.Mon
         captured["loader_preset_path"] = args.finetune_preset_path
         return "loader"
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sleep2vec.infer.apply_finetune_config", _apply_config)
     monkeypatch.setattr("sleep2vec.infer._build_inference_loader", _build_loader)
     monkeypatch.setattr("sleep2vec.infer.Sleep2vecFinetuning", _DummyModule)
