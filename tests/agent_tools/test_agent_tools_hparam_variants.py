@@ -187,7 +187,7 @@ _PREFLIGHT_VARIANT_CASES = [
         "configs/sex_age_baseline/cox.yaml",
         "sex_age_baseline.finetune",
         "sex_age_baseline.config.load_finetune_config",
-        "sex_age_mlp",
+        "sex_age_mlp (covariates=age, sex, covariate_dim=16)",
         None,
     ),
 ]

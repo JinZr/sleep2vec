@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from data.default_dataset import SampleIndex
-from sex_age_baseline.data import _collate_records, load_split_dataset
+from sex_age_baseline.data import _collate_records, load_split_dataset, validate_disjoint_split_keys
 
 
 def _sidecars(tmp_path, task, keys=("1", "2", "3")):
@@ -152,9 +152,10 @@ def test_missing_covariate_column_fails(tmp_path):
 
 
 def test_conflicting_duplicates_and_cross_split_keys_fail(tmp_path):
-    reused = _index(tmp_path, [_row("1"), _row("1", split="test")])
+    reused = _config(tmp_path, index=_index(tmp_path, [_row("1"), _row("1", split="test")]))
+    datasets = {split: load_split_dataset(reused, split, sources=None) for split in ("train", "test")}
     with pytest.raises(ValueError, match="multiple loaded splits"):
-        load_split_dataset(_config(tmp_path, index=reused), "train", sources=None, loaded_splits=["train", "test"])
+        validate_disjoint_split_keys(datasets)
 
     conflicting = _index(tmp_path, [_row("1", age=45), _row("1", age=46)])
     with pytest.raises(ValueError, match="conflicting age"):

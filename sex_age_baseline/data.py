@@ -15,7 +15,7 @@ import logging
 import math
 from pathlib import Path
 import pickle
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -56,13 +56,7 @@ class SexAgeDataset(Dataset):
         return replace(self.records[index], sample_index=index)
 
 
-def load_split_dataset(
-    cfg: BaselineConfig,
-    split: str,
-    *,
-    sources: list[str] | None,
-    loaded_splits: list[str] | None = None,
-) -> SexAgeDataset:
+def load_split_dataset(cfg: BaselineConfig, split: str, *, sources: list[str] | None) -> SexAgeDataset:
     """One record per task key in ``split``, restricted to rows whose source contains one of ``sources``."""
     task_cfg = covariate_task_config(cfg)
     key_column = task_cfg.key_column
@@ -72,8 +66,6 @@ def load_split_dataset(
     if missing:
         raise ValueError(f"Sex/age baseline metadata is missing required columns: {missing}")
     normalize_key = normalize_survival_key if cfg.finetune.task.type == "survival" else normalize_multilabel_key
-    if loaded_splits:
-        _validate_loaded_split_key_uniqueness(rows, key_column, normalize_key, loaded_splits)
 
     rows = _select_rows(rows, split, sources, task_cfg.covariates)
     records = _collapse_by_key(
@@ -218,19 +210,12 @@ def _raw_split_value(value: Any) -> str:
     return "" if pd.isna(value) else str(value).strip()
 
 
-def _validate_loaded_split_key_uniqueness(
-    rows: list[dict[str, Any]],
-    key_column: str,
-    normalize_key: Callable[[Any, str], str],
-    loaded_splits: list[str],
-) -> None:
-    loaded = {str(split).strip() for split in loaded_splits}
+def validate_disjoint_split_keys(datasets: dict[str, SexAgeDataset]) -> None:
+    """Reject a task key retained in more than one loaded split; rows the cohort filters dropped do not count."""
     key_splits: dict[str, set[str]] = {}
-    for row in rows:
-        split = _raw_split_value(row.get("split"))
-        if split not in loaded:
-            continue
-        key_splits.setdefault(normalize_key(row[key_column], key_column), set()).add(split)
+    for split, dataset in datasets.items():
+        for record in dataset.records:
+            key_splits.setdefault(record.key, set()).add(split)
 
     for key, splits in key_splits.items():
         if len(splits) > 1:

@@ -12,7 +12,7 @@ import yaml
 
 from data.default_dataset import SampleIndex
 from sex_age_baseline.config import load_config
-from sex_age_baseline.data import _collate_records, load_split_dataset, make_dataloader
+from sex_age_baseline.data import _collate_records, load_split_dataset, make_dataloader, validate_disjoint_split_keys
 from sex_age_baseline.model import SexAgeMLP
 import sex_age_baseline.runtime as baseline_runtime
 from sex_age_baseline.runtime import evaluate_model, masked_multilabel_bce
@@ -353,24 +353,40 @@ def test_rows_with_invalid_covariates_are_dropped_from_the_selected_split(tmp_pa
 def test_unused_split_duplicate_metadata_does_not_block_selected_split(tmp_path: Path):
     config = _write_config(tmp_path, ["001,train,50,0", "002,val,60,1", "001,test,55,1"])
     cfg = load_config(config)
+    datasets = {split: load_split_dataset(cfg, split, sources=None) for split in ("train", "val")}
 
-    assert _subjects(load_split_dataset(cfg, "train", sources=None, loaded_splits=["train", "val"])) == [
-        ("001", 50.0, 0)
-    ]
-    assert _subjects(load_split_dataset(cfg, "val", sources=None, loaded_splits=["train", "val"])) == [("002", 60.0, 1)]
+    assert _subjects(datasets["train"]) == [("001", 50.0, 0)]
+    assert _subjects(datasets["val"]) == [("002", 60.0, 1)]
+    validate_disjoint_split_keys(datasets)
 
+    datasets["test"] = load_split_dataset(cfg, "test", sources=None)
     with pytest.raises(ValueError, match="multiple loaded splits"):
-        load_split_dataset(cfg, "train", sources=None, loaded_splits=["train", "val", "test"])
+        validate_disjoint_split_keys(datasets)
 
 
 @pytest.mark.parametrize("backend", ["npz_index", "npz_preset", "kaldi"])
-def test_loaded_split_key_reuse_fails_before_metadata_parsing(tmp_path: Path, backend: str):
-    rows = ["001,train,50,0", "001,val,bad,unknown", "002,test,,unknown"]
+def test_split_key_reuse_counts_only_retained_rows(tmp_path: Path, backend: str):
+    # 001's val row fails the covariate filter, so only its train row is in the effective cohort.
+    rows = ["001,train,50,0", "001,val,bad,unknown", "002,val,60,1", "002,test,55,1"]
     data = _backend_data_config(tmp_path, rows, backend)
     cfg = load_config(_write_config_for_data(tmp_path, rows, data))
+    datasets = {split: load_split_dataset(cfg, split, sources=None) for split in ("train", "val")}
 
+    validate_disjoint_split_keys(datasets)
+
+    datasets["test"] = load_split_dataset(cfg, "test", sources=None)
     with pytest.raises(ValueError, match="multiple loaded splits"):
-        load_split_dataset(cfg, "train", sources=None, loaded_splits=["train", "val"])
+        validate_disjoint_split_keys(datasets)
+
+
+def test_train_rejects_empty_requested_split_before_creating_run_dir(tmp_path: Path, monkeypatch):
+    config = _write_config(tmp_path, ["001,train,50,0", "002,test,60,1"])
+    cfg = load_config(config)
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="split 'val' has no rows"):
+        baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="empty-val"), cfg)
+    assert not (tmp_path / "log-finetune" / "empty-val").exists()
 
 
 def test_train_rejects_key_reused_across_train_val(tmp_path: Path, monkeypatch):
@@ -380,6 +396,8 @@ def test_train_rejects_key_reused_across_train_val(tmp_path: Path, monkeypatch):
 
     with pytest.raises(ValueError, match="multiple loaded splits"):
         baseline_runtime.train_and_save(_runtime_args(config, tmp_path, version_name="split-leak"), cfg)
+    # Data errors surface before the single-use run root exists.
+    assert not (tmp_path / "log-finetune" / "split-leak").exists()
 
 
 @pytest.mark.parametrize("task_type", ["survival", "multilabel_classification"])

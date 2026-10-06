@@ -243,6 +243,34 @@ def test_sex_age_baseline_config_summary_reports_backend_and_variant(tmp_path: P
     assert summary["data"]["finetune_data_index"]
 
 
+def test_sex_age_baseline_config_summary_blocks_kaldi_without_paths(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    payload["data"].update({"backend": "kaldi", "finetune_data_index": None})
+    _write_yaml(config, payload)
+
+    summary = config_summary(config)
+
+    assert summary["blocking_issues"] == [
+        "data.backend=kaldi but data.kaldi_data_root is missing.",
+        "data.backend=kaldi but data.kaldi_manifest is missing.",
+    ]
+
+
+def test_sex_age_baseline_preset_survival_still_requires_label_names(tmp_path: Path):
+    # The survival preset exemption covers the label sidecars, not the names in the baseline's label contract.
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    missing = tmp_path / "missing_disease_columns.txt"
+    payload["data"].update({"finetune_data_index": None, "finetune_preset_path": str(tmp_path / "shared.pkl")})
+    payload["finetune"]["survival"]["disease_columns_index"] = str(missing)
+    _write_yaml(config, payload)
+
+    summary = config_summary(config)
+
+    assert f"finetune.survival.disease_columns_index does not exist: {missing}" in summary["blocking_issues"]
+
+
 def test_sex_age_config_family_blocks_root_finetune_variant(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     recipe = _finetune_recipe(tmp_path, config)

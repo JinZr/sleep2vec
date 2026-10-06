@@ -48,7 +48,7 @@ from sleep2vec.sleep2vec_inference import prediction_export_enabled
 
 from .common import apply_task_flags
 from .config import BaselineConfig, covariate_task_config
-from .data import SexAgeDataset, load_split_dataset, make_dataloader
+from .data import SexAgeDataset, load_split_dataset, make_dataloader, validate_disjoint_split_keys
 from .model import SexAgeMLP
 
 # Like sleep2vec finetuning, training seeds from a fixed value; only inference exposes --seed.
@@ -300,7 +300,7 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
 
     run_dir = Path("log-finetune") / args.version
     checkpoint_dir = run_dir / "checkpoints"
-    # DDP subprocesses re-enter the CLI; only the original rank creates the single-use root.
+    # DDP subprocesses re-enter the CLI; only the original rank checks and creates the single-use root.
     if is_rank_zero_process():
         if run_dir.is_symlink():
             raise FileExistsError(f"sex_age_baseline run directory must not be a symlink: {run_dir}.")
@@ -308,6 +308,20 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             raise FileExistsError(
                 f"sex_age_baseline run directory already exists and is not empty: {run_dir}. Use a new --version-name."
             )
+    loaded_splits = ["train", "val"] if epochs > 0 else []
+    if args.test_after_fit:
+        loaded_splits.append("test")
+    # Load every split before the run root exists, so data, sidecar and cohort errors leave nothing behind.
+    datasets = {
+        split: _required_dataset(
+            cfg,
+            split,
+            sources=cfg.data.test_dataset_names if split == "test" else cfg.data.train_dataset_names,
+        )
+        for split in loaded_splits
+    }
+    validate_disjoint_split_keys(datasets)
+    if is_rank_zero_process():
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         persist_run_config_and_args(args, run_dir)
 
@@ -315,15 +329,10 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     model = module.model
     if args.ckpt_path:
         load_checkpoint(model, args.ckpt_path, device=torch.device("cpu"), cfg=cfg)
-    loaded_splits = ["train", "val"] if epochs > 0 else []
-    if args.test_after_fit:
-        loaded_splits.append("test")
     if epochs > 0:
-        sources = cfg.data.train_dataset_names
-        module.train_set = _required_dataset(cfg, "train", sources=sources, loaded_splits=loaded_splits)
-        val_set = _required_dataset(cfg, "val", sources=sources, loaded_splits=loaded_splits)
+        module.train_set = datasets["train"]
         val_loader = make_dataloader(
-            val_set,
+            datasets["val"],
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             shuffle=False,
@@ -404,8 +413,9 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
             )
             return
 
-        test_set = _required_dataset(cfg, "test", sources=cfg.data.test_dataset_names, loaded_splits=loaded_splits)
-        test_loader = make_dataloader(test_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
+        test_loader = make_dataloader(
+            datasets["test"], batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False
+        )
         args.eval_split = "test"
         checkpoint_test_results = []
         original_ckpt_path = args.ckpt_path
@@ -527,7 +537,7 @@ def run_inference_and_save(args: Namespace, cfg: BaselineConfig) -> None:
     # sleep2vec inference's source selection: an override, else the YAML list for the evaluated split.
     yaml_sources = cfg.data.test_dataset_names if args.eval_split == "test" else cfg.data.train_dataset_names
     sources = args.override_dataset_names or yaml_sources
-    dataset = _required_dataset(cfg, args.eval_split, sources=sources, loaded_splits=[args.eval_split])
+    dataset = _required_dataset(cfg, args.eval_split, sources=sources)
     loader = make_dataloader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
     trainer = _trainer(args)
     prepare_inference_result_paths(
@@ -969,10 +979,8 @@ def _multilabel_disease_names(cfg: BaselineConfig) -> list[str]:
     return load_multilabel_disease_columns(cfg.finetune.multilabel.disease_columns_index)
 
 
-def _required_dataset(
-    cfg: BaselineConfig, split: str, *, sources: list[str] | None, loaded_splits: list[str] | None = None
-) -> SexAgeDataset:
-    dataset = load_split_dataset(cfg, split, sources=sources, loaded_splits=loaded_splits)
+def _required_dataset(cfg: BaselineConfig, split: str, *, sources: list[str] | None) -> SexAgeDataset:
+    dataset = load_split_dataset(cfg, split, sources=sources)
     if len(dataset) == 0:
         raise ValueError(f"Sex/age baseline split {split!r} has no rows.")
     return dataset

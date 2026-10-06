@@ -68,14 +68,16 @@ whose `split` column names it, as `KaldiPSGDataset` does).
 
 - The split column is `split`. Rows collapse to one record per
   `finetune.{survival|multilabel}.key_column` value; a key whose rows encode
-  different covariates, or that appears in two loaded splits, fails.
+  different covariates fails, and so does a key retained in two loaded splits
+  after the filters below.
 - Dataset-name filters match the signal loader: `train_dataset_names` for
   train/val, `test_dataset_names` for test, and inference
   `--override-dataset-names` in place of either.
 - Rows whose selected covariates are missing or invalid are dropped with a
   logged count, as the signal loader's required-metadata filter does.
 - A preset supplies the labels embedded at preset generation; an index or Kaldi
-  manifest reads the label sidecars.
+  manifest reads the label sidecars. Label names always come from
+  `disease_columns_index`, because they belong to the checkpoint label contract.
 - `bmi` is raw BMI (imputed upstream) and `bmi_missing` its 0/1 imputation
   indicator; both must be columns of the index or manifest and are copied into
   regenerated presets. A preset built before these columns existed cannot serve
@@ -97,6 +99,8 @@ Model/data/task semantics belong to the model YAML. Recipe `runtime` and the
 CLI own epochs, batch size, learning rate, devices, precision, accumulation,
 clipping, validation cadence and checkpoint cadence. Lightning executes these
 settings for both single-device and DDP runs; only rank zero writes outputs.
+Training loads every split it uses before it creates `log-finetune/<version>`,
+so a data, sidecar or cohort error leaves no run directory behind.
 Distributed training drops the sampler tail before forming local batches,
 then drops incomplete local batches, so no padding copies contribute to loss;
 validation and test retain all samples before distributed-padding deduplication.
