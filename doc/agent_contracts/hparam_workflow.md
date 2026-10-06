@@ -427,7 +427,10 @@ selector re-entry may only reproduce the same score and checkpoint evidence.
 Deleting `ranking.csv` does not authorize replacement from changed runtime
 evidence; the projection may be rebuilt only from unchanged canonical selection.
 Validation-selected tuning resolves a fixed epoch checkpoint rather than a
-moving best/last alias.
+moving best/last alias. When no fixed checkpoint exists for the best epoch, for
+example after early stopping before the first periodic save, a completed or
+skipped-test run manifest binds the `best-epoch=` file it names; selection
+freezes its SHA-256 like any other checkpoint.
 
 For test-selected tuning, complete finite checkpoint-level evidence for the
 frozen `test_*` metric globally ranks every compatible regular non-alias saved
