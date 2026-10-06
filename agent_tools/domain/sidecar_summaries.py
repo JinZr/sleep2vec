@@ -137,16 +137,21 @@ def multilabel_summary(
     issues = summary["issues"]
     preset_issues = summary["preset_issues"]
     if not isinstance(finetune.get("multilabel"), dict):
-        issues.append("finetune.multilabel must be a mapping for multilabel tasks.")
-        preset_issues.extend(issues)
+        preset_issues.append("finetune.multilabel must be a mapping for multilabel tasks.")
+        issues.extend(preset_issues)
         return summary
-    if not isinstance(raw.get("key_column"), str) or not raw.get("key_column"):
-        issues.append("finetune.multilabel.key_column must be a non-empty string.")
-        preset_issues.append(issues[-1])
+    # Every variant's config loader requires these as non-empty strings, even when a preset supplies the labels.
+    for field in ("key_column", *path_fields):
+        value = raw.get(field)
+        if not isinstance(value, str) or not value:
+            preset_issues.append(f"finetune.multilabel.{field} must be a non-empty string.")
+    issues.extend(preset_issues)
     resolved_paths: dict[str, str] = {}
     for field in path_fields:
         value = raw.get(field)
-        if not isinstance(value, str) or looks_like_placeholder_path(value):
+        if not isinstance(value, str) or not value:
+            continue
+        if looks_like_placeholder_path(value):
             issue = f"finetune.multilabel.{field} must point to a real file."
         elif not validate_local_paths:
             continue
@@ -157,8 +162,8 @@ def multilabel_summary(
                 continue
             issue = f"finetune.multilabel.{field} does not exist: {value}"
         issues.append(issue)
-        # The variant config loader rejects a missing or non-string label sidecar even when a preset leaves it unread.
-        if field == "disease_columns_index" or not isinstance(value, str) or not value:
+        # A preset-backed run still reads disease_columns_index to name per-disease metrics and prediction columns.
+        if field == "disease_columns_index":
             preset_issues.append(issue)
     if "disease_columns_index" in resolved_paths:
         disease_columns_issue = _disease_columns_issue(resolved_paths["disease_columns_index"], task.get("output_dim"))

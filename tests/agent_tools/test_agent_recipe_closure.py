@@ -518,7 +518,7 @@ def test_infer_multilabel_preset_still_requires_loader_fields(tmp_path: Path, fi
     report = _evaluate_payload(recipe, payload)
     assert report.exit_code == 2
     issue = _multilabel_sidecar_issue(report)
-    assert any(f"finetune.multilabel.{field} " in text for text in issue.evidence["multilabel"]["preset_issues"])
+    assert f"finetune.multilabel.{field} must be a non-empty string." in issue.evidence["multilabel"]["preset_issues"]
 
 
 def test_infer_multilabel_preset_rejects_tilde_disease_columns_path(tmp_path: Path):
