@@ -57,6 +57,8 @@ ACTIVE_STATUSES = frozenset(
     {"submitting", "queued", "launched", "running", "stopping", "unknown_remote", "unknown_scheduler", "missing_pid"}
 )
 LAUNCH_TIMEOUT_SECONDS = 60
+# Complete repository scans can be slow on shared experiment filesystems.
+_EXECUTION_PREFLIGHT_TIMEOUT_SECONDS = 300
 RETRYABLE_PRE_SPAWN_EXIT_CODE = 75
 EXECUTION_SNAPSHOT_NAME = "execution_snapshot.json"
 
@@ -2055,7 +2057,7 @@ def run_execution_command(execution: dict[str, Any], command: list[str]) -> subp
         run_command = f"env {env_prefix} {run_command}"
     run_command = f"cd {_sh(workdir)} && {run_command}"
     host = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
-    return transport.run_shell(host, run_command, timeout=LAUNCH_TIMEOUT_SECONDS)
+    return transport.run_shell(host, run_command, timeout=_EXECUTION_PREFLIGHT_TIMEOUT_SECONDS)
 
 
 def build_launch_command(
