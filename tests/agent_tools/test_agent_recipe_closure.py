@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import write_finetune_recipe, write_survival_sidecars, write_yaml
 import pytest
 import yaml
 
@@ -570,6 +570,85 @@ def test_infer_multilabel_index_still_requires_label_sidecars(tmp_path: Path):
     issue = _multilabel_sidecar_issue(report)
     assert issue.evidence["multilabel"]["preset_issues"] == []
     assert "label_index" in issue.question
+
+
+def _survival_infer_payload(tmp_path: Path, *, preset: bool) -> tuple[Path, dict]:
+    """An output_dim=2 survival infer recipe whose sidecar paths are unfilled placeholders."""
+    recipe, payload = _infer_recipe_payload(tmp_path)
+    config_path = Path(payload["inputs"]["config"])
+    config = yaml.safe_load(config_path.read_text())
+    config["finetune"]["task"].update({"type": "survival", "output_dim": 2, "is_seq": False})
+    config["finetune"]["survival"] = {
+        "key_column": "eid",
+        "disease_columns_index": "/path/to/disease_columns.txt",
+        "event_time_index": "/path/to/event_time.csv",
+        "is_event_index": "/path/to/is_event.csv",
+        "has_label_index": "/path/to/has_label.csv",
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    if preset:
+        preset_path = tmp_path / "survival.pickle"
+        preset_path.write_bytes(b"preset")
+        payload["inputs"]["inference_preset_path"] = str(preset_path)
+    return recipe, payload
+
+
+def _survival_sidecar_issue(report) -> object:
+    [issue] = [issue for issue in report.blocking_issues() if issue.field == "survival_sidecars"]
+    return issue
+
+
+def test_infer_survival_preset_does_not_require_sidecar_files(tmp_path: Path):
+    # The preset embeds the survival labels; no survival sidecar file is opened.
+    recipe, payload = _survival_infer_payload(tmp_path, preset=True)
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("key_column", None), ("event_time_index", None), ("has_label_index", ""), ("is_event_index", 1)],
+)
+def test_infer_survival_preset_still_requires_loader_fields(tmp_path: Path, field: str, value: object):
+    # The variant config loader needs every survival field as a non-empty string, even with a preset.
+    recipe, payload = _survival_infer_payload(tmp_path, preset=True)
+    config_path = Path(payload["inputs"]["config"])
+    config = yaml.safe_load(config_path.read_text())
+    if value is None:
+        del config["finetune"]["survival"][field]
+    else:
+        config["finetune"]["survival"][field] = value
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 2
+    issue = _survival_sidecar_issue(report)
+    assert issue.evidence["survival"]["preset_issues"] == [f"finetune.survival.{field} must be a non-empty string."]
+    assert "non-empty strings" in issue.question
+
+
+@pytest.mark.parametrize("preset", [True, False])
+def test_finetune_survival_blocks_loader_rejected_field_with_or_without_preset(tmp_path: Path, preset: bool):
+    recipe = write_finetune_recipe(tmp_path)
+    config_path = Path(yaml.safe_load(recipe.read_text())["inputs"]["config"])
+    config = yaml.safe_load(config_path.read_text())
+    config["finetune"]["task"].update({"type": "survival", "output_dim": 2, "is_seq": False})
+    config["finetune"]["survival"] = {"key_column": "eid", **write_survival_sidecars(tmp_path), "has_label_index": None}
+    Path(config["data"]["finetune_data_index"]).write_text(
+        "path,split,duration,eid,ppg_mask,ah_event_mask,stage_mask\nx.npz,train,60,001,1,1,1\n"
+    )
+    if preset:
+        preset_path = tmp_path / "survival.pickle"
+        preset_path.write_bytes(b"preset")
+        config["data"]["finetune_preset_path"] = str(preset_path)
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    report = evaluate_recipe(recipe)[2]
+    assert report.exit_code == 2, [issue.message for issue in report.blocking_issues()]
+    issue = _survival_sidecar_issue(report)
+    expected = "finetune.survival.has_label_index must be a non-empty string."
+    assert issue.evidence["survival"]["preset_issues"] == [expected]
 
 
 def test_infer_relative_checkpoint_defaults_to_repo_root_without_workdir(tmp_path: Path):
