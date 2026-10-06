@@ -374,6 +374,102 @@ def test_run_inference_logs_metrics_and_files_to_wandb(
     assert captured["events"] == ["log", "artifact", "finish"]
 
 
+@pytest.mark.parametrize("failing_call", [None, "log_artifact", "finish"])
+@pytest.mark.parametrize("package_name", RUNTIME_PACKAGES)
+def test_run_inference_withdraws_manifest_when_wandb_publication_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, package_name: str, failing_call: str
+):
+    infer_mod = importlib.import_module(f"{package_name}.infer")
+    results_mod = importlib.import_module(f"{package_name}.results")
+    events: list[str] = []
+
+    class _DummyModule:
+        def __init__(self, args, model_cfg, finetune_config=None, averaging_config=None):
+            self.prediction_rows = [{"path": "sample.npz", "groundtruth": 1, "prediction": 1}]
+
+    class _DummyTrainer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def test(self, model=None, ckpt_path=None, dataloaders=None):
+            return [{"test_loss": 0.5}]
+
+    class _DummyArtifact:
+        def __init__(self, name, type, metadata=None):
+            pass
+
+        def add_file(self, path, name=None):
+            assert Path(path).exists()
+
+    def _apply_config(args):
+        args.finetune_preset_path = Path("config.pkl")
+        return argparse.Namespace(finetune=None, averaging=None), object()
+
+    def _prepare_paths(args, namespace, root=None, checkpoint_paths=None, timestamp=None):
+        return results_mod.prepare_inference_result_paths(
+            args, namespace=namespace, root=tmp_path / "results", checkpoint_paths=checkpoint_paths, timestamp=timestamp
+        )
+
+    def _record(name):
+        def _call(*args, **kwargs):
+            events.append(name)
+            if name == failing_call:
+                raise RuntimeError(f"{name} failure")
+
+        return _call
+
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    monkeypatch.setattr(infer_mod, "apply_finetune_config", _apply_config)
+    monkeypatch.setattr(infer_mod, "_build_inference_loader", lambda args: "loader")
+    monkeypatch.setattr(infer_mod, "Sleep2vecFinetuning", _DummyModule)
+    monkeypatch.setattr(infer_mod.pl, "Trainer", _DummyTrainer)
+    monkeypatch.setattr(infer_mod, "_init_wandb", lambda args: object())
+    monkeypatch.setattr(infer_mod, "prepare_inference_result_paths", _prepare_paths)
+    monkeypatch.setattr(infer_mod.wandb, "log", _record("log"))
+    monkeypatch.setattr(infer_mod.wandb, "Artifact", _DummyArtifact)
+    monkeypatch.setattr(infer_mod.wandb, "log_artifact", _record("log_artifact"))
+    monkeypatch.setattr(infer_mod.wandb, "finish", _record("finish"))
+    args = argparse.Namespace(
+        label_name="sex",
+        avg_ckpts=1,
+        ckpt_path="/tmp/model.ckpt",
+        avg_ckpt_dir=None,
+        config=Path("dummy.yaml"),
+        precision=32,
+        accelerator="cpu",
+        devices=[0],
+        batch_size=4,
+        eval_split="test",
+        seed=4523,
+        wandb=True,
+        inference_preset_path=None,
+        lr=1e-4,
+        n_few_shot=None,
+        channel_names=["ppg"],
+    )
+
+    if failing_call is None:
+        infer_mod.run_inference(args)
+    else:
+        with pytest.raises(RuntimeError, match=f"{failing_call} failure"):
+            infer_mod.run_inference(args)
+
+    # run_manifest.json is uploaded with the artifact, so it is written first and withdrawn on failure.
+    assert Path(args.manifest_path).exists() is (failing_call is None)
+    # Finalization is attempted once, also when it fails.
+    assert events == ["log", "log_artifact", "finish"]
+
+
+@pytest.mark.parametrize("avg_ckpts", [0, -1])
+@pytest.mark.parametrize("package_name", RUNTIME_PACKAGES)
+def test_run_inference_rejects_non_positive_avg_ckpts(package_name: str, avg_ckpts: int):
+    infer_mod = importlib.import_module(f"{package_name}.infer")
+
+    with pytest.raises(ValueError, match="--avg-ckpts must be a positive integer"):
+        infer_mod.run_inference(argparse.Namespace(avg_ckpts=avg_ckpts))
+
+
 def test_sleep2expert_run_inference_records_active_route_filter_metadata(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

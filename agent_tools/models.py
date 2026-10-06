@@ -66,6 +66,9 @@ class SurvivalSummary(SidecarDiagnostics):
 
 class MultilabelSummary(SidecarDiagnostics):
     label_index: Any
+    #: The subset of ``issues`` that still blocks a preset-backed run: disease_columns_index, the only sidecar it
+    #: reads, and fields that are not non-empty strings, which the variant config loader rejects.
+    preset_issues: list[str]
 
 
 class ChannelSummary(TypedDict):

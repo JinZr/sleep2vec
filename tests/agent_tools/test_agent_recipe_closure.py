@@ -441,25 +441,135 @@ def test_infer_checkpoint_alias_is_valid_with_average_checkpoint_dir(tmp_path: P
     assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
 
 
-def test_infer_multilabel_preset_still_requires_runtime_sidecars(tmp_path: Path):
+def _multilabel_infer_payload(
+    tmp_path: Path, disease_columns: list[str] | None, *, preset: bool, label_index: str = "missing-labels.csv"
+) -> tuple[Path, dict]:
+    """An output_dim=2 multilabel infer recipe whose has_label_index never exists."""
     recipe, payload = _infer_recipe_payload(tmp_path)
     config_path = Path(payload["inputs"]["config"])
     config = yaml.safe_load(config_path.read_text())
     config["finetune"]["task"].update({"type": "multilabel_classification", "output_dim": 2, "is_seq": False})
+    disease_index = tmp_path / "diseases.txt"
+    if disease_columns is not None:
+        disease_index.write_text("".join(f"{name}\n" for name in disease_columns))
     config["finetune"]["multilabel"] = {
         "key_column": "eid",
-        "disease_columns_index": "missing-diseases.txt",
-        "label_index": "missing-labels.csv",
+        "disease_columns_index": str(disease_index),
+        "label_index": label_index,
         "has_label_index": "missing-has-label.csv",
     }
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
-    preset = tmp_path / "multilabel.pickle"
-    preset.write_bytes(b"preset")
-    payload["inputs"]["inference_preset_path"] = str(preset)
+    if preset:
+        preset_path = tmp_path / "multilabel.pickle"
+        preset_path.write_bytes(b"preset")
+        payload["inputs"]["inference_preset_path"] = str(preset_path)
+    return recipe, payload
+
+
+def _multilabel_sidecar_issue(report) -> object:
+    [issue] = [issue for issue in report.blocking_issues() if issue.field == "multilabel_sidecars"]
+    return issue
+
+
+def test_infer_multilabel_preset_does_not_require_label_sidecars(tmp_path: Path):
+    # The preset embeds disease_label/has_label; label_index and has_label_index are never opened.
+    recipe, payload = _multilabel_infer_payload(tmp_path, ["d1", "d2"], preset=True, label_index="~/labels.csv")
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
+
+
+@pytest.mark.parametrize(
+    ("disease_columns", "expected"),
+    [
+        (None, "finetune.multilabel.disease_columns_index does not exist"),
+        (["d1", "d2", "d1"], "duplicate disease column 'd1'"),
+        (["d1", "d2", "d3"], "Multilabel output_dim (2) must match disease column count (3)."),
+    ],
+)
+def test_infer_multilabel_preset_still_requires_disease_columns(
+    tmp_path: Path, disease_columns: list[str] | None, expected: str
+):
+    # Val/test finalization reads disease_columns_index for per-disease metric and prediction names.
+    recipe, payload = _multilabel_infer_payload(tmp_path, disease_columns, preset=True)
 
     report = _evaluate_payload(recipe, payload)
     assert report.exit_code == 2
-    assert any(issue.field == "multilabel_sidecars" for issue in report.blocking_issues())
+    issue = _multilabel_sidecar_issue(report)
+    assert any(expected in text for text in issue.evidence["multilabel"]["preset_issues"])
+    assert "label_index" not in issue.question
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("key_column", None), ("label_index", None), ("label_index", ""), ("has_label_index", 3)],
+)
+def test_infer_multilabel_preset_still_requires_loader_fields(tmp_path: Path, field: str, value: object):
+    # The variant config loader needs every multilabel field as a non-empty string, even ones the preset leaves unread.
+    recipe, payload = _multilabel_infer_payload(tmp_path, ["d1", "d2"], preset=True)
+    config_path = Path(payload["inputs"]["config"])
+    config = yaml.safe_load(config_path.read_text())
+    if value is None:
+        del config["finetune"]["multilabel"][field]
+    else:
+        config["finetune"]["multilabel"][field] = value
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 2
+    issue = _multilabel_sidecar_issue(report)
+    assert f"finetune.multilabel.{field} must be a non-empty string." in issue.evidence["multilabel"]["preset_issues"]
+
+
+def test_infer_multilabel_preset_rejects_tilde_disease_columns_path(tmp_path: Path):
+    recipe, payload = _multilabel_infer_payload(tmp_path, None, preset=True)
+    config_path = Path(payload["inputs"]["config"])
+    config = yaml.safe_load(config_path.read_text())
+    config["finetune"]["multilabel"]["disease_columns_index"] = "~/diseases.txt"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 1
+    fields = {issue.field for issue in report.blocking_issues()}
+    assert "finetune.multilabel.disease_columns_index" in fields
+    assert "finetune.multilabel.has_label_index" not in fields
+
+
+@pytest.mark.parametrize(("disease_columns", "exit_code"), [(["d1", "d2"], 0), (["d1"], 2)])
+def test_finetune_multilabel_config_preset_requires_only_disease_columns(
+    tmp_path: Path, disease_columns: list[str], exit_code: int
+):
+    recipe = write_finetune_recipe(tmp_path)
+    config_path = Path(yaml.safe_load(recipe.read_text())["inputs"]["config"])
+    config = yaml.safe_load(config_path.read_text())
+    config["finetune"]["task"].update({"type": "multilabel_classification", "output_dim": 2, "is_seq": False})
+    disease_index = tmp_path / "diseases.txt"
+    disease_index.write_text("".join(f"{name}\n" for name in disease_columns))
+    config["finetune"]["multilabel"] = {
+        "key_column": "eid",
+        "disease_columns_index": str(disease_index),
+        "label_index": "missing-labels.csv",
+        "has_label_index": "missing-has-label.csv",
+    }
+    preset = tmp_path / "multilabel.pickle"
+    preset.write_bytes(b"preset")
+    config["data"]["finetune_preset_path"] = str(preset)
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    report = evaluate_recipe(recipe)[2]
+    assert report.exit_code == exit_code, [issue.message for issue in report.blocking_issues()]
+    assert any(issue.field == "multilabel_sidecars" for issue in report.blocking_issues()) is bool(exit_code)
+
+
+def test_infer_multilabel_index_still_requires_label_sidecars(tmp_path: Path):
+    recipe, payload = _multilabel_infer_payload(tmp_path, ["d1", "d2"], preset=False, label_index="~/labels.csv")
+
+    report = _evaluate_payload(recipe, payload)
+    assert report.exit_code == 1
+    assert "finetune.multilabel.label_index" in {issue.field for issue in report.blocking_issues()}
+    issue = _multilabel_sidecar_issue(report)
+    assert issue.evidence["multilabel"]["preset_issues"] == []
+    assert "label_index" in issue.question
 
 
 def test_infer_relative_checkpoint_defaults_to_repo_root_without_workdir(tmp_path: Path):

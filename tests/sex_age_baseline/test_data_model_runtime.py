@@ -859,6 +859,33 @@ def test_finetune_writes_predictions_only_with_export_flag(tmp_path: Path, monke
     assert len(pd.read_csv(tmp_path / "log-finetune" / "export" / "predictions.csv")) == 2
 
 
+@pytest.mark.parametrize(("test_after_fit", "status"), [(True, "completed"), (False, "skipped_test")])
+def test_finetune_finishes_wandb_before_terminal_manifest(
+    tmp_path: Path, monkeypatch, test_after_fit: bool, status: str
+):
+    config = _write_config(
+        tmp_path,
+        ["001,train,50,0", "002,train,60,1", "003,val,55,0", "004,val,65,1", "005,test,58,0", "006,test,68,1"],
+        task_type="multilabel_classification",
+    )
+    cfg = load_config(config)
+    monkeypatch.chdir(tmp_path)
+    events = []
+    monkeypatch.setattr(baseline_runtime, "_finish_wandb_run", lambda preexisting, stage: events.append("finish"))
+    monkeypatch.setattr(
+        baseline_runtime,
+        "save_training_run_manifest",
+        lambda *args, **kwargs: events.append(f"manifest:{kwargs['status']}"),
+    )
+
+    baseline_runtime.train_and_save(
+        _runtime_args(config, tmp_path, version_name="ordered", test_after_fit=test_after_fit), cfg
+    )
+
+    # W&B finalization can fail, so the terminal manifest is written only after it succeeds; cleanup does not retry it.
+    assert events == ["finish", f"manifest:{status}"]
+
+
 def test_all_checkpoint_test_rejects_missing_validation_best_periodic_checkpoint(tmp_path: Path, monkeypatch):
     config = _write_config(
         tmp_path,
@@ -1323,6 +1350,101 @@ def test_scheduler_arguments_are_validated_before_run_directory(tmp_path: Path, 
     assert not (tmp_path / "log-finetune" / "bad-scheduler").exists()
 
 
+@pytest.mark.parametrize("failing_call", [None, "publish", "finish"])
+def test_inference_withdraws_manifest_when_wandb_publication_fails(tmp_path: Path, monkeypatch, failing_call):
+    events = []
+    created_run = object()
+    args = Namespace(
+        ckpt_path=str(tmp_path / "model.ckpt"),
+        label_name="age",
+        eval_split="test",
+        batch_size=2,
+        num_workers=0,
+        device="cpu",
+        seed=4523,
+        inference_preset_path=None,
+        override_dataset_names=None,
+        results_root=tmp_path / "results",
+        avg_ckpts=1,
+        wandb=True,
+    )
+    cfg = Namespace(
+        finetune=Namespace(task=Namespace(type="regression")),
+        data=Namespace(train_dataset_names=None, test_dataset_names=None),
+    )
+    result = baseline_runtime.EvaluationResult(
+        metrics={"test_mae": 1.0}, prediction_rows=[], survival_per_disease_rows=[], multilabel_per_disease_rows=[]
+    )
+
+    class _DummyTrainer:
+        is_global_zero = True
+
+        def test(self, module, *, dataloaders, verbose):
+            module.evaluation_result = result
+
+    def _prepare_paths(runtime_args, *, namespace, root, checkpoint_paths):
+        root.mkdir(parents=True)
+        runtime_args.manifest_path = root / "run_manifest.json"
+        for name in (
+            "inference_metrics_csv_path",
+            "inference_overview_csv_path",
+            "inference_prediction_csv_path",
+            "inference_survival_per_disease_metrics_csv_path",
+            "inference_multilabel_per_disease_metrics_csv_path",
+        ):
+            setattr(runtime_args, name, root / f"{name}.csv")
+
+    def _init_wandb(runtime_args):
+        baseline_runtime.wandb.run = created_run
+        return created_run
+
+    def _record(name, clears_run=False):
+        def _call(*call_args, **call_kwargs):
+            events.append(name)
+            if name == failing_call:
+                raise RuntimeError(f"{name} failure")
+            if clears_run:
+                baseline_runtime.wandb.run = None
+
+        return _call
+
+    monkeypatch.setattr(baseline_runtime, "configure_result_args", lambda *args: None)
+    monkeypatch.setattr(baseline_runtime, "_seed_everything", lambda *args: None)
+    monkeypatch.setattr(baseline_runtime, "BaselineModule", lambda cfg, args: Namespace(model="model"))
+    monkeypatch.setattr(baseline_runtime, "_trainer", lambda args: _DummyTrainer())
+    monkeypatch.setattr(baseline_runtime, "_load_inference_checkpoint", lambda *args: None)
+    monkeypatch.setattr(baseline_runtime, "prepare_inference_result_paths", _prepare_paths)
+    monkeypatch.setattr(baseline_runtime, "_required_dataset", lambda *args, **kwargs: "dataset")
+    monkeypatch.setattr(baseline_runtime, "make_dataloader", lambda *args, **kwargs: "loader")
+    for writer in (
+        "save_result_csv",
+        "save_prediction_csv",
+        "save_survival_per_disease_metrics_csv",
+        "save_multilabel_per_disease_metrics_csv",
+    ):
+        monkeypatch.setattr(baseline_runtime, writer, lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        baseline_runtime,
+        "save_inference_manifest",
+        lambda runtime_args, *a, **k: runtime_args.manifest_path.write_text("{}"),
+    )
+    monkeypatch.setattr(baseline_runtime.wandb, "run", None, raising=False)
+    monkeypatch.setattr(baseline_runtime, "_init_wandb", _init_wandb)
+    monkeypatch.setattr(baseline_runtime, "_log_inference_outputs_to_wandb", _record("publish"))
+    monkeypatch.setattr(baseline_runtime.wandb, "finish", _record("finish", clears_run=True))
+
+    if failing_call is None:
+        baseline_runtime.run_inference_and_save(args, cfg)
+    else:
+        with pytest.raises(RuntimeError, match=f"{failing_call} failure"):
+            baseline_runtime.run_inference_and_save(args, cfg)
+
+    # Finalization is attempted once, also when it fails.
+    assert events == ["publish", "finish"]
+    # run_manifest.json is uploaded with the artifact, so it is written first and withdrawn on failure.
+    assert args.manifest_path.exists() is (failing_call is None)
+
+
 def _save_epoch_checkpoints(root: Path, cfg, count: int = 3) -> list[SexAgeMLP]:
     models = []
     for epoch in range(count):
@@ -1390,6 +1512,18 @@ def test_inference_alias_requires_averaging_directory(tmp_path: Path, avg_ckpts:
     with pytest.raises(ValueError, match=message):
         baseline_runtime._load_inference_checkpoint(
             SexAgeMLP(cfg), _inference_ckpt_args("best", avg_ckpts, root if with_dir else None), cfg
+        )
+
+
+@pytest.mark.parametrize("avg_ckpts", [0, -1])
+def test_inference_rejects_non_positive_avg_ckpts(tmp_path: Path, avg_ckpts: int):
+    cfg = load_config(_write_config(tmp_path, ["001,test,50,0", "002,test,60,1"]))
+    root = tmp_path / "checkpoints"
+    _save_epoch_checkpoints(root, cfg)
+
+    with pytest.raises(ValueError, match="--avg-ckpts must be a positive integer"):
+        baseline_runtime._load_inference_checkpoint(
+            SexAgeMLP(cfg), _inference_ckpt_args(str(root / "epoch=01.ckpt"), avg_ckpts, None), cfg
         )
 
 

@@ -365,7 +365,7 @@ python -m sleep2vec.infer \
 Use `--override-dataset-names` to test on a different dataset list than the YAML specifies.
 Use `--inference-preset-path` to evaluate the same config/checkpoint against a different preset pickle without editing YAML; result CSV rows record the effective preset in `preset_path`.
 Use the same `--label-name` that was used for fine-tuning; it is required.
-To average checkpoints before inference, pass `--avg-ckpts N` (and `--avg-ckpt-dir` if `--ckpt-path` is `best/last`).
+To average checkpoints before inference, pass `--avg-ckpts N` (and `--avg-ckpt-dir` if `--ckpt-path` is `best/last`). Averaging takes the last `N` periodic `epoch=*.ckpt` files up to the epoch named by `--ckpt-path` and fails when fewer exist; `best*.ckpt` and `last.ckpt` aliases are never averaged.
 Use `--pretrained-backbone-path` if you want to preload a pretrain/adaptation initialization checkpoint before applying downstream weights.
 Use `--wandb` to enable W&B logging during inference (needed for confusion matrix logging).
 
