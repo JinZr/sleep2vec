@@ -78,8 +78,9 @@ class ExperimentCompletionFields(TypedDict):
     final_report_sha256: str
 
 
-def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
-    # The locator is untrusted; all execution fields below come from the registered frozen plan.
+def _preset_direct_workspace(plan_dir: Path) -> Path:
+    # The locator is untrusted and only names the workspace to lock; run_manifest.tsv may be replaced by a concurrent
+    # lock holder, so callers read workspace state through _read_preset_direct_plan under the run lock.
     initial = read_json(plan_dir / "plan.json")
     recipe = initial.get("recipe") if isinstance(initial, dict) else None
     if not isinstance(recipe, dict) or recipe.get("task") != "preset_prepare":
@@ -89,6 +90,12 @@ def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.Registered
         raise ValueError("Invalid preset workspace binding: " + "; ".join(issue["message"] for issue in issues))
     workspace = experiment_root(recipe)
     assert workspace is not None
+    return workspace
+
+
+def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
+    # All execution fields below come from the registered frozen plan, not the untrusted locator.
+    workspace = _preset_direct_workspace(plan_dir)
     experiment, rows = _managed_workspace(workspace, remote=None)
     registered_steps = _registered_plan_steps(workspace, experiment, rows, remote=None, require_registered_rows=True)
     for registered in registered_steps:
@@ -112,7 +119,7 @@ def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.Registered
 
 def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_scheduler.LaunchResult:
     owner_dir = Path(plan_dir).absolute()
-    workspace, _plan, _rows = _read_preset_direct_plan(owner_dir)
+    workspace = _preset_direct_workspace(owner_dir)
     with managed_scheduler.managed_run_lock(workspace):
         locked_workspace, plan, rows = _read_preset_direct_plan(owner_dir)
         if locked_workspace != workspace:
@@ -217,7 +224,7 @@ def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
     if not reason.strip():
         raise ValueError("Stopping a run requires a non-empty reason.")
     owner_dir = Path(plan_dir).absolute()
-    workspace, _plan, _rows = _read_preset_direct_plan(owner_dir)
+    workspace = _preset_direct_workspace(owner_dir)
     with managed_scheduler.managed_run_lock(workspace):
         locked_workspace, plan, rows = _read_preset_direct_plan(owner_dir)
         if locked_workspace != workspace:
@@ -305,8 +312,9 @@ def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
     return workspace / "run_manifest.tsv"
 
 
-def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
-    # The initial document only locates the workspace; execution uses the strict registered-plan reader below.
+def _infer_slurm_workspace(plan_dir: Path) -> Path:
+    # The initial document only locates the workspace to lock; run_manifest.tsv may be replaced by a concurrent lock
+    # holder, so callers read workspace state through _read_infer_slurm_plan under the run lock.
     initial = read_json(plan_dir / "plan.json")
     recipe = initial.get("recipe") if isinstance(initial, dict) else None
     if not isinstance(recipe, dict) or recipe.get("task") not in {"infer", "evaluate"}:
@@ -316,6 +324,12 @@ def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPl
         raise ValueError("Invalid inference workspace binding: " + "; ".join(issue["message"] for issue in issues))
     workspace = experiment_root(recipe)
     assert workspace is not None
+    return workspace
+
+
+def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
+    # Execution uses the strict registered-plan reader below, not the locating document.
+    workspace = _infer_slurm_workspace(plan_dir)
     experiment, rows = _managed_workspace(workspace, remote=None)
     registered_steps = _registered_plan_steps(workspace, experiment, rows, remote=None, require_registered_rows=True)
     for registered in registered_steps:
@@ -335,7 +349,7 @@ def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPl
 
 def launch_infer_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_scheduler.LaunchResult:
     owner_dir = Path(plan_dir).absolute()
-    workspace, _plan, _rows = _read_infer_slurm_plan(owner_dir)
+    workspace = _infer_slurm_workspace(owner_dir)
     with managed_scheduler.managed_run_lock(workspace):
         locked_workspace, plan, _rows = _read_infer_slurm_plan(owner_dir)
         if locked_workspace != workspace:
@@ -385,7 +399,7 @@ def stop_infer_run(plan_dir: str | Path, *, reason: str) -> Path:
     if not reason.strip():
         raise ValueError("Stopping a run requires a non-empty reason.")
     owner_dir = Path(plan_dir).absolute()
-    workspace, _plan, _rows = _read_infer_slurm_plan(owner_dir)
+    workspace = _infer_slurm_workspace(owner_dir)
     with managed_scheduler.managed_run_lock(workspace):
         locked_workspace, plan, rows = _read_infer_slurm_plan(owner_dir)
         if locked_workspace != workspace:

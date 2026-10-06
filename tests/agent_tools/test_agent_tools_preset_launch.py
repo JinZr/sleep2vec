@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import functools
 import json
 from pathlib import Path
 import shlex
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import time
 
+from agent_tool_test_helpers import call_while_run_lock_holder_commits
 import pytest
 from test_agent_preset_runtime_identity import (
     _PRESET_SCRIPTS,
@@ -435,6 +437,23 @@ def test_preset_stop_planned_run_requires_reason_and_does_not_launch(tmp_path, p
     assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "stopped"
     assert not experiments.launch_preset_run(plan_dir, dry_run=False).started_keys
     assert not preset_runtime["payload"].exists()
+
+
+@pytest.mark.parametrize(("operation", "expected_status"), [("launch", "launched"), ("stop", "stopped")])
+def test_preset_lifecycle_reads_workspace_state_only_under_run_lock(
+    tmp_path, preset_runtime, monkeypatch, operation, expected_status
+):
+    plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args, **_kwargs: "launched")
+    call = (
+        functools.partial(experiments.launch_preset_run, plan_dir, dry_run=False)
+        if operation == "launch"
+        else functools.partial(experiments.stop_preset_run, plan_dir, reason="cancel during monitor commit")
+    )
+
+    call_while_run_lock_holder_commits(monkeypatch, preset_runtime["workspace"], call)
+
+    assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == expected_status
 
 
 def _recorded_attempt(tmp_path, preset_runtime, monkeypatch):

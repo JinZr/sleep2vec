@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -9,7 +10,13 @@ import shutil
 import subprocess
 import sys
 
-from agent_tool_test_helpers import config_payload, run_execution_preflight_fixture, write_survival_sidecars, write_yaml
+from agent_tool_test_helpers import (
+    call_while_run_lock_holder_commits,
+    config_payload,
+    run_execution_preflight_fixture,
+    write_survival_sidecars,
+    write_yaml,
+)
 import pytest
 import yaml
 
@@ -602,6 +609,23 @@ def test_infer_launch_post_submitting_exception_never_downgrades_identity(
     assert row["status"] == "queued"
     assert row["scheduler_job_id"] == "3880"
     assert sum(argv[0] == "bash" for argv in calls) == 1
+
+
+@pytest.mark.parametrize(("operation", "expected_status"), [("launch", "queued"), ("stop", "stopped")])
+def test_infer_lifecycle_reads_workspace_state_only_under_run_lock(
+    tmp_path: Path, monkeypatch, operation, expected_status, _runtime_commit, _runtime_probe
+):
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
+    _stub_queued_slurm(monkeypatch, plan_dir, plan)
+    call = (
+        functools.partial(experiments.launch_infer_run, plan_dir, dry_run=False)
+        if operation == "launch"
+        else functools.partial(experiments.stop_infer_run, plan_dir, reason="cancel during monitor commit")
+    )
+
+    call_while_run_lock_holder_commits(monkeypatch, plan_dir.parent, call)
+
+    assert experiment_workspace.read_run_manifest(plan_dir.parent)[0]["status"] == expected_status
 
 
 def test_infer_launch_untrusted_plan_does_not_invent_failure_state(tmp_path: Path, _runtime_commit, _runtime_probe):
