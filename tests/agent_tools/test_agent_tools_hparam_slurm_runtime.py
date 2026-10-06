@@ -340,7 +340,7 @@ def test_hparam_monitor_uses_canonical_slurm_controller_topology(
         recipe_scheduler.pop("direct_controller")
     else:
         recipe_scheduler["direct_controller"] = True
-    monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda _path: plan)
+    monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda _path, **_kwargs: plan)
     observed_executions = []
 
     def observe_slurm_run(_root, execution, row, *, health=False, monitor_context=None):

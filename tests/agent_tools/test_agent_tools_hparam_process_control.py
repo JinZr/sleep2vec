@@ -427,6 +427,27 @@ def test_hparam_stop_reads_workspace_state_only_under_run_lock(tmp_path: Path, m
     assert canonical["stop_reason"] == "cancel during monitor commit"
 
 
+@pytest.mark.parametrize("entrypoint", ["monitor", "queue", "reconcile"])
+def test_hparam_runtime_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch, entrypoint):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr
+    if entrypoint == "queue":
+        # Terminal runs let the queue return after its first canonical poll.
+        for run in run_artifacts.read_hparam_plan(plan_dir)["runs"]:
+            hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="settle queue")
+    calls = {
+        "monitor": lambda: hparam_runtime.monitor_hparam_runs(plan_dir),
+        "queue": lambda: hparam_runtime.run_hparam_queue(plan_dir, dry_run=False),
+        "reconcile": lambda: hparam_runtime.reconcile_hparam_launch_artifacts(plan_dir, set()),
+    }
+
+    call_while_run_lock_holder_commits(monkeypatch, tmp_path, calls[entrypoint])
+
+    assert _read_table(plan_dir / "run_status.tsv") == _read_table(tmp_path / "run_manifest.tsv")
+
+
 def test_remote_stop_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
         tmp_path,
@@ -1355,9 +1376,18 @@ def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor
     )
     identity = _write_process_identity(rows[0]["pid_path"])
     real_merge = merge_run_manifest
+    monitor_observing = threading.Event()
+    release_monitor_observation = threading.Event()
     monitor_commit_ready = threading.Event()
     release_monitor_commit = threading.Event()
     monitor_failures = []
+
+    def stale_observation(_root, observation, _prior, **_kwargs):
+        # The monitor read the running row under the run lock and observes outside it while stop runs.
+        if threading.current_thread().name == "competing-hparam-monitor":
+            monitor_observing.set()
+            assert release_monitor_observation.wait(timeout=5)
+        return {**observation, "status": "finished"}
 
     def competing_merge(root, rows, **kwargs):
         if threading.current_thread().name == "competing-hparam-monitor":
@@ -1376,7 +1406,7 @@ def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor
 
     def stop_while_monitor_commits(_row, observed):
         stopped.append(observed)
-        monitor_thread.start()
+        release_monitor_observation.set()
         assert monitor_commit_ready.wait(timeout=5)
         lock_probe = subprocess.run(
             [
@@ -1400,12 +1430,10 @@ def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor
             release_monitor_commit.set()
 
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", competing_merge)
-    monkeypatch.setattr(
-        hparam_runtime.scheduler,
-        "observe_run",
-        lambda _root, observation, _prior, **_kwargs: {**observation, "status": "finished"},
-    )
+    monkeypatch.setattr(hparam_runtime.scheduler, "observe_run", stale_observation)
     monkeypatch.setattr(run_evidence, "stop_process_group", stop_while_monitor_commits)
+    monitor_thread.start()
+    assert monitor_observing.wait(timeout=5)
 
     hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
     monitor_thread.join(timeout=5)

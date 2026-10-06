@@ -1324,12 +1324,14 @@ def _run_attempts(
             groups.append((pipeline_dir / "retry_schedulers" / row["job_id"], pipeline_attempts.planned_runs([row])))
 
         missing_pid_blocker = None
-        # Validated attempt rows and the canonical manifest have managed identities.
+        # Validated attempt rows and the canonical manifest have managed identities. Pipeline jobs commit their own
+        # status under the run lock, so every canonical read in this loop holds it.
         for owner_dir, runs in groups:
             owner_dir.mkdir(parents=True, exist_ok=True)
             snapshot_path = owner_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
             if snapshot_path.exists():
-                canonical = {cast(tuple[str, str], managed_run_key(row)): row for row in read_run_manifest(root)}
+                with managed_scheduler.managed_run_lock(root):
+                    canonical = {cast(tuple[str, str], managed_run_key(row)): row for row in read_run_manifest(root)}
                 if any(
                     (canonical[cast(tuple[str, str], managed_run_key(run))].get("status") or "planned")
                     in managed_scheduler.LAUNCHABLE_STATUSES
@@ -1353,7 +1355,8 @@ def _run_attempts(
                 missing_pid_blocker = exc
                 break
 
-        canonical = {cast(tuple[str, str], managed_run_key(row)): row for row in read_run_manifest(root)}
+        with managed_scheduler.managed_run_lock(root):
+            canonical = {cast(tuple[str, str], managed_run_key(row)): row for row in read_run_manifest(root)}
         if any(
             canonical[cast(tuple[str, str], managed_run_key(row))].get("status") in SUCCESS_STATUSES
             and str(row.get("verified") or "").lower() != "true"

@@ -9,7 +9,7 @@ import shutil
 import threading
 from types import SimpleNamespace
 
-from agent_tool_test_helpers import write_finetune_recipe
+from agent_tool_test_helpers import call_while_run_lock_holder_commits, write_finetune_recipe
 import pytest
 import yaml
 
@@ -1597,6 +1597,74 @@ def test_run_attempts_waits_when_capacity_blocks_before_execution_snapshot(tmp_p
 
     assert launches == [True]
     assert not (pipeline_dir / "execution_snapshot.json").exists()
+
+
+@pytest.mark.parametrize(
+    "reader", ["validate_attempt_rows", "create_needed_retries", "run_attempts", "run_attempts_with_snapshot"]
+)
+def test_pipeline_attempt_polls_read_canonical_state_only_under_run_lock(tmp_path: Path, monkeypatch, reader):
+    root = tmp_path / "workspace"
+    pipeline_dir = root / "pipelines" / "external-v1"
+    pipeline_dir.mkdir(parents=True)
+    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
+    experiment = {
+        "id": "unit",
+        "title": "Unit",
+        "objective": "Exercise pipeline polls during canonical commits.",
+        "root": str(root),
+        "baseline": {"type": "none"},
+        "status": "active",
+    }
+    (root / "experiment.yaml").write_text(yaml.safe_dump({"experiment": experiment}, sort_keys=False))
+    attempt = {
+        "experiment_id": "unit",
+        "step_id": "external-evaluate",
+        "run_id": "run-001",
+        "pipeline_id": "external-v1",
+        "job_id": "age-hsp-i2-psg",
+        "variant": "sleep2vec2",
+        "attempt": "1",
+        "status": "completed",
+        "verified": "false",
+        "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
+        "terminal_status_owner": "script",
+    }
+    write_rows(root / "run_manifest.tsv", [attempt])
+    write_rows(pipeline_dir / "jobs.tsv", [attempt])
+    spec = _spec(root)
+    if reader.startswith("run_attempts"):
+        # Stub the frozen-artifact checks so the loop's canonical reads are the first managed manifest reads; an
+        # existing execution snapshot moves the first one to the pre-launch snapshot check.
+        if reader == "run_attempts_with_snapshot":
+            (pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME).write_text("{}\n")
+        monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
+        monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
+        monkeypatch.setattr(pipeline_attempts, "planned_runs", lambda rows: [dict(row) for row in rows])
+        monkeypatch.setattr(
+            experiment_pipeline.managed_scheduler,
+            "launch_managed_runs",
+            lambda *_args, **_kwargs: SimpleNamespace(committed_rows=[dict(attempt)]),
+        )
+        result_manifest = pipeline_dir / "result_manifest.json"
+        monkeypatch.setattr(experiment_pipeline, "_validate_result_manifest", lambda *_args: result_manifest)
+    calls = {
+        "validate_attempt_rows": lambda: pipeline_attempts.validate_attempt_rows(
+            root, pipeline_dir, spec, {}, [], require_all_jobs=False
+        ),
+        "create_needed_retries": lambda: pipeline_attempts.create_needed_retries(root, pipeline_dir, spec, {}, []),
+        "run_attempts": lambda: experiment_pipeline._run_attempts(
+            root, pipeline_dir, spec, {"age": {}}, [attempt], poll_seconds=1
+        ),
+    }
+    calls["run_attempts_with_snapshot"] = calls["run_attempts"]
+
+    result = call_while_run_lock_holder_commits(monkeypatch, root, calls[reader])
+
+    if reader == "create_needed_retries":
+        assert result == ([], False)
+    elif reader.startswith("run_attempts"):
+        assert result["status"] == "completed"
+        assert experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")[0]["verified"] == "true"
 
 
 @pytest.mark.parametrize(

@@ -832,10 +832,14 @@ def append_event(root: str | Path, event_type: str, payload: dict[str, Any] | Ad
 def read_experiment_events(root: str | Path) -> list[dict[str, Any]]:
     root = Path(root)
     path = root / "events.jsonl"
-    exp_io.validate_managed_output_paths(root, [path])
+    lock_path = path.with_name(f".{path.name}.cas.lock")
+    exp_io.validate_managed_output_paths(root, [path, lock_path])
     if not os.path.lexists(path):
         return []
-    snapshot = exp_io.read_managed_files_at(root, [path])[str(path)]
+    # append_event replaces events.jsonl under its append lock, often without the run lock; share that lock so the
+    # managed read cannot observe a replacement between its stat and open.
+    with exp_io.blocking_file_lock(lock_path):
+        snapshot = exp_io.read_managed_files_at(root, [path])[str(path)]
     events = []
     # This managed read uses strict UTF-8 mode, so text cannot be None.
     text = snapshot["text"]

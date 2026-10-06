@@ -1331,6 +1331,7 @@ def test_logical_job_states_preserves_explicit_none(tmp_path: Path, field: str):
 @pytest.mark.parametrize("status", ["missing_pid", "unknown_remote", "stopped", "superseded"])
 def test_uncertain_or_human_terminal_attempt_is_blocked_and_not_retried(tmp_path: Path, monkeypatch, status: str):
     root = tmp_path / "workspace"
+    root.mkdir()
     spec = _spec(root)
     attempts = [{"job_id": "age-hsp-i2-psg", "attempt": 1, "status": status, "verified": "false"}]
     monkeypatch.setattr(

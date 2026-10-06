@@ -110,17 +110,22 @@ def run_hparam_queue(
     if dry_run:
         return launch_hparam_runs(run_dir, dry_run=True)
 
-    plan = artifacts.read_hparam_plan(run_dir)
+    # Only the frozen workspace binding is needed to lock; launched run scripts and concurrent monitors replace
+    # run_manifest.tsv under the run lock, so every workspace-state read below holds it.
+    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False, require_adaptive_commit=False)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    with scheduler.managed_run_lock(workspace):
+        plan = artifacts.read_hparam_plan(run_dir)
     expected_keys = {validated_run_key(run) for run in plan["runs"]}
     status_path = run_dir / "run_status.tsv"
     exp_io.validate_managed_output_paths(workspace, [status_path])
     while True:
-        rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
+        with scheduler.managed_run_lock(workspace):
+            rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
         if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
             write_rows(status_path, [rows_by_key[validated_run_key(run)] for run in plan["runs"]])
             return status_path
@@ -130,7 +135,8 @@ def run_hparam_queue(
             raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
 
         monitor_hparam_runs(run_dir)
-        rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
+        with scheduler.managed_run_lock(workspace):
+            rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
         if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
             return status_path
         unresolved_scheduler = sorted(
@@ -163,7 +169,8 @@ def run_hparam_queue(
             )
 
         launch_hparam_runs(run_dir, dry_run=False, fail_on_missing_pid_blocker=True)
-        rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
+        with scheduler.managed_run_lock(workspace):
+            rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
         if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
             return status_path
         missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
@@ -177,7 +184,9 @@ def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tu
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
-    plan = artifacts.read_hparam_plan(run_dir)
+    # Only the frozen workspace binding is needed to lock; processes started by the interrupted launch replace
+    # run_manifest.tsv under the run lock, so the workspace-state reads below hold it.
+    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False, require_adaptive_commit=False)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
@@ -193,7 +202,9 @@ def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tu
             run_dir / EXECUTION_SNAPSHOT_NAME,
         ],
     )
-    canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
+    with scheduler.managed_run_lock(workspace):
+        plan = artifacts.read_hparam_plan(run_dir)
+        canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
     expected_keys = {validated_run_key(run) for run in plan["runs"]}
     if not started_keys.issubset(expected_keys):
         raise ValueError("Interrupted launch evidence is outside the current hparam plan.")
@@ -226,7 +237,8 @@ def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tu
         except Exception:
             if key not in launched_event_keys():
                 raise
-    write_status_report(workspace)
+    with scheduler.managed_run_lock(workspace):
+        write_status_report(workspace)
     return rows
 
 
@@ -359,10 +371,11 @@ def monitor_hparam_runs(
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("poll_seconds must be positive.")
     root = Path(run_dir)
-    plan = artifacts.read_hparam_plan(root)
+    # Only the frozen workspace binding is needed to lock; launches, stops and launched run scripts replace
+    # run_manifest.tsv under the run lock, so the workspace-state reads below hold it while observation does not.
+    plan = artifacts.read_hparam_plan(root, require_workspace_state=False, require_adaptive_commit=False)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
-    expected_keys = {validated_run_key(run) for run in plan["runs"]}
     status_path = root / "run_status.tsv"
     workspace = experiment_root(recipe)
     if workspace is None:
@@ -377,8 +390,12 @@ def monitor_hparam_runs(
         root / "run_status.tsv",
     ]
     exp_io.validate_managed_output_paths(workspace, managed_output_paths)
+    with scheduler.managed_run_lock(workspace):
+        plan = artifacts.read_hparam_plan(root)
+    expected_keys = {validated_run_key(run) for run in plan["runs"]}
     while True:
-        workspace_rows = read_run_manifest(workspace)
+        with scheduler.managed_run_lock(workspace):
+            workspace_rows = read_run_manifest(workspace)
         workspace_by_key = {validated_run_key(row): row for row in workspace_rows}
         missing = expected_keys - set(workspace_by_key)
         if missing:
@@ -449,7 +466,8 @@ def monitor_hparam_runs(
                             "reason": row.get("stop_reason", ""),
                         },
                     )
-        write_status_report(workspace)
+        with scheduler.managed_run_lock(workspace):
+            write_status_report(workspace)
         if once or all(row.get("status") in TERMINAL_STATUSES for row in rows):
             return status_path
         print(f"wrote {status_path}")
