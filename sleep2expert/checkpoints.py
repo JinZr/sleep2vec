@@ -9,6 +9,8 @@ import typing as t
 import torch
 
 _EPOCH_RE = re.compile(r"epoch[=\-](\d+)")
+# Lightning's periodic checkpoints; `best-epoch=NN.ckpt`, `best.ckpt` and `last.ckpt` copy one of them.
+_PERIODIC_CKPT_RE = re.compile(r"epoch=(\d+)(?:-step=\d+)?\.ckpt")
 
 
 @dataclass
@@ -220,48 +222,46 @@ def select_checkpoints(
     end_ckpt: Path | None,
     num_ckpts: int,
 ) -> list[Path]:
+    """Return the last `num_ckpts` periodic `epoch=*.ckpt` checkpoints, up to `end_ckpt`'s epoch when given.
+
+    Best/last aliases are never candidates: each copies a periodic checkpoint, so averaging it in would count
+    one state twice. Too few periodic checkpoints is an error rather than a reason to widen the candidates.
+    """
     ckpt_dir = Path(ckpt_dir)
     if not ckpt_dir.exists():
         raise FileNotFoundError(f"Checkpoint directory not found: {ckpt_dir}")
 
-    ckpts = sorted(ckpt_dir.glob("*.ckpt"))
-    if not ckpts:
-        raise ValueError(f"No .ckpt files found under {ckpt_dir}")
-
+    end_epoch = None
     if end_ckpt is not None:
         end_ckpt = Path(end_ckpt)
         if not end_ckpt.exists():
             raise FileNotFoundError(f"Checkpoint not found: {end_ckpt}")
+        end_epoch = _parse_epoch(end_ckpt)
+        if end_epoch is None:
+            raise ValueError(
+                f"Cannot average checkpoints ending at {end_ckpt}: its file name carries no epoch. "
+                "Pass an epoch=*.ckpt path, or --ckpt-path best/last with --avg-ckpt-dir."
+            )
 
-    epoch_pairs: list[tuple[int, Path]] = []
-    for path in ckpts:
-        epoch = _parse_epoch(path)
-        if epoch is not None:
-            epoch_pairs.append((epoch, path))
+    epoch_paths: dict[int, Path] = {}
+    for path in sorted(ckpt_dir.glob("epoch=*.ckpt")):
+        match = _PERIODIC_CKPT_RE.fullmatch(path.name)
+        if match is None:
+            continue
+        epoch = int(match.group(1))
+        if epoch in epoch_paths:
+            raise ValueError(
+                f"Duplicate epoch {epoch} checkpoints under {ckpt_dir}: {epoch_paths[epoch].name}, {path.name}"
+            )
+        epoch_paths[epoch] = path
 
-    if epoch_pairs:
-        epoch_pairs.sort(key=lambda item: item[0])
-        if end_ckpt is not None:
-            end_epoch = _parse_epoch(end_ckpt)
-            if end_epoch is not None:
-                epoch_pairs = [item for item in epoch_pairs if item[0] <= end_epoch]
-            else:
-                try:
-                    end_idx = [p for _, p in epoch_pairs].index(end_ckpt)
-                    epoch_pairs = epoch_pairs[: end_idx + 1]
-                except ValueError:
-                    pass
-        selected = [p for _, p in epoch_pairs][-num_ckpts:]
-        if len(selected) == num_ckpts:
-            return selected
-
-    ckpts_sorted = sorted(ckpts, key=lambda p: p.stat().st_mtime)
-    if end_ckpt is not None:
-        end_mtime = end_ckpt.stat().st_mtime
-        ckpts_sorted = [p for p in ckpts_sorted if p.stat().st_mtime <= end_mtime + 1e-6]
-    selected = ckpts_sorted[-num_ckpts:]
+    selected = [epoch_paths[epoch] for epoch in sorted(epoch_paths) if end_epoch is None or epoch <= end_epoch]
+    selected = selected[-num_ckpts:]
     if len(selected) < num_ckpts:
-        raise ValueError(f"Not enough checkpoints to average: requested {num_ckpts}, found {len(selected)}")
+        raise ValueError(
+            f"Not enough epoch=*.ckpt checkpoints to average under {ckpt_dir}: "
+            f"requested {num_ckpts}, found {len(selected)}"
+        )
     return selected
 
 

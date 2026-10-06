@@ -1057,7 +1057,13 @@ def test_supervised_separates_periodic_and_best_checkpoint_callbacks(
     assert copies == [(best_checkpoint.best_model_path, Path(best_checkpoint.dirpath) / "best.ckpt")]
 
 
-def test_supervised_finishes_owned_wandb_run_after_writing_results(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+@pytest.mark.parametrize(
+    ("test_after_fit", "expected_events"),
+    [(True, ["csv", "finish", "manifest:completed"]), (False, ["finish", "manifest:skipped_test"])],
+)
+def test_supervised_finishes_owned_wandb_run_before_terminal_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, test_after_fit: bool, expected_events: list[str]
+):
     events: list[str] = []
     created_run = object()
 
@@ -1097,6 +1103,7 @@ def test_supervised_finishes_owned_wandb_run_after_writing_results(monkeypatch: 
         ckpt_path="",
         results_csv_path=tmp_path / "results.csv",
         label_name="ahi",
+        test_after_fit=test_after_fit,
     )
 
     def _build_logger(*args, **kwargs):
@@ -1113,12 +1120,23 @@ def test_supervised_finishes_owned_wandb_run_after_writing_results(monkeypatch: 
     monkeypatch.setattr("sleep2vec.finetune.pl.Trainer", _DummyTrainer)
     monkeypatch.setattr("sleep2vec.finetune.shutil.copy2", lambda *args, **kwargs: None)
     monkeypatch.setattr("sleep2vec.finetune.save_result_csv", lambda *args, **kwargs: events.append("csv"))
+    monkeypatch.setattr(
+        "sleep2vec.finetune.save_training_run_manifest",
+        lambda *args, **kwargs: events.append(f"manifest:{kwargs['status']}"),
+    )
     monkeypatch.setattr("sleep2vec.finetune.wandb.run", None, raising=False)
-    monkeypatch.setattr("sleep2vec.finetune.wandb.finish", lambda: events.append("finish"))
+
+    def _finish():
+        events.append("finish")
+        finetune.wandb.run = None  # Real wandb.finish() clears the global run.
+
+    monkeypatch.setattr("sleep2vec.finetune.wandb.finish", _finish)
+    monkeypatch.chdir(tmp_path)
 
     supervised(args_ns, _DummyBundle(model=_DummyModelConfig()))
 
-    assert events == ["csv", "finish"]
+    # W&B finalization can fail, so the terminal manifest is written only after it succeeds.
+    assert events == expected_events
 
 
 def test_supervised_does_not_finish_preexisting_wandb_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -1241,17 +1259,23 @@ def test_supervised_raises_wandb_finish_failure_after_success(monkeypatch: pytes
     monkeypatch.setattr("sleep2vec.finetune.pl.Trainer", _DummyTrainer)
     monkeypatch.setattr("sleep2vec.finetune.shutil.copy2", lambda *args, **kwargs: None)
     monkeypatch.setattr("sleep2vec.finetune.save_result_csv", lambda *args, **kwargs: events.append("csv"))
+    monkeypatch.setattr(
+        "sleep2vec.finetune.save_training_run_manifest",
+        lambda *args, **kwargs: events.append(f"manifest:{kwargs['status']}"),
+    )
     monkeypatch.setattr("sleep2vec.finetune.wandb.run", None, raising=False)
     monkeypatch.setattr("sleep2vec.finetune.wandb.finish", _finish)
     monkeypatch.setattr(
         "sleep2vec.finetune.logging.warning",
         lambda msg, *args: events.append(msg % args),
     )
+    monkeypatch.chdir(tmp_path)
 
     with pytest.raises(RuntimeError, match="cleanup failure"):
         supervised(args_ns, _DummyBundle(model=_DummyModelConfig()))
 
-    assert events == ["csv", "finish"]
+    assert events[:3] == ["csv", "finish", "manifest:failed"]
+    assert "manifest:completed" not in events
 
 
 def test_supervised_preserves_primary_error_when_wandb_finish_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

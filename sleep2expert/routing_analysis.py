@@ -62,6 +62,8 @@ def run_routing_analysis(args: argparse.Namespace) -> list[dict[str, t.Any]]:
                 raise FileNotFoundError(f"Pretrained backbone checkpoint not found: {pretrained_backbone_path}")
         elif not getattr(args, "ckpt_path", None):
             raise ValueError("Routing analysis requires --ckpt-path unless --pretrained-only is set.")
+        elif args.avg_ckpts < 1:
+            raise ValueError(f"--avg-ckpts must be a positive integer, got {args.avg_ckpts}.")
 
         config_bundle, model_cfg = apply_finetune_config(args)
         moe_cfg = getattr(model_cfg.backbone, "moe", None)

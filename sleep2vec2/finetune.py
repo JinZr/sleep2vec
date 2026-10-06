@@ -168,6 +168,20 @@ def _preflight_finetune_run_directory(args, exp_root: Path) -> None:
         time.sleep(0.05)
 
 
+def _finish_wandb_run(preexisting_run) -> None:
+    """Finish the W&B run this call created; while a primary error propagates, log a teardown failure instead."""
+    active_run = wandb.run
+    if active_run is None or active_run is preexisting_run:
+        return
+    primary_exc_active = sys.exc_info()[0] is not None
+    try:
+        wandb.finish()
+    except BaseException as exc:
+        if not primary_exc_active:
+            raise
+        logging.warning("wandb.finish() failed during finetune cleanup: %s", exc)
+
+
 def supervised(args, config_bundle):
     validate_finetune_scheduler_args(args)
     # Programmatic callers may build Namespace without CLI defaults.
@@ -320,6 +334,8 @@ def supervised(args, config_bundle):
 
         if not args.test_after_fit:
             logging.info("Test-after-fit disabled; skipping trainer.test and results CSV append.")
+            # W&B finalization can still fail, so it precedes the terminal manifest.
+            _finish_wandb_run(preexisting_wandb_run)
             save_training_run_manifest(
                 args,
                 manifest_path=manifest_path,
@@ -456,6 +472,7 @@ def supervised(args, config_bundle):
         else:
             save_result_csv(pretrain_result, args.results_csv_path, args)
         args.ckpt_path = original_ckpt_path
+        _finish_wandb_run(preexisting_wandb_run)
         save_training_run_manifest(
             args,
             manifest_path=manifest_path,
@@ -491,18 +508,8 @@ def supervised(args, config_bundle):
                 logging.warning(f"Failed to write failed-run manifest: {exc}")
         raise
     finally:
-        # Finish only the run this call created, and do not let teardown hide
-        # the primary training / evaluation error if one is already active.
-        active_wandb_run = wandb.run
-        if active_wandb_run is not None and active_wandb_run is not preexisting_wandb_run:
-            primary_exc_active = sys.exc_info()[0] is not None
-            try:
-                wandb.finish()
-            except BaseException as exc:
-                if primary_exc_active:
-                    logging.warning("wandb.finish() failed during finetune cleanup: %s", exc)
-                else:
-                    raise
+        # A no-op once a successful run has finished W&B before its terminal manifest.
+        _finish_wandb_run(preexisting_wandb_run)
 
 
 def build_version_name(args) -> str:
