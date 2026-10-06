@@ -1084,6 +1084,65 @@ def test_concurrent_append_events_share_the_managed_cas_lock(tmp_path: Path, mon
     assert [event["event_type"] for event in events] == ["first", "second"]
 
 
+def test_event_read_waits_for_append_lock_holder(tmp_path: Path, monkeypatch):
+    append_event(tmp_path, "before", {})
+    events_path = tmp_path / "events.jsonl"
+    waiting = threading.Event()
+    committed = threading.Event()
+    in_managed_read = threading.Event()
+    outcome = {}
+    real_lstat = os.lstat
+    real_read = experiment_io.read_managed_files_at
+    real_lock = experiment_io.blocking_file_lock
+
+    def lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        # Park only the managed read between its stat and open; path validation stats the log first.
+        if threading.current_thread() is reader and in_managed_read.is_set() and os.fspath(path) == str(events_path):
+            waiting.set()
+            assert committed.wait(timeout=5)
+        return info
+
+    def read_managed_files_at(*args, **kwargs):
+        in_managed_read.set()
+        try:
+            return real_read(*args, **kwargs)
+        finally:
+            in_managed_read.clear()
+
+    @contextmanager
+    def blocking_file_lock(path):
+        if threading.current_thread() is reader:
+            waiting.set()
+        with real_lock(path):
+            yield
+
+    def target():
+        try:
+            outcome["events"] = experiment_workspace.read_experiment_events(tmp_path)
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    reader = threading.Thread(target=target)
+    monkeypatch.setattr(os, "lstat", lstat)
+    monkeypatch.setattr(experiment_io, "read_managed_files_at", read_managed_files_at)
+    monkeypatch.setattr(experiment_io, "blocking_file_lock", blocking_file_lock)
+    with real_lock(tmp_path / ".events.jsonl.cas.lock"):
+        reader.start()
+        assert waiting.wait(timeout=5)
+        # Replace the log as append_event does while it holds the append lock.
+        replacement = tmp_path / ".events.jsonl.replacement"
+        replacement.write_text(events_path.read_text() + json.dumps({"event_type": "concurrent"}) + "\n")
+        os.replace(replacement, events_path)
+        committed.set()
+    reader.join(timeout=10)
+
+    assert not reader.is_alive()
+    if "error" in outcome:
+        raise outcome["error"]
+    assert [event["event_type"] for event in outcome["events"]] == ["before", "concurrent"]
+
+
 def test_append_event_has_no_failing_tail_after_commit(tmp_path: Path, monkeypatch):
     (tmp_path / "events.jsonl").write_text('{"event_type": "before"}\n')
     original_replace = experiment_io.os.replace

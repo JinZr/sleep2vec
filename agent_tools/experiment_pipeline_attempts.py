@@ -656,7 +656,9 @@ def validate_attempt_rows(
     *,
     require_all_jobs: bool = True,
 ) -> None:
-    canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
+    # Pipeline jobs commit their own status under the run lock; no caller holds it here.
+    with managed_scheduler.managed_run_lock(root):
+        canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
     jobs = {job["id"]: job for job in spec["jobs"]}
     seen_attempts = set()
     for row in rows:
@@ -848,7 +850,8 @@ def create_needed_retries(
     for row in attempts:
         if int(row["attempt"]) > 1:
             _reconcile_pipeline_retry_planned_event(root, spec, row)
-    canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
+    with managed_scheduler.managed_run_lock(root):
+        canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
     by_job: dict[str, list[dict[str, Any]]] = {}
     for row in attempts:
         by_job.setdefault(str(row["job_id"]), []).append(row)
