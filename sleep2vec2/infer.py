@@ -126,6 +126,8 @@ def _log_inference_outputs_to_wandb(
 
 
 def run_inference(args):
+    if args.avg_ckpts < 1:
+        raise ValueError(f"--avg-ckpts must be a positive integer, got {args.avg_ckpts}.")
     config_bundle, model_cfg = apply_finetune_config(args)
     inference_preset_path = getattr(args, "inference_preset_path", None)
     if inference_preset_path is not None:
@@ -229,13 +231,22 @@ def run_inference(args):
         )
         save_inference_manifest(args, metrics, prediction_row_count=prediction_row_count)
         if wandb_run is not None:
-            _log_inference_outputs_to_wandb(
-                args,
-                metrics,
-                prediction_row_count,
-                survival_per_disease_metric_count,
-                multilabel_per_disease_metric_count,
-            )
+            try:
+                _log_inference_outputs_to_wandb(
+                    args,
+                    metrics,
+                    prediction_row_count,
+                    survival_per_disease_metric_count,
+                    multilabel_per_disease_metric_count,
+                )
+                wandb.finish()
+            except BaseException:
+                # The W&B artifact uploads run_manifest.json, so it is written first; it must not survive as a
+                # terminal manifest when publication or finalization fails.
+                Path(args.manifest_path).unlink(missing_ok=True)
+                raise
+            # Finished: the cleanup below only handles runs that fail before this point.
+            wandb_run = None
     finally:
         if wandb_run is not None:
             primary_exc_active = sys.exc_info()[0] is not None
