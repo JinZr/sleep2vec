@@ -126,6 +126,15 @@ class Sleep2vecDownstreamModel(nn.Module):
         inferred_head = head_config.name
         if self.survival_covariates and inferred_head not in {"classification", "regression"}:
             raise ValueError("covariates require the classification or regression head.")
+        # The classification head activates its input before the first Linear; ReLU has zero gradient at the
+        # zero-initialized covariate features, so those embeddings would never train.
+        if (
+            self.survival_covariate_fusion != "risk"
+            and self.survival_covariates
+            and inferred_head == "classification"
+            and (head_config.act or "").lower() == "relu"
+        ):
+            raise ValueError("covariates with the classification head do not support head.act 'relu'.")
         if head_config.act:
             head_kwargs.setdefault("act", _resolve_act(head_config.act))
         channel_cfg = head_config.channel_agg

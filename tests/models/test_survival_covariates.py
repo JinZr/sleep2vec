@@ -131,6 +131,34 @@ def test_downstream_classification_head_accepts_covariates(package_name: str, mo
     assert model.head.extra_feature_dim == 6
 
 
+@pytest.mark.parametrize(
+    ("package_name", "fusion"),
+    [("sleep2vec", "feature_concat"), ("sleep2vec2", "feature_concat"), ("sleep2vec2", "token_concat")],
+)
+def test_downstream_classification_head_rejects_relu_with_covariates(package_name: str, fusion: str, monkeypatch):
+    module = _import_downstream_module(package_name, monkeypatch)
+    config = _model_config(package_name, head_name="classification")
+    config.head.act = "relu"
+    kwargs = {"survival_covariate_fusion": fusion} if package_name == "sleep2vec2" else {}
+
+    with pytest.raises(ValueError, match="do not support head.act 'relu'"):
+        module.Sleep2vecDownstreamModel(
+            target="disease",
+            backbone=_DummyBackbone(),
+            channel_names=["ppg"],
+            output_dim=2,
+            is_classification=True,
+            is_seq=False,
+            device="cpu",
+            model_config=config,
+            head_config=config.head,
+            survival_covariates=["bmi"],
+            survival_covariate_embedding_dim=3,
+            covariate_normalization=_NORMALIZATION,
+            **kwargs,
+        )
+
+
 def test_sleep2vec2_downstream_adds_survival_covariate_risk(monkeypatch):
     model = _downstream_model("sleep2vec2", monkeypatch, survival_covariate_fusion="risk")
     assert model.head.extra_feature_dim == 0
@@ -350,3 +378,14 @@ def test_sleep2vec2_bmi_covariates_normalize_across_fusions(fusion: str, monkeyp
     batch["metadata"]["bmi_missing"] = torch.tensor([0.5, 0.0])
     with pytest.raises(ValueError, match="bmi_missing"):
         model._build_survival_covariate_values(batch, torch.zeros(2, 8))
+
+
+def test_sleep2vec2_risk_covariates_standardize_before_reduced_precision(monkeypatch):
+    model = _bmi_model("sleep2vec2", monkeypatch, survival_covariate_fusion="risk")
+    batch = _bmi_batch()
+    batch["metadata"]["bmi"] = torch.tensor([25.05, 30.0])
+
+    values = model._build_survival_covariate_values(batch, torch.zeros(2, 8, dtype=torch.bfloat16))
+
+    assert values.dtype == torch.bfloat16
+    assert values[0, 2].item() == pytest.approx(0.01, abs=1e-4)

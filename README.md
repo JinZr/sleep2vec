@@ -257,7 +257,9 @@ Survival and multilabel tasks in `sleep2vec` and `sleep2vec2` accept
 `finetune.survival.covariates` or `finetune.multilabel.covariates` drawn from
 `age`, `sex`, `bmi`, and `bmi_missing`. Their zero-initialized embeddings join
 the pooled signal features; `sleep2vec2` also offers
-`covariate_fusion: risk | token_concat`. Keep age and imputed BMI in their
+`covariate_fusion: risk | token_concat`. The classification head activates
+those features before its first layer, so it rejects `head.act: relu`, which
+would never move them off zero. Keep age and imputed BMI in their
 original units in the index/preset and supply `bmi_missing` as 0 or 1. Freeze
 scaling fitted on training patients only:
 ```yaml

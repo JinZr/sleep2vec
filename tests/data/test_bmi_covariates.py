@@ -117,6 +117,7 @@ def test_process_metadata_always_emits_bmi_without_truncation(data_package, vari
             SimpleNamespace(metadata={"bmi": 23.75, "bmi_missing": 0}),
             SimpleNamespace(metadata={"bmi": "unused", "bmi_missing": 0.5}),
             SimpleNamespace(metadata={}),
+            SimpleNamespace(metadata={"bmi_missing": "female"}),
         ],
         [],
     )
@@ -124,7 +125,7 @@ def test_process_metadata_always_emits_bmi_without_truncation(data_package, vari
     assert processed["bmi"].dtype == torch.float
     assert processed["bmi"][0].item() == 23.75
     assert processed["bmi"][1:].isnan().all()
-    assert processed["bmi_missing"].tolist() == [0, -1, -1]
+    assert processed["bmi_missing"].tolist() == [0, -1, -1, -1]
 
 
 @pytest.mark.parametrize(
@@ -140,6 +141,10 @@ def test_process_metadata_always_emits_bmi_without_truncation(data_package, vari
         ("bmi", None, False),
         ("bmi_missing", 1.0, True),
         ("bmi_missing", 0.5, False),
+        ("bmi_missing", "1", True),
+        ("bmi_missing", "male", False),
+        ("bmi_missing", "x", False),
+        ("sex", "male", True),
         ("eid", "001", True),
         ("eid", float("nan"), False),
     ],

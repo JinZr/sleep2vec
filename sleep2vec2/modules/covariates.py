@@ -64,11 +64,12 @@ def covariate_values(
     reference: torch.Tensor,
 ) -> torch.Tensor:
     """Scaled covariate values as a ``[B, k]`` tensor on the reference device and dtype."""
+    # Standardize in float32: a reduced-precision reference would round raw bmi before the frozen mean is removed.
     columns = [
-        _covariate_column(name, metadata, normalization, reference.device, reference.dtype).view(-1, 1)
+        _covariate_column(name, metadata, normalization, reference.device, torch.float32).view(-1, 1)
         for name in ordered_covariates(names)
     ]
-    return torch.cat(columns, dim=-1)
+    return torch.cat(columns, dim=-1).to(dtype=reference.dtype)
 
 
 def embed_covariates(
