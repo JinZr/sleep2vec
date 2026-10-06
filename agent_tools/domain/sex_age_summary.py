@@ -103,6 +103,8 @@ def sex_age_baseline_config_summary(
             blocking_issues.append("data.backend=kaldi but data.kaldi_manifest is missing.")
         if data_summary["finetune_preset_path"]:
             blocking_issues.append("data.backend=kaldi does not support data.finetune_preset_path.")
+    elif not data_summary["finetune_data_index"] and not data_summary["finetune_preset_path"]:
+        blocking_issues.append("data.backend=npz but both finetune_data_index and finetune_preset_path are missing.")
     if survival is not None and validate_survival_local_paths:
         # Unlike the signal loaders, the baseline reads survival label names in preset mode too: they belong to its
         # checkpoint label contract, so the preset exemption from survival sidecar checks does not cover this file.

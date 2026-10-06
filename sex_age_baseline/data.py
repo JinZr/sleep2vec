@@ -65,21 +65,29 @@ def load_split_dataset(cfg: BaselineConfig, split: str, *, sources: list[str] | 
     missing = sorted({"split", key_column, *task_cfg.covariates} - present)
     if missing:
         raise ValueError(f"Sex/age baseline metadata is missing required columns: {missing}")
-    normalize_key = normalize_survival_key if cfg.finetune.task.type == "survival" else normalize_multilabel_key
+    survival = cfg.finetune.task.type == "survival"
+    normalize_key = normalize_survival_key if survival else normalize_multilabel_key
+    label_fields = ("event_time", "is_event", "has_label") if survival else ("disease_label", "has_label")
+    output_dim = cfg.finetune.task.output_dim
+    # A preset embeds the labels its signal run trains on; read them as the signal preset path does.
+    from_preset = cfg.data.backend == "npz" and bool(cfg.data.finetune_preset_path)
 
     rows = _select_rows(rows, split, sources, task_cfg.covariates)
     records = _collapse_by_key(
         [BaselineRecord(key=normalize_key(row[key_column], key_column), metadata=row) for row in rows],
         task_cfg.covariates,
+        label_fields=label_fields if from_preset else (),
+        output_dim=output_dim,
     )
 
-    survival = cfg.finetune.task.type == "survival"
-    label_fields = ("event_time", "is_event", "has_label") if survival else ("disease_label", "has_label")
-    output_dim = cfg.finetune.task.output_dim
-    if cfg.data.backend == "npz" and cfg.data.finetune_preset_path:
-        # A preset embeds the labels its signal run trains on; read them as the signal preset path does.
+    if from_preset:
         load_names = load_survival_disease_columns if survival else load_multilabel_disease_columns
         label_names = load_names(task_cfg.disease_columns_index)
+        if len(label_names) != output_dim:
+            task_name = "Survival" if survival else "Multilabel"
+            raise ValueError(
+                f"{task_name} output_dim ({output_dim}) must match disease column count ({len(label_names)})."
+            )
         labels = {
             field: {record.key: _preset_label(record, field, output_dim) for record in records}
             for field in label_fields
@@ -192,8 +200,14 @@ def _select_rows(
     return selected
 
 
-def _collapse_by_key(records: list[BaselineRecord], covariates: list[str]) -> list[BaselineRecord]:
-    """Keep the first record per key after checking that every record of a key encodes the same covariates."""
+def _collapse_by_key(
+    records: list[BaselineRecord], covariates: list[str], *, label_fields: tuple[str, ...], output_dim: int
+) -> list[BaselineRecord]:
+    """Keep the first record per key after checking that every record of a key encodes the same covariates.
+
+    ``label_fields`` names the preset-embedded labels to compare as well; the signal evaluation rejects labels that
+    differ across one key's records, so the first window must not silently win.
+    """
     if not records:
         return []
     encoded = process_metadata(records, [])
@@ -203,6 +217,10 @@ def _collapse_by_key(records: list[BaselineRecord], covariates: list[str]) -> li
         for name in covariates:
             if not math.isclose(float(encoded[name][index]), float(encoded[name][first]), rel_tol=0.0, abs_tol=1e-6):
                 raise ValueError(f"Duplicate key {record.key!r} has conflicting {name} values.")
+        for field in label_fields:
+            value = _preset_label(record, field, output_dim)
+            if not np.allclose(value, _preset_label(records[first], field, output_dim), equal_nan=True):
+                raise ValueError(f"Duplicate key {record.key!r} has conflicting {field} labels.")
     return [records[index] for index in first_index.values()]
 
 

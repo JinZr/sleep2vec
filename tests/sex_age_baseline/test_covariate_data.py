@@ -2,6 +2,7 @@
 
 import json
 import logging
+from pathlib import Path
 import pickle
 from types import SimpleNamespace
 
@@ -92,6 +93,30 @@ def test_preset_supplies_rows_and_labels_like_the_signal_preset_path(tmp_path, t
     assert [record.key for record in dataset.records] == ["9", "8"]
     field = "event_time" if task == "survival" else "disease_label"
     assert [getattr(record, field).tolist() for record in dataset.records] == [[labels[field][0]]] * 2
+
+
+def test_preset_windows_of_one_key_must_carry_the_same_labels(tmp_path):
+    labels = {"event_time": [7.0], "is_event": [1.0], "has_label": [1.0]}
+    samples = [
+        SampleIndex(id=0, path="a.npz", start=0, end=10, metadata={**_row("9"), **labels}),
+        SampleIndex(id=1, path="b.npz", start=0, end=10, metadata={**_row("9"), **labels, "event_time": [8.0]}),
+    ]
+    preset = tmp_path / "preset.pkl"
+    preset.write_bytes(pickle.dumps(samples))
+
+    with pytest.raises(ValueError, match="'9' has conflicting event_time labels"):
+        load_split_dataset(_config(tmp_path, preset=preset), "train", sources=None)
+
+
+def test_preset_label_names_must_match_the_output_width(tmp_path):
+    labels = {"event_time": [7.0], "is_event": [1.0], "has_label": [1.0]}
+    preset = tmp_path / "preset.pkl"
+    preset.write_bytes(pickle.dumps([SampleIndex(id=0, path="x", start=0, end=1, metadata={**_row("1"), **labels})]))
+    cfg = _config(tmp_path, preset=preset)
+    Path(cfg.finetune.survival.disease_columns_index).write_text("disease\nother\n")
+
+    with pytest.raises(ValueError, match=r"Survival output_dim \(1\) must match disease column count \(2\)"):
+        load_split_dataset(cfg, "train", sources=None)
 
 
 def test_preset_without_labels_asks_for_regeneration(tmp_path):

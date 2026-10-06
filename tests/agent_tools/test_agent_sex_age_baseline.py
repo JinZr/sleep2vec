@@ -257,6 +257,19 @@ def test_sex_age_baseline_config_summary_blocks_kaldi_without_paths(tmp_path: Pa
     ]
 
 
+def test_sex_age_baseline_config_summary_blocks_npz_without_a_source(tmp_path: Path):
+    config = _write_survival_config(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    payload["data"].update({"finetune_data_index": None, "finetune_preset_path": None})
+    _write_yaml(config, payload)
+
+    summary = config_summary(config)
+
+    assert summary["blocking_issues"] == [
+        "data.backend=npz but both finetune_data_index and finetune_preset_path are missing."
+    ]
+
+
 def test_sex_age_baseline_preset_survival_still_requires_label_names(tmp_path: Path):
     # The survival preset exemption covers the label sidecars, not the names in the baseline's label contract.
     config = _write_survival_config(tmp_path)
