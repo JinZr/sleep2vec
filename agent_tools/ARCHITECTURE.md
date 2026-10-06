@@ -131,8 +131,8 @@ runtime identity.
 | `models` | Hardcodes `SUPPORTED_VARIANTS` (incl. `sex_age_baseline`) and `VARIANTLESS_TASKS`. Root anchor imported everywhere. |
 | `configs` | Thin shell, but hard-imports `domain.finetune_summary`. |
 | `plan_rendering` | `preset_cli_args` (sleep preset fields). |
-| `decision_paths` | survival / multilabel sidecar validation (highest domain signal among L0). |
-| `decision_hparam` | hparam decision contract; depends on decision_paths' multilabel. |
+| `decision_paths` | survival / multilabel sidecar validation and the sex_age_baseline pretrained-backbone rejection (highest domain signal among L0). |
+| `decision_hparam` | hparam decision contract; depends on decision_paths' multilabel and sex_age_baseline backbone checks. |
 | `plan_hparam` | hparam plan materialization over the domain-aware primitives. |
 | `plan_context` | Imports `domain.presets` + `domain.index_csv`. |
 | `hparam_postprocess` | kaldi / label_name / torch logit post-processing. |

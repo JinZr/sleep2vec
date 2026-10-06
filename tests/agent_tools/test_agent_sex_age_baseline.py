@@ -12,6 +12,7 @@ import yaml
 
 from agent_tools import managed_scheduler
 from agent_tools.configs import config_summary
+from agent_tools.decision_models import DecisionStatus
 from agent_tools.plans import build_plan, evaluate_recipe
 from tests.agent_tool_test_helpers import run_execution_preflight_fixture, write_yaml as _write_yaml
 
@@ -805,8 +806,16 @@ def test_sex_age_baseline_multilabel_blocks_missing_covariate_columns(tmp_path: 
     assert not (tmp_path / "plan-missing-covariates" / "run.sh").exists()
 
 
-def test_sex_age_baseline_finetune_plan_renders_pretrained_backbone_path(tmp_path: Path):
-    # The plan renders the shared variant CLI; the baseline entrypoint itself rejects the flag at launch.
+def _backbone_issues(report) -> list[str]:
+    return [
+        issue.message
+        for issue in report.issues
+        if issue.field.endswith("pretrained_backbone_path") and issue.status == DecisionStatus.FAIL
+    ]
+
+
+def test_sex_age_baseline_finetune_rejects_pretrained_backbone_path(tmp_path: Path):
+    # The baseline entrypoint rejects --pretrained-backbone-path at launch, so doctor and plan must not pass it.
     config = _write_survival_config(tmp_path)
     recipe = _finetune_recipe(tmp_path, config)
     pretrained = tmp_path / "pretrained.ckpt"
@@ -819,10 +828,13 @@ def test_sex_age_baseline_finetune_plan_renders_pretrained_backbone_path(tmp_pat
     }
     _write_yaml(recipe, payload)
 
+    _recipe, _cfg, doctor_report = evaluate_recipe(recipe)
     report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-pretrained")
 
-    assert report.exit_code == 0, report.issues
-    assert f"--pretrained-backbone-path {pretrained}" in (tmp_path / "plan-pretrained" / "run.sh").read_text()
+    for result in (doctor_report, report):
+        assert result.exit_code == 1, result.issues
+        assert any("does not support pretrained_backbone_path" in message for message in _backbone_issues(result))
+    assert not (tmp_path / "plan-pretrained" / "run.sh").exists()
 
 
 def test_sex_age_baseline_remote_ssh_multilabel_checks_sidecar_paths(tmp_path: Path, monkeypatch):
@@ -948,7 +960,7 @@ def test_sex_age_baseline_hparam_blocks_local_multilabel_sidecar_issues(tmp_path
     assert any(issue.field == "multilabel_sidecars" for issue in report.issues)
 
 
-def test_sex_age_baseline_hparam_renders_base_pretrained_backbone_path(tmp_path: Path):
+def test_sex_age_baseline_hparam_rejects_base_pretrained_backbone_path(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     recipe = _hparam_recipe(tmp_path, config)
     base = tmp_path / "finetune.yaml"
@@ -965,10 +977,9 @@ def test_sex_age_baseline_hparam_renders_base_pretrained_backbone_path(tmp_path:
 
     report = build_plan(recipe_path=recipe, output_dir=output)
 
-    assert report.exit_code == 0, report.issues
-    (run,) = json.loads((output / "plan.json").read_text())["runs"]
-    argv = shlex.split(run["command"])
-    assert argv[argv.index("--pretrained-backbone-path") + 1] == str(pretrained)
+    assert report.exit_code == 1, report.issues
+    assert any("does not support pretrained_backbone_path" in message for message in _backbone_issues(report))
+    assert not (output / "plan.json").exists()
 
 
 def test_sex_age_baseline_infer_plan_can_render_inference_preset_path(tmp_path: Path):
@@ -990,7 +1001,7 @@ def test_sex_age_baseline_infer_plan_can_render_inference_preset_path(tmp_path: 
     assert "--inference-preset-path" in script
 
 
-def test_sex_age_baseline_infer_plan_renders_pretrained_backbone_path(tmp_path: Path):
+def test_sex_age_baseline_infer_rejects_pretrained_backbone_path(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     ckpt = tmp_path / "model.ckpt"
     ckpt.write_text("placeholder")
@@ -1003,9 +1014,9 @@ def test_sex_age_baseline_infer_plan_renders_pretrained_backbone_path(tmp_path: 
 
     report = build_plan(recipe_path=recipe, output_dir=tmp_path / "plan-infer-pretrained")
 
-    assert report.exit_code == 0, report.issues
-    script = (tmp_path / "plan-infer-pretrained" / "run.sh").read_text()
-    assert f"--pretrained-backbone-path {pretrained}" in script
+    assert report.exit_code == 1, report.issues
+    assert any("does not support pretrained_backbone_path" in message for message in _backbone_issues(report))
+    assert not (tmp_path / "plan-infer-pretrained" / "run.sh").exists()
 
 
 def test_sex_age_baseline_infer_plan_renders_override_dataset_names(tmp_path: Path):
