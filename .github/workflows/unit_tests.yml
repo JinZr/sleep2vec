@@ -192,8 +192,8 @@ jobs:
       # The agent_tools kernel must stay importable and fully testable without
       # any domain package (torch, lightning, wandb, sleep2stat, ...). The
       # ignored domain-facing test files need those packages in their own
-      # environment; test_agent_run_manifest.py runs in the unit_tests job
-      # below, and test_agent_tools_recipes.py is owned by the
+      # environment; test_agent_run_manifest.py runs through the shared runner
+      # in the unit_tests job below, and test_agent_tools_recipes.py is owned by the
       # agent_tools_recipe_tests job above. The deselected hparam cases assert
       # generated scripts whose frozen-identity preflight imports the variant
       # module (and thus torch) in the invoking python.
@@ -232,6 +232,7 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements-unit-tests.txt
+            requirements-agent-tools.txt
             .github/workflows/unit_tests.yml
             pyproject.toml
 
@@ -240,11 +241,13 @@ jobs:
           python -m pip install --upgrade pip
           # Keep torch separate to force the CPU wheel on GitHub runners.
           python -m pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install -r requirements-unit-tests.txt
+          python -m pip install -r requirements-unit-tests.txt -r requirements-agent-tools.txt
 
+      # pytest-randomly from requirements-agent-tools.txt serves the agent_tools
+      # runner below; this list keeps its fixed order.
       - name: Run unit tests
         run: |
-          pytest -q -n auto \
+          pytest -q -n auto -p no:randomly \
             tests/config/test_metadata_task_validation.py \
             tests/config/test_config_loading.py \
             tests/config/test_common_finetune_apply.py \
@@ -261,5 +264,13 @@ jobs:
             tests/runtime/test_ahi_event_metrics.py \
             tests/variants/test_variant_infer_preset_override.py \
             tests/variants/test_sleep2vec2_namespace.py \
-            tests/variants/test_sleep2expert_namespace.py \
-            tests/agent_tools/test_agent_run_manifest.py
+            tests/variants/test_sleep2expert_namespace.py
+
+      # Domain-facing agent_tools tests need torch, lightning and wandb, and run
+      # through the shared runner for its random-order and CPU policy.
+      - name: Run agent tools domain tests
+        env:
+          PYTEST_ADDOPTS: --randomly-seed=${{ github.run_number }}
+        run: |
+          echo "pytest random seed: ${GITHUB_RUN_NUMBER}"
+          python utils/test_agent_tools.py -q tests/agent_tools/test_agent_run_manifest.py
