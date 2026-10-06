@@ -60,7 +60,7 @@ def load_split_dataset(cfg: BaselineConfig, split: str, *, sources: list[str] | 
     """One record per task key in ``split``, restricted to rows whose source contains one of ``sources``."""
     task_cfg = covariate_task_config(cfg)
     key_column = task_cfg.key_column
-    rows = _load_metadata_rows(cfg)
+    rows = _load_metadata_rows(cfg, split)
     present = set().union(*(row.keys() for row in rows))
     missing = sorted({"split", key_column, *task_cfg.covariates} - present)
     if missing:
@@ -128,14 +128,14 @@ def make_dataloader(
     )
 
 
-def _load_metadata_rows(cfg: BaselineConfig) -> list[dict[str, Any]]:
+def _load_metadata_rows(cfg: BaselineConfig, split: str) -> list[dict[str, Any]]:
     # The signal runtime's data-source rules (sleep2vec.common.apply_data_backend_args and the preset-or-index read).
     if cfg.data.backend == "kaldi":
         if not cfg.data.kaldi_data_root or not cfg.data.kaldi_manifest:
             raise ValueError("Kaldi backend requires explicit kaldi_data_root and kaldi_manifest.")
         if cfg.data.finetune_preset_path:
             raise ValueError("Kaldi backend uses manifest.json; legacy NPZ preset pickles are unsupported.")
-        return _load_rows_from_kaldi_manifest(cfg)
+        return _load_rows_from_kaldi_manifest(cfg, split)
     if cfg.data.finetune_preset_path:
         with Path(cfg.data.finetune_preset_path).open("rb") as file_obj:
             samples = pickle.load(file_obj)
@@ -155,27 +155,29 @@ def _load_metadata_rows(cfg: BaselineConfig) -> list[dict[str, Any]]:
     return frame.to_dict("records")
 
 
-def _load_rows_from_kaldi_manifest(cfg: BaselineConfig) -> list[dict[str, Any]]:
+def _load_rows_from_kaldi_manifest(cfg: BaselineConfig, split: str) -> list[dict[str, Any]]:
     root = Path(cfg.data.kaldi_data_root)
     with Path(cfg.data.kaldi_manifest).open() as file_obj:
         manifest = json.load(file_obj)
+    # As KaldiPSGDataset: open only the requested split's manifest CSV, so other splits (a locked test cohort
+    # included) are never read.
     splits = manifest.get("splits")
-    if not isinstance(splits, dict) or not splits:
-        raise ValueError("Kaldi manifest must contain a non-empty 'splits' mapping.")
+    if not isinstance(splits, dict) or split not in splits:
+        raise ValueError(f"Kaldi manifest.json is missing requested split {split!r}.")
+    split_spec = splits[split]
+    if not isinstance(split_spec, dict) or not split_spec.get("manifest"):
+        raise ValueError(f"Kaldi manifest split {split!r} must define a manifest CSV.")
 
     key_column = covariate_task_config(cfg).key_column
+    frame = pd.read_csv(root / Path(str(split_spec["manifest"])), dtype={key_column: "string"})
+    # A split's rows are those its own manifest lists under that split name.
+    frame = frame[frame["split"].isin([split])]
     rows = []
-    for split_name, split_spec in splits.items():
-        if not isinstance(split_spec, dict) or not split_spec.get("manifest"):
-            raise ValueError(f"Kaldi manifest split {split_name!r} must define a manifest CSV.")
-        frame = pd.read_csv(root / Path(str(split_spec["manifest"])), dtype={key_column: "string"})
-        # As KaldiPSGDataset: a split's rows are those its own manifest lists under that split name.
-        frame = frame[frame["split"].isin([split_name])]
-        for _, row in frame.iterrows():
-            metadata = row.to_dict()
-            # Same source fallback as KaldiPSGDataset, so dataset-name filters select the same rows.
-            metadata["source"] = _first_present(row, ("source", "dataset", "sample_source"), "nan")
-            rows.append(metadata)
+    for _, row in frame.iterrows():
+        metadata = row.to_dict()
+        # Same source fallback as KaldiPSGDataset, so dataset-name filters select the same rows.
+        metadata["source"] = _first_present(row, ("source", "dataset", "sample_source"), "nan")
+        rows.append(metadata)
     return rows
 
 

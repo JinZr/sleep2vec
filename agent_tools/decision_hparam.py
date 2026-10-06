@@ -15,7 +15,12 @@ from typing import Any
 
 from .adaptive_proposals import validate_configurations, validate_parameter_envelopes
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
-from .decision_paths import managed_runtime_env_issues, managed_runtime_resource_issues, multilabel_sidecar_issue
+from .decision_paths import (
+    managed_runtime_env_issues,
+    managed_runtime_resource_issues,
+    multilabel_sidecar_issue,
+    sex_age_pretrained_backbone_issue,
+)
 from .models import REPO_ROOT, ConfigSummaryInput, is_full_git_object_id
 from .plan_rendering import FINETUNE_SCHEDULER_FIELDS
 
@@ -357,6 +362,9 @@ def _hparam_config_issues(
     multilabel_issue = multilabel_sidecar_issue("hparam_tune", recipe, config_summary, uses_finetune_config=True)
     if multilabel_issue is not None:
         issues.append(multilabel_issue)
+    pretrained_issue = sex_age_pretrained_backbone_issue(recipe)
+    if pretrained_issue is not None:
+        issues.append(pretrained_issue)
     local_field_map = {
         "selection_metric": ("evaluation_policy.selection_metric", "selection_metric"),
         "selection_mode": ("evaluation_policy.selection_mode", "selection_mode"),

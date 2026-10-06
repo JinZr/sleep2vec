@@ -15,7 +15,12 @@ from __future__ import annotations
 from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
-from ..decision_paths import inference_checkpoint_averaging_issue, multilabel_sidecar_issue, survival_sidecar_issue
+from ..decision_paths import (
+    inference_checkpoint_averaging_issue,
+    multilabel_sidecar_issue,
+    sex_age_pretrained_backbone_issue,
+    survival_sidecar_issue,
+)
 from ..models import ConfigSummaryInput, coerce_list
 from ..plan_rendering import (
     INFER_RUNTIME_FIELDS,
@@ -150,6 +155,9 @@ class InferEvaluateAdapter(TaskAdapter):
         averaging_issue = inference_checkpoint_averaging_issue(recipe, inputs.get("ckpt_path"))
         if averaging_issue is not None:
             issues.append(averaging_issue)
+        pretrained_issue = sex_age_pretrained_backbone_issue(recipe)
+        if pretrained_issue is not None:
+            issues.append(pretrained_issue)
         survival_issue = survival_sidecar_issue(
             str(recipe.get("task")),
             recipe,

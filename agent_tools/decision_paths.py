@@ -1,7 +1,8 @@
 """Path, sidecar, and execution-contract validation for recipe decisions.
 
 Mixed bridge, and the highest domain signal among the L0 leaves: survival and
-multilabel sidecar checks are spelled here rather than behind an adapter hook.
+multilabel sidecar checks and the sex_age_baseline pretrained-backbone rejection
+are spelled here rather than behind an adapter hook.
 
 Must never import the adapter registry -- the task-specific dispatch that used
 to live here is hoisted into ``decisions`` instead, which is what keeps this a
@@ -838,6 +839,23 @@ def inference_checkpoint_averaging_issue(recipe: dict, ckpt_path: Any) -> Decisi
             require_directory=True,
         )
     return None
+
+
+def sex_age_pretrained_backbone_issue(recipe: dict) -> DecisionIssue | None:
+    # The baseline CLIs accept --pretrained-backbone-path only to match sleep2vec and raise when it is set.
+    if recipe.get("variant") != "sex_age_baseline":
+        return None
+    inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
+    value = inputs.get("pretrained_backbone_path")
+    if value in (None, "", "ASK_USER"):
+        return None
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        "pretrained_backbone_path",
+        "sex_age_baseline has no backbone and does not support pretrained_backbone_path.",
+        None,
+        {"variant": "sex_age_baseline", "pretrained_backbone_path": value},
+    )
 
 
 def _path_label(configured: bool) -> str:

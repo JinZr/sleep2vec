@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status, needs_issue
-from ..decision_paths import multilabel_sidecar_issue, survival_sidecar_issue
+from ..decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
 from ..models import REPO_ROOT, ConfigSummaryInput, recipe_name
 from ..plan_rendering import (
     FINETUNE_RUNTIME_FIELDS,
@@ -106,6 +106,9 @@ class FinetuneAdapter(TaskAdapter):
                         {"config": data},
                     )
                 )
+        pretrained_issue = sex_age_pretrained_backbone_issue(recipe)
+        if pretrained_issue is not None:
+            issues.append(pretrained_issue)
         # self.task, not the recipe's own task string: the pre-adapter kernel
         # hard-coded "finetune" for these helpers.
         survival_issue = survival_sidecar_issue(self.task, recipe, config_summary, uses_finetune_config=True)

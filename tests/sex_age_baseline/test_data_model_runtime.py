@@ -301,6 +301,45 @@ def test_kaldi_rows_belong_to_the_split_whose_manifest_lists_them(tmp_path: Path
     assert _subjects(load_split_dataset(cfg, "val", sources=None)) == [("003", 55.0, 0)]
 
 
+@pytest.mark.parametrize(("test_csv", "error"), [("missing", FileNotFoundError), ("malformed", pd.errors.ParserError)])
+def test_kaldi_opens_only_the_requested_split_manifest(tmp_path: Path, monkeypatch, test_csv: str, error: type):
+    # A train/val run must not read the (possibly locked) test manifest, nor fail on it.
+    rows = ["001,train,50,0", "002,val,60,1", "003,test,55,0"]
+    data = _backend_data_config(tmp_path, rows, "kaldi")
+    test_path = Path(data["kaldi_data_root"]) / "test.csv"
+    if test_csv == "missing":
+        test_path.unlink()
+    else:
+        test_path.write_text('eid,split,age,sex\n"003,test,55,0\n')
+    cfg = load_config(_write_config_for_data(tmp_path, rows, data))
+    opened: list[str] = []
+    read_csv = pd.read_csv
+
+    def recording_read_csv(path, *args, **kwargs):
+        opened.append(str(path))
+        return read_csv(path, *args, **kwargs)
+
+    monkeypatch.setattr(pd, "read_csv", recording_read_csv)
+
+    assert _subjects(load_split_dataset(cfg, "train", sources=None)) == [("001", 50.0, 0)]
+    assert _subjects(load_split_dataset(cfg, "val", sources=None)) == [("002", 60.0, 1)]
+    assert str(test_path) not in opened
+
+    with pytest.raises(error):
+        load_split_dataset(cfg, "test", sources=None)
+    assert str(test_path) in opened
+
+
+def test_kaldi_requested_split_missing_from_manifest_fails(tmp_path: Path):
+    rows = ["001,train,50,0", "002,val,60,1"]
+    data = _backend_data_config(tmp_path, rows, "kaldi")
+    cfg = load_config(_write_config_for_data(tmp_path, rows, data))
+
+    assert _subjects(load_split_dataset(cfg, "train", sources=None)) == [("001", 50.0, 0)]
+    with pytest.raises(ValueError, match="Kaldi manifest.json is missing requested split 'test'"):
+        load_split_dataset(cfg, "test", sources=None)
+
+
 @pytest.mark.parametrize("backend", ["npz_index", "npz_preset", "kaldi"])
 def test_conflicting_duplicate_metadata_fails(tmp_path: Path, backend: str):
     rows = ["001,train,50,0", "001,train,51,0"]
