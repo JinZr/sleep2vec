@@ -57,18 +57,27 @@ def survival_summary(
         "disease_count": None,
         "sidecar_key_count": None,
         "issues": [],
+        "preset_issues": [],
     }
 
     issues = summary["issues"]
+    preset_issues = summary["preset_issues"]
     if not isinstance(finetune.get("survival"), dict):
-        issues.append("finetune.survival must be a mapping for survival tasks.")
+        preset_issues.append("finetune.survival must be a mapping for survival tasks.")
+        issues.extend(preset_issues)
         return summary
-    if not isinstance(raw.get("key_column"), str) or not raw.get("key_column"):
-        issues.append("finetune.survival.key_column must be a non-empty string.")
+    # Every variant's config loader requires these as non-empty strings, even when a preset supplies the labels.
+    for field in ("key_column", *path_fields):
+        value = raw.get(field)
+        if not isinstance(value, str) or not value:
+            preset_issues.append(f"finetune.survival.{field} must be a non-empty string.")
+    issues.extend(preset_issues)
     resolved_paths: dict[str, str] = {}
     for field in path_fields:
         value = raw.get(field)
-        if not isinstance(value, str) or looks_like_placeholder_path(value):
+        if not isinstance(value, str) or not value:
+            continue
+        if looks_like_placeholder_path(value):
             issues.append(f"finetune.survival.{field} must point to a real file.")
             continue
         if not validate_local_paths:

@@ -429,21 +429,31 @@ def survival_sidecar_issue(
     preset_path_recipe_field: str | None = None,
     uses_finetune_config: bool = False,
 ) -> DecisionIssue | None:
-    if not _requires_survival_sidecars(
+    survival = _config_finetune(config_summary).get("survival")
+    if not isinstance(survival, dict):
+        return None
+    if _requires_survival_sidecars(
         task, recipe, config_summary, required, preset_path_recipe_field, uses_finetune_config
     ):
+        issues_key, question = "issues", (
+            "Please provide valid disease_columns_index, event_time_index, is_event_index, and "
+            "has_label_index files, and keep output_dim equal to the disease column count."
+        )
+    elif required is None and uses_finetune_config:
+        # The preset supplies the labels, so no sidecar file is opened, but the config loader still runs.
+        issues_key, question = "preset_issues", (
+            "Please set finetune.survival key_column, disease_columns_index, event_time_index, is_event_index, "
+            "and has_label_index to non-empty strings; the config loader requires them even with a preset."
+        )
+    else:
         return None
-    survival = _config_finetune(config_summary).get("survival")
-    if not isinstance(survival, dict) or not survival.get("issues"):
+    if not survival.get(issues_key):
         return None
     return DecisionIssue(
         DecisionStatus.NEEDS_USER_INPUT,
         "survival_sidecars",
         "Survival sidecar files are missing or inconsistent.",
-        (
-            "Please provide valid disease_columns_index, event_time_index, is_event_index, and "
-            "has_label_index files, and keep output_dim equal to the disease column count."
-        ),
+        question,
         {"survival": survival},
     )
 

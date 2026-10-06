@@ -5,6 +5,7 @@ from shlex import quote as shlex_quote
 import sys
 
 from agent_tool_test_helpers import survival_config_payload, write_finetune_recipe, write_survival_sidecars, write_yaml
+import pytest
 from test_agent_plan_blocks_on_ambiguity import (
     _RUNTIME_COMMIT,
     _run,
@@ -15,6 +16,8 @@ from test_agent_plan_blocks_on_ambiguity import (
 )
 from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
 import yaml
+
+_OMITTED = object()
 
 
 def test_doctor_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
@@ -53,6 +56,26 @@ def test_plan_skips_survival_index_gate_when_finetune_preset_is_configured(tmp_p
     assert result.returncode == 0
     assert "survival key values missing from sidecars" not in result.stdout
     assert (output_dir / "run.sh").exists()
+
+
+@pytest.mark.parametrize("with_preset", [True, False])
+def test_finetune_survival_blocks_loader_rejected_field_with_or_without_preset(tmp_path: Path, with_preset: bool):
+    recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    payload["finetune"]["survival"]["has_label_index"] = None
+    if with_preset:
+        preset = tmp_path / "preset.pkl"
+        preset.write_bytes(b"preset")
+        payload["data"]["finetune_preset_path"] = str(preset)
+    write_yaml(config, payload)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2, result.stdout
+    assert "survival_sidecars" in result.stdout
+    assert "finetune.survival.has_label_index must be a non-empty string." in result.stdout
+    assert not (output_dir / "run.sh").exists()
 
 
 def test_plan_skips_missing_index_path_when_finetune_preset_is_configured(tmp_path: Path):
@@ -278,6 +301,38 @@ def test_infer_survival_allows_invalid_sidecars_with_preset(tmp_path: Path):
     assert result.returncode == 0
     assert "survival_sidecars" not in result.stdout
     assert (output_dir / "run.sh").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("event_time_index", _OMITTED),
+        ("event_time_index", None),
+        ("has_label_index", ""),
+        ("is_event_index", 1),
+        ("key_column", _OMITTED),
+    ],
+)
+def test_infer_survival_preset_still_requires_loader_fields(tmp_path: Path, field: str, value: object):
+    # The preset embeds the survival labels, but every variant's config loader still requires these fields.
+    preset = tmp_path / "preset.pkl"
+    preset.write_bytes(b"preset")
+    config = _write_survival_config_with_bad_sidecars(tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    if value is _OMITTED:
+        del payload["finetune"]["survival"][field]
+    else:
+        payload["finetune"]["survival"][field] = value
+    write_yaml(config, payload)
+    recipe = _write_infer_recipe(tmp_path, config, inference_preset_path=preset)
+    output_dir = tmp_path / "plan"
+
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2, result.stdout
+    assert "survival_sidecars" in result.stdout
+    assert f"finetune.survival.{field} must be a non-empty string." in result.stdout
+    assert not (output_dir / "run.sh").exists()
 
 
 def test_infer_preset_path_does_not_skip_survival_sidecar_checks(tmp_path: Path):

@@ -60,6 +60,8 @@ class SidecarDiagnostics(TypedDict):
 class SurvivalSummary(SidecarDiagnostics):
     event_time_index: Any
     is_event_index: Any
+    #: The subset of ``issues`` the config loader rejects; a preset-backed run opens no survival sidecar file.
+    preset_issues: list[str]
 
 
 class MultilabelSummary(SidecarDiagnostics):
