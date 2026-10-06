@@ -93,7 +93,7 @@ def test_index_summary_reports_survival_key_column(tmp_path: Path):
         "missing_from_sidecars": 0,
         "missing_from_sidecars_examples": [],
     }
-    assert summary["survival_covariates"] == {}
+    assert summary["covariates"] == {}
     assert "Index CSV contains empty survival key values in column: eid" not in summary["blocking_issues"]
 
 
@@ -111,11 +111,11 @@ def test_index_summary_reports_survival_covariates(tmp_path: Path):
 
     summary = index_summary([index], config=config)
 
-    assert summary["survival_covariates"] == {
+    assert summary["covariates"] == {
         "age": {"exists": True, "non_null_rows": 2, "missing_rows": 0},
         "sex": {"exists": True, "non_null_rows": 2, "missing_rows": 0},
     }
-    assert not any("survival covariate" in issue for issue in summary["blocking_issues"])
+    assert not any("covariate" in issue for issue in summary["blocking_issues"])
 
 
 def test_index_summary_blocks_missing_survival_covariate_columns(tmp_path: Path):
@@ -132,8 +132,8 @@ def test_index_summary_blocks_missing_survival_covariate_columns(tmp_path: Path)
 
     summary = index_summary([index], config=config)
 
-    assert summary["survival_covariates"]["sex"] == {"exists": False, "non_null_rows": 0, "missing_rows": 2}
-    assert "Index CSV missing required survival covariate column: sex" in summary["blocking_issues"]
+    assert summary["covariates"]["sex"] == {"exists": False, "non_null_rows": 0, "missing_rows": 2}
+    assert "Index CSV missing required covariate column: sex" in summary["blocking_issues"]
 
 
 def test_index_summary_blocks_empty_survival_covariate_values(tmp_path: Path):
@@ -150,10 +150,10 @@ def test_index_summary_blocks_empty_survival_covariate_values(tmp_path: Path):
 
     summary = index_summary([index], config=config)
 
-    assert summary["survival_covariates"]["age"]["missing_rows"] == 1
-    assert summary["survival_covariates"]["sex"]["missing_rows"] == 1
-    assert "Index CSV contains empty survival covariate values in column: age" in summary["blocking_issues"]
-    assert "Index CSV contains empty survival covariate values in column: sex" in summary["blocking_issues"]
+    assert summary["covariates"]["age"]["missing_rows"] == 1
+    assert summary["covariates"]["sex"]["missing_rows"] == 1
+    assert "Index CSV contains empty covariate values in column: age" in summary["blocking_issues"]
+    assert "Index CSV contains empty covariate values in column: sex" in summary["blocking_issues"]
 
 
 def test_index_summary_blocks_missing_survival_key_column(tmp_path: Path):
@@ -229,130 +229,40 @@ def test_index_summary_blocks_empty_survival_keys(tmp_path: Path):
     assert "Index CSV contains empty survival key values in column: eid" in summary["blocking_issues"]
 
 
-def test_index_summary_blocks_sex_age_multilabel_keys_missing_from_sidecars(tmp_path: Path):
+def test_index_summary_checks_multilabel_keys_and_covariates(tmp_path: Path):
     index = tmp_path / "index.csv"
-    index.write_text("eid,split,age,sex\n001,train,50,0\n003,val,60,1\n")
+    index.write_text("path,split,duration,eid,age\na.npz,train,60,001,50\nb.npz,val,60,003,\n")
     disease_columns = tmp_path / "disease_columns.txt"
     label = tmp_path / "label.csv"
     has_label = tmp_path / "has_label.csv"
     disease_columns.write_text("d1\nd2\n")
     label.write_text("eid,d1,d2\n001,1,0\n002,0,1\n")
     has_label.write_text("eid,d1,d2\n001,1,1\n002,1,1\n")
-    config = write_yaml(
-        tmp_path / "sex_age_multilabel.yaml",
-        {
-            "model": {
-                "name": "sex_age_mlp",
-                "features": ["age", "sex"],
-                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4, "initialization": "default"},
-                "sex": {"encoding": "binary", "embedding_dim": 4, "initialization": "default"},
-                "head": {
-                    "name": "classification",
-                    "hidden_dim": 8,
-                    "dropout": 0.1,
-                    "act": "elu",
-                    "kwargs": {"num_layers": 3},
-                },
-            },
-            "data": {
-                "backend": "npz",
-                "finetune_data_index": str(index),
-                "finetune_preset_path": None,
-                "kaldi_data_root": None,
-                "kaldi_manifest": None,
-                "split_column": "split",
-                "key_column": "eid",
-                "deduplicate_by_key": True,
-            },
-            "finetune": {
-                "task": {
-                    "type": "multilabel_classification",
-                    "output_dim": 2,
-                    "is_seq": False,
-                    "monitor": "val_loss",
-                    "monitor_mod": "min",
-                },
-                "multilabel": {
-                    "key_column": "eid",
-                    "disease_columns_index": str(disease_columns),
-                    "label_index": str(label),
-                    "has_label_index": str(has_label),
-                },
-            },
-        },
-    )
+    payload = config_payload(index)
+    payload["finetune"]["task"] = {
+        "type": "multilabel_classification",
+        "output_dim": 2,
+        "is_seq": False,
+        "monitor": "val_loss",
+        "monitor_mod": "min",
+    }
+    payload["finetune"]["multilabel"] = {
+        "key_column": "eid",
+        "disease_columns_index": str(disease_columns),
+        "label_index": str(label),
+        "has_label_index": str(has_label),
+        "covariates": ["age", "sex"],
+    }
+    config = write_yaml(tmp_path / "multilabel.yaml", payload)
 
     summary = index_summary([index], config=config)
 
-    assert summary["required_columns"] == {"eid": True, "split": True, "age": True, "sex": True}
     assert summary["multilabel_key"]["missing_from_sidecars"] == 1
     assert summary["multilabel_key"]["missing_from_sidecars_examples"] == ["003"]
     assert (
         "Index CSV contains multilabel key values missing from sidecars in column eid: 1 missing (examples: 003)"
         in summary["blocking_issues"]
     )
-
-
-def test_index_summary_uses_sex_age_configured_split_column_for_filtering(tmp_path: Path):
-    index = tmp_path / "index.csv"
-    index.write_text("eid,fold,age,sex\n001, train ,50,0\n003,test,60,1\n")
-    disease_columns = tmp_path / "disease_columns.txt"
-    event_time = tmp_path / "event_time.csv"
-    is_event = tmp_path / "is_event.csv"
-    has_label = tmp_path / "has_label.csv"
-    disease_columns.write_text("d1\n")
-    event_time.write_text("eid,d1\n001,10\n")
-    is_event.write_text("eid,d1\n001,1\n")
-    has_label.write_text("eid,d1\n001,1\n")
-    config = write_yaml(
-        tmp_path / "sex_age_cox.yaml",
-        {
-            "model": {
-                "name": "sex_age_mlp",
-                "features": ["age", "sex"],
-                "age": {"transform": "divide", "scale": 100.0, "embedding_dim": 4, "initialization": "default"},
-                "sex": {"encoding": "binary", "embedding_dim": 4, "initialization": "default"},
-                "head": {
-                    "name": "classification",
-                    "hidden_dim": 8,
-                    "dropout": 0.1,
-                    "act": "elu",
-                    "kwargs": {"num_layers": 3},
-                },
-            },
-            "data": {
-                "backend": "npz",
-                "finetune_data_index": str(index),
-                "finetune_preset_path": None,
-                "kaldi_data_root": None,
-                "kaldi_manifest": None,
-                "split_column": "fold",
-                "key_column": "eid",
-                "deduplicate_by_key": True,
-            },
-            "finetune": {
-                "task": {
-                    "type": "survival",
-                    "output_dim": 1,
-                    "is_seq": False,
-                    "monitor": "val_c_index",
-                    "monitor_mod": "max",
-                },
-                "survival": {
-                    "key_column": "eid",
-                    "disease_columns_index": str(disease_columns),
-                    "event_time_index": str(event_time),
-                    "is_event_index": str(is_event),
-                    "has_label_index": str(has_label),
-                },
-            },
-        },
-    )
-
-    summary = index_summary([index], config=config, split_values=["train"])
-
-    assert summary["rows"] == 1
-    assert summary["required_columns"] == {"eid": True, "fold": True, "age": True, "sex": True}
-    assert summary["split_counts"] == {"train": 1}
-    assert summary["survival_key"]["missing_from_sidecars"] == 0
-    assert not summary["blocking_issues"]
+    assert summary["covariates"]["age"] == {"exists": True, "non_null_rows": 1, "missing_rows": 1}
+    assert "Index CSV contains empty covariate values in column: age" in summary["blocking_issues"]
+    assert "Index CSV missing required covariate column: sex" in summary["blocking_issues"]

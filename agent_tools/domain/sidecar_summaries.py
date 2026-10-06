@@ -115,12 +115,17 @@ def multilabel_summary(
 
     raw_value = finetune.get("multilabel")
     raw = raw_value if isinstance(raw_value, dict) else {}
+    covariates = raw.get("covariates", [])
+    if isinstance(covariates, list):
+        covariates = list(covariates)
     path_fields = ("disease_columns_index", "label_index", "has_label_index")
     summary: MultilabelSummary = {
         "key_column": raw.get("key_column"),
         "disease_columns_index": raw.get("disease_columns_index"),
         "label_index": raw.get("label_index"),
         "has_label_index": raw.get("has_label_index"),
+        "covariates": covariates,
+        "covariate_embedding_dim": raw.get("covariate_embedding_dim", 16),
         "output_dim": task.get("output_dim"),
         "valid": False,
         "disease_count": None,

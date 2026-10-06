@@ -1,8 +1,7 @@
 """Path, sidecar, and execution-contract validation for recipe decisions.
 
-Mixed bridge, and the highest domain signal among the L0 leaves: survival,
-multilabel, and sex_age sidecar checks are spelled here rather than behind an
-adapter hook.
+Mixed bridge, and the highest domain signal among the L0 leaves: survival and
+multilabel sidecar checks are spelled here rather than behind an adapter hook.
 
 Must never import the adapter registry -- the task-specific dispatch that used
 to live here is hoisted into ``decisions`` instead, which is what keeps this a
@@ -493,8 +492,6 @@ def _requires_survival_sidecars(
         return False
     if required is not None:
         return required
-    if config_summary and config_summary.get("authoritative_variant") == "sex_age_baseline":
-        return uses_finetune_config
     if uses_finetune_config:
         _field, preset_path = _effective_preset_path(
             task, recipe, config_summary, preset_path_recipe_field, uses_finetune_config=uses_finetune_config
@@ -516,8 +513,6 @@ def _required_multilabel_sidecars(
         return ()
     if required is not None:
         return _MULTILABEL_SIDECARS if required else ()
-    if config_summary and config_summary.get("authoritative_variant") == "sex_age_baseline":
-        return _MULTILABEL_SIDECARS if uses_finetune_config else ()
     if not uses_finetune_config:
         return ()
     _field, preset_path = _effective_preset_path(

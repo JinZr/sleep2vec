@@ -1,15 +1,5 @@
 model:
   name: sex_age_mlp
-  features: [age, sex]
-  age:
-    transform: divide
-    scale: 100.0
-    embedding_dim: 16
-    initialization: zeros
-  sex:
-    encoding: binary
-    embedding_dim: 16
-    initialization: zeros
   head:
     name: classification
     hidden_dim: 32
@@ -19,14 +9,14 @@ model:
       num_layers: 3
 
 data:
+  # The matching signal run's index, preset or Kaldi manifest; rows collapse to one record per key_column value.
   backend: npz
-  finetune_data_index: /path/to/index.csv
+  finetune_data_index: null
   finetune_preset_path: null
   kaldi_data_root: null
   kaldi_manifest: null
-  split_column: split
-  key_column: eid
-  deduplicate_by_key: true
+  train_dataset_names: []
+  test_dataset_names: []
 
 finetune:
   loss:
@@ -43,3 +33,9 @@ finetune:
     event_time_index: /path/to/event_time.csv
     is_event_index: /path/to/is_event.csv
     has_label_index: /path/to/has_label.csv
+    covariates: [age, sex]
+    covariate_embedding_dim: 16
+    # BMI needs bmi and bmi_missing columns in the shared index or preset, plus frozen training-split statistics:
+    # covariates: [age, sex, bmi, bmi_missing]
+    # covariate_normalization:
+    #   bmi: {mean: <train mean>, std: <train std>}

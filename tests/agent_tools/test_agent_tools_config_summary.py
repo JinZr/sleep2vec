@@ -213,6 +213,34 @@ def test_config_summary_reports_survival_covariates(tmp_path: Path):
     assert survival["covariate_embedding_dim"] == 8
 
 
+def test_config_summary_reports_multilabel_covariates(tmp_path: Path):
+    """Multilabel tasks carry the same covariate fields as survival, so the index check can require them."""
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration,eid\nx.npz,train,60,001\n")
+    payload = config_payload(index)
+    payload["finetune"]["task"] = {
+        "type": "multilabel_classification",
+        "output_dim": 2,
+        "is_seq": False,
+        "monitor": "val_loss",
+        "monitor_mod": "min",
+    }
+    payload["finetune"]["multilabel"] = {
+        "key_column": "eid",
+        "disease_columns_index": "ASK_USER",
+        "label_index": "ASK_USER",
+        "has_label_index": "ASK_USER",
+        "covariates": ["age", "sex"],
+        "covariate_embedding_dim": 8,
+    }
+    config = write_yaml(tmp_path / "multilabel_covariates.yaml", payload)
+
+    multilabel = config_summary(config)["finetune"]["multilabel"]
+
+    assert multilabel["covariates"] == ["age", "sex"]
+    assert multilabel["covariate_embedding_dim"] == 8
+
+
 def test_config_summary_validates_survival_sidecars_without_torch(tmp_path: Path, monkeypatch):
     import builtins
 

@@ -156,7 +156,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             missing_paths = index["sample_path_check"]["checked"]  # type: ignore[assignment]
             index["mask_columns"]["ppg"]["true_count"] = "1"  # type: ignore[typeddict-item]
             index["numeric_shift_metrics"]["age"]["test_mean"] = "1"  # type: ignore[typeddict-item]
-            index["survival_covariates"]["age"]["missing_rows"] = "1"  # type: ignore[typeddict-item]
+            index["covariates"]["age"]["missing_rows"] = "1"  # type: ignore[typeddict-item]
             if index["survival_key"] is not None:
                 key_count: int | None = index["survival_key"]["sidecar_key_count"]
                 index["survival_key"]["missing_from_sidecars_examples"] = [1]  # type: ignore[list-item]
@@ -214,7 +214,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 fine["data"]["train_dataset_names"] = "train"  # type: ignore[typeddict-item]
                 fine["finetune"]["task"]["output_dim"] = {"invalid": "preserved"}
                 sex = sex_age_baseline_config_summary(Path("config.yaml"))
-                sex["model"]["features"] = [1]  # type: ignore[list-item]
+                sex["model"]["name"] = 1  # type: ignore[typeddict-item]
                 stats = sleep2stat_config_summary(Path("config.yaml"))
                 stats["agent_risk_issues"] = False  # type: ignore[typeddict-item]
                 stats["sleep2stat"]["supported_analyzer_types"] = [1]  # type: ignore[list-item]

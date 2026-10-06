@@ -249,9 +249,8 @@ it never substitutes the status reader's host environment.
 - NPZ finetune/inference may consume a frozen preset without reopening survival
   sidecars or the multilabel `label_index` / `has_label_index`. Multilabel runs
   still read `disease_columns_index` to name per-disease metrics and prediction
-  columns, so it stays required. `sex_age_baseline` always reads its label
-  sidecars. `preset_prepare` always validates the sidecar files needed to build
-  that preset.
+  columns, so it stays required. `preset_prepare` always validates the sidecar
+  files needed to build that preset.
 - Checkpoint and pretrained-backbone inputs must be files.
 - Checkpoint averaging rejects AHI. `avg_ckpts` must be a positive integer,
   `best`/`last` aliases require an explicit `avg_ckpt_dir`, and any explicit
