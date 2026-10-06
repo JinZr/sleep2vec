@@ -158,6 +158,38 @@ def test_config_summary_validates_survival_sidecars(tmp_path: Path):
     assert survival["disease_count"] == 2
     assert survival["sidecar_key_count"] == 2
     assert survival["issues"] == []
+    assert survival["preset_issues"] == []
+
+
+def test_config_summary_survival_preset_issues_hold_only_loader_rejected_fields(tmp_path: Path):
+    index = tmp_path / "index.csv"
+    index.write_text("path,split,duration,eid\nx.npz,train,60,001\n")
+    payload = survival_config_payload(index, write_survival_sidecars(tmp_path))
+    missing = tmp_path / "missing_has_label.csv"
+    survival_block = payload["finetune"]["survival"]
+    del survival_block["key_column"]
+    survival_block.update(
+        {"event_time_index": None, "is_event_index": "/path/to/is_event.csv", "has_label_index": str(missing)}
+    )
+    config = write_yaml(tmp_path / "survival_bad_fields.yaml", payload)
+
+    survival = config_summary(config)["finetune"]["survival"]
+
+    assert survival["preset_issues"] == [
+        "finetune.survival.key_column must be a non-empty string.",
+        "finetune.survival.event_time_index must be a non-empty string.",
+    ]
+    assert survival["issues"] == [
+        *survival["preset_issues"],
+        "finetune.survival.is_event_index must point to a real file.",
+        f"finetune.survival.has_label_index does not exist: {missing}",
+    ]
+
+    payload["finetune"]["survival"] = None
+    write_yaml(config, payload)
+    survival = config_summary(config)["finetune"]["survival"]
+    assert survival["preset_issues"] == ["finetune.survival must be a mapping for survival tasks."]
+    assert survival["issues"] == survival["preset_issues"]
 
 
 def test_config_summary_resolves_relative_survival_sidecars_from_runtime_base(tmp_path: Path):
