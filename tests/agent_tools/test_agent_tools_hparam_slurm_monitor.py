@@ -1606,7 +1606,7 @@ def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch, dir
         recipe_scheduler.pop("direct_controller")
     else:
         recipe_scheduler["direct_controller"] = True
-    monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda _path: plan)
+    monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda _path, **_kwargs: plan)
     cancelled = []
     monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-21T03:40:00Z")
 

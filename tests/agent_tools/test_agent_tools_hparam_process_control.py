@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 
+from agent_tool_test_helpers import call_while_run_lock_holder_commits
 import pytest
 from test_agent_tools_hparam_runtime import (
     _embedded_process_group_running,
@@ -404,6 +405,26 @@ def test_hparam_concurrent_stops_keep_plan_projections_canonical(tmp_path: Path,
     assert sorted(event["run_id"] for event in events if event["event_type"] == "run_stopped") == [
         run["run_id"] for run in runs
     ]
+
+
+def test_hparam_stop_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr
+    run = run_artifacts.read_hparam_plan(plan_dir)["runs"][0]
+
+    status_path = call_while_run_lock_holder_commits(
+        monkeypatch,
+        tmp_path,
+        lambda: hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="cancel during monitor commit"),
+    )
+
+    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert status_path == plan_dir / "run_status.tsv"
+    assert _read_table(status_path) == [canonical]
+    assert canonical["status"] == "stopped"
+    assert canonical["stop_reason"] == "cancel during monitor commit"
 
 
 def test_remote_stop_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
@@ -1318,7 +1339,8 @@ def test_hparam_stop_rejects_invalid_canonical_output_before_kill(tmp_path: Path
     monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row, **_kwargs: 123)
     monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
-    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
+    # Workspace state is read only under the run lock, so the pre-lock output check rejects the hard link first.
+    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
 
     assert killed == []

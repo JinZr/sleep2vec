@@ -460,10 +460,11 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     if not reason.strip():
         raise ValueError("Stopping a run requires a non-empty reason.")
     root = Path(run_dir)
-    plan = artifacts.read_hparam_plan(root)
+    # Only the frozen workspace binding is needed to lock; a concurrent lock holder may replace run_manifest.tsv
+    # and events.jsonl, so the full workspace-state validation runs under the lock.
+    plan = artifacts.read_hparam_plan(root, require_workspace_state=False, require_adaptive_commit=False)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
-    expected_keys = {validated_run_key(run) for run in plan["runs"]}
     manifest_path = root / "launch_manifest.tsv"
     status_path = root / "run_status.tsv"
     workspace = experiment_root(recipe)
@@ -482,6 +483,8 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         ],
     )
     with scheduler.managed_run_lock(workspace):
+        plan = artifacts.read_hparam_plan(root)
+        expected_keys = {validated_run_key(run) for run in plan["runs"]}
         workspace_rows = read_run_manifest(workspace)
         workspace_by_key = {validated_run_key(item): item for item in workspace_rows}
         missing = expected_keys - set(workspace_by_key)

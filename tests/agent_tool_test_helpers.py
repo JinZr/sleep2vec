@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+import contextlib
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
+from typing import TypeVar
 
 import yaml
+
+_T = TypeVar("_T")
 
 
 def run_execution_preflight_fixture(execution: dict, command: list[str]) -> subprocess.CompletedProcess:
@@ -55,6 +62,58 @@ def run_execution_preflight_fixture(execution: dict, command: list[str]) -> subp
         f"AGENT_CLI_PREFLIGHT={json.dumps(evidence, sort_keys=True)}\n",
         "",
     )
+
+
+def call_while_run_lock_holder_commits(monkeypatch, workspace: Path, call: Callable[[], _T]) -> _T:
+    """Run call in a thread while this thread holds the workspace run lock and republishes run_manifest.tsv.
+
+    The caller signals when it stats run_manifest.tsv or contends for the run lock. A stat then parks it between
+    stat and open until the republish has replaced the manifest inode, so any managed read made outside the lock
+    fails deterministically. Returns the call's result and re-raises its exception."""
+    from agent_tools import managed_scheduler
+    from agent_tools.experiment_workspace import merge_run_manifest, read_run_manifest
+
+    waiting = threading.Event()
+    committed = threading.Event()
+    outcome: dict[str, _T] = {}
+    failures: list[BaseException] = []
+    real_lstat = os.lstat
+    real_run_lock = managed_scheduler.managed_run_lock
+
+    def lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if threading.current_thread() is caller and os.fspath(path).endswith("run_manifest.tsv"):
+            waiting.set()
+            assert committed.wait(timeout=5)
+        return info
+
+    @contextlib.contextmanager
+    def run_lock(root):
+        if threading.current_thread() is caller:
+            waiting.set()
+        with real_run_lock(root):
+            yield
+
+    def target():
+        try:
+            outcome["result"] = call()
+        except BaseException as exc:
+            failures.append(exc)
+
+    caller = threading.Thread(target=target)
+    monkeypatch.setattr(os, "lstat", lstat)
+    monkeypatch.setattr(managed_scheduler, "managed_run_lock", run_lock)
+    with real_run_lock(workspace):
+        caller.start()
+        assert waiting.wait(timeout=5)
+        # Republish canonical rows unchanged, as a concurrent monitor poll does under the lock.
+        merge_run_manifest(workspace, read_run_manifest(workspace), lock_held=True)
+        committed.set()
+    caller.join(timeout=30)
+    assert not caller.is_alive()
+    if failures:
+        raise failures[0]
+    return outcome["result"]
 
 
 def prepare_hparam_plan_fixture(recipe: Path, plan_dir: Path) -> None:
