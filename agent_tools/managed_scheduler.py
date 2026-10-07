@@ -48,7 +48,7 @@ from .experiment_workspace import (
     write_status_report,
 )
 from .manifests import read_json, utc_now
-from .models import REPO_ROOT, is_full_git_object_id
+from .models import REPO_ROOT, JsonValue, is_full_git_object_id
 
 RunKey = tuple[str, str]
 ACTIVE_STATUSES = frozenset(
@@ -99,8 +99,8 @@ __all__ = [
 
 @dataclass(frozen=True)
 class StatusChanges:
-    rows_by_key: dict[RunKey, dict[str, Any]]
-    changes: dict[RunKey, tuple[Any, Any]]
+    rows_by_key: dict[RunKey, Mapping[str, JsonValue]]
+    changes: dict[RunKey, tuple[JsonValue, JsonValue]]
 
 
 @dataclass
@@ -119,9 +119,9 @@ class CapacityState:
 
     def next_allocation(
         self,
-        candidates: Sequence[tuple[int, dict[str, Any]]],
-    ) -> tuple[int, dict[str, Any], int | None] | None:
-        eligible: list[tuple[int, int, dict[str, Any], int | None]] = []
+        candidates: Sequence[tuple[int, dict[str, JsonValue]]],
+    ) -> tuple[int, dict[str, JsonValue], int | None] | None:
+        eligible: list[tuple[int, int, dict[str, JsonValue], int | None]] = []
         for index, row in candidates:
             frozen_group_index = self.assigned_group_by_key.get(validated_run_key(row))
             if frozen_group_index is not None:
@@ -151,11 +151,11 @@ class CapacityState:
 
 @dataclass(frozen=True)
 class LaunchResult:
-    committed_rows: list[dict[str, Any]]
-    launch_rows: list[dict[str, Any]]
+    committed_rows: list[dict[str, str]]
+    launch_rows: Sequence[Mapping[str, JsonValue]]
     started_keys: frozenset[RunKey]
-    status_changes: dict[RunKey, tuple[Any, Any]]
-    external_status_changes: dict[RunKey, tuple[Any, Any]]
+    status_changes: dict[RunKey, tuple[JsonValue, JsonValue]]
+    external_status_changes: dict[RunKey, tuple[JsonValue, JsonValue]]
 
 
 class SlurmHealthFields(TypedDict):
@@ -188,7 +188,7 @@ class DirectLaunchIdentity(_LaunchIdentityFields):
 
 
 class SlurmLaunchIdentity(_LaunchIdentityFields):
-    log_path: Any
+    log_path: JsonValue
 
 
 class LaunchVerificationOptions(TypedDict, total=False):
@@ -235,7 +235,7 @@ ExecutionSnapshotResult = tuple[ExecutionSnapshot, bool] | tuple[None, Literal[F
 
 @dataclass(frozen=True)
 class SchedulerHooks:
-    merge_manifest: Callable[..., list[dict[str, Any]]] = merge_run_manifest
+    merge_manifest: Callable[..., list[dict[str, str]]] = merge_run_manifest
     append_event: Callable[..., None] = append_event
     write_status_report: Callable[..., Path] = write_status_report
     validate_run_update: Callable[..., None] = validate_frozen_run_update
@@ -266,7 +266,7 @@ def managed_run_lock(workspace: str | Path):
         yield
 
 
-def gpu_groups(execution: dict[str, Any], runtime: dict[str, Any]) -> list[list[Any]]:
+def gpu_groups(execution: Mapping[str, Any], runtime: Mapping[str, Any]) -> list[list[Any]]:
     groups, issues = gpu_rules.gpu_group_plan(execution, runtime)
     errors = [issue for issue in issues if not issue.warning]
     if errors:
@@ -274,7 +274,7 @@ def gpu_groups(execution: dict[str, Any], runtime: dict[str, Any]) -> list[list[
     return groups
 
 
-def script_commits_terminal_status(row: dict[str, Any], *, default: bool = False) -> bool:
+def script_commits_terminal_status(row: Mapping[str, JsonValue], *, default: bool = False) -> bool:
     owner = row.get("terminal_status_owner")
     if owner in (None, ""):
         return default
@@ -287,12 +287,12 @@ def script_commits_terminal_status(row: dict[str, Any], *, default: bool = False
 
 def observe_run(
     run_dir: str | Path,
-    row: dict[str, Any],
-    previous: dict[str, Any] | None = None,
+    row: Mapping[str, JsonValue],
+    previous: Mapping[str, JsonValue] | None = None,
     *,
     health: bool = False,
     default_script_commits_terminal_status: bool = False,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     """Return a direct-run observation merged with previous (or row) evidence.
 
     Passes the row's observation fields to status_row and derives terminal-status
@@ -325,15 +325,15 @@ def observe_run(
 
 def observe_runs(
     run_dir: str | Path,
-    rows_by_key: dict[RunKey, dict[str, Any]],
+    rows_by_key: Mapping[RunKey, Mapping[str, JsonValue]],
     keys: Iterable[RunKey],
     *,
     dry_run: bool,
     health: bool = False,
     default_script_commits_terminal_status: bool = False,
 ) -> StatusChanges:
-    refreshed: dict[RunKey, dict[str, Any]] = {}
-    changes: dict[RunKey, tuple[Any, Any]] = {}
+    refreshed: dict[RunKey, Mapping[str, JsonValue]] = {}
+    changes: dict[RunKey, tuple[JsonValue, JsonValue]] = {}
     for key in keys:
         previous = rows_by_key.get(key)
         if previous is None:
@@ -355,10 +355,10 @@ def observe_runs(
 
 
 def capacity_state(
-    execution: dict[str, Any],
-    runtime: dict[str, Any],
-    expected_rows: dict[RunKey, dict[str, Any]],
-    workspace_rows: dict[RunKey, dict[str, Any]],
+    execution: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    expected_rows: Mapping[RunKey, Mapping[str, JsonValue]],
+    workspace_rows: Mapping[RunKey, Mapping[str, JsonValue]],
     *,
     expected_keys: set[RunKey],
 ) -> CapacityState:
@@ -442,9 +442,9 @@ def capacity_state(
 
 
 def shares_capacity(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     groups: list[list[Any]],
-    row: dict[str, Any],
+    row: Mapping[str, JsonValue],
 ) -> bool:
     if scheduler_type(row) == "slurm":
         return False
@@ -465,9 +465,9 @@ def shares_capacity(
 def launch_managed_runs(
     workspace: str | Path,
     owner_dir: str | Path,
-    runs: list[dict[str, Any]],
-    execution: dict[str, Any],
-    runtime: dict[str, Any],
+    runs: Sequence[Mapping[str, JsonValue]],
+    execution: Mapping[str, Any],
+    runtime: Mapping[str, Any],
     *,
     dry_run: bool = True,
     fail_on_missing_pid_blocker: bool = False,
@@ -498,9 +498,9 @@ def launch_managed_runs(
 def _launch_managed_runs(
     workspace: Path,
     owner_dir: Path,
-    runs: list[dict[str, Any]],
-    execution: dict[str, Any],
-    runtime: dict[str, Any],
+    runs: Sequence[Mapping[str, JsonValue]],
+    execution: Mapping[str, Any],
+    runtime: Mapping[str, Any],
     options: LaunchOptions,
 ) -> LaunchResult:
     backend = _managed_scheduler_type(execution, runs)
@@ -637,8 +637,8 @@ def _launch_managed_runs(
     )
     if options.projection_writer is not None:
         options.projection_writer(result)
-    for row in committed_rows:
-        key = validated_run_key(row)
+    for committed_row in committed_rows:
+        key = validated_run_key(committed_row)
         if key in observed.changes:
             before, after = observed.changes[key]
             options.hooks.append_event(
@@ -650,7 +650,7 @@ def _launch_managed_runs(
             options.hooks.append_event(
                 workspace,
                 "run_launched",
-                {"step_id": key[0], "run_id": key[1], "gpus": row.get("gpus", "")},
+                {"step_id": key[0], "run_id": key[1], "gpus": committed_row.get("gpus", "")},
             )
     options.hooks.write_status_report(workspace)
     if missing_pid_blocker is not None:
@@ -659,15 +659,15 @@ def _launch_managed_runs(
 
 
 def _prepare_direct_launch_rows(
-    runs: list[dict[str, Any]],
-    execution: dict[str, Any],
-    refreshed: dict[RunKey, dict[str, Any]],
+    runs: Sequence[Mapping[str, JsonValue]],
+    execution: Mapping[str, Any],
+    refreshed: Mapping[RunKey, Mapping[str, JsonValue]],
     *,
     target: str,
     hooks: SchedulerHooks,
-) -> tuple[list[dict[str, Any]], dict[RunKey, DirectLaunchIdentity]]:
+) -> tuple[list[dict[str, JsonValue]], dict[RunKey, DirectLaunchIdentity]]:
     launch_identity_by_key: dict[RunKey, DirectLaunchIdentity] = {}
-    rows: list[dict[str, Any]] = []
+    rows: list[dict[str, JsonValue]] = []
     for run in runs:
         key = validated_run_key(run)
         previous = refreshed[key]
@@ -690,7 +690,7 @@ def _prepare_direct_launch_rows(
             if previous.get("target") not in (None, "")
             else {field: "" for field in launch_identity_by_key[key]}
         )
-        row = {
+        row: dict[str, JsonValue] = {
             **previous,
             **execution_identity,
             "status": previous.get("status") or "planned",
@@ -729,36 +729,38 @@ def _prepare_direct_launch_rows(
 
 def _commit_direct_launch_rows(
     workspace: Path,
-    runs: list[dict[str, Any]],
-    rows: list[dict[str, Any]],
-    workspace_by_key: dict[RunKey, dict[str, Any]],
+    runs: Sequence[Mapping[str, JsonValue]],
+    rows: list[dict[str, JsonValue]],
+    workspace_by_key: Mapping[RunKey, Mapping[str, JsonValue]],
     *,
     dry_run: bool,
     hooks: SchedulerHooks,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, str]], Sequence[Mapping[str, JsonValue]]]:
     commit_rows = []
     for row in rows:
-        committed_row = dict(row)
+        commit_row = dict(row)
         if dry_run and workspace_by_key[validated_run_key(row)].get("target") in (None, ""):
-            committed_row.update({field: "" for field in EXECUTION_IDENTITY_FIELDS})
-        commit_rows.append(committed_row)
+            commit_row.update({field: "" for field in EXECUTION_IDENTITY_FIELDS})
+        commit_rows.append(commit_row)
     committed = hooks.merge_manifest(workspace, commit_rows, lock_held=True)
     committed_by_key = {validated_run_key(row): row for row in committed}
     committed_rows = [committed_by_key[validated_run_key(run)] for run in runs]
+    launch_rows: Sequence[Mapping[str, JsonValue]]
     if dry_run:
         preview_by_key = {validated_run_key(row): row for row in rows}
-        launch_rows = []
+        preview_rows: list[Mapping[str, JsonValue]] = []
         for committed_row in committed_rows:
             preview = preview_by_key[validated_run_key(committed_row)]
             if committed_row.get("target") in (None, ""):
-                launch_rows.append(
+                preview_rows.append(
                     {
                         **committed_row,
                         **{field: preview.get(field, "") for field in EXECUTION_IDENTITY_FIELDS},
                     }
                 )
             else:
-                launch_rows.append(committed_row)
+                preview_rows.append(committed_row)
+        launch_rows = preview_rows
     else:
         launch_rows = committed_rows
     return committed_rows, launch_rows
@@ -768,13 +770,13 @@ def _refresh_external_capacity_runs(
     *,
     workspace: Path,
     owner_dir: Path,
-    workspace_by_key: dict[RunKey, dict[str, Any]],
+    workspace_by_key: dict[RunKey, dict[str, str]],
     expected_keys: set[RunKey],
     groups: list[list[Any]],
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     dry_run: bool,
     hooks: SchedulerHooks,
-) -> tuple[dict[RunKey, dict[str, Any]], dict[RunKey, tuple[Any, Any]]]:
+) -> tuple[dict[RunKey, dict[str, str]], dict[RunKey, tuple[JsonValue, JsonValue]]]:
     external_keys = []
     if groups:
         external_keys = [
@@ -791,12 +793,10 @@ def _refresh_external_capacity_runs(
         ]
     external_observed = observe_runs(owner_dir, workspace_by_key, external_keys, dry_run=dry_run)
     external_status_changes = external_observed.changes
-    for key in external_status_changes:
-        workspace_by_key[key] = external_observed.rows_by_key[key]
     if external_status_changes:
         committed = hooks.merge_manifest(
             workspace,
-            [workspace_by_key[key] for key in external_status_changes],
+            [external_observed.rows_by_key[key] for key in external_status_changes],
             lock_held=True,
         )
         workspace_by_key = {validated_run_key(row): row for row in committed}
@@ -814,13 +814,13 @@ def _refresh_external_capacity_runs(
 def _start_direct_launch_rows(
     *,
     workspace: Path,
-    rows: list[dict[str, Any]],
-    launchable: list[tuple[int, dict[str, Any]]],
+    rows: list[dict[str, JsonValue]],
+    launchable: list[tuple[int, dict[str, JsonValue]]],
     capacity: CapacityState,
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     launch_identity_by_key: dict[RunKey, DirectLaunchIdentity],
-    workspace_by_key: dict[RunKey, dict[str, Any]],
-    planned_by_key: dict[RunKey, dict[str, Any]],
+    workspace_by_key: Mapping[RunKey, Mapping[str, JsonValue]],
+    planned_by_key: Mapping[RunKey, Mapping[str, JsonValue]],
     execution_snapshot: ExecutionSnapshot | None,
     missing_pid_blocker: MissingPidCapacityError | None,
     dry_run: bool,
@@ -849,7 +849,7 @@ def _start_direct_launch_rows(
                 identity["pid_path"],
                 gpus,
             )
-            row.update(identity)
+            row.update(**identity)
             hooks.validate_run_update(
                 workspace_by_key[validated_run_key(row)],
                 row,
@@ -899,7 +899,7 @@ def _start_direct_launch_rows(
                 )
                 if execution.get("runtime_commit") not in (None, ""):
                     identity["planned_runtime_commit"] = str(execution["runtime_commit"])
-                row.update(identity)
+                row.update(**identity)
                 hooks.validate_run_update(
                     workspace_by_key[validated_run_key(row)],
                     row,
@@ -920,7 +920,7 @@ def _start_direct_launch_rows(
                 except RuntimeError:
                     process_identity = None
                 if process_identity is not None:
-                    row.update(process_identity)
+                    row.update(**process_identity)
             committed = hooks.merge_manifest(workspace, [row], lock_held=True)
             committed_by_key = {validated_run_key(item): item for item in committed}
             row.clear()
@@ -935,7 +935,7 @@ def _start_direct_launch_rows(
     return started_keys
 
 
-def _managed_scheduler_type(execution: dict[str, Any], runs: list[dict[str, Any]]) -> str:
+def _managed_scheduler_type(execution: Mapping[str, Any], runs: Sequence[Mapping[str, JsonValue]]) -> str:
     scheduler = execution.get("scheduler") or {}
     if not isinstance(scheduler, dict):
         raise ValueError("execution.scheduler must be a mapping.")
@@ -951,8 +951,8 @@ def _managed_scheduler_type(execution: dict[str, Any], runs: list[dict[str, Any]
 def _managed_launch_preflight(
     workspace: Path,
     owner_dir: Path,
-    runs: list[dict[str, Any]],
-) -> tuple[Path, set[RunKey], dict[RunKey, dict[str, Any]]]:
+    runs: Sequence[Mapping[str, JsonValue]],
+) -> tuple[Path, set[RunKey], dict[RunKey, dict[str, str]]]:
     snapshot_path = owner_dir / EXECUTION_SNAPSHOT_NAME
     exp_io.validate_managed_output_paths(
         workspace,
@@ -977,11 +977,11 @@ def _managed_launch_preflight(
 def _preflight_slurm_launch(
     workspace: Path,
     owner_dir: Path,
-    runs: list[dict[str, Any]],
+    runs: Sequence[Mapping[str, JsonValue]],
     *,
     dry_run: bool,
     hooks: SchedulerHooks,
-) -> tuple[Path, dict[RunKey, dict[str, Any]]]:
+) -> tuple[Path, dict[RunKey, dict[str, str]]]:
     snapshot_path, expected_keys, workspace_by_key = _managed_launch_preflight(workspace, owner_dir, runs)
     missing = expected_keys - set(workspace_by_key)
     if missing:
@@ -1023,17 +1023,17 @@ def _preflight_slurm_launch(
 def _launch_slurm_runs(
     workspace: Path,
     owner_dir: Path,
-    runs: list[dict[str, Any]],
-    execution: dict[str, Any],
+    runs: Sequence[Mapping[str, JsonValue]],
+    execution: Mapping[str, Any],
     options: LaunchOptions,
 ) -> LaunchResult:
     snapshot_path, workspace_by_key = _preflight_slurm_launch(
         workspace, owner_dir, runs, dry_run=options.dry_run, hooks=options.hooks
     )
 
-    status_changes: dict[RunKey, tuple[Any, Any]] = {}
+    status_changes: dict[RunKey, tuple[JsonValue, JsonValue]] = {}
     if not options.dry_run:
-        observed_rows = []
+        observed_rows: list[Mapping[str, JsonValue]] = []
         previous_statuses = {}
         for run in runs:
             key = validated_run_key(run)
@@ -1053,13 +1053,13 @@ def _launch_slurm_runs(
             if workspace_by_key[key].get("status") != before
         }
 
-    preview_rows = []
+    preview_rows: list[Mapping[str, JsonValue]] = []
     for run in runs:
         key = validated_run_key(run)
         previous = workspace_by_key[key]
         identity = _slurm_execution_identity(execution, run)
         if options.dry_run and previous.get("target") in (None, ""):
-            preview_rows.append({**previous, **identity})
+            preview_rows.append(dict(previous, **identity))
         else:
             preview_rows.append(previous)
 
@@ -1091,7 +1091,7 @@ def _launch_slurm_runs(
         ]
         exp_io.validate_managed_output_paths(owner_dir, frozen_paths, remote=remote)
         for run in launchable:
-            script_text = exp_io.read_text_at(run["scheduler_script"], remote=remote)
+            script_text = exp_io.read_text_at(str(run["scheduler_script"]), remote=remote)
             if hashlib.sha256(script_text.encode()).hexdigest() != run["scheduler_script_sha256"]:
                 raise ValueError(f"Frozen Slurm script changed before submission: {run['scheduler_script']}")
         validated_snapshot = options.hooks.validated_snapshot or validated_execution_snapshot
@@ -1121,14 +1121,12 @@ def _launch_slurm_runs(
             key = validated_run_key(run)
             previous = workspace_by_key[key]
             cluster = slurm.controller_cluster(execution, timeout=LAUNCH_TIMEOUT_SECONDS)
-            submitting = {
-                **previous,
+            claim: dict[str, JsonValue] = dict(
+                previous,
                 **_slurm_execution_identity(execution, run, execution_snapshot_sha256),
-                "status": "submitting",
-                "scheduler_cluster": cluster,
-                "scheduler_observed_at": utc_now(),
-            }
-            committed = options.hooks.merge_manifest(workspace, [submitting], lock_held=True)
+            )
+            claim.update(status="submitting", scheduler_cluster=cluster, scheduler_observed_at=utc_now())
+            committed = options.hooks.merge_manifest(workspace, [claim], lock_held=True)
             workspace_by_key = {validated_run_key(row): row for row in committed}
             submitting = workspace_by_key[key]
             if submitting.get("status") != "submitting":
@@ -1176,7 +1174,7 @@ def _launch_slurm_runs(
                 break
 
     committed_rows = [workspace_by_key[validated_run_key(run)] for run in runs]
-    launch_rows = preview_rows if options.dry_run else committed_rows
+    launch_rows: Sequence[Mapping[str, JsonValue]] = preview_rows if options.dry_run else committed_rows
     result = LaunchResult(
         committed_rows=committed_rows,
         launch_rows=launch_rows,
@@ -1210,7 +1208,7 @@ def _launch_slurm_runs(
 
 
 def _slurm_execution_identity(
-    execution: dict[str, Any], run: dict[str, Any], execution_snapshot_sha256: str | None = None
+    execution: Mapping[str, Any], run: Mapping[str, JsonValue], execution_snapshot_sha256: str | None = None
 ) -> SlurmLaunchIdentity:
     target = str(execution.get("target", "local") or "local")
     inner = slurm.submission_command(
@@ -1238,12 +1236,12 @@ def _slurm_execution_identity(
 
 
 def _submitted_slurm_row(
-    row: dict[str, Any],
+    row: Mapping[str, JsonValue],
     identity: slurm.JobIdentity,
     *,
     raw_state: str,
     status: str = "queued",
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     return {
         **row,
         "status": status,
@@ -1258,10 +1256,10 @@ def _submitted_slurm_row(
 
 def _reconcile_slurm_submission(
     owner_dir: Path,
-    execution: dict[str, Any],
-    row: dict[str, Any],
+    execution: Mapping[str, Any],
+    row: Mapping[str, str],
     cause: BaseException,
-) -> tuple[dict[str, Any], RuntimeError | None]:
+) -> tuple[dict[str, JsonValue], RuntimeError | None]:
     terminal = _read_slurm_json(owner_dir, execution, row["scheduler_result_path"])
     if terminal:
         observed = observe_slurm_run(owner_dir, execution, row)
@@ -1276,7 +1274,7 @@ def _reconcile_slurm_submission(
         )
     except Exception as reconcile_error:
         detail = f"{cause}; reconciliation failed: {reconcile_error}"
-        unresolved = {**row, "scheduler_reason": detail, "scheduler_observed_at": utc_now()}
+        unresolved: dict[str, JsonValue] = {**row, "scheduler_reason": detail, "scheduler_observed_at": utc_now()}
         return unresolved, RuntimeError(f"Slurm submission outcome is uncertain: {detail}")
     if len(matches) == 1:
         job_observation = matches[0]
@@ -1307,13 +1305,13 @@ def _reconcile_slurm_submission(
 
 def stop_slurm_run_locked(
     workspace: Path,
-    workspace_rows: list[dict[str, Any]],
+    workspace_rows: list[dict[str, str]],
     key: RunKey,
     *,
     reason: str,
     hooks: SchedulerHooks,
     now: Callable[[], str],
-) -> tuple[list[dict[str, Any]], bool]:
+) -> tuple[list[dict[str, str]], bool]:
     # The caller holds managed_run_lock and supplies its freshly read, validated canonical rows.
     previous = next(row for row in workspace_rows if validated_run_key(row) == key)
     run_id = key[1]
@@ -1344,7 +1342,7 @@ def stop_slurm_run_locked(
         raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
     if target == "ssh" and (not isinstance(host, str) or not host.strip()):
         raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
-    execution = {"target": target, "host": host}
+    execution: dict[str, JsonValue] = {"target": target, "host": host}
     if scheduler_direct_controller(previous):
         execution["scheduler"] = {"direct_controller": True}
     job_id = str(previous.get("scheduler_job_id") or "")
@@ -1387,7 +1385,7 @@ def stop_slurm_run_locked(
 
 
 class SlurmMonitorContext:
-    def __init__(self, rows: Iterable[dict[str, Any]], *, owner_dir: str | Path, remote: str | None = None):
+    def __init__(self, rows: Iterable[Mapping[str, str]], *, owner_dir: str | Path, remote: str | None = None):
         self.owner_dir = Path(owner_dir)
         groups: dict[tuple[str, str, str, bool], set[str]] = {}
         file_groups: dict[tuple[str, str], list[tuple[str, str]]] = {}
@@ -1407,7 +1405,7 @@ class SlurmMonitorContext:
         self.file_snapshots: dict[tuple[str, str, str], dict[str, str | None] | None] = {}
 
     @staticmethod
-    def _file_route(row: dict[str, Any]) -> tuple[str, str] | None:
+    def _file_route(row: Mapping[str, str]) -> tuple[str, str] | None:
         target = row.get("target")
         host = str(row.get("host") or "").strip() if target == "ssh" else ""
         if (
@@ -1420,7 +1418,9 @@ class SlurmMonitorContext:
             return None
         return target, host
 
-    def sidecar(self, owner_dir: Path, execution: dict[str, Any], row: dict[str, Any], field: str) -> dict[str, Any]:
+    def sidecar(
+        self, owner_dir: Path, execution: Mapping[str, Any], row: Mapping[str, str], field: str
+    ) -> dict[str, JsonValue]:
         path = str(row[field])
         route = self._file_route(row)
         group = self.file_groups.get(route, ()) if route is not None else ()
@@ -1461,7 +1461,7 @@ class SlurmMonitorContext:
         return _parse_slurm_json(snapshot[path], path)
 
     @staticmethod
-    def _route(row: dict[str, Any]) -> tuple[str, str, str, bool] | None:
+    def _route(row: Mapping[str, str]) -> tuple[str, str, str, bool] | None:
         target = row.get("target")
         host = str(row.get("host") or "").strip() if target == "ssh" else ""
         topology = row.get("scheduler_direct_controller")
@@ -1476,7 +1476,7 @@ class SlurmMonitorContext:
             return None
         return target, host, str(row["scheduler_cluster"]), topology == "true"
 
-    def active_job(self, execution: dict[str, Any], row: dict[str, Any]) -> slurm.JobObservation | None:
+    def active_job(self, execution: Mapping[str, Any], row: Mapping[str, str]) -> slurm.JobObservation | None:
         route = self._route(row)
         if route is None:
             return None
@@ -1501,12 +1501,12 @@ class SlurmMonitorContext:
 
 def observe_slurm_run(
     owner_dir: str | Path,
-    execution: dict[str, Any],
-    row: dict[str, Any],
+    execution: Mapping[str, Any],
+    row: Mapping[str, str],
     *,
     health: bool = False,
     monitor_context: SlurmMonitorContext | None = None,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     """Observe a bound Slurm run and return evidence for the caller to commit.
 
     Uses owner_dir for managed sidecars and execution for scheduler routing;
@@ -1547,7 +1547,7 @@ def observe_slurm_run(
         if monitor_context is not None
         else _read_slurm_json(owner, execution, row["scheduler_result_path"])
     )
-    observation: dict[str, Any] = {**row, "scheduler_observed_at": utc_now()}
+    observation: dict[str, JsonValue] = {**row, "scheduler_observed_at": utc_now()}
     job_id, terminal_exit_code, terminal_identity = _observe_slurm_sidecars(
         owner=owner,
         execution=execution,
@@ -1681,13 +1681,13 @@ def observe_slurm_run(
 def _observe_slurm_sidecars(
     *,
     owner: Path,
-    execution: dict[str, Any],
-    row: dict[str, Any],
-    terminal: Mapping[str, Any],
+    execution: Mapping[str, Any],
+    row: Mapping[str, str],
+    terminal: Mapping[str, JsonValue],
     token: str,
     job_id: str,
     cluster: str,
-    observation: dict[str, Any],
+    observation: dict[str, JsonValue],
     monitor_context: SlurmMonitorContext | None,
 ) -> tuple[str, int | None, slurm.JobIdentity | None]:
     terminal_exit_code: int | None = None
@@ -1745,8 +1745,8 @@ def _apply_slurm_state(
     active: slurm.JobObservation,
     stop_requested: bool,
     terminal_exit_code: int | None,
-    observation: dict[str, Any],
-    row: dict[str, Any],
+    observation: dict[str, JsonValue],
+    row: Mapping[str, str],
 ) -> None:
     # Sidecars supply lookup candidates, never first-bind identity without scheduler evidence on the frozen route.
     if not canonical_job_id:
@@ -1799,13 +1799,13 @@ def _slurm_sidecar_runtime_commit(payload: Mapping[str, Any]) -> str:
     return value
 
 
-def _read_slurm_json(owner_dir: Path, execution: dict[str, Any], path: str | Path) -> dict[str, Any]:
+def _read_slurm_json(owner_dir: Path, execution: Mapping[str, Any], path: str | Path) -> dict[str, JsonValue]:
     remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
     text = exp_io.read_managed_output_texts_at(owner_dir, [path], remote=remote)[str(path)]
     return _parse_slurm_json(text, path)
 
 
-def _parse_slurm_json(text: str | None, path: str | Path) -> dict[str, Any]:
+def _parse_slurm_json(text: str | None, path: str | Path) -> dict[str, JsonValue]:
     if not text:
         return {}
     try:
@@ -1817,7 +1817,9 @@ def _parse_slurm_json(text: str | None, path: str | Path) -> dict[str, Any]:
     return payload
 
 
-def _slurm_artifact_observation(row: dict[str, Any], *, health: bool = False, health_error: str = "") -> dict[str, Any]:
+def _slurm_artifact_observation(
+    row: dict[str, JsonValue], *, health: bool = False, health_error: str = ""
+) -> dict[str, JsonValue]:
     observed_artifacts = evidence.runtime_artifacts(row)
     if observed_artifacts is not None:
         run_manifest, _manifest, checkpoints = observed_artifacts
@@ -1845,7 +1847,7 @@ def _slurm_artifact_observation(row: dict[str, Any], *, health: bool = False, he
             "scheduler_allocation_age_seconds": "" if allocation_age is None else allocation_age,
             "log_age_seconds": "" if log_age is None else log_age,
         }
-        row.update(health_fields)
+        row.update(**health_fields)
     row["monitored_at"] = utc_now()
     return row
 
@@ -1864,11 +1866,11 @@ def _timestamp_age_seconds(value: Any) -> int | None:
 
 def validated_execution_snapshot(
     owner_dir: str | Path,
-    execution: dict[str, Any],
-    runs: list[dict[str, Any]],
-    workspace_by_key: dict[RunKey, dict[str, Any]],
+    execution: Mapping[str, Any],
+    runs: Sequence[Mapping[str, JsonValue]],
+    workspace_by_key: Mapping[RunKey, Mapping[str, JsonValue]],
     *,
-    inspector: Callable[[dict[str, Any], list[dict[str, Any]]], ExecutionSnapshot] | None = None,
+    inspector: Callable[[Mapping[str, Any], Sequence[Mapping[str, JsonValue]]], ExecutionSnapshot] | None = None,
     plan_label: str = "managed",
 ) -> tuple[ExecutionSnapshot, bool]:
     root = Path(owner_dir)
@@ -1914,10 +1916,10 @@ def write_execution_snapshot_file(path: str | Path, snapshot: ExecutionSnapshot)
 
 
 def inspect_execution_target(
-    execution: dict[str, Any],
-    runs: list[dict[str, Any]],
+    execution: Mapping[str, Any],
+    runs: Sequence[Mapping[str, JsonValue]],
     *,
-    command_runner: Callable[[dict[str, Any], list[str]], subprocess.CompletedProcess] | None = None,
+    command_runner: Callable[[Mapping[str, Any], list[str]], subprocess.CompletedProcess] | None = None,
     plan_label: str = "managed",
 ) -> ExecutionSnapshot:
     modules: set[str] = set()
@@ -2042,7 +2044,7 @@ def inspect_execution_target(
     }
 
 
-def run_execution_command(execution: dict[str, Any], command: list[str]) -> subprocess.CompletedProcess:
+def run_execution_command(execution: Mapping[str, Any], command: list[str]) -> subprocess.CompletedProcess:
     workdir = str(execution.get("workdir") or REPO_ROOT)
     inner = f"export PYTHONPATH={_sh(workdir)} && " + " ".join(_sh(part) for part in command)
     run = ["bash", "-c", inner]
@@ -2059,7 +2061,7 @@ def run_execution_command(execution: dict[str, Any], command: list[str]) -> subp
 
 
 def build_launch_command(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     script: Path,
     log_path: str | Path,
     pid_path: str | Path,
@@ -2163,7 +2165,7 @@ def build_launch_command(
 
 
 def start_process(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     command: str,
     *,
     retry_pre_spawn_failure: bool = True,

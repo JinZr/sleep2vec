@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-from typing import Any, Final, TypedDict, TypeGuard, overload
+from typing import Any, Final, TypeAlias, TypedDict, TypeGuard, overload
 
 import yaml
 
@@ -29,6 +29,8 @@ VARIANTLESS_TASKS = {"sleep2stat"}
 # through this constant).
 CONFIG_FINETUNE_SECTION: Final = "finetune"
 _FULL_GIT_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}")
+#: A value of the JSON data model, as ``json.loads`` returns it and JSON-backed records hold it.
+JsonValue: TypeAlias = "str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]"
 
 
 class _ConfigProvenance(TypedDict, total=False):
@@ -174,8 +176,16 @@ class EmptySummary(TypedDict):
     pass
 
 
+class SexAgeHeadDetails(TypedDict):
+    name: str
+    hidden_dim: int
+    dropout: float
+    act: str
+    kwargs: dict[str, int]
+
+
 class _SexAgeModelDetails(TypedDict, total=False):
-    head_details: dict[str, Any]
+    head_details: SexAgeHeadDetails
 
 
 class SexAgeModelSummary(_SexAgeModelDetails):

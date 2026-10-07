@@ -49,7 +49,7 @@ from .experiment_workspace import (
     validated_run_key,
 )
 from .manifests import read_json, read_rows, utc_now, validate_managed_header
-from .models import REPO_ROOT
+from .models import REPO_ROOT, JsonValue
 
 EXECUTION_IDENTITY_FIELDS = ("python", "runtime_commit")
 
@@ -579,7 +579,7 @@ def reconcile_interrupted_launch(
     with managed_scheduler.managed_run_lock(workspace):
         artifacts.read_hparam_plan(plan_dir)
         canonical_rows = read_run_manifest(workspace)
-    updates = []
+    updates: list[Mapping[str, JsonValue]] = []
     unresolved = set()
     reconciled = set()
     for row in canonical_rows:
@@ -592,7 +592,7 @@ def reconcile_interrupted_launch(
                 continue
             if row.get("status") not in {"submitting", "unknown_scheduler"}:
                 continue
-            execution: dict[str, Any] = {"target": row["target"]}
+            execution: dict[str, JsonValue] = {"target": row["target"]}
             if row["target"] == "ssh":
                 execution["host"] = row["host"]
             if scheduler_direct_controller(row):
@@ -615,16 +615,11 @@ def reconcile_interrupted_launch(
             continue
         if process_identity is not None:
             reconciled.add(key)
-            updates.append(
-                {
-                    "step_id": row["step_id"],
-                    "run_id": row["run_id"],
-                    "status": "launched",
-                    # The launch may have outlived its first commit; recover the complete immutable identity.
-                    **process_identity,
-                    "launched_at": row.get("launched_at") or utc_now(),
-                }
-            )
+            update: dict[str, JsonValue] = {"step_id": row["step_id"], "run_id": row["run_id"], "status": "launched"}
+            # The launch may have outlived its first commit; recover the complete immutable identity.
+            update.update(**process_identity)
+            update["launched_at"] = row.get("launched_at") or utc_now()
+            updates.append(update)
     if updates:
         canonical_rows = merge_run_manifest(workspace, updates)
     return canonical_rows, unresolved, reconciled

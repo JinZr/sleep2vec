@@ -9,6 +9,7 @@ placement belong to ``managed_scheduler``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, NamedTuple
 
 from .models import coerce_list
@@ -23,8 +24,8 @@ class GpuRuleIssue(NamedTuple):
 
 
 def gpu_group_plan(
-    execution: dict[str, Any],
-    runtime: dict[str, Any],
+    execution: Mapping[str, Any],
+    runtime: Mapping[str, Any],
     *,
     max_concurrent: int | None = None,
 ) -> tuple[list[list[Any]], list[GpuRuleIssue]]:

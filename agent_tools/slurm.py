@@ -198,7 +198,7 @@ def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> SlurmRe
 
 
 def fixed_node_resource_capacity(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     resources: SlurmResources,
     planned_runs: int,
     *,
@@ -308,7 +308,7 @@ def submit_token(run: Mapping[str, Any], resources: SlurmResources, runtime_comm
 def render_batch_script(
     *,
     run: Mapping[str, Any],
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     resources: SlurmResources,
     token: str,
     result_path: str | Path,
@@ -558,7 +558,7 @@ def run_frozen_job(
 
 
 def run_command(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     argv: list[str],
     *,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
@@ -575,7 +575,7 @@ def run_command(
 
 
 def controller_cluster(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     *,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
 ) -> str:
@@ -601,7 +601,7 @@ def parse_sbatch_output(stdout: str) -> JobIdentity:
 
 
 def submit(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     script: str,
     submit_token: str,
     *,
@@ -619,7 +619,7 @@ def submit(
 
 
 def active_jobs(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     *,
     job_id: str | Sequence[str] | None = None,
     submit_token: str | None = None,
@@ -651,7 +651,7 @@ def active_jobs(
 
 
 def show_job(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     job_id: str,
     *,
     cluster: str | None = None,
@@ -703,7 +703,7 @@ def show_job(
 
 
 def accounting_job(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     job_id: str,
     *,
     submit_token: str,
@@ -730,7 +730,7 @@ def accounting_job(
 
 
 def cluster_scheduling_capabilities(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     partition: str,
     *,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
@@ -791,7 +791,7 @@ def parse_cluster_scheduling_capabilities(
 
 
 def cancel(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     job_id: str,
     *,
     cluster: str | None = None,
@@ -807,7 +807,7 @@ def cancel(
         raise SlurmCommandError("cancellation", result)
 
 
-def _follow_up_cluster_name(execution: dict[str, Any], cluster: str | None) -> str:
+def _follow_up_cluster_name(execution: Mapping[str, Any], cluster: str | None) -> str:
     cluster_name = _cluster_name(cluster)
     scheduler = execution["scheduler"] if isinstance(execution.get("scheduler"), dict) else {}
     return "" if scheduler.get("direct_controller") is True else cluster_name

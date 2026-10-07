@@ -7,6 +7,7 @@ spawning a process and recording it is repaired rather than double-launched.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import json
 import math
 from pathlib import Path
@@ -40,6 +41,7 @@ from .experiment_workspace import (
     write_status_report,
 )
 from .manifests import utc_now, write_rows
+from .models import JsonValue
 
 LAUNCH_TIMEOUT_SECONDS = scheduler.LAUNCH_TIMEOUT_SECONDS
 EXECUTION_SNAPSHOT_NAME = scheduler.EXECUTION_SNAPSHOT_NAME
@@ -338,9 +340,9 @@ def _launch_hparam_runs(
 
 def _validated_execution_snapshot(
     run_dir: Path,
-    execution: dict[str, Any],
-    runs: list[dict[str, Any]],
-    workspace_by_key: dict[tuple[str, str], dict[str, Any]],
+    execution: Mapping[str, Any],
+    runs: Sequence[Mapping[str, JsonValue]],
+    workspace_by_key: Mapping[tuple[str, str], Mapping[str, JsonValue]],
 ) -> tuple[scheduler.ExecutionSnapshot, bool]:
     return scheduler.validated_execution_snapshot(
         run_dir,
@@ -352,7 +354,9 @@ def _validated_execution_snapshot(
     )
 
 
-def _inspect_execution_target(execution: dict[str, Any], runs: list[dict[str, Any]]) -> scheduler.ExecutionSnapshot:
+def _inspect_execution_target(
+    execution: Mapping[str, Any], runs: Sequence[Mapping[str, JsonValue]]
+) -> scheduler.ExecutionSnapshot:
     return scheduler.inspect_execution_target(
         execution,
         runs,
@@ -361,7 +365,7 @@ def _inspect_execution_target(execution: dict[str, Any], runs: list[dict[str, An
     )
 
 
-def _run_execution_command(execution: dict[str, Any], command: list[str]) -> subprocess.CompletedProcess:
+def _run_execution_command(execution: Mapping[str, Any], command: list[str]) -> subprocess.CompletedProcess:
     return scheduler.run_execution_command(execution, command)
 
 
@@ -419,7 +423,7 @@ def monitor_hparam_runs(
         previous_rows = {key: workspace_by_key[key] for key in expected_keys}
         # Anchor CLI-relative owners without resolving aliases or removing raw '..' components.
         monitor_context = scheduler.SlurmMonitorContext(previous_rows.values(), owner_dir=root.absolute())
-        rows = []
+        rows: list[Mapping[str, JsonValue]] = []
         for run in plan["runs"]:
             key = validated_run_key(run)
             prior = previous_rows[key]
@@ -427,7 +431,7 @@ def monitor_hparam_runs(
                 rows.append(prior)
                 continue
             if scheduler_type(prior) == "slurm":
-                execution: dict[str, Any] = {"target": prior["target"]}
+                execution: dict[str, JsonValue] = {"target": prior["target"]}
                 if prior["target"] == "ssh":
                     execution["host"] = prior["host"]
                 if scheduler_direct_controller(prior):
@@ -644,7 +648,7 @@ def _gpu_groups(recipe: dict[str, Any]) -> list[list[Any]]:
 
 
 def _launch_command(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     script: Path,
     log_path: str | Path,
     pid_path: str | Path,
@@ -676,5 +680,5 @@ def _parent_path(path: str | Path) -> str:
     return scheduler._parent_path(path)
 
 
-def _start_process(execution: dict[str, Any], command: str) -> str:
+def _start_process(execution: Mapping[str, Any], command: str) -> str:
     return scheduler.start_process(execution, command)
