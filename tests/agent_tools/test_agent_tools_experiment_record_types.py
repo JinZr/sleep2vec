@@ -161,14 +161,16 @@ def test_experiment_record_types_reach_callers(tmp_path):
             if raw is not None:
                 raw["unvalidated_extra"] = None
 
-            def research_entry(normalized: research_log.NormalizedResearchLogEntry) -> None:
-                body: str = normalized["body"]
-                normalized["body"] = None  # type: ignore[typeddict-item]
-                normalized["evidences"]  # type: ignore[typeddict-item]
-                evidence = normalized["evidence"][0]
-                locator: str = evidence["locator"]
-                evidence["sha256"] = None  # type: ignore[typeddict-item]
-
+            entry = workspace._normalized_research_log_entry(
+                {}, experiment_id="unit", managed_rows=[], root=Path("/workspace"), remote=None,
+            )
+            normalized: research_log.NormalizedResearchLogEntry = entry
+            body: str = normalized["body"]
+            normalized["body"] = None  # type: ignore[typeddict-item]
+            normalized["evidences"]  # type: ignore[typeddict-item]
+            evidence = normalized["evidence"][0]
+            locator: str = evidence["locator"]
+            evidence["sha256"] = None  # type: ignore[typeddict-item]
             minimal_evidence: research_log.ResearchLogEvidence = {"label": "report", "locator": "../report"}
             scope: research_log.ResearchLogScope = {"step_id": "train"}
             scope["run_ids"] = [1]  # type: ignore[list-item]
