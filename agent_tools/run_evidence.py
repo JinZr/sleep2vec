@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import calendar
 import codecs
+from collections.abc import Mapping
 import json
 import locale
 import os
@@ -36,7 +37,7 @@ from .experiment_workspace import (
     merge_run_row,
 )
 from .manifests import read_json, utc_now
-from .models import is_full_git_object_id
+from .models import JsonValue, is_full_git_object_id
 from .progress import read_progress
 from .transport import SSH_TIMEOUT_SECONDS
 
@@ -112,11 +113,11 @@ class ProcessIdentityError(RuntimeError):
 def status_row(
     run_dir: Path,
     row: dict[str, Any],
-    previous: dict[str, Any] | None = None,
+    previous: Mapping[str, Any] | None = None,
     *,
     script_commits_terminal_status: bool,
     health: bool = False,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     """Observe a direct run and return a row merged with caller-supplied history.
 
     Reads local/SSH process identity, logs and runtime artifacts; health adds
@@ -233,14 +234,16 @@ def status_row(
         observation["process_identity_error"] = process_identity_error
     output = merge_run_row(previous, observation)
     if health:
-        output.update(health_fields(run_dir, row, previous, pid, running_state, output["status"], health_checkpoints))
+        output.update(
+            **health_fields(run_dir, row, previous, pid, running_state, str(output["status"]), health_checkpoints)
+        )
     return output
 
 
 def _direct_run_status(
     *,
     row: dict[str, Any],
-    previous: dict[str, Any],
+    previous: Mapping[str, Any],
     observed_status: str,
     pid: int | None,
     running_state: bool | None,
@@ -750,7 +753,7 @@ def log_tail_and_age(path: Any, row: dict[str, Any], lines: int = 8) -> tuple[st
 def health_fields(
     run_dir: Path,
     row: dict[str, Any],
-    previous: dict[str, Any],
+    previous: Mapping[str, Any],
     pid: int | None,
     running_state: bool | None,
     status: str,
@@ -950,7 +953,7 @@ def _to_int(value: Any) -> int | None:
         return None
 
 
-def progress_is_fresh(progress: dict[str, Any], previous: dict[str, Any]) -> bool:
+def progress_is_fresh(progress: dict[str, Any], previous: Mapping[str, Any]) -> bool:
     if progress.get("status") != "running":
         return False
     processed = _to_int(progress.get("processed"))

@@ -27,7 +27,7 @@ from typing import Any, Literal, TypedDict, cast
 import yaml
 
 from . import experiment_io as exp_io, research_log, transport
-from .models import REPO_ROOT, is_full_git_object_id, json_ready
+from .models import REPO_ROOT, JsonValue, is_full_git_object_id, json_ready
 
 
 class RunIdentity(TypedDict):
@@ -1045,7 +1045,7 @@ def verify_run_snapshot(run: dict[str, Any]) -> None:
             raise ValueError(f"Run input snapshot hash changed after planning: {snapshot.get('field')}: {path}")
 
 
-def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+def merge_run_row(existing: Mapping[str, Any], incoming: Mapping[str, Any]) -> dict[str, JsonValue]:
     existing_status = existing.get("status")
     incoming_status = incoming.get("status")
     existing_stop_requested_at = existing.get("stop_requested_at")
@@ -1054,7 +1054,7 @@ def merge_run_row(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[st
         and existing_stop_requested_at not in (None, "")
         and incoming.get("stop_requested_at") != existing_stop_requested_at
     )
-    merged = {**existing, **json_ready(incoming)}
+    merged: dict[str, JsonValue] = {**existing, **json_ready(incoming)}
     # A conflicting submission receipt is quarantined; later scheduler observations cannot authenticate its route.
     if existing.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
         merged.update(
@@ -1196,7 +1196,7 @@ def scheduler_type(row: Mapping[str, Any]) -> str:
     return value
 
 
-def scheduler_direct_controller(row: dict[str, Any]) -> bool:
+def scheduler_direct_controller(row: Mapping[str, Any]) -> bool:
     raw_value = row.get("scheduler_direct_controller")
     if raw_value in (None, ""):
         return False
@@ -1206,7 +1206,7 @@ def scheduler_direct_controller(row: dict[str, Any]) -> bool:
     return value == "true"
 
 
-def has_managed_launch_evidence(row: dict[str, Any]) -> bool:
+def has_managed_launch_evidence(row: Mapping[str, Any]) -> bool:
     fields = EXECUTION_IDENTITY_FIELDS | {
         "scheduler_job_id",
         "scheduler_cluster",
@@ -1284,15 +1284,16 @@ def validate_checkpoint_ownership(
 
 
 def merge_run_manifest(
-    root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None, lock_held: bool = False
-) -> list[dict[str, Any]]:
+    root: str | Path, rows: Sequence[Mapping[str, Any]], *, remote: str | None = None, lock_held: bool = False
+) -> list[dict[str, str]]:
     """Merge incoming rows into canonical state and refresh run-matrix projections.
 
     Requires an existing run_manifest.tsv and experiment.yaml with an experiment
     ID and a status other than completed. Rereads canonical rows, validates frozen
     fields and scheduler identity, and applies merge_run_row lifecycle rules.
     Existing order is retained and new identities are appended; new runs must
-    name this experiment. Returns all committed rows, not just the input updates.
+    name this experiment. Returns all committed rows, not just the input updates,
+    parsed back from the committed run_manifest.tsv text like read_run_manifest.
 
     Local calls acquire run_manifest.tsv.lock unless lock_held=True, which means
     the caller already owns that lock. remote selects SSH reads and conditional
@@ -1349,7 +1350,9 @@ def merge_run_manifest(
                 raise FileNotFoundError(f"Managed run manifest is missing: {path}")
             current_text = exp_io.read_text_at(path, remote=remote)
             existing = _parse_run_manifest(current_text, path)
-            by_id = {managed_run_key(row): dict(row) for row in existing}
+            by_id: dict[tuple[str, str] | None, dict[str, JsonValue]] = {
+                managed_run_key(row): dict(row) for row in existing
+            }
             order = [managed_run_key(row) for row in existing]
             # Incoming rows were validated before the lock, so their managed keys cannot be None.
             new_rows = [row for row in rows if managed_run_key(row) not in by_id]
@@ -1394,11 +1397,10 @@ def merge_run_manifest(
         else:
             raise RuntimeError(f"Canonical run manifest changed during three commit attempts: {path}")
         if remote:
-            projection_rows = committed
+            projection_rows: Sequence[Mapping[str, JsonValue]] = committed
             projection_manifest_text = replacement
             for _projection_attempt in range(3):
                 if _write_remote_run_matrix_if_current(root, projection_rows, projection_manifest_text, remote):
-                    committed = projection_rows
                     break
                 # A concurrent canonical commit won the shared lock; project only its newly observed version.
                 current_text = exp_io.read_text_at(path, remote=remote)
@@ -1406,11 +1408,13 @@ def merge_run_manifest(
                 projection_manifest_text = current_text
             else:
                 raise RuntimeError(f"Canonical run manifest changed during three projection attempts: {path}")
+            committed_text = projection_manifest_text
         else:
             write_run_matrix(root, committed)
+            committed_text = replacement
     finally:
         lock_stack.close()
-    return committed
+    return _parse_run_manifest(committed_text, path)
 
 
 def commit_run_start(
@@ -1420,7 +1424,7 @@ def commit_run_start(
     *,
     planned_runtime_commit: str,
     runtime_commit: str,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, str]]:
     root = Path(root)
     lock_path = root / "run_manifest.tsv.lock"
     exp_io.validate_managed_output_paths(root, [lock_path])
@@ -1458,7 +1462,7 @@ def commit_run_start(
         )
 
 
-def _run_matrix_text(rows: list[dict[str, Any]]) -> tuple[str, str]:
+def _run_matrix_text(rows: Sequence[Mapping[str, Any]]) -> tuple[str, str]:
     if rows:
         buffer = io.StringIO()
         fieldnames = sorted({key for row in rows for key in row})
@@ -1509,7 +1513,7 @@ def _run_matrix_text(rows: list[dict[str, Any]]) -> tuple[str, str]:
 
 def _write_remote_run_matrix_if_current(
     root: Path,
-    rows: list[dict[str, Any]],
+    rows: Sequence[Mapping[str, Any]],
     manifest_text: str,
     remote: str,
 ) -> bool:
@@ -1539,7 +1543,7 @@ def _write_remote_run_matrix_if_current(
     raise RuntimeError(f"Remote run-matrix projection outcome may be unknown on {remote}: {detail}")
 
 
-def write_run_matrix(root: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> Path:
+def write_run_matrix(root: str | Path, rows: Sequence[Mapping[str, Any]], *, remote: str | None = None) -> Path:
     root = Path(root)
     validate_managed_run_rows(rows, source="run_manifest.tsv", cardinality="one_per_run")
     matrix_path = root / "run_matrix.csv"

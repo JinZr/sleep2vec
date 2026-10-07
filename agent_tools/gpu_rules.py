@@ -24,7 +24,7 @@ class GpuRuleIssue(NamedTuple):
 
 
 def gpu_group_plan(
-    execution: dict[str, Any],
+    execution: Mapping[str, Any],
     runtime: Mapping[str, Any],
     *,
     max_concurrent: int | None = None,

@@ -155,6 +155,9 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   in `experiment_sources`, and projections/status in `experiment_tracking` behind `experiments`;
   see [canonical state](../agent_contracts/run_manifest.md#canonical-state-and-projections)
   and the [status read-set](../agent_contracts/experiment_workspace.md#read-only-status-and-advisory-actions).
+- Spell decoded JSON values as `models.JsonValue`, not `Any`. Canonical run rows are the `dict[str, str]`
+  that `read_run_manifest` and `merge_run_manifest` return; observations, in-flight launch rows and frozen
+  plan runs are `dict[str, JsonValue]` or read-only `Mapping[str, JsonValue]`.
 - Reuse `hparam_selection` and `checkpoint_test_results` for
   [selection and selected-candidate consumers](../agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers).
   Append semantic notes through `experiments.append_experiment_note` and `research_log`,

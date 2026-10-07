@@ -60,7 +60,7 @@ from .experiment_workspace import (
     run_identity,
 )
 from .manifests import read_json, write_json, write_text
-from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, ConfigSummaryInput, coerce_list, resolve_repo_path
+from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, ConfigSummaryInput, JsonValue, coerce_list, resolve_repo_path
 from .repo import repo_summary
 
 FROZEN_FINAL_EVAL_CONFIG_NAME = plan_contract.FROZEN_FINAL_EVAL_CONFIG_NAME
@@ -1294,7 +1294,7 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
 
 
 def _inspect_hparam_execution_target(
-    execution: dict[str, Any], runs: list[dict[str, Any]]
+    execution: Mapping[str, Any], runs: Sequence[Mapping[str, JsonValue]]
 ) -> managed_scheduler.ExecutionSnapshot:
     return managed_scheduler.inspect_execution_target(execution, runs, plan_label="hparam")
 

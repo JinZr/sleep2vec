@@ -14,7 +14,7 @@ or managed path validation belong to ``experiment_io``.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import csv
 import json
 from pathlib import Path
@@ -68,7 +68,7 @@ def read_rows(path: str | Path, *, require_managed_identity: bool = False) -> li
     return rows
 
 
-def write_rows(path: str | Path, rows: list[dict[str, Any]]) -> None:
+def write_rows(path: str | Path, rows: Sequence[Mapping[str, Any]]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = sorted({key for row in rows for key in row}) if rows else ["run_id"]
