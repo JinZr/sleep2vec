@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 
+from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS
 import pytest
 
 from agent_tools import experiment_workspace, managed_scheduler, python_programs, run_evidence, runtime_sync, transport
@@ -506,7 +507,7 @@ def test_direct_launch_holds_runtime_sync_through_verification_head_capture_and_
     identity = None
 
     def wait_for(path: Path) -> None:
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + SUBPROCESS_WAIT_SECONDS
         while not path.exists():
             if launcher is not None and launcher.poll() is not None:
                 stdout, stderr = launcher.communicate()
@@ -529,7 +530,7 @@ def test_direct_launch_holds_runtime_sync_through_verification_head_capture_and_
         assert _git(runtime, "rev-parse", "HEAD") == first
 
         popen_release.touch()
-        stdout, stderr = launcher.communicate(timeout=10)
+        stdout, stderr = launcher.communicate(timeout=SUBPROCESS_WAIT_SECONDS)
         assert launcher.returncode == 0, stdout + stderr
         assert sync_acquired.wait(timeout=5)
         sync_thread.join(timeout=5)
@@ -546,12 +547,12 @@ def test_direct_launch_holds_runtime_sync_through_verification_head_capture_and_
         if launcher is not None and launcher.poll() is None:
             launcher.terminate()
             try:
-                launcher.wait(timeout=10)
+                launcher.wait(timeout=SUBPROCESS_WAIT_SECONDS)
             except subprocess.TimeoutExpired:
                 launcher.kill()
-                launcher.wait(timeout=10)
+                launcher.wait(timeout=SUBPROCESS_WAIT_SECONDS)
         if sync_thread is not None:
-            sync_thread.join(timeout=10)
+            sync_thread.join(timeout=SUBPROCESS_WAIT_SECONDS)
         if identity is None and pid_path.exists():
             identity = run_evidence.read_process_identity(pid_path, {})
         if identity is not None and run_evidence.process_identity_running({}, identity) is True:
@@ -737,7 +738,9 @@ def test_direct_process_launcher_ignores_authored_repository_selection_variables
     )
     identity = None
     try:
-        result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=10)
+        result = subprocess.run(
+            ["bash", "-lc", command], text=True, capture_output=True, timeout=SUBPROCESS_WAIT_SECONDS
+        )
         assert result.returncode == 0, result.stderr
         identity = run_evidence.read_process_identity(pid_path, {})
         assert identity is not None

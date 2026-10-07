@@ -15,7 +15,12 @@ import threading
 import time
 from types import SimpleNamespace
 
-from agent_tool_test_helpers import call_while_run_lock_holder_commits, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import (
+    SUBPROCESS_WAIT_SECONDS,
+    call_while_run_lock_holder_commits,
+    write_finetune_recipe,
+    write_yaml,
+)
 import pytest
 import yaml
 
@@ -1475,7 +1480,7 @@ def test_concurrent_local_manifest_writers_preserve_distinct_runs(tmp_path: Path
         for run_id in ("run-000", "run-001")
     ]
 
-    assert [process.wait(timeout=10) for process in processes] == [0, 0]
+    assert [process.wait(timeout=SUBPROCESS_WAIT_SECONDS) for process in processes] == [0, 0]
     assert {row["run_id"] for row in read_run_manifest(tmp_path)} == {"run-000", "run-001"}
 
 
@@ -1700,7 +1705,7 @@ def test_concurrent_terminal_updates_use_the_existing_reducer(tmp_path: Path):
         for status in ("completed", "failed")
     ]
 
-    assert [process.wait(timeout=10) for process in processes] == [0, 0]
+    assert [process.wait(timeout=SUBPROCESS_WAIT_SECONDS) for process in processes] == [0, 0]
     assert read_run_manifest(tmp_path)[0]["status"] == "failed"
 
 
@@ -3811,7 +3816,7 @@ raise SystemExit(report.exit_code)
             )
             if name == "first":
                 entered = tmp_path / "first-entered"
-                deadline = time.monotonic() + 10
+                deadline = time.monotonic() + SUBPROCESS_WAIT_SECONDS
                 while not entered.exists() and time.monotonic() < deadline:
                     time.sleep(0.01)
                 assert entered.exists()
@@ -3819,7 +3824,7 @@ raise SystemExit(report.exit_code)
         second_entered_early = (tmp_path / "second-entered").exists()
     finally:
         release.touch()
-    results = [process.communicate(timeout=30) for process in processes]
+    results = [process.communicate(timeout=SUBPROCESS_WAIT_SECONDS) for process in processes]
 
     assert not second_entered_early
     assert [process.returncode for process in processes] == [0, 0], results
@@ -3885,7 +3890,7 @@ with plan_publication_lock(output):
             )
             if name == "first":
                 entered = tmp_path / "first-entered"
-                deadline = time.monotonic() + 10
+                deadline = time.monotonic() + SUBPROCESS_WAIT_SECONDS
                 while not entered.exists() and time.monotonic() < deadline:
                     time.sleep(0.01)
                 assert entered.exists()
@@ -3893,7 +3898,7 @@ with plan_publication_lock(output):
         second_entered_early = (tmp_path / "second-entered").exists()
     finally:
         release.touch()
-    results = [process.communicate(timeout=30) for process in processes]
+    results = [process.communicate(timeout=SUBPROCESS_WAIT_SECONDS) for process in processes]
 
     assert not second_entered_early
     assert [process.returncode for process in processes] == [0, 0], results
@@ -3909,7 +3914,7 @@ def test_plan_registration_lock_cannot_deadlock_with_plan_output(tmp_path: Path)
         [sys.executable, str(runner), "plan", "--recipe", str(recipe), "--output-dir", str(output)],
         text=True,
         capture_output=True,
-        timeout=5,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
 
     assert result.returncode != 0

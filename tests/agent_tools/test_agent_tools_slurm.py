@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 
+from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS
 import pytest
 
 from agent_tools import managed_scheduler, python_programs, slurm
@@ -1281,7 +1282,7 @@ def test_slurm_bootstrap_writes_terminal_sidecar_when_checkout_import_fails(tmp_
         cwd=runtime,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
 
     assert process.returncode != 0
@@ -1333,7 +1334,7 @@ def test_slurm_bootstrap_forwards_signal_and_writes_terminal_sidecar(tmp_path: P
         stderr=subprocess.PIPE,
     )
     try:
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + SUBPROCESS_WAIT_SECONDS
         while not marker.exists():
             if process.poll() is not None:
                 stdout, stderr = process.communicate()
@@ -1341,12 +1342,12 @@ def test_slurm_bootstrap_forwards_signal_and_writes_terminal_sidecar(tmp_path: P
             assert time.monotonic() < deadline, "timed out waiting for Slurm worker"
             time.sleep(0.01)
         process.send_signal(slurm.signal.SIGTERM)
-        stdout, stderr = process.communicate(timeout=10)
+        stdout, stderr = process.communicate(timeout=SUBPROCESS_WAIT_SECONDS)
         assert process.returncode == 128 + slurm.signal.SIGTERM, stdout + stderr
     finally:
         if process.poll() is None:
             process.kill()
-            process.wait(timeout=10)
+            process.wait(timeout=SUBPROCESS_WAIT_SECONDS)
 
     terminal = json.loads(result_path.read_text())
     assert slurm.sidecar_identity(terminal, "agent-tools-unit", expected_job_id="3880") == slurm.JobIdentity(
