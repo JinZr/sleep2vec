@@ -418,6 +418,24 @@ def test_preset_interrupted_attempt_is_not_relaunched(tmp_path, preset_runtime, 
             experiments.stop_preset_run(plan_dir, reason="no child receipt")
 
 
+def test_preset_existing_pid_receipt_is_refused_without_recording_launch_failed(tmp_path, preset_runtime, monkeypatch):
+    plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
+    for name, value in preset_runtime["env"].items():
+        monkeypatch.setenv(name, value)
+    workspace = preset_runtime["workspace"]
+    pid_path = Path(plan["runs"][0]["run_dir"]) / "pid"
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text("{}")
+    events = read_experiment_events(workspace)
+    monkeypatch.setattr(
+        managed_scheduler, "start_process", lambda *_args, **_kwargs: pytest.fail("receipt must block spawn")
+    )
+    # An unbound receipt may come from an interrupted live launch; it stays an uncertain planned row, not a failure.
+    with pytest.raises(ValueError, match="PID receipt already exists"):
+        experiments.launch_preset_run(plan_dir, dry_run=False)
+    _assert_unbound_planned_row(workspace, events)
+
+
 @pytest.mark.parametrize("after_commit", [False, True])
 def test_preset_claim_write_failure_never_spawns(tmp_path, preset_runtime, monkeypatch, after_commit):
     plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)

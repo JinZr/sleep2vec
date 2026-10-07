@@ -213,7 +213,8 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
                 lock_held=True,
             )
         except Exception as exc:
-            if not dry_run:
+            # An unbound PID receipt may belong to an interrupted live launch, so it never becomes launch_failed.
+            if not dry_run and not (Path(run["run_dir"]) / "pid").exists():
                 _record_definitely_unlaunched_failure(workspace, key, f"Pre-launch guard failed: {exc}")
             raise
 
