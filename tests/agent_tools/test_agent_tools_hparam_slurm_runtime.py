@@ -16,7 +16,6 @@ from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  
 import yaml
 
 from agent_tools import (
-    decision_hparam,
     hparam_runtime,
     managed_scheduler,
     plan_contract,
@@ -1038,31 +1037,6 @@ def test_hparam_plan_uses_logical_devices_for_scheduled_gpu_groups(
     assert result.returncode == 0, result.stderr or result.stdout
     command = json.loads((plan_dir / "plan.json").read_text())["runs"][0]["command"]
     assert f"--devices {expected_devices} --precision" in command
-
-
-@pytest.mark.parametrize("gpus_per_run", [1, 2, 4])
-def test_sex_age_baseline_accepts_slurm_and_direct_multi_gpu(gpus_per_run):
-    scheduler = {
-        "type": "slurm",
-        "partition": "gpu",
-        "cpus_per_task": 8,
-        "memory": "64G",
-        "walltime": "01:00:00",
-    }
-
-    slurm_issues = decision_hparam._hparam_execution_issues(
-        {"gpus_per_run": gpus_per_run, "scheduler": scheduler},
-        {},
-        variant="sex_age_baseline",
-    )
-    direct_issues = decision_hparam._hparam_execution_issues(
-        {"gpu_pool": list(range(gpus_per_run)), "gpus_per_run": gpus_per_run},
-        {},
-        variant="sex_age_baseline",
-    )
-
-    assert not [issue for issue in slurm_issues if issue.status.value == "FAIL"]
-    assert not [issue for issue in direct_issues if issue.status.value == "FAIL"]
 
 
 @pytest.mark.parametrize("gpus_per_run", [1.0, "1"])

@@ -9,8 +9,8 @@ from agent_tool_test_helpers import write_finetune_recipe, write_survival_sideca
 import pytest
 import yaml
 
-from agent_tools import decision_rules, plans
-from agent_tools.adapters import SUPPORTED_TASKS
+from agent_tools import decision_rules
+from agent_tools.adapters import SUPPORTED_TASKS, get_adapter
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import evaluate_recipe
 from agent_tools.recipes import load_recipe_with_base, load_yaml_file
@@ -1219,7 +1219,7 @@ def test_agent_proposal_invalid_objective_blocks_before_workspace_writes(
 
 
 def test_infer_runtime_fields_have_observable_command_effects():
-    command = plans._commands_for_recipe(
+    command = get_adapter("infer").commands(
         {
             "name": "infer-runtime-contract",
             "task": "infer",
@@ -1244,7 +1244,8 @@ def test_infer_runtime_fields_have_observable_command_effects():
                 "seed": 7,
                 "wandb_mode": "offline",
             },
-        }
+        },
+        None,
     )[0]
 
     for expected in (
@@ -1265,7 +1266,7 @@ def test_infer_runtime_fields_have_observable_command_effects():
 
 
 def test_sleep2stat_postprocess_fields_have_observable_command_effects():
-    commands = plans._commands_for_recipe(
+    commands = get_adapter("sleep2stat").commands(
         {
             "name": "sleep2stat-runtime-contract",
             "task": "sleep2stat",

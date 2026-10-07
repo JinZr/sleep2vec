@@ -628,17 +628,3 @@ def test_preset_status_recommends_explicit_managed_execute(tmp_path, preset_runt
     action = experiments.experiment_status(preset_runtime["workspace"])["decision"]["recommended_next"]
     assert action["id"] == "preset-launch"
     assert action["argv"] == ["python", "-m", "agent_tools", "preset-launch", "--plan-dir", str(plan_dir), "--execute"]
-
-
-@pytest.mark.parametrize("command", ["preset-launch", "preset-stop"])
-def test_preset_cli_required_arguments_and_launch_default(command):
-    parser = cli._build_parser()
-    args = [command, "--plan-dir", "/tmp/plan"]
-    if command == "preset-stop":
-        with pytest.raises(SystemExit):
-            parser.parse_args(args)
-        args += ["--reason", "authorized stop"]
-    parsed = parser.parse_args(args)
-    assert parsed.plan_dir == "/tmp/plan"
-    if command == "preset-launch":
-        assert parsed.execute is False

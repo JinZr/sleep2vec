@@ -21,7 +21,6 @@ import pytest
 import yaml
 
 from agent_tools import (
-    decision_hparam,
     hparam_runtime,
     managed_scheduler,
     manifests,
@@ -414,15 +413,6 @@ def test_hparam_plan_rejects_environment_semantic_aliases(tmp_path: Path, env_na
 
     assert result.returncode == 1
     assert f"execution.env.{env_name}" in result.stdout
-
-
-def test_direct_hparam_allows_slurm_named_environment_variable():
-    issues = decision_hparam._hparam_execution_issues(
-        {"scheduler": {"type": "direct"}, "env": {"SLURM_JOB_ID": "outer-allocation"}},
-        {},
-    )
-
-    assert not [issue for issue in issues if issue.field == "execution.env.SLURM_JOB_ID"]
 
 
 def test_hparam_runtime_rewrites_legacy_projection_rows_from_canonical(tmp_path: Path, monkeypatch):

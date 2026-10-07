@@ -131,7 +131,7 @@ def test_experiment_indexes_checkpoints_and_ranks_validation_metric(tmp_path: Pa
 
 @pytest.mark.parametrize("epoch", ["2", "2.5"])
 def test_experiment_rank_does_not_fallback_to_checkpoint_from_another_epoch(epoch: str):
-    metric = {"step_id": "train-model", "run_id": "run-000", "epoch": epoch}
+    metric = {"step_id": "train-model", "run_id": "run-000", "epoch": epoch, "score": 0.8}
     checkpoints = [
         {
             "step_id": "train-model",
@@ -151,7 +151,9 @@ def test_experiment_rank_does_not_fallback_to_checkpoint_from_another_epoch(epoc
         },
     ]
 
-    assert experiment_tracking._checkpoint_for_metric_row(metric, checkpoints) == ""
+    (ranked,) = experiment_tracking.rank_candidates([metric], checkpoints, mode="max")
+
+    assert ranked["checkpoint_path"] == ""
 
 
 def test_experiment_indexes_checkpoints_from_managed_runtime_dir(tmp_path: Path):
@@ -1508,8 +1510,10 @@ def test_experiment_checkpoint_scan_rejects_checkpoint_named_directories(tmp_pat
         }
     ]
 
+    experiment_io.write_rows_at(tmp_path / "run_manifest.tsv", runs)
+
     with pytest.raises(ValueError, match="independent regular files"):
-        experiment_tracking._local_checkpoint_rows(runs)
+        experiment_tracking.checkpoint_rows(tmp_path)
 
 
 def test_local_checkpoint_scan_prefers_manifest_epoch_over_best_filename(tmp_path: Path):
@@ -1531,7 +1535,9 @@ def test_local_checkpoint_scan_prefers_manifest_epoch_over_best_filename(tmp_pat
         }
     ]
 
-    rows = experiment_tracking._local_checkpoint_rows(runs)
+    experiment_io.write_rows_at(tmp_path / "run_manifest.tsv", runs)
+
+    rows = experiment_tracking.checkpoint_rows(tmp_path)
 
     assert {row["checkpoint_path"]: row["is_best_by_val"] for row in rows} == {
         str(mismatched_best): "false",
@@ -1556,21 +1562,15 @@ def test_local_checkpoint_scan_keeps_same_epoch_best_only_fallback(tmp_path: Pat
         }
     ]
 
-    rows = experiment_tracking._local_checkpoint_rows(runs)
+    experiment_io.write_rows_at(tmp_path / "run_manifest.tsv", runs)
+
+    rows = experiment_tracking.checkpoint_rows(tmp_path)
 
     assert rows[0]["is_best_by_val"] == "true"
-    assert experiment_tracking._checkpoint_for_metric_row(
-        {"step_id": "train-model", "run_id": "run-000", "epoch": ""}, rows
-    ) == str(checkpoint)
-    assert experiment_tracking._checkpoint_for_metric_row(
-        {"step_id": "train-model", "run_id": "run-000", "epoch": 3}, rows
-    ) == str(checkpoint)
-    assert (
-        experiment_tracking._checkpoint_for_metric_row(
-            {"step_id": "train-model", "run_id": "run-000", "epoch": 4}, rows
-        )
-        == ""
-    )
+    for epoch, expected in (("", str(checkpoint)), (3, str(checkpoint)), (4, "")):
+        metric = {"step_id": "train-model", "run_id": "run-000", "epoch": epoch, "score": 0.5}
+        (ranked,) = experiment_tracking.rank_candidates([metric], rows, mode="max")
+        assert ranked["checkpoint_path"] == expected
 
 
 def test_experiment_monitor_does_not_advance_planned_run_from_local_mirror(tmp_path: Path):
@@ -1763,8 +1763,10 @@ def test_local_checkpoint_scan_rejects_hardlinked_checkpoint(tmp_path: Path):
         "checkpoint_dir": str(checkpoint_dir),
     }
 
+    experiment_io.write_rows_at(tmp_path / "run_manifest.tsv", [run])
+
     with pytest.raises(ValueError, match="independent regular files"):
-        experiment_tracking._local_checkpoint_rows([run])
+        experiment_tracking.checkpoint_rows(tmp_path)
 
 
 def test_experiment_rank_ignores_managed_checkpoint_without_requested_metric(tmp_path: Path):
@@ -2208,8 +2210,10 @@ def test_remote_checkpoint_scan_skips_confirmed_missing_run_and_indexes_other_ru
     monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(experiment_io, "read_text_at", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(experiment_tracking.subprocess, "run", fake_run)
+    monkeypatch.setattr(experiment_io, "read_rows_at", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(experiment_tracking, "read_run_manifest", lambda *_args, **_kwargs: [missing, ready])
 
-    rows = experiment_tracking._remote_checkpoint_rows([missing, ready], "unit-host")
+    rows = experiment_tracking.checkpoint_rows(Path("/remote/workspace"), remote="unit-host")
 
     assert [(row["run_id"], row["checkpoint_path"]) for row in rows] == [("run-001", checkpoint)]
     assert rows[0]["mtime"] == "123.4500"
@@ -2217,7 +2221,7 @@ def test_remote_checkpoint_scan_skips_confirmed_missing_run_and_indexes_other_ru
     assert rows[0]["global_step"] == ""
     assert rows[0]["is_last"] == "false"
     assert rows[0]["is_best_by_val"] == "false"
-    command, kwargs = commands[0]
+    [(command, kwargs)] = commands
     assert missing["checkpoint_dir"] not in command[-1]
     assert ready["checkpoint_dir"] in command[-1]
     assert kwargs["timeout"] == transport.SSH_TIMEOUT_SECONDS
@@ -2243,9 +2247,11 @@ def test_remote_checkpoint_scan_rejects_hardlinked_checkpoint(monkeypatch):
         return subprocess.CompletedProcess(command, 0, f"{checkpoint}\t123.0\n", "")
 
     monkeypatch.setattr(experiment_tracking.subprocess, "run", fake_run)
+    monkeypatch.setattr(experiment_io, "read_rows_at", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(experiment_tracking, "read_run_manifest", lambda *_args, **_kwargs: [run])
 
     with pytest.raises(ValueError, match="hardlinked checkpoint"):
-        experiment_tracking._remote_checkpoint_rows([run], "unit-host")
+        experiment_tracking.checkpoint_rows(Path("/remote/workspace"), remote="unit-host")
 
 
 def test_remote_checkpoint_scan_preserves_inventory_when_directory_disappears(monkeypatch):
@@ -2286,9 +2292,11 @@ def test_remote_checkpoint_scan_propagates_path_probe_errors(monkeypatch):
         "path_exists_at",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("permission denied")),
     )
+    monkeypatch.setattr(experiment_io, "read_rows_at", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(experiment_tracking, "read_run_manifest", lambda *_args, **_kwargs: [run])
 
     with pytest.raises(RuntimeError, match="SSH checkpoint scan failed.*permission denied"):
-        experiment_tracking._remote_checkpoint_rows([run], "unit-host")
+        experiment_tracking.checkpoint_rows(Path("/remote/workspace"), remote="unit-host")
 
 
 @pytest.mark.parametrize(

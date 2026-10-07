@@ -188,7 +188,7 @@ def test_proposal_history_excludes_uncommitted_zero_start_round(tmp_path: Path, 
     with pytest.raises(RuntimeError, match="started no runs.*was not committed"):
         adaptive_hparam.adaptive_step(workflow, proposal_path=proposal_path, execute=True)
 
-    registry = test_support._read_table(workflow / "adaptive" / "run_registry.tsv")
+    registry = manifests.read_rows(workflow / "adaptive" / "run_registry.tsv")
     assert {row["round"] for row in registry} == {"0", "1"}
     input_path = adaptive_hparam.adaptive_step(workflow)
     assert input_path is not None

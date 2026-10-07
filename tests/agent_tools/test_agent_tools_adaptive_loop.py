@@ -1217,3 +1217,60 @@ def test_test_selected_running_replacement_distinguishes_checkpoint_and_run_leve
 
     expected = {(run["step_id"], run["run_id"])} if expected_bad else set()
     assert bad_keys == expected
+
+
+def test_adaptive_retirement_skips_slurm_run_with_verified_terminal_sidecar(tmp_path: Path, monkeypatch):
+    recipe = {
+        "adaptive": {
+            "objective_metric": "val_score",
+            "objective_mode": "max",
+            "replacement": {"enabled": True, "allow_running_stop": True},
+        }
+    }
+    run = {
+        "step_id": "train-model",
+        "run_id": "run-000",
+        "status": "running",
+        "scheduler_type": "slurm",
+        "scheduler_exit_code": "0",
+    }
+    monkeypatch.setattr(
+        adaptive_hparam.artifacts,
+        "read_hparam_plan",
+        lambda _round_dir, **_kwargs: {"recipe": {"experiment": {"root": str(tmp_path)}}, "runs": [run]},
+    )
+    monkeypatch.setattr(adaptive_replacement, "read_run_manifest", lambda _workspace: [run])
+    monkeypatch.setattr(adaptive_replacement, "_latest_incumbent_score", lambda _root: 1.0)
+    monkeypatch.setattr(
+        adaptive_replacement.evidence,
+        "log_has_failure",
+        lambda *_args, **_kwargs: pytest.fail("terminal Slurm work must not be considered for retirement"),
+    )
+
+    assert adaptive_replacement._bad_running_run_keys(tmp_path, tmp_path / "round", recipe) == set()
+
+
+@pytest.mark.parametrize(
+    ("enabled", "allow_running_stop"),
+    [("true", True), (True, "true"), ("false", "false")],
+)
+def test_adaptive_runtime_never_stops_runs_for_non_boolean_replacement_flags(
+    tmp_path: Path, enabled, allow_running_stop
+):
+    recipe = {"adaptive": {"replacement": {"enabled": enabled, "allow_running_stop": allow_running_stop}}}
+
+    assert adaptive_replacement._bad_running_run_keys(tmp_path, tmp_path / "missing-round", recipe) == set()
+
+
+def test_adaptive_stop_scan_ignores_header_only_legacy_projection(tmp_path: Path):
+    recipe_path = _adaptive_recipe(tmp_path, max_rounds=1)
+    workflow_dir = tmp_path / "workflow"
+    assert _run("hparam-adaptive-init", "--recipe", str(recipe_path), "--output-dir", str(workflow_dir)).returncode == 0
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    status_path = round_dir / "run_status.tsv"
+    status_path.write_text("trial_id\tstatus\n")
+    recipe = adaptive_hparam.load_recipe_with_base(recipe_path)
+
+    adaptive_replacement._stop_bad_running_runs(workflow_dir, round_dir, recipe)
+
+    assert status_path.read_text() == "trial_id\tstatus\n"
