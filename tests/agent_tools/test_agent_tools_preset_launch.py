@@ -78,6 +78,9 @@ def test_new_preset_plan_freezes_managed_direct_launch(tmp_path, preset_runtime,
     assert plan["recipe"]["execution"]["scheduler"] == {"type": "direct"}
     assert plan["runs"][0]["terminal_status_owner"] == "script"
     assert plan["runs"][0]["scheduler_type"] == "direct"
+    # The launch start command rechecks only script and config; a preset run must freeze no other inputs.
+    assert [snapshot["field"] for snapshot in plan["recipe"]["input_snapshots"]] == ["inputs.config"]
+    assert "input_snapshots" not in plan["runs"][0]
     assert "preset-launch" in (plan_dir / "run.sh").read_text()
     assert plan["commands"][0] not in (plan_dir / "run.sh").read_text()
     assert shlex.split(plan["commands"][0])[:2] == [
