@@ -32,6 +32,7 @@ from . import (
     run_evidence as evidence,
 )
 from .experiment_workspace import (
+    EXECUTION_IDENTITY_FIELDS,
     FROZEN_RUN_FIELDS,
     PROCESS_IDENTITY_FIELDS,
     RESEARCH_LOG_NAME,
@@ -160,7 +161,10 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
             # Script-based preset runs freeze no module execution snapshot; the start command re-verifies artifacts.
             if previous["status"] not in managed_scheduler.LAUNCHABLE_STATUSES:
                 return None, False
-            if has_managed_launch_evidence(previous):
+            # A preset spawns only after its launched claim persists, so identity the scheduler bound to a still
+            # launchable row before that claim proves no process; any other launch evidence is refused.
+            pre_claim_identity = dict.fromkeys(EXECUTION_IDENTITY_FIELDS - PROCESS_IDENTITY_FIELDS, "")
+            if has_managed_launch_evidence({**previous, **pre_claim_identity}):
                 raise ValueError("Preset run already has launch evidence; refusing another launch attempt.")
             if (Path(run["run_dir"]) / "pid").exists():
                 raise ValueError("Preset PID receipt already exists; refusing another launch attempt.")

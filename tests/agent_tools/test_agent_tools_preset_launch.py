@@ -457,12 +457,20 @@ def test_preset_claim_write_failure_never_spawns(tmp_path, preset_runtime, monke
     if after_commit:
         assert not experiments.launch_preset_run(plan_dir, dry_run=False).started_keys
     else:
-        # The scheduler bound execution identity before the failed claim; that evidence is refused, never retried.
+        # The scheduler bound execution identity before the failed claim, but no process exists without the claim.
         assert has_managed_launch_evidence(row)
+        assert not row["launched_at"]
         monkeypatch.setattr(experiments, "merge_run_manifest", original_merge)
-        with pytest.raises(ValueError, match="already has launch evidence"):
-            experiments.launch_preset_run(plan_dir, dry_run=False)
-        assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "planned"
+        started = []
+        monkeypatch.setattr(
+            managed_scheduler,
+            "start_process",
+            lambda _execution, command, **_kwargs: started.append(command) or "launched",
+        )
+        result = experiments.launch_preset_run(plan_dir, dry_run=False)
+        assert started == [row["command"]]
+        assert result.started_keys == {(row["step_id"], row["run_id"])}
+        assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "launched"
 
 
 def _launch_waiting_worker(tmp_path, preset_runtime, monkeypatch):
