@@ -10,6 +10,7 @@ validation belongs to ``experiment_pipeline_spec``.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 import fcntl
 import hashlib
 import json
@@ -137,6 +138,23 @@ class PipelineDryRunResult(TypedDict):
 PipelineResult = PipelineDryRunResult | AttemptExecutionResult | PipelineReportResult
 
 
+@dataclass(frozen=True)
+class PipelineHooks:
+    """The pipeline's process, runtime-probe and clock effects, replaceable by Python callers such as tests.
+
+    A ``None`` field uses the canonical owner, looked up when the effect runs: ``monitor_runs`` replaces
+    ``monitor_hparam_runs`` for source refreshes, ``inspect_target`` replaces
+    ``managed_scheduler.inspect_execution_target`` for registration and pre-launch snapshot probes,
+    ``launch_runs`` replaces ``managed_scheduler.launch_managed_runs``, and ``sleep`` replaces ``time.sleep``
+    between polls. Validation, locking, state and artifact writes are not replaceable.
+    """
+
+    monitor_runs: Callable[..., Path] | None = None
+    inspect_target: Callable[..., managed_scheduler.ExecutionSnapshot] | None = None
+    launch_runs: Callable[..., managed_scheduler.LaunchResult] | None = None
+    sleep: Callable[[float], None] | None = None
+
+
 def run_experiment_pipeline(
     run_dir: str | Path,
     spec_path: str | Path,
@@ -146,9 +164,11 @@ def run_experiment_pipeline(
     resume: bool = False,
     poll_seconds: float = 60,
     finalize_callback: Callable[[str | Path, str | Path], Path] | None = None,
+    hooks: PipelineHooks | None = None,
 ) -> PipelineResult:
     if poll_seconds < 0:
         raise ValueError("poll_seconds must be non-negative.")
+    hooks = hooks or PipelineHooks()
     root = canonical_local_experiment_root(run_dir, Path.cwd())
     spec_file = Path(spec_path).expanduser()
     if not spec_file.is_absolute():
@@ -175,7 +195,9 @@ def run_experiment_pipeline(
             raise ValueError("--resume is only valid with --execute.")
         state = _validate_frozen_pipeline(pipeline_dir, source_text, spec) if existed else {}
         selections_committed = state.get(_selection_hash_field(spec)) not in (None, "")
-        sources = state["source_states"] if selections_committed else _inspect_sources(root, spec, refresh=False)
+        sources = (
+            state["source_states"] if selections_committed else _inspect_sources(root, spec, refresh=False, hooks=hooks)
+        )
         return {
             "status": _source_summary_status(sources),
             "dry_run": True,
@@ -222,6 +244,7 @@ def run_experiment_pipeline(
                 spec,
                 poll_seconds=poll_seconds,
                 finalize_callback=finalize_callback,
+                hooks=hooks,
             )
         except pipeline_attempts.PipelineRegistrationRecoveryError:
             raise
@@ -452,7 +475,7 @@ def _source_hparam_plans(source_id: str, source: dict[str, Any]) -> list[tuple[P
     return plans
 
 
-def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list[SourceState]:
+def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool, hooks: PipelineHooks) -> list[SourceState]:
     # Monitoring takes the run lock itself, so only the reads hold it.
     with managed_scheduler.managed_run_lock(root):
         canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
@@ -462,7 +485,7 @@ def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list
         plans = _source_hparam_plans(source_id, source)
         if refresh:
             for registered_dir, _plan in plans:
-                monitor_hparam_runs(registered_dir, once=True, health=True)
+                (hooks.monitor_runs or monitor_hparam_runs)(registered_dir, once=True, health=True)
             with managed_scheduler.managed_run_lock(root):
                 canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
         runs = [run for _plan_dir, plan in plans for run in plan["runs"]]
@@ -524,6 +547,7 @@ def _execute_pipeline(
     *,
     poll_seconds: float,
     finalize_callback: Callable[[str | Path, str | Path], Path] | None,
+    hooks: PipelineHooks,
 ) -> AttemptExecutionResult | PipelineReportResult:
     state = _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
     if state.get("status") == "completed":
@@ -531,7 +555,7 @@ def _execute_pipeline(
     while state.get(_selection_hash_field(spec)) in (None, ""):
         with plan_registration_lock(root):
             _validate_frozen_pipeline(pipeline_dir, (pipeline_dir / "spec.source.yaml").read_text(), spec)
-            sources = _inspect_sources(root, spec, refresh=True)
+            sources = _inspect_sources(root, spec, refresh=True, hooks=hooks)
             state_status = _source_summary_status(sources)
             _update_state(pipeline_dir, status=state_status, source_states=sources)
             if state_status in {"blocked", "failed"}:
@@ -539,7 +563,7 @@ def _execute_pipeline(
             if state_status == "ready":
                 _load_or_freeze_selections(root, pipeline_dir, spec)
                 break
-        time.sleep(poll_seconds)
+        (hooks.sleep or time.sleep)(poll_seconds)
 
     if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND:
         return _execute_cohort_selection(
@@ -548,12 +572,15 @@ def _execute_pipeline(
             spec,
             poll_seconds=poll_seconds,
             finalize_callback=finalize_callback,
+            hooks=hooks,
         )
 
     selections = _load_or_freeze_selections(root, pipeline_dir, spec)
-    attempts = pipeline_attempts.load_or_create_initial_attempts(root, pipeline_dir, spec, selections)
+    attempts = pipeline_attempts.load_or_create_initial_attempts(
+        root, pipeline_dir, spec, selections, inspect_target=hooks.inspect_target
+    )
     _update_state(pipeline_dir, status="running_external", missing_pid_blocker=None)
-    result = _run_attempts(root, pipeline_dir, spec, selections, attempts, poll_seconds=poll_seconds)
+    result = _run_attempts(root, pipeline_dir, spec, selections, attempts, poll_seconds=poll_seconds, hooks=hooks)
     if result["status"] != "completed":
         _update_state(
             pipeline_dir,
@@ -660,6 +687,7 @@ def _execute_cohort_selection(
     *,
     poll_seconds: float,
     finalize_callback: Callable[[str | Path, str | Path], Path] | None,
+    hooks: PipelineHooks,
 ) -> AttemptExecutionResult | PipelineReportResult:
     candidates = _load_or_freeze_selections(root, pipeline_dir, spec)
     selection_spec = _cohort_phase_spec(
@@ -675,6 +703,7 @@ def _execute_cohort_selection(
         candidates,
         poll_seconds=poll_seconds,
         controller_spec=spec,
+        hooks=hooks,
     )
     if selection_result["status"] != "completed":
         _update_state(
@@ -732,6 +761,7 @@ def _execute_cohort_selection(
             candidates,
             poll_seconds=poll_seconds,
             controller_spec=spec,
+            hooks=hooks,
         )
         if report_result["status"] != "completed":
             _update_state(
@@ -803,10 +833,13 @@ def _execute_cohort_phase(
     *,
     poll_seconds: float,
     controller_spec: dict[str, Any],
+    hooks: PipelineHooks,
 ) -> AttemptExecutionResult:
     phase = str(phase_spec["_execution_stage"])
     phase_dir = pipeline_dir / "phases" / phase
-    attempts = pipeline_attempts.load_or_create_initial_attempts(root, phase_dir, phase_spec, candidates)
+    attempts = pipeline_attempts.load_or_create_initial_attempts(
+        root, phase_dir, phase_spec, candidates, inspect_target=hooks.inspect_target
+    )
     _update_state(pipeline_dir, status=f"running_{phase}", missing_pid_blocker=None)
     return _run_attempts(
         root,
@@ -818,6 +851,7 @@ def _execute_cohort_phase(
         frozen_pipeline_dir=pipeline_dir,
         frozen_spec=controller_spec,
         state_dir=pipeline_dir,
+        hooks=hooks,
     )
 
 
@@ -1303,6 +1337,7 @@ def _run_attempts(
     frozen_pipeline_dir: Path | None = None,
     frozen_spec: dict[str, Any] | None = None,
     state_dir: Path | None = None,
+    hooks: PipelineHooks,
 ) -> AttemptExecutionResult:
     jobs_path = pipeline_dir / "jobs.tsv"
     execution = pipeline_attempts.pipeline_execution(spec)
@@ -1344,9 +1379,12 @@ def _run_attempts(
                     in managed_scheduler.LAUNCHABLE_STATUSES
                     for run in runs
                 ):
-                    managed_scheduler.validated_execution_snapshot(owner_dir, execution, runs, canonical)
+                    managed_scheduler.validated_execution_snapshot(
+                        owner_dir, execution, runs, canonical, inspector=hooks.inspect_target
+                    )
             try:
-                managed_scheduler.launch_managed_runs(
+                launch = hooks.launch_runs or managed_scheduler.launch_managed_runs
+                launch(
                     root,
                     owner_dir,
                     runs,
@@ -1405,7 +1443,7 @@ def _run_attempts(
 
         try:
             attempts, retry_created = pipeline_attempts.create_needed_retries(
-                root, pipeline_dir, spec, selections, attempts
+                root, pipeline_dir, spec, selections, attempts, inspect_target=hooks.inspect_target
             )
         except pipeline_attempts.RetryPreparationError as exc:
             independent_active = any(row.get("status") in ACTIVE_STATUSES | {"planned", "pending"} for row in attempts)
@@ -1414,7 +1452,7 @@ def _run_attempts(
             phase = spec.get("_execution_stage")
             status = f"running_{phase}" if phase else "running_external"
             _update_state(controller_state_dir, status=status, retry_preparation_error=str(exc))
-            time.sleep(poll_seconds)
+            (hooks.sleep or time.sleep)(poll_seconds)
             continue
         if retry_created:
             pipeline_attempts.write_jobs(jobs_path, attempts)
@@ -1430,7 +1468,7 @@ def _run_attempts(
                 "blocked" if any(job["status"] == "blocked" for job in logical) else "failed"
             )
             return {"status": final_status, "jobs": logical}
-        time.sleep(poll_seconds)
+        (hooks.sleep or time.sleep)(poll_seconds)
 
 
 def _refresh_attempt_results(

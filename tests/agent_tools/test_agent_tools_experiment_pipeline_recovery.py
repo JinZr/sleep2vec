@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import copy
 import hashlib
 import json
 from pathlib import Path
@@ -9,8 +8,18 @@ import shutil
 import threading
 from types import SimpleNamespace
 
-from agent_tool_test_helpers import call_while_run_lock_holder_commits, write_finetune_recipe
+from agent_tool_test_helpers import (
+    FakePipelineRuntime,
+    PipelineInterrupted,
+    call_while_run_lock_holder_commits,
+    complete_experiment,
+    dry_run_pipeline,
+    prepare_pipeline_sources,
+    run_pipeline,
+    write_finetune_recipe,
+)
 import pytest
+from test_agent_tools_experiment_pipeline_cohort_selection import _spec as _cohort_spec
 import yaml
 
 from agent_tools import (
@@ -24,43 +33,40 @@ from agent_tools import (
     plans,
     python_programs,
 )
-from agent_tools.experiment_workspace import commit_step_manifest, file_sha256, read_run_manifest
+from agent_tools.experiment_workspace import commit_step_manifest, file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.manifests import write_rows
 
 
 def test_attempt_materialization_enters_plan_publication_lock(tmp_path: Path, monkeypatch):
-    plan_dir = tmp_path / "attempt"
-    lock_active = False
+    spec = _spec(tmp_path / "workspace")
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    pipeline_dir = tmp_path / "workspace" / "pipelines" / "external-v1"
+    locked = []
+    materialized = []
+    real_lock = pipeline_attempts.plan_publication_lock
+    real_materialize = pipeline_attempts._materialize_attempt_locked
 
     @contextmanager
     def publication_lock(out):
-        nonlocal lock_active
-        assert out == plan_dir
-        lock_active = True
-        try:
-            yield
-        finally:
-            lock_active = False
+        with real_lock(out):
+            locked.append(out)
+            try:
+                yield
+            finally:
+                locked.remove(out)
 
-    def materialize_locked(*_args, **_kwargs):
-        assert lock_active
-        return {"status": "planned"}
+    def materialize_locked(*args, plan_dir, **kwargs):
+        assert locked == [plan_dir]
+        materialized.append(plan_dir)
+        return real_materialize(*args, plan_dir=plan_dir, **kwargs)
 
     monkeypatch.setattr(pipeline_attempts, "plan_publication_lock", publication_lock)
     monkeypatch.setattr(pipeline_attempts, "_materialize_attempt_locked", materialize_locked)
 
-    result = pipeline_attempts._materialize_attempt(
-        tmp_path,
-        {},
-        {},
-        {},
-        1,
-        recipe_path=tmp_path / "recipe.yaml",
-        plan_dir=plan_dir,
-        result_root=tmp_path / "result",
-    )
+    result = run_pipeline(spec_path, FakePipelineRuntime(spec).hooks())
 
-    assert result == {"status": "planned"}
+    assert result["status"] == "completed"
+    assert materialized == [pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"]
 
 
 def test_pipeline_group_registration_waits_for_ordinary_plan(tmp_path: Path, monkeypatch):
@@ -277,15 +283,10 @@ def test_pipeline_retry_planned_event_is_reconciled_after_append_failure(tmp_pat
 
 
 @pytest.mark.parametrize(
-    "kind,event_type,count_field,selection",
+    "kind,event_type,count_field",
     [
-        ("external_matrix", "pipeline_checkpoints_frozen", "source_count", {"source_id": "age"}),
-        (
-            "cohort_selection",
-            "pipeline_candidates_frozen",
-            "candidate_count",
-            {"candidate_id": "age-rank-001"},
-        ),
+        ("external_matrix", "pipeline_checkpoints_frozen", "source_count"),
+        ("cohort_selection", "pipeline_candidates_frozen", "candidate_count"),
     ],
 )
 def test_selection_event_is_reconciled_after_committed_hash(
@@ -294,92 +295,69 @@ def test_selection_event_is_reconciled_after_committed_hash(
     kind: str,
     event_type: str,
     count_field: str,
-    selection: dict[str, str],
 ):
     root = tmp_path / "workspace"
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "pipeline.json").write_text(json.dumps({"status": "ready"}) + "\n")
-    spec = {"pipeline": {"id": "external-v1", "kind": kind}}
+    spec = _spec(root) if kind == "external_matrix" else _cohort_spec(root)
     if kind == "cohort_selection":
-        spec["candidates"] = {"kind": "top_k", "count": 1}
+        spec["candidates"]["count"] = 1
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    pipeline_dir = root / "pipelines" / spec["pipeline"]["id"]
+    runtime = FakePipelineRuntime(spec)
+    original_append = pipeline_attempts.append_event
 
-    key = "candidate_id" if kind == "cohort_selection" else "source_id"
-    monkeypatch.setattr(experiment_pipeline, "_select_checkpoint_sources", lambda *_args: [selection])
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_read_frozen_selections",
-        lambda *_args: {selection[key]: selection},
-    )
-    original_append = experiment_pipeline.append_event
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "append_event",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("event append interrupted")),
-    )
-    monkeypatch.setattr(pipeline_attempts, "append_event", experiment_pipeline.append_event)
+    def interrupt_selection_event(root_path, appended_type, payload):
+        if appended_type == event_type:
+            raise RuntimeError("event append interrupted")
+        original_append(root_path, appended_type, payload)
+
+    monkeypatch.setattr(pipeline_attempts, "append_event", interrupt_selection_event)
 
     with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="reconciled on resume"):
-        experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
+        run_pipeline(spec_path, runtime.hooks())
 
-    selection_path = experiment_pipeline._selection_manifest_path(pipeline_dir, spec)
+    selection_path = pipeline_dir / ("candidates.json" if kind == "cohort_selection" else "checkpoints.json")
+    hash_field = "candidate_selection_sha256" if kind == "cohort_selection" else "checkpoint_selection_sha256"
     state = json.loads((pipeline_dir / "pipeline.json").read_text())
-    assert state[experiment_pipeline._selection_hash_field(spec)] == file_sha256(selection_path)
+    assert state[hash_field] == file_sha256(selection_path)
     assert state["status"] == "ready"
+    assert not any(name == "inspect" for name, _ids in runtime.calls)
 
     monkeypatch.setattr(pipeline_attempts, "append_event", original_append)
-    state["status"] = "completed"
-    (pipeline_dir / "pipeline.json").write_text(json.dumps(state) + "\n")
-    experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
-    assert not (root / "events.jsonl").exists()
+    assert run_pipeline(spec_path, runtime.hooks(), resume=True)["status"] == "completed"
 
-    state["status"] = "ready"
-    (pipeline_dir / "pipeline.json").write_text(json.dumps(state) + "\n")
-    experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
-    experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
+    def selection_events():
+        events = pipeline_attempts.read_experiment_events(root)
+        return [event for event in events if event.get("event_type") == event_type]
 
-    events = [
-        event for event in pipeline_attempts.read_experiment_events(root) if event.get("event_type") == event_type
-    ]
+    events = selection_events()
     assert len(events) == 1
-    assert events[0]["pipeline_id"] == "external-v1"
+    assert events[0]["pipeline_id"] == spec["pipeline"]["id"]
     assert events[0][count_field] == 1
+
+    # A completed pipeline keeps its selection history unchanged during resume validation.
+    history = (root / "events.jsonl").read_text().splitlines(keepends=True)
+    (root / "events.jsonl").write_text(
+        "".join(line for line in history if json.loads(line).get("event_type") != event_type)
+    )
+    assert run_pipeline(spec_path, runtime.hooks(), resume=True)["status"] == "completed"
+    assert selection_events() == []
 
 
 def test_pipeline_registration_recovery_error_does_not_mark_pipeline_failed(tmp_path: Path, monkeypatch):
-    root = tmp_path / "workspace"
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "pipeline.json").write_text(json.dumps({"status": "ready"}) + "\n")
-    spec_path = tmp_path / "external.yaml"
-    spec_path.write_text(yaml.safe_dump(_spec(root), sort_keys=False))
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_source_hparam_plans",
-        lambda *_args: [],
-    )
-    monkeypatch.setattr(experiment_pipeline, "_validate_experiment", lambda *_args, **_kwargs: {"status": "active"})
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_frozen_pipeline",
-        lambda *_args, **_kwargs: {"status": "ready"},
-    )
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_execute_pipeline",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            pipeline_attempts.PipelineRegistrationRecoveryError("resume registration")
-        ),
-    )
+    spec = _spec(tmp_path / "workspace")
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    pipeline_dir = tmp_path / "workspace" / "pipelines" / "external-v1"
+    original_append = pipeline_attempts.append_event
 
-    with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="resume registration"):
-        experiment_pipeline.run_experiment_pipeline(
-            root,
-            spec_path,
-            unlock_final_test=True,
-            execute=True,
-            resume=True,
-        )
+    def interrupt_jobs_event(root_path, event_type, payload):
+        if event_type == "pipeline_jobs_planned":
+            raise RuntimeError("event append interrupted")
+        original_append(root_path, event_type, payload)
+
+    monkeypatch.setattr(pipeline_attempts, "append_event", interrupt_jobs_event)
+
+    with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        run_pipeline(spec_path, FakePipelineRuntime(spec).hooks())
 
     assert json.loads((pipeline_dir / "pipeline.json").read_text())["status"] == "ready"
 
@@ -450,6 +428,13 @@ def _spec(root: Path) -> dict:
     }
 
 
+def _two_job_spec(root: Path) -> dict:
+    spec = _spec(root)
+    spec["jobs"].append({**spec["jobs"][0], "id": "age-hsp-i2-bcg", "modality": "bcg", "num_workers": 16})
+    spec["jobs"][1]["inference_preset_path"] = str(root / "presets" / "hsp_i2_age_bcg.pickle")
+    return spec
+
+
 @pytest.mark.parametrize("prefixes", [["ema_model."], ["running_mean_model."]])
 def test_schema_requires_both_model_averaging_prefixes(tmp_path: Path, prefixes: list[str]):
     spec = _spec(tmp_path)
@@ -496,11 +481,12 @@ def test_mixed_terminal_source_accepts_no_test_after_fit_manifest(
         lambda run: manifest_path if run == successful else pytest.fail("failed runs have no success manifest"),
     )
 
-    states = experiment_pipeline._inspect_sources(root, spec, refresh=False)
+    result = dry_run_pipeline(root, spec)
 
+    states = result["source_states"]
     assert states[0]["complete"] is True
     assert states[0]["failed_runs"] == ["run-001"]
-    assert experiment_pipeline._source_summary_status(states) == "ready"
+    assert result["status"] == "ready"
 
 
 def test_mixed_terminal_source_rejects_stopped_run_without_reason(tmp_path: Path, monkeypatch):
@@ -523,7 +509,7 @@ def test_mixed_terminal_source_rejects_stopped_run_without_reason(tmp_path: Path
     )
 
     with pytest.raises(ValueError, match="Stopped source runs are missing required stop_reason.*run-001"):
-        experiment_pipeline._inspect_sources(root, spec, refresh=False)
+        dry_run_pipeline(root, spec)
 
 
 @pytest.mark.parametrize("status", ["planned", "running"])
@@ -539,10 +525,10 @@ def test_active_source_waits_for_terminal_status(tmp_path: Path, monkeypatch, st
     )
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [{**run, "status": status}])
 
-    states = experiment_pipeline._inspect_sources(root, spec, refresh=False)
+    result = dry_run_pipeline(root, spec)
 
-    assert states[0]["complete"] is False
-    assert experiment_pipeline._source_summary_status(states) == "waiting_for_sources"
+    assert result["source_states"][0]["complete"] is False
+    assert result["status"] == "waiting_for_sources"
 
 
 def test_all_unsuccessful_terminal_source_fails(tmp_path: Path, monkeypatch):
@@ -567,10 +553,10 @@ def test_all_unsuccessful_terminal_source_fails(tmp_path: Path, monkeypatch):
         ],
     )
 
-    states = experiment_pipeline._inspect_sources(root, spec, refresh=False)
+    result = dry_run_pipeline(root, spec)
 
-    assert states[0]["complete"] is False
-    assert experiment_pipeline._source_summary_status(states) == "failed"
+    assert result["source_states"][0]["complete"] is False
+    assert result["status"] == "failed"
 
 
 @pytest.mark.parametrize("status", ["submitting", "unknown_scheduler"])
@@ -586,10 +572,10 @@ def test_slurm_source_uncertainty_blocks_external_pipeline(tmp_path: Path, monke
     )
     monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [{**run, "status": status}])
 
-    states = experiment_pipeline._inspect_sources(root, spec, refresh=False)
+    result = dry_run_pipeline(root, spec)
 
-    assert states[0]["uncertain_runs"] == ["run-000"]
-    assert experiment_pipeline._source_summary_status(states) == "blocked"
+    assert result["source_states"][0]["uncertain_runs"] == ["run-000"]
+    assert result["status"] == "blocked"
 
 
 def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path, monkeypatch):
@@ -643,7 +629,7 @@ def test_retry_preflight_failure_does_not_block_independent_retry(tmp_path: Path
     ]
     assert updated[0]["retry_preparation_error"] == "preflight failed"
     assert [row["attempt"] for row in updated if row["job_id"] == "age-hsp-i2-bcg"] == [1, 2]
-    assert [job["status"] for job in experiment_pipeline._logical_job_states(spec, updated)] == [
+    assert [job["status"] for job in experiment_pipeline_results.logical_job_states(spec, updated)] == [
         "failed",
         "running",
     ]
@@ -1057,7 +1043,7 @@ def test_unsafe_process_identity_is_blocked_and_never_retried(
 
     assert created is False
     assert updated[0]["retry_blocker"] == f"unsafe process identity: {identity_error}"
-    assert experiment_pipeline._logical_job_states(_spec(root), updated)[0]["status"] == "blocked"
+    assert experiment_pipeline_results.logical_job_states(_spec(root), updated)[0]["status"] == "blocked"
 
 
 def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monkeypatch):
@@ -1553,59 +1539,24 @@ def test_jobs_exceeding_capacity_launch_only_available_gpu_slots(tmp_path: Path)
     ]
 
 
-def test_run_attempts_waits_when_capacity_blocks_before_execution_snapshot(tmp_path: Path, monkeypatch):
-    class WaitObserved(Exception):
-        pass
+def test_run_attempts_waits_when_capacity_defers_launch(tmp_path: Path, monkeypatch):
+    spec = _spec(tmp_path / "workspace")
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    pipeline_dir = tmp_path / "workspace" / "pipelines" / "external-v1"
+    runtime = FakePipelineRuntime(spec, outcome=lambda _run: None)
+    waits = []
 
-    root = tmp_path / "workspace"
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
-    plan_dir = pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"
-    attempt = {
-        "step_id": "external-evaluate",
-        "run_id": "run-001",
-        "pipeline_id": "external-v1",
-        "job_id": "age-hsp-i2-psg",
-        "variant": "sleep2vec2",
-        "attempt": 1,
-        "status": "pending",
-        "verified": "false",
-        "plan_dir": str(plan_dir),
-        "runtime_commit": "",
-    }
-    write_rows(pipeline_dir / "jobs.tsv", [attempt])
+    def wait(seconds):
+        waits.append(seconds)
+        raise PipelineInterrupted
 
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "planned_runs",
-        lambda _rows: [{"step_id": "external-evaluate", "run_id": "run-001"}],
-    )
-    launches = []
+    with pytest.raises(PipelineInterrupted):
+        run_pipeline(spec_path, runtime.hooks(sleep=wait))
 
-    def capacity_blocked(*_args, **_kwargs):
-        launches.append(True)
-        return SimpleNamespace(committed_rows=[dict(attempt)])
-
-    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "launch_managed_runs", capacity_blocked)
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(attempt)])
-    monkeypatch.setattr(pipeline_attempts, "read_run_manifest", experiment_pipeline.read_run_manifest)
-    monkeypatch.setattr(experiment_pipeline.time, "sleep", lambda _seconds: (_ for _ in ()).throw(WaitObserved()))
-
-    with pytest.raises(WaitObserved):
-        experiment_pipeline._run_attempts(
-            root,
-            pipeline_dir,
-            _spec(root),
-            {"age": {}},
-            [attempt],
-            poll_seconds=1,
-        )
-
-    assert launches == [True]
-    assert not (pipeline_dir / "execution_snapshot.json").exists()
+    assert [name for name, _ids in runtime.calls] == ["monitor", "inspect", "inspect", "launch"]
+    assert waits == [0]
+    assert [row["status"] for row in experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")] == ["planned"]
+    assert json.loads((pipeline_dir / "pipeline.json").read_text())["status"] == "running_external"
 
 
 @pytest.mark.parametrize(
@@ -1657,11 +1608,6 @@ def test_pipeline_attempt_polls_read_canonical_state_only_under_run_lock(tmp_pat
         monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
         monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
         monkeypatch.setattr(pipeline_attempts, "planned_runs", lambda rows: [dict(row) for row in rows])
-        monkeypatch.setattr(
-            experiment_pipeline.managed_scheduler,
-            "launch_managed_runs",
-            lambda *_args, **_kwargs: SimpleNamespace(committed_rows=[dict(attempt)]),
-        )
         result_manifest = pipeline_dir / "result_manifest.json"
         monkeypatch.setattr(experiment_pipeline, "_validate_result_manifest", lambda *_args: result_manifest)
     calls = {
@@ -1674,7 +1620,15 @@ def test_pipeline_attempt_polls_read_canonical_state_only_under_run_lock(tmp_pat
         ),
         "create_needed_retries": lambda: pipeline_attempts.create_needed_retries(root, pipeline_dir, spec, {}, []),
         "run_attempts": lambda: experiment_pipeline._run_attempts(
-            root, pipeline_dir, spec, {"age": {}}, [attempt], poll_seconds=1
+            root,
+            pipeline_dir,
+            spec,
+            {"age": {}},
+            [attempt],
+            poll_seconds=1,
+            hooks=experiment_pipeline.PipelineHooks(
+                launch_runs=lambda *_args, **_kwargs: SimpleNamespace(committed_rows=[dict(attempt)])
+            ),
         ),
     }
     calls["run_attempts_with_snapshot"] = calls["run_attempts"]
@@ -1704,552 +1658,197 @@ def test_run_attempts_terminal_attempt_projects_only_canonical_runtime_commit(
     monkeypatch,
     canonical_runtime_commit: str,
 ):
-    root = tmp_path / "workspace"
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
-    snapshot_path = pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
-    snapshot_path.write_text(json.dumps({"runtime_commit": "a" * 40}) + "\n")
-    attempt = {
-        "step_id": "external-evaluate",
-        "run_id": "run-001",
-        "pipeline_id": "external-v1",
-        "job_id": "age-hsp-i2-psg",
-        "variant": "sleep2vec2",
-        "attempt": 1,
-        "status": "completed",
-        "verified": "false",
-        "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
-        "runtime_commit": "b" * 40,
-    }
-    canonical_attempt = {**attempt, "runtime_commit": canonical_runtime_commit}
-    write_rows(pipeline_dir / "jobs.tsv", [attempt])
-    validations = []
-    launches = []
+    spec = _spec(tmp_path / "workspace")
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    pipeline_dir = tmp_path / "workspace" / "pipelines" / "external-v1"
+    runtime = FakePipelineRuntime(spec, runtime_commit=canonical_runtime_commit)
 
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "validate_attempt_rows",
-        lambda *_args: validations.append("attempts"),
-    )
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "planned_runs",
-        lambda _rows: [{"step_id": "external-evaluate", "run_id": "run-001"}],
-    )
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(canonical_attempt)])
-    monkeypatch.setattr(pipeline_attempts, "read_run_manifest", experiment_pipeline.read_run_manifest)
-    monkeypatch.setattr(
-        experiment_pipeline.managed_scheduler,
-        "validated_execution_snapshot",
-        lambda *_args, **_kwargs: pytest.fail("terminal attempts must not probe the live runtime"),
-    )
-    monkeypatch.setattr(
-        experiment_pipeline.managed_scheduler,
-        "launch_managed_runs",
-        lambda *_args, **_kwargs: launches.append(True) or SimpleNamespace(committed_rows=[dict(canonical_attempt)]),
-    )
-    result_manifest = pipeline_dir / "result_manifest.json"
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_result_manifest",
-        lambda *_args: validations.append("result") or result_manifest,
-    )
-
-    result = experiment_pipeline._run_attempts(root, pipeline_dir, _spec(root), {"age": {}}, [attempt], poll_seconds=0)
+    result = run_pipeline(spec_path, runtime.hooks())
 
     persisted = experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")[0]
     assert result["status"] == "completed"
-    assert launches == [True]
-    assert validations == ["attempts", "result"]
     assert persisted["verified"] == "true"
+    # The frozen snapshot and spec name runtime "a" * 40; the attempt projects only what the run committed.
     assert persisted["runtime_commit"] == canonical_runtime_commit
+    # Only the registration and pre-launch probes inspect the live runtime; the terminal attempt is not probed.
+    assert runtime.calls == [
+        ("monitor", [spec["checkpoint_sources"]["age"]["plan"]]),
+        ("inspect", ["run-000"]),
+        ("inspect", ["run-000"]),
+        ("launch", ["run-000"]),
+    ]
 
 
 def test_run_attempts_result_validation_failure_is_terminal_without_changing_canonical_status(
     tmp_path: Path, monkeypatch
 ):
     root = tmp_path / "workspace"
+    spec = _spec(root)
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
     pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
-    attempt = {
-        "step_id": "external-evaluate",
-        "run_id": "run-001",
-        "pipeline_id": "external-v1",
-        "job_id": "age-hsp-i2-psg",
-        "variant": "sleep2vec2",
-        "attempt": 1,
-        "status": "completed",
-        "verified": "false",
-        "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
-        "runtime_commit": "",
-        "terminal_status_owner": "script",
-    }
-    write_rows(pipeline_dir / "jobs.tsv", [attempt])
-    canonical = dict(attempt)
-    validations = []
+    runtime = FakePipelineRuntime(spec)
 
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "planned_runs",
-        lambda _rows: [{"step_id": "external-evaluate", "run_id": "run-001"}],
-    )
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(canonical)])
-    monkeypatch.setattr(pipeline_attempts, "read_run_manifest", experiment_pipeline.read_run_manifest)
-    monkeypatch.setattr(experiment_pipeline.time, "sleep", lambda *_args: pytest.fail("must not poll"))
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "merge_run_manifest",
-        lambda *_args, **_kwargs: pytest.fail("result verification must not change canonical lifecycle status"),
-    )
-    monkeypatch.setattr(
-        experiment_pipeline.managed_scheduler,
-        "launch_managed_runs",
-        lambda *_args, **_kwargs: SimpleNamespace(committed_rows=[dict(canonical)]),
-    )
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "_attempt_recipe",
-        lambda *_args, **_kwargs: pytest.fail("result verification failures must not be retried"),
-    )
+    def launch_with_wrong_split(*args, **kwargs):
+        launched = runtime.launch_runs(*args, **kwargs)
+        for manifest_path in pipeline_dir.rglob("infer/run_manifest.json"):
+            manifest = json.loads(manifest_path.read_text())
+            manifest_path.write_text(json.dumps({**manifest, "eval_split": "val"}) + "\n")
+        return launched
 
-    def reject_result(*_args):
-        validations.append("result")
-        raise ValueError("manifest invalid")
+    hooks = runtime.hooks(launch_runs=launch_with_wrong_split, sleep=lambda _seconds: pytest.fail("must not poll"))
+    result = run_pipeline(spec_path, hooks)
 
-    monkeypatch.setattr(experiment_pipeline, "_validate_result_manifest", reject_result)
-
-    result = experiment_pipeline._run_attempts(
-        root,
-        pipeline_dir,
-        _spec(root),
-        {"age": {}},
-        [attempt],
-        poll_seconds=0,
-    )
-
-    persisted = experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")[0]
+    persisted = experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")
     assert result["status"] == "failed"
     assert result["jobs"][0]["status"] == "failed"
     assert result["jobs"][0]["attempt_count"] == 1
-    assert persisted["status"] == "completed"
-    assert persisted["verified"] == "false"
-    assert persisted["validation_error"] == "manifest invalid"
-    assert validations == ["result"]
+    assert len(persisted) == 1
+    assert persisted[0]["status"] == "completed"
+    assert persisted[0]["verified"] == "false"
+    assert persisted[0]["validation_error"] == "Inference result manifest label or split differs from the frozen job."
+    assert [row["status"] for row in read_run_manifest(root) if row["step_id"] == "external-evaluate"] == ["completed"]
+    assert json.loads((pipeline_dir / "pipeline.json").read_text())["status"] == "failed"
 
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_result_manifest",
-        lambda *_args: pytest.fail("resume must preserve the terminal validation failure"),
-    )
-    resumed = experiment_pipeline._run_attempts(
-        root,
-        pipeline_dir,
-        _spec(root),
-        {"age": {}},
-        [persisted],
-        poll_seconds=0,
-    )
-
-    assert resumed["status"] == "failed"
-    assert experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv") == [persisted]
+    with pytest.raises(ValueError, match="Failed pipelines are immutable"):
+        run_pipeline(spec_path, runtime.hooks(), resume=True)
+    assert experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv") == persisted
 
 
 def test_run_attempts_mixed_group_validates_live_snapshot_before_launch(tmp_path: Path, monkeypatch):
-    class LaunchObserved(Exception):
-        pass
+    spec = _two_job_spec(tmp_path / "workspace")
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    deferred = {"age-hsp-i2-bcg"}
 
-    root = tmp_path / "workspace"
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
-    (pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME).write_text("{}\n")
-    spec = _spec(root)
-    spec["jobs"].append(
-        {
-            **spec["jobs"][0],
-            "id": "age-hsp-i2-bcg",
-            "modality": "bcg",
-            "num_workers": 16,
-        }
-    )
-    attempts = [
-        {
-            "step_id": "external-evaluate",
-            "run_id": "run-001",
-            "pipeline_id": "external-v1",
-            "job_id": "age-hsp-i2-psg",
-            "variant": "sleep2vec2",
-            "attempt": 1,
-            "status": "completed",
-            "verified": "true",
-            "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
-            "runtime_commit": "a" * 40,
-        },
-        {
-            "step_id": "external-evaluate",
-            "run_id": "run-002",
-            "pipeline_id": "external-v1",
-            "job_id": "age-hsp-i2-bcg",
-            "variant": "sleep2vec2",
-            "attempt": 1,
-            "status": "pending",
-            "verified": "false",
-            "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-bcg" / "attempt-001"),
-            "runtime_commit": "",
-        },
+    def outcome(run):
+        if run["job_id"] in deferred:
+            deferred.remove(run["job_id"])
+            return None
+        return "completed"
+
+    runtime = FakePipelineRuntime(spec, outcome=outcome)
+
+    result = run_pipeline(spec_path, runtime.hooks())
+
+    assert result["status"] == "completed"
+    group = ["run-000", "run-001"]
+    # With one attempt terminal and its sibling still launchable, the whole frozen group is re-probed before launch.
+    assert runtime.calls[1:] == [
+        ("inspect", group),
+        ("inspect", group),
+        ("launch", group),
+        ("inspect", group),
+        ("launch", group),
     ]
-    write_rows(pipeline_dir / "jobs.tsv", attempts)
-    calls = []
-
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "planned_runs",
-        lambda rows: [{"step_id": row["step_id"], "run_id": row["run_id"]} for row in rows],
-    )
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(row) for row in attempts])
-
-    def validate_snapshot(owner_dir, _execution, runs, _canonical):
-        assert owner_dir == pipeline_dir
-        assert [run["run_id"] for run in runs] == ["run-001", "run-002"]
-        calls.append("snapshot")
-
-    def observe_launch(_root, owner_dir, runs, *_args, **_kwargs):
-        assert owner_dir == pipeline_dir
-        assert [run["run_id"] for run in runs] == ["run-001", "run-002"]
-        calls.append("launch")
-        raise LaunchObserved
-
-    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "validated_execution_snapshot", validate_snapshot)
-    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "launch_managed_runs", observe_launch)
-
-    with pytest.raises(LaunchObserved):
-        experiment_pipeline._run_attempts(
-            root,
-            pipeline_dir,
-            spec,
-            {"age": {}},
-            attempts,
-            poll_seconds=0,
-        )
-
-    assert calls == ["snapshot", "launch"]
 
 
 def test_run_attempts_blocks_on_external_missing_pid_capacity_blocker(tmp_path: Path, monkeypatch):
-    root = tmp_path / "workspace"
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
-    spec = _spec(root)
-    spec["jobs"].append(
-        {
-            **spec["jobs"][0],
-            "id": "age-hsp-i2-bcg",
-            "modality": "bcg",
-            "num_workers": 16,
-        }
-    )
-    attempts = [
-        {
-            "step_id": "external-evaluate",
-            "run_id": "run-001",
-            "pipeline_id": "external-v1",
-            "job_id": "age-hsp-i2-psg",
-            "variant": "sleep2vec",
-            "attempt": 1,
-            "status": "pending",
-            "verified": "false",
-            "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
-            "runtime_commit": "",
-        },
-        {
-            "step_id": "external-evaluate",
-            "run_id": "run-002",
-            "pipeline_id": "external-v1",
-            "job_id": "age-hsp-i2-bcg",
-            "variant": "sleep2vec2",
-            "attempt": 1,
-            "status": "pending",
-            "verified": "false",
-            "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-bcg" / "attempt-001"),
-            "runtime_commit": "",
-        },
-    ]
-    write_rows(pipeline_dir / "jobs.tsv", attempts)
-    blocker = {
-        "step_id": "train-age",
-        "run_id": "run-099",
-        "status": "missing_pid",
-        "target": "local",
-        "gpus": "0",
-    }
+    spec = _two_job_spec(tmp_path / "workspace")
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    pipeline_dir = tmp_path / "workspace" / "pipelines" / "external-v1"
+    blocker = {"step_id": "train-age", "run_id": "run-099"}
+    runtime = FakePipelineRuntime(spec, outcome=lambda run: "failed" if run["job_id"] == "age-hsp-i2-psg" else None)
+    blocked = []
 
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "planned_runs",
-        lambda rows: [{"step_id": row["step_id"], "run_id": row["run_id"]} for row in rows],
-    )
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "read_run_manifest",
-        lambda _root: [*[dict(row) for row in attempts], dict(blocker)],
-    )
-    launches = []
-
-    def blocked_launch(*_args, **kwargs):
-        launches.append(kwargs["fail_on_missing_pid_blocker"])
+    def launch_until_blocked(*args, **kwargs):
+        if not any(name == "launch" for name, _ids in runtime.calls):
+            return runtime.launch_runs(*args, **kwargs)
+        blocked.append(([str(run["run_id"]) for run in args[2]], kwargs["fail_on_missing_pid_blocker"]))
         raise managed_scheduler.MissingPidCapacityError(blocker["step_id"], blocker["run_id"])
 
-    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "launch_managed_runs", blocked_launch)
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "create_needed_retries",
-        lambda *_args, **_kwargs: pytest.fail("a missing_pid capacity blocker must not create retries"),
+    hooks = runtime.hooks(
+        launch_runs=launch_until_blocked,
+        sleep=lambda _seconds: pytest.fail("a missing_pid capacity blocker must not sleep"),
     )
-    monkeypatch.setattr(
-        experiment_pipeline.time,
-        "sleep",
-        lambda *_args: pytest.fail("a missing_pid capacity blocker must not sleep"),
-    )
-
-    result = experiment_pipeline._run_attempts(
-        root,
-        pipeline_dir,
-        spec,
-        {"age": {}},
-        attempts,
-        poll_seconds=1,
-    )
+    result = run_pipeline(spec_path, hooks)
 
     assert result["status"] == "blocked"
-    assert result["missing_pid_blocker"] == {
-        "status": "missing_pid",
-        "step_id": blocker["step_id"],
-        "run_id": blocker["run_id"],
-    }
-    assert launches == [True]
-    assert [row["status"] for row in experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")] == [
-        "pending",
-        "pending",
-    ]
-    assert not list(pipeline_dir.rglob(managed_scheduler.EXECUTION_SNAPSHOT_NAME))
+    assert result["missing_pid_blocker"] == {"status": "missing_pid", **blocker}
+    # The failed attempt's retry forms its own scheduler group; the blocker stops before that group launches.
+    assert blocked == [(["run-000", "run-001"], True)]
+    assert runtime.calls[-2:] == [("inspect", ["run-002"]), ("inspect", ["run-000", "run-001"])]
+    assert [
+        (row["run_id"], row["attempt"], row["status"])
+        for row in experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")
+    ] == [("run-000", "1", "failed"), ("run-001", "1", "planned"), ("run-002", "2", "planned")]
+    state = json.loads((pipeline_dir / "pipeline.json").read_text())
+    assert state["status"] == "blocked"
+    assert state["missing_pid_blocker"] == {"status": "missing_pid", **blocker}
 
 
 def test_run_attempts_blocks_before_retry_when_external_run_has_missing_pid(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
+    spec = _spec(root)
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
     pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
-    attempt = {
-        "step_id": "external-evaluate",
-        "run_id": "run-001",
-        "pipeline_id": "external-v1",
-        "job_id": "age-hsp-i2-psg",
-        "variant": "sleep2vec2",
-        "attempt": 1,
-        "status": "failed",
-        "verified": "false",
-        "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
-        "runtime_commit": "",
-    }
-    blocker = {
-        "step_id": "train-age",
-        "run_id": "run-099",
-        "status": "missing_pid",
-        "target": "local",
-        "gpus": "0",
-    }
-    write_rows(pipeline_dir / "jobs.tsv", [attempt])
+    rows = read_run_manifest(root)
+    blocker = {**rows[0], "run_id": "run-099", "status": "missing_pid", "target": "local", "gpus": "0"}
+    write_rows(root / "run_manifest.tsv", [*rows, blocker])
+    runtime = FakePipelineRuntime(spec, outcome=lambda _run: "failed")
 
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "planned_runs",
-        lambda rows: [{"step_id": row["step_id"], "run_id": row["run_id"]} for row in rows],
-    )
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "read_run_manifest",
-        lambda _root: [dict(attempt), dict(blocker)],
-    )
-    monkeypatch.setattr(
-        experiment_pipeline.managed_scheduler,
-        "launch_managed_runs",
-        lambda *_args, **_kwargs: SimpleNamespace(committed_rows=[dict(attempt)]),
-    )
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "create_needed_retries",
-        lambda *_args, **_kwargs: pytest.fail("capacity blocker must be handled before retry creation"),
-    )
-    monkeypatch.setattr(
-        experiment_pipeline.time,
-        "sleep",
-        lambda *_args: pytest.fail("capacity blocker must not sleep"),
-    )
-
-    result = experiment_pipeline._run_attempts(
-        root,
-        pipeline_dir,
-        _spec(root),
-        {"age": {}},
-        [attempt],
-        poll_seconds=1,
+    result = run_pipeline(
+        spec_path, runtime.hooks(sleep=lambda _seconds: pytest.fail("capacity blocker must not sleep"))
     )
 
     assert result["status"] == "blocked"
-    assert result["missing_pid_blocker"] == {
-        "status": "missing_pid",
-        "step_id": blocker["step_id"],
-        "run_id": blocker["run_id"],
-    }
+    assert result["missing_pid_blocker"] == {"status": "missing_pid", "step_id": "train-age", "run_id": "run-099"}
     persisted = experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")
     assert [(row["attempt"], row["status"]) for row in persisted] == [("1", "failed")]
+    assert [name for name, _ids in runtime.calls].count("launch") == 1
 
 
 def test_run_attempts_syncs_owned_missing_pid_and_blocks_pending_sibling(tmp_path: Path, monkeypatch):
-    root = tmp_path / "workspace"
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
-    spec = _spec(root)
-    spec["jobs"].append(
-        {
-            **spec["jobs"][0],
-            "id": "age-hsp-i2-bcg",
-            "modality": "bcg",
-            "num_workers": 16,
-        }
-    )
-    attempts = [
-        {
-            "step_id": "external-evaluate",
-            "run_id": "run-001",
-            "pipeline_id": "external-v1",
-            "job_id": "age-hsp-i2-psg",
-            "variant": "sleep2vec2",
-            "attempt": 1,
-            "status": "running",
-            "verified": "false",
-            "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-psg" / "attempt-001"),
-            "runtime_commit": "",
-        },
-        {
-            "step_id": "external-evaluate",
-            "run_id": "run-002",
-            "pipeline_id": "external-v1",
-            "job_id": "age-hsp-i2-bcg",
-            "variant": "sleep2vec2",
-            "attempt": 1,
-            "status": "pending",
-            "verified": "false",
-            "plan_dir": str(pipeline_dir / "plans" / "age-hsp-i2-bcg" / "attempt-001"),
-            "runtime_commit": "",
-        },
-    ]
-    write_rows(pipeline_dir / "jobs.tsv", attempts)
-    canonical = [{**attempts[0], "status": "missing_pid"}, dict(attempts[1])]
-
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "planned_runs",
-        lambda rows: [{"step_id": row["step_id"], "run_id": row["run_id"]} for row in rows],
-    )
-    monkeypatch.setattr(experiment_pipeline, "read_run_manifest", lambda _root: [dict(row) for row in canonical])
+    spec = _two_job_spec(tmp_path / "workspace")
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    pipeline_dir = tmp_path / "workspace" / "pipelines" / "external-v1"
     launches = []
 
-    def blocked_launch(*_args, **kwargs):
+    def lose_owned_pid(root, _owner_dir, runs, *_args, **kwargs):
         launches.append(kwargs["fail_on_missing_pid_blocker"])
-        raise managed_scheduler.MissingPidCapacityError(canonical[0]["step_id"], canonical[0]["run_id"])
+        with managed_scheduler.managed_run_lock(root):
+            row = next(row for row in read_run_manifest(root) if row["run_id"] == runs[0]["run_id"])
+            merge_run_manifest(root, [{**row, "status": "missing_pid"}], lock_held=True)
+        raise managed_scheduler.MissingPidCapacityError(row["step_id"], row["run_id"])
 
-    monkeypatch.setattr(experiment_pipeline.managed_scheduler, "launch_managed_runs", blocked_launch)
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "create_needed_retries",
-        lambda *_args, **_kwargs: pytest.fail("an owned missing_pid attempt must not create retries"),
+    hooks = FakePipelineRuntime(spec).hooks(
+        launch_runs=lose_owned_pid,
+        sleep=lambda _seconds: pytest.fail("an owned missing_pid attempt must not sleep"),
     )
-    monkeypatch.setattr(
-        experiment_pipeline.time,
-        "sleep",
-        lambda *_args: pytest.fail("an owned missing_pid attempt must not sleep"),
-    )
-
-    result = experiment_pipeline._run_attempts(
-        root,
-        pipeline_dir,
-        spec,
-        {"age": {}},
-        attempts,
-        poll_seconds=1,
-    )
+    result = run_pipeline(spec_path, hooks)
 
     assert result["status"] == "blocked"
     assert result["missing_pid_blocker"] == {
         "status": "missing_pid",
-        "step_id": canonical[0]["step_id"],
-        "run_id": canonical[0]["run_id"],
+        "step_id": "external-evaluate",
+        "run_id": "run-000",
     }
     assert launches == [True]
     persisted = {row["run_id"]: row for row in experiment_pipeline.read_rows(pipeline_dir / "jobs.tsv")}
-    assert persisted["run-001"]["status"] == "missing_pid"
-    assert persisted["run-002"]["status"] == "pending"
-    assert not list(pipeline_dir.rglob(managed_scheduler.EXECUTION_SNAPSHOT_NAME))
+    assert set(persisted) == {"run-000", "run-001"}
+    assert persisted["run-000"]["status"] == "missing_pid"
+    assert persisted["run-001"]["status"] == "planned"
 
 
 def test_execute_pipeline_persists_and_clears_missing_pid_blocker_on_resume(tmp_path: Path, monkeypatch):
     class ResumeObserved(Exception):
         pass
 
-    root = tmp_path / "workspace"
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
-    (pipeline_dir / "pipeline.json").write_text(json.dumps({"status": "running_external"}) + "\n")
+    spec = _spec(tmp_path / "workspace")
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    pipeline_dir = tmp_path / "workspace" / "pipelines" / "external-v1"
+    runtime = FakePipelineRuntime(spec)
     blocker = {"status": "missing_pid", "step_id": "train-age", "run_id": "run-099"}
-    blocked_result = {
-        "status": "blocked",
-        "jobs": [{"job_id": "age-hsp-i2-psg", "status": "running"}],
-        "missing_pid_blocker": blocker,
-    }
 
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_frozen_pipeline",
-        lambda *_args: json.loads((pipeline_dir / "pipeline.json").read_text()),
-    )
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_inspect_sources",
-        lambda *_args, **_kwargs: [{"failed_runs": [], "uncertain_runs": [], "complete": True}],
-    )
-    monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: {})
-    monkeypatch.setattr(pipeline_attempts, "load_or_create_initial_attempts", lambda *_args: [])
-    monkeypatch.setattr(experiment_pipeline, "_run_attempts", lambda *_args, **_kwargs: blocked_result)
+    def blocked_launch(*_args, **_kwargs):
+        raise managed_scheduler.MissingPidCapacityError(blocker["step_id"], blocker["run_id"])
 
-    result = experiment_pipeline._execute_pipeline(
-        root,
-        pipeline_dir,
-        _spec(root),
-        poll_seconds=1,
-        finalize_callback=None,
-    )
+    result = run_pipeline(spec_path, runtime.hooks(launch_runs=blocked_launch))
 
-    assert result == blocked_result
+    assert result["status"] == "blocked"
+    assert result["missing_pid_blocker"] == blocker
     state = json.loads((pipeline_dir / "pipeline.json").read_text())
     assert state["status"] == "blocked"
     assert state["missing_pid_blocker"] == blocker
+    assert state["logical_jobs"] == result["jobs"]
 
     def observe_resume(*_args, **_kwargs):
         resumed_state = json.loads((pipeline_dir / "pipeline.json").read_text())
@@ -2257,16 +1856,8 @@ def test_execute_pipeline_persists_and_clears_missing_pid_blocker_on_resume(tmp_
         assert resumed_state["missing_pid_blocker"] is None
         raise ResumeObserved
 
-    monkeypatch.setattr(experiment_pipeline, "_run_attempts", observe_resume)
-
     with pytest.raises(ResumeObserved):
-        experiment_pipeline._execute_pipeline(
-            root,
-            pipeline_dir,
-            _spec(root),
-            poll_seconds=1,
-            finalize_callback=None,
-        )
+        run_pipeline(spec_path, runtime.hooks(launch_runs=observe_resume), resume=True)
 
 
 @pytest.mark.parametrize(
@@ -2327,123 +1918,52 @@ def test_planned_runs_carries_frozen_checkpoint_evidence_to_scheduler(tmp_path: 
 
 
 def test_frozen_pipeline_rejects_external_preset_byte_drift(tmp_path: Path, monkeypatch):
-    root = tmp_path / "workspace"
-    spec = _spec(root)
-    plan_dir = Path(spec["checkpoint_sources"]["age"]["plan"])
-    plan_dir.mkdir(parents=True)
-    plan_path = plan_dir / "plan.json"
-    recipe_path = plan_dir / "recipe.resolved.yaml"
-    plan_path.write_text("{}\n")
-    recipe_path.write_text("task: hparam_tune\n")
-    preset = Path(spec["jobs"][0]["inference_preset_path"])
-    preset.parent.mkdir(parents=True)
-    preset.write_bytes(b"frozen-preset")
+    spec = _spec(tmp_path / "workspace")
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    runtime = FakePipelineRuntime(spec)
+    assert run_pipeline(spec_path, runtime.hooks())["status"] == "completed"
+    calls = list(runtime.calls)
 
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    source_text = yaml.safe_dump(spec, sort_keys=False)
-    resolved_text = yaml.safe_dump(spec, sort_keys=False)
-    original_spec = tmp_path / "external.yaml"
-    original_spec.write_text(source_text)
-    (pipeline_dir / "spec.source.yaml").write_text(source_text)
-    (pipeline_dir / "spec.resolved.yaml").write_text(resolved_text)
-    state = {
-        "schema_version": 1,
-        "pipeline_id": "external-v1",
-        "experiment_id": "unit",
-        "status": "waiting_for_sources",
-        "spec_path": str(original_spec),
-        "spec_source_sha256": experiment_pipeline._text_sha256(source_text),
-        "spec_resolved_sha256": experiment_pipeline._text_sha256(resolved_text),
-        "runtime_commit": "a" * 40,
-        "source_plans": [
-            {
-                "source_id": "age",
-                "plan_dir": str(plan_dir),
-                "plan_path": str(plan_path),
-                "plan_sha256": file_sha256(plan_path),
-                "resolved_recipe_path": str(recipe_path),
-                "resolved_recipe_sha256": file_sha256(recipe_path),
-            }
-        ],
-        "external_presets": [
-            {
-                "job_id": "age-hsp-i2-psg",
-                "path": str(preset),
-                "sha256": file_sha256(preset),
-            }
-        ],
-    }
-    (pipeline_dir / "pipeline.json").write_text(json.dumps(state) + "\n")
-    monkeypatch.setattr(experiment_pipeline, "read_hparam_plan_under_run_lock", lambda _plan_dir: {})
-
-    preset.write_bytes(b"changed-preset")
+    Path(spec["jobs"][0]["inference_preset_path"]).write_bytes(b"changed-preset")
 
     with pytest.raises(ValueError, match="Frozen external preset changed"):
-        experiment_pipeline._validate_frozen_pipeline(pipeline_dir, source_text, spec)
+        run_pipeline(spec_path, runtime.hooks(), resume=True)
+    assert runtime.calls == calls
 
 
 @pytest.mark.parametrize("tamper", [False, True])
 def test_orphan_checkpoint_selection_is_rederived_before_state_commit(tmp_path: Path, monkeypatch, tamper: bool):
     root = tmp_path / "workspace"
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
     spec = _spec(root)
-    config = tmp_path / "config.yaml"
-    checkpoint = tmp_path / "rank-1.ckpt"
-    alternate = tmp_path / "alternate.ckpt"
-    config.write_text("model: unit\n")
-    checkpoint.write_bytes(b"rank-1")
-    alternate.write_bytes(b"alternate")
-    derived = {
-        "source_id": "age",
-        "step_id": "train-age",
-        "run_id": "run-000",
-        "plan": spec["checkpoint_sources"]["age"]["plan"],
-        "selection_metric": "val_mae",
-        "selection_mode": "min",
-        "score": 4.5,
-        "config": str(config),
-        "config_sha256": file_sha256(config),
-        "checkpoint": str(checkpoint),
-        "checkpoint_sha256": file_sha256(checkpoint),
-        "variant": "sleep2vec2",
-        "label_name": "age",
-        "source_task": "age",
-    }
-    orphan = copy.deepcopy(derived)
-    if tamper:
-        orphan["checkpoint"] = str(alternate)
-        orphan["checkpoint_sha256"] = file_sha256(alternate)
-    checkpoints_path = pipeline_dir / "checkpoints.json"
-    checkpoints_path.write_text(
-        json.dumps(
-            {
-                "pipeline_id": "external-v1",
-                "created_at": "2026-07-20T00:00:00Z",
-                "sources": [orphan],
-            }
-        )
-        + "\n"
-    )
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    pipeline_dir = root / "pipelines" / "external-v1"
+    runtime = FakePipelineRuntime(spec)
+
+    def interrupt_launch(*_args, **_kwargs):
+        raise PipelineInterrupted
+
+    with pytest.raises(PipelineInterrupted):
+        run_pipeline(spec_path, runtime.hooks(launch_runs=interrupt_launch))
+
+    # Leave checkpoints.json behind without its committed hash, as a runner killed between the two writes would.
     state_path = pipeline_dir / "pipeline.json"
-    state_path.write_text(json.dumps({"status": "waiting_for_sources"}) + "\n")
-    monkeypatch.setattr(experiment_pipeline, "_select_checkpoint_sources", lambda *_args: [derived])
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_frozen_selection_owner",
-        lambda *_args: None,
-    )
+    state = json.loads(state_path.read_text())
+    del state["checkpoint_selection_sha256"]
+    state_path.write_text(json.dumps(state) + "\n")
+    checkpoints_path = pipeline_dir / "checkpoints.json"
+    if tamper:
+        payload = json.loads(checkpoints_path.read_text())
+        payload["sources"][0]["score"] = 4.4
+        checkpoints_path.write_text(json.dumps(payload) + "\n")
 
     if tamper:
         with pytest.raises(ValueError, match="differs from validation-derived selection"):
-            experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
+            run_pipeline(spec_path, runtime.hooks(), resume=True)
         assert "checkpoint_selection_sha256" not in json.loads(state_path.read_text())
     else:
-        selections = experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
-        assert selections == {"age": derived}
+        result = run_pipeline(spec_path, runtime.hooks(), resume=True)
+        assert result["status"] == "completed"
         assert json.loads(state_path.read_text())["checkpoint_selection_sha256"] == file_sha256(checkpoints_path)
-        experiment_pipeline._load_or_freeze_selections(root, pipeline_dir, spec)
         events = [
             event
             for event in pipeline_attempts.read_experiment_events(root)
@@ -2454,175 +1974,70 @@ def test_orphan_checkpoint_selection_is_rederived_before_state_commit(tmp_path: 
 
 def test_completed_pipeline_resume_validates_and_finalizes_without_reexecution(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
-    report = pipeline_dir / "final.md"
-    report.write_text("completed\n")
-    state = {
-        "status": "completed",
-        "final_report": str(report),
-        "result_artifacts": {str(report): file_sha256(report)},
-    }
-    (pipeline_dir / "pipeline.json").write_text(json.dumps(state) + "\n")
-    attempt = {"status": "completed"}
-
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: state)
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_experiment",
-        lambda *_args, **_kwargs: {"status": "active"},
-    )
-    monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: {"age": {}})
-    monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: [attempt])
-    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_logical_job_states",
-        lambda *_args: [{"job_id": "age-hsp-i2-psg", "status": "completed"}],
-    )
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_inspect_sources",
-        lambda *_args, **_kwargs: pytest.fail("completed pipelines must not recheck training sources"),
-    )
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_run_attempts",
-        lambda *_args, **_kwargs: pytest.fail("completed pipelines must not rerun external attempts"),
-    )
+    spec = _spec(root)
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    runtime = FakePipelineRuntime(spec)
     finalized = []
+    first = run_pipeline(spec_path, runtime.hooks(), finalized=finalized)
+    report = Path(first["report"])
+    calls = list(runtime.calls)
+    finalized.clear()
 
-    result = experiment_pipeline._execute_pipeline(
-        root,
-        pipeline_dir,
-        _spec(root),
-        poll_seconds=0,
-        finalize_callback=lambda finalized_root, finalized_report: finalized.append((finalized_root, finalized_report)),
-    )
+    result = run_pipeline(spec_path, runtime.hooks(), resume=True, finalized=finalized)
 
     assert result["status"] == "completed"
     assert finalized == [(root, report)]
+    # Completed pipelines neither recheck training sources nor probe, launch or poll external attempts.
+    assert runtime.calls == calls
 
     finalized.clear()
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_experiment",
-        lambda *_args, **_kwargs: {"status": "completed"},
-    )
-    result = experiment_pipeline._execute_pipeline(
-        root,
-        pipeline_dir,
-        _spec(root),
-        poll_seconds=0,
-        finalize_callback=lambda finalized_root, finalized_report: finalized.append((finalized_root, finalized_report)),
-    )
+    complete_experiment(root)
+    result = run_pipeline(spec_path, runtime.hooks(), resume=True, finalized=finalized)
     assert result["status"] == "completed"
     assert finalized == []
+    assert runtime.calls == calls
 
 
 def test_completed_event_append_failure_resumes_before_finalization(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
-    pipeline_dir = root / "pipelines" / "external-v1"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("schema_version: 1\n")
-    (pipeline_dir / "pipeline.json").write_text(json.dumps({"status": "ready"}) + "\n")
     spec = _spec(root)
-    job = {"job_id": spec["jobs"][0]["id"], "status": "completed"}
-    attempt = {"status": "completed"}
-    experiment_status = {"value": "active"}
-    order = []
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
+    pipeline_dir = root / "pipelines" / "external-v1"
+    runtime = FakePipelineRuntime(spec)
+    # Completion events and finalization calls are recorded in one ordered history.
+    order: list = []
+    original_append = pipeline_attempts.append_event
+    interrupted = {"value": True}
 
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_frozen_pipeline",
-        lambda *_args, **_kwargs: json.loads((pipeline_dir / "pipeline.json").read_text()),
-    )
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_experiment",
-        lambda *_args, **_kwargs: {"status": experiment_status["value"]},
-    )
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_inspect_sources",
-        lambda *_args, **_kwargs: [{"complete": True, "failed_runs": [], "uncertain_runs": []}],
-    )
-    monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: {"age": {}})
-    monkeypatch.setattr(pipeline_attempts, "load_or_create_initial_attempts", lambda *_args: [attempt])
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_run_attempts",
-        lambda *_args, **_kwargs: {"status": "completed", "jobs": [job]},
-    )
-    monkeypatch.setattr(experiment_pipeline, "read_rows", lambda *_args, **_kwargs: [attempt])
-    monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
-    monkeypatch.setattr(experiment_pipeline, "_logical_job_states", lambda *_args: [job])
+    def append(root_path, event_type, payload):
+        if event_type == "pipeline_completed":
+            if interrupted["value"]:
+                raise RuntimeError("event append interrupted")
+            order.append("event")
+        original_append(root_path, event_type, payload)
 
-    def aggregate(*_args):
-        for name in ("results.csv", "metrics.csv", "summary.md", "final.md"):
-            (pipeline_dir / name).write_text(f"{name}\n")
-        return pipeline_dir / "final.md"
-
-    monkeypatch.setattr(experiment_pipeline, "_aggregate_results", aggregate)
-    original_append = experiment_pipeline.append_event
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "append_event",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("event append interrupted")),
-    )
-    monkeypatch.setattr(pipeline_attempts, "append_event", experiment_pipeline.append_event)
+    monkeypatch.setattr(pipeline_attempts, "append_event", append)
 
     with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="reconciled on resume"):
-        experiment_pipeline._execute_pipeline(
-            root,
-            pipeline_dir,
-            spec,
-            poll_seconds=0,
-            finalize_callback=lambda *_args: order.append("finalize"),
-        )
+        run_pipeline(spec_path, runtime.hooks(), finalized=order)
 
     state = json.loads((pipeline_dir / "pipeline.json").read_text())
     assert state["status"] == "completed"
     assert state["result_artifacts"][str(pipeline_dir / "final.md")] == file_sha256(pipeline_dir / "final.md")
     assert order == []
+    calls = list(runtime.calls)
 
-    def append(root_path, event_type, payload):
-        order.append("event")
-        original_append(root_path, event_type, payload)
-
-    monkeypatch.setattr(pipeline_attempts, "append_event", append)
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_inspect_sources",
-        lambda *_args, **_kwargs: pytest.fail("completed pipelines must not recheck training sources"),
-    )
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_run_attempts",
-        lambda *_args, **_kwargs: pytest.fail("completed pipelines must not rerun external attempts"),
-    )
-    result = experiment_pipeline._execute_pipeline(
-        root,
-        pipeline_dir,
-        spec,
-        poll_seconds=0,
-        finalize_callback=lambda *_args: order.append("finalize"),
-    )
+    interrupted["value"] = False
+    result = run_pipeline(spec_path, runtime.hooks(), resume=True, finalized=order)
 
     assert result["status"] == "completed"
-    assert order == ["event", "finalize"]
+    assert order == ["event", (root, pipeline_dir / "final.md")]
+    assert runtime.calls == calls
     events_before = (root / "events.jsonl").read_bytes()
 
-    experiment_status["value"] = "completed"
+    complete_experiment(root)
     order.clear()
-    result = experiment_pipeline._execute_pipeline(
-        root,
-        pipeline_dir,
-        spec,
-        poll_seconds=0,
-        finalize_callback=lambda *_args: order.append("finalize"),
-    )
+    result = run_pipeline(spec_path, runtime.hooks(), resume=True, finalized=order)
 
     assert result["status"] == "completed"
     assert order == []

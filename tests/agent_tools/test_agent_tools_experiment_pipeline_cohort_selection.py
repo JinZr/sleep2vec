@@ -5,6 +5,13 @@ import json
 import math
 from pathlib import Path
 
+from agent_tool_test_helpers import (
+    FakePipelineRuntime,
+    PipelineInterrupted,
+    complete_experiment,
+    prepare_pipeline_sources,
+    run_pipeline,
+)
 import pytest
 import yaml
 
@@ -261,45 +268,28 @@ def test_cohort_selection_expands_selection_matrix_then_only_the_winner(tmp_path
 
 
 def test_cohort_selection_freezes_the_requested_ranked_candidates(tmp_path: Path, monkeypatch):
-    spec = _spec(tmp_path)
-    source_plan = {
-        "recipe": {"step": {"id": "train-age"}},
-        "runs": [{"step_id": "train-age", "run_id": "run-001"}],
-    }
-    rows = [
-        {"step_id": "train-age", "rank": "1", "run_id": "run-001"},
-        {"step_id": "train-age", "rank": "2", "run_id": "run-002"},
-    ]
-    source_plan["runs"] = [{"step_id": "train-age", "run_id": row["run_id"]} for row in rows]
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_source_hparam_plans",
-        lambda _source_id, source: [(Path(source["plan"]), source_plan)],
-    )
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec, scores=(4.0, 4.2, 4.4))
+    resolve = experiment_pipeline.resolve_hparam_candidates
     resolver_calls = []
-    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda *_args: source_plan)
-    monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", lambda *_args: None)
 
-    def resolve(*args, **kwargs):
-        resolver_calls.append((args, kwargs))
-        return rows, {("train-age", row["run_id"]): source_plan for row in rows}
+    def record_resolve(*args, **kwargs):
+        resolver_calls.append(kwargs)
+        return resolve(*args, **kwargs)
 
-    monkeypatch.setattr(experiment_pipeline, "resolve_hparam_candidates", resolve)
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_freeze_checkpoint_candidate",
-        lambda _spec, source_id, _source, _plan_dir, _step_id, _recipe, row, _policy: {
-            "source_id": source_id,
-            "run_id": row["run_id"],
-        },
-    )
+    def stop(*_args, **_kwargs):
+        raise PipelineInterrupted
 
-    selected = experiment_pipeline._select_checkpoint_sources(tmp_path, spec)
+    monkeypatch.setattr(experiment_pipeline, "resolve_hparam_candidates", record_resolve)
+    with pytest.raises(PipelineInterrupted):
+        run_pipeline(spec_path, FakePipelineRuntime(spec).hooks(inspect_target=stop))
 
-    assert resolver_calls[0][1] == {"top_k": 2}
-    assert [(row["candidate_id"], row["source_rank"]) for row in selected] == [
-        ("age-rank-001", 1),
-        ("age-rank-002", 2),
+    selected = json.loads((root / "pipelines" / "cohort-gate" / "candidates.json").read_text())["candidates"]
+    assert resolver_calls == [{"top_k": 2}]
+    assert [(row["candidate_id"], row["source_rank"], row["run_id"]) for row in selected] == [
+        ("age-rank-001", 1, "run-001"),
+        ("age-rank-002", 2, "run-002"),
     ]
 
 
@@ -387,54 +377,51 @@ def test_frozen_winner_is_hash_bound_and_tamper_evident(tmp_path: Path, monkeypa
         )
 
 
+def _candidate_metrics(values: dict[str, float]):
+    """Report each selection-phase run's MAE by its frozen candidate; report-only runs report 3.0."""
+
+    def metrics(run: dict) -> dict:
+        role, candidate_id, _template_id = run["job_id"].split("--")
+        return {"mae": values[candidate_id] if role == "selection" else 3.0}
+
+    return metrics
+
+
+def _selection_manifest(pipeline_dir: Path, candidate_id: str) -> Path:
+    attempt_dir = pipeline_dir / "phases" / "selection" / "results" / f"selection--{candidate_id}--selection-internal"
+    return attempt_dir / "attempt-001" / "infer" / "run_manifest.json"
+
+
 @pytest.mark.parametrize("with_report", [True, False])
 def test_selection_evidence_is_reread_before_completion(tmp_path: Path, monkeypatch, with_report: bool):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "cohort-gate"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("pipeline: frozen\n")
-    (pipeline_dir / "pipeline.json").write_text("{}\n")
     spec = _spec(root)
-    candidates = _candidates(tmp_path)
-    manifests = {
-        row["candidate_id"]: Path(row["result_manifest"])
-        for row in _evidence(tmp_path, {"age-rank-001": 4.9, "age-rank-002": 4.1})
-    }
-    finalized = []
-    evidence_reads = []
     if not with_report:
         spec["jobs"] = spec["jobs"][:1]
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec, scores=(4.0, 4.2))
+    runtime = FakePipelineRuntime(spec, metrics=_candidate_metrics({"age-rank-001": 4.9, "age-rank-002": 4.1}))
+    finalized = []
+    evidence_reads = []
+    read_evidence = experiment_pipeline.pipeline_results.selection_evidence
 
-    def current_evidence(*_args):
+    def change_winner_evidence():
+        manifest_path = _selection_manifest(pipeline_dir, "age-rank-001")
+        manifest = json.loads(manifest_path.read_text())
+        manifest_path.write_text(json.dumps({**manifest, "metrics": {"mae": 5.9}}) + "\n")
+
+    def current_evidence(*args):
         evidence_reads.append(True)
         if not with_report and len(evidence_reads) == 2:
-            manifests["age-rank-001"].write_text(json.dumps({"metrics": {"mae": 5.9}}) + "\n")
-        rows = []
-        for candidate_id, manifest_path in manifests.items():
-            manifest = json.loads(manifest_path.read_text())
-            rows.append(
-                {
-                    "candidate_id": candidate_id,
-                    "job_template_id": "selection-internal",
-                    "cohort": "internal_holdout",
-                    "metrics": manifest["metrics"],
-                    "result_manifest": str(manifest_path),
-                    "result_manifest_sha256": file_sha256(manifest_path),
-                }
-            )
-        return rows
+            change_winner_evidence()
+        return read_evidence(*args)
 
-    def execute_phase(_root, _pipeline_dir, phase_spec, _candidates, **_kwargs):
-        if phase_spec["_execution_stage"] == "report_only":
-            manifests["age-rank-001"].write_text(json.dumps({"metrics": {"mae": 5.9}}) + "\n")
-        return {
-            "status": "completed",
-            "jobs": [{"job_id": job["id"], "status": "completed"} for job in phase_spec["jobs"]],
-        }
+    def launch_and_change_evidence(*args, **kwargs):
+        result = runtime.launch_runs(*args, **kwargs)
+        if args[2][0]["job_id"].startswith("report_only--"):
+            change_winner_evidence()
+        return result
 
-    monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: candidates)
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(experiment_pipeline, "_execute_cohort_phase", execute_phase)
     monkeypatch.setattr(experiment_pipeline.pipeline_results, "selection_evidence", current_evidence)
     monkeypatch.setattr(
         experiment_pipeline.pipeline_results,
@@ -443,63 +430,32 @@ def test_selection_evidence_is_reread_before_completion(tmp_path: Path, monkeypa
     )
 
     with pytest.raises(ValueError, match="Frozen cohort-selection decision changed"):
-        experiment_pipeline._execute_cohort_selection(
-            root,
-            pipeline_dir,
-            spec,
-            poll_seconds=0,
-            finalize_callback=lambda *_args: finalized.append(True),
-        )
+        run_pipeline(spec_path, runtime.hooks(launch_runs=launch_and_change_evidence), finalized=finalized)
 
     assert finalized == []
     assert len(evidence_reads) == 2
-    assert json.loads((pipeline_dir / "pipeline.json").read_text()).get("status") != "completed"
+    assert json.loads((pipeline_dir / "pipeline.json").read_text())["status"] == "failed"
 
 
 @pytest.mark.parametrize("with_report", [True, False])
 def test_no_winner_stops_before_report_only_materialization(tmp_path: Path, monkeypatch, with_report: bool):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "cohort-gate"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("pipeline: frozen\n")
     spec = _spec(root)
-    candidates = _candidates(tmp_path)
-    calls = []
-    states = []
     spec["jobs"][0]["provenance"] = "external"
     spec["selector"]["gates"][0]["strict"] = True
     if not with_report:
         spec["jobs"] = spec["jobs"][:1]
-    evidence = _evidence(tmp_path, {"age-rank-001": 5.0, "age-rank-002": 5.1})
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec, scores=(4.0, 4.2))
+    runtime = FakePipelineRuntime(spec, metrics=_candidate_metrics({"age-rank-001": 5.0, "age-rank-002": 5.1}))
+    finalized = []
 
-    monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: candidates)
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_execute_cohort_phase",
-        lambda *_args, **kwargs: calls.append(_args[2]["_execution_stage"])
-        or {"status": "completed", "jobs": [{"status": "completed"}]},
-    )
-    monkeypatch.setattr(experiment_pipeline.pipeline_results, "selection_evidence", lambda *_args: [])
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_load_or_freeze_cohort_decision",
-        lambda *_args: cohort_selection.rank_candidates(spec, candidates, evidence),
-    )
-    monkeypatch.setattr(experiment_pipeline, "_update_state", lambda *_args, **kwargs: states.append(kwargs))
-    monkeypatch.setattr(experiment_pipeline, "append_event", lambda *_args, **_kwargs: None)
-
-    result = experiment_pipeline._execute_cohort_selection(
-        root,
-        pipeline_dir,
-        spec,
-        poll_seconds=0,
-        finalize_callback=lambda *_args: pytest.fail("no-winner must not finalize"),
-    )
+    result = run_pipeline(spec_path, runtime.hooks(), finalized=finalized)
 
     assert result["status"] == "failed"
-    assert calls == ["selection"]
-    assert states[-1]["failure"] == "no_feasible_candidate"
+    assert finalized == []
+    assert [run_ids for effect, run_ids in runtime.calls if effect == "launch"] == [["run-000", "run-001"]]
+    assert json.loads((pipeline_dir / "pipeline.json").read_text())["failure"] == "no_feasible_candidate"
     report = (pipeline_dir / "selection_failure.md").read_text()
     assert "| age-rank-001 | internal_holdout | external | mae | 5.0 | `<` | 5.0 | False |" in report
     assert not (pipeline_dir / "phases" / "report_only").exists()
@@ -509,68 +465,40 @@ def test_no_winner_stops_before_report_only_materialization(tmp_path: Path, monk
 def test_report_only_phase_is_built_from_the_frozen_winner(tmp_path: Path, monkeypatch, with_report: bool):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "cohort-gate"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("pipeline: frozen\n")
-    (pipeline_dir / "candidates.json").write_text("{}\n")
     spec = _spec(root)
-    candidates = _candidates(tmp_path)
-    winner = candidates["age-rank-002"]
     if not with_report:
         spec["jobs"] = spec["jobs"][:1]
-    phases = []
-    states = []
-    completion_order = []
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec, scores=(4.0, 4.2))
+    runtime = FakePipelineRuntime(spec, metrics=_candidate_metrics({"age-rank-001": 5.5, "age-rank-002": 4.1}))
+    launched_jobs = []
+    # Completion events and finalization calls are recorded in one ordered history.
+    completion_order: list = []
+    append_event = pipeline_attempts.append_event
 
-    def execute_phase(_root, _pipeline_dir, phase_spec, _candidates, **_kwargs):
-        if phase_spec["_execution_stage"] == "report_only":
+    def launch(*args, **kwargs):
+        job_ids = [run["job_id"] for run in args[2]]
+        if job_ids[0].startswith("report_only--"):
             assert (pipeline_dir / "cohort_selection_winner.json").is_file()
-        phases.append((phase_spec["_execution_stage"], phase_spec["jobs"]))
-        return {
-            "status": "completed",
-            "jobs": [{"job_id": job["id"], "status": "completed"} for job in phase_spec["jobs"]],
-        }
+        launched_jobs.append(job_ids)
+        return runtime.launch_runs(*args, **kwargs)
 
-    def freeze_decision(*_args):
-        (pipeline_dir / "cohort_selection_ranking.csv").write_text("candidate_id\n")
-        (pipeline_dir / "cohort_selection_winner.json").write_text("{}\n")
-        return [], {"winner": winner, "candidates": list(candidates.values())}
+    def append(root_path, event_type, payload):
+        if event_type == "pipeline_completed":
+            completion_order.append(event_type)
+        append_event(root_path, event_type, payload)
 
-    def write_summary(*_args):
-        for name in ("results.csv", "metrics.csv", "summary.md", "final.md"):
-            (pipeline_dir / name).write_text(f"{name}\n")
-        return pipeline_dir / "final.md"
+    monkeypatch.setattr(pipeline_attempts, "append_event", append)
 
-    monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: candidates)
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
-    monkeypatch.setattr(experiment_pipeline, "_execute_cohort_phase", execute_phase)
-    monkeypatch.setattr(experiment_pipeline.pipeline_results, "selection_evidence", lambda *_args: [])
-    monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_cohort_decision", freeze_decision)
-    monkeypatch.setattr(experiment_pipeline, "_validate_cohort_decision", lambda *_args: ([], {}))
-    monkeypatch.setattr(experiment_pipeline.pipeline_results, "write_cohort_result_summary", write_summary)
-    monkeypatch.setattr(experiment_pipeline, "_update_state", lambda *_args, **kwargs: states.append(kwargs))
-    monkeypatch.setattr(
-        pipeline_attempts,
-        "reconcile_pipeline_event",
-        lambda _root, event_type, _payload, **_kwargs: completion_order.append(event_type),
-    )
-
-    result = experiment_pipeline._execute_cohort_selection(
-        root,
-        pipeline_dir,
-        spec,
-        poll_seconds=0,
-        finalize_callback=lambda *_args: completion_order.append("finalize"),
-    )
+    result = run_pipeline(spec_path, runtime.hooks(launch_runs=launch), finalized=completion_order)
 
     assert result["status"] == "completed"
-    assert [phase for phase, _jobs in phases] == (["selection", "report_only"] if with_report else ["selection"])
-    assert {job["candidate_id"] for job in phases[0][1]} == set(candidates)
-    if with_report:
-        assert {job["candidate_id"] for job in phases[1][1]} == {winner["candidate_id"]}
-    else:
+    selection_jobs = [f"selection--age-rank-00{rank}--selection-internal" for rank in (1, 2)]
+    report_jobs = [["report_only--age-rank-002--report-external"]] if with_report else []
+    assert launched_jobs == [selection_jobs, *report_jobs]
+    if not with_report:
         assert not (pipeline_dir / "phases" / "report_only").exists()
-    assert states[-1]["status"] == "completed"
-    assert completion_order == ["pipeline_completed", "finalize"]
+    assert json.loads((pipeline_dir / "pipeline.json").read_text())["status"] == "completed"
+    assert completion_order == ["pipeline_completed", (root, pipeline_dir / "final.md")]
 
 
 @pytest.mark.parametrize("with_report", [True, False])
@@ -579,86 +507,51 @@ def test_completed_cohort_pipeline_reconciles_completion_event_before_finalizati
 ):
     root = tmp_path / "workspace"
     pipeline_dir = root / "pipelines" / "cohort-gate"
-    pipeline_dir.mkdir(parents=True)
-    (pipeline_dir / "spec.source.yaml").write_text("pipeline: frozen\n")
     report = pipeline_dir / "final.md"
-    report.write_text("completed\n")
-    state = {
-        "status": "completed",
-        "final_report": str(report),
-        "result_artifacts": {str(report): file_sha256(report)},
-    }
-    (pipeline_dir / "pipeline.json").write_text(json.dumps(state) + "\n")
     spec = _spec(root)
-    candidates = _candidates(tmp_path)
-    winner = candidates["age-rank-001"]
     if not with_report:
         spec["jobs"] = spec["jobs"][:1]
-    validated_phases = []
-    experiment_status = {"value": "active"}
-    finalized = []
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec, scores=(4.0, 4.2))
+    runtime = FakePipelineRuntime(spec, metrics=_candidate_metrics({"age-rank-001": 4.9, "age-rank-002": 4.1}))
+    # Completion events and finalization calls are recorded in one ordered history.
+    order: list = []
+    append_event = pipeline_attempts.append_event
+    interrupted = {"value": True}
 
-    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: state)
-    monkeypatch.setattr(experiment_pipeline, "_load_or_freeze_selections", lambda *_args: candidates)
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_validated_completed_phase",
-        lambda _root, _phase_dir, phase_spec, _candidates: validated_phases.append(phase_spec["_execution_stage"])
-        or [{"job_id": job["id"], "status": "completed"} for job in phase_spec["jobs"]],
-    )
-    monkeypatch.setattr(experiment_pipeline.pipeline_results, "selection_evidence", lambda *_args: [])
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_cohort_decision",
-        lambda *_args: ([], {"winner": winner}),
-    )
-    monkeypatch.setattr(
-        experiment_pipeline,
-        "_validate_experiment",
-        lambda *_args, **_kwargs: {"status": experiment_status["value"]},
-    )
+    def append(root_path, event_type, payload):
+        if event_type == "pipeline_completed":
+            if interrupted["value"]:
+                raise RuntimeError("event append interrupted")
+            order.append(event_type)
+        append_event(root_path, event_type, payload)
 
-    def finalize(_root, _report):
-        events = [
-            event
-            for event in pipeline_attempts.read_experiment_events(root)
-            if event.get("event_type") == "pipeline_completed"
-        ]
-        assert len(events) == 1
-        assert events[0]["pipeline_id"] == "cohort-gate"
-        assert events[0]["report"] == str(report)
-        finalized.append(True)
-        experiment_status["value"] = "completed"
+    monkeypatch.setattr(pipeline_attempts, "append_event", append)
+    with pytest.raises(pipeline_attempts.PipelineRegistrationRecoveryError, match="reconciled on resume"):
+        run_pipeline(spec_path, runtime.hooks(), finalized=order)
+    assert json.loads((pipeline_dir / "pipeline.json").read_text())["status"] == "completed"
+    assert order == []
+    calls = list(runtime.calls)
 
-    result = experiment_pipeline._execute_pipeline(
-        root,
-        pipeline_dir,
-        spec,
-        poll_seconds=0,
-        finalize_callback=finalize,
-    )
+    interrupted["value"] = False
+    result = run_pipeline(spec_path, runtime.hooks(), resume=True, finalized=order)
 
     assert result["status"] == "completed"
-    assert finalized == [True]
+    assert order == ["pipeline_completed", (root, report)]
+    assert runtime.calls == calls
     events_before = (root / "events.jsonl").read_bytes()
 
-    result = experiment_pipeline._execute_pipeline(
-        root,
-        pipeline_dir,
-        spec,
-        poll_seconds=0,
-        finalize_callback=finalize,
-    )
+    complete_experiment(root)
+    order.clear()
+    result = run_pipeline(spec_path, runtime.hooks(), resume=True, finalized=order)
 
     assert result["status"] == "completed"
-    assert finalized == [True]
+    assert order == []
     assert (root / "events.jsonl").read_bytes() == events_before
-    assert validated_phases == (["selection", "report_only"] if with_report else ["selection"]) * 2
 
     report.write_text("changed after completion\n")
     with pytest.raises(ValueError, match="Completed pipeline artifact changed"):
-        experiment_pipeline._execute_pipeline(root, pipeline_dir, spec, poll_seconds=0, finalize_callback=finalize)
-    assert finalized == [True]
+        run_pipeline(spec_path, runtime.hooks(), resume=True, finalized=order)
+    assert order == []
     assert (root / "events.jsonl").read_bytes() == events_before
 
 

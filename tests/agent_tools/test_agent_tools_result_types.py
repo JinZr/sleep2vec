@@ -66,7 +66,15 @@ def test_result_types_reach_callers(tmp_path: Path):
                 slurm._atomic_create_json(Path("/sidecar"), generated_sidecar)
             slurm.terminal_exit_code(terminal_sidecar)
 
-            source_states = experiment_pipeline._inspect_sources(Path("/workspace"), {}, refresh=False)
+            pipeline_hooks = experiment_pipeline.PipelineHooks(
+                inspect_target=lambda *args, **kwargs: managed_scheduler.inspect_execution_target({}, []),
+                sleep=lambda seconds: None,
+            )
+            pipeline_hooks.sleep = None  # type: ignore[misc]
+            experiment_pipeline.PipelineHooks(sleep="later")  # type: ignore[arg-type]
+            source_states = experiment_pipeline._inspect_sources(
+                Path("/workspace"), {}, refresh=False, hooks=pipeline_hooks,
+            )
             source_complete: bool = source_states[0]["complete"]
             source_states[0]["complete"] = "true"  # type: ignore[typeddict-item]
             frozen_candidates = experiment_pipeline._select_checkpoint_sources(Path("/workspace"), {})
@@ -78,13 +86,13 @@ def test_result_types_reach_callers(tmp_path: Path):
             attempt_count: int = logical_jobs[0]["attempt_count"]
             logical_jobs[0]["status"] = "ready"  # type: ignore[typeddict-item]
             execution_result = experiment_pipeline._run_attempts(
-                Path("/workspace"), Path("/pipeline"), {}, {}, [], poll_seconds=0,
+                Path("/workspace"), Path("/pipeline"), {}, {}, [], poll_seconds=0, hooks=pipeline_hooks,
             )
             execution_result["jobs"][0]["attempt_count"] = "1"  # type: ignore[typeddict-item]
             if "missing_pid_blocker" in execution_result:
                 execution_result["missing_pid_blocker"]["status"] = "running"  # type: ignore[typeddict-item]
             for pipeline_result in (
-                experiment_pipeline.run_experiment_pipeline(Path("/workspace"), Path("/spec")),
+                experiment_pipeline.run_experiment_pipeline(Path("/workspace"), Path("/spec"), hooks=pipeline_hooks),
                 experiments.run_experiment_pipeline(Path("/workspace"), Path("/spec")),
             ):
                 pipeline_result["status"] = "unknown"  # type: ignore[arg-type]
