@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from contextlib import nullcontext
 from datetime import datetime, timezone
+import functools
 import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
@@ -56,7 +57,6 @@ from .experiment_workspace import (
     validate_frozen_run_update,
     validate_managed_run_rows,
     validated_run_key,
-    verify_run_snapshot,
     write_initial_experiment_manifest,
     write_status_report,
 )
@@ -118,6 +118,31 @@ def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.Registered
     raise ValueError(f"Preset plan is not registered in its experiment workspace: {plan_dir}")
 
 
+def _record_definitely_unlaunched_failure(workspace: Path, key: tuple[str, str], reason: str) -> None:
+    previous = {managed_run_key(row): row for row in read_run_manifest(workspace)}[key]
+    # A lost receipt or post-submit failure must never become a definitely-unsubmitted failure.
+    if previous["status"] in managed_scheduler.LAUNCHABLE_STATUSES and not has_managed_launch_evidence(previous):
+        merge_run_manifest(
+            workspace,
+            [
+                {
+                    "step_id": key[0],
+                    "run_id": key[1],
+                    "status": "launch_failed",
+                    "scheduler_reason": reason,
+                    "scheduler_observed_at": utc_now(),
+                }
+            ],
+            lock_held=True,
+        )
+        append_event(
+            workspace,
+            "run_status_changed",
+            {"step_id": key[0], "run_id": key[1], "from": previous["status"], "to": "launch_failed"},
+        )
+        write_status_report(workspace)
+
+
 def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_scheduler.LaunchResult:
     owner_dir = Path(plan_dir).absolute()
     workspace = _preset_direct_workspace(owner_dir)
@@ -128,97 +153,69 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
         run = plan["runs"][0]
         key = validated_run_key(run)
         previous = {managed_run_key(row): row for row in rows}[key]
-        if previous["status"] not in managed_scheduler.LAUNCHABLE_STATUSES:
-            return managed_scheduler.LaunchResult(rows, [previous], frozenset(), {}, {})
-        if has_managed_launch_evidence(previous):
-            raise ValueError("Preset run already has launch evidence; refusing another launch attempt.")
         execution = plan["recipe"]["execution"]
-        run_dir = Path(run["run_dir"])
-        identity = {
-            "target": "local",
-            "host": "",
-            "workdir": execution["workdir"],
-            "gpus": "",
-            "pid_path": str(run_dir / "pid"),
-            "log_path": str(run_dir / "stdout.log"),
-        }
-        identity["command"] = managed_scheduler.build_launch_command(
-            execution,
-            Path(run["script"]),
-            identity["log_path"],
-            identity["pid_path"],
-            [],
-            config_path=Path(run["config"]),
-            script_sha256=run["script_sha256"],
-            config_sha256=run["config_sha256"],
-        )
-        exp_io.validate_managed_output_paths(
-            workspace,
-            [
-                workspace / "run_manifest.tsv",
-                workspace / "run_matrix.csv",
-                workspace / "reports" / "run_matrix.md",
-                workspace / "events.jsonl",
-                workspace / "reports" / "status.md",
-                Path(identity["pid_path"]),
-                Path(identity["log_path"]),
-            ],
-        )
-        verify_run_snapshot(run)
-        preview = {**previous, **identity}
-        validate_frozen_run_update(previous, preview, allow_execution_identity_fill=True)
-        if dry_run:
-            return managed_scheduler.LaunchResult(rows, [preview], frozenset(), {}, {})
-        if Path(identity["pid_path"]).exists():
-            raise ValueError("Preset PID receipt already exists; refusing another launch attempt.")
-        probe = managed_scheduler.run_execution_command(
-            execution,
-            [
-                execution["python"],
-                "-c",
-                python_programs.source("managed_scheduler.runtime_identity"),
-                "agent_tools.experiment_workspace",
-                "{}",
-                "[]",
-                str(execution["runtime_commit"]),
-            ],
-        )
-        if probe.returncode != 0:
-            detail = probe.stderr.strip() or probe.stdout.strip() or f"exit code {probe.returncode}"
-            raise RuntimeError(f"Preset runtime preflight failed: {detail}")
-        verify_run_snapshot(run)
-        # Claim before fork: an interrupted manager must not turn an uncertain launch into a retry.
-        attempted = {
-            **preview,
-            "planned_runtime_commit": str(execution["runtime_commit"]),
-            "status": "launched",
-            "launched_at": utc_now(),
-        }
-        merge_run_manifest(workspace, [attempted], lock_held=True)
-        status = managed_scheduler.start_process(
-            execution,
-            identity["command"],
-            retry_pre_spawn_failure=False,
-        )
-        attempted["status"] = status
-        process_identity = evidence.read_process_identity(identity["pid_path"], attempted)
-        if process_identity is not None:
-            attempted.update(process_identity)
-        committed = merge_run_manifest(workspace, [attempted], lock_held=True)
-        final = {managed_run_key(row): row for row in committed}[key]
-        append_event(
-            workspace,
-            "run_status_changed",
-            {"step_id": key[0], "run_id": key[1], "from": previous["status"], "to": final["status"]},
-        )
-        write_status_report(workspace)
-        return managed_scheduler.LaunchResult(
-            committed,
-            [final],
-            frozenset({key}) if status == "launched" else frozenset(),
-            {key: (previous["status"], final["status"])},
-            {},
-        )
+
+        def preflight(*_scheduler_state: object) -> managed_scheduler.ExecutionSnapshotResult:
+            # The scheduler passes the manifest state read under this same lock, which is previous for this run.
+            # Script-based preset runs freeze no module execution snapshot; the start command re-verifies artifacts.
+            if previous["status"] not in managed_scheduler.LAUNCHABLE_STATUSES:
+                return None, False
+            if has_managed_launch_evidence(previous):
+                raise ValueError("Preset run already has launch evidence; refusing another launch attempt.")
+            if (Path(run["run_dir"]) / "pid").exists():
+                raise ValueError("Preset PID receipt already exists; refusing another launch attempt.")
+            probe = managed_scheduler.run_execution_command(
+                execution,
+                [
+                    execution["python"],
+                    "-c",
+                    python_programs.source("managed_scheduler.runtime_identity"),
+                    "agent_tools.experiment_workspace",
+                    "{}",
+                    "[]",
+                    str(execution["runtime_commit"]),
+                ],
+            )
+            if probe.returncode != 0:
+                detail = probe.stderr.strip() or probe.stdout.strip() or f"exit code {probe.returncode}"
+                raise RuntimeError(f"Preset runtime preflight failed: {detail}")
+            return None, False
+
+        def claim_and_start(_frozen_execution: object, command: str) -> str:
+            # Claim before fork: an interrupted manager must not turn an uncertain launch into a retry.
+            merge_run_manifest(
+                workspace,
+                [{"step_id": key[0], "run_id": key[1], "status": "launched", "launched_at": utc_now()}],
+                lock_held=True,
+            )
+            # A pre-spawn verification failure after the claim is a definite launch failure, not a pending retry.
+            return managed_scheduler.start_process(execution, command, retry_pre_spawn_failure=False)
+
+        try:
+            return managed_scheduler.launch_managed_runs(
+                workspace,
+                owner_dir,
+                plan["runs"],
+                execution,
+                plan["recipe"].get("runtime", {}),
+                dry_run=dry_run,
+                hooks=managed_scheduler.SchedulerHooks(
+                    validated_snapshot=preflight,
+                    # Dry run previews the same artifact-verifying command that execute records and starts.
+                    build_command=functools.partial(
+                        managed_scheduler.build_launch_command,
+                        config_path=Path(run["config"]),
+                        script_sha256=run["script_sha256"],
+                        config_sha256=run["config_sha256"],
+                    ),
+                    start_process=claim_and_start,
+                ),
+                lock_held=True,
+            )
+        except Exception as exc:
+            if not dry_run:
+                _record_definitely_unlaunched_failure(workspace, key, f"Pre-launch guard failed: {exc}")
+            raise
 
 
 def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
@@ -369,30 +366,7 @@ def launch_infer_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_s
         except Exception as exc:
             if not dry_run:
                 key = validated_run_key(plan["runs"][0])
-                previous = {managed_run_key(row): row for row in read_run_manifest(workspace)}[key]
-                # A lost receipt or post-submit failure must never become a definitely-unsubmitted failure.
-                if previous["status"] in managed_scheduler.LAUNCHABLE_STATUSES and not has_managed_launch_evidence(
-                    previous
-                ):
-                    merge_run_manifest(
-                        workspace,
-                        [
-                            {
-                                "step_id": key[0],
-                                "run_id": key[1],
-                                "status": "launch_failed",
-                                "scheduler_reason": f"Pre-submission guard failed: {exc}",
-                                "scheduler_observed_at": utc_now(),
-                            }
-                        ],
-                        lock_held=True,
-                    )
-                    append_event(
-                        workspace,
-                        "run_status_changed",
-                        {"step_id": key[0], "run_id": key[1], "from": previous["status"], "to": "launch_failed"},
-                    )
-                    write_status_report(workspace)
+                _record_definitely_unlaunched_failure(workspace, key, f"Pre-submission guard failed: {exc}")
             raise
 
 
