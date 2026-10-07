@@ -101,7 +101,7 @@ def test_execute_supersedes_canonical_pending_run_and_prevents_old_round_launch(
     after = [json.loads(line) for line in events_path.read_text().splitlines()]
     assert [event["event_type"] for event in after].count("supersede_pending_run") == 1
     started = []
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: started.append(True) or "launched")
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: started.append(True) or "launched")
 
     hparam_runtime.launch_hparam_runs(round_dir, dry_run=False)
 
@@ -531,7 +531,7 @@ def test_adaptive_step_reconciles_pid_after_initial_post_start_commit_failure(tm
             raise RuntimeError("post-start canonical commit failed")
         return real_runtime_merge(*args, **kwargs)
 
-    monkeypatch.setattr(hparam_runtime, "_start_process", start_with_pid)
+    monkeypatch.setattr(managed_scheduler, "start_process", start_with_pid)
     monkeypatch.setattr(hparam_runtime.evidence, "process_identity_running", lambda *_args: True)
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", fail_post_start_commit)
 
@@ -604,7 +604,7 @@ def test_adaptive_step_blocks_retry_when_post_start_reconciliation_fails(
             raise RuntimeError("canonical reconciliation failed")
         return real_adaptive_merge(root, rows, **kwargs)
 
-    monkeypatch.setattr(hparam_runtime, "_start_process", start_with_pid)
+    monkeypatch.setattr(managed_scheduler, "start_process", start_with_pid)
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", fail_post_start_commit)
     if recovery_failure == "canonical":
         monkeypatch.setattr(adaptive_state, "merge_run_manifest", fail_reconciliation)
@@ -715,7 +715,7 @@ def test_zero_start_replacement_uses_a_fresh_round_on_the_next_step(
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
     launch_statuses = iter([first_status, "launched"])
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: next(launch_statuses))
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: next(launch_statuses))
 
     expected_error = (
         r"started no runs.*was not committed" if first_status == "pending" else r"launch failed.*was not committed"
@@ -756,7 +756,7 @@ def test_superseded_abandoned_run_still_consumes_registered_run_budget(tmp_path:
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "pending")
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: "pending")
 
     with pytest.raises(RuntimeError, match=r"started no runs.*was not committed"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
@@ -787,7 +787,7 @@ def test_adaptive_step_blocks_uncommitted_execution_evidence(tmp_path: Path, mon
     )
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
     if uncommitted_evidence in {"launch_failed_pid", "pid_read_error"}:
-        monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launch_failed")
+        monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: "launch_failed")
         error = "launch failed for run-001"
     else:
 
@@ -869,7 +869,7 @@ def test_build_failure_retries_the_same_unpublished_round(tmp_path: Path, monkey
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: "launched")
     build_plan = adaptive_hparam.build_plan
     build_calls = 0
 
@@ -1003,7 +1003,7 @@ def test_registry_round_commit_is_atomic_and_recoverable(tmp_path: Path, monkeyp
 
     assert registry_path.read_bytes() == registry_before
     monkeypatch.setattr(adaptive_hparam.exp_io, "conditional_atomic_replace_text_at", replace_text)
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: "launched")
 
     adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
@@ -1042,7 +1042,7 @@ def test_registry_failure_recovers_the_same_published_round(tmp_path: Path, monk
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: "launched")
     append_registry = adaptive_state.append_registry_rows
     append_calls = 0
 
@@ -1097,7 +1097,7 @@ def test_abandoned_supersede_race_blocks_before_fresh_round(tmp_path: Path, monk
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "pending")
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: "pending")
     with pytest.raises(RuntimeError, match="started no runs"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 

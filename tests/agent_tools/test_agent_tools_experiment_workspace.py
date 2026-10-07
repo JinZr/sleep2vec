@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 from agent_tool_test_helpers import (
     SUBPROCESS_WAIT_SECONDS,
+    FakeLauncher,
     call_while_run_lock_holder_commits,
     write_finetune_recipe,
     write_yaml,
@@ -413,9 +414,7 @@ def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda _execution, _command: "launched")
-    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", lambda *_args, **_kwargs: (None, False))
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=FakeLauncher(verify_target=False).hooks())
     row = list(csv.DictReader((plan_dir / "launch_manifest.tsv").open(), delimiter="\t"))[0]
     pid_path = Path(row["pid_path"])
     identity = {"pid": 123, "process_group_id": 123, "process_start_token": "proc:unit-start"}

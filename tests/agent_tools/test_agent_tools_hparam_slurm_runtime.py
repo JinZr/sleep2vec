@@ -9,15 +9,9 @@ import re
 import shlex
 import subprocess
 
+from agent_tool_test_helpers import FakeLauncher
 import pytest
-from test_agent_tools_hparam_runtime import (
-    _REAL_VALIDATED_EXECUTION_SNAPSHOT,
-    _hparam_recipe,
-    _read_table,
-    _run,
-    _write_slurm_plan,
-    write_yaml,
-)
+from test_agent_tools_hparam_runtime import _hparam_recipe, _read_table, _run, _write_slurm_plan, write_yaml
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
 
@@ -158,7 +152,6 @@ def test_slurm_runtime_preflight_failure_fails_before_controller_or_submit(tmp_p
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
     before = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
-    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", _REAL_VALIDATED_EXECUTION_SNAPSHOT)
     monkeypatch.setattr(
         managed_scheduler.slurm,
         "controller_cluster",
@@ -175,7 +168,7 @@ def test_slurm_runtime_preflight_failure_fails_before_controller_or_submit(tmp_p
         assert command[-1]
         return subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed")
 
-    monkeypatch.setattr(hparam_runtime, "_run_execution_command", reject_protocol)
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", reject_protocol)
 
     with pytest.raises(RuntimeError, match="Target runtime preflight failed"):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
@@ -918,11 +911,7 @@ def test_hparam_launch_rejects_topology_drift_before_launch(
     manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
     events_before = (tmp_path / "events.jsonl").read_bytes()
     launch_attempts = []
-    monkeypatch.setattr(
-        hparam_runtime,
-        "_start_process",
-        lambda *_args, **_kwargs: launch_attempts.append("start"),
-    )
+    launcher = FakeLauncher(lambda *_args: launch_attempts.append("start"))
     monkeypatch.setattr(
         managed_scheduler.slurm,
         "submit",
@@ -930,7 +919,7 @@ def test_hparam_launch_rejects_topology_drift_before_launch(
     )
 
     with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     canonical = next(
         row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == plan["runs"][0]["run_id"]

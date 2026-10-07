@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 
-from agent_tool_test_helpers import call_while_run_lock_holder_commits
+from agent_tool_test_helpers import FakeLauncher, call_while_run_lock_holder_commits
 import pytest
 from test_agent_tools_hparam_runtime import (
     _embedded_process_group_running,
@@ -29,6 +29,7 @@ import yaml
 from agent_tools import (
     experiments,
     hparam_runtime,
+    managed_scheduler,
     manifests,
     plan_hparam,
     run_artifacts,
@@ -71,7 +72,9 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
     monkeypatch.setattr(slurm, "active_jobs", lambda *_a, **_k: pytest.fail("no scheduler lookup"))
     monkeypatch.setattr(slurm, "cancel", lambda *_a, **_k: pytest.fail("no scheduler cancel"))
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_a, **_k: pytest.fail("no launch"))
+    launcher = FakeLauncher()
+    # Stop and the queue take no hooks, so the public owner guards them against starting a process.
+    monkeypatch.setattr(managed_scheduler, "start_process", launcher.start_process)
     real_validate = hparam_runtime.exp_io.validate_managed_output_paths
 
     def validate_local(root, paths, *, remote=None):
@@ -113,11 +116,12 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(
         "validate_managed_output_paths",
         lambda root, paths, remote=None: None if remote else real_validate(root, paths),
     )
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "stopped"
     monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", lambda *_a, **_k: pytest.fail("no queue monitor"))
     monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_a, **_k: pytest.fail("no queue launch"))
     assert hparam_runtime.run_hparam_queue(plan_dir, dry_run=False) == plan_dir / "run_status.tsv"
+    launcher.assert_not_started()
 
 
 def test_hparam_unlaunched_stop_leaves_other_runs_launchable(tmp_path: Path, monkeypatch):
@@ -130,22 +134,21 @@ def test_hparam_unlaunched_stop_leaves_other_runs_launchable(tmp_path: Path, mon
     result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     cancelled, remaining = run_artifacts.read_hparam_plan(plan_dir)["runs"]
-    started = []
-    monkeypatch.setattr(
-        hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
-    )
+    launcher = FakeLauncher()
+    # Stop takes no hooks, so the public owner guards it against starting a process.
+    monkeypatch.setattr(managed_scheduler, "start_process", launcher.start_process)
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_a, **_k: None)
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
 
     hparam_runtime.stop_hparam_run(plan_dir, cancelled["run_id"], reason="cancel one candidate")
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
     assert rows[cancelled["run_id"]]["status"] == "stopped"
     assert rows[remaining["run_id"]]["status"] == "launched"
-    assert len(started) == 1
-    assert remaining["script"] in started[0]
-    assert cancelled["script"] not in started[0]
+    assert len(launcher.starts) == 1
+    assert remaining["script"] in launcher.commands[0]
+    assert cancelled["script"] not in launcher.commands[0]
 
 
 @pytest.mark.parametrize("backend", ["direct", "slurm"])
@@ -239,7 +242,6 @@ def test_hparam_unlaunched_stop_serializes_with_launch(tmp_path: Path, monkeypat
     second_attempted = threading.Event()
     second_acquired = threading.Event()
     failures = []
-    started = []
     stopped = []
     real_lock = hparam_runtime.scheduler.managed_run_lock
     real_merge = hparam_runtime.merge_run_manifest
@@ -260,26 +262,28 @@ def test_hparam_unlaunched_stop_serializes_with_launch(tmp_path: Path, monkeypat
             assert release_first.wait(timeout=5)
         return real_merge(root, rows, **kwargs)
 
-    def start(_execution, command):
-        started.append(command)
+    def start(_execution, _command):
         canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
         _write_process_identity(canonical["pid_path"])
         first_ready.set()
         assert release_first.wait(timeout=5)
         return "launched"
 
+    launcher = FakeLauncher(start)
+
     def operation(name):
         try:
             if name == "stop":
                 hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="cancel race")
             else:
-                hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+                hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
         except BaseException as exc:
             failures.append(exc)
 
     monkeypatch.setattr(hparam_runtime.scheduler, "managed_run_lock", track_lock)
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge)
-    monkeypatch.setattr(hparam_runtime, "_start_process", start)
+    # Stop takes no hooks, so the public owner guards it against starting a process.
+    monkeypatch.setattr(managed_scheduler, "start_process", launcher.start_process)
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda _row, identity: stopped.append(identity))
     first = threading.Thread(target=operation, args=(first_operation,), name="first-operation")
     second = threading.Thread(
@@ -298,7 +302,7 @@ def test_hparam_unlaunched_stop_serializes_with_launch(tmp_path: Path, monkeypat
             second.join(timeout=5)
     assert not first.is_alive() and not second.is_alive()
     assert failures == []
-    assert len(started) == (first_operation == "launch")
+    assert len(launcher.starts) == (first_operation == "launch")
     assert stopped == ([_process_identity()] if first_operation == "launch" else [])
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
     assert canonical["status"] == "stopped"
@@ -554,7 +558,7 @@ def test_remote_stop_pid_probe_failure_has_no_side_effects(tmp_path: Path, monke
         return subprocess.CompletedProcess([], 255, "", "connection lost")
 
     monkeypatch.setattr(run_evidence, "run_row_command", fake_pid_read)
-    monkeypatch.setattr(hparam_runtime.subprocess, "run", lambda *_args, **_kwargs: calls.append("kill"))
+    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: calls.append("kill"))
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda *_args: calls.append("merge"))
     monkeypatch.setattr(hparam_runtime, "write_rows", lambda *_args: calls.append("write"))
     monkeypatch.setattr(hparam_runtime, "append_event", lambda *_args: calls.append("event"))

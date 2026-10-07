@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 
+from agent_tool_test_helpers import FakeLauncher
 import pytest
 from test_agent_tools_hparam_runtime import (
     _hparam_recipe,
@@ -16,7 +17,7 @@ from test_agent_tools_hparam_runtime import (
 )
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 
-from agent_tools import hparam_runtime, manifests, run_artifacts, run_evidence, transport
+from agent_tools import hparam_runtime, managed_scheduler, manifests, run_artifacts, run_evidence, transport
 from agent_tools.experiment_workspace import merge_run_manifest
 from agent_tools.hparam_runtime import monitor_hparam_runs
 
@@ -446,7 +447,7 @@ def test_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch)
         started.append(command)
         return "launched"
 
-    monkeypatch.setattr(hparam_runtime, "_start_process", fake_start)
+    monkeypatch.setattr(managed_scheduler, "start_process", fake_start)
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("once monitor must not sleep"))
     monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
@@ -474,7 +475,7 @@ def test_continuous_hparam_monitor_never_launches_pending_runs(tmp_path: Path, m
         raise StopPolling
 
     monkeypatch.setattr(hparam_runtime.time, "sleep", stop_polling)
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args, **_kwargs: pytest.fail("no start"))
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args, **_kwargs: pytest.fail("no start"))
     monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
     monkeypatch.setattr(hparam_runtime.scheduler.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
 
@@ -538,21 +539,14 @@ def test_hparam_status_does_not_infer_terminal_from_corrupt_local_pid(tmp_path: 
 
 @pytest.mark.parametrize("pid_text", ["", "not-a-pid", "0", "-1"])
 @pytest.mark.parametrize("status", ["planned", "pending"])
-def test_hparam_launch_does_not_start_when_local_pid_is_corrupt(
-    tmp_path: Path, monkeypatch, status: str, pid_text: str
-):
+def test_hparam_launch_does_not_start_when_local_pid_is_corrupt(tmp_path: Path, status: str, pid_text: str):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": status}])
     Path(rows[0]["pid_path"]).write_text(pid_text)
-    started = []
-    monkeypatch.setattr(
-        hparam_runtime,
-        "_start_process",
-        lambda _execution, command: started.append(command) or "launched",
-    )
+    launcher = FakeLauncher(verify_target=False)
 
-    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
-    assert started == []
+    launcher.assert_not_started()
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "missing_pid"
 
 
@@ -570,26 +564,21 @@ def test_hparam_launch_recovers_after_transient_local_pid_read_error(tmp_path: P
             raise OSError("temporary PID read failure")
         return original_read_text(path, *args, **kwargs)
 
-    started = []
+    launcher = FakeLauncher(verify_target=False)
     monkeypatch.setattr(Path, "read_text", fail_pid_read)
-    monkeypatch.setattr(
-        hparam_runtime,
-        "_start_process",
-        lambda _execution, command: started.append(command) or "launched",
-    )
 
     with pytest.raises(RuntimeError, match="PID file read failed"):
-        hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+        hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
-    assert started == []
+    launcher.assert_not_started()
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == status
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == status
 
     read_fails["value"] = False
     pid_path.unlink()
-    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
-    assert len(started) == 1
+    assert len(launcher.starts) == 1
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "launched"
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
 

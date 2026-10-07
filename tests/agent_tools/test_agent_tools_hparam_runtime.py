@@ -10,7 +10,13 @@ import shlex
 import subprocess
 import sys
 
-from agent_tool_test_helpers import config_payload, run_execution_preflight_fixture, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import (
+    FakeLauncher,
+    config_payload,
+    run_execution_preflight_fixture,
+    write_finetune_recipe,
+    write_yaml,
+)
 import pytest
 import yaml
 
@@ -27,7 +33,6 @@ from agent_tools import (
 from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256
 from agent_tools.models import REPO_ROOT
 
-_REAL_VALIDATED_EXECUTION_SNAPSHOT = hparam_runtime._validated_execution_snapshot
 _RUNTIME_COMMIT = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
 ).stdout.strip()
@@ -35,13 +40,6 @@ _RUNTIME_COMMIT = subprocess.run(
 
 @pytest.fixture(autouse=True)
 def _stub_execution_snapshot_preflight(monkeypatch, request):
-    def validated_snapshot(run_dir, _execution, _runs, _workspace_by_key):
-        snapshot_path = Path(run_dir) / hparam_runtime.EXECUTION_SNAPSHOT_NAME
-        if snapshot_path.exists():
-            return json.loads(snapshot_path.read_text()), False
-        return None, False
-
-    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", validated_snapshot)
     monkeypatch.setattr(managed_scheduler.slurm, "controller_cluster", lambda *_args, **_kwargs: "wuji-h20")
     if not request.node.name.startswith("test_execution_probe_"):
         monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
@@ -235,7 +233,7 @@ def _set_execution_probe(
             parse_error or "",
         )
 
-    monkeypatch.setattr(hparam_runtime, "_run_execution_command", run_probe)
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", run_probe)
     return calls
 
 
@@ -301,7 +299,7 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
             "gpus": "",
             "pid_path": str(managed_dir / "pid"),
             "log_path": str(managed_dir / "stdout.log"),
-            "command": hparam_runtime._launch_command(
+            "command": managed_scheduler.build_launch_command(
                 {"workdir": str(root)},
                 script,
                 managed_dir / "stdout.log",
@@ -340,22 +338,19 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
     return rows
 
 
-def test_hparam_launch_rejects_plan_without_workspace_binding_before_start(tmp_path: Path, monkeypatch):
+def test_hparam_launch_rejects_plan_without_workspace_binding_before_start(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
     plan["recipe"].pop("experiment")
     (plan_dir / "plan.json").write_text(json.dumps(plan))
-    started = []
-    monkeypatch.setattr(
-        hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
-    )
+    launcher = FakeLauncher()
 
     with pytest.raises(ValueError, match="workspace binding"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
-    assert started == []
+    launcher.assert_not_started()
     assert not (plan_dir / "launch_manifest.tsv").exists()
 
 
@@ -434,16 +429,13 @@ def test_hparam_runtime_rewrites_legacy_projection_rows_from_canonical(tmp_path:
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "version": "v0", "status": "launched"}])
     legacy_rows = [{**rows[0], "trial_id": "trial_000"}]
     manifests.write_rows(tmp_path / "launch_manifest.tsv", legacy_rows)
-    started = []
+    launcher = FakeLauncher()
     killed = []
-    monkeypatch.setattr(
-        hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
-    )
     monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
-    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=True)
+    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=True, hooks=launcher.hooks())
 
-    assert started == []
+    launcher.assert_not_started()
     assert killed == []
     assert "trial_id" not in (tmp_path / "launch_manifest.tsv").read_text()
     assert "trial_id" not in (tmp_path / "run_status.tsv").read_text()
@@ -453,34 +445,28 @@ def test_hparam_runtime_rewrites_legacy_projection_rows_from_canonical(tmp_path:
 def test_hparam_runtime_rewrites_header_only_removed_projection_table(tmp_path: Path, monkeypatch, table: str):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "version": "v0", "status": "launched"}])
     (tmp_path / table).write_text("trial_id\n")
-    started = []
+    launcher = FakeLauncher()
     killed = []
-    monkeypatch.setattr(
-        hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
-    )
     monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
-    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=True)
+    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=True, hooks=launcher.hooks())
 
-    assert started == []
+    launcher.assert_not_started()
     assert killed == []
     assert "trial_id" not in (tmp_path / table).read_text()
 
 
-def test_hparam_runtime_rejects_legacy_status_filename(tmp_path: Path, monkeypatch):
+def test_hparam_runtime_rejects_legacy_status_filename(tmp_path: Path):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "version": "v0", "status": "planned"}])
     legacy_status = tmp_path / "trial_status.tsv"
     legacy_status.write_text("trial_id\tstatus\ntrial_000\tfailed\n")
     current_status = (tmp_path / "run_status.tsv").read_bytes()
-    started = []
-    monkeypatch.setattr(
-        hparam_runtime, "_start_process", lambda _execution, command: started.append(command) or "launched"
-    )
+    launcher = FakeLauncher()
 
     with pytest.raises(ValueError, match="Legacy hparam status"):
-        hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False)
+        hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
-    assert started == []
+    launcher.assert_not_started()
     assert (tmp_path / "run_status.tsv").read_bytes() == current_status
 
 

@@ -170,6 +170,9 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   `experiment_pipeline_results`; see [pipeline gates](../agent_contracts/experiment_pipeline.md#invocation-and-frozen-state).
   Drive pipeline tests from frozen on-disk state through `run_experiment_pipeline(..., hooks=PipelineHooks(...))`,
   which replaces only the monitor, target-probe, launch, and sleep effects, not private stage functions.
+  Drive hparam launch tests through `launch_hparam_runs(..., hooks=SchedulerHooks(...))`, which replaces
+  only the execution-snapshot, command, and process-start effects, not private launch helpers; entries
+  without hooks (queue, monitor, stop, adaptive) patch the public `managed_scheduler.start_process`.
 - Reuse `runtime-sync` for a clean in-place `origin/main` fast-forward and the shared runtime lock for
   launch/update coordination. Keep the planned commit in frozen artifacts and record the actual start commit
   in the canonical run manifest; do not clone or rewrite a published plan to follow HEAD. Its remote path sends

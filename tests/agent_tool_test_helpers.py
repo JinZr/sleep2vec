@@ -555,3 +555,40 @@ class FakePipelineRuntime:
             "metrics": metrics,
         }
         manifest_path.write_text(json.dumps(manifest) + "\n")
+
+
+class FakeLauncher:
+    """Scripted process start for ``hparam_runtime.launch_hparam_runs(..., hooks=launcher.hooks())`` in tests.
+
+    Each start records ``(execution, command)`` in ``starts`` and returns the next outcome, repeating the last one:
+    a status such as ``"launched"``, ``"pending"`` or ``"launch_failed"``, an exception to raise, or a callable that
+    takes ``(execution, command)`` and returns a status. ``verify_target=False`` also skips the frozen
+    execution-target check and launches without a snapshot, for hand-written plans that froze none and for tests that
+    do not exercise the check."""
+
+    def __init__(self, *outcomes, verify_target: bool = True):
+        self.outcomes = outcomes or ("launched",)
+        self.verify_target = verify_target
+        self.starts: list[tuple[dict, str]] = []
+
+    @property
+    def commands(self) -> list[str]:
+        return [command for _execution, command in self.starts]
+
+    def hooks(self):
+        from agent_tools import managed_scheduler
+
+        return managed_scheduler.SchedulerHooks(
+            start_process=self.start_process,
+            validated_snapshot=None if self.verify_target else lambda *_args: (None, False),
+        )
+
+    def start_process(self, execution: dict, command: str) -> str:
+        self.starts.append((execution, command))
+        outcome = self.outcomes[min(len(self.starts), len(self.outcomes)) - 1]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome(execution, command) if callable(outcome) else outcome
+
+    def assert_not_started(self) -> None:
+        assert self.starts == [], f"Unexpected process starts: {self.commands}"

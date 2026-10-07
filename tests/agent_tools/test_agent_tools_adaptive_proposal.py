@@ -14,7 +14,7 @@ from agent_tools import (
     adaptive_proposals,
     adaptive_replacement,
     adaptive_state,
-    hparam_runtime,
+    managed_scheduler,
     manifests,
     run_evidence,
 )
@@ -1527,7 +1527,7 @@ def test_agent_proposal_zero_start_recovery_uses_a_fresh_target_round(tmp_path: 
     assert first_input is not None
     first_proposal = _write_agent_submission(first_input)
     launch_statuses = iter(["pending", "launched"])
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: next(launch_statuses))
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: next(launch_statuses))
 
     with pytest.raises(RuntimeError, match=r"started no runs.*was not committed"):
         adaptive_hparam.adaptive_step(workflow_dir, proposal_path=first_proposal, execute=True)
