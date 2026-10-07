@@ -12,6 +12,7 @@ from agent_tools import (
     adaptive_replacement,
     adaptive_state,
     hparam_runtime,
+    managed_scheduler,
     manifests,
     python_programs,
     run_evidence,
@@ -34,7 +35,7 @@ def test_best_neighborhood_step_replaces_bad_running_run_before_round_terminal(t
     workflow_dir = tmp_path / "workflow"
     assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "launched")
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: "launched")
     hparam_runtime.launch_hparam_runs(round_dir, dry_run=False)
     _write_fake_manifest(workflow_dir, score=0.73)
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
@@ -129,7 +130,7 @@ def test_adaptive_step_refreshes_terminal_blocker_before_launching_replacement_o
         )
         return "launched"
 
-    monkeypatch.setattr(hparam_runtime, "_start_process", start_with_pid)
+    monkeypatch.setattr(managed_scheduler, "start_process", start_with_pid)
     hparam_runtime.launch_hparam_runs(round_dir, dry_run=False)
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     launch = _read_table(round_dir / "launch_manifest.tsv")[0]
@@ -485,7 +486,7 @@ def test_adaptive_step_reconciles_pid_after_post_drain_commit_failure(tmp_path: 
         )
         return Path(run_dir) / "run_status.tsv"
 
-    monkeypatch.setattr(hparam_runtime, "_start_process", start_with_pid)
+    monkeypatch.setattr(managed_scheduler, "start_process", start_with_pid)
     monkeypatch.setattr(hparam_runtime.evidence, "process_identity_running", lambda *_args: True)
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", fail_post_start_commit)
     monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", launch_after_drain)

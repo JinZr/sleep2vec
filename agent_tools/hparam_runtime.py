@@ -8,10 +8,11 @@ spawning a process and recording it is repaired rather than double-launched.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import dataclasses
+import functools
 import json
 import math
 from pathlib import Path
-import subprocess
 import time
 from typing import Any
 
@@ -66,6 +67,7 @@ def launch_hparam_runs(
     *,
     dry_run: bool = True,
     fail_on_missing_pid_blocker: bool = False,
+    hooks: scheduler.SchedulerHooks | None = None,
 ) -> Path:
     """Attempt one scheduling pass for a registered hparam plan and return launch_manifest.tsv.
 
@@ -80,7 +82,14 @@ def launch_hparam_runs(
     be recorded as statuses such as unknown_scheduler or launch_failed and return
     normally. Inspect canonical run status: the returned path does not imply a
     successful launch. Unhandled exceptions propagate; already recorded launches
-    are not rolled back on later failure."""
+    are not rolled back on later failure.
+
+    hooks lets Python callers such as tests replace the process effects. Only
+    three fields are used: ``validated_snapshot`` replaces the frozen
+    execution-target check, ``build_command`` the launch-command builder and
+    ``start_process`` the process start; a ``None`` field uses the canonical
+    owner, looked up when the pass starts. Manifest merges, event appends,
+    status reports and frozen-run validation are not replaceable."""
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
@@ -98,6 +107,7 @@ def launch_hparam_runs(
             dry_run=dry_run,
             manifest_lock_held=True,
             fail_on_missing_pid_blocker=fail_on_missing_pid_blocker,
+            hooks=hooks,
         )
 
 
@@ -265,6 +275,7 @@ def _launch_hparam_runs(
     dry_run: bool = True,
     manifest_lock_held: bool,
     fail_on_missing_pid_blocker: bool,
+    hooks: scheduler.SchedulerHooks | None,
 ) -> Path:
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
@@ -313,15 +324,27 @@ def _launch_hparam_runs(
         write_rows(manifest, result.launch_rows)
         write_rows(status_path, result.committed_rows)
 
-    hooks = scheduler.SchedulerHooks(
+    # Built per pass so a patched public owner takes effect; hooks replace only the process effects.
+    launch_hooks = scheduler.SchedulerHooks(
         merge_manifest=merge_run_manifest,
         append_event=append_event,
         write_status_report=write_status_report,
         validate_run_update=validate_frozen_run_update,
-        validated_snapshot=_validated_execution_snapshot,
-        build_command=_launch_command,
-        start_process=_start_process,
+        validated_snapshot=functools.partial(
+            scheduler.validated_execution_snapshot,
+            inspector=_inspect_execution_target,
+            plan_label="hparam",
+        ),
+        build_command=scheduler.build_launch_command,
+        start_process=scheduler.start_process,
     )
+    if hooks is not None:
+        launch_hooks = dataclasses.replace(
+            launch_hooks,
+            validated_snapshot=hooks.validated_snapshot or launch_hooks.validated_snapshot,
+            build_command=hooks.build_command or launch_hooks.build_command,
+            start_process=hooks.start_process or launch_hooks.start_process,
+        )
     scheduler.launch_managed_runs(
         workspace,
         run_dir,
@@ -332,41 +355,16 @@ def _launch_hparam_runs(
         fail_on_missing_pid_blocker=fail_on_missing_pid_blocker,
         default_script_commits_terminal_status=False,
         projection_writer=write_projections,
-        hooks=hooks,
+        hooks=launch_hooks,
         lock_held=manifest_lock_held,
     )
     return manifest
 
 
-def _validated_execution_snapshot(
-    run_dir: Path,
-    execution: Mapping[str, Any],
-    runs: Sequence[Mapping[str, JsonValue]],
-    workspace_by_key: Mapping[tuple[str, str], Mapping[str, JsonValue]],
-) -> tuple[scheduler.ExecutionSnapshot, bool]:
-    return scheduler.validated_execution_snapshot(
-        run_dir,
-        execution,
-        runs,
-        workspace_by_key,
-        inspector=_inspect_execution_target,
-        plan_label="hparam",
-    )
-
-
 def _inspect_execution_target(
     execution: Mapping[str, Any], runs: Sequence[Mapping[str, JsonValue]]
 ) -> scheduler.ExecutionSnapshot:
-    return scheduler.inspect_execution_target(
-        execution,
-        runs,
-        command_runner=_run_execution_command,
-        plan_label="hparam",
-    )
-
-
-def _run_execution_command(execution: Mapping[str, Any], command: list[str]) -> subprocess.CompletedProcess:
-    return scheduler.run_execution_command(execution, command)
+    return scheduler.inspect_execution_target(execution, runs, plan_label="hparam")
 
 
 def monitor_hparam_runs(
@@ -645,40 +643,3 @@ def _gpu_groups(recipe: dict[str, Any]) -> list[list[Any]]:
     runtime_value = recipe.get("runtime")
     runtime = runtime_value if isinstance(runtime_value, dict) else {}
     return scheduler.gpu_groups(execution, runtime)
-
-
-def _launch_command(
-    execution: Mapping[str, Any],
-    script: Path,
-    log_path: str | Path,
-    pid_path: str | Path,
-    gpus: list[Any],
-    *,
-    execution_snapshot: scheduler.ExecutionSnapshot | None = None,
-    config_path: Path | None = None,
-    script_sha256: str | None = None,
-    config_sha256: str | None = None,
-    planned_command: str | None = None,
-    run_id: str = "",
-) -> str:
-    return scheduler.build_launch_command(
-        execution,
-        script,
-        log_path,
-        pid_path,
-        gpus,
-        execution_snapshot=execution_snapshot,
-        config_path=config_path,
-        script_sha256=script_sha256,
-        config_sha256=config_sha256,
-        planned_command=planned_command,
-        run_id=run_id,
-    )
-
-
-def _parent_path(path: str | Path) -> str:
-    return scheduler._parent_path(path)
-
-
-def _start_process(execution: Mapping[str, Any], command: str) -> str:
-    return scheduler.start_process(execution, command)

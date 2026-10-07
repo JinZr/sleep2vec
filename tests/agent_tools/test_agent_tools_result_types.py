@@ -133,7 +133,6 @@ def test_result_types_reach_callers(tmp_path: Path):
                 managed_scheduler.inspect_execution_target({}, []),
                 managed_scheduler.validated_execution_snapshot(Path("/plan"), {}, [], {})[0],
                 hparam_runtime._inspect_execution_target({}, []),
-                hparam_runtime._validated_execution_snapshot(Path("/plan"), {}, [], {})[0],
                 plan_hparam._inspect_hparam_execution_target({}, []),
             ):
                 module_name: str = execution_snapshot["module"]
@@ -146,9 +145,6 @@ def test_result_types_reach_callers(tmp_path: Path):
                 execution_snapshot["module_name"]  # type: ignore[typeddict-item]
                 managed_scheduler.write_execution_snapshot_file(Path("/snapshot"), execution_snapshot)
                 managed_scheduler.build_launch_command(
-                    {}, Path("script"), "log", "pid", [], execution_snapshot=execution_snapshot,
-                )
-                hparam_runtime._launch_command(
                     {}, Path("script"), "log", "pid", [], execution_snapshot=execution_snapshot,
                 )
 
@@ -250,10 +246,6 @@ def test_result_types_reach_callers(tmp_path: Path):
                 {}, Path("script"), "log", "pid", [], execution_snapshot=minimal_snapshot,
             )
             managed_scheduler.build_launch_command(
-                {}, Path("script"), "log", "pid", [],
-                execution_snapshot={"module": 1},  # type: ignore[arg-type]
-            )
-            hparam_runtime._launch_command(
                 {}, Path("script"), "log", "pid", [],
                 execution_snapshot={"module": 1},  # type: ignore[arg-type]
             )

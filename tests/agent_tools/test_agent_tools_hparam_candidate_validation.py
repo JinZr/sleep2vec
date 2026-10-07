@@ -346,9 +346,7 @@ def test_invalid_frozen_config_blocks_every_submission_route_without_mutation(
     before = _workspace_files(plan_dir.parent)
 
     with pytest.raises(ValueError, match="run-000.*model.cls.embedding_type must be set"):
-        hparam_runtime._launch_hparam_runs(
-            plan_dir, dry_run=dry_run, manifest_lock_held=True, fail_on_missing_pid_blocker=False
-        )
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=dry_run)
 
     assert _workspace_files(plan_dir.parent) == before
 
@@ -378,9 +376,7 @@ def test_launch_validates_prospective_frozen_bytes_including_pending_command(
     monkeypatch.setattr(managed_scheduler, "launch_managed_runs", launch)
     before = _workspace_files(plan_dir.parent)
     for _ in range(2):
-        hparam_runtime._launch_hparam_runs(
-            plan_dir, dry_run=dry_run, manifest_lock_held=True, fail_on_missing_pid_blocker=False
-        )
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=dry_run)
 
     expected = [(run, Path(run["config"]).read_bytes()) for run in plan["runs"][:2]]
     assert checked == [expected, expected]
@@ -400,9 +396,7 @@ def test_active_and_terminal_launch_and_monitor_do_not_validate_configs(tmp_path
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda _root, rows: rows)
     monkeypatch.setattr(hparam_runtime, "write_status_report", lambda *_args: None)
     for dry_run in (False, True):
-        hparam_runtime._launch_hparam_runs(
-            plan_dir, dry_run=dry_run, manifest_lock_held=True, fail_on_missing_pid_blocker=False
-        )
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=dry_run)
     assert hparam_runtime.monitor_hparam_runs(plan_dir) == plan_dir / "run_status.tsv"
 
 

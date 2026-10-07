@@ -330,6 +330,11 @@ Preview with `hparam-launch` before execute and inspect frozen identity,
 scheduler/resources, GPU assignment, W&B project/group, log and lifecycle
 identity paths, and test policy. Dry-run is the default; `--execute` is the
 launch action. It does not grant scientific or test-access decisions.
+Python callers may pass `managed_scheduler.SchedulerHooks` to
+`hparam_runtime.launch_hparam_runs` to replace only the execution-snapshot
+check, launch-command, and process-start effects; the CLI has no such option,
+and manifest merges, events, status reports, and frozen-run validation are
+unchanged.
 
 Before calculating direct capacity, execute-mode launch refreshes observable
 active blockers from other plans sharing the relevant target, host, and GPU

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import adaptive_hparam, adaptive_replacement, hparam_runtime, manifests
+from agent_tools import adaptive_hparam, adaptive_replacement, managed_scheduler, manifests
 from agent_tools.experiment_workspace import merge_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import (
@@ -183,7 +183,7 @@ def test_proposal_history_excludes_uncommitted_zero_start_round(tmp_path: Path, 
     first_input = adaptive_hparam.adaptive_step(workflow)
     assert first_input is not None
     proposal_path = _write_agent_submission(first_input)
-    monkeypatch.setattr(hparam_runtime, "_start_process", lambda *_args: "pending")
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: "pending")
 
     with pytest.raises(RuntimeError, match="started no runs.*was not committed"):
         adaptive_hparam.adaptive_step(workflow, proposal_path=proposal_path, execute=True)

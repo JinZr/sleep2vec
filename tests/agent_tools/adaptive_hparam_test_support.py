@@ -10,7 +10,7 @@ from agent_tool_test_helpers import run_execution_preflight_fixture, write_finet
 import pytest
 import yaml
 
-from agent_tools import hparam_runtime, managed_scheduler
+from agent_tools import managed_scheduler
 from agent_tools.experiment_workspace import merge_run_manifest
 from agent_tools.models import REPO_ROOT
 
@@ -21,7 +21,6 @@ _RUNTIME_COMMIT = subprocess.run(
 
 @pytest.fixture(autouse=True)
 def _stub_execution_snapshot_preflight(monkeypatch):
-    monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", lambda *_args, **_kwargs: (None, False))
     monkeypatch.setattr(
         managed_scheduler,
         "run_execution_command",
