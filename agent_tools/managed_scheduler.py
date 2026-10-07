@@ -6,9 +6,7 @@ snapshot each launch commits.
 
 ``_launch_managed_runs`` selects the direct or Slurm backend for one frozen
 ``LaunchOptions``; ``SchedulerHooks`` inside it supplies persistence and
-execution callbacks. ``experiments.launch_preset_run`` separately sequences
-execution, manifest updates, and ``start_process`` using this module's
-primitives without the shared launch dispatcher.
+execution callbacks.
 """
 
 from __future__ import annotations

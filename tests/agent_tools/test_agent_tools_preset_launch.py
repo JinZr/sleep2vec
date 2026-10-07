@@ -18,7 +18,13 @@ from test_agent_preset_runtime_identity import (
 )
 
 from agent_tools import cli, experiments, managed_scheduler, plans, run_evidence
-from agent_tools.experiment_workspace import PROCESS_IDENTITY_FIELDS, merge_run_manifest, read_run_manifest
+from agent_tools.experiment_workspace import (
+    PROCESS_IDENTITY_FIELDS,
+    has_managed_launch_evidence,
+    merge_run_manifest,
+    read_experiment_events,
+    read_run_manifest,
+)
 from agent_tools.models import REPO_ROOT
 
 
@@ -72,6 +78,9 @@ def test_new_preset_plan_freezes_managed_direct_launch(tmp_path, preset_runtime,
     assert plan["recipe"]["execution"]["scheduler"] == {"type": "direct"}
     assert plan["runs"][0]["terminal_status_owner"] == "script"
     assert plan["runs"][0]["scheduler_type"] == "direct"
+    # The launch start command rechecks only script and config; a preset run must freeze no other inputs.
+    assert [snapshot["field"] for snapshot in plan["recipe"]["input_snapshots"]] == ["inputs.config"]
+    assert "input_snapshots" not in plan["runs"][0]
     assert "preset-launch" in (plan_dir / "run.sh").read_text()
     assert plan["commands"][0] not in (plan_dir / "run.sh").read_text()
     assert shlex.split(plan["commands"][0])[:2] == [
@@ -81,15 +90,42 @@ def test_new_preset_plan_freezes_managed_direct_launch(tmp_path, preset_runtime,
     assert plan["commands"][0] in Path(plan["runs"][0]["script"]).read_text()
 
 
-def test_preset_launch_preview_does_not_bind_or_spawn(tmp_path, preset_runtime, monkeypatch):
+def _assert_unbound_planned_row(workspace, events):
+    # Dry run follows the managed scheduler: it may refresh projections but records no launch identity or event.
+    (row,) = read_run_manifest(workspace)
+    assert row["status"] == "planned"
+    assert not has_managed_launch_evidence(row)
+    assert read_experiment_events(workspace) == events
+
+
+def test_preset_launch_preview_does_not_bind_or_spawn(tmp_path, preset_runtime, monkeypatch, capsys):
     plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
-    before = read_run_manifest(preset_runtime["workspace"])
+    run = plan["runs"][0]
+    events = read_experiment_events(preset_runtime["workspace"])
 
     result = experiments.launch_preset_run(plan_dir)
 
     assert not result.started_keys
-    assert result.launch_rows[0]["command"]
-    assert read_run_manifest(preset_runtime["workspace"]) == before
+    assert result.status_changes == {}
+    command = managed_scheduler.build_launch_command(
+        plan["recipe"]["execution"],
+        Path(run["script"]),
+        str(Path(run["run_dir"]) / "stdout.log"),
+        str(Path(run["run_dir"]) / "pid"),
+        [],
+        config_path=Path(run["config"]),
+        script_sha256=run["script_sha256"],
+        config_sha256=run["config_sha256"],
+    )
+    assert result.launch_rows[0]["command"] == command
+    assert result.launch_rows[0]["pid_path"] == str(Path(run["run_dir"]) / "pid")
+    _assert_unbound_planned_row(preset_runtime["workspace"], events)
+    capsys.readouterr()
+    assert cli.main(["preset-launch", "--plan-dir", str(plan_dir)]) == 0
+    assert capsys.readouterr().out == (
+        f"Mode: dry-run (no launch attempted)\nLifecycle state: planned\nLaunch command: {command}\n"
+    )
+    _assert_unbound_planned_row(preset_runtime["workspace"], events)
     assert not preset_runtime["payload"].exists()
     assert not (Path(plan["runs"][0]["run_dir"]) / "pid").exists()
     assert not (Path(plan["runs"][0]["run_dir"]) / "stdout.log").exists()
@@ -145,13 +181,13 @@ def test_preset_detached_worker_commits_terminal_after_launcher_exits(
     )
     _commit_runtime_python(preset_runtime)
     plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch, variant)
-    before = read_run_manifest(preset_runtime["workspace"])
+    events = read_experiment_events(preset_runtime["workspace"])
     preview = subprocess.run(
         ["bash", str(plan_dir / "run.sh")], env=preset_runtime["env"], capture_output=True, text=True, timeout=10
     )
     assert preview.returncode == 0, preview.stderr
     assert "dry-run" in preview.stdout
-    assert read_run_manifest(preset_runtime["workspace"]) == before
+    _assert_unbound_planned_row(preset_runtime["workspace"], events)
     launcher = subprocess.Popen(
         ["bash", str(plan_dir / "run.sh"), "--execute"],
         env=preset_runtime["env"],
@@ -189,7 +225,15 @@ def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_run
     before = read_run_manifest(preset_runtime["workspace"])
     with pytest.raises((ValueError, RuntimeError)):
         experiments.launch_preset_run(plan_dir, dry_run=False)
-    assert read_run_manifest(preset_runtime["workspace"]) == before
+    if failure.endswith("_hash"):
+        # The registered-plan reader rejects drifted artifacts before the scheduler can own a failure state.
+        assert read_run_manifest(preset_runtime["workspace"]) == before
+    else:
+        (row,) = read_run_manifest(preset_runtime["workspace"])
+        assert row["status"] == "launch_failed"
+        assert row["scheduler_reason"].startswith("Pre-launch guard failed: Preset runtime preflight failed:")
+        assert not has_managed_launch_evidence(row)
+        assert not experiments.launch_preset_run(plan_dir, dry_run=False).started_keys
     assert not preset_runtime["payload"].exists()
 
 
@@ -216,39 +260,28 @@ def test_preset_runtime_preflight_claim_and_start_run_in_order(tmp_path, preset_
     monkeypatch.setattr(managed_scheduler, "run_execution_command", probe)
     monkeypatch.setattr(experiments, "merge_run_manifest", merge)
     monkeypatch.setattr(managed_scheduler, "start_process", start)
+    workspace = preset_runtime["workspace"]
+    prior_events = read_experiment_events(workspace)
 
     result = experiments.launch_preset_run(plan_dir, dry_run=False)
 
-    assert result.started_keys
+    (row,) = read_run_manifest(workspace)
+    key = (row["step_id"], row["run_id"])
+    assert result.started_keys == frozenset({key})
+    assert result.status_changes == {}
+    assert result.committed_rows == [row]
+    assert result.launch_rows == [row]
+    assert row["status"] == "launched"
+    assert row["planned_runtime_commit"] == preset_runtime["execution"]["runtime_commit"]
     assert events == ["probe", "claim", "start"]
+    # The scheduler reports a started run as run_launched, not as a run_status_changed transition.
+    new_events = read_experiment_events(workspace)[len(prior_events) :]
+    assert [(event["event_type"], event["run_id"], event["gpus"]) for event in new_events] == [
+        ("run_launched", key[1], "")
+    ]
 
 
-def test_preset_reverifies_artifacts_before_claim(tmp_path, preset_runtime, monkeypatch):
-    plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
-    run = plan["runs"][0]
-    artifact = Path(run["script"])
-    before = read_run_manifest(preset_runtime["workspace"])
-    original_verify = experiments.verify_run_snapshot
-    calls = 0
-
-    def verify(candidate):
-        nonlocal calls
-        calls += 1
-        original_verify(candidate)
-        if calls == 1:
-            artifact.write_bytes(artifact.read_bytes() + b"\n# changed before claim\n")
-
-    monkeypatch.setattr(experiments, "verify_run_snapshot", verify)
-
-    with pytest.raises(ValueError, match="Run snapshot hash changed after planning"):
-        experiments.launch_preset_run(plan_dir, dry_run=False)
-
-    assert calls == 2
-    assert read_run_manifest(preset_runtime["workspace"]) == before
-    assert not preset_runtime["payload"].exists()
-
-
-@pytest.mark.parametrize("mutation_phase", ["claim", "start"])
+@pytest.mark.parametrize("mutation_phase", ["probe", "claim", "start"])
 @pytest.mark.parametrize("artifact", ["script", "config"])
 def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
     tmp_path, preset_runtime, monkeypatch, mutation_phase, artifact
@@ -259,9 +292,16 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
     original_bytes = artifact_path.read_bytes()
     for name, value in preset_runtime["env"].items():
         monkeypatch.setenv(name, value)
+    original_probe = managed_scheduler.run_execution_command
     original_merge = experiments.merge_run_manifest
     original_start = managed_scheduler.start_process
     start_commands = []
+
+    def probe(execution, command):
+        result = original_probe(execution, command)
+        if mutation_phase == "probe":
+            artifact_path.write_bytes(original_bytes + b"\n# changed during runtime preflight\n")
+        return result
 
     def merge(workspace, rows, **kwargs):
         result = original_merge(workspace, rows, **kwargs)
@@ -276,6 +316,7 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
             artifact_path.write_bytes(original_bytes + b"\n# changed immediately before start\n")
         return original_start(execution, command, **kwargs)
 
+    monkeypatch.setattr(managed_scheduler, "run_execution_command", probe)
     monkeypatch.setattr(experiments, "merge_run_manifest", merge)
     monkeypatch.setattr(managed_scheduler, "start_process", start)
     pid_path = Path(run["run_dir"]) / "pid"
@@ -366,8 +407,10 @@ def test_preset_interrupted_attempt_is_not_relaunched(tmp_path, preset_runtime, 
     if lost_receipt:
         _wait_status(preset_runtime["workspace"], {"completed"})
     else:
-        assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "launched"
-        row = read_run_manifest(preset_runtime["workspace"])[0]
+        # Relaunch observes the claimed attempt like the monitor: without a PID receipt it is missing_pid, not a retry.
+        (row,) = read_run_manifest(preset_runtime["workspace"])
+        assert row["status"] == "missing_pid"
+        assert result.status_changes == {(row["step_id"], row["run_id"]): ("launched", "missing_pid")}
         Path(row["log_path"]).write_text("success: completed\n")
         for _ in range(2):
             experiments.monitor_experiment(preset_runtime["workspace"])
@@ -376,6 +419,24 @@ def test_preset_interrupted_attempt_is_not_relaunched(tmp_path, preset_runtime, 
         assert len(attempts) == 1
         with pytest.raises(ValueError, match="no recorded process identity"):
             experiments.stop_preset_run(plan_dir, reason="no child receipt")
+
+
+def test_preset_existing_pid_receipt_is_refused_without_recording_launch_failed(tmp_path, preset_runtime, monkeypatch):
+    plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
+    for name, value in preset_runtime["env"].items():
+        monkeypatch.setenv(name, value)
+    workspace = preset_runtime["workspace"]
+    pid_path = Path(plan["runs"][0]["run_dir"]) / "pid"
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text("{}")
+    events = read_experiment_events(workspace)
+    monkeypatch.setattr(
+        managed_scheduler, "start_process", lambda *_args, **_kwargs: pytest.fail("receipt must block spawn")
+    )
+    # An unbound receipt may come from an interrupted live launch; it stays an uncertain planned row, not a failure.
+    with pytest.raises(ValueError, match="PID receipt already exists"):
+        experiments.launch_preset_run(plan_dir, dry_run=False)
+    _assert_unbound_planned_row(workspace, events)
 
 
 @pytest.mark.parametrize("after_commit", [False, True])
@@ -398,6 +459,21 @@ def test_preset_claim_write_failure_never_spawns(tmp_path, preset_runtime, monke
     assert row["status"] == ("launched" if after_commit else "planned")
     if after_commit:
         assert not experiments.launch_preset_run(plan_dir, dry_run=False).started_keys
+    else:
+        # The scheduler bound execution identity before the failed claim, but no process exists without the claim.
+        assert has_managed_launch_evidence(row)
+        assert not row["launched_at"]
+        monkeypatch.setattr(experiments, "merge_run_manifest", original_merge)
+        started = []
+        monkeypatch.setattr(
+            managed_scheduler,
+            "start_process",
+            lambda _execution, command, **_kwargs: started.append(command) or "launched",
+        )
+        result = experiments.launch_preset_run(plan_dir, dry_run=False)
+        assert started == [row["command"]]
+        assert result.started_keys == {(row["step_id"], row["run_id"])}
+        assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "launched"
 
 
 def _launch_waiting_worker(tmp_path, preset_runtime, monkeypatch):

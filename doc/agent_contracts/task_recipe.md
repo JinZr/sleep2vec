@@ -319,6 +319,12 @@ Stdin is closed to input; stdout and stderr share the run's persistent
 and start token. Loss of the launching connection or an incomplete receipt does
 not authorize another launch. These controls preserve the preset runtime
 contract above; they do not create the hparam module/host execution snapshot.
+The launcher runs on the shared direct managed scheduler under the run lock.
+A dry run refreshes the manifest projection and status report without recording
+launch evidence, and a completed experiment refuses launch. A pre-launch guard
+failure such as the runtime identity probe records `launch_failed` with its
+reason; a row that already has launch evidence or a PID receipt is never
+launched again.
 
 The worker remains responsible for `running`, `completed`, and `failed` commits.
 Use `experiment-monitor` to observe the existing run; it neither launches work
