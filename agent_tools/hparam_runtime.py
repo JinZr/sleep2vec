@@ -362,7 +362,7 @@ def _launch_hparam_runs(
 
 
 def _inspect_execution_target(
-    execution: Mapping[str, Any], runs: Sequence[Mapping[str, JsonValue]]
+    execution: Mapping[str, JsonValue], runs: Sequence[Mapping[str, JsonValue]]
 ) -> scheduler.ExecutionSnapshot:
     return scheduler.inspect_execution_target(execution, runs, plan_label="hparam")
 

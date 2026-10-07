@@ -11,6 +11,7 @@ layer 0 leaf that adapters may import.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 import re
 import subprocess  # noqa: F401 -- tests patch decision_paths.subprocess.run (stdlib global)
@@ -18,7 +19,7 @@ from typing import Any
 
 from . import gpu_rules, slurm, transport
 from .decision_models import DecisionIssue, DecisionStatus
-from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, ConfigSummaryInput, is_full_git_object_id
+from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, ConfigSummaryInput, JsonValue, is_full_git_object_id
 
 _EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target", "workdir"}
 _RUNTIME_IDENTITY_FIELDS = {"python", "runtime_commit"}
@@ -211,7 +212,7 @@ def _execution_contract_issue(field: str, message: str, value: Any, source_layer
 
 
 def managed_runtime_resource_issues(
-    execution: dict[str, Any],
+    execution: Mapping[str, JsonValue],
     runtime: dict[str, Any],
     *,
     scheduler: Any,
@@ -766,7 +767,7 @@ def validate_input_path(
             )
         validation_path = raw_path
         if relative_to_workdir and not Path(str(raw_path)).is_absolute():
-            workdir = execution.get("workdir") or REPO_ROOT
+            workdir: JsonValue | Path = execution.get("workdir") or REPO_ROOT
             if Path(str(workdir)).is_absolute():
                 validation_path = Path(str(workdir)) / str(raw_path)
         test_flag = "-d" if require_directory else "-f" if require_file else "-e"
@@ -882,7 +883,7 @@ def path_validation(recipe: dict, context: str) -> str:
     return "defer" if context == "remote" else "local"
 
 
-def _execution(recipe: dict) -> dict[str, Any]:
+def _execution(recipe: dict) -> Mapping[str, JsonValue]:
     return recipe["execution"] if isinstance(recipe.get("execution"), dict) else {}
 
 

@@ -1294,7 +1294,7 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
 
 
 def _inspect_hparam_execution_target(
-    execution: Mapping[str, Any], runs: Sequence[Mapping[str, JsonValue]]
+    execution: Mapping[str, JsonValue], runs: Sequence[Mapping[str, JsonValue]]
 ) -> managed_scheduler.ExecutionSnapshot:
     return managed_scheduler.inspect_execution_target(execution, runs, plan_label="hparam")
 

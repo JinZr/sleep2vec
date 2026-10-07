@@ -31,6 +31,7 @@ from .runtime_lock import runtime_lock
 
 if TYPE_CHECKING:
     from .managed_scheduler import ExecutionSnapshot
+    from .models import JsonValue
 
 
 class SlurmResources(TypedDict):
@@ -198,7 +199,7 @@ def normalize_resources(scheduler: dict[str, Any], gpus_per_run: Any) -> SlurmRe
 
 
 def fixed_node_resource_capacity(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     resources: SlurmResources,
     planned_runs: int,
     *,
@@ -558,7 +559,7 @@ def run_frozen_job(
 
 
 def run_command(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     argv: list[str],
     *,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
@@ -575,7 +576,7 @@ def run_command(
 
 
 def controller_cluster(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     *,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
 ) -> str:
@@ -601,7 +602,7 @@ def parse_sbatch_output(stdout: str) -> JobIdentity:
 
 
 def submit(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     script: str,
     submit_token: str,
     *,
@@ -619,7 +620,7 @@ def submit(
 
 
 def active_jobs(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     *,
     job_id: str | Sequence[str] | None = None,
     submit_token: str | None = None,
@@ -651,7 +652,7 @@ def active_jobs(
 
 
 def show_job(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     job_id: str,
     *,
     cluster: str | None = None,
@@ -703,7 +704,7 @@ def show_job(
 
 
 def accounting_job(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     job_id: str,
     *,
     submit_token: str,
@@ -730,7 +731,7 @@ def accounting_job(
 
 
 def cluster_scheduling_capabilities(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     partition: str,
     *,
     timeout: float = transport.SSH_TIMEOUT_SECONDS,
@@ -791,7 +792,7 @@ def parse_cluster_scheduling_capabilities(
 
 
 def cancel(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     job_id: str,
     *,
     cluster: str | None = None,
