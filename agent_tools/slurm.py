@@ -864,13 +864,6 @@ def state_category(value: str) -> str:
     return "unknown"
 
 
-def parse_exit_code(value: str) -> tuple[int, int]:
-    match = re.fullmatch(r"([0-9]+):([0-9]+)", str(value or "").strip())
-    if match is None:
-        raise ValueError(f"Invalid Slurm exit code: {value!r}")
-    return int(match.group(1)), int(match.group(2))
-
-
 def submission_command(script: str, submit_token: str, execution_snapshot_sha256: str | None = None) -> str:
     return _shell_command(_submission_argv(script, submit_token, execution_snapshot_sha256))
 

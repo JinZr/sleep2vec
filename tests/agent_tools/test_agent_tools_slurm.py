@@ -1121,13 +1121,6 @@ def test_state_category(state: str, category: str):
     assert slurm.state_category(state) == category
 
 
-def test_parse_exit_code():
-    assert slurm.parse_exit_code("0:0") == (0, 0)
-    assert slurm.parse_exit_code("7:9") == (7, 9)
-    with pytest.raises(ValueError):
-        slurm.parse_exit_code("0")
-
-
 def test_sidecar_identity_requires_frozen_token_and_job_id():
     payload = {
         "schema_version": 1,

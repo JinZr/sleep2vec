@@ -92,8 +92,3 @@ def remote_python_program_command(name: str, *args: Any) -> str:
 def remote_write_command(path: Any) -> str:
     target = Path(str(path))
     return f"mkdir -p {sh(target.parent)} && cat > {sh(target)}"
-
-
-def remote_append_command(path: Any) -> str:
-    target = Path(str(path))
-    return f"mkdir -p {sh(target.parent)} && cat >> {sh(target)}"
