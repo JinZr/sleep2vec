@@ -1054,7 +1054,7 @@ def merge_run_row(existing: Mapping[str, Any], incoming: Mapping[str, Any]) -> d
         and existing_stop_requested_at not in (None, "")
         and incoming.get("stop_requested_at") != existing_stop_requested_at
     )
-    merged: dict[str, JsonValue] = {**existing, **json_ready(incoming)}
+    merged: dict[str, JsonValue] = {**existing, **json_ready(dict(incoming))}
     # A conflicting submission receipt is quarantined; later scheduler observations cannot authenticate its route.
     if existing.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
         merged.update(
