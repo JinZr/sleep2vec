@@ -174,8 +174,16 @@ class EmptySummary(TypedDict):
     pass
 
 
+class SexAgeHeadDetails(TypedDict):
+    name: str
+    hidden_dim: int
+    dropout: float
+    act: str
+    kwargs: dict[str, int]
+
+
 class _SexAgeModelDetails(TypedDict, total=False):
-    head_details: dict[str, Any]
+    head_details: SexAgeHeadDetails
 
 
 class SexAgeModelSummary(_SexAgeModelDetails):

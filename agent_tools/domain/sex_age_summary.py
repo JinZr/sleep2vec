@@ -8,7 +8,6 @@ task.
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -133,7 +132,16 @@ def sex_age_baseline_config_summary(
         "is_finetune": True,
         "is_pretrain": False,
         "data_backend": cfg.data.backend,
-        "model": {"name": cfg.model.name, "head_details": asdict(cfg.model.head)},
+        "model": {
+            "name": cfg.model.name,
+            "head_details": {
+                "name": cfg.model.head.name,
+                "hidden_dim": cfg.model.head.hidden_dim,
+                "dropout": cfg.model.head.dropout,
+                "act": cfg.model.head.act,
+                "kwargs": dict(cfg.model.head.kwargs),
+            },
+        },
         "data": data_summary,
         CONFIG_FINETUNE_SECTION: finetune_summary,
         "preset_build": {},

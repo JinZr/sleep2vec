@@ -266,7 +266,7 @@ def managed_run_lock(workspace: str | Path):
         yield
 
 
-def gpu_groups(execution: dict[str, Any], runtime: dict[str, Any]) -> list[list[Any]]:
+def gpu_groups(execution: dict[str, Any], runtime: Mapping[str, Any]) -> list[list[Any]]:
     groups, issues = gpu_rules.gpu_group_plan(execution, runtime)
     errors = [issue for issue in issues if not issue.warning]
     if errors:
@@ -356,7 +356,7 @@ def observe_runs(
 
 def capacity_state(
     execution: dict[str, Any],
-    runtime: dict[str, Any],
+    runtime: Mapping[str, Any],
     expected_rows: dict[RunKey, dict[str, Any]],
     workspace_rows: dict[RunKey, dict[str, Any]],
     *,
@@ -500,7 +500,7 @@ def _launch_managed_runs(
     owner_dir: Path,
     runs: list[dict[str, Any]],
     execution: dict[str, Any],
-    runtime: dict[str, Any],
+    runtime: Mapping[str, Any],
     options: LaunchOptions,
 ) -> LaunchResult:
     backend = _managed_scheduler_type(execution, runs)
