@@ -10,7 +10,7 @@ def test_result_types_reach_callers(tmp_path: Path):
         textwrap.dedent("""\
             from pathlib import Path
             from agent_tools import (
-                adaptive_handshake, adaptive_hparam, adaptive_state,
+                adaptive_evidence, adaptive_handshake, adaptive_hparam, adaptive_state,
                 checkpoint_test_results, experiment_tracking,
                 experiments,
                 experiment_io, experiment_sources, experiment_workspace, hparam_selection,
@@ -32,10 +32,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             direct_launch["log_path"] = Path("/log")  # type: ignore[typeddict-item]
             direct_launch["pid"] = "123"  # type: ignore[typeddict-item]
             direct_launch["planned_runtime_commit"] = None  # type: ignore[typeddict-item]
-            slurm_launch: managed_scheduler.SlurmLaunchIdentity = {
-                "target": "local", "host": None, "workdir": Path("/runtime"),
-                "gpus": "", "pid_path": "", "log_path": "/run/stdout.log", "command": "",
-            }
+            slurm_launch = managed_scheduler._slurm_execution_identity({}, {})
             submit_command: str = slurm_launch["command"]
             slurm_launch["command"] = None  # type: ignore[typeddict-item]
             slurm_launch["execution_snapshot_sha256"] = 1  # type: ignore[typeddict-item]
@@ -73,10 +70,12 @@ def test_result_types_reach_callers(tmp_path: Path):
             )
             pipeline_hooks.sleep = None  # type: ignore[misc]
             experiment_pipeline.PipelineHooks(sleep="later")  # type: ignore[arg-type]
-            source_states: list[experiment_pipeline.SourceState] = []
+            source_states = experiment_pipeline._inspect_sources(
+                Path("/workspace"), {}, refresh=False, hooks=pipeline_hooks,
+            )
             source_complete: bool = source_states[0]["complete"]
             source_states[0]["complete"] = "true"  # type: ignore[typeddict-item]
-            frozen_candidates: list[experiment_pipeline.FrozenCheckpointCandidate] = []
+            frozen_candidates = experiment_pipeline._select_checkpoint_sources(Path("/workspace"), {})
             frozen_score: float = frozen_candidates[0]["score"]
             frozen_candidates[0]["score"] = "1"  # type: ignore[typeddict-item]
             checkpoint_key_count: int = frozen_candidates[0]["state_dict_key_count"]
@@ -84,9 +83,9 @@ def test_result_types_reach_callers(tmp_path: Path):
             logical_jobs = experiment_pipeline_results.logical_job_states({}, [])
             attempt_count: int = logical_jobs[0]["attempt_count"]
             logical_jobs[0]["status"] = "ready"  # type: ignore[typeddict-item]
-            execution_result: experiment_pipeline.AttemptExecutionResult = {
-                "status": "completed", "jobs": logical_jobs,
-            }
+            execution_result = experiment_pipeline._run_attempts(
+                Path("/workspace"), Path("/pipeline"), {}, {}, [], poll_seconds=0, hooks=pipeline_hooks,
+            )
             execution_result["jobs"][0]["attempt_count"] = "1"  # type: ignore[typeddict-item]
             if "missing_pid_blocker" in execution_result:
                 execution_result["missing_pid_blocker"]["status"] = "running"  # type: ignore[typeddict-item]
@@ -327,7 +326,10 @@ def test_result_types_reach_callers(tmp_path: Path):
                 workflow: adaptive_state.InitialAdaptiveWorkflow,
                 accepted_payload: adaptive_handshake.AcceptedProposalPayload,
             ) -> None:
-                binding["target_round"] = "1"  # type: ignore[typeddict-item]
+                generated_binding = adaptive_handshake._proposal_request_event_fields(
+                    proposal_document, Path("/input"), "a" * 64, Path("/proposal"),
+                )
+                generated_binding["target_round"] = "1"  # type: ignore[typeddict-item]
                 accepted_payload["proposal_sha256"] = None  # type: ignore[typeddict-item]
                 accepted_payload["schema_version"] = 2  # type: ignore[typeddict-item]
                 initialized["round"] = "0"  # type: ignore[typeddict-item]
@@ -455,6 +457,9 @@ def test_result_types_reach_callers(tmp_path: Path):
             del hparam_compiled["run_files"]  # type: ignore[misc]
             del hparam_compiled["final_eval_config_required"]  # type: ignore[misc]
             hparam_compiled["runs"][0]["custom"] = {"raw": [None, 1]}
+            raw_plan, raw_recipe = run_artifacts._read_plan_documents(Path("/plan"))
+            raw_plan["custom"] = {"raw": [None, 1]}
+            raw_recipe["custom"] = None
             raw_final = plan_hparam.final_eval_config_snapshot({})
             if raw_final is not None:
                 raw_final["custom"] = [None, {"field": 1}]
@@ -562,6 +567,12 @@ def test_result_types_reach_callers(tmp_path: Path):
             checkpoint_rows[0]["checkpoint_paths"]  # type: ignore[typeddict-item]
             checkpoint_rows[0]["score"] = "0.5"  # type: ignore[typeddict-item]
             checkpoint_rows[0]["epoch"] = 1.5  # type: ignore[typeddict-item]
+            objective_evidence = adaptive_evidence._test_checkpoint_evidence({}, {}, "/checkpoints", [])
+            objective_evidence[0]  # type: ignore[index]
+            if objective_evidence is not None:
+                objective_result, checkpoint_trajectory = objective_evidence
+                objective_score: float = objective_result["score"]
+                objective_result["checkpoint_paths"]  # type: ignore[typeddict-item]
 
             class RankingRow(checkpoint_test_results.CheckpointTestResult):
                 checkpoint_sha256: str
@@ -627,7 +638,9 @@ def test_result_types_reach_callers(tmp_path: Path):
                 metric: str = selection["metric"]
                 selection["metric"] = 1  # type: ignore[typeddict-item]
 
-            steps: list[run_artifacts.RegisteredPlanStep] = []
+            steps = experiments._registered_plan_steps(
+                Path("/workspace"), {}, [], remote=None, require_registered_rows=True,
+            )
             steps[0]["plans"][0]["run_key"]  # type: ignore[typeddict-item]
             lifecycle = experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"))
             lifecycle_step = lifecycle["hparam_steps"][0]
@@ -643,7 +656,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             if "checkpoint_audit_rows" in selected_step:
                 audit_score: str = selected_step["checkpoint_audit_rows"][0]["score"]
                 selected_step["checkpoint_audit_rows"][0]["score"] = 0.5  # type: ignore[assignment]
-            report_steps: list[experiment_tracking.HparamSelectionReportStep] = []
+            report_steps = hparam_selection._selection_report_steps([])
             report_steps[0]["step_id"] = 1  # type: ignore[typeddict-item]
             report_steps[0]["ranked"] = ["run-001"]  # type: ignore[list-item]
             ranking_input: experiment_tracking.HparamSelectionReportStep = {
@@ -727,30 +740,34 @@ def test_result_types_reach_callers(tmp_path: Path):
                 [{"manifest": {}, "plans": ["/plan"]}], [], root=Path("/workspace"),  # type: ignore[list-item]
             )
 
-            def selection_report(report: experiment_tracking.HparamSelectionReportSnapshot | None) -> None:
-                report["text"]  # type: ignore[index]
-                if report is not None:
-                    report_path: str = report["path"]
-                    report_text: str = report["text"]
-                    report_sha: str = report["sha256"]
-                    ranking_path: str = report["ranking_path"]
-                    ranking_text: str | None = report["ranking_text"]
-                    ranking_sha: str | None = report["ranking_sha256"]
-                    report["ranking_sha265"]  # type: ignore[typeddict-item]
-                    report["sha256"] = None  # type: ignore[typeddict-item]
-                    required_ranking: str = report["ranking_text"]  # type: ignore[assignment]
-                    required_ranking_sha: str = report["ranking_sha256"]  # type: ignore[assignment]
-                    experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"), report=report)
-                    experiment_tracking.experiment_status_snapshot(
-                        {}, steps, [], root=Path("/workspace"), hparam_selection_report=report,
-                    )
-                    experiment_tracking.hparam_selection_lifecycle(
-                        steps, [], root=Path("/workspace"), report={**report, "sha256": None},  # type: ignore[arg-type]
-                    )
-                    experiment_tracking.experiment_status_snapshot(
-                        {}, steps, [], root=Path("/workspace"),
-                        hparam_selection_report={**report, "ranking_text": 1},  # type: ignore[arg-type]
-                    )
+            report = experiments._hparam_selection_report(Path("/workspace"), remote=None)
+            report["text"]  # type: ignore[index]
+            if report is not None:
+                report_path: str = report["path"]
+                report_text: str = report["text"]
+                report_sha: str = report["sha256"]
+                ranking_path: str = report["ranking_path"]
+                ranking_text: str | None = report["ranking_text"]
+                ranking_sha: str | None = report["ranking_sha256"]
+                report["ranking_sha265"]  # type: ignore[typeddict-item]
+                report["sha256"] = None  # type: ignore[typeddict-item]
+                required_ranking: str = report["ranking_text"]  # type: ignore[assignment]
+                required_ranking_sha: str = report["ranking_sha256"]  # type: ignore[assignment]
+                experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"), report=report)
+                experiment_tracking.experiment_status_snapshot(
+                    {}, steps, [], root=Path("/workspace"), hparam_selection_report=report,
+                )
+                experiments._validate_hparam_selection_files_unchanged(Path("/workspace"), report, {}, remote=None)
+                experiment_tracking.hparam_selection_lifecycle(
+                    steps, [], root=Path("/workspace"), report={**report, "sha256": None},  # type: ignore[arg-type]
+                )
+                experiment_tracking.experiment_status_snapshot(
+                    {}, steps, [], root=Path("/workspace"),
+                    hparam_selection_report={**report, "ranking_text": 1},  # type: ignore[arg-type]
+                )
+                experiments._validate_hparam_selection_files_unchanged(
+                    Path("/workspace"), {**report, "path": None}, {}, remote=None,  # type: ignore[typeddict-item]
+                )
             """),
         encoding="utf-8",
     )
