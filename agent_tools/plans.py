@@ -33,6 +33,7 @@ import yaml
 from . import (
     decision_rules as task_rules,
     experiment_io as exp_io,
+    managed_scheduler,
     plan_context as context,
     plan_contract,
     plan_rendering as rendering,
@@ -2010,7 +2011,8 @@ def collect_runs(root: str | Path, metric: str | None, output: str | Path) -> No
         raise ValueError("collect-runs output cannot overwrite canonical run_manifest.tsv.")
     # The report may live outside the experiment, so validate its complete absolute topology from the filesystem root.
     exp_io.validate_managed_output_paths(Path(output_path.anchor), [output_path])
-    managed_rows = read_run_manifest(root_path)
+    with managed_scheduler.managed_run_lock(root_path):
+        managed_rows = read_run_manifest(root_path)
     for managed in managed_rows:
         runtime_dir = Path(managed["runtime_dir"]) if managed.get("runtime_dir") else None
         manifest = artifacts.find_run_manifest(managed)

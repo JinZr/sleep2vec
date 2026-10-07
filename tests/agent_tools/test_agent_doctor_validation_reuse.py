@@ -328,6 +328,9 @@ def test_plan_identity_read_is_optional_and_manifest_only(tmp_path, monkeypatch,
         recipe_path.write_text(yaml.safe_dump(payload))
         if state == "missing_manifest":
             root.mkdir()
+    else:
+        # The existing workspace's canonical rows are read under the run lock, which creates this empty file.
+        (root / "run_manifest.tsv.lock").touch()
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     read = plans.exp_io.read_managed_output_texts_at
     calls = []
@@ -624,6 +627,8 @@ def test_final_workspace_check_rejects_identity_changed_after_early_read(
     changed_manifest["experiment"]["title"] = "Changed after early read"
     if early_manifest == "missing":
         manifest_path.unlink()
+    # The final workspace check reads canonical rows under the run lock, which creates this empty file.
+    (tmp_path / "run_manifest.tsv.lock").touch()
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file() and path != manifest_path}
     read = plans.exp_io.read_managed_output_texts_at
     ensure = plans.ensure_experiment_workspace

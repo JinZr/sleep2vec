@@ -1358,7 +1358,8 @@ def commit_hparam_plan(
                 "run_count": len(manifest_rows),
             },
         )
-    artifacts.read_hparam_plan(plan_dir, require_adaptive_commit=False)
+    with managed_scheduler.managed_run_lock(root):
+        artifacts.read_hparam_plan(plan_dir, require_adaptive_commit=False)
     return plan
 
 

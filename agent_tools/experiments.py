@@ -14,6 +14,7 @@ command performs across those owners -- most visibly in
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
@@ -96,7 +97,7 @@ def _preset_direct_workspace(plan_dir: Path) -> Path:
 def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
     # All execution fields below come from the registered frozen plan, not the untrusted locator.
     workspace = _preset_direct_workspace(plan_dir)
-    experiment, rows = _managed_workspace(workspace, remote=None)
+    experiment, rows = _managed_workspace(workspace, remote=None, lock_held=True)
     registered_steps = _registered_plan_steps(workspace, experiment, rows, remote=None, require_registered_rows=True)
     for registered in registered_steps:
         for plan in registered["plans"]:
@@ -330,7 +331,7 @@ def _infer_slurm_workspace(plan_dir: Path) -> Path:
 def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
     # Execution uses the strict registered-plan reader below, not the locating document.
     workspace = _infer_slurm_workspace(plan_dir)
-    experiment, rows = _managed_workspace(workspace, remote=None)
+    experiment, rows = _managed_workspace(workspace, remote=None, lock_held=True)
     registered_steps = _registered_plan_steps(workspace, experiment, rows, remote=None, require_registered_rows=True)
     for registered in registered_steps:
         for plan in registered["plans"]:
@@ -670,14 +671,16 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     root = _target_root(run_dir, remote)
     run_manifest_path = root / "run_manifest.tsv"
     rows = _finalizable_rows(root, remote=remote)
-    run_manifest_snapshot = exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[
-        str(run_manifest_path)
-    ]
+    with nullcontext() if remote else managed_scheduler.managed_run_lock(root):
+        run_manifest_snapshot = exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[
+            str(run_manifest_path)
+        ]
     rows = _finalizable_rows(root, remote=remote)
-    if (
-        exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[str(run_manifest_path)]["sha256"]
-        != run_manifest_snapshot["sha256"]
-    ):
+    with nullcontext() if remote else managed_scheduler.managed_run_lock(root):
+        current_run_manifest = exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[
+            str(run_manifest_path)
+        ]
+    if current_run_manifest["sha256"] != run_manifest_snapshot["sha256"]:
         raise RuntimeError("Run manifest changed during finalization.")
     manifest_text = exp_io.read_text_at(root / "experiment.yaml", remote=remote)
     manifest = read_managed_yaml_mapping(
@@ -1199,6 +1202,7 @@ def _managed_workspace(
     remote: str | None,
     allow_completed: bool = False,
     validate_experiment_index: bool = True,
+    lock_held: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     manifest_path = root / "experiment.yaml"
     if not exp_io.path_exists_at(manifest_path, remote=remote):
@@ -1248,7 +1252,10 @@ def _managed_workspace(
         if manifest_row.get("experiment_root") != str(root):
             raise ValueError("experiment_manifest.tsv root differs from the target workspace.")
 
-    rows = read_run_manifest(root, remote=remote)
+    # lock_held means the caller already owns the local run lock. SSH reads use the remote workspace,
+    # whose lock this process cannot take.
+    with nullcontext() if remote or lock_held else managed_scheduler.managed_run_lock(root):
+        rows = read_run_manifest(root, remote=remote)
     for row in rows:
         if row["experiment_id"] != experiment["id"]:
             raise ValueError("run_manifest.tsv contains a run owned by a different experiment.")

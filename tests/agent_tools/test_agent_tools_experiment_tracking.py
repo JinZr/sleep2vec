@@ -963,6 +963,8 @@ def test_wandb_sync_rejects_multiple_attempts_for_one_managed_run_before_writes(
         "wandb_runs",
         lambda *_args: [FakeRun("wandb-attempt-1", 0.7), FakeRun("wandb-attempt-2", 0.8)],
     )
+    # Sync reads canonical rows under the run lock, which creates this empty file.
+    (tmp_path / "run_manifest.tsv.lock").touch()
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
     with pytest.raises(ValueError, match="Ambiguous W&B runs for managed run train-model / run-000"):
@@ -1025,6 +1027,8 @@ def test_wandb_sync_rejects_foreign_existing_metrics_before_api_or_write(tmp_pat
         "experiment_id\tstep_id\trun_id\tversion\tmetric\tvalue\n"
         "other\ttrain-model\trun-000\tmanaged-v1\tval_auroc\t0.99\n"
     )
+    # Sync reads canonical rows under the run lock, which creates this empty file.
+    (tmp_path / "run_manifest.tsv.lock").touch()
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     calls = []
     monkeypatch.setattr(experiment_tracking, "wandb_runs", lambda *_args: calls.append("wandb") or [])
@@ -1040,6 +1044,8 @@ def test_wandb_sync_rejects_invalid_canonical_target_before_api_or_write(tmp_pat
     _initialize_workspace(tmp_path)
     experiment_workspace.initialize_run_manifest(tmp_path)
     (tmp_path / "run_matrix.csv").mkdir()
+    # Sync reads canonical rows under the run lock, which creates this empty file.
+    (tmp_path / "run_manifest.tsv.lock").touch()
     before = {path.relative_to(tmp_path): path.read_bytes() if path.is_file() else None for path in tmp_path.rglob("*")}
     calls = []
     monkeypatch.setattr(experiment_tracking, "wandb_runs", lambda *_args: calls.append("wandb") or [])

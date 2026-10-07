@@ -1,3 +1,4 @@
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -68,8 +69,8 @@ def test_hparam_selection_validation_failure_stops_ranking_and_publication(monke
 
 def test_hparam_selection_build_failure_does_not_start_publication(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        hparam_selection.artifacts,
-        "read_hparam_plan",
+        hparam_selection.hparam_runtime,
+        "read_hparam_plan_under_run_lock",
         lambda _root: {"runs": [], "recipe": {"evaluation_policy": {}}},
     )
     publication_started = False
@@ -137,6 +138,14 @@ def test_hparam_selection_publication_order(monkeypatch: pytest.MonkeyPatch, tmp
         "read_run_manifest",
         lambda _workspace: calls.append(("read_run_manifest", None)) or [selected],
     )
+
+    @contextlib.contextmanager
+    def run_lock(root):
+        calls.append(("run_lock", root))
+        yield
+        calls.append(("run_unlock", root))
+
+    monkeypatch.setattr(hparam_selection.managed_scheduler, "managed_run_lock", run_lock)
     monkeypatch.setattr(
         hparam_selection,
         "_selection_report_steps",
@@ -168,7 +177,9 @@ def test_hparam_selection_publication_order(monkeypatch: pytest.MonkeyPatch, tmp
         ("write_rows", audit),
         ("write_rows", ranking),
         ("merge_run_manifest", None),
+        ("run_lock", workspace),
         ("read_run_manifest", None),
+        ("run_unlock", workspace),
         ("selection_report_steps", None),
         ("render_report", workspace),
         ("write_report", report),

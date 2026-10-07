@@ -227,7 +227,12 @@ def _sha256(path: Path) -> str:
 
 
 def _workspace_files(root: Path) -> dict[str, bytes]:
-    return {str(path.relative_to(root)): path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
+    # Status reads run_manifest.tsv under the run lock, which creates the empty lock file; it holds no state.
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path != root / "run_manifest.tsv.lock"
+    }
 
 
 def _record_hparam_selection(

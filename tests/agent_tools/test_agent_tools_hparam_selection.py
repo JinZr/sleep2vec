@@ -7,7 +7,12 @@ from pathlib import Path
 import subprocess
 import sys
 
-from agent_tool_test_helpers import prepare_hparam_plan_fixture, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import (
+    call_while_run_lock_holder_commits,
+    prepare_hparam_plan_fixture,
+    write_finetune_recipe,
+    write_yaml,
+)
 import pytest
 import yaml
 
@@ -378,6 +383,47 @@ def test_resolve_hparam_candidates_uses_canonical_rank_and_skips_terminal_failur
     assert [row["run_id"] for row in top_rows] == [plan["runs"][2]["run_id"], plan["runs"][0]["run_id"]]
     assert ranking.read_bytes() == ranking_before
     assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
+
+
+@pytest.mark.parametrize(
+    "reader", ["select_plan", "select_rows", "commit_rows", "resolve_plan", "resolve_rows", "scan_plan", "scan_rows"]
+)
+def test_hparam_selection_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch, reader: str):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    prepare_hparam_plan_fixture(recipe, plan_dir)
+    run = _first_run(plan_dir)
+    checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint")
+    Path(run["runtime_dir"], "run_manifest.json").write_text(
+        json.dumps({"metrics": {"val_ahi_pearson": 0.9}, "best_model_path": str(checkpoint), "epoch": 1})
+    )
+    if reader.startswith(("commit", "resolve")):
+        hparam_selection.select_hparam_candidates(plan_dir)
+    # The harness races only the first manifest read, so later reads are targeted by skipping earlier ones.
+    if reader.endswith("_rows"):
+        plan = run_artifacts.read_hparam_plan(plan_dir)
+        monkeypatch.setattr(hparam_selection.hparam_runtime, "read_hparam_plan_under_run_lock", lambda _path: plan)
+    if reader == "commit_rows":
+        selection = hparam_selection._build_hparam_selection(plan_dir)
+        monkeypatch.setattr(hparam_selection, "merge_run_manifest", lambda *_args, **_kwargs: None)
+    readers = {
+        "select": lambda: hparam_selection.select_hparam_candidates(plan_dir),
+        "commit": lambda: hparam_selection._commit_hparam_selection(selection),
+        "resolve": lambda: hparam_selection.resolve_hparam_candidates(plan_dir, [run])[0],
+        "scan": lambda: hparam_selection.scan_hparam_checkpoints(plan_dir, "val_ahi_pearson", "max"),
+    }
+
+    result = call_while_run_lock_holder_commits(monkeypatch, tmp_path, readers[reader.rsplit("_", 1)[0]])
+
+    if reader.startswith("resolve"):
+        assert [row["run_id"] for row in result] == [run["run_id"]]
+    elif reader.startswith("scan"):
+        assert [row["run_id"] for row in _read_table(result)] == [run["run_id"]]
+    else:
+        assert result == _ranking_path(plan_dir)
+        assert _read_table(result)[0]["run_id"] == run["run_id"]
 
 
 def test_resolve_hparam_candidates_rejects_forged_validation_rank(tmp_path: Path):
@@ -2946,9 +2992,9 @@ def test_hparam_select_only_preflights_registered_plans_that_own_preserved_ranki
     strict_reads = []
     original_read_hparam_plan = hparam_selection.artifacts.read_hparam_plan
 
-    def tracked_read_hparam_plan(path):
+    def tracked_read_hparam_plan(path, **kwargs):
         strict_reads.append(Path(path))
-        return original_read_hparam_plan(path)
+        return original_read_hparam_plan(path, **kwargs)
 
     monkeypatch.setattr(hparam_selection.artifacts, "read_hparam_plan", tracked_read_hparam_plan)
 
