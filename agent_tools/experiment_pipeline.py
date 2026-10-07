@@ -45,7 +45,7 @@ from .experiment_workspace import (
     stopped_runs_without_reason,
     validated_run_key,
 )
-from .hparam_runtime import monitor_hparam_runs
+from .hparam_runtime import monitor_hparam_runs, read_hparam_plan_under_run_lock
 from .hparam_selection import resolve_hparam_candidates, select_hparam_candidates
 from .manifests import read_json, read_rows, utc_now
 
@@ -244,7 +244,9 @@ def _validate_experiment(root: Path, spec: dict[str, Any], *, allow_completed: b
         raise ValueError("Pipeline run directory differs from experiment.yaml root.")
     if experiment.get("status") == "completed" and not allow_completed:
         raise ValueError("Experiment is already completed.")
-    read_run_manifest(root)
+    # Launches and run scripts replace run_manifest.tsv under the run lock; no pipeline caller holds it here.
+    with managed_scheduler.managed_run_lock(root):
+        read_run_manifest(root)
     return experiment
 
 
@@ -301,7 +303,7 @@ def _validate_frozen_source_plans(state: dict[str, Any], spec: dict[str, Any]) -
             raise ValueError(f"Source plan changed after pipeline freeze: {plan_path}")
         if file_sha256(resolved_recipe_path) != snapshot["resolved_recipe_sha256"]:
             raise ValueError(f"Source plan recipe changed after pipeline freeze: {resolved_recipe_path}")
-        artifacts.read_hparam_plan(Path(str(snapshot["plan_dir"])))
+        read_hparam_plan_under_run_lock(Path(str(snapshot["plan_dir"])))
 
 
 def _validate_frozen_pipeline(pipeline_dir: Path, source_text: str, spec: dict[str, Any]) -> dict[str, Any]:
@@ -389,7 +391,7 @@ def _source_plan_snapshots(root: Path, spec: dict[str, Any]) -> list[SourcePlanS
     snapshots: list[SourcePlanSnapshot] = []
     for source_id, source in spec["checkpoint_sources"].items():
         plan_dir = Path(source["plan"])
-        plan = artifacts.read_hparam_plan(plan_dir)
+        plan = read_hparam_plan_under_run_lock(plan_dir)
         recipe = plan["recipe"]
         if canonical_local_experiment_root(recipe["experiment"]["root"], Path.cwd()) != root:
             raise ValueError(f"Source plan belongs to another experiment: {plan_dir}")
@@ -429,27 +431,31 @@ def _preset_snapshots(spec: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _source_hparam_plans(source_id: str, source: dict[str, Any]) -> list[tuple[Path, plan_contract.HparamPlan]]:
-    plan = artifacts.read_hparam_plan(Path(source["plan"]))
+    plan = read_hparam_plan_under_run_lock(Path(source["plan"]))
     recipe = plan["recipe"]
     _assert_source_semantics(source_id, source, recipe)
     evaluation = recipe["evaluation_policy"]
     root = canonical_local_experiment_root(recipe["experiment"]["root"], Path.cwd())
-    plans = list(
-        artifacts.iter_registered_hparam_plans(
-            root,
-            str(recipe["step"]["id"]),
-            selection_metric=evaluation["selection_metric"],
-            selection_mode=evaluation["selection_mode"],
-            selection_split=evaluation["selection_split"],
+    # Each registered plan's full read validates run_manifest.tsv; no pipeline caller holds the run lock here.
+    with managed_scheduler.managed_run_lock(root):
+        plans = list(
+            artifacts.iter_registered_hparam_plans(
+                root,
+                str(recipe["step"]["id"]),
+                selection_metric=evaluation["selection_metric"],
+                selection_mode=evaluation["selection_mode"],
+                selection_split=evaluation["selection_split"],
+            )
         )
-    )
     for _plan_dir, owner_plan in plans:
         _assert_source_semantics(source_id, source, owner_plan["recipe"])
     return plans
 
 
 def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list[SourceState]:
-    canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
+    # Monitoring takes the run lock itself, so only the reads hold it.
+    with managed_scheduler.managed_run_lock(root):
+        canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
     states: list[SourceState] = []
     for source_id, source in spec["checkpoint_sources"].items():
         plan_dir = Path(source["plan"])
@@ -457,7 +463,8 @@ def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool) -> list
         if refresh:
             for registered_dir, _plan in plans:
                 monitor_hparam_runs(registered_dir, once=True, health=True)
-            canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
+            with managed_scheduler.managed_run_lock(root):
+                canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
         runs = [run for _plan_dir, plan in plans for run in plan["runs"]]
         rows = [canonical[managed_run_key(run)] for run in runs]
         missing_stop_reasons = stopped_runs_without_reason(rows)
@@ -1216,8 +1223,8 @@ def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[
 
 
 def _validate_frozen_selection_owner(source_id: str, source: dict[str, Any], selection: dict[str, Any]) -> None:
-    source_recipe = artifacts.read_hparam_plan(Path(source["plan"]))["recipe"]
-    owner_plan = artifacts.read_hparam_plan(Path(selection["plan"]))
+    source_recipe = read_hparam_plan_under_run_lock(Path(source["plan"]))["recipe"]
+    owner_plan = read_hparam_plan_under_run_lock(Path(selection["plan"]))
     recipe = owner_plan["recipe"]
     _assert_source_semantics(source_id, source, recipe)
     if (

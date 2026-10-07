@@ -20,7 +20,14 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from . import adaptive_evidence, adaptive_proposals, adaptive_state, experiment_io as exp_io, run_artifacts as artifacts
+from . import (
+    adaptive_evidence,
+    adaptive_proposals,
+    adaptive_state,
+    experiment_io as exp_io,
+    managed_scheduler,
+    run_artifacts as artifacts,
+)
 from .experiment_workspace import (
     AdaptiveProposalRequestBinding,
     AdaptiveProposalRequestedEvent,
@@ -32,6 +39,7 @@ from .experiment_workspace import (
     validate_managed_run_rows,
     validated_run_key,
 )
+from .hparam_runtime import read_hparam_plan_under_run_lock
 from .manifests import read_rows
 from .models import resolve_repo_path
 from .recipes import strip_internal_recipe_keys
@@ -53,7 +61,9 @@ def proposal_digest_rows(
     rows: list[dict[str, Any]] = []
     for round_index in sorted(adaptive_state.committed_round_indexes(root)):
         round_dir = adaptive_state.round_path(root, round_index)
-        plan = artifacts.read_hparam_plan(round_dir)
+        # Round, workflow and digest reads below take the run lock themselves, so only this read holds it here.
+        with managed_scheduler.managed_run_lock(workspace):
+            plan = artifacts.read_hparam_plan(round_dir)
         adaptive_state.validate_round_registry(root, round_index, plan, registry)
         if not adaptive_state.round_is_terminal(round_dir, workspace, read_run_manifest=read_run_manifest):
             raise ValueError(f"Agent proposal history round {round_index:03d} is not terminal.")
@@ -140,7 +150,7 @@ def _agent_proposal_input_payload(
     expected_keys = {
         (str(round_index), validated_run_key(run))
         for round_index in committed_rounds
-        for run in artifacts.read_hparam_plan(adaptive_state.round_path(root, round_index))["runs"]
+        for run in read_hparam_plan_under_run_lock(adaptive_state.round_path(root, round_index))["runs"]
     }
     digest_keys = [(str(row.get("round")), managed_run_key(row)) for row in rows]
     if len(digest_keys) != len(set(digest_keys)) or set(digest_keys) != expected_keys:
@@ -414,7 +424,9 @@ def load_agent_proposal(
 def applied_agent_proposal(
     root: Path, workspace: Path, proposal_path: str | Path, *, read_run_manifest: Callable[[Path], list[dict[str, str]]]
 ) -> Path | None:
-    initial_plan = artifacts.read_hparam_plan(adaptive_state.round_path(root, 0))
+    # Workflow, registry and launch-attempt checks below take the run lock themselves, so only these reads hold it.
+    with managed_scheduler.managed_run_lock(workspace):
+        initial_plan = artifacts.read_hparam_plan(adaptive_state.round_path(root, 0))
     initial_recipe_value = initial_plan.get("recipe")
     initial_recipe = initial_recipe_value if isinstance(initial_recipe_value, dict) else {}
     if adaptive_state.suggest_strategy(initial_recipe) != "agent_proposal":
@@ -435,7 +447,8 @@ def applied_agent_proposal(
 
     # A successful replay is proven from frozen artifacts because its live round binding is stale by design.
     round_dir = adaptive_state.round_path(root, target_round)
-    round_plan = artifacts.read_hparam_plan(round_dir)
+    with managed_scheduler.managed_run_lock(workspace):
+        round_plan = artifacts.read_hparam_plan(round_dir)
     registry_path = root / "adaptive" / "run_registry.tsv"
     registry_rows = read_rows(registry_path, require_managed_identity=True)
     validate_managed_run_rows(registry_rows, source=str(registry_path), cardinality="one_per_run")
@@ -481,10 +494,12 @@ def applied_agent_proposal(
     }
     events = read_experiment_events(workspace)
     adaptive_state.validate_agent_proposal_execute_events(events, accepted_event, round_dir)
-    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    with managed_scheduler.managed_run_lock(workspace):
+        canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
     for later_round in sorted(round_index for round_index in committed_rounds if round_index > target_round):
         later_dir = adaptive_state.round_path(root, later_round)
-        later_plan = artifacts.read_hparam_plan(later_dir)
+        with managed_scheduler.managed_run_lock(workspace):
+            later_plan = artifacts.read_hparam_plan(later_dir)
         adaptive_state.validate_round_registry(root, later_round, later_plan, registry_rows)
         later_event = adaptive_state.agent_proposal_accepted_event(events, later_round)
         adaptive_state.validate_agent_proposal_execute_events(events, later_event, later_dir)

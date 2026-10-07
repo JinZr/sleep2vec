@@ -380,7 +380,10 @@ def _materialize_attempt_locked(
     if staging_dir is not None:
         publish_staged_plan_locked(staging_dir, plan_dir, out_preexisted=False)
 
-    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(root)}
+    # Pipeline jobs commit their own status under the run lock. Callers hold only the registration and publication
+    # locks, and merge_run_manifest below takes the run lock itself, so only this read holds it.
+    with managed_scheduler.managed_run_lock(root):
+        canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(root)}
     canonical = canonical_by_key.get(managed_run_key(run))
     if canonical is not None:
         _validate_attempt_plan(
@@ -407,7 +410,9 @@ def _prepare_attempt_registration_groups(
     prepared: dict[str, Path] = {}
     groups: dict[str, list[dict[str, Any]]] = {}
     group_paths: dict[str, list[Path]] = {}
-    canonical_keys = {managed_run_key(row) for row in read_run_manifest(root)}
+    # Callers hold only the registration lock; the execution-target probe below must not hold the run lock.
+    with managed_scheduler.managed_run_lock(root):
+        canonical_keys = {managed_run_key(row) for row in read_run_manifest(root)}
     pending = []
     for item in attempts:
         job, _selection, _attempt, _recipe_path, plan_dir, _result_root = item
