@@ -13,7 +13,7 @@ instead of leaving the pipeline half-registered.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import json
 import os
 from pathlib import Path
@@ -92,6 +92,8 @@ def load_or_create_initial_attempts(
     pipeline_dir: Path,
     spec: dict[str, Any],
     selections: Mapping[str, Mapping[str, Any]],
+    *,
+    inspect_target: Callable[..., managed_scheduler.ExecutionSnapshot] | None = None,
 ) -> list[dict[str, Any]]:
     jobs_path = pipeline_dir / "jobs.tsv"
     existing = read_rows(jobs_path, require_managed_identity=True)
@@ -126,6 +128,7 @@ def load_or_create_initial_attempts(
             spec,
             recipes,
             snapshot_owner_dirs=snapshot_owner_dirs,
+            inspect_target=inspect_target,
         )
         try:
             for job, selection, attempt, recipe_path, plan_dir, result_root in pending:
@@ -406,6 +409,7 @@ def _prepare_attempt_registration_groups(
     attempts: list[tuple[dict[str, Any], Mapping[str, Any], int, Path, Path, Path]],
     *,
     snapshot_owner_dirs: dict[str, Path],
+    inspect_target: Callable[..., managed_scheduler.ExecutionSnapshot] | None = None,
 ) -> dict[str, Path]:
     prepared: dict[str, Path] = {}
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -477,7 +481,8 @@ def _prepare_attempt_registration_groups(
                 [*group_paths[variant], snapshot_path],
                 remote=remote,
             )
-            snapshot = managed_scheduler.inspect_execution_target(execution, groups[variant], plan_label="pipeline")
+            inspect = inspect_target or managed_scheduler.inspect_execution_target
+            snapshot = inspect(execution, groups[variant], plan_label="pipeline")
             if snapshot_path.exists() and read_json(snapshot_path) != snapshot:
                 raise ValueError(f"Frozen pipeline execution snapshot changed: {snapshot_path}")
             snapshots[variant] = (snapshot_path, snapshot)
@@ -849,6 +854,8 @@ def create_needed_retries(
     spec: dict[str, Any],
     selections: Mapping[str, Mapping[str, Any]],
     attempts: list[dict[str, Any]],
+    *,
+    inspect_target: Callable[..., managed_scheduler.ExecutionSnapshot] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     created = False
     state_changed = False
@@ -926,6 +933,7 @@ def create_needed_retries(
                         spec,
                         [(job, selection, attempt, recipe_path, plan_dir, result_root)],
                         snapshot_owner_dirs={str(selection["variant"]): pipeline_dir / "retry_schedulers" / job["id"]},
+                        inspect_target=inspect_target,
                     )
                     physical_plan_dir = prepared[job["id"]]
                 except AttemptRegistrationPreflightError as exc:

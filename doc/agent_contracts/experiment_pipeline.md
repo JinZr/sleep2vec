@@ -32,7 +32,10 @@ separate Python, route, clean/importable-code, module-origin, live-argv, and
 artifact-hash launch gates also fail closed. Those are launch gates, not a claim
 that every pipeline read or controller transition re-probes the runtime. A
 rolling checkout's commit advance is recorded per attempt and does not rewrite
-frozen pipeline or snapshot bytes.
+frozen pipeline or snapshot bytes. Python callers may pass
+`experiment_pipeline.PipelineHooks` to replace only the source-monitor,
+execution-target probe, launch, and poll-sleep effects; the CLI has no such
+option, and validation, locks, state, and artifact writes are unchanged.
 
 An `external_matrix` uses this pipeline-owned subtree:
 

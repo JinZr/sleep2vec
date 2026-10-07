@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
-from typing import TypeVar
+from typing import TypeVar, cast
 
 import yaml
 
@@ -309,3 +309,243 @@ def hparam_search_defaults() -> dict[str, int]:
     from agent_tools.recipes import load_consultation_policy
 
     return {key: entry["value"] for key, entry in load_consultation_policy()["hparam_search_defaults"].items()}
+
+
+def prepare_pipeline_sources(tmp_path: Path, monkeypatch, spec: dict, *, scores: tuple[float, ...] = (4.5,)) -> Path:
+    """Publish a managed workspace that a managed pipeline spec can run against; return the spec path.
+
+    The spec's experiment.yaml is active and its run_manifest.tsv holds one completed source run per score, all
+    owned by the spec's single checkpoint source plan, with real configs, checkpoints, runtime manifests and the
+    spec's job presets. The data readers that need a real hparam plan or torch are stubbed at their module-level
+    names: hparam plan reads, ranking and candidate resolution (rank order follows ``scores``), and checkpoint
+    payload inspection. Drive the pipeline with ``FakePipelineRuntime(spec).hooks()``."""
+    from agent_tools import experiment_pipeline, plan_contract
+    from agent_tools.experiment_workspace import file_sha256, managed_run_key
+    from agent_tools.manifests import write_rows
+
+    root = Path(spec["checkpoint_sources"][next(iter(spec["checkpoint_sources"]))]["plan"]).parents[1]
+    root.mkdir(parents=True, exist_ok=True)
+    experiment = {
+        "id": spec["pipeline"]["experiment_id"],
+        "title": "Unit",
+        "objective": "Exercise the managed pipeline end to end.",
+        "root": str(root),
+        "baseline": {"type": "none"},
+        "status": "active",
+    }
+    (root / "experiment.yaml").write_text(yaml.safe_dump({"experiment": experiment}, sort_keys=False))
+    ((source_id, source),) = spec["checkpoint_sources"].items()
+    plan_dir = Path(source["plan"])
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "plan.json").write_text("{}\n")
+    (plan_dir / "recipe.resolved.yaml").write_text("task: hparam_tune\n")
+    source_recipe = yaml.safe_load(write_finetune_recipe(tmp_path / "source", variant=source["variant"]).read_text())
+    config = Path(source_recipe["inputs"]["config"])
+    recipe = {
+        "task": "hparam_tune",
+        "variant": source["variant"],
+        "experiment": {"id": experiment["id"], "root": str(root)},
+        "step": {"id": "train-age"},
+        "inputs": {"label_name": source["label_name"]},
+        "evaluation_policy": {
+            "selection_metric": source["selection_metric"],
+            "selection_mode": source["selection_mode"],
+            "selection_split": "val",
+        },
+        "execution": {"target": "local"},
+    }
+    runs, ranked = [], []
+    for rank, score in enumerate(scores, start=1):
+        run_dir = plan_dir / "runs" / f"run-{rank:03d}"
+        checkpoint_dir = run_dir / "checkpoints"
+        checkpoint_dir.mkdir(parents=True)
+        checkpoint = checkpoint_dir / "epoch=1.ckpt"
+        checkpoint.write_bytes(f"checkpoint {rank}".encode())
+        runtime_dir = run_dir / "runtime"
+        runtime_dir.mkdir()
+        (runtime_dir / "run_manifest.json").write_text(json.dumps({"status": "completed"}) + "\n")
+        run = {
+            "experiment_id": experiment["id"],
+            "step_id": "train-age",
+            "run_id": f"run-{rank:03d}",
+            "status": "completed",
+            "config": str(config),
+            "config_sha256": file_sha256(config),
+            "checkpoint_dir": str(checkpoint_dir),
+            "runtime_dir": str(runtime_dir),
+        }
+        runs.append(run)
+        ranked.append(
+            {
+                **run,
+                "run_name": f"rank-{rank}",
+                "rank": str(rank),
+                "score": str(score),
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": file_sha256(checkpoint),
+            }
+        )
+    write_rows(root / "run_manifest.tsv", runs)
+    plan = cast(plan_contract.HparamPlan, {"recipe": recipe, "runs": runs})
+    for job in spec["jobs"]:
+        preset = Path(job["inference_preset_path"])
+        preset.parent.mkdir(parents=True, exist_ok=True)
+        preset.write_bytes(f"preset {job['id']}".encode())
+
+    def resolve(_plan_dir, _runs, *, top_k: int = 1, all_candidates: bool = False):
+        selected = ranked if all_candidates else ranked[:top_k]
+        return [dict(row) for row in selected], {managed_run_key(row): plan for row in selected}
+
+    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(
+        experiment_pipeline.artifacts,
+        "iter_registered_hparam_plans",
+        lambda *_args, **_kwargs: iter([(plan_dir, plan)]),
+    )
+    monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", lambda *_args: None)
+    monkeypatch.setattr(experiment_pipeline, "resolve_hparam_candidates", resolve)
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_checkpoint_payload",
+        lambda *_args: {"state_dict_key_count": 1, "has_ahi_eval_threshold": False},
+    )
+    spec_path = tmp_path / f"{spec['pipeline']['id']}.yaml"
+    spec_path.write_text(yaml.safe_dump(spec, sort_keys=False))
+    return spec_path
+
+
+def complete_experiment(root: Path) -> None:
+    """Mark the managed experiment completed, as experiment finalization does."""
+    manifest = yaml.safe_load((root / "experiment.yaml").read_text())
+    manifest["experiment"]["status"] = "completed"
+    (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+
+
+class PipelineInterrupted(BaseException):
+    """Raised from a pipeline hook to stop the runner the way a killed process would: no failure state is recorded."""
+
+
+def run_pipeline(spec_path: Path, hooks, *, resume: bool = False, finalized: list | None = None):
+    """Execute the pipeline spec through ``run_experiment_pipeline`` with zero-second polls.
+
+    The run directory is the spec's experiment root; finalization calls are appended to ``finalized``."""
+    from agent_tools import experiment_pipeline
+
+    spec = yaml.safe_load(spec_path.read_text())
+    root = Path(next(iter(spec["checkpoint_sources"].values()))["plan"]).parents[1]
+    calls = [] if finalized is None else finalized
+    return experiment_pipeline.run_experiment_pipeline(
+        root,
+        spec_path,
+        unlock_final_test=True,
+        execute=True,
+        resume=resume,
+        poll_seconds=0,
+        finalize_callback=lambda run_dir, report: calls.append((Path(run_dir), Path(report))),
+        hooks=hooks,
+    )
+
+
+def dry_run_pipeline(root: Path, spec: dict):
+    """Write spec next to the run directory and return the pipeline's dry-run result."""
+    from agent_tools import experiment_pipeline
+
+    spec_path = root.parent / f"{spec['pipeline']['id']}.yaml"
+    spec_path.write_text(yaml.safe_dump(spec, sort_keys=False))
+    return experiment_pipeline.run_experiment_pipeline(root, spec_path)
+
+
+class FakePipelineRuntime:
+    """Process and runtime-probe effects for ``experiment_pipeline.PipelineHooks`` in tests.
+
+    ``monitor_runs`` only records the source plan it was asked to refresh. ``inspect_target`` returns one constant
+    execution snapshot. ``launch_runs`` commits each launchable run's terminal status as its launch script would,
+    under the run lock, with ``runtime_commit`` (the spec's by default), and for a successful run writes the
+    inference result tree that result verification expects. ``outcome(run)`` picks the terminal status, or ``None``
+    to leave the run launchable as a full GPU pool would, and ``metrics(run)`` the reported metrics. Every effect
+    is recorded in ``calls``."""
+
+    def __init__(self, spec: dict, *, outcome=None, metrics=None, runtime_commit: str | None = None):
+        self.spec = spec
+        self.outcome = outcome or (lambda _run: "completed")
+        self.metrics = metrics or (lambda _run: {"mae": 4.0})
+        self.runtime_commit = spec["runtime"]["runtime_commit"] if runtime_commit is None else runtime_commit
+        self.calls: list[tuple[str, list[str]]] = []
+
+    def hooks(self, **overrides):
+        from agent_tools import experiment_pipeline
+
+        effects = {
+            "monitor_runs": self.monitor_runs,
+            "inspect_target": self.inspect_target,
+            "launch_runs": self.launch_runs,
+            **overrides,
+        }
+        return experiment_pipeline.PipelineHooks(**effects)
+
+    def monitor_runs(self, plan_dir: Path, **_kwargs) -> Path:
+        self.calls.append(("monitor", [str(plan_dir)]))
+        return plan_dir
+
+    def inspect_target(self, execution: dict, runs: list[dict], **_kwargs) -> dict:
+        self.calls.append(("inspect", [str(run["run_id"]) for run in runs]))
+        return {"target": execution.get("target", "local"), "runtime_commit": execution["runtime_commit"]}
+
+    def launch_runs(self, root, _owner_dir, runs, _execution, _runtime, **_kwargs):
+        from types import SimpleNamespace
+
+        from agent_tools import managed_scheduler
+        from agent_tools.experiment_workspace import managed_run_key, merge_run_manifest, read_run_manifest
+
+        self.calls.append(("launch", [str(run["run_id"]) for run in runs]))
+        with managed_scheduler.managed_run_lock(root):
+            canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
+            updates = []
+            for run in runs:
+                row = canonical[managed_run_key(run)]
+                if (row.get("status") or "planned") not in managed_scheduler.LAUNCHABLE_STATUSES:
+                    continue
+                status = self.outcome(run)
+                if status is None:
+                    continue
+                if status == "completed":
+                    self._write_result(run)
+                updates.append({**row, "status": status, "runtime_commit": self.runtime_commit})
+            committed = merge_run_manifest(root, updates, lock_held=True) if updates else list(canonical.values())
+        return SimpleNamespace(committed_rows=committed)
+
+    def _write_result(self, run: dict) -> None:
+        # A cohort-phase job id ends with its template id.
+        job = next(job for job in self.spec["jobs"] if run["job_id"].split("--")[-1] == job["id"])
+        run_dir = Path(str(run["result_root"])) / "infer"
+        run_dir.mkdir(parents=True)
+        metrics_path = run_dir / "metrics.csv"
+        prediction_path = run_dir / "predictions.csv"
+        metrics = self.metrics(run)
+        metrics_path.write_text("metric,value\n" + "".join(f"{name},{value}\n" for name, value in metrics.items()))
+        prediction_path.write_text("prediction\n0.5\n")
+        manifest_path = run_dir / "run_manifest.json"
+        runtime = self.spec["runtime"]
+        manifest = {
+            "namespace": job["variant"],
+            "config_path": str(run["config"]),
+            "label_name": job["label_name"],
+            "eval_split": "test",
+            "checkpoint": {"input": run["checkpoint"], "resolved_path": run["checkpoint"], "avg_ckpts": 1},
+            "runtime": {
+                "inference_preset_path": job["inference_preset_path"],
+                "batch_size": runtime["batch_size"],
+                "accelerator": runtime["accelerator"],
+                "precision": runtime["precision"],
+                "devices": [0],
+            },
+            "paths": {
+                "run_dir": str(run_dir),
+                "metrics_csv_path": str(metrics_path),
+                "prediction_csv_path": str(prediction_path),
+                "manifest_path": str(manifest_path),
+            },
+            "prediction_row_count": 1,
+            "metrics": metrics,
+        }
+        manifest_path.write_text(json.dumps(manifest) + "\n")
