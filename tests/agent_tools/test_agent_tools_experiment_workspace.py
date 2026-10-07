@@ -23,7 +23,6 @@ from agent_tools import (
     experiment_io,
     experiment_workspace,
     experiments,
-    hparam,
     hparam_runtime,
     plans,
     run_artifacts,
@@ -412,7 +411,7 @@ def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     monkeypatch.setattr(hparam_runtime, "_start_process", lambda _execution, _command: "launched")
     monkeypatch.setattr(hparam_runtime, "_validated_execution_snapshot", lambda *_args, **_kwargs: (None, False))
-    hparam.launch_hparam_runs(plan_dir, dry_run=False)
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
     row = list(csv.DictReader((plan_dir / "launch_manifest.tsv").open(), delimiter="\t"))[0]
     pid_path = Path(row["pid_path"])
     identity = {"pid": 123, "process_group_id": 123, "process_start_token": "proc:unit-start"}
@@ -424,8 +423,8 @@ def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(hparam_runtime.evidence, "stop_process_group", lambda *_args: None)
 
     with pytest.raises(ValueError, match="reason"):
-        hparam.stop_hparam_run(plan_dir, "run-000", reason="")
-    status_path = hparam.stop_hparam_run(plan_dir, "run-000", reason="validation diverged")
+        hparam_runtime.stop_hparam_run(plan_dir, "run-000", reason="")
+    status_path = hparam_runtime.stop_hparam_run(plan_dir, "run-000", reason="validation diverged")
 
     assert "validation diverged" in status_path.read_text()
     assert "validation diverged" in (tmp_path / "events.jsonl").read_text()
