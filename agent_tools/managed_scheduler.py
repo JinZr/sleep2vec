@@ -210,22 +210,22 @@ class PlannedArgv(TypedDict):
 
 class ExecutionSnapshot(TypedDict, total=False):
     # External identity fields are passed through, including overrides of execution metadata.
-    target: Any
-    host: Any
-    workdir: Any
-    conda_env: Any
-    python_command: Any
-    expected_runtime_commit: Any
-    execution_env_sha256: Any
-    python: Any
-    python_version: Any
-    runtime_repo_root: Any
-    runtime_hostname: Any
-    module_origin: Any
+    target: JsonValue
+    host: JsonValue
+    workdir: JsonValue
+    conda_env: JsonValue
+    python_command: JsonValue
+    expected_runtime_commit: JsonValue
+    execution_env_sha256: JsonValue
+    python: JsonValue
+    python_version: JsonValue
+    runtime_repo_root: JsonValue
+    runtime_hostname: JsonValue
+    module_origin: JsonValue
     runtime_commit: str
     module: str
     required_options: list[str]
-    supported_options: list[Any]
+    supported_options: list[JsonValue]
     cli_options_sha256: str
     validated_argv_sha256: str
 
@@ -266,7 +266,7 @@ def managed_run_lock(workspace: str | Path):
         yield
 
 
-def gpu_groups(execution: Mapping[str, Any], runtime: Mapping[str, Any]) -> list[list[Any]]:
+def gpu_groups(execution: Mapping[str, JsonValue], runtime: Mapping[str, Any]) -> list[list[Any]]:
     groups, issues = gpu_rules.gpu_group_plan(execution, runtime)
     errors = [issue for issue in issues if not issue.warning]
     if errors:
@@ -355,7 +355,7 @@ def observe_runs(
 
 
 def capacity_state(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     runtime: Mapping[str, Any],
     expected_rows: Mapping[RunKey, Mapping[str, JsonValue]],
     workspace_rows: Mapping[RunKey, Mapping[str, JsonValue]],
@@ -442,7 +442,7 @@ def capacity_state(
 
 
 def shares_capacity(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     groups: list[list[Any]],
     row: Mapping[str, JsonValue],
 ) -> bool:
@@ -466,7 +466,7 @@ def launch_managed_runs(
     workspace: str | Path,
     owner_dir: str | Path,
     runs: Sequence[Mapping[str, JsonValue]],
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     runtime: Mapping[str, Any],
     *,
     dry_run: bool = True,
@@ -499,7 +499,7 @@ def _launch_managed_runs(
     workspace: Path,
     owner_dir: Path,
     runs: Sequence[Mapping[str, JsonValue]],
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     runtime: Mapping[str, Any],
     options: LaunchOptions,
 ) -> LaunchResult:
@@ -660,7 +660,7 @@ def _launch_managed_runs(
 
 def _prepare_direct_launch_rows(
     runs: Sequence[Mapping[str, JsonValue]],
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     refreshed: Mapping[RunKey, Mapping[str, JsonValue]],
     *,
     target: str,
@@ -773,7 +773,7 @@ def _refresh_external_capacity_runs(
     workspace_by_key: dict[RunKey, dict[str, str]],
     expected_keys: set[RunKey],
     groups: list[list[Any]],
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     dry_run: bool,
     hooks: SchedulerHooks,
 ) -> tuple[dict[RunKey, dict[str, str]], dict[RunKey, tuple[JsonValue, JsonValue]]]:
@@ -817,7 +817,7 @@ def _start_direct_launch_rows(
     rows: list[dict[str, JsonValue]],
     launchable: list[tuple[int, dict[str, JsonValue]]],
     capacity: CapacityState,
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     launch_identity_by_key: dict[RunKey, DirectLaunchIdentity],
     workspace_by_key: Mapping[RunKey, Mapping[str, JsonValue]],
     planned_by_key: Mapping[RunKey, Mapping[str, JsonValue]],
@@ -935,7 +935,7 @@ def _start_direct_launch_rows(
     return started_keys
 
 
-def _managed_scheduler_type(execution: Mapping[str, Any], runs: Sequence[Mapping[str, JsonValue]]) -> str:
+def _managed_scheduler_type(execution: Mapping[str, JsonValue], runs: Sequence[Mapping[str, JsonValue]]) -> str:
     scheduler = execution.get("scheduler") or {}
     if not isinstance(scheduler, dict):
         raise ValueError("execution.scheduler must be a mapping.")
@@ -1024,7 +1024,7 @@ def _launch_slurm_runs(
     workspace: Path,
     owner_dir: Path,
     runs: Sequence[Mapping[str, JsonValue]],
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     options: LaunchOptions,
 ) -> LaunchResult:
     snapshot_path, workspace_by_key = _preflight_slurm_launch(
@@ -1208,7 +1208,7 @@ def _launch_slurm_runs(
 
 
 def _slurm_execution_identity(
-    execution: Mapping[str, Any], run: Mapping[str, JsonValue], execution_snapshot_sha256: str | None = None
+    execution: Mapping[str, JsonValue], run: Mapping[str, JsonValue], execution_snapshot_sha256: str | None = None
 ) -> SlurmLaunchIdentity:
     target = str(execution.get("target", "local") or "local")
     inner = slurm.submission_command(
@@ -1256,7 +1256,7 @@ def _submitted_slurm_row(
 
 def _reconcile_slurm_submission(
     owner_dir: Path,
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     row: Mapping[str, str],
     cause: BaseException,
 ) -> tuple[dict[str, JsonValue], RuntimeError | None]:
@@ -1419,7 +1419,7 @@ class SlurmMonitorContext:
         return target, host
 
     def sidecar(
-        self, owner_dir: Path, execution: Mapping[str, Any], row: Mapping[str, str], field: str
+        self, owner_dir: Path, execution: Mapping[str, JsonValue], row: Mapping[str, str], field: str
     ) -> dict[str, JsonValue]:
         path = str(row[field])
         route = self._file_route(row)
@@ -1476,7 +1476,7 @@ class SlurmMonitorContext:
             return None
         return target, host, str(row["scheduler_cluster"]), topology == "true"
 
-    def active_job(self, execution: Mapping[str, Any], row: Mapping[str, str]) -> slurm.JobObservation | None:
+    def active_job(self, execution: Mapping[str, JsonValue], row: Mapping[str, str]) -> slurm.JobObservation | None:
         route = self._route(row)
         if route is None:
             return None
@@ -1501,7 +1501,7 @@ class SlurmMonitorContext:
 
 def observe_slurm_run(
     owner_dir: str | Path,
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     row: Mapping[str, str],
     *,
     health: bool = False,
@@ -1681,7 +1681,7 @@ def observe_slurm_run(
 def _observe_slurm_sidecars(
     *,
     owner: Path,
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     row: Mapping[str, str],
     terminal: Mapping[str, JsonValue],
     token: str,
@@ -1799,7 +1799,7 @@ def _slurm_sidecar_runtime_commit(payload: Mapping[str, Any]) -> str:
     return value
 
 
-def _read_slurm_json(owner_dir: Path, execution: Mapping[str, Any], path: str | Path) -> dict[str, JsonValue]:
+def _read_slurm_json(owner_dir: Path, execution: Mapping[str, JsonValue], path: str | Path) -> dict[str, JsonValue]:
     remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
     text = exp_io.read_managed_output_texts_at(owner_dir, [path], remote=remote)[str(path)]
     return _parse_slurm_json(text, path)
@@ -1866,11 +1866,11 @@ def _timestamp_age_seconds(value: Any) -> int | None:
 
 def validated_execution_snapshot(
     owner_dir: str | Path,
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     runs: Sequence[Mapping[str, JsonValue]],
     workspace_by_key: Mapping[RunKey, Mapping[str, JsonValue]],
     *,
-    inspector: Callable[[Mapping[str, Any], Sequence[Mapping[str, JsonValue]]], ExecutionSnapshot] | None = None,
+    inspector: Callable[[Mapping[str, JsonValue], Sequence[Mapping[str, JsonValue]]], ExecutionSnapshot] | None = None,
     plan_label: str = "managed",
 ) -> tuple[ExecutionSnapshot, bool]:
     root = Path(owner_dir)
@@ -1916,10 +1916,10 @@ def write_execution_snapshot_file(path: str | Path, snapshot: ExecutionSnapshot)
 
 
 def inspect_execution_target(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     runs: Sequence[Mapping[str, JsonValue]],
     *,
-    command_runner: Callable[[Mapping[str, Any], list[str]], subprocess.CompletedProcess] | None = None,
+    command_runner: Callable[[Mapping[str, JsonValue], list[str]], subprocess.CompletedProcess] | None = None,
     plan_label: str = "managed",
 ) -> ExecutionSnapshot:
     modules: set[str] = set()
@@ -2165,7 +2165,7 @@ def build_launch_command(
 
 
 def start_process(
-    execution: Mapping[str, Any],
+    execution: Mapping[str, JsonValue],
     command: str,
     *,
     retry_pre_spawn_failure: bool = True,

@@ -502,7 +502,7 @@ def ensure_initial_registry(root: Path, round_dir: Path, plan: Mapping[str, Any]
     exp_io.validate_managed_output_paths(root, [registry_path])
 
 
-def execution_route(execution: dict[str, Any]) -> dict[str, str]:
+def execution_route(execution: Mapping[str, JsonValue]) -> dict[str, str]:
     scheduler_value = execution.get("scheduler")
     scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
     scheduler_type = str(scheduler.get("type") or "direct")
