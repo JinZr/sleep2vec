@@ -30,7 +30,7 @@ def sh(value: Any) -> str:
     return shlex.quote(str(value))
 
 
-def ssh_argv(host: str, command: str) -> list[str]:
+def _ssh_argv(host: str, command: str) -> list[str]:
     return ["ssh", str(host), command]
 
 
@@ -59,7 +59,7 @@ def run_ssh(
         kwargs["check"] = check
     if timeout is not None:
         kwargs["timeout"] = timeout
-    return subprocess.run(ssh_argv(host, command), **kwargs)
+    return subprocess.run(_ssh_argv(host, command), **kwargs)
 
 
 def run_shell(
@@ -72,7 +72,7 @@ def run_shell(
     """Dispatching primitive: host -> ssh, None -> local bash -lc.
     swallow_timeout=True reproduces the evidence-probe semantics: a timeout is
     reported as returncode 124 instead of raising."""
-    argv = ssh_argv(host, command) if host else ["bash", "-lc", command]
+    argv = _ssh_argv(host, command) if host else ["bash", "-lc", command]
     try:
         return subprocess.run(argv, text=True, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:

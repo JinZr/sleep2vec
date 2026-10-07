@@ -83,17 +83,17 @@ def final_test_unlocked(evaluation: dict, unlock_final_test: bool = False) -> bo
     )
 
 
-def has_resolved_ckpt_path(recipe: dict) -> bool:
-    ckpt_path = resolved_ckpt_path(recipe)
+def _has_resolved_ckpt_path(recipe: dict) -> bool:
+    ckpt_path = _resolved_ckpt_path(recipe)
     return ckpt_path not in (None, "", "ASK_USER") and not str(ckpt_path).startswith("<")
 
 
-def final_script_allowed(
+def _final_script_allowed(
     recipe: dict,
     evaluation: dict,
     unlock_final_test: bool,
 ) -> bool:
-    return unlock_final_test or (final_test_unlocked(evaluation) and has_resolved_ckpt_path(recipe))
+    return unlock_final_test or (final_test_unlocked(evaluation) and _has_resolved_ckpt_path(recipe))
 
 
 def final_test_checkpoint_issues(
@@ -104,13 +104,13 @@ def final_test_checkpoint_issues(
 ) -> list[DecisionIssue]:
     evaluation_value = recipe.get("evaluation_policy")
     evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
-    if not unlock_final_test and not final_script_allowed(recipe, evaluation, unlock_final_test):
+    if not unlock_final_test and not _final_script_allowed(recipe, evaluation, unlock_final_test):
         return []
     issues: list[DecisionIssue] = []
     runtime_value = recipe.get("runtime")
     runtime = runtime_value if isinstance(runtime_value, dict) else {}
     avg_ckpts = runtime.get("avg_ckpts", 1)
-    ckpt_path = resolved_ckpt_path(recipe)
+    ckpt_path = _resolved_ckpt_path(recipe)
     if ckpt_path in (None, "", "ASK_USER") or str(ckpt_path).startswith("<"):
         return [
             DecisionIssue(
@@ -138,7 +138,7 @@ def final_test_checkpoint_issues(
             issues.append(ckpt_issue)
             if ckpt_issue.status == DecisionStatus.FAIL:
                 return issues
-    final_config = resolved_final_eval_config_path(recipe, None)
+    final_config = _resolved_final_eval_config_path(recipe, None)
     if has_yaml_search_overrides(recipe) and not has_explicit_final_eval_config(recipe):
         issues.append(
             DecisionIssue(
@@ -163,7 +163,7 @@ def final_test_checkpoint_issues(
             if config_issue.status == DecisionStatus.FAIL:
                 return issues
         try:
-            config_bytes = read_final_eval_config_bytes(recipe, final_config)
+            config_bytes = _read_final_eval_config_bytes(recipe, final_config)
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             issues.append(
                 DecisionIssue(
@@ -212,7 +212,7 @@ def final_test_checkpoint_issues(
                     {"final_eval_config_path": str(final_config), "preflight_before_workspace": True},
                 )
             )
-        drift_issue = final_eval_config_drift_issue(recipe)
+        drift_issue = _final_eval_config_drift_issue(recipe)
         if drift_issue is not None:
             issues.append(drift_issue)
     issues.extend(
@@ -295,7 +295,7 @@ def validate_hparam_run_configs(recipe: dict, run_configs: list[tuple[dict[str, 
         validated_configs.add(config_bytes)
 
 
-def read_final_eval_config_bytes(recipe: dict, config_path: Any) -> bytes:
+def _read_final_eval_config_bytes(recipe: dict, config_path: Any) -> bytes:
     context = path_context(recipe, config_path)
     validation = path_validation(recipe, context)
     if context == "remote":
@@ -326,12 +326,12 @@ def read_final_eval_config_bytes(recipe: dict, config_path: Any) -> bytes:
     return resolved.read_bytes()
 
 
-def final_eval_config_drift_issue(recipe: dict) -> DecisionIssue | None:
+def _final_eval_config_drift_issue(recipe: dict) -> DecisionIssue | None:
     snapshot = final_eval_config_snapshot(recipe)
     if snapshot is None:
         return None
     try:
-        current_bytes = read_final_eval_config_bytes(recipe, snapshot.get("source_path"))
+        current_bytes = _read_final_eval_config_bytes(recipe, snapshot.get("source_path"))
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         return DecisionIssue(
             DecisionStatus.FAIL,
@@ -469,20 +469,20 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
     return []
 
 
-def resolved_ckpt_path(recipe: dict) -> Any:
+def _resolved_ckpt_path(recipe: dict) -> Any:
     inputs_value = recipe.get("inputs")
     inputs = inputs_value if isinstance(inputs_value, dict) else {}
     return inputs.get("ckpt_path")
 
 
-def resolved_final_eval_config_path(recipe: dict, fallback: Any) -> Any:
+def _resolved_final_eval_config_path(recipe: dict, fallback: Any) -> Any:
     inputs_value = recipe.get("inputs")
     inputs = inputs_value if isinstance(inputs_value, dict) else {}
     return inputs.get("final_eval_config_path", fallback)
 
 
 def has_explicit_final_eval_config(recipe: dict) -> bool:
-    value = resolved_final_eval_config_path(recipe, None)
+    value = _resolved_final_eval_config_path(recipe, None)
     return value not in (None, "", "ASK_USER") and not str(value).startswith("<")
 
 
@@ -737,7 +737,7 @@ def hparam_run_layouts(recipe: dict[str, Any], out: Path, run_index_offset: int)
 def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | None:
     evaluation_value = recipe.get("evaluation_policy")
     evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
-    if not final_script_allowed(recipe, evaluation, False):
+    if not _final_script_allowed(recipe, evaluation, False):
         return None
     execution_value = recipe.get("execution")
     execution = execution_value if isinstance(execution_value, dict) else {}
@@ -756,7 +756,7 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
             "--config",
             config_path,
             "--ckpt-path",
-            resolved_ckpt_path(recipe),
+            _resolved_ckpt_path(recipe),
             "--label-name",
             inputs.get("label_name"),
             "--eval-split",
@@ -793,12 +793,12 @@ def apply_search_overrides(config: dict[str, Any], combo: dict[str, Any]) -> Non
 
 
 def set_json_pointer(config: Any, pointer: str, value: Any) -> None:
-    parts = json_pointer_parts(pointer)
+    parts = _json_pointer_parts(pointer)
     if not parts:
         raise ValueError("YAML override pointer must not target the document root.")
     parent = config
     for part in parts[:-1]:
-        parent = json_pointer_child(parent, part)
+        parent = _json_pointer_child(parent, part)
     last = parts[-1]
     if isinstance(parent, dict):
         if last not in parent:
@@ -816,7 +816,7 @@ def set_json_pointer(config: Any, pointer: str, value: Any) -> None:
     raise TypeError(f"YAML override parent is not indexable: {pointer}")
 
 
-def json_pointer_child(parent: Any, part: str) -> Any:
+def _json_pointer_child(parent: Any, part: str) -> Any:
     if isinstance(parent, dict):
         if part not in parent:
             raise KeyError(f"YAML override path component does not exist: {part}")
@@ -831,7 +831,7 @@ def json_pointer_child(parent: Any, part: str) -> Any:
     raise TypeError(f"YAML override parent is not indexable: {part}")
 
 
-def json_pointer_parts(pointer: str) -> list[str]:
+def _json_pointer_parts(pointer: str) -> list[str]:
     if not pointer.startswith("/"):
         raise ValueError(f"YAML override must be a JSON Pointer: {pointer}")
     if re.search(r"~(?![01])", pointer):
@@ -937,7 +937,7 @@ def write_hparam_plan(
     inputs_value = recipe.get("inputs")
     inputs = inputs_value if isinstance(inputs_value, dict) else {}
     evaluation = recipe.get("evaluation_policy") or {}
-    final_allowed = final_script_allowed(recipe, evaluation, False)
+    final_allowed = _final_script_allowed(recipe, evaluation, False)
     frozen_final_eval_config = out / FROZEN_FINAL_EVAL_CONFIG_NAME
     write_frozen_final_eval_config = physical_out / FROZEN_FINAL_EVAL_CONFIG_NAME
     bound_final_config: tuple[dict[str, Any], bytes, str] | None = None

@@ -177,7 +177,7 @@ def status_row(
     except ProcessIdentityError as exc:
         # Corrupt, incomplete, or reused identity is confirmed unsafe evidence, not a transient probe failure.
         observed_status = previous.get("status") or row.get("status") or "missing_pid"
-        pid = to_int(previous.get("pid") or row.get("pid"))
+        pid = _to_int(previous.get("pid") or row.get("pid"))
         running_state = None
         process_identity_error = str(exc)
         if observed_status not in TERMINAL_STATUSES:
@@ -186,7 +186,7 @@ def status_row(
         observed_status = previous.get("status") or row.get("status") or "missing_pid"
         if not is_remote_row(row) and observed_status in {"planned", "pending"} and isinstance(exc.__cause__, OSError):
             raise
-        pid = to_int(previous.get("pid") or row.get("pid"))
+        pid = _to_int(previous.get("pid") or row.get("pid"))
         running_state = None
         if is_remote_row(row):
             observed_status = "unknown_remote"
@@ -744,7 +744,7 @@ def log_tail_and_age(path: Any, row: dict[str, Any], lines: int = 8) -> tuple[st
         text = stdout.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
         stderr.decode(encoding)  # Preserve the original text subprocess's strict decoding, including stderr.
         outputs.append(text.strip() if returncode == 0 else "")
-    return outputs[0], to_int(outputs[1])
+    return outputs[0], _to_int(outputs[1])
 
 
 def health_fields(
@@ -760,8 +760,8 @@ def health_fields(
     io_counts = proc_io(row, pid)
     read_bytes = io_counts.get("read_bytes")
     write_bytes = io_counts.get("write_bytes")
-    read_delta = delta(read_bytes, previous.get("io_read_bytes"))
-    write_delta = delta(write_bytes, previous.get("io_write_bytes"))
+    read_delta = _delta(read_bytes, previous.get("io_read_bytes"))
+    write_delta = _delta(write_bytes, previous.get("io_write_bytes"))
     log_age = log_age_seconds(row.get("log_path"), row)
     gpu = gpu_summary(row, pid)
     checkpoint_count = len(checkpoints) if checkpoints is not None else None
@@ -775,7 +775,7 @@ def health_fields(
         progress_is_fresh=progress_is_fresh(progress, previous),
         log_age_seconds=log_age,
         checkpoint_count=checkpoint_count,
-        previous_checkpoint_count=to_int(previous.get("checkpoint_count")),
+        previous_checkpoint_count=_to_int(previous.get("checkpoint_count")),
     )
     return {
         "health_status": health_status,
@@ -833,13 +833,13 @@ def gpu_summary(row: dict[str, Any], pid: int | None) -> str | None:
     app_rows = []
     for line in apps.stdout.splitlines():
         parts = [part.strip() for part in line.split(",")]
-        app_pid = to_int(parts[0]) if parts else None
+        app_pid = _to_int(parts[0]) if parts else None
         if app_pid is not None:
             app_rows.append((app_pid, line.strip()))
     if not app_rows:
         return ""
     managed_pids = {pid}
-    process_group_id = to_int(row.get("process_group_id"))
+    process_group_id = _to_int(row.get("process_group_id"))
     if process_group_id is not None:
         processes = run_row_command(row, "ps -eo pid=,pgid=")
         if processes.returncode == 0:
@@ -847,8 +847,8 @@ def gpu_summary(row: dict[str, Any], pid: int | None) -> str | None:
                 parts = line.split()
                 if len(parts) != 2:
                     continue
-                process_pid = to_int(parts[0])
-                process_pgid = to_int(parts[1])
+                process_pid = _to_int(parts[0])
+                process_pgid = _to_int(parts[1])
                 if process_pid is not None and process_pgid == process_group_id:
                     managed_pids.add(process_pid)
         elif not any(app_pid == pid for app_pid, _line in app_rows):
@@ -877,7 +877,7 @@ def log_age_seconds(path: Any, row: dict[str, Any]) -> int | None:
         )
         if result.returncode != 0:
             return None
-        return to_int(result.stdout.strip())
+        return _to_int(result.stdout.strip())
     log_path = Path(str(path))
     if not log_path.exists():
         return None
@@ -934,14 +934,14 @@ def classify_health(
     return "possibly_stalled"
 
 
-def delta(current: int | None, previous: Any) -> int | None:
-    old = to_int(previous)
+def _delta(current: int | None, previous: Any) -> int | None:
+    old = _to_int(previous)
     if current is None or old is None:
         return None
     return max(int(current) - old, 0)
 
 
-def to_int(value: Any) -> int | None:
+def _to_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
     try:
@@ -953,8 +953,8 @@ def to_int(value: Any) -> int | None:
 def progress_is_fresh(progress: dict[str, Any], previous: dict[str, Any]) -> bool:
     if progress.get("status") != "running":
         return False
-    processed = to_int(progress.get("processed"))
-    previous_processed = to_int(previous.get("progress_processed"))
+    processed = _to_int(progress.get("processed"))
+    previous_processed = _to_int(previous.get("progress_processed"))
     if processed is not None and previous_processed is not None and processed > previous_processed:
         return True
     age = progress_age_seconds(progress)
