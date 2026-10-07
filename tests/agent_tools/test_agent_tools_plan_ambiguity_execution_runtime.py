@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -628,6 +629,30 @@ def test_collect_runs_only_reads_managed_manifest_paths(tmp_path: Path):
     assert rows[0]["score"] == "0.8"
     assert "runtime-version" not in output.read_text()
     assert "historical-version" not in output.read_text()
+
+
+def test_collect_runs_reads_canonical_rows_only_under_run_lock(tmp_path: Path, monkeypatch):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    (tmp_path / "run_manifest.tsv").write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tfailed\n")
+    output = tmp_path / "collected.csv"
+    read = plans.read_run_manifest
+    reads = []
+
+    # The output alias check stats run_manifest.tsv before the read, so probe the lock at the read itself.
+    def read_locked_manifest(root):
+        with (root / "run_manifest.tsv.lock").open("a+") as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        reads.append(root)
+        return read(root)
+
+    monkeypatch.setattr(plans, "read_run_manifest", read_locked_manifest)
+
+    collect_runs(tmp_path, None, output)
+
+    assert reads == [tmp_path]
+    with output.open(newline="") as file_obj:
+        assert [row["run_id"] for row in csv.DictReader(file_obj)] == ["run-000"]
 
 
 def test_collect_runs_rejects_invalid_runtime_manifest_without_overwriting_output(tmp_path: Path):

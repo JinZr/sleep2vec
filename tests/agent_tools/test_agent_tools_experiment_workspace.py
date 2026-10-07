@@ -2520,6 +2520,34 @@ def test_plan_registration_reads_canonical_rows_only_under_run_lock(tmp_path: Pa
     assert state == "present"
 
 
+@pytest.mark.parametrize("reader", ["ensure_workspace", "next_run_index"])
+def test_planning_reads_canonical_rows_only_under_run_lock(tmp_path: Path, monkeypatch, reader: str):
+    root = tmp_path / "workspace"
+    recipe = {
+        "experiment": {
+            "id": "unit",
+            "title": "Unit experiment",
+            "objective": "Exercise planning reads under the run lock.",
+            "root": str(root),
+            "baseline": {"type": "none"},
+        },
+        "step": {"id": "prepare", "phase": "prepare", "purpose": "Prepare a plan."},
+    }
+    plan_dir = root / "steps" / "prepare" / "plan"
+    ensure_experiment_workspace(recipe, plan_dir)
+    merge_run_manifest(
+        root, [{"experiment_id": "unit", "step_id": "prepare", "run_id": "run-000", "status": "planned"}]
+    )
+    readers = {
+        "ensure_workspace": lambda: ensure_experiment_workspace(recipe, plan_dir, validate_only=True),
+        "next_run_index": lambda: experiment_workspace.next_run_index(recipe),
+    }
+
+    result = call_while_run_lock_holder_commits(monkeypatch, root, readers[reader])
+
+    assert result == (1 if reader == "next_run_index" else (root, root / "steps" / "prepare"))
+
+
 def _slurm_identity(tmp_path: Path) -> dict[str, str]:
     return {
         "scheduler_type": "slurm",

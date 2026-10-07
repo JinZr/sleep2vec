@@ -23,6 +23,8 @@ from . import (
     checkpoint_test_results,
     experiment_io as exp_io,
     experiment_tracking as tracking,
+    hparam_runtime,
+    managed_scheduler,
     plan_contract,
     run_artifacts as artifacts,
     run_evidence as evidence,
@@ -119,7 +121,7 @@ def resolve_hparam_candidates(
         raise ValueError("top_k must be a positive integer.")
     validate_managed_run_rows(candidate_rows, source="selected candidates", cardinality="one_per_run")
     root = Path(run_dir)
-    plan = artifacts.read_hparam_plan(root)
+    plan = hparam_runtime.read_hparam_plan_under_run_lock(root)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     evaluation_value = recipe.get("evaluation_policy")
@@ -133,24 +135,25 @@ def resolve_hparam_candidates(
     step_value = recipe.get("step")
     step = step_value if isinstance(step_value, dict) else {}
     step_id = str(step.get("id") or "")
-    workspace_rows = read_run_manifest(workspace)
-    workspace_by_key = {validated_run_key(run): run for run in workspace_rows}
-
     owner_runs_by_key = {}
     owner_plans_by_key: dict[tuple[str, str], plan_contract.HparamPlan] = {}
-    for _registered_root, owner_plan in artifacts.iter_registered_hparam_plans(
-        workspace,
-        step_id,
-        selection_metric=selection_metric,
-        selection_mode=selection_mode,
-        selection_split=selection_split,
-    ):
-        for run in owner_plan["runs"]:
-            key = validated_run_key(run)
-            if key in owner_runs_by_key:
-                raise ValueError(f"Managed run is owned by multiple registered hparam plans: {key[0]} / {key[1]}")
-            owner_runs_by_key[key] = run
-            owner_plans_by_key[key] = owner_plan
+    # Registered plans validate their rows against run_manifest.tsv as they are read.
+    with managed_scheduler.managed_run_lock(workspace):
+        workspace_rows = read_run_manifest(workspace)
+        for _registered_root, owner_plan in artifacts.iter_registered_hparam_plans(
+            workspace,
+            step_id,
+            selection_metric=selection_metric,
+            selection_mode=selection_mode,
+            selection_split=selection_split,
+        ):
+            for run in owner_plan["runs"]:
+                key = validated_run_key(run)
+                if key in owner_runs_by_key:
+                    raise ValueError(f"Managed run is owned by multiple registered hparam plans: {key[0]} / {key[1]}")
+                owner_runs_by_key[key] = run
+                owner_plans_by_key[key] = owner_plan
+    workspace_by_key = {validated_run_key(run): run for run in workspace_rows}
 
     active_runs = []
     for key, run in owner_runs_by_key.items():
@@ -386,7 +389,7 @@ def _preflight_hparam_selection(
     mode: str | None = None,
 ) -> _HparamSelectionInputs:
     root = Path(run_dir)
-    plan = artifacts.read_hparam_plan(root)
+    plan = hparam_runtime.read_hparam_plan_under_run_lock(root)
     plan_run_keys = {managed_run_key(run) for run in plan["runs"]}
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
@@ -421,7 +424,8 @@ def _preflight_hparam_selection(
         raise ValueError("Invalid active experiment owner: " + "; ".join(issue["message"] for issue in active_issues))
     validate_existing_experiment_manifest(experiment_manifest_text, recipe["experiment"], workspace)
     # Keep the canonical snapshot invocation-local; publication rereads it after the first manifest merge.
-    canonical_rows = read_run_manifest(workspace)
+    with managed_scheduler.managed_run_lock(workspace):
+        canonical_rows = read_run_manifest(workspace)
     canonical_by_key = {managed_run_key(row): row for row in canonical_rows}
     step_id = str((recipe.get("step") or {}).get("id") or "")
     out = workspace / "reports" / "ranking.csv"
@@ -456,15 +460,16 @@ def _preflight_hparam_selection(
         if len(policies) != 1:
             raise ValueError(f"Canonical hparam rows disagree on selection policy: {selected_step_id}")
         selected_metric, selected_mode, selected_split = next(iter(policies))
-        registered = list(
-            artifacts.iter_registered_hparam_plans(
-                workspace,
-                selected_step_id,
-                selection_metric=selected_metric,
-                selection_mode=selected_mode,
-                selection_split=selected_split,
+        with managed_scheduler.managed_run_lock(workspace):
+            registered = list(
+                artifacts.iter_registered_hparam_plans(
+                    workspace,
+                    selected_step_id,
+                    selection_metric=selected_metric,
+                    selection_mode=selected_mode,
+                    selection_split=selected_split,
+                )
             )
-        )
         if not registered:
             raise ValueError(f"Selected hparam step has no registered plan: {selected_step_id}")
         if selected_split == "test":
@@ -490,15 +495,16 @@ def _preflight_hparam_selection(
     step_runs = []
     evidence_runs_by_key = {}
     plan_root_by_key = {}
-    current_registered = list(
-        artifacts.iter_registered_hparam_plans(
-            workspace,
-            step_id,
-            selection_metric=metric,
-            selection_mode=mode,
-            selection_split=selection_split,
+    with managed_scheduler.managed_run_lock(workspace):
+        current_registered = list(
+            artifacts.iter_registered_hparam_plans(
+                workspace,
+                step_id,
+                selection_metric=metric,
+                selection_mode=mode,
+                selection_split=selection_split,
+            )
         )
-    )
     for registered_root, registered_plan in current_registered:
         registered_recipe_value = registered_plan.get("recipe")
         registered_recipe = registered_recipe_value if isinstance(registered_recipe_value, dict) else {}
@@ -895,7 +901,8 @@ def _commit_hparam_selection(selection: _HparamSelectionBuild) -> Path:
             for row in selection.unscored_rows
         ],
     )
-    selected_rows = read_run_manifest(selection.workspace)
+    with managed_scheduler.managed_run_lock(selection.workspace):
+        selected_rows = read_run_manifest(selection.workspace)
     report_steps = _selection_report_steps(
         [row for row in selected_rows if managed_run_key(row) in selection.report_run_keys]
     )
@@ -1315,13 +1322,14 @@ def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_
     a write failure may leave a partial ranking.
     """
     root = Path(run_dir)
-    plan = artifacts.read_hparam_plan(root)
+    plan = hparam_runtime.read_hparam_plan_under_run_lock(root)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    canonical_rows = read_run_manifest(workspace)
+    with managed_scheduler.managed_run_lock(workspace):
+        canonical_rows = read_run_manifest(workspace)
     out = root / "checkpoint_ranking.csv"
     exp_io.validate_managed_output_paths(root, [out])
     existing_ranked = read_rows(out, require_managed_identity=True)

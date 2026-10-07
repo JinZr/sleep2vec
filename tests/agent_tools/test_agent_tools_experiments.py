@@ -8,9 +8,10 @@ import subprocess
 import sys
 import threading
 
+from agent_tool_test_helpers import call_while_run_lock_holder_commits
 import pytest
 
-from agent_tools import experiment_io, experiment_workspace, experiments
+from agent_tools import experiment_io, experiment_tracking, experiment_workspace, experiments
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -37,7 +38,12 @@ def _experiment_spec(tmp_path: Path) -> Path:
 
 
 def _workspace_files(root: Path) -> dict[Path, bytes]:
-    return {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    # Workspace reads take the run lock, which creates the empty lock file; it holds no state.
+    return {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file() and path != root / "run_manifest.tsv.lock"
+    }
 
 
 def _research_entry(
@@ -874,6 +880,36 @@ def test_experiment_registers_step_and_finalizes_completed_workspace(tmp_path: P
     assert len(prepared) == 1
     assert prepared[0]["report"] == str(tmp_path / "reports" / "final.md")
     assert "experiment_finalized" not in {event["event_type"] for event in events}
+
+
+@pytest.mark.parametrize("reader", ["status", "finalize_snapshot", "run_rows", "checkpoint_rows"])
+def test_experiment_commands_read_canonical_rows_only_under_run_lock(tmp_path: Path, monkeypatch, reader: str):
+    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
+    # Status needs registered steps and checkpoint scans need artifact paths, so those keep the empty manifest.
+    if reader in {"finalize_snapshot", "run_rows"}:
+        (tmp_path / "run_manifest.tsv").write_text(
+            "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tcompleted\n"
+        )
+    report = tmp_path.parent / "final.md"
+    report.write_text("# Final\n\nValidation-selected result.\n")
+    if reader == "finalize_snapshot":
+        # The harness races only the first manifest read, so skip the rows read that precedes the snapshot.
+        rows = experiment_workspace.read_run_manifest(tmp_path)
+        monkeypatch.setattr(experiments, "_finalizable_rows", lambda _root, *, remote: rows)
+    readers = {
+        "status": lambda: experiments.experiment_status(tmp_path, remote=None)["runs"],
+        "finalize_snapshot": lambda: experiments.finalize_experiment(tmp_path, report),
+        "run_rows": lambda: experiment_tracking.experiment_run_rows(tmp_path),
+        "checkpoint_rows": lambda: experiment_tracking.checkpoint_rows(tmp_path),
+    }
+
+    result = call_while_run_lock_holder_commits(monkeypatch, tmp_path, readers[reader])
+
+    if reader == "finalize_snapshot":
+        assert result == tmp_path / "reports" / "final.md"
+        assert "status: completed" in (tmp_path / "experiment.yaml").read_text()
+    else:
+        assert [row["run_id"] for row in result] == (["run-000"] if reader == "run_rows" else [])
 
 
 def test_experiment_finalize_records_preparation_before_manifest_conflict(tmp_path: Path, monkeypatch):

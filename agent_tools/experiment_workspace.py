@@ -761,7 +761,11 @@ def ensure_experiment_workspace(
     workspace_rows = []
     if manifest_exists:
         validate_existing_experiment_manifest(manifest_path.read_text(), experiment, root)
-        workspace_rows = read_run_manifest(root)
+        # managed_scheduler imports this module; planning callers hold only the registration/publication locks.
+        from . import managed_scheduler
+
+        with managed_scheduler.managed_run_lock(root):
+            workspace_rows = read_run_manifest(root)
         for row in workspace_rows:
             if row["experiment_id"] != experiment["id"]:
                 raise ValueError("run_manifest.tsv contains a run owned by a different experiment.")
@@ -987,7 +991,11 @@ def next_run_index(recipe: dict[str, Any]) -> int:
         return 0
     step_id = str((recipe.get("step") or {}).get("id") or "")
     indices = []
-    rows = read_run_manifest(root)
+    # managed_scheduler imports this module; planning callers hold only the registration/publication locks.
+    from . import managed_scheduler
+
+    with managed_scheduler.managed_run_lock(root):
+        rows = read_run_manifest(root)
     for row in rows:
         if str(row.get("step_id") or "") != step_id:
             continue

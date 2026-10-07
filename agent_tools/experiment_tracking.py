@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 import csv
 import io
 import json
@@ -329,7 +330,9 @@ def wandb_run_observations(
 
 
 def experiment_run_rows(root: Path, *, remote: str | None = None) -> list[dict[str, Any]]:
-    return read_run_manifest(root, remote=remote)
+    # SSH reads use the remote workspace, whose run lock this process cannot take.
+    with nullcontext() if remote else managed_scheduler.managed_run_lock(root):
+        return read_run_manifest(root, remote=remote)
 
 
 def managed_metric_rows(
@@ -370,7 +373,8 @@ def managed_metric_rows(
 def checkpoint_rows(root: Path, *, remote: str | None = None) -> list[experiment_sources.CheckpointObservation]:
     previous_rows = exp_io.read_rows_at(root / "checkpoint_manifest.tsv", remote=remote, require_managed_identity=True)
     validate_managed_run_rows(previous_rows, source="checkpoint_manifest.tsv", cardinality="many_per_run")
-    runs = read_run_manifest(root, remote=remote)
+    with nullcontext() if remote else managed_scheduler.managed_run_lock(root):
+        runs = read_run_manifest(root, remote=remote)
     eligible_runs = []
     for run in runs:
         if "runtime_dir" not in run or "checkpoint_dir" not in run:

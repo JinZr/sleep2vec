@@ -26,7 +26,16 @@ from test_agent_tools_hparam_runtime import (
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
 
-from agent_tools import experiments, hparam_runtime, manifests, run_artifacts, run_evidence, slurm, transport
+from agent_tools import (
+    experiments,
+    hparam_runtime,
+    manifests,
+    plan_hparam,
+    run_artifacts,
+    run_evidence,
+    slurm,
+    transport,
+)
 from agent_tools.experiment_workspace import EXECUTION_IDENTITY_FIELDS, MONITOR_EXIT_CODE_PREFIX, merge_run_manifest
 
 
@@ -459,6 +468,28 @@ def test_hparam_plan_reads_workspace_state_only_under_run_lock(tmp_path: Path, m
     )
 
     assert plan == run_artifacts.read_hparam_plan(plan_dir)
+
+
+def test_hparam_plan_commit_rereads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr
+    plan = run_artifacts.read_hparam_plan(plan_dir)
+    # Skip the registration reads and merge before the final full read, which the harness then races.
+    monkeypatch.setattr(
+        plan_hparam, "_hparam_registration_state", lambda _plan: (tmp_path, plan_hparam.hparam_manifest_rows(plan))
+    )
+    monkeypatch.setattr(plan_hparam, "ensure_experiment_workspace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(plan_hparam, "merge_run_manifest", lambda *_args, **_kwargs: None)
+
+    committed = call_while_run_lock_holder_commits(
+        monkeypatch,
+        tmp_path,
+        lambda: plan_hparam.commit_hparam_plan(plan_dir, emit_event=False, preflight_validated=True),
+    )
+
+    assert committed["runs"] == plan["runs"]
 
 
 def test_remote_stop_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
