@@ -15,7 +15,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import call_while_run_lock_holder_commits, write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
@@ -2503,6 +2503,21 @@ def test_plan_registration_accepts_canonical_execution_identity_fill(tmp_path: P
     )
 
     assert experiment_workspace.plan_registration_rows_state(tmp_path, [expected], source="unit plan") == "present"
+
+
+def test_plan_registration_reads_canonical_rows_only_under_run_lock(tmp_path: Path, monkeypatch):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    expected = {"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}
+    merge_run_manifest(tmp_path, [expected])
+
+    state = call_while_run_lock_holder_commits(
+        monkeypatch,
+        tmp_path,
+        lambda: experiment_workspace.plan_registration_rows_state(tmp_path, [expected], source="unit plan"),
+    )
+
+    assert state == "present"
 
 
 def _slurm_identity(tmp_path: Path) -> dict[str, str]:

@@ -107,7 +107,12 @@ def _snapshot(execution: dict, runs: list[dict]) -> dict:
 
 
 def _workspace_files(workspace: Path) -> dict[Path, bytes]:
-    return {path.relative_to(workspace): path.read_bytes() for path in workspace.rglob("*") if path.is_file()}
+    # Registration reads run_manifest.tsv under the run lock, which creates the empty lock file; it holds no state.
+    return {
+        path.relative_to(workspace): path.read_bytes()
+        for path in workspace.rglob("*")
+        if path.is_file() and path != workspace / "run_manifest.tsv.lock"
+    }
 
 
 def _staging_dirs(workspace: Path, plan_dir: Path) -> list[Path]:

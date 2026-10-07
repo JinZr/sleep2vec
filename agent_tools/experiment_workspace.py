@@ -1155,7 +1155,14 @@ def plan_registration_rows_state(
     validate_managed_run_rows(expected_rows, source=source, cardinality="one_per_run")
     # Explicit validation and read_run_manifest require non-blank managed identities.
     expected_by_key = {cast(tuple[str, str], managed_run_key(row)): row for row in expected_rows}
-    existing_rows = read_run_manifest(root) if exp_io.path_exists_at(root / "run_manifest.tsv") else []
+    existing_rows: list[dict[str, str]] = []
+    if exp_io.path_exists_at(root / "run_manifest.tsv"):
+        # managed_scheduler imports this module. Launches and run scripts replace run_manifest.tsv under the
+        # run lock; registration callers hold only the plan registration/publication locks, which order first.
+        from . import managed_scheduler
+
+        with managed_scheduler.managed_run_lock(root):
+            existing_rows = read_run_manifest(root)
     canonical_by_key = {cast(tuple[str, str], managed_run_key(row)): row for row in existing_rows}
     present_keys = set(expected_by_key) & set(canonical_by_key)
     if present_keys and len(present_keys) != len(expected_by_key):

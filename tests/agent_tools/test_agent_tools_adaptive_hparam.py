@@ -153,7 +153,7 @@ def test_adaptive_retirement_skips_slurm_run_with_verified_terminal_sidecar(tmp_
     monkeypatch.setattr(
         adaptive_hparam.artifacts,
         "read_hparam_plan",
-        lambda _round_dir: {"recipe": {"experiment": {"root": str(tmp_path)}}, "runs": [run]},
+        lambda _round_dir, **_kwargs: {"recipe": {"experiment": {"root": str(tmp_path)}}, "runs": [run]},
     )
     monkeypatch.setattr(adaptive_replacement, "read_run_manifest", lambda _workspace: [run])
     monkeypatch.setattr(adaptive_replacement, "_latest_incumbent_score", lambda _root: 1.0)

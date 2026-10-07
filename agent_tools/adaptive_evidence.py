@@ -20,6 +20,7 @@ from . import (
     adaptive_proposals,
     checkpoint_test_results,
     experiment_sources,
+    managed_scheduler,
     plan_rendering,
     run_artifacts as artifacts,
     run_evidence as evidence,
@@ -35,16 +36,19 @@ def digest_rows(
     *,
     read_run_manifest: Callable[[Path], list[dict[str, str]]],
 ) -> list[dict[str, Any]]:
-    plan = artifacts.read_hparam_plan(round_dir)
+    # Launches and run scripts replace run_manifest.tsv under the run lock; runtime evidence below may be read over
+    # SSH, so only the plan and manifest reads hold it. No adaptive caller holds the run lock here.
+    with managed_scheduler.managed_run_lock(workspace):
+        plan = artifacts.read_hparam_plan(round_dir)
+        plan_keys = {managed_run_key(run) for run in plan.get("runs", [])}
+        status_rows = {
+            managed_run_key(row): row for row in read_run_manifest(workspace) if managed_run_key(row) in plan_keys
+        }
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     evaluation_value = recipe.get("evaluation_policy")
     evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     selection_split = str(evaluation.get("selection_split") or "")
-    plan_keys = {managed_run_key(run) for run in plan.get("runs", [])}
-    status_rows = {
-        managed_run_key(row): row for row in read_run_manifest(workspace) if managed_run_key(row) in plan_keys
-    }
     rows = []
     for run in plan.get("runs", []):
         run_id = str(run["run_id"])

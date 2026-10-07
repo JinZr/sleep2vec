@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from agent_tool_test_helpers import call_while_run_lock_holder_commits
 import pytest
 import yaml
 
 from agent_tools import (
+    adaptive_evidence,
     adaptive_hparam,
     adaptive_replacement,
     adaptive_state,
@@ -15,7 +17,7 @@ from agent_tools import (
     managed_scheduler,
     manifests,
 )
-from agent_tools.experiment_workspace import merge_run_manifest
+from agent_tools.experiment_workspace import managed_run_key, merge_run_manifest, read_run_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _read_table, _run, _write_fake_manifest
 
@@ -104,6 +106,59 @@ def test_execute_supersedes_canonical_pending_run_and_prevents_old_round_launch(
     hparam_runtime.launch_hparam_runs(round_dir, dry_run=False)
 
     assert started == []
+
+
+@pytest.mark.parametrize(
+    "reader",
+    [
+        "workflow_payload",
+        "committed_rounds",
+        "round_is_terminal",
+        "reconcile_interrupted_launch",
+        "uncommitted_launch_attempts",
+        "supersede_pending_runs",
+        "digest_rows",
+    ],
+)
+def test_adaptive_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch, reader: str):
+    recipe = _adaptive_recipe(tmp_path, max_rounds=3)
+    workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
+    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
+    run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
+    workflow = json.loads((workflow_dir / "adaptive" / "workflow.json").read_text())
+    calls = {
+        # Skipping the commit check makes this payload's own locked read the first canonical read.
+        "workflow_payload": lambda: adaptive_state.validate_workflow_payload(
+            workflow_dir, workflow, require_adaptive_commit=False
+        ),
+        "committed_rounds": lambda: adaptive_state.committed_round_indexes(workflow_dir),
+        "round_is_terminal": lambda: adaptive_state.round_is_terminal(
+            round_dir, tmp_path, read_run_manifest=read_run_manifest
+        ),
+        "reconcile_interrupted_launch": lambda: adaptive_state.reconcile_interrupted_launch(
+            tmp_path, round_dir, {managed_run_key(run)}
+        ),
+        "uncommitted_launch_attempts": lambda: adaptive_state.uncommitted_launch_attempts(workflow_dir, tmp_path),
+        "supersede_pending_runs": lambda: adaptive_replacement._supersede_pending_runs(workflow_dir, round_dir),
+        "digest_rows": lambda: adaptive_evidence.digest_rows(
+            round_dir, 0, tmp_path, {"metric": "test_auroc", "mode": "max"}, read_run_manifest=read_run_manifest
+        ),
+    }
+
+    result = call_while_run_lock_holder_commits(monkeypatch, tmp_path, calls[reader])
+
+    expected = {
+        "workflow_payload": workflow,
+        "committed_rounds": {0},
+        "round_is_terminal": False,
+        "reconcile_interrupted_launch": (read_run_manifest(tmp_path), set(), set()),
+        "uncommitted_launch_attempts": ([], []),
+        "supersede_pending_runs": [managed_run_key(run)],
+    }
+    if reader == "digest_rows":
+        assert [(row["run_id"], row["status"]) for row in result] == [(run["run_id"], "planned")]
+    else:
+        assert result == expected[reader]
 
 
 def test_supersede_uses_canonical_status_and_repairs_stale_round_mirrors(tmp_path: Path):

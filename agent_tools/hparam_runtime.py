@@ -17,6 +17,7 @@ from typing import Any
 from . import (
     experiment_io as exp_io,
     managed_scheduler as scheduler,
+    plan_contract,
     plan_hparam,
     run_artifacts as artifacts,
     run_evidence as evidence,
@@ -42,6 +43,20 @@ from .manifests import utc_now, write_rows
 
 LAUNCH_TIMEOUT_SECONDS = scheduler.LAUNCH_TIMEOUT_SECONDS
 EXECUTION_SNAPSHOT_NAME = scheduler.EXECUTION_SNAPSHOT_NAME
+
+
+def read_hparam_plan_under_run_lock(run_dir: Path) -> plan_contract.HparamPlan:
+    """Return the fully validated hparam plan, reading workspace state under the workspace run lock.
+
+    The frozen-plan read only locates the workspace. Launches, stops and run
+    scripts replace run_manifest.tsv under the run lock, so the full read holds
+    it. The caller must not already hold that lock: it is not reentrant.
+    """
+    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False, require_adaptive_commit=False)
+    workspace = experiment_root(plan["recipe"])
+    assert workspace is not None  # read_hparam_plan rejects a plan without experiment.root.
+    with scheduler.managed_run_lock(workspace):
+        return artifacts.read_hparam_plan(run_dir)
 
 
 def launch_hparam_runs(

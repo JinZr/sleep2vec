@@ -56,7 +56,7 @@ from .experiment_workspace import (
     read_run_manifest,
     validate_step_registration,
 )
-from .hparam_runtime import monitor_hparam_runs
+from .hparam_runtime import monitor_hparam_runs, read_hparam_plan_under_run_lock
 from .manifests import read_json, read_rows, utc_now, write_rows, write_text
 from .models import is_full_git_object_id, recipe_name, resolve_repo_path
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
@@ -370,7 +370,7 @@ def digest_hparam_run(run_dir: str | Path) -> Path:
     workflow_root, round_dir, round_index = _resolve_workflow_round(root)
     if (workflow_root / "adaptive" / "workflow.json").exists():
         adaptive_state.read_workflow(workflow_root)
-    plan = artifacts.read_hparam_plan(round_dir)
+    plan = read_hparam_plan_under_run_lock(round_dir)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
@@ -1238,7 +1238,7 @@ def _workflow_execution_route(workflow: dict[str, Any]) -> dict[str, str]:
     root = Path(str(workflow.get("root") or ""))
     if not root.is_absolute():
         raise ValueError("Adaptive workflow lacks a frozen execution route.")
-    initial_plan = artifacts.read_hparam_plan(adaptive_state.round_path(root, 0))
+    initial_plan = read_hparam_plan_under_run_lock(adaptive_state.round_path(root, 0))
     initial_recipe_value = initial_plan.get("recipe")
     initial_recipe = initial_recipe_value if isinstance(initial_recipe_value, dict) else {}
     initial_execution_value = initial_recipe.get("execution")
@@ -1248,7 +1248,7 @@ def _workflow_execution_route(workflow: dict[str, Any]) -> dict[str, str]:
 
 def _validate_workflow_scientific_contract(recipe: dict[str, Any], workflow: dict[str, Any]) -> None:
     root = Path(str(workflow.get("root") or ""))
-    initial_plan = artifacts.read_hparam_plan(adaptive_state.round_path(root, 0))
+    initial_plan = read_hparam_plan_under_run_lock(adaptive_state.round_path(root, 0))
     initial_recipe_value = initial_plan.get("recipe")
     initial_recipe = initial_recipe_value if isinstance(initial_recipe_value, dict) else {}
     fields = ("task", "variant", "step", "inputs", "evaluation_policy")

@@ -19,6 +19,7 @@ from . import (
     adaptive_evidence,
     adaptive_state,
     experiment_io as exp_io,
+    managed_scheduler,
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
@@ -30,7 +31,7 @@ from .experiment_workspace import (
     scheduler_type,
     validated_run_key,
 )
-from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, stop_hparam_run
+from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, read_hparam_plan_under_run_lock, stop_hparam_run
 from .manifests import read_rows, write_rows
 
 
@@ -163,7 +164,10 @@ def _launch_initial_replacement(
 ) -> list[dict[str, Any]]:
     before_launch = state.started_keys
     _launch_with_recovery(root, workspace, state, round_dir, attempt_run_id=None, before_launch=before_launch)
-    canonical_rows = read_run_manifest(workspace)
+    # Launches, stops and run scripts replace run_manifest.tsv under the run lock. Every launch, stop, monitor and
+    # recovery call in this module takes that lock itself, so only the reads between them hold it.
+    with managed_scheduler.managed_run_lock(workspace):
+        canonical_rows = read_run_manifest(workspace)
     next_round_rows = [row for row in canonical_rows if validated_run_key(row) in state.next_plan_keys]
     refreshed_started_keys = adaptive_state.accepted_start_keys(next_round_rows)
     newly_launch_failed = {
@@ -194,7 +198,8 @@ def _drain_bad_runs(
 ) -> list[dict[str, Any]]:
     bad_index = 0
     while bad_index < len(ordered_bad_run_keys):
-        canonical_rows = read_run_manifest(workspace)
+        with managed_scheduler.managed_run_lock(workspace):
+            canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if validated_run_key(row) in state.next_plan_keys]
         pending = any(row.get("status") in {"planned", "pending"} for row in next_round_rows)
         if state.retirement_credit <= 0 and not pending:
@@ -207,7 +212,8 @@ def _drain_bad_runs(
         try:
             stopped = _stop_bad_running_runs(root, round_dir, recipe, run_keys={run_key})
         except Exception as exc:
-            canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
+            with managed_scheduler.managed_run_lock(workspace):
+                canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
             if canonical_by_key[run_key].get("status") == "stopped" and run_key not in state.stopped_run_keys:
                 state.stopped_run_keys.append(run_key)
             raise RuntimeError(
@@ -216,7 +222,8 @@ def _drain_bad_runs(
                 + _preserved_tail(state.stopped_run_keys, state.superseded_current_keys, state.next_dir)
             ) from exc
         if not stopped:
-            canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
+            with managed_scheduler.managed_run_lock(workspace):
+                canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
             after_stop = canonical_by_key[run_key]
             if (
                 before_stop.get("stop_requested_at") in (None, "")
@@ -231,7 +238,8 @@ def _drain_bad_runs(
             break
         state.stopped_run_keys.extend(stopped)
         state.retirement_credit -= len(stopped)
-        canonical_rows = read_run_manifest(workspace)
+        with managed_scheduler.managed_run_lock(workspace):
+            canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if validated_run_key(row) in state.next_plan_keys]
         if not any(row.get("status") in {"planned", "pending"} for row in next_round_rows):
             continue
@@ -240,7 +248,8 @@ def _drain_bad_runs(
             validated_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
         }
         _launch_with_recovery(root, workspace, state, round_dir, attempt_run_id=run_key[1], before_launch=before_launch)
-        canonical_rows = read_run_manifest(workspace)
+        with managed_scheduler.managed_run_lock(workspace):
+            canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if validated_run_key(row) in state.next_plan_keys]
         state.started_keys = adaptive_state.accepted_start_keys(next_round_rows)
         newly_launch_failed = {
@@ -281,13 +290,16 @@ def launch_replacement_round(
     scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
     if scheduler.get("type") == "slurm":
         monitor_hparam_runs(round_dir)
-    current_plan = artifacts.read_hparam_plan(round_dir)
+    # Both rounds are frozen into this workspace; monitoring and _bad_running_run_keys take its run lock themselves.
+    with managed_scheduler.managed_run_lock(workspace):
+        current_plan = artifacts.read_hparam_plan(round_dir)
     bad_run_keys = _bad_running_run_keys(root, round_dir, recipe)
     ordered_bad_run_keys = [
         validated_run_key(run) for run in current_plan["runs"] if validated_run_key(run) in bad_run_keys
     ]
-    next_plan_keys = {validated_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
-    canonical_rows = read_run_manifest(workspace)
+    with managed_scheduler.managed_run_lock(workspace):
+        next_plan_keys = {validated_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
+        canonical_rows = read_run_manifest(workspace)
     state = _ReplacementState(
         next_round=next_round,
         next_dir=next_dir,
@@ -313,7 +325,7 @@ def launch_replacement_round(
 
 
 def _supersede_pending_runs(root: Path, round_dir: Path) -> list[tuple[str, str]]:
-    plan = artifacts.read_hparam_plan(round_dir)
+    plan = read_hparam_plan_under_run_lock(round_dir)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
@@ -330,7 +342,9 @@ def _supersede_pending_runs(root: Path, round_dir: Path) -> list[tuple[str, str]
     if launch_path.exists():
         targets.append(launch_path)
     exp_io.validate_managed_output_paths(workspace, targets)
-    canonical_rows = read_run_manifest(workspace)
+    # merge_run_manifest takes the run lock and re-applies lifecycle rules, so only this read holds it.
+    with managed_scheduler.managed_run_lock(workspace):
+        canonical_rows = read_run_manifest(workspace)
     canonical_by_key = {validated_run_key(row): row for row in canonical_rows}
     transitions = []
     for run in plan["runs"]:
@@ -373,7 +387,7 @@ def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -
     objective = adaptive_state.workflow_objective(root, recipe)
     incumbent = _latest_incumbent_score(root)
     margin = float(replacement.get("kill_margin") or 0.0)
-    plan = artifacts.read_hparam_plan(round_dir)
+    plan = read_hparam_plan_under_run_lock(round_dir)
     plan_recipe_value = plan.get("recipe")
     plan_recipe = plan_recipe_value if isinstance(plan_recipe_value, dict) else {}
     evaluation_value = plan_recipe.get("evaluation_policy")
@@ -384,7 +398,10 @@ def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
     plan_keys = {validated_run_key(run) for run in plan["runs"]}
     bad_keys = set()
-    for row in read_run_manifest(workspace):
+    # Runtime evidence may be read over SSH, so only the manifest read holds the run lock.
+    with managed_scheduler.managed_run_lock(workspace):
+        canonical_rows = read_run_manifest(workspace)
+    for row in canonical_rows:
         key = validated_run_key(row)
         if key not in plan_keys:
             continue
@@ -433,13 +450,15 @@ def _stop_bad_running_runs(
     keys = _bad_running_run_keys(root, round_dir, recipe) if run_keys is None else run_keys
     if not keys:
         return []
-    plan = artifacts.read_hparam_plan(round_dir)
+    plan = read_hparam_plan_under_run_lock(round_dir)
     plan_recipe_value = plan.get("recipe")
     plan_recipe = plan_recipe_value if isinstance(plan_recipe_value, dict) else {}
     workspace = experiment_root(plan_recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    # stop_hparam_run takes the run lock itself, so only the reads around it hold it.
+    with managed_scheduler.managed_run_lock(workspace):
+        canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
     stopped = []
     for run in plan["runs"]:
         key = managed_run_key(run)
@@ -447,7 +466,8 @@ def _stop_bad_running_runs(
         if key not in keys or row.get("status") != "running":
             continue
         stop_hparam_run(round_dir, str(row["run_id"]), reason="adaptive replacement")
-        canonical_by_key = {managed_run_key(item): item for item in read_run_manifest(workspace)}
+        with managed_scheduler.managed_run_lock(workspace):
+            canonical_by_key = {managed_run_key(item): item for item in read_run_manifest(workspace)}
         if canonical_by_key[key].get("status") == "stopped":
             adaptive_state.append_event(
                 root, "stop_bad_running_run", {"round_dir": str(round_dir), "run_id": row["run_id"]}

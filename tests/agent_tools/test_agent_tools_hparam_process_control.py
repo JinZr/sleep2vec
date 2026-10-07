@@ -448,6 +448,19 @@ def test_hparam_runtime_reads_workspace_state_only_under_run_lock(tmp_path: Path
     assert _read_table(plan_dir / "run_status.tsv") == _read_table(tmp_path / "run_manifest.tsv")
 
 
+def test_hparam_plan_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr
+
+    plan = call_while_run_lock_holder_commits(
+        monkeypatch, tmp_path, lambda: hparam_runtime.read_hparam_plan_under_run_lock(plan_dir)
+    )
+
+    assert plan == run_artifacts.read_hparam_plan(plan_dir)
+
+
 def test_remote_stop_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
         tmp_path,

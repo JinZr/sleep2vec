@@ -400,13 +400,15 @@ def test_dry_run_does_not_freeze_or_mutate_workspace(tmp_path: Path, monkeypatch
 def test_external_pipeline_rejects_ssh_source_plan_before_outputs(tmp_path: Path, monkeypatch, execute: bool):
     root = tmp_path / "workspace"
     root.mkdir()
+    # Reading the source plan takes the workspace run lock; the lock file is not a pipeline output.
+    (root / "run_manifest.tsv.lock").touch()
     spec_path = tmp_path / "external.yaml"
     spec_path.write_text(yaml.safe_dump(_spec(root), sort_keys=False))
     monkeypatch.setattr(
         experiment_pipeline.artifacts,
         "read_hparam_plan",
         lambda *_args, **_kwargs: {
-            "recipe": {"execution": {"target": "ssh", "host": "unit-host"}},
+            "recipe": {"experiment": {"root": str(root)}, "execution": {"target": "ssh", "host": "unit-host"}},
         },
     )
     before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
@@ -541,7 +543,7 @@ def cross_round_source(tmp_path: Path, monkeypatch):
             }
         )
     plans = dict(registered)
-    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda path: plans[Path(path)])
+    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda path, **_kwargs: plans[Path(path)])
     monkeypatch.setattr(
         experiment_pipeline.artifacts, "iter_registered_hparam_plans", lambda *_args, **_kwargs: iter(registered)
     )
@@ -565,6 +567,8 @@ def test_pipeline_rejects_ssh_owner_in_another_round_before_outputs(cross_round_
     registered[1][1]["recipe"]["execution"] = {"target": "ssh", "host": "unit-host"}
     spec_path = tmp_path / "external.yaml"
     spec_path.write_text(yaml.safe_dump(spec, sort_keys=False))
+    # Reading source plans takes the workspace run lock; the lock file is not a pipeline output.
+    (root / "run_manifest.tsv.lock").touch()
     before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
     with pytest.raises(ValueError, match="SSH execution target"):
@@ -924,6 +928,8 @@ def test_frozen_cross_round_owner_must_match_anchor_contract(cross_round_source,
         owner_recipe["experiment"]["id"] = "other-experiment"
     else:
         owner_recipe["experiment"]["root"] = str(root / "other-workspace")
+        # The stubbed plan read skips the plan-inside-root check, so the run lock needs the directory.
+        (root / "other-workspace").mkdir()
     path = root / "checkpoints.json"
     path.write_text(json.dumps({"pipeline_id": spec["pipeline"]["id"], "sources": selected}))
 

@@ -104,7 +104,7 @@ def append_event(root: Path, event_type: str, payload: dict[str, Any]) -> None:
 
 
 def workflow_workspace(root: Path) -> Path:
-    initial_plan = artifacts.read_hparam_plan(round_path(root, 0))
+    initial_plan = hparam_runtime.read_hparam_plan_under_run_lock(round_path(root, 0))
     recipe_value = initial_plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
@@ -145,8 +145,10 @@ def suggest_strategy(recipe: dict[str, Any]) -> str:
 def round_is_terminal(
     round_dir: Path, workspace: Path, *, read_run_manifest: Callable[[Path], list[dict[str, str]]]
 ) -> bool:
-    plan = artifacts.read_hparam_plan(round_dir)
-    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    # Launches and run scripts replace run_manifest.tsv under the run lock; no adaptive caller holds it here.
+    with managed_scheduler.managed_run_lock(workspace):
+        plan = artifacts.read_hparam_plan(round_dir)
+        canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
     run_keys = [managed_run_key(run) for run in plan.get("runs", [])]
     return bool(run_keys) and all(canonical_by_key.get(key, {}).get("status") in TERMINAL_STATUSES for key in run_keys)
 
@@ -184,29 +186,31 @@ def validate_workflow_payload(
     validate_managed_run_rows(registry_rows, source=str(registry_path), cardinality="one_per_run")
     round_index = latest_round_index(root) if require_adaptive_commit else 0
     round_dir = round_path(root, round_index)
-    plan = artifacts.read_hparam_plan(round_dir, require_adaptive_commit=require_adaptive_commit)
-    recipe_value = plan.get("recipe")
-    recipe = recipe_value if isinstance(recipe_value, dict) else {}
-    plan_execution_value = recipe.get("execution")
-    plan_execution = plan_execution_value if isinstance(plan_execution_value, dict) else {}
-    if any(plan_execution.get(field) != execution_identity[field] for field in FROZEN_EXECUTION_IDENTITY_FIELDS):
-        raise ValueError(f"Adaptive workflow execution identity differs from the current round plan: {round_dir}")
-    initial_plan = plan if round_index == 0 else artifacts.read_hparam_plan(round_path(root, 0))
-    initial_recipe_value = initial_plan.get("recipe")
-    initial_recipe = initial_recipe_value if isinstance(initial_recipe_value, dict) else {}
-    initial_execution_value = initial_recipe.get("execution")
-    initial_execution = initial_execution_value if isinstance(initial_execution_value, dict) else {}
-    if any(initial_execution.get(field) != execution_identity[field] for field in EXECUTION_IDENTITY_FIELDS):
-        raise ValueError(f"Adaptive workflow baseline execution identity differs from round 000: {path}")
-    frozen_route = execution_route(initial_execution)
-    current_route = execution_route(plan_execution)
-    changed_route = [field for field in EXECUTION_ROUTE_FIELDS if current_route[field] != frozen_route[field]]
-    if changed_route:
-        raise ValueError(f"Adaptive workflow execution route differs from round 000: {', '.join(changed_route)}")
-    workspace = experiment_root(recipe)
-    if workspace is None:
-        raise ValueError("Adaptive workflow is not bound to an experiment workspace.")
-    canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
+    frozen_plan = artifacts.read_hparam_plan(round_dir, require_workspace_state=False, require_adaptive_commit=False)
+    workspace = experiment_root(frozen_plan["recipe"])
+    assert workspace is not None  # read_hparam_plan rejects a plan without experiment.root.
+    # Launches and run scripts replace run_manifest.tsv under the run lock; no adaptive caller holds it here.
+    with managed_scheduler.managed_run_lock(workspace):
+        plan = artifacts.read_hparam_plan(round_dir, require_adaptive_commit=require_adaptive_commit)
+        recipe_value = plan.get("recipe")
+        recipe = recipe_value if isinstance(recipe_value, dict) else {}
+        plan_execution_value = recipe.get("execution")
+        plan_execution = plan_execution_value if isinstance(plan_execution_value, dict) else {}
+        if any(plan_execution.get(field) != execution_identity[field] for field in FROZEN_EXECUTION_IDENTITY_FIELDS):
+            raise ValueError(f"Adaptive workflow execution identity differs from the current round plan: {round_dir}")
+        initial_plan = plan if round_index == 0 else artifacts.read_hparam_plan(round_path(root, 0))
+        initial_recipe_value = initial_plan.get("recipe")
+        initial_recipe = initial_recipe_value if isinstance(initial_recipe_value, dict) else {}
+        initial_execution_value = initial_recipe.get("execution")
+        initial_execution = initial_execution_value if isinstance(initial_execution_value, dict) else {}
+        if any(initial_execution.get(field) != execution_identity[field] for field in EXECUTION_IDENTITY_FIELDS):
+            raise ValueError(f"Adaptive workflow baseline execution identity differs from round 000: {path}")
+        frozen_route = execution_route(initial_execution)
+        current_route = execution_route(plan_execution)
+        changed_route = [field for field in EXECUTION_ROUTE_FIELDS if current_route[field] != frozen_route[field]]
+        if changed_route:
+            raise ValueError(f"Adaptive workflow execution route differs from round 000: {', '.join(changed_route)}")
+        canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
     for registered in registry_rows:
         canonical = canonical_by_key.get(managed_run_key(registered))
         if canonical is None:
@@ -517,7 +521,7 @@ def execution_route(execution: dict[str, Any]) -> dict[str, str]:
 
 def append_registry_rows(root: Path, round_index: int, round_dir: Path) -> None:
     path = root / "adaptive" / "run_registry.tsv"
-    plan = artifacts.read_hparam_plan(round_dir)
+    plan = hparam_runtime.read_hparam_plan_under_run_lock(round_dir)
     snapshot = exp_io.read_managed_files_at(root, [path])[str(path)]
     rows = _parse_registry(snapshot["text"], path)
     registered_at = utc_now()
@@ -570,8 +574,11 @@ def append_registry_rows(root: Path, round_index: int, round_dir: Path) -> None:
 def reconcile_interrupted_launch(
     workspace: Path, plan_dir: Path, plan_keys: set[tuple[str, str]]
 ) -> tuple[list[dict[str, Any]], set[tuple[str, str]], set[tuple[str, str]]]:
-    artifacts.read_hparam_plan(plan_dir)
-    canonical_rows = read_run_manifest(workspace)
+    # Slurm observation may reach a remote scheduler and merge_run_manifest takes the run lock, so only the reads
+    # hold it; the merge re-applies lifecycle rules to the rows it reads under the lock.
+    with managed_scheduler.managed_run_lock(workspace):
+        artifacts.read_hparam_plan(plan_dir)
+        canonical_rows = read_run_manifest(workspace)
     updates = []
     unresolved = set()
     reconciled = set()
@@ -627,7 +634,8 @@ def finish_interrupted_launch(
     round_dir: Path, workspace: Path, started_keys: set[tuple[str, str]]
 ) -> list[dict[str, Any]]:
     hparam_runtime.reconcile_hparam_launch_artifacts(round_dir, started_keys)
-    return read_run_manifest(workspace)
+    with managed_scheduler.managed_run_lock(workspace):
+        return read_run_manifest(workspace)
 
 
 def uncommitted_launch_attempts(
@@ -636,7 +644,9 @@ def uncommitted_launch_attempts(
 ) -> tuple[list[tuple[int, str]], list[tuple[int, dict[str, Any]]]]:
     committed_rounds = committed_round_indexes(root)
     registry = read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True)
-    canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
+    # Process-identity reads and plan_registration_rows_state below must not hold the run lock.
+    with managed_scheduler.managed_run_lock(workspace):
+        canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
     registered_by_round: dict[int, set[tuple[str, str]]] = {}
     for registered in registry:
         round_index = int(registered["round"])
@@ -657,7 +667,7 @@ def uncommitted_launch_attempts(
             continue
         registered_keys = set(registered_by_round.get(round_index, set()))
         plan = (
-            artifacts.read_hparam_plan(round_dir)
+            hparam_runtime.read_hparam_plan_under_run_lock(round_dir)
             if registered_keys
             else artifacts.read_hparam_plan(
                 round_dir,
@@ -753,7 +763,7 @@ def committed_round_indexes(root: Path) -> set[int]:
         return committed
     registry = read_rows(registry_path, require_managed_identity=True)
     registered_rounds = {int(row["round"]) for row in registry}
-    initial_plan = artifacts.read_hparam_plan(round_path(root, 0))
+    initial_plan = hparam_runtime.read_hparam_plan_under_run_lock(round_path(root, 0))
     recipe_value = initial_plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)

@@ -466,6 +466,7 @@ def test_mixed_terminal_source_accepts_no_test_after_fit_manifest(
     failed_status: str,
 ):
     root = tmp_path / "workspace"
+    root.mkdir()
     spec = _spec(root)
     successful = {"step_id": "train-age", "run_id": "run-000"}
     unsuccessful = {"step_id": "train-age", "run_id": "run-001"}
@@ -504,6 +505,7 @@ def test_mixed_terminal_source_accepts_no_test_after_fit_manifest(
 
 def test_mixed_terminal_source_rejects_stopped_run_without_reason(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
+    root.mkdir()
     spec = _spec(root)
     runs = [
         {"step_id": "train-age", "run_id": "run-000"},
@@ -527,6 +529,7 @@ def test_mixed_terminal_source_rejects_stopped_run_without_reason(tmp_path: Path
 @pytest.mark.parametrize("status", ["planned", "running"])
 def test_active_source_waits_for_terminal_status(tmp_path: Path, monkeypatch, status: str):
     root = tmp_path / "workspace"
+    root.mkdir()
     spec = _spec(root)
     run = {"step_id": "train-age", "run_id": "run-000"}
     monkeypatch.setattr(
@@ -544,6 +547,7 @@ def test_active_source_waits_for_terminal_status(tmp_path: Path, monkeypatch, st
 
 def test_all_unsuccessful_terminal_source_fails(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
+    root.mkdir()
     spec = _spec(root)
     runs = [
         {"step_id": "train-age", "run_id": "run-000"},
@@ -572,6 +576,7 @@ def test_all_unsuccessful_terminal_source_fails(tmp_path: Path, monkeypatch):
 @pytest.mark.parametrize("status", ["submitting", "unknown_scheduler"])
 def test_slurm_source_uncertainty_blocks_external_pipeline(tmp_path: Path, monkeypatch, status: str):
     root = tmp_path / "workspace"
+    root.mkdir()
     spec = _spec(root)
     run = {"step_id": "train-age", "run_id": "run-000"}
     monkeypatch.setattr(
@@ -856,6 +861,10 @@ def test_initial_registration_preflight_groups_variants_before_publishing_any_at
     def reject_unsafe_group(root_path, paths, *, remote=None):
         if [Path(path) for path in paths] == [root.parent / ".workspace.plan-registration.lock"]:
             assert Path(root_path) == root.parent
+            assert remote is None
+            return
+        if [Path(path) for path in paths] == [root / "run_manifest.tsv.lock"]:
+            assert Path(root_path) == root
             assert remote is None
             return
         assert Path(root_path) == Path("/")
@@ -1600,7 +1609,15 @@ def test_run_attempts_waits_when_capacity_blocks_before_execution_snapshot(tmp_p
 
 
 @pytest.mark.parametrize(
-    "reader", ["validate_attempt_rows", "create_needed_retries", "run_attempts", "run_attempts_with_snapshot"]
+    "reader",
+    [
+        "validate_experiment",
+        "prepare_registration_groups",
+        "validate_attempt_rows",
+        "create_needed_retries",
+        "run_attempts",
+        "run_attempts_with_snapshot",
+    ],
 )
 def test_pipeline_attempt_polls_read_canonical_state_only_under_run_lock(tmp_path: Path, monkeypatch, reader):
     root = tmp_path / "workspace"
@@ -1648,6 +1665,10 @@ def test_pipeline_attempt_polls_read_canonical_state_only_under_run_lock(tmp_pat
         result_manifest = pipeline_dir / "result_manifest.json"
         monkeypatch.setattr(experiment_pipeline, "_validate_result_manifest", lambda *_args: result_manifest)
     calls = {
+        "validate_experiment": lambda: experiment_pipeline._validate_experiment(root, spec),
+        "prepare_registration_groups": lambda: pipeline_attempts._prepare_attempt_registration_groups(
+            root, spec, [], snapshot_owner_dirs={}
+        ),
         "validate_attempt_rows": lambda: pipeline_attempts.validate_attempt_rows(
             root, pipeline_dir, spec, {}, [], require_all_jobs=False
         ),
@@ -1660,7 +1681,11 @@ def test_pipeline_attempt_polls_read_canonical_state_only_under_run_lock(tmp_pat
 
     result = call_while_run_lock_holder_commits(monkeypatch, root, calls[reader])
 
-    if reader == "create_needed_retries":
+    if reader == "validate_experiment":
+        assert result["id"] == "unit"
+    elif reader == "prepare_registration_groups":
+        assert result == {}
+    elif reader == "create_needed_retries":
         assert result == ([], False)
     elif reader.startswith("run_attempts"):
         assert result["status"] == "completed"
@@ -2350,7 +2375,7 @@ def test_frozen_pipeline_rejects_external_preset_byte_drift(tmp_path: Path, monk
         ],
     }
     (pipeline_dir / "pipeline.json").write_text(json.dumps(state) + "\n")
-    monkeypatch.setattr(experiment_pipeline.artifacts, "read_hparam_plan", lambda _plan_dir: {})
+    monkeypatch.setattr(experiment_pipeline, "read_hparam_plan_under_run_lock", lambda _plan_dir: {})
 
     preset.write_bytes(b"changed-preset")
 
