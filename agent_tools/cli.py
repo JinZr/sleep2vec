@@ -110,6 +110,39 @@ def _command(sub: argparse._SubParsersAction, name: str, summary: str) -> argpar
     return sub.add_parser(name, help=summary, description=summary)
 
 
+# Shared declarations exist only for options whose help text is identical on every
+# command that takes them. Per-command help (--run-dir, --plan-dir, --metric, ...) is
+# part of the help contract and stays inline at each command.
+
+
+def _add_workspace_remote(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
+
+
+def _add_json(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--json", action="store_true", help="Emit JSON instead of the human-readable rendering.")
+
+
+def _add_reason(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--reason", required=True, help="Reason recorded in the run manifest; required.")
+
+
+def _add_selected(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selected", required=True, help="Selection report identifying the ranked candidates.")
+
+
+def _add_dry_run_or_execute(parser: argparse.ArgumentParser, *, subject: str, execute_help: str) -> None:
+    """Add the mutually exclusive ``--dry-run`` (the default) / ``--execute`` pair of a launching command."""
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=True,
+        help=f"Report the {subject} without changing state (default).",
+    )
+    mode.add_argument("--execute", action="store_true", help=execute_help)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent_tools",
@@ -119,6 +152,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
+    _add_inspection_commands(sub)
+    _add_consultation_commands(sub)
+    _add_launch_commands(sub)
+    _add_experiment_commands(sub)
+    _add_selection_commands(sub)
+    _add_adaptive_commands(sub)
+    return parser
+
+
+def _add_inspection_commands(sub: argparse._SubParsersAction) -> None:
+    """Register the repository, config, index, and preset inspection commands."""
     skills = _command(sub, "skills", "List or validate the checked-in agent skill playbooks.")
     group = skills.add_mutually_exclusive_group(required=True)
     group.add_argument("--list", action="store_true", help="Print each skill's name, task types, and path.")
@@ -130,7 +174,7 @@ def _build_parser() -> argparse.ArgumentParser:
     skills.set_defaults(func=_cmd_skills)
 
     repo = _command(sub, "repo-summary", "Summarize repository entrypoints, variants, and tracked configs.")
-    repo.add_argument("--json", action="store_true", help="Emit JSON instead of the human-readable rendering.")
+    _add_json(repo)
     repo.set_defaults(func=_cmd_repo_summary)
 
     runtime_sync = _command(
@@ -155,7 +199,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     config = _command(sub, "config-summary", "Summarize a resolved training or inference YAML config.")
     config.add_argument("--config", required=True, help="Path to the YAML config to summarize.")
-    config.add_argument("--json", action="store_true", help="Emit JSON instead of the human-readable rendering.")
+    _add_json(config)
     config.set_defaults(func=_cmd_config_summary)
 
     index = _command(
@@ -178,14 +222,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Number of sampled rows whose NPZ payloads are opened and checked (0 disables).",
     )
-    index.add_argument("--json", action="store_true", help="Emit JSON instead of the human-readable rendering.")
+    _add_json(index)
     index.set_defaults(func=_cmd_index_summary)
 
     preset = _command(sub, "preset-summary", "Summarize a dataset preset: channels, splits, and record counts.")
     preset.add_argument("--preset", required=True, help="Path to the preset file to summarize.")
-    preset.add_argument("--json", action="store_true", help="Emit JSON instead of the human-readable rendering.")
+    _add_json(preset)
     preset.set_defaults(func=_cmd_preset_summary)
 
+
+def _add_consultation_commands(sub: argparse._SubParsersAction) -> None:
+    """Register the consultation, planning, and run-collection commands."""
     doctor = _command(
         sub,
         "doctor",
@@ -258,20 +305,16 @@ def _build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--output", required=True, help="CSV path to write the collected runs to.")
     collect.set_defaults(func=_cmd_collect_runs)
 
+
+def _add_launch_commands(sub: argparse._SubParsersAction) -> None:
+    """Register the launch, stop, queue, and monitor commands for registered plans."""
     launch = _command(
         sub,
         "hparam-launch",
         "Launch a registered hyper-parameter plan's runs. Dry run unless --execute is given.",
     )
     launch.add_argument("--plan-dir", required=True, help="Registered plan directory to launch from.")
-    launch_mode = launch.add_mutually_exclusive_group()
-    launch_mode.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=True,
-        help="Report the launch without changing state (default).",
-    )
-    launch_mode.add_argument("--execute", action="store_true", help="Actually launch the runs; enables state changes.")
+    _add_dry_run_or_execute(launch, subject="launch", execute_help="Actually launch the runs; enables state changes.")
     launch.set_defaults(func=_cmd_hparam_launch)
 
     infer_launch = _command(
@@ -285,7 +328,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     infer_stop = _command(sub, "infer-stop", "Stop a managed inference run and record why it was stopped.")
     infer_stop.add_argument("--plan-dir", required=True, help="Registered plan directory owning the run.")
-    infer_stop.add_argument("--reason", required=True, help="Reason recorded in the run manifest; required.")
+    _add_reason(infer_stop)
     infer_stop.set_defaults(func=_cmd_infer_stop)
 
     preset_launch = _command(
@@ -299,7 +342,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     preset_stop = _command(sub, "preset-stop", "Stop a managed preset-preparation run and record why.")
     preset_stop.add_argument("--plan-dir", required=True, help="Registered plan directory owning the run.")
-    preset_stop.add_argument("--reason", required=True, help="Reason recorded in the run manifest; required.")
+    _add_reason(preset_stop)
     preset_stop.set_defaults(func=_cmd_preset_stop)
 
     run_queue = _command(
@@ -309,17 +352,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "reaches a terminal state. Dry run unless --execute is given.",
     )
     run_queue.add_argument("--plan-dir", required=True, help="Registered plan directory to drain.")
-    run_queue_mode = run_queue.add_mutually_exclusive_group()
-    run_queue_mode.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=True,
-        help="Report the queue without changing state (default).",
-    )
-    run_queue_mode.add_argument(
-        "--execute",
-        action="store_true",
-        help="Actually launch queued runs; enables state changes.",
+    _add_dry_run_or_execute(
+        run_queue, subject="queue", execute_help="Actually launch queued runs; enables state changes."
     )
     run_queue.add_argument("--poll-seconds", type=float, default=60, help="Seconds to wait between queue polls.")
     run_queue.set_defaults(func=_cmd_hparam_run_queue)
@@ -340,10 +374,13 @@ def _build_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--poll-seconds", type=float, default=60, help="Seconds to wait between polls.")
     monitor.set_defaults(func=_cmd_hparam_monitor)
 
+
+def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
+    """Register progress and the experiment lifecycle commands."""
     progress = _command(sub, "progress", "Report training progress for a run directory.")
     progress.add_argument("--run-dir", required=True, help="Run directory to read progress from.")
     progress.add_argument("--remote", help="SSH host to read the run directory from instead of the local filesystem.")
-    progress.add_argument("--json", action="store_true", help="Emit JSON instead of the human-readable rendering.")
+    _add_json(progress)
     progress.set_defaults(func=_cmd_progress)
 
     experiment_init = _command(sub, "experiment-init", "Initialize a managed experiment workspace from a spec.")
@@ -353,7 +390,7 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="YAML spec declaring the experiment id, title, objective, root, and baseline.",
     )
-    experiment_init.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
+    _add_workspace_remote(experiment_init)
     experiment_init.set_defaults(func=_cmd_experiment_init)
 
     experiment_note = _command(
@@ -367,7 +404,7 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Existing local YAML file path; inline text is not accepted.",
     )
-    experiment_note.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
+    _add_workspace_remote(experiment_note)
     experiment_note.set_defaults(func=_cmd_experiment_note)
 
     experiment_step = _command(
@@ -381,7 +418,7 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="YAML spec declaring the step id, phase, purpose, and the plans it owns.",
     )
-    experiment_step.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
+    _add_workspace_remote(experiment_step)
     experiment_step.set_defaults(func=_cmd_experiment_register_step)
 
     experiment_finalize = _command(
@@ -395,7 +432,7 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Non-empty final report whose path and SHA-256 are bound to the completed experiment.",
     )
-    experiment_finalize.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
+    _add_workspace_remote(experiment_finalize)
     experiment_finalize.set_defaults(func=_cmd_experiment_finalize)
 
     experiment_run = _command(
@@ -411,17 +448,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Authorize the pipeline's external/final test stage.",
     )
-    experiment_run_mode = experiment_run.add_mutually_exclusive_group()
-    experiment_run_mode.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=True,
-        help="Report the pipeline without changing state (default).",
-    )
-    experiment_run_mode.add_argument(
-        "--execute",
-        action="store_true",
-        help="Actually run the pipeline; enables launching and state changes.",
+    _add_dry_run_or_execute(
+        experiment_run,
+        subject="pipeline",
+        execute_help="Actually run the pipeline; enables launching and state changes.",
     )
     experiment_run.add_argument(
         "--resume",
@@ -436,7 +466,7 @@ def _build_parser() -> argparse.ArgumentParser:
     experiment_wandb.add_argument("--entity", required=True, help="W&B entity that owns the runs.")
     experiment_wandb.add_argument("--project", required=True, help="W&B project to sync runs from.")
     experiment_wandb.add_argument("--group", help="Restrict the sync to one W&B group.")
-    experiment_wandb.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
+    _add_workspace_remote(experiment_wandb)
     experiment_wandb.set_defaults(func=_cmd_experiment_wandb_sync)
 
     experiment_checkpoints = _command(
@@ -445,10 +475,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "Index the checkpoints reachable from an experiment workspace.",
     )
     experiment_checkpoints.add_argument("--run-dir", required=True, help="Experiment workspace root to index.")
-    experiment_checkpoints.add_argument(
-        "--remote",
-        help="SSH host owning the workspace instead of the local filesystem.",
-    )
+    _add_workspace_remote(experiment_checkpoints)
     experiment_checkpoints.set_defaults(func=_cmd_experiment_index_checkpoints)
 
     experiment_monitor = _command(
@@ -457,7 +484,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "Refresh an experiment's status report from its manifests. Never launches runs.",
     )
     experiment_monitor.add_argument("--run-dir", required=True, help="Experiment workspace root to monitor.")
-    experiment_monitor.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
+    _add_workspace_remote(experiment_monitor)
     experiment_monitor.add_argument(
         "--json",
         action="store_true",
@@ -471,15 +498,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "Print a projected status snapshot for an experiment workspace.",
     )
     experiment_status_parser.add_argument("--run-dir", required=True, help="Experiment workspace root to report on.")
-    experiment_status_parser.add_argument(
-        "--remote",
-        help="SSH host owning the workspace instead of the local filesystem.",
-    )
-    experiment_status_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit JSON instead of the human-readable rendering.",
-    )
+    _add_workspace_remote(experiment_status_parser)
+    _add_json(experiment_status_parser)
     experiment_status_parser.set_defaults(func=_cmd_experiment_status)
 
     experiment_rank = _command(
@@ -495,13 +515,16 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Ranking direction: max ranks the highest metric first, min the lowest.",
     )
-    experiment_rank.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
+    _add_workspace_remote(experiment_rank)
     experiment_rank.set_defaults(func=_cmd_experiment_rank)
 
+
+def _add_selection_commands(sub: argparse._SubParsersAction) -> None:
+    """Register hparam-stop and the hyper-parameter selection and post-processing commands."""
     stop = _command(sub, "hparam-stop", "Stop one hyper-parameter run and record why it was stopped.")
     stop.add_argument("--run-dir", required=True, help="Run directory holding run_manifest.tsv.")
     stop.add_argument("--run-id", required=True, help="Managed run id to stop (e.g. run-000).")
-    stop.add_argument("--reason", required=True, help="Reason recorded in the run manifest; required.")
+    _add_reason(stop)
     stop.set_defaults(func=_cmd_hparam_stop)
 
     select = _command(
@@ -524,7 +547,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "Generate the external-evaluation script for selected hyper-parameter candidates.",
     )
     external.add_argument("--run-dir", required=True, help="Run directory holding the completed runs.")
-    external.add_argument("--selected", required=True, help="Selection report identifying the ranked candidates.")
+    _add_selected(external)
     external.add_argument(
         "--unlock-final-test",
         action="store_true",
@@ -548,7 +571,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "Export validation and test logits for selected candidates, for thresholding and ensembling.",
     )
     export_logits.add_argument("--run-dir", required=True, help="Run directory holding the completed runs.")
-    export_logits.add_argument("--selected", required=True, help="Selection report identifying the ranked candidates.")
+    _add_selected(export_logits)
     export_logits.add_argument(
         "--unlock-final-test",
         action="store_true",
@@ -595,7 +618,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     threshold = _command(sub, "hparam-threshold", "Tune decision thresholds from exported validation logits.")
     threshold.add_argument("--run-dir", required=True, help="Run directory holding the exported logits.")
-    threshold.add_argument("--selected", required=True, help="Selection report identifying the ranked candidates.")
+    _add_selected(threshold)
     threshold.set_defaults(func=_cmd_hparam_threshold)
 
     ensemble = _command(sub, "hparam-ensemble", "Score ensembles of candidates from their exported logits.")
@@ -637,6 +660,9 @@ def _build_parser() -> argparse.ArgumentParser:
     digest.add_argument("--run-dir", required=True, help="Run directory holding the completed round.")
     digest.set_defaults(func=_cmd_hparam_digest)
 
+
+def _add_adaptive_commands(sub: argparse._SubParsersAction) -> None:
+    """Register the adaptive hyper-parameter search commands."""
     suggest = _command(
         sub,
         "hparam-suggest",
@@ -683,7 +709,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Register and launch each round; enables state changes.",
     )
     adaptive_loop_cmd.set_defaults(func=_cmd_hparam_adaptive_loop)
-    return parser
 
 
 def _emit(payload: Any, *, as_json: bool) -> None:
