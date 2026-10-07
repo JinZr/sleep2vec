@@ -252,9 +252,8 @@ def test_schema_rejects_duplicate_job_ids_illegal_phase_and_missing_unlock(tmp_p
 
 def test_freeze_pipeline_rejects_step_controller_conflict_before_writing_state(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
-    _write_experiment(root)
-    (root / "run_manifest.tsv").write_text("step_id\trun_id\n")
     spec = _spec(root)
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
     commit_step_manifest(
         root,
         {
@@ -265,21 +264,13 @@ def test_freeze_pipeline_rejects_step_controller_conflict_before_writing_state(t
             "plans": [str(root / "plans" / "ordinary")],
         },
     )
-    monkeypatch.setattr(experiment_pipeline, "_source_plan_snapshots", lambda *_args: [])
-    monkeypatch.setattr(experiment_pipeline, "_preset_snapshots", lambda *_args: [])
-    pipeline_dir = root / "pipelines" / ".external-v1.staging"
-    pipeline_dir.mkdir(parents=True)
 
     with pytest.raises(ValueError, match="plan_controller differs"):
-        experiment_pipeline._freeze_pipeline(
-            root,
-            pipeline_dir,
-            root / "pipeline.yaml",
-            yaml.safe_dump(spec, sort_keys=False),
-            spec,
-        )
+        run_pipeline(spec_path, _stop_at_registration_hooks())
 
-    assert list(pipeline_dir.iterdir()) == []
+    staging_dirs = list((root / "pipelines").glob(".external-v1.*.staging"))
+    assert [list(path.iterdir()) for path in staging_dirs] == [[]]
+    assert not (root / "pipelines" / "external-v1").exists()
 
 
 @pytest.mark.parametrize("field", ["workdir", "python", "runtime_commit"])

@@ -183,38 +183,16 @@ def test_cohort_selection_uses_kind_without_schema_marker(tmp_path: Path):
 
 def test_cohort_selection_frozen_state_has_no_schema_marker(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
-    root.mkdir()
-    (root / "experiment.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "experiment": {
-                    "id": "unit",
-                    "title": "Unit",
-                    "objective": "Exercise cohort selection.",
-                    "root": str(root),
-                    "baseline": {"type": "none"},
-                    "status": "active",
-                }
-            },
-            sort_keys=False,
-        )
-    )
-    (root / "run_manifest.tsv").write_text("step_id\trun_id\n")
     spec = _spec(root)
-    for job in spec["jobs"]:
-        preset = Path(job["inference_preset_path"])
-        preset.parent.mkdir(parents=True, exist_ok=True)
-        preset.write_bytes(job["id"].encode())
-    spec_file = tmp_path / "cohort.yaml"
-    source_text = yaml.safe_dump(spec, sort_keys=False)
-    spec_file.write_text(source_text)
-    pipeline_dir = root / "pipelines" / ".cohort-gate.staging"
-    pipeline_dir.mkdir(parents=True)
-    monkeypatch.setattr(experiment_pipeline, "_source_plan_snapshots", lambda *_args: [])
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec, scores=(4.0, 4.2))
 
-    experiment_pipeline._freeze_pipeline(root, pipeline_dir, spec_file, source_text, spec)
+    def stop(*_args, **_kwargs):
+        raise PipelineInterrupted
 
-    assert "schema_version" not in json.loads((pipeline_dir / "pipeline.json").read_text())
+    with pytest.raises(PipelineInterrupted):
+        run_pipeline(spec_path, FakePipelineRuntime(spec).hooks(inspect_target=stop))
+
+    assert "schema_version" not in json.loads((root / "pipelines" / "cohort-gate" / "pipeline.json").read_text())
 
 
 def test_cohort_selection_rejects_cross_role_cohort_and_preset_reuse(tmp_path: Path):
@@ -235,15 +213,17 @@ def test_cohort_selection_rejects_cross_role_cohort_and_preset_reuse(tmp_path: P
         pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
 
 
-def test_cohort_selection_rejects_identical_preset_bytes_across_roles(tmp_path: Path):
-    spec = _spec(tmp_path)
+def test_cohort_selection_rejects_identical_preset_bytes_across_roles(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec, scores=(4.0, 4.2))
     for job in spec["jobs"]:
-        preset = Path(job["inference_preset_path"])
-        preset.parent.mkdir(parents=True, exist_ok=True)
-        preset.write_bytes(b"same cohort payload")
+        Path(job["inference_preset_path"]).write_bytes(b"same cohort payload")
 
     with pytest.raises(ValueError, match="same preset bytes"):
-        experiment_pipeline._preset_snapshots(spec)
+        run_pipeline(spec_path, FakePipelineRuntime(spec).hooks())
+
+    assert not (root / "pipelines" / "cohort-gate").exists()
 
 
 def test_cohort_selection_expands_selection_matrix_then_only_the_winner(tmp_path: Path):
