@@ -15,6 +15,12 @@ import yaml
 
 _T = TypeVar("_T")
 
+# Wall-clock guard for waits on real subprocess chains: login shells, several interpreter starts and git
+# probes per launch. The longest chain, a preset ``run.sh --execute``, takes about 2 s idle but 9 s while the
+# rest of the suite forks around it under ``-n auto``, and has exceeded 10 s. The guard only bounds a hang,
+# so it stays an order of magnitude above that loaded cost rather than near the idle one.
+SUBPROCESS_WAIT_SECONDS = 120
+
 
 def run_execution_preflight_fixture(execution: dict, command: list[str]) -> subprocess.CompletedProcess:
     from agent_tools import python_programs

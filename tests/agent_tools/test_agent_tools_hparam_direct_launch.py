@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 
+from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS
 import pytest
 from test_agent_tools_hparam_runtime import (
     _REAL_VALIDATED_EXECUTION_SNAPSHOT,
@@ -1030,7 +1031,7 @@ def test_launch_creates_and_stops_a_dedicated_process_group(tmp_path: Path):
         [],
     )
 
-    result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=10)
+    result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=SUBPROCESS_WAIT_SECONDS)
     assert result.returncode == 0
     identity = run_evidence.read_process_identity(pid_path, {})
     assert identity is not None
@@ -1062,11 +1063,11 @@ def test_detached_process_stdio_survives_transport_pipe_closure(tmp_path: Path):
     launcher.stderr.close()
     identity = None
     try:
-        assert launcher.wait(timeout=10) == 0
+        assert launcher.wait(timeout=SUBPROCESS_WAIT_SECONDS) == 0
         identity = run_evidence.read_process_identity(pid_path, {})
         assert identity is not None
         assert identity["pid"] == identity["process_group_id"]
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + SUBPROCESS_WAIT_SECONDS
         while run_evidence.process_identity_running({}, identity) is not False:
             assert time.monotonic() < deadline
             time.sleep(0.05)
@@ -1076,7 +1077,7 @@ def test_detached_process_stdio_survives_transport_pipe_closure(tmp_path: Path):
             run_evidence.stop_process_group({}, identity)
         if launcher.poll() is None:
             launcher.kill()
-            launcher.wait(timeout=10)
+            launcher.wait(timeout=SUBPROCESS_WAIT_SECONDS)
 
 
 @pytest.mark.parametrize(
@@ -1108,11 +1109,11 @@ def test_monitor_owned_launch_uses_shell_exit_code(tmp_path: Path, exit_code: in
         [],
     )
 
-    result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=10)
+    result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=SUBPROCESS_WAIT_SECONDS)
     assert result.returncode == 0, result.stderr
     identity = run_evidence.read_process_identity(pid_path, {})
     assert identity is not None
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + SUBPROCESS_WAIT_SECONDS
     while run_evidence.process_identity_running({}, identity) is not False:
         assert time.monotonic() < deadline
         time.sleep(0.05)

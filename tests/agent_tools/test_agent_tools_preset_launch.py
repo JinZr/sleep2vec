@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import time
 
-from agent_tool_test_helpers import call_while_run_lock_holder_commits
+from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS, call_while_run_lock_holder_commits
 import pytest
 from test_agent_preset_runtime_identity import (
     _PRESET_SCRIPTS,
@@ -140,7 +140,7 @@ def test_real_preset_consultation_can_generate_a_registered_launchable_plan(tmp_
 
 
 def _wait_status(workspace, statuses):
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + SUBPROCESS_WAIT_SECONDS
     while True:
         with managed_scheduler.managed_run_lock(workspace):
             row = read_run_manifest(workspace)[0]
@@ -183,7 +183,11 @@ def test_preset_detached_worker_commits_terminal_after_launcher_exits(
     plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch, variant)
     events = read_experiment_events(preset_runtime["workspace"])
     preview = subprocess.run(
-        ["bash", str(plan_dir / "run.sh")], env=preset_runtime["env"], capture_output=True, text=True, timeout=10
+        ["bash", str(plan_dir / "run.sh")],
+        env=preset_runtime["env"],
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
     assert preview.returncode == 0, preview.stderr
     assert "dry-run" in preview.stdout
@@ -197,7 +201,7 @@ def test_preset_detached_worker_commits_terminal_after_launcher_exits(
     # Close the transport's pipes; the worker must own only its persistent log and DEVNULL.
     launcher.stdout.close()
     launcher.stderr.close()
-    launcher.wait(timeout=10)
+    launcher.wait(timeout=SUBPROCESS_WAIT_SECONDS)
     row = _wait_status(preset_runtime["workspace"], {"completed", "failed"})
     assert row["status"] == ("completed" if exit_code == 0 else "failed")
     assert row["terminal_status_owner"] == "script"

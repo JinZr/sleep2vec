@@ -13,6 +13,7 @@ import sys
 import threading
 from types import SimpleNamespace
 
+from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS
 import pytest
 
 from agent_tools import python_programs
@@ -300,7 +301,7 @@ def test_runtime_identity_rejects_ignored_nested_repository_code(runtime_repo):
         cwd=runtime_repo,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
 
     assert result.returncode == 2
@@ -326,7 +327,7 @@ def test_runtime_identity_rejects_index_hidden_tracked_python_changes(runtime_re
         cwd=runtime_repo,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
 
     assert result.returncode == 2
@@ -348,7 +349,7 @@ def test_runtime_identity_rejects_symlinked_package_directories(runtime_repo, tm
         cwd=runtime_repo,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
 
     assert result.returncode == 2
@@ -365,7 +366,7 @@ def test_runtime_identity_rejects_sourceless_bytecode(runtime_repo):
         cwd=runtime_repo,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
 
     assert result.returncode == 2
@@ -384,7 +385,7 @@ def test_runtime_identity_allows_non_sourceless_bytecode(runtime_repo):
         cwd=runtime_repo,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr
@@ -404,7 +405,7 @@ def test_runtime_identity_rejects_nonexistent_planned_commit(runtime_repo):
         cwd=runtime_repo,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
 
     assert result.returncode == 2
@@ -426,7 +427,7 @@ def test_runtime_identity_rejects_non_sha1_planned_commit(runtime_repo):
         cwd=runtime_repo,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
 
     assert result.returncode == 2
@@ -461,7 +462,7 @@ def test_runtime_identity_ignores_ambient_repository_selection_env(runtime_repo)
         env=env,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr
@@ -528,7 +529,7 @@ def test_runtime_identity_allows_only_untracked_code_inside_tracked_submodule(ru
         cwd=runtime_repo,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr

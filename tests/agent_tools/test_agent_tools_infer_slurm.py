@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 from agent_tool_test_helpers import (
+    SUBPROCESS_WAIT_SECONDS,
     call_while_run_lock_holder_commits,
     config_payload,
     run_execution_preflight_fixture,
@@ -482,7 +483,7 @@ def test_infer_slurm_worker_authenticates_allocation_before_workload(
         env=env,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
 
     if identity_case == "matching":

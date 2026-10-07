@@ -11,6 +11,7 @@ from threading import Barrier, Event
 import time
 from types import SimpleNamespace
 
+from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "utils" / "stage_git_runtime.py"
@@ -152,14 +153,14 @@ if argv[0] == "checkout" and os.environ.get("STAGE_TEST_ATTACH_HEAD"):
 if argv[0] == "clone" and os.environ.get("STAGE_TEST_GIT_GATE"):
     gate = Path(os.environ["STAGE_TEST_GIT_GATE"])
     gate.with_suffix(".waiting").write_text(str(os.getpid()))
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + __GATE_WAIT_SECONDS__
     while not gate.exists():
         if time.monotonic() >= deadline:
             sys.exit(24)
         time.sleep(0.01)
 print("durable git stderr", file=sys.stderr)
 os.execv(os.environ["STAGE_TEST_REAL_GIT"], [os.environ["STAGE_TEST_REAL_GIT"], *argv])
-"""
+""".replace("__GATE_WAIT_SECONDS__", str(SUBPROCESS_WAIT_SECONDS))
     executable = directory / "git"
     executable.write_text(program)
     executable.chmod(0o755)
@@ -171,13 +172,13 @@ os.execv(os.environ["STAGE_TEST_REAL_GIT"], [os.environ["STAGE_TEST_REAL_GIT"], 
 
 
 def _finish(staging, evidence):
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + SUBPROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
         result = staging.check_runtime(evidence)
         if result["kind"] != "pending":
             return result
         time.sleep(0.02)
-    pytest.fail("The tiny Git staging operation did not finish within ten seconds")
+    pytest.fail(f"The tiny Git staging operation did not finish within {SUBPROCESS_WAIT_SECONDS} seconds")
 
 
 def _stage(staging, source, tmp_path, *, remote=False):
@@ -376,7 +377,7 @@ def test_lost_start_reply_preserves_pending_worker_handle(
     try:
         with pytest.raises(RuntimeError, match="no complete operation reply"):
             _stage(staging, source_repo, tmp_path, remote=True)
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + SUBPROCESS_WAIT_SECONDS
         while not gate.with_suffix(".waiting").exists():
             assert time.monotonic() < deadline, "Worker did not reach the controlled Git barrier"
             time.sleep(0.01)
@@ -443,7 +444,7 @@ def test_pending_worker_handle_is_atomically_visible(staging, source_repo, tmp_p
             assert "recorded_pid" not in pending
         finally:
             release.set()
-        assert worker.result(timeout=10)["kind"] == "completed"
+        assert worker.result(timeout=SUBPROCESS_WAIT_SECONDS)["kind"] == "completed"
     handle = json.loads((attempt / "worker.json").read_text())
     assert handle["pid"] == os.getpid()
     assert _finish(staging, evidence)["kind"] == "completed"
@@ -667,7 +668,7 @@ def test_missing_receipt_stays_pending_even_when_head_exists(staging, source_rep
         [sys.executable, str(SCRIPT), "check", "--evidence-dir", str(evidence)],
         capture_output=True,
         text=True,
-        timeout=5,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
     assert checked.returncode == 2
     assert json.loads(checked.stdout)["kind"] == "pending"
@@ -704,7 +705,7 @@ def test_two_attempts_for_one_destination_launch_at_most_once(staging, source_re
 
     def produce_together(*args):
         bundle = produce(*args)
-        ready.wait(timeout=10)
+        ready.wait(timeout=SUBPROCESS_WAIT_SECONDS)
         return bundle
 
     monkeypatch.setattr(staging, "_produce_bundle", produce_together)
@@ -778,7 +779,7 @@ def test_stage_cli_started_is_not_shell_success(staging, source_repo, tmp_path, 
         ],
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
     assert result.returncode == 2, result.stderr
     assert json.loads(result.stdout)["kind"] == "started"
@@ -787,7 +788,7 @@ def test_stage_cli_started_is_not_shell_success(staging, source_repo, tmp_path, 
         [sys.executable, str(SCRIPT), "check", "--evidence-dir", str(evidence)],
         capture_output=True,
         text=True,
-        timeout=5,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
     assert checked.returncode == 0, checked.stderr
     assert json.loads(checked.stdout)["kind"] == "completed"

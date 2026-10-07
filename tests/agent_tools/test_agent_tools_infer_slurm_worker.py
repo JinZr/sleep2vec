@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 
+from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS
 import pytest
 from test_agent_tools_infer_slurm import (  # noqa: F401
     _infer_slurm_recipe,
@@ -135,7 +136,7 @@ def test_generated_infer_worker_commits_only_authenticated_terminal_evidence(
         env=env,
         text=True,
         capture_output=True,
-        timeout=20,
+        timeout=SUBPROCESS_WAIT_SECONDS,
     )
     log_text = Path(run["log_path"]).read_text()
     assert completed.returncode == expected_exit, completed.stderr + log_text
