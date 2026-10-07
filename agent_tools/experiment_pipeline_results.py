@@ -355,14 +355,14 @@ def write_cohort_result_summary(
         metric_row["is_winner"] = metric_row["candidate_id"] == winner["candidate_id"]
     write_rows_atomic(pipeline_dir / "results.csv", summary_rows)
     write_rows_atomic(pipeline_dir / "metrics.csv", metric_rows)
-    markdown = cohort_summary_markdown(pipeline_dir, spec, summary_rows, metric_rows, winner)
+    markdown = _cohort_summary_markdown(pipeline_dir, spec, summary_rows, metric_rows, winner)
     atomic_write_text(pipeline_dir / "summary.md", markdown)
     report = pipeline_dir / "final.md"
     atomic_write_text(report, markdown)
     return report
 
 
-def cohort_summary_markdown(
+def _cohort_summary_markdown(
     pipeline_dir: Path,
     spec: dict[str, Any],
     summary_rows: list[dict[str, Any]],

@@ -90,9 +90,9 @@ def load_config_summary_for_recipe(
     return config_summary(
         config,
         variant=recipe.get("variant"),
-        validate_survival_local_paths=not skips_local_path_validation(
+        validate_survival_local_paths=not _skips_local_path_validation(
             recipe,
-            survival_validation_paths(config_data),
+            _survival_validation_paths(config_data),
         ),
         local_path_base=_runtime_path_base(recipe),
         config_bytes=config_bytes,
@@ -100,7 +100,7 @@ def load_config_summary_for_recipe(
     )
 
 
-def skips_local_path_validation(recipe: dict, raw_paths: list[Any] | None = None) -> bool:
+def _skips_local_path_validation(recipe: dict, raw_paths: list[Any] | None = None) -> bool:
     for raw_path in raw_paths or [""]:
         context = path_context(recipe, raw_path, relative_to_workdir=True)
         if context == "remote" and path_validation(recipe, context) in {"defer", "ssh", "remote"}:
@@ -116,7 +116,7 @@ def _runtime_path_base(recipe: dict) -> Path:
     return REPO_ROOT
 
 
-def survival_validation_paths(config_data: dict | None) -> list[Any]:
+def _survival_validation_paths(config_data: dict | None) -> list[Any]:
     if not isinstance(config_data, dict):
         return []
     data = config_data["data"] if isinstance(config_data.get("data"), dict) else {}
@@ -172,7 +172,7 @@ def context_index_summary(
     *,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
 ) -> IndexSummary | SummaryFailure | None:
-    paths, config, split_values = index_summary_inputs(recipe, cfg)
+    paths, config, split_values = _index_summary_inputs(recipe, cfg)
     finetune: Any = (cfg or {}).get(CONFIG_FINETUNE_SECTION) or {}
     task_type = (finetune.get("task") or {}).get("type")
     label_sidecars_valid = False
@@ -180,7 +180,7 @@ def context_index_summary(
         label_sidecars_valid = (finetune.get("survival") or {}).get("valid") is True
     elif task_type == "multilabel_classification":
         label_sidecars_valid = (finetune.get("multilabel") or {}).get("valid") is True
-    if not paths or skips_local_path_validation(recipe, paths):
+    if not paths or _skips_local_path_validation(recipe, paths):
         return None
     validated_summary = None
     if (
@@ -207,7 +207,7 @@ def context_index_summary(
         return {"blocking_issues": [f"Failed to summarize index: {exc}"]}
 
 
-def index_summary_inputs(recipe: dict, cfg: ConfigSummaryInput | None) -> tuple[list[Any], Any, list[Any]]:
+def _index_summary_inputs(recipe: dict, cfg: ConfigSummaryInput | None) -> tuple[list[Any], Any, list[Any]]:
     inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
     config = inputs.get("config")
     for adapter in all_adapters():

@@ -21,7 +21,7 @@ def load_yaml_file(path: str | Path) -> dict[str, Any]:
     return read_managed_yaml_mapping(resolved.read_text(), source=f"YAML file {resolved}")
 
 
-def load_recipe(path: str | Path) -> dict[str, Any]:
+def _load_recipe(path: str | Path) -> dict[str, Any]:
     recipe = load_yaml_file(path)
     reserved = sorted(str(key) for key in recipe if str(key).startswith("_"))
     if reserved:
@@ -34,13 +34,13 @@ def load_recipe_with_base(path: str | Path) -> dict[str, Any]:
     recipe_path = resolve_repo_path(path)
     if recipe_path is None:
         raise FileNotFoundError("Path is required.")
-    recipe = load_recipe(recipe_path)
+    recipe = _load_recipe(recipe_path)
     base_path = recipe.get("base_recipe")
     if base_path in (None, ""):
         return recipe
     if not isinstance(base_path, (str, Path)):
         raise ValueError("base_recipe must be a path string.")
-    base = load_recipe(_resolve_base_recipe_path(base_path, recipe_path))
+    base = _load_recipe(_resolve_base_recipe_path(base_path, recipe_path))
     merged = merge_recipe_layers(base, recipe)
     merged["_base_recipe"] = base
     merged["_local_recipe"] = recipe

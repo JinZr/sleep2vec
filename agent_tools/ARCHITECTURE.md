@@ -29,12 +29,12 @@ ownership claims or accuracy. This section is the
 split a concern between them — that no single docstring can state. When the two
 disagree, the docstring is next to the code and wins; fix this document.
 
-### Kernel — reusable (42, zero domain signal)
+### Kernel — reusable (41, zero domain signal)
 decision_models, transport, python_programs, manifests, schema_map, gpu_rules, repo,
 runtime_lock, runtime_sync,
 experiment_io, research_log, experiment_workspace, experiment_sources,
 experiment_tracking, experiments,
-run_artifacts, run_evidence, checkpoint_test_results, hparam, hparam_runtime, hparam_selection,
+run_artifacts, run_evidence, checkpoint_test_results, hparam_runtime, hparam_selection,
 adaptive_hparam, adaptive_evidence, adaptive_handshake, adaptive_proposals, adaptive_replacement, adaptive_state,
 recipes, progress,
 markdown, skills,

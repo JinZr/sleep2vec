@@ -722,7 +722,7 @@ def _evaluate_selected_config_decision(
     return report
 
 
-def write_questions(output_dir: str | Path, report: DecisionReport) -> None:
+def _write_questions(output_dir: str | Path, report: DecisionReport) -> None:
     """Write questions.json and questions.md from an existing consultation report.
 
     Creates the output directory as needed and overwrites these files in order,
@@ -936,7 +936,7 @@ def write_doctor_outputs(
         if _has_output_artifact_issue(locked_report):
             raise ValueError(locked_report.blocking_issues()[-1].message)
         if report.blocking_issues():
-            write_questions(out, report)
+            _write_questions(out, report)
         return write_user_decision_template(out, recipe, report, preserve_existing=True)
 
 
@@ -1040,7 +1040,7 @@ def build_context(
     write_json(out / "context.json", payload)
     write_text(out / "context.md", context.context_markdown(payload))
     if report.blocking_issues():
-        write_questions(out, report)
+        _write_questions(out, report)
         write_text(out / "commands.blocked.sh", rendering.blocked_script(), executable=True)
     elif report.exit_code == 0:
         write_text(
@@ -1580,7 +1580,7 @@ def _build_plan(
                 register_step=False,
                 plan_controller=request.plan_controller,
             )
-            write_questions(out, report)
+            _write_questions(out, report)
             template = write_user_decision_template(out, recipe, report, preserve_existing=False)
             template_path = template[0] if template is not None else None
             if template_path is not None:

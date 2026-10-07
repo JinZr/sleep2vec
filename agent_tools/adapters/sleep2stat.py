@@ -29,7 +29,7 @@ from ..plan_rendering import append_bool_option, append_list_option, append_opti
 from .base import TaskAdapter
 
 
-def sleep2stat_config_run_dir(cfg: ConfigSummaryInput | None) -> str | None:
+def _sleep2stat_config_run_dir(cfg: ConfigSummaryInput | None) -> str | None:
     if not cfg or not cfg.get("is_sleep2stat"):
         return None
     sleep2stat: Any = cfg.get("sleep2stat") or {}
@@ -37,7 +37,7 @@ def sleep2stat_config_run_dir(cfg: ConfigSummaryInput | None) -> str | None:
     return str(value) if value not in (None, "") else None
 
 
-def sleep2stat_runtime_args(recipe: dict[str, Any]) -> list[Any]:
+def _sleep2stat_runtime_args(recipe: dict[str, Any]) -> list[Any]:
     runtime_value = recipe.get("runtime")
     runtime = runtime_value if isinstance(runtime_value, dict) else {}
     inputs_value = recipe.get("inputs")
@@ -52,7 +52,7 @@ def sleep2stat_runtime_args(recipe: dict[str, Any]) -> list[Any]:
     return args
 
 
-def sleep2stat_record_check_args(recipe: dict[str, Any]) -> list[Any]:
+def _sleep2stat_record_check_args(recipe: dict[str, Any]) -> list[Any]:
     runtime_value = recipe.get("runtime")
     runtime = runtime_value if isinstance(runtime_value, dict) else {}
     inputs_value = recipe.get("inputs")
@@ -63,7 +63,7 @@ def sleep2stat_record_check_args(recipe: dict[str, Any]) -> list[Any]:
     return args
 
 
-def sleep2stat_has_yasa_stage(cfg: ConfigSummaryInput | None) -> bool:
+def _sleep2stat_has_yasa_stage(cfg: ConfigSummaryInput | None) -> bool:
     sleep2stat: Any = (cfg or {}).get("sleep2stat") or {}
     for analyzer in sleep2stat.get("analyzers", []):
         if analyzer.get("enabled") is not False and analyzer.get("type") == "yasa_stage":
@@ -79,7 +79,7 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
-def sleep2stat_existing_run_dir_issue(recipe: dict, raw_path: Any) -> DecisionIssue | None:
+def _sleep2stat_existing_run_dir_issue(recipe: dict, raw_path: Any) -> DecisionIssue | None:
     context = path_context(recipe, raw_path)
     validation = path_validation(recipe, context)
     if context != "local" or validation in {"remote", "ssh"}:
@@ -298,7 +298,7 @@ class Sleep2statAdapter(TaskAdapter):
                 )
             )
         if config_run_dir:
-            existing_run_dir_issue = sleep2stat_existing_run_dir_issue(recipe, config_run_dir)
+            existing_run_dir_issue = _sleep2stat_existing_run_dir_issue(recipe, config_run_dir)
             if existing_run_dir_issue is not None:
                 issues.append(existing_run_dir_issue)
         effective_split = _as_list(inputs.get("split") or cfg_data.get("split"))
@@ -381,16 +381,16 @@ class Sleep2statAdapter(TaskAdapter):
         runtime_value = recipe.get("runtime")
         runtime = runtime_value if isinstance(runtime_value, dict) else {}
         config = inputs.get("config")
-        run_dir = sleep2stat_config_run_dir(config_summary)
+        run_dir = _sleep2stat_config_run_dir(config_summary)
         if not run_dir:
             return []
         prefix = self.frozen_command_prefix(recipe)
         commands = [
             render_command([*prefix, "validate-config", "--config", config]),
         ]
-        if sleep2stat_has_yasa_stage(config_summary):
+        if _sleep2stat_has_yasa_stage(config_summary):
             commands.append(
-                render_command([*prefix, "validate-config", "--config", config] + sleep2stat_record_check_args(recipe))
+                render_command([*prefix, "validate-config", "--config", config] + _sleep2stat_record_check_args(recipe))
             )
         commands.append(
             render_command(
@@ -399,7 +399,7 @@ class Sleep2statAdapter(TaskAdapter):
                     "run",
                     "--config",
                     config,
-                    *sleep2stat_runtime_args(recipe),
+                    *_sleep2stat_runtime_args(recipe),
                 ]
             )
         )
@@ -450,7 +450,7 @@ class Sleep2statAdapter(TaskAdapter):
         self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[dict[str, str]]:
         cfg = config_summary
-        run_dir = sleep2stat_config_run_dir(cfg)
+        run_dir = _sleep2stat_config_run_dir(cfg)
         if not run_dir:
             return []
         sleep2stat: Any = cfg.get("sleep2stat") if cfg else {}

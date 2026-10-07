@@ -296,7 +296,7 @@ def read_registered_plan(
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs or any(not isinstance(run, dict) for run in runs):
         raise ValueError(f"Registered plan must define a non-empty runs list of mappings: {plan_path}")
-    validate_run_rows(
+    _validate_run_rows(
         runs,
         source=str(plan_path),
         require_artifact_paths=True,
@@ -583,7 +583,7 @@ def _validate_registered_workspace_runs(
     canonical_by_key = {managed_run_key(row): row for row in workspace_rows}
     for run in runs:
         key = managed_run_key(run)
-        assert key is not None  # validate_run_rows already requires both managed identity fields.
+        assert key is not None  # _validate_run_rows already requires both managed identity fields.
         canonical = canonical_by_key.get(key)
         if canonical is None:
             raise ValueError(f"Workspace run_manifest.tsv is missing registered plan run: {key[0]} / {key[1]}")
@@ -814,7 +814,7 @@ def read_hparam_plan(
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs:
         raise ValueError(f"Hparam plan must define a non-empty runs list: {plan_path}")
-    validate_run_rows(runs, source=str(plan_path), require_artifact_paths=True)
+    _validate_run_rows(runs, source=str(plan_path), require_artifact_paths=True)
     recipe = plan["recipe"] if isinstance(plan.get("recipe"), dict) else {}
     metadata_issues = experiment_metadata_issues(recipe)
     if metadata_issues:
@@ -1143,7 +1143,7 @@ def iter_registered_hparam_plans(
         yield registered_root, registered_plan
 
 
-def validate_run_rows(
+def _validate_run_rows(
     rows: list[dict[str, Any]],
     *,
     source: str,

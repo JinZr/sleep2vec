@@ -137,7 +137,7 @@ def append_bool_option(args: list[Any], value: Any, true_flag: str, false_flag: 
         args.append(false_flag)
 
 
-def loads_train_val(epochs: Any) -> bool:
+def _loads_train_val(epochs: Any) -> bool:
     try:
         return int(epochs) > 0
     except (TypeError, ValueError):
@@ -151,7 +151,7 @@ def finetune_loaded_split_values(recipe: dict, *, load_test: bool | None = None)
     evaluation = raw_evaluation if isinstance(raw_evaluation, dict) else {}
 
     splits: list[str] = []
-    if loads_train_val(runtime.get("epochs", 30)):
+    if _loads_train_val(runtime.get("epochs", 30)):
         splits.extend(["train", "val"])
 
     if load_test is None:
