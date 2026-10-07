@@ -41,18 +41,18 @@ class _ConfigProvenance(TypedDict, total=False):
 
 class ConfigDiagnostics(_ConfigProvenance):
     config_path: str
-    data_backend: Any
+    data_backend: JsonValue
     warnings: list[str]
     blocking_issues: list[str]
 
 
 class SidecarDiagnostics(TypedDict):
-    key_column: Any
-    disease_columns_index: Any
-    has_label_index: Any
-    covariates: Any
-    covariate_embedding_dim: Any
-    output_dim: Any
+    key_column: JsonValue
+    disease_columns_index: JsonValue
+    has_label_index: JsonValue
+    covariates: JsonValue
+    covariate_embedding_dim: JsonValue
+    output_dim: JsonValue
     valid: bool
     disease_count: int | None
     sidecar_key_count: int | None
@@ -60,32 +60,32 @@ class SidecarDiagnostics(TypedDict):
 
 
 class SurvivalSummary(SidecarDiagnostics):
-    event_time_index: Any
-    is_event_index: Any
+    event_time_index: JsonValue
+    is_event_index: JsonValue
     #: The subset of ``issues`` the config loader rejects; a preset-backed run opens no survival sidecar file.
     preset_issues: list[str]
 
 
 class MultilabelSummary(SidecarDiagnostics):
-    label_index: Any
+    label_index: JsonValue
     #: The subset of ``issues`` that still blocks a preset-backed run: disease_columns_index, the only sidecar it
     #: reads, and fields that are not non-empty strings, which the variant config loader rejects.
     preset_issues: list[str]
 
 
 class ChannelSummary(TypedDict):
-    name: Any
-    input_dim: Any
-    tokenizer: Any
-    out_dim: Any
+    name: JsonValue
+    input_dim: JsonValue
+    tokenizer: JsonValue
+    out_dim: JsonValue
 
 
 class TaskSummary(TypedDict):
-    type: Any
-    output_dim: Any
-    is_seq: Any
-    monitor: Any
-    monitor_mod: Any
+    type: JsonValue
+    output_dim: JsonValue
+    is_seq: JsonValue
+    monitor: JsonValue
+    monitor_mod: JsonValue
 
 
 class _OptionalSidecarSummaries(TypedDict, total=False):
@@ -95,70 +95,70 @@ class _OptionalSidecarSummaries(TypedDict, total=False):
 
 class TaskConfigSummary(_OptionalSidecarSummaries):
     task: TaskSummary
-    loss: dict[str, Any]
+    loss: dict[str, JsonValue]
 
 
 class FinetuneTaskSummary(TaskConfigSummary):
-    tuning: dict[str, Any]
+    tuning: dict[str, JsonValue]
     tuning_present: bool
 
 
 class AggregationSummary(TypedDict):
-    name: Any
-    kwargs: dict[str, Any]
+    name: JsonValue
+    kwargs: dict[str, JsonValue]
 
 
 class HeadSummary(TypedDict):
-    name: Any
-    dropout: Any
-    hidden_dim: Any
-    kwargs: dict[str, Any]
+    name: JsonValue
+    dropout: JsonValue
+    hidden_dim: JsonValue
+    kwargs: dict[str, JsonValue]
     channel_agg: AggregationSummary
     temporal_agg: AggregationSummary
 
 
 class AveragingSummary(TypedDict):
     present: bool
-    name: Any
-    enabled: Any
+    name: JsonValue
+    enabled: JsonValue
 
 
 class ClsSummary(TypedDict):
-    embedding_type: Any
-    downstream: Any
+    embedding_type: JsonValue
+    downstream: JsonValue
 
 
 class NamedComponentSummary(TypedDict):
-    name: Any
+    name: JsonValue
 
 
 class FinetuneModelSummary(TypedDict):
-    backbone: Any
-    hidden_size: Any
-    backbone_depth: Any
+    backbone: JsonValue
+    hidden_size: JsonValue
+    backbone_depth: JsonValue
     channels: list[ChannelSummary]
     cls: ClsSummary
     head: NamedComponentSummary
     head_details: HeadSummary
     layer_mix_present: bool
-    layer_mix: dict[str, Any]
+    layer_mix: dict[str, JsonValue]
     model_averaging: AveragingSummary
 
 
 class FinetuneDataSummary(TypedDict):
-    max_tokens: Any
-    data_channel_names: list[Any]
-    finetune_data_index: Any
-    finetune_preset_path: Any
-    train_dataset_names: list[Any]
-    test_dataset_names: list[Any]
-    kaldi_data_root: Any
-    kaldi_manifest: Any
+    max_tokens: JsonValue
+    data_channel_names: list[JsonValue]
+    finetune_data_index: JsonValue
+    finetune_preset_path: JsonValue
+    train_dataset_names: list[JsonValue]
+    test_dataset_names: list[JsonValue]
+    kaldi_data_root: JsonValue
+    kaldi_manifest: JsonValue
 
 
 class PresetBuildSummary(TypedDict):
-    required_channels: Any
-    min_channels: Any
+    required_channels: JsonValue
+    min_channels: JsonValue
 
 
 class FinetuneConfigSummary(ConfigDiagnostics):
@@ -235,7 +235,7 @@ class ReducerSummary(TypedDict):
     sex_prediction: str | None
     metadata_age_column: str
     metadata_sex_column: str
-    options: dict[str, Any]
+    options: dict[str, JsonValue]
 
 
 class Sleep2statRunSummary(TypedDict):
