@@ -33,6 +33,7 @@ from . import (
     managed_scheduler,
     plan_contract,
     run_artifacts as artifacts,
+    run_evidence,
 )
 from .experiment_pipeline_spec import (
     CheckpointEvidence,
@@ -487,7 +488,7 @@ def _inspect_sources(root: Path, spec: PipelineSpec, *, refresh: bool, hooks: Pi
             for run, row in zip(runs, rows, strict=True):
                 if row.get("status") not in SUCCESS_STATUSES:
                     continue
-                manifest_path = artifacts.find_run_manifest(run)
+                manifest_path = run_evidence.find_run_manifest(run)
                 if manifest_path is None or manifest_path.is_symlink() or not manifest_path.is_file():
                     raise ValueError(f"Successful source run lacks a valid run_manifest.json: {run['run_id']}")
                 manifest = read_json(manifest_path)

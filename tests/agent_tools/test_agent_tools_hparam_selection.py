@@ -3462,7 +3462,7 @@ def test_hparam_select_preflights_ranking_before_read_or_runtime_scan(tmp_path: 
 
     monkeypatch.setattr(hparam_selection, "read_rows", tracked_read_rows)
     monkeypatch.setattr(
-        hparam_selection.artifacts,
+        hparam_selection.evidence,
         "find_run_manifest",
         lambda _run: runtime_reads.append("runtime") or None,
     )
@@ -3514,7 +3514,7 @@ def test_hparam_checkpoint_scan_rejects_symlink_output_before_runtime_scan(tmp_p
     ranking.symlink_to(outside)
     runtime_reads = []
     monkeypatch.setattr(
-        hparam_selection.artifacts,
+        hparam_selection.evidence,
         "find_run_manifest",
         lambda _run: runtime_reads.append("runtime") or None,
     )
@@ -3557,7 +3557,7 @@ def test_hparam_checkpoint_scan_validates_existing_ranking_before_runtime_scan(
     before = ranking.read_bytes()
     runtime_reads = []
     monkeypatch.setattr(
-        hparam_selection.artifacts,
+        hparam_selection.evidence,
         "find_run_manifest",
         lambda _run: runtime_reads.append("runtime") or None,
     )

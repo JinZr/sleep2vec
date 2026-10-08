@@ -17,7 +17,7 @@ from test_agent_tools_hparam_runtime import (
 )
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 
-from agent_tools import hparam_runtime, managed_scheduler, manifests, run_artifacts, run_evidence, transport
+from agent_tools import hparam_runtime, managed_scheduler, manifests, run_evidence, transport
 from agent_tools.experiment_workspace import merge_run_manifest
 from agent_tools.hparam_runtime import monitor_hparam_runs
 
@@ -171,12 +171,12 @@ def test_find_run_manifest_distinguishes_missing_and_valid_regular_file(tmp_path
     runtime_dir.mkdir()
     run = {"runtime_dir": str(runtime_dir)}
 
-    assert run_artifacts.find_run_manifest(run) is None
+    assert run_evidence.find_run_manifest(run) is None
 
     manifest = runtime_dir / "run_manifest.json"
     manifest.write_text(json.dumps({"metrics": {"val_ahi_pearson": 0.7}}))
 
-    assert run_artifacts.find_run_manifest(run) == manifest
+    assert run_evidence.find_run_manifest(run) == manifest
 
 
 def test_hparam_monitor_handles_running_missing_and_failed_rows(tmp_path: Path, monkeypatch):

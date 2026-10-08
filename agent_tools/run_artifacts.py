@@ -42,7 +42,6 @@ from .experiment_workspace import (
     verify_run_snapshot,
 )
 from .manifests import read_json
-from .models import JsonValue
 from .recipes import merge_recipe_layers
 
 RUN_METADATA_FIELDS = ("experiment_id", "run_name", "version")
@@ -1201,35 +1200,6 @@ def _validate_run_rows(
         versions.add(version)
 
 
-def find_run_manifest(run: Mapping[str, JsonValue]) -> Path | None:
-    """Locate and parse-check runtime_dir/run_manifest.json on the local host.
-
-    Returns None for an absent/empty runtime_dir value or a missing manifest.
-    Rejects symlink runtime directories/manifests, non-directory parents and
-    non-regular or multiply linked manifests. An unreadable/unparseable manifest
-    or a non-object JSON payload raises ValueError. Returns the path, not the
-    parsed mapping; it does not validate run identity, metrics or success, and
-    does not update lifecycle state. Other filesystem errors can propagate.
-    """
-    if not run.get("runtime_dir"):
-        return None
-    runtime_dir = Path(str(run["runtime_dir"]))
-    path = runtime_dir / "run_manifest.json"
-    if runtime_dir.is_symlink() or path.is_symlink():
-        raise ValueError(f"Runtime run manifest is not an independent regular file: {path}")
-    if runtime_dir.exists() and not runtime_dir.is_dir():
-        raise ValueError(f"Runtime run manifest parent is not a directory: {runtime_dir}")
-    if not path.exists():
-        return None
-    if not path.is_file() or path.stat().st_nlink != 1:
-        raise ValueError(f"Runtime run manifest is not an independent regular file: {path}")
-    try:
-        read_json(path)  # Must parse as a JSON object.
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise ValueError(f"Runtime run manifest is corrupt: {path}") from exc
-    return path
-
-
 def metric_value(manifest: dict[str, Any], metric: str) -> float | str:
     """Extract a metric without coercing or validating the stored value.
 
@@ -1390,23 +1360,6 @@ def fixed_checkpoint_path_from_names(
                 return str(checkpoint_dir / candidate)
         return ""
     return ""
-
-
-def checkpoint_names(run: Mapping[str, JsonValue]) -> list[str]:
-    """List sorted local *.ckpt basenames, excluding symlinks and non-files.
-
-    Returns [] when checkpoint_dir is absent, a symlink or not a directory.
-    Reads only the immediate directory and does not inspect checkpoint contents
-    or prove run completion. Filesystem errors may propagate; the inventory is
-    an observation without locking, not a frozen artifact snapshot.
-    """
-    if not run.get("checkpoint_dir"):
-        return []
-    ckpt_dir = Path(str(run["checkpoint_dir"]))
-    if ckpt_dir.is_symlink() or not ckpt_dir.is_dir():
-        return []
-    # Match remote evidence collection: only physical checkpoint files belong to the runtime inventory.
-    return [path.name for path in sorted(ckpt_dir.glob("*.ckpt")) if not path.is_symlink() and path.is_file()]
 
 
 def checkpoint_for_epoch_in_dir(ckpt_dir: Path, epoch: int | None) -> Path | None:

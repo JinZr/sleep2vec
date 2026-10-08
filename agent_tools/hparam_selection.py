@@ -1345,7 +1345,7 @@ def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_
         validate_frozen_run_update(canonical, row, require_checkpoint_ownership=True)
     rows = []
     for run in plan["runs"]:
-        manifest_path = artifacts.find_run_manifest(run)
+        manifest_path = evidence.find_run_manifest(run)
         manifest = read_json(manifest_path) if manifest_path else {}
         rows.extend(_checkpoint_scan_rows(run, metric, manifest_path, manifest))
     reverse = mode == "max"

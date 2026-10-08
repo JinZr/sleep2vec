@@ -281,6 +281,7 @@ def test_retired_compatibility_paths_stay_removed():
     import agent_tools.hparam_runtime
     import agent_tools.managed_scheduler
     import agent_tools.recipes
+    import agent_tools.run_artifacts
 
     assert not (_package_dir() / "index_csv.py").exists()
     assert not hasattr(agent_tools.configs, "sleep2stat_config_summary")
@@ -300,6 +301,8 @@ def test_retired_compatibility_paths_stay_removed():
     ):
         assert not hasattr(agent_tools.managed_scheduler, name), name
     assert not hasattr(agent_tools.hparam_runtime, "EXECUTION_SNAPSHOT_NAME")
+    assert not hasattr(agent_tools.run_artifacts, "find_run_manifest")
+    assert not hasattr(agent_tools.run_artifacts, "checkpoint_names")
 
 
 def _executed_imports(node: ast.AST, local: bool = False) -> Iterator[tuple[ast.Import | ast.ImportFrom, bool]]:
