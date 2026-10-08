@@ -11,7 +11,7 @@ evaluate_recipe can never false-positive.
 import ast
 from pathlib import Path
 
-from agent_tools.adapters import SUPPORTED_TASKS, all_adapters, composite_adapter, get_adapter
+from agent_tools.adapters.registry import SUPPORTED_TASKS, all_adapters, composite_adapter, get_adapter
 from agent_tools.models import VARIANTLESS_TASKS
 
 KERNEL_MODULES = (

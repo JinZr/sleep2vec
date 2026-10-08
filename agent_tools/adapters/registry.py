@@ -18,8 +18,8 @@ from .base import TaskAdapter
 from .embedding_extraction import EMBEDDING_EXTRACTION_ADAPTER
 
 # Registration order is the probing order for config-shape claims
-# (index_summary_inputs_override / matches_config_data): config-probing
-# adapters must precede task-keyed ones.
+# (index_summary_inputs_override): config-probing adapters must precede
+# task-keyed ones.
 from .finetune import FINETUNE_ADAPTER
 from .hparam_tune import HPARAM_TUNE_ADAPTER
 from .infer_evaluate import EVALUATE_ADAPTER, INFER_ADAPTER

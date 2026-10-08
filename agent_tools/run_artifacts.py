@@ -34,8 +34,8 @@ from . import (
     plan_contract,
     plan_hparam,
 )
-from .adapters import get_adapter
 from .adapters.base import TaskAdapter
+from .adapters.registry import get_adapter
 from .decision_models import USER_DECISIONS_FILENAME
 from .experiment_workspace import (
     SCHEDULER_PLAN_IDENTITY_FIELDS,

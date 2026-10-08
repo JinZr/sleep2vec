@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import decision_paths as paths, decision_rules as task_rules, schema_map
-from .adapters import SUPPORTED_TASKS, all_adapters, get_adapter
+from .adapters.registry import SUPPORTED_TASKS, all_adapters, get_adapter
 from .decision_models import (
     DecisionIssue,
     DecisionReport,

@@ -12,7 +12,8 @@ import pytest
 import yaml
 
 from agent_tools import execution_snapshot, experiment_tracking, experiments, plan_contract, plan_hparam, plans
-from agent_tools.adapters import finetune as finetune_adapter, get_adapter
+from agent_tools.adapters import finetune as finetune_adapter
+from agent_tools.adapters.registry import get_adapter
 from agent_tools.experiment_workspace import managed_run_parameters
 from agent_tools.manifests import write_rows
 from agent_tools.models import REPO_ROOT

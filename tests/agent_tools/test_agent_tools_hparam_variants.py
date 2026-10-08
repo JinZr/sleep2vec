@@ -8,7 +8,7 @@ import sys
 import pytest
 import yaml
 
-from agent_tools import configs, plan_context
+from agent_tools import configs
 from agent_tools.decisions import DecisionStatus, evaluate_consultation_gates
 from agent_tools.models import REPO_ROOT, SUPPORTED_VARIANTS
 from agent_tools.plan_hparam import (
@@ -368,7 +368,7 @@ def test_hparam_card_skips_sidecar_tables_without_weakening_validation(
     assert "| run-000, run-001 |" in card
     assert calls == []
 
-    summary = plan_context.load_config_summary_for_recipe(recipe, config_bytes=config_bytes)
+    summary = configs.load_config_summary_for_recipe(recipe, config_bytes=config_bytes)
     report = evaluate_consultation_gates(
         "finetune", recipe, summary, {}, load_consultation_policy(), require_experiment=False
     )

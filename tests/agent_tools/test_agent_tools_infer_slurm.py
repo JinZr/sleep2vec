@@ -33,7 +33,7 @@ from agent_tools import (
     run_artifacts,
     slurm,
 )
-from agent_tools.adapters import get_adapter
+from agent_tools.adapters.registry import get_adapter
 from agent_tools.models import REPO_ROOT
 
 

@@ -31,7 +31,6 @@ from . import (
     configs,
     execution_snapshot,
     experiment_io as exp_io,
-    plan_context,
     plan_contract,
     plan_rendering as rendering,
     slurm,
@@ -202,7 +201,7 @@ def final_test_checkpoint_issues(
                 )
             )
             return issues
-        config_summary = plan_context.load_config_summary_for_recipe(recipe, config_bytes=config_bytes)
+        config_summary = configs.load_config_summary_for_recipe(recipe, config_bytes=config_bytes)
         blocking_issues = config_summary.get("blocking_issues", []) if config_summary is not None else []
         for message in blocking_issues:
             issues.append(

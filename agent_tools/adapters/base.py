@@ -6,13 +6,16 @@ Layering contract (import directions are one-way):
   transport, plan_rendering, decision_paths, gpu_rules, decision_hparam,
   plan_hparam, experiment_workspace, manifests, repo, slurm.
 - Layer 1 (this package): adapters/base.py, adapters/<task>.py,
-  adapters/registry.py.
-- Layer 2 (kernel orchestration, imports the registry): configs,
-  decision_rules, decisions, plan_context, plans.
+  adapters/config_providers.py, adapters/registry.py.
+- Layer 2 (kernel orchestration, imports the registry): decision_rules,
+  decisions, plan_context, plans.
 
 Adapters must never import layer-2 modules. decision_paths is layer 0 and
 must never import the registry -- task-specific dispatch that used to live
-there is hoisted into decisions.py instead.
+there is hoisted into decisions.py instead. configs, and through it
+plan_hparam and decision_hparam, reads adapters/config_providers (which pairs
+the sleep2stat adapter's config summary) but never the registry; the layering
+test rejects any import cycle and any function-local intra-package import.
 
 For the full module ownership map (kernel vs domain vs mixed bridges), the CLI
 command triage, and the tolerated reverse edges, see ../ARCHITECTURE.md and the
@@ -27,7 +30,7 @@ from typing import Any, Mapping
 
 from .. import plan_contract, plan_rendering, slurm
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
-from ..models import BoundFinalEvalConfigSnapshot, ConfigSummary, ConfigSummaryInput, JsonValue, coerce_list
+from ..models import BoundFinalEvalConfigSnapshot, ConfigSummaryInput, JsonValue, coerce_list
 from ..plan_contract import CompiledPlanContract, GenericCompiledPlanContract
 from ..plan_rendering import finetune_loaded_split_values
 
@@ -170,8 +173,8 @@ class TaskAdapter:
     ) -> list[DecisionIssue]:
         """Bind config-owned fields into the in-memory effective recipe.
 
-        Domain adapters may defer a domain-leaf compiler import inside this
-        hook; generic adapters must keep it domain-free.
+        Domain adapters may call a domain-leaf compiler here; generic adapters
+        must keep it domain-free.
         """
         return []
 
@@ -255,15 +258,6 @@ class TaskAdapter:
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         """Task-owned prefix required for every command in a frozen plan."""
-        raise NotImplementedError
-
-    def matches_config_data(self, data: dict[str, Any]) -> bool:
-        """Whether a loaded config mapping belongs to this task's domain."""
-        return False
-
-    def config_summary(self, config_path: str | Path) -> ConfigSummary:
-        """Structured summary of a domain config. Domain-leaf imports used by
-        adapter hooks must stay inside the method body (deferred)."""
         raise NotImplementedError
 
     def task_issues(

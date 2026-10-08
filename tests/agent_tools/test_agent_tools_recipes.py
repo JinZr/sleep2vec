@@ -7,7 +7,7 @@ import re
 import pytest
 import yaml
 
-from agent_tools import execution_snapshot, plan_context
+from agent_tools import configs, execution_snapshot, plan_context
 from agent_tools.decision_hparam import hparam_recipe_contract_issues, hparam_search_issues
 from agent_tools.decision_models import DecisionStatus
 from agent_tools.experiment_workspace import experiment_metadata_issues
@@ -697,9 +697,13 @@ def test_checked_in_recipe(
 
         with monkeypatch.context() as guarded:
             guarded.setattr(Path, "open", guarded_open)
-            for name in ("load_config_summary_for_recipe", "context_index_summary", "context_preset_summary"):
+            for module, name in (
+                (configs, "load_config_summary_for_recipe"),
+                (plan_context, "context_index_summary"),
+                (plan_context, "context_preset_summary"),
+            ):
                 guarded.setattr(
-                    plan_context,
+                    module,
                     name,
                     lambda *_args, **_kwargs: pytest.fail("Unresolved template ownership reached data validation"),
                 )

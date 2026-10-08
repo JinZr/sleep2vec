@@ -12,7 +12,16 @@ import pandas as pd
 import pytest
 import yaml
 
-from agent_tools import cli, decisions, execution_snapshot, experiment_workspace, managed_scheduler, plan_context, plans
+from agent_tools import (
+    cli,
+    configs,
+    decisions,
+    execution_snapshot,
+    experiment_workspace,
+    managed_scheduler,
+    plan_context,
+    plans,
+)
 from agent_tools.configs import config_summary
 from agent_tools.domain import index_csv
 from agent_tools.models import REPO_ROOT
@@ -134,7 +143,7 @@ def _forbid_config_reads(monkeypatch, config_path):
 
     monkeypatch.setattr(Path, "open", guarded_open)
     monkeypatch.setattr(
-        plan_context,
+        configs,
         "load_config_summary_for_recipe",
         lambda *_args, **_kwargs: pytest.fail("Invalid authored input reached config validation"),
     )
