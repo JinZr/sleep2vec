@@ -24,6 +24,7 @@ from typing import Any, Literal, TypedDict
 import yaml
 
 from . import (
+    execution_snapshot,
     experiment_io as exp_io,
     experiment_pipeline,
     experiment_tracking as tracking,
@@ -155,7 +156,7 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
         previous = {managed_run_key(row): row for row in rows}[key]
         execution = plan["recipe"]["execution"]
 
-        def preflight(*_scheduler_state: object) -> managed_scheduler.ExecutionSnapshotResult:
+        def preflight(*_scheduler_state: object) -> execution_snapshot.ExecutionSnapshotResult:
             # The scheduler passes the manifest state read under this same lock, which is previous for this run.
             # Script-based preset runs freeze no module execution snapshot; the start command re-verifies artifacts.
             if previous["status"] not in managed_scheduler.LAUNCHABLE_STATUSES:
@@ -167,7 +168,7 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
                 raise ValueError("Preset run already has launch evidence; refusing another launch attempt.")
             if (Path(run["run_dir"]) / "pid").exists():
                 raise ValueError("Preset PID receipt already exists; refusing another launch attempt.")
-            probe = managed_scheduler.run_execution_command(
+            probe = execution_snapshot.run_execution_command(
                 execution,
                 [
                     execution["python"],

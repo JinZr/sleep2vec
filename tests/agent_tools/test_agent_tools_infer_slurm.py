@@ -23,10 +23,10 @@ import yaml
 
 from agent_tools import (
     cli,
+    execution_snapshot,
     experiment_io,
     experiment_workspace,
     experiments,
-    managed_scheduler,
     plan_rendering,
     plans,
     python_programs,
@@ -66,7 +66,7 @@ def _no_external_scheduler(tmp_path: Path, monkeypatch):
 
 @pytest.fixture
 def _runtime_probe(monkeypatch):
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
 
 
 @pytest.fixture(scope="module")
@@ -572,7 +572,7 @@ def test_infer_launch_guard_failure_records_definitely_unsubmitted_failure(
     def failed_runtime_probe(*_args, **_kwargs):
         raise ValueError("runtime interpreter changed")
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", failed_runtime_probe)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", failed_runtime_probe)
     with pytest.raises(ValueError, match="runtime interpreter changed"):
         experiments.launch_infer_run(plan_dir, dry_run=False)
 

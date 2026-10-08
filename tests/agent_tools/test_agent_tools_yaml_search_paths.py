@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, managed_scheduler, plan_hparam
+from agent_tools import adaptive_hparam, execution_snapshot, plan_hparam
 from agent_tools.adaptive_proposals import validate_proposal
 from tests.agent_tools.adaptive_hparam_test_support import _agent_recipe
 from tests.agent_tools.test_agent_tools_adaptive_proposals import _proposal, _snapshot
@@ -96,7 +96,7 @@ def test_proposal_preflight_rejects_list_alias_before_acceptance(tmp_path: Path,
     def reject_target_inspection(*_args, **_kwargs):
         pytest.fail("Invalid pointer must fail before execution-target inspection")
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", reject_target_inspection)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", reject_target_inspection)
 
     with pytest.raises(RuntimeError, match="Agent proposal failed preflight.*canonical integer spelling"):
         adaptive_hparam._preflight_candidate(yaml.safe_dump(candidate).encode(), next_dir, "Agent proposal")

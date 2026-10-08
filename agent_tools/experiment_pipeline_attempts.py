@@ -25,11 +25,11 @@ from typing import Any, cast
 import yaml
 
 from . import (
+    execution_snapshot,
     experiment_io as exp_io,
     experiment_pipeline_cohort_selection as cohort_selection,
     experiment_pipeline_results as pipeline_results,
     experiment_workspace,
-    managed_scheduler,
     run_artifacts as artifacts,
 )
 from .experiment_pipeline_spec import FrozenCheckpointCandidate, JobSpec, PipelineSpec
@@ -96,7 +96,7 @@ def load_or_create_initial_attempts(
     spec: PipelineSpec,
     selections: Mapping[str, FrozenCheckpointCandidate],
     *,
-    inspect_target: Callable[..., managed_scheduler.ExecutionSnapshot] | None = None,
+    inspect_target: Callable[..., execution_snapshot.ExecutionSnapshot] | None = None,
 ) -> list[dict[str, Any]]:
     jobs_path = pipeline_dir / "jobs.tsv"
     existing = read_rows(jobs_path, require_managed_identity=True)
@@ -412,7 +412,7 @@ def _prepare_attempt_registration_groups(
     attempts: list[tuple[JobSpec, FrozenCheckpointCandidate, int, Path, Path, Path]],
     *,
     snapshot_owner_dirs: dict[str, Path],
-    inspect_target: Callable[..., managed_scheduler.ExecutionSnapshot] | None = None,
+    inspect_target: Callable[..., execution_snapshot.ExecutionSnapshot] | None = None,
 ) -> dict[str, Path]:
     prepared: dict[str, Path] = {}
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -476,15 +476,15 @@ def _prepare_attempt_registration_groups(
 
         execution = pipeline_execution(spec)
         remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
-        snapshots: dict[str, tuple[Path, managed_scheduler.ExecutionSnapshot]] = {}
+        snapshots: dict[str, tuple[Path, execution_snapshot.ExecutionSnapshot]] = {}
         for variant in sorted(groups):
-            snapshot_path = snapshot_owner_dirs[variant] / managed_scheduler.EXECUTION_SNAPSHOT_NAME
+            snapshot_path = snapshot_owner_dirs[variant] / execution_snapshot.EXECUTION_SNAPSHOT_NAME
             exp_io.validate_managed_output_paths(
                 Path("/"),
                 [*group_paths[variant], snapshot_path],
                 remote=remote,
             )
-            inspect = inspect_target or managed_scheduler.inspect_execution_target
+            inspect = inspect_target or execution_snapshot.inspect_execution_target
             snapshot = inspect(execution, groups[variant], plan_label="pipeline")
             if snapshot_path.exists() and read_json(snapshot_path) != snapshot:
                 raise ValueError(f"Frozen pipeline execution snapshot changed: {snapshot_path}")
@@ -858,7 +858,7 @@ def create_needed_retries(
     selections: Mapping[str, FrozenCheckpointCandidate],
     attempts: list[dict[str, Any]],
     *,
-    inspect_target: Callable[..., managed_scheduler.ExecutionSnapshot] | None = None,
+    inspect_target: Callable[..., execution_snapshot.ExecutionSnapshot] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     created = False
     state_changed = False

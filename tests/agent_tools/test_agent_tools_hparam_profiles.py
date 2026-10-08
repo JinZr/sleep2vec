@@ -10,7 +10,7 @@ from agent_tool_test_helpers import hparam_search_defaults, run_execution_prefli
 import pytest
 import yaml
 
-from agent_tools import managed_scheduler, plans
+from agent_tools import execution_snapshot, plans
 from agent_tools.adaptive_proposals import validate_configurations, validate_parameter_envelopes
 from agent_tools.configs import config_summary
 from agent_tools.decision_models import DecisionStatus
@@ -25,7 +25,7 @@ from agent_tools.plan_hparam import apply_search_overrides, validate_finetune_co
 
 @pytest.fixture(autouse=True)
 def _stub_execution_target(monkeypatch):
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
 
 
 def _recipe(*, label: str = "ahi", variant: str = "sleep2vec", max_runs: int | None = None) -> dict:
@@ -943,7 +943,7 @@ def test_real_profile_candidate_validation_precedes_target_probe(tmp_path: Path,
 
     monkeypatch.setattr(finetune_hparam_profile, "compile_finetune_balanced_profile", invalid_compilation)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda *_args, **_kwargs: pytest.fail("Invalid candidate reached target preflight"),
     )

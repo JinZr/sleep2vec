@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from agent_tools import (
+    execution_snapshot,
     hparam_runtime,
     managed_scheduler,
     manifests,
@@ -41,7 +42,7 @@ _RUNTIME_COMMIT = subprocess.run(
 def _stub_execution_snapshot_preflight(monkeypatch, request):
     monkeypatch.setattr(managed_scheduler.slurm, "controller_cluster", lambda *_args, **_kwargs: "wuji-h20")
     if not request.node.name.startswith("test_execution_probe_"):
-        monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
+        monkeypatch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -192,7 +193,7 @@ def _set_execution_probe(
     parse_error: str | None = None,
 ) -> list[str]:
     plan = json.loads((plan_dir / "plan.json").read_text())
-    frozen = json.loads((plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_text())
+    frozen = json.loads((plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_text())
     command = shlex.split(plan["runs"][0]["command"])
     module = command[command.index("-m") + 1]
     options = set(frozen["supported_options"]) - set(missing_options or set())
@@ -233,7 +234,7 @@ def _set_execution_probe(
             parse_error or "",
         )
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", run_probe)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", run_probe)
     return calls
 
 

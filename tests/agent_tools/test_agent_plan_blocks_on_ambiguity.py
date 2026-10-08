@@ -17,7 +17,7 @@ from agent_tool_test_helpers import (
 import pytest
 import yaml
 
-from agent_tools import experiments, managed_scheduler, plans, run_artifacts
+from agent_tools import execution_snapshot, experiments, plans, run_artifacts
 from agent_tools.experiment_workspace import ensure_experiment_workspace, read_run_manifest
 from agent_tools.models import REPO_ROOT
 
@@ -28,7 +28,7 @@ _RUNTIME_COMMIT = subprocess.run(
 
 @pytest.fixture(autouse=True)
 def _stub_execution_target(monkeypatch):
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:

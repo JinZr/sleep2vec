@@ -128,7 +128,7 @@ def prepare_hparam_plan_fixture(recipe: Path, plan_dir: Path) -> None:
 
     import pytest
 
-    from agent_tools import cli, experiment_io, managed_scheduler
+    from agent_tools import cli, execution_snapshot, experiment_io
 
     original_validate_paths = experiment_io.validate_managed_output_paths
 
@@ -139,7 +139,7 @@ def prepare_hparam_plan_fixture(recipe: Path, plan_dir: Path) -> None:
     stdout, stderr = StringIO(), StringIO()
     # Match the CLI stub's two substitutions only while preparing this fixture.
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
+        patch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
         patch.setattr(experiment_io, "validate_managed_output_paths", validate_managed_output_paths)
         with redirect_stdout(stdout), redirect_stderr(stderr):
             returncode = cli.main(["plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)])

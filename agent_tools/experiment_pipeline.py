@@ -23,6 +23,7 @@ from typing import Any, Callable, Literal, TypedDict, TypeGuard, cast
 import yaml
 
 from . import (
+    execution_snapshot,
     experiment_io as exp_io,
     experiment_pipeline_attempts as pipeline_attempts,
     experiment_pipeline_cohort_selection as cohort_selection,
@@ -123,13 +124,13 @@ class PipelineHooks:
 
     A ``None`` field uses the canonical owner, looked up when the effect runs: ``monitor_runs`` replaces
     ``monitor_hparam_runs`` for source refreshes, ``inspect_target`` replaces
-    ``managed_scheduler.inspect_execution_target`` for registration and pre-launch snapshot probes,
+    ``execution_snapshot.inspect_execution_target`` for registration and pre-launch snapshot probes,
     ``launch_runs`` replaces ``managed_scheduler.launch_managed_runs``, and ``sleep`` replaces ``time.sleep``
     between polls. Validation, locking, state and artifact writes are not replaceable.
     """
 
     monitor_runs: Callable[..., Path] | None = None
-    inspect_target: Callable[..., managed_scheduler.ExecutionSnapshot] | None = None
+    inspect_target: Callable[..., execution_snapshot.ExecutionSnapshot] | None = None
     launch_runs: Callable[..., managed_scheduler.LaunchResult] | None = None
     sleep: Callable[[float], None] | None = None
 
@@ -1362,7 +1363,7 @@ def _run_attempts(
         # status under the run lock, so every canonical read in this loop holds it.
         for owner_dir, runs in groups:
             owner_dir.mkdir(parents=True, exist_ok=True)
-            snapshot_path = owner_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
+            snapshot_path = owner_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME
             if snapshot_path.exists():
                 with experiment_workspace.managed_run_lock(root):
                     canonical = {cast(tuple[str, str], managed_run_key(row)): row for row in read_run_manifest(root)}
@@ -1371,7 +1372,7 @@ def _run_attempts(
                     in managed_scheduler.LAUNCHABLE_STATUSES
                     for run in runs
                 ):
-                    managed_scheduler.validated_execution_snapshot(
+                    execution_snapshot.validated_execution_snapshot(
                         owner_dir, execution, runs, canonical, inspector=hooks.inspect_target
                     )
             try:

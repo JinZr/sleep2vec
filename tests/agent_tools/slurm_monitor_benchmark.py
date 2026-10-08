@@ -140,7 +140,7 @@ def prepare_fixture(repo, root, count, routes, state):
     import pytest
     from test_agent_tools_hparam_runtime import _write_slurm_plan
 
-    from agent_tools import managed_scheduler, manifests, python_programs
+    from agent_tools import execution_snapshot, manifests, python_programs
     from agent_tools.experiment_workspace import read_run_manifest
 
     state["programs"] = {
@@ -149,7 +149,7 @@ def prepare_fixture(repo, root, count, routes, state):
     state_path = Path(os.environ[STATE_ENV])
     state_path.write_text(json.dumps(state))
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
+        patch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
         plan_dir, plan = _write_slurm_plan(
             root,
             run_count=count,

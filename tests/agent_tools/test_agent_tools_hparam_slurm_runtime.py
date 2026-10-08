@@ -16,6 +16,7 @@ from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  
 import yaml
 
 from agent_tools import (
+    execution_snapshot,
     hparam_runtime,
     managed_scheduler,
     plan_contract,
@@ -167,7 +168,7 @@ def test_slurm_runtime_preflight_failure_fails_before_controller_or_submit(tmp_p
         assert command[-1]
         return subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed")
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", reject_protocol)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", reject_protocol)
 
     with pytest.raises(RuntimeError, match="Target runtime preflight failed"):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
@@ -830,7 +831,7 @@ def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: 
         if row["run_id"] in {run["run_id"] for run in plan["runs"]}
     ]
     assert len(calls) == 2
-    expected_snapshot_sha256 = file_sha256(plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME)
+    expected_snapshot_sha256 = file_sha256(plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME)
     assert all(call[3] == expected_snapshot_sha256 for call in calls)
     assert [row["status"] for row in rows] == ["queued", "queued"]
     assert [row["scheduler_job_id"] for row in rows] == ["3881", "3882"]
@@ -843,7 +844,7 @@ def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: 
 @pytest.mark.parametrize("field", ["runtime_dir", "checkpoint_dir"])
 def test_slurm_launch_rejects_existing_local_runtime_output_before_submission(tmp_path: Path, monkeypatch, field: str):
     plan_dir, plan = _write_slurm_plan(tmp_path)
-    snapshot = (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_bytes()
+    snapshot = (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_bytes()
     run = plan["runs"][0]
     Path(run[field]).mkdir(parents=True)
     submitted = []
@@ -855,7 +856,7 @@ def test_slurm_launch_rejects_existing_local_runtime_output_before_submission(tm
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert submitted == []
     assert canonical["status"] in {"planned", "pending"}
-    assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot
+    assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot
 
 
 @pytest.mark.parametrize("scheduler_kind", ["direct", "slurm"])
@@ -968,7 +969,7 @@ def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission
         execution={"target": "ssh", "host": "offline-host", "workdir": str(tmp_path)},
     )
     run = plan["runs"][0]
-    snapshot = (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_bytes()
+    snapshot = (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_bytes()
     checkpoint_dir = Path(run["checkpoint_dir"])
     remote_probes = []
 
@@ -1006,7 +1007,7 @@ def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission
     ]
     assert submitted == []
     assert canonical["status"] in {"planned", "pending"}
-    assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot
+    assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot
 
 
 @pytest.mark.parametrize(

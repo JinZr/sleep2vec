@@ -58,6 +58,7 @@ KERNEL_MODULES: frozenset[str] = frozenset(
         "run_evidence",
         "checkpoint_test_results",
         "hparam_runtime",
+        "execution_snapshot",
         "managed_scheduler",
         "slurm",
         "hparam_selection",
@@ -151,28 +152,17 @@ KNOWN_DOMAIN_IMPORT_EXEMPTIONS: frozenset[tuple[str, str]] = frozenset(
 IMPORT_CYCLE_LEDGER: frozenset[str] = frozenset(
     {
         "adapters",
-        "adapters.base",
-        "adapters.embedding_extraction",
-        "adapters.finetune",
         "adapters.hparam_tune",
-        "adapters.infer_evaluate",
-        "adapters.preset_prepare",
         "adapters.registry",
-        "adapters.sleep2stat",
         "configs",
         "decision_hparam",
-        "decision_paths",
         "decision_rules",
         "decisions",
         "domain.index_csv",
-        "managed_scheduler",
         "markdown",
         "plan_context",
-        "plan_contract",
         "plan_hparam",
         "run_artifacts",
-        "run_evidence",
-        "slurm",
     }
 )
 
@@ -182,10 +172,8 @@ IMPORT_CYCLE_LEDGER: frozenset[str] = frozenset(
 #: removes its last function-local import; never add one.
 LAZY_IMPORT_LEDGER: frozenset[tuple[str, str]] = frozenset(
     {
-        ("adapters.hparam_tune", "managed_scheduler"),
         ("adapters.hparam_tune", "plan_hparam"),
         ("decision_hparam", "plan_hparam"),
         ("plan_hparam", "run_artifacts"),
-        ("slurm", "managed_scheduler"),
     }
 )

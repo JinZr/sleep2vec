@@ -20,7 +20,7 @@ from test_agent_tools_hparam_runtime import (
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
 
-from agent_tools import hparam_runtime, managed_scheduler, run_evidence
+from agent_tools import execution_snapshot, hparam_runtime, managed_scheduler, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 
 
@@ -39,7 +39,7 @@ def test_launch_without_canonical_status_keeps_snapshot_preflight_error(tmp_path
             {},
             dry_run=False,
         )
-    assert not (tmp_path / managed_scheduler.EXECUTION_SNAPSHOT_NAME).exists()
+    assert not (tmp_path / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
 
 
 def test_slurm_sidecar_runtime_commit_rejects_sha256_object_id():
@@ -371,10 +371,10 @@ def test_hparam_launch_rejects_partially_executed_plan_without_snapshot(tmp_path
     plan = json.loads((plan_dir / "plan.json").read_text())
     plan.pop("execution_snapshot")
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
-    (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).unlink()
+    (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).unlink()
     calls = []
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "run_execution_command",
         lambda *_args, **_kwargs: calls.append(True) or pytest.fail("started plan must fail before target probing"),
     )
@@ -383,7 +383,7 @@ def test_hparam_launch_rejects_partially_executed_plan_without_snapshot(tmp_path
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     assert calls == []
-    assert not (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert not (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
 
 
 def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_is_unknown(tmp_path: Path):

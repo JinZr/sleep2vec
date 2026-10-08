@@ -121,12 +121,12 @@ def test_generated_infer_worker_commits_only_authenticated_terminal_evidence(
     bootstrap = (
         "import os, runpy\n"
         "from agent_tool_test_helpers import run_execution_preflight_fixture\n"
-        "from agent_tools import managed_scheduler\n"
+        "from agent_tools import execution_snapshot\n"
         "def runtime_preflight(execution, command):\n"
         "    if os.environ['INFER_WORKER_TEST_MODE'] == 'rolling-runtime':\n"
         "        execution = {**execution, 'runtime_commit': '0' * 40}\n"
         "    return run_execution_preflight_fixture(execution, command)\n"
-        "managed_scheduler.run_execution_command = runtime_preflight\n"
+        "execution_snapshot.run_execution_command = runtime_preflight\n"
         "os.environ['INFER_WORKER_TEST_OUTER_PID'] = str(os.getpid())\n"
         # Same entry the bootstrap launches: python -m agent_tools.slurm <worker argv>.
         "runpy.run_module('agent_tools.slurm', run_name='__main__', alter_sys=True)\n"

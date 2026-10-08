@@ -13,7 +13,7 @@ import time
 from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS
 import pytest
 
-from agent_tools import managed_scheduler, python_programs, slurm
+from agent_tools import execution_snapshot, managed_scheduler, python_programs, slurm
 
 
 def _frozen_job_inputs(tmp_path: Path, *, script_text: str = "#!/usr/bin/env bash\ntrue\n"):
@@ -1371,9 +1371,9 @@ def test_run_frozen_job_writes_allocation_and_terminal_sidecars(tmp_path: Path, 
     fake_srun.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
 
-    from agent_tools import managed_scheduler
+    from agent_tools import execution_snapshot
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
     result_path = Path(kwargs["result_path"])
     allocation_path = Path(kwargs["allocation_identity_path"])
     log_path = Path(kwargs["log_path"])
@@ -1450,7 +1450,7 @@ def test_run_frozen_job_records_allocation_runtime_commit_drift_without_blocking
         return CompletedChild()
 
     monkeypatch.setattr(slurm, "runtime_lock", observed_lock)
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect_execution_target)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect_execution_target)
     monkeypatch.setattr(slurm.subprocess, "Popen", popen)
 
     assert slurm.run_frozen_job(**kwargs) == 0
@@ -1479,7 +1479,7 @@ def test_run_frozen_job_rechecks_frozen_artifacts_inside_runtime_lock_before_spa
 
     spawned = []
     monkeypatch.setattr(slurm, "runtime_lock", drifting_lock)
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
     monkeypatch.setattr(slurm.subprocess, "Popen", lambda *args, **kwargs: spawned.append((args, kwargs)))
 
     assert slurm.run_frozen_job(**kwargs) == 2
@@ -1499,9 +1499,9 @@ def test_run_frozen_job_rejects_allocation_interpreter_drift_before_spawn(
     monkeypatch.setenv("SLURM_NTASKS", "1")
 
     observed_snapshot = {**frozen_snapshot, field: observed}
-    from agent_tools import managed_scheduler
+    from agent_tools import execution_snapshot
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: observed_snapshot)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", lambda *_args, **_kwargs: observed_snapshot)
     spawned = []
     monkeypatch.setattr(slurm.subprocess, "Popen", lambda *args, **kwargs: spawned.append((args, kwargs)))
     result_path = Path(kwargs["result_path"])
@@ -1523,9 +1523,9 @@ def test_run_frozen_job_rejects_changed_execution_snapshot_digest_before_spawn(t
     monkeypatch.setenv("SLURM_NTASKS", "1")
     snapshot_path = Path(kwargs["execution_snapshot_path"])
     snapshot_path.write_text(json.dumps(snapshot, indent=2))
-    from agent_tools import managed_scheduler
+    from agent_tools import execution_snapshot
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
     spawned = []
     monkeypatch.setattr(slurm.subprocess, "Popen", lambda *args, **kwargs: spawned.append((args, kwargs)))
     result_path = Path(kwargs["result_path"])
@@ -1554,13 +1554,13 @@ def test_run_frozen_job_does_not_spawn_after_signal_during_verification(tmp_path
         return previous
 
     monkeypatch.setattr(slurm.signal, "signal", capture_signal)
-    from agent_tools import managed_scheduler
+    from agent_tools import execution_snapshot
 
     def inspect(*_args, **_kwargs):
         handlers[signum](signum, None)
         return snapshot
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
     spawned = []
     monkeypatch.setattr(slurm.subprocess, "Popen", lambda *args, **kwargs: spawned.append((args, kwargs)))
     result_path = Path(kwargs["result_path"])
@@ -1584,11 +1584,11 @@ def test_run_frozen_job_rejects_invalid_allocation_task_count_before_spawn(
     else:
         monkeypatch.delenv("SLURM_NTASKS", raising=False)
 
-    from agent_tools import managed_scheduler
+    from agent_tools import execution_snapshot
 
     inspected = []
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda *_args, **_kwargs: inspected.append(True) or snapshot,
     )
@@ -1611,9 +1611,9 @@ def test_run_frozen_job_records_aggregate_srun_failure(tmp_path: Path, monkeypat
     monkeypatch.setenv("SLURM_JOB_ID", "3880")
     monkeypatch.setenv("SLURM_NTASKS", "2")
 
-    from agent_tools import managed_scheduler
+    from agent_tools import execution_snapshot
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
     spawned = []
 
     class FailedStep:
@@ -1670,9 +1670,9 @@ def test_run_frozen_job_forwards_signal_to_active_srun_and_records_terminal_side
         return previous
 
     monkeypatch.setattr(slurm.signal, "signal", capture_signal)
-    from agent_tools import managed_scheduler
+    from agent_tools import execution_snapshot
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
     sent_signals = []
 
     class ActiveStep:
@@ -1727,9 +1727,9 @@ def test_run_frozen_job_forwards_signal_received_before_popen_returns_exactly_on
         return previous
 
     monkeypatch.setattr(slurm.signal, "signal", capture_signal)
-    from agent_tools import managed_scheduler
+    from agent_tools import execution_snapshot
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", lambda *_args, **_kwargs: snapshot)
     sent_signals = []
 
     class ActiveStep:

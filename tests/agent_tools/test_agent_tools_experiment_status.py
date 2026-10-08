@@ -11,7 +11,7 @@ from agent_tool_test_helpers import run_execution_preflight_fixture, write_finet
 import pytest
 import yaml
 
-from agent_tools import experiment_tracking, experiments, managed_scheduler, plan_contract, plan_hparam, plans
+from agent_tools import execution_snapshot, experiment_tracking, experiments, plan_contract, plan_hparam, plans
 from agent_tools.adapters import finetune as finetune_adapter, get_adapter
 from agent_tools.experiment_workspace import managed_run_parameters
 from agent_tools.manifests import write_rows
@@ -24,7 +24,7 @@ _RUNTIME_COMMIT = subprocess.run(
 
 @pytest.fixture(autouse=True)
 def _stub_execution_target(monkeypatch):
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
 
 
 def _init_workspace(root: Path) -> None:

@@ -7,10 +7,10 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).res
 
 from agent_tool_test_helpers import run_execution_preflight_fixture
 
-from agent_tools import experiment_io, managed_scheduler
+from agent_tools import execution_snapshot, experiment_io
 from agent_tools.cli import main
 
-managed_scheduler.run_execution_command = run_execution_preflight_fixture
+execution_snapshot.run_execution_command = run_execution_preflight_fixture
 _validate_managed_output_paths = experiment_io.validate_managed_output_paths
 
 
