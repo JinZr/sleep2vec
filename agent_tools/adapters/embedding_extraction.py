@@ -21,7 +21,7 @@ from ..plan_rendering import render_command, variant_module
 from .base import TaskAdapter
 
 
-def _mapping(recipe: dict[str, JsonValue], section: str) -> dict[str, JsonValue]:
+def _mapping(recipe: dict[str, Any], section: str) -> dict[str, Any]:
     value = recipe.get(section)
     return value if isinstance(value, dict) else {}
 
@@ -106,15 +106,15 @@ class EmbeddingExtractionAdapter(TaskAdapter):
     accepts_pretrain_config = True
     preflight_on_unresolved = True
 
-    def runtime_fields(self, variant: JsonValue) -> frozenset[str]:
+    def runtime_fields(self, variant: Any) -> frozenset[str]:
         return frozenset({"device", "num_workers"})
 
-    def frozen_command_prefix(self, recipe: dict[str, JsonValue]) -> tuple[str, ...]:
+    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         return ("python", "-m", variant_module(recipe, "extract_embeddings"))
 
-    def required_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, JsonValue]]:
+    def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         inputs = _mapping(recipe, "inputs")
-        paths: list[tuple[str, JsonValue]] = []
+        paths: list[tuple[str, Any]] = []
         checkpoint = inputs.get("ckpt_path")
         if checkpoint not in (None, "", "ASK_USER"):
             paths.append(("ckpt_path", checkpoint))
@@ -157,7 +157,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
 
     def task_issues(
         self,
-        recipe: dict[str, JsonValue],
+        recipe: dict[str, Any],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
@@ -324,7 +324,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         return issues
 
     def configured_input_issues(
-        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue]:
         inputs = _mapping(recipe, "inputs")
         extraction = _mapping(recipe, "extraction")
@@ -406,7 +406,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
                     ]
         return []
 
-    def commands(self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None) -> list[str]:
+    def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
         inputs = _mapping(recipe, "inputs")
         extraction = _mapping(recipe, "extraction")
         runtime = _mapping(recipe, "runtime")
@@ -450,7 +450,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         ]
 
     def expected_artifacts(
-        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[dict[str, str]]:
         embedding_dir = _mapping(recipe, "artifacts").get("embedding_dir")
         if embedding_dir in (None, "", "ASK_USER"):
@@ -458,7 +458,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         return [{"name": "embedding_manifest", "path": str(Path(str(embedding_dir)) / "manifest.json")}]
 
     def index_summary_inputs_override(
-        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> tuple[list[Any], Any, list[Any]] | None:
         if recipe.get("task") != self.task:
             return None

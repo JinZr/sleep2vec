@@ -12,7 +12,7 @@ from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from ..decision_paths import execution_contract_issues, multilabel_sidecar_issue, survival_sidecar_issue
-from ..models import REPO_ROOT, ConfigSummaryInput, JsonValue, coerce_list
+from ..models import REPO_ROOT, ConfigSummaryInput, coerce_list
 from ..plan_rendering import PRESET_FIELDS, preset_cli_args, render_command
 from ..repo import repo_summary
 from .base import TaskAdapter
@@ -37,15 +37,13 @@ class PresetPrepareAdapter(TaskAdapter):
     requires_survival_sidecars = True
     requires_multilabel_sidecars = True
 
-    def frozen_command_prefix(self, recipe: dict[str, JsonValue]) -> tuple[str, ...]:
+    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         preset_script = {
             "sleep2vec": "preprocess/save_dataset_presets.py",
             "sleep2vec2": "sleep2vec2/preprocess/save_dataset_presets.py",
             "sleep2expert": "sleep2expert/preprocess/save_dataset_presets.py",
         }[str(recipe.get("variant"))]
-        execution = recipe.get("execution")
-        if not isinstance(execution, dict):
-            execution = {}
+        execution = recipe.get("execution") or {}
         # Historical frozen plans without runtime identity retain their original command.
         return (str(execution.get("python") or "python"), preset_script)
 
@@ -163,7 +161,7 @@ class PresetPrepareAdapter(TaskAdapter):
         recipe["preset"] = preset
         return issues
 
-    def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, JsonValue]]:
+    def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         inputs = recipe.get("inputs")
         if not isinstance(inputs, dict):
             inputs = {}
@@ -171,7 +169,7 @@ class PresetPrepareAdapter(TaskAdapter):
 
     def task_issues(
         self,
-        recipe: dict[str, JsonValue],
+        recipe: dict[str, Any],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
@@ -246,7 +244,7 @@ class PresetPrepareAdapter(TaskAdapter):
             issues.append(multilabel_issue)
         return issues
 
-    def commands(self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None) -> list[str]:
+    def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
         inputs = recipe.get("inputs")
         if not isinstance(inputs, dict):
             inputs = {}
@@ -273,7 +271,7 @@ class PresetPrepareAdapter(TaskAdapter):
         ]
 
     def index_summary_inputs_override(
-        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> tuple[list[Any], Any, list[Any]] | None:
         if recipe.get("task") != self.task:
             return None

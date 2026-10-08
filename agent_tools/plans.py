@@ -175,7 +175,7 @@ def _source_recipe_contract_issues(
     return issues
 
 
-def _recipe_contract_issue(field: str, message: str, value: JsonValue, source_layer: str) -> DecisionIssue:
+def _recipe_contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
     return DecisionIssue(
         DecisionStatus.FAIL,
         field,
@@ -185,7 +185,7 @@ def _recipe_contract_issue(field: str, message: str, value: JsonValue, source_la
     )
 
 
-def _decision_value(raw: JsonValue) -> JsonValue:
+def _decision_value(raw: Any) -> Any:
     return raw.get("value") if isinstance(raw, dict) else raw
 
 
@@ -317,7 +317,7 @@ def _materialize_task_defaults(recipe: dict, policy: dict, user_decisions: dict)
         recipe["decisions"] = decisions
 
 
-def _normalize_runtime_commit(recipe: dict[str, JsonValue]) -> None:
+def _normalize_runtime_commit(recipe: dict[str, Any]) -> None:
     execution = recipe.get("execution")
     if not isinstance(execution, dict):
         return
@@ -1063,13 +1063,13 @@ def build_context(
 
 
 def _validate_bound_recipe(
-    recipe: dict[str, JsonValue],
+    recipe: dict[str, Any],
     cfg: ConfigSummaryInput | None,
     report: DecisionReport,
     out: Path,
     *,
-    expected_recipe: dict[str, JsonValue] | None,
-    expected_base_recipe: dict[str, JsonValue] | None,
+    expected_recipe: dict[str, Any] | None,
+    expected_base_recipe: dict[str, Any] | None,
     registered_recipe_path: str | Path | None,
     source_config_sha256: str | None,
 ) -> tuple[bytes, str] | None:
@@ -1105,9 +1105,8 @@ def _validate_bound_recipe(
                 f"Registered plan recipe must be inside the final plan directory: {frozen_recipe_path}"
             ) from exc
         recipe["_recipe_path"] = str(frozen_recipe_path)
-        local_recipe = recipe.get("_local_recipe")
-        if isinstance(local_recipe, dict):
-            local_recipe["_recipe_path"] = str(frozen_recipe_path)
+        if isinstance(recipe.get("_local_recipe"), dict):
+            recipe["_local_recipe"]["_recipe_path"] = str(frozen_recipe_path)
     validated_config_bytes = cfg.get("_source_config_bytes") if isinstance(cfg, dict) else None
     validated_config_sha256 = cfg.get("_source_config_sha256") if isinstance(cfg, dict) else None
     if report.exit_code == 0:
@@ -1397,8 +1396,8 @@ class PlanBuildRequest:
     allow_unresolved: bool
     unlock_final_test: bool
     source_config_sha256: str | None
-    expected_recipe: dict[str, JsonValue] | None
-    expected_base_recipe: dict[str, JsonValue] | None
+    expected_recipe: dict[str, Any] | None
+    expected_base_recipe: dict[str, Any] | None
     staging_dir: str | Path | None
     defer_commit: bool
     registered_recipe_path: str | Path | None
@@ -1416,8 +1415,8 @@ def build_plan(
     allow_unresolved: bool = False,
     unlock_final_test: bool = False,
     source_config_sha256: str | None = None,
-    expected_recipe: dict[str, JsonValue] | None = None,
-    expected_base_recipe: dict[str, JsonValue] | None = None,
+    expected_recipe: dict[str, Any] | None = None,
+    expected_base_recipe: dict[str, Any] | None = None,
     staging_dir: str | Path | None = None,
     defer_commit: bool = False,
     registered_recipe_path: str | Path | None = None,
@@ -2084,7 +2083,7 @@ def _has_output_artifact_issue(report: DecisionReport) -> bool:
     return any(issue.field == "output_artifacts" for issue in report.issues)
 
 
-def _overwrite_policy(recipe: dict) -> JsonValue:
+def _overwrite_policy(recipe: dict) -> Any:
     section, key = _resolve_write_targets(recipe.get("task"))["overwrite_policy"]
     owner_value = recipe.get(section)
     owner = owner_value if isinstance(owner_value, dict) else {}
@@ -2105,7 +2104,7 @@ def _registered_plan_owners(recipe: dict[str, Any], out: Path) -> list[dict[str,
     ]
 
 
-def _is_unowned_published_plan(recipe: dict[str, JsonValue], out: Path) -> bool:
+def _is_unowned_published_plan(recipe: dict[str, Any], out: Path) -> bool:
     return exp_io.path_exists_at(out / "plan.json") and not _registered_plan_owners(recipe, out)
 
 
@@ -2254,7 +2253,7 @@ def _registered_plan_immutable_report(report: DecisionReport, out: Path) -> Deci
 def _guard_existing_outputs(
     report: DecisionReport,
     paths: list[Path],
-    overwrite_policy: JsonValue,
+    overwrite_policy: Any,
     *,
     root: Path,
     allow_existing: bool = False,

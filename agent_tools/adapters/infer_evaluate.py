@@ -21,7 +21,7 @@ from ..decision_paths import (
     sex_age_pretrained_backbone_issue,
     survival_sidecar_issue,
 )
-from ..models import ConfigSummaryInput, JsonValue, coerce_list
+from ..models import ConfigSummaryInput, coerce_list
 from ..plan_rendering import (
     INFER_RUNTIME_FIELDS,
     infer_input_cli_args,
@@ -51,7 +51,7 @@ _INPUT_FIELDS = frozenset(
 _EVALUATION_FIELDS = frozenset({"external_test_locked", "final_test_unlocked"})
 
 
-def _recipe_preset_field(recipe: dict[str, JsonValue]) -> str | None:
+def _recipe_preset_field(recipe: dict[str, Any]) -> str | None:
     # Byte-compat with the pre-adapter kernel: these helpers were keyed on the
     # recipe's own task string, not the dispatch task.
     return "inference_preset_path" if str(recipe.get("task")) in _INFER_EVALUATE_TASKS else None
@@ -71,7 +71,7 @@ class InferEvaluateAdapter(TaskAdapter):
         self.task = task
         self.extra_decision_fields = extra_decision_fields
 
-    def runtime_fields(self, variant: JsonValue) -> frozenset[str]:
+    def runtime_fields(self, variant: Any) -> frozenset[str]:
         return INFER_RUNTIME_FIELDS
 
     def bind_effective_recipe(
@@ -88,20 +88,20 @@ class InferEvaluateAdapter(TaskAdapter):
                 recipe.setdefault("runtime", {}).setdefault("devices", list(range(gpus)))
         return []
 
-    def frozen_command_prefix(self, recipe: dict[str, JsonValue]) -> tuple[str, ...]:
+    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         execution = recipe.get("execution")
         if not isinstance(execution, dict):
             execution = {}
         return (str(execution.get("python") or "python"), "-m", variant_module(recipe, "infer"))
 
-    def required_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, JsonValue]]:
+    def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         inputs = recipe_inputs(recipe)
         runtime = recipe.get("runtime")
         if not isinstance(runtime, dict):
             runtime = {}
         avg_ckpts = runtime.get("avg_ckpts", 1)
         averages_checkpoints = type(avg_ckpts) is int and avg_ckpts > 1
-        required: list[tuple[str, JsonValue]] = []
+        required: list[tuple[str, Any]] = []
         for input_field in ("ckpt_path", "pretrained_backbone_path"):
             value = inputs.get(input_field)
             if input_field == "ckpt_path" and averages_checkpoints and value in ("best", "last"):
@@ -112,7 +112,7 @@ class InferEvaluateAdapter(TaskAdapter):
 
     def task_issues(
         self,
-        recipe: dict[str, JsonValue],
+        recipe: dict[str, Any],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
@@ -178,7 +178,7 @@ class InferEvaluateAdapter(TaskAdapter):
             issues.append(multilabel_issue)
         return issues
 
-    def commands(self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None) -> list[str]:
+    def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
         inputs = recipe_inputs(recipe)
         runtime = recipe.get("runtime")
         if not isinstance(runtime, dict):
@@ -201,7 +201,7 @@ class InferEvaluateAdapter(TaskAdapter):
             )
         ]
 
-    def index_summary_split_values(self, recipe: dict[str, JsonValue]) -> list[Any]:
+    def index_summary_split_values(self, recipe: dict[str, Any]) -> list[Any]:
         # infer/evaluate name their split in the recipe rather than loading the
         # finetune split set.
         return coerce_list(recipe_inputs(recipe).get("eval_split"))

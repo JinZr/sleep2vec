@@ -38,7 +38,7 @@ def _sleep2stat_config_run_dir(cfg: ConfigSummaryInput | None) -> str | None:
     return str(value) if value not in (None, "") else None
 
 
-def _sleep2stat_runtime_args(recipe: dict[str, JsonValue]) -> list[Any]:
+def _sleep2stat_runtime_args(recipe: dict[str, Any]) -> list[Any]:
     runtime_value = recipe.get("runtime")
     runtime = runtime_value if isinstance(runtime_value, dict) else {}
     inputs_value = recipe.get("inputs")
@@ -53,7 +53,7 @@ def _sleep2stat_runtime_args(recipe: dict[str, JsonValue]) -> list[Any]:
     return args
 
 
-def _sleep2stat_record_check_args(recipe: dict[str, JsonValue]) -> list[Any]:
+def _sleep2stat_record_check_args(recipe: dict[str, Any]) -> list[Any]:
     runtime_value = recipe.get("runtime")
     runtime = runtime_value if isinstance(runtime_value, dict) else {}
     inputs_value = recipe.get("inputs")
@@ -226,10 +226,10 @@ class Sleep2statAdapter(TaskAdapter):
     }
     extra_decision_fields = frozenset({"config", "external_test_locked"})
 
-    def runtime_fields(self, variant: JsonValue) -> frozenset[str]:
+    def runtime_fields(self, variant: Any) -> frozenset[str]:
         return SLEEP2STAT_RUNTIME_FIELDS
 
-    def frozen_command_prefix(self, recipe: dict[str, JsonValue]) -> tuple[str, ...]:
+    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         return ("python", "-m", "sleep2stat")
 
     def matches_config_data(self, data: dict[str, Any]) -> bool:
@@ -240,7 +240,7 @@ class Sleep2statAdapter(TaskAdapter):
 
     def task_issues(
         self,
-        recipe: dict[str, JsonValue],
+        recipe: dict[str, Any],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
@@ -338,7 +338,7 @@ class Sleep2statAdapter(TaskAdapter):
         return issues
 
     def configured_input_issues(
-        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue]:
         issues: list[DecisionIssue] = []
         if not config_summary or not config_summary.get("is_sleep2stat"):
@@ -376,7 +376,7 @@ class Sleep2statAdapter(TaskAdapter):
                     issues.append(issue)
         return issues
 
-    def commands(self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None) -> list[str]:
+    def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
         inputs_value = recipe.get("inputs")
         inputs = inputs_value if isinstance(inputs_value, dict) else {}
         runtime_value = recipe.get("runtime")
@@ -435,7 +435,7 @@ class Sleep2statAdapter(TaskAdapter):
         }
         return self.commands(recipe, summary)
 
-    def validation_commands(self, recipe: dict[str, JsonValue]) -> list[str] | None:
+    def validation_commands(self, recipe: dict[str, Any]) -> list[str] | None:
         inputs_value = recipe.get("inputs")
         inputs = inputs_value if isinstance(inputs_value, dict) else {}
         commands = []
@@ -448,7 +448,7 @@ class Sleep2statAdapter(TaskAdapter):
         return commands
 
     def expected_artifacts(
-        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[dict[str, str]]:
         cfg = config_summary
         run_dir = _sleep2stat_config_run_dir(cfg)
@@ -483,7 +483,7 @@ class Sleep2statAdapter(TaskAdapter):
         return expected
 
     def index_summary_inputs_override(
-        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> tuple[list[Any], Any, list[Any]] | None:
         if config_summary and config_summary.get("is_sleep2stat"):
             sleep2stat: Any = config_summary.get("sleep2stat") or {}

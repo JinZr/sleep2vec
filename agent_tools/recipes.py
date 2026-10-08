@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .experiment_workspace import read_managed_yaml_mapping
-from .models import JsonValue, repo_relative, resolve_repo_path
+from .models import repo_relative, resolve_repo_path
 
 
 def load_yaml_file(path: str | Path) -> dict[str, Any]:
@@ -65,14 +65,13 @@ def load_consultation_policy() -> dict[str, Any]:
     return load_yaml_file("agent_policies/consultation_policy.yaml")
 
 
-def merge_recipe_layers(base: dict[str, JsonValue], override: dict[str, JsonValue]) -> dict[str, JsonValue]:
+def merge_recipe_layers(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in override.items():
         if key.startswith("_"):
             continue
-        existing = merged.get(key)
-        if isinstance(value, dict) and isinstance(existing, dict):
-            merged[key] = merge_recipe_layers(existing, value)
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_recipe_layers(merged[key], value)
         else:
             merged[key] = value
     return merged

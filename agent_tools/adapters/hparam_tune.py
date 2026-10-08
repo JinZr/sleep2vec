@@ -53,16 +53,16 @@ class HparamTuneAdapter(TaskAdapter):
         "hparam_budget": ("search", "max_runs"),
     }
 
-    def runtime_fields(self, variant: JsonValue) -> frozenset[str]:
+    def runtime_fields(self, variant: Any) -> frozenset[str]:
         return FINETUNE_RUNTIME_FIELDS | INFER_RUNTIME_FIELDS
 
-    def frozen_command_prefix(self, recipe: dict[str, JsonValue]) -> tuple[str, ...]:
+    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         execution = recipe.get("execution")
         if not isinstance(execution, dict):
             execution = {}
         return (str(execution.get("python") or "python"), "-m", variant_module(recipe, "finetune"))
 
-    def section_contract_issues(self, recipe: dict[str, JsonValue], *, source_layer: str) -> list[DecisionIssue] | None:
+    def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
         return hparam_recipe_contract_issues(recipe, source_layer=source_layer)
 
     def recipe_input_issues(self, recipe: dict[str, JsonValue]) -> list[DecisionIssue]:
@@ -95,7 +95,7 @@ class HparamTuneAdapter(TaskAdapter):
 
     def task_issues(
         self,
-        recipe: dict[str, JsonValue],
+        recipe: dict[str, Any],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
@@ -137,7 +137,7 @@ class HparamTuneAdapter(TaskAdapter):
             unlock_final_test=unlock_final_test,
         )
 
-    def prepare_doctor_report(self, recipe: dict[str, JsonValue], report: DecisionReport) -> DecisionReport:
+    def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
         from .. import plan_hparam
 
         execution = recipe.get("execution")
@@ -384,7 +384,7 @@ class HparamTuneAdapter(TaskAdapter):
 
     def planned_plan_paths(
         self,
-        recipe: dict[str, JsonValue],
+        recipe: dict[str, Any],
         out: Path,
         report: DecisionReport,
         *,
@@ -396,9 +396,7 @@ class HparamTuneAdapter(TaskAdapter):
 
         if report.exit_code != 0:
             paths = plan_contract.blocked_plan_control_paths(out)
-            evaluation = recipe.get("evaluation_policy")
-            if not isinstance(evaluation, dict):
-                evaluation = {}
+            evaluation = recipe.get("evaluation_policy") or {}
             if plan_hparam.final_test_unlocked(evaluation, unlock_final_test):
                 paths.extend(
                     [
@@ -417,12 +415,7 @@ class HparamTuneAdapter(TaskAdapter):
             out / "config.source.yaml",
             out / plan_hparam.FROZEN_FINAL_EVAL_CONFIG_NAME,
         ]
-        execution = recipe.get("execution")
-        if not isinstance(execution, dict):
-            execution = {}
-        scheduler = execution.get("scheduler")
-        if not isinstance(scheduler, dict):
-            scheduler = {}
+        scheduler = (recipe.get("execution") or {}).get("scheduler") or {}
         for layout in plan_hparam.hparam_run_layouts(recipe, out, next_run_index(recipe)):
             run_dir = layout["run_dir"]
             paths.extend(
