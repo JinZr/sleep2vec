@@ -10,7 +10,7 @@ def test_result_types_reach_callers(tmp_path: Path):
         textwrap.dedent("""\
             from pathlib import Path
             from agent_tools import (
-                adaptive_evidence, adaptive_handshake, adaptive_hparam, adaptive_state,
+                adaptive_handshake, adaptive_hparam, adaptive_state,
                 checkpoint_test_results, experiment_tracking,
                 experiments,
                 experiment_io, experiment_sources, experiment_workspace, hparam_selection,
@@ -32,11 +32,8 @@ def test_result_types_reach_callers(tmp_path: Path):
             direct_launch["log_path"] = Path("/log")  # type: ignore[typeddict-item]
             direct_launch["pid"] = "123"  # type: ignore[typeddict-item]
             direct_launch["planned_runtime_commit"] = None  # type: ignore[typeddict-item]
-            slurm_launch = managed_scheduler._slurm_execution_identity({}, {})
-            submit_command: str = slurm_launch["command"]
-            slurm_launch["command"] = None  # type: ignore[typeddict-item]
-            slurm_launch["execution_snapshot_sha256"] = 1  # type: ignore[typeddict-item]
-            slurm_launch["log_path"] = None
+            direct_launch["command"] = None  # type: ignore[typeddict-item]
+            direct_launch["execution_snapshot_sha256"] = 1  # type: ignore[typeddict-item]
             verification_options: managed_scheduler.LaunchVerificationOptions = {}
             verification_options["checkpoint_path"] = None
             verification_options["checkpoint_sha256"] = None
@@ -83,17 +80,15 @@ def test_result_types_reach_callers(tmp_path: Path):
             logical_jobs = experiment_pipeline_results.logical_job_states({}, [])
             attempt_count: int = logical_jobs[0]["attempt_count"]
             logical_jobs[0]["status"] = "ready"  # type: ignore[typeddict-item]
-            execution_result = experiment_pipeline._run_attempts(
-                Path("/workspace"), Path("/pipeline"), {}, {}, [], poll_seconds=0, hooks=pipeline_hooks,
-            )
-            execution_result["jobs"][0]["attempt_count"] = "1"  # type: ignore[typeddict-item]
-            if "missing_pid_blocker" in execution_result:
-                execution_result["missing_pid_blocker"]["status"] = "running"  # type: ignore[typeddict-item]
             for pipeline_result in (
                 experiment_pipeline.run_experiment_pipeline(Path("/workspace"), Path("/spec"), hooks=pipeline_hooks),
                 experiments.run_experiment_pipeline(Path("/workspace"), Path("/spec")),
             ):
                 pipeline_result["status"] = "unknown"  # type: ignore[arg-type]
+                if "dry_run" not in pipeline_result:
+                    pipeline_result["jobs"][0]["attempt_count"] = "1"  # type: ignore[typeddict-item]
+                    if "missing_pid_blocker" in pipeline_result:
+                        pipeline_result["missing_pid_blocker"]["status"] = "running"  # type: ignore[typeddict-item]
 
             selection_evidence = experiment_pipeline_results.selection_evidence(Path("/phase"), {}, {})
             evidence_hash: str = selection_evidence[0]["result_manifest_sha256"]
@@ -567,12 +562,6 @@ def test_result_types_reach_callers(tmp_path: Path):
             checkpoint_rows[0]["checkpoint_paths"]  # type: ignore[typeddict-item]
             checkpoint_rows[0]["score"] = "0.5"  # type: ignore[typeddict-item]
             checkpoint_rows[0]["epoch"] = 1.5  # type: ignore[typeddict-item]
-            objective_evidence = adaptive_evidence._test_checkpoint_evidence({}, {}, "/checkpoints", [])
-            objective_evidence[0]  # type: ignore[index]
-            if objective_evidence is not None:
-                objective_result, checkpoint_trajectory = objective_evidence
-                objective_score: float = objective_result["score"]
-                objective_result["checkpoint_paths"]  # type: ignore[typeddict-item]
 
             class RankingRow(checkpoint_test_results.CheckpointTestResult):
                 checkpoint_sha256: str
@@ -638,11 +627,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 metric: str = selection["metric"]
                 selection["metric"] = 1  # type: ignore[typeddict-item]
 
-            steps = experiments._registered_plan_steps(
-                Path("/workspace"), {}, [], remote=None, require_registered_rows=True,
-            )
-            steps[0]["plans"][0]["run_key"]  # type: ignore[typeddict-item]
-            lifecycle = experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"))
+            lifecycle = experiment_tracking.hparam_selection_lifecycle([], [], root=Path("/workspace"))
             lifecycle_step = lifecycle["hparam_steps"][0]
             selected_step = lifecycle["selected_steps"][0]
             plan_path: str = lifecycle_step["plan_path"]
@@ -675,7 +660,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             lifecycle["selected_step"]  # type: ignore[typeddict-item]
             lifecycle["report_valid"] = "yes"  # type: ignore[typeddict-item]
             required_report: str = lifecycle["expected_report"]  # type: ignore[assignment]
-            status_snapshot = experiment_tracking.experiment_status_snapshot({}, steps, [], root=Path("/workspace"))
+            status_snapshot = experiment_tracking.experiment_status_snapshot({}, [], [], root=Path("/workspace"))
             status_experiment = status_snapshot["experiment"]
             status_title: str = status_experiment["title"]
             status_remote: str | None = status_experiment["remote"]
@@ -753,20 +738,16 @@ def test_result_types_reach_callers(tmp_path: Path):
                 report["sha256"] = None  # type: ignore[typeddict-item]
                 required_ranking: str = report["ranking_text"]  # type: ignore[assignment]
                 required_ranking_sha: str = report["ranking_sha256"]  # type: ignore[assignment]
-                experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"), report=report)
+                experiment_tracking.hparam_selection_lifecycle([], [], root=Path("/workspace"), report=report)
                 experiment_tracking.experiment_status_snapshot(
-                    {}, steps, [], root=Path("/workspace"), hparam_selection_report=report,
+                    {}, [], [], root=Path("/workspace"), hparam_selection_report=report,
                 )
-                experiments._validate_hparam_selection_files_unchanged(Path("/workspace"), report, {}, remote=None)
                 experiment_tracking.hparam_selection_lifecycle(
-                    steps, [], root=Path("/workspace"), report={**report, "sha256": None},  # type: ignore[arg-type]
+                    [], [], root=Path("/workspace"), report={**report, "sha256": None},  # type: ignore[arg-type]
                 )
                 experiment_tracking.experiment_status_snapshot(
-                    {}, steps, [], root=Path("/workspace"),
+                    {}, [], [], root=Path("/workspace"),
                     hparam_selection_report={**report, "ranking_text": 1},  # type: ignore[arg-type]
-                )
-                experiments._validate_hparam_selection_files_unchanged(
-                    Path("/workspace"), {**report, "path": None}, {}, remote=None,  # type: ignore[typeddict-item]
                 )
             """),
         encoding="utf-8",
