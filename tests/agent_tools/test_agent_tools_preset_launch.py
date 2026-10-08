@@ -17,7 +17,15 @@ from test_agent_preset_runtime_identity import (
     preset_runtime as preset_runtime_fixture,
 )
 
-from agent_tools import cli, experiment_workspace, experiments, managed_scheduler, plans, run_evidence
+from agent_tools import (
+    cli,
+    execution_snapshot,
+    experiment_workspace,
+    experiments,
+    managed_scheduler,
+    plans,
+    run_evidence,
+)
 from agent_tools.experiment_workspace import (
     PROCESS_IDENTITY_FIELDS,
     has_managed_launch_evidence,
@@ -220,7 +228,7 @@ def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_run
     plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
     if failure == "runtime_preflight":
         monkeypatch.setattr(
-            managed_scheduler,
+            execution_snapshot,
             "run_execution_command",
             lambda _execution, command: subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed"),
         )
@@ -261,7 +269,7 @@ def test_preset_runtime_preflight_claim_and_start_run_in_order(tmp_path, preset_
         events.append("start")
         return "launched"
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", probe)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", probe)
     monkeypatch.setattr(experiments, "merge_run_manifest", merge)
     monkeypatch.setattr(managed_scheduler, "start_process", start)
     workspace = preset_runtime["workspace"]
@@ -296,7 +304,7 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
     original_bytes = artifact_path.read_bytes()
     for name, value in preset_runtime["env"].items():
         monkeypatch.setenv(name, value)
-    original_probe = managed_scheduler.run_execution_command
+    original_probe = execution_snapshot.run_execution_command
     original_merge = experiments.merge_run_manifest
     original_start = managed_scheduler.start_process
     start_commands = []
@@ -320,7 +328,7 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
             artifact_path.write_bytes(original_bytes + b"\n# changed immediately before start\n")
         return original_start(execution, command, **kwargs)
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", probe)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", probe)
     monkeypatch.setattr(experiments, "merge_run_manifest", merge)
     monkeypatch.setattr(managed_scheduler, "start_process", start)
     pid_path = Path(run["run_dir"]) / "pid"

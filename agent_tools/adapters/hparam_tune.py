@@ -17,7 +17,7 @@ import subprocess
 import sys
 from typing import Any
 
-from .. import experiment_workspace, plan_contract, slurm
+from .. import execution_snapshot, experiment_workspace, plan_contract, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
 from ..domain import finetune_hparam_profile
@@ -255,8 +255,6 @@ class HparamTuneAdapter(TaskAdapter):
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
 
     def doctor_runtime_card(self, recipe: dict[str, Any]) -> str | None:
-        from .. import managed_scheduler
-
         execution = recipe.get("execution")
         if not isinstance(execution, dict):
             execution = {}
@@ -269,7 +267,7 @@ class HparamTuneAdapter(TaskAdapter):
             "'python_version': sys.version.split()[0], 'pytorch_lightning_version': pl_version}, sort_keys=True))"
         )
         try:
-            result = managed_scheduler.run_execution_command(execution, [python, "-c", program])
+            result = execution_snapshot.run_execution_command(execution, [python, "-c", program])
         except subprocess.TimeoutExpired:
             return "Doctor runtime unavailable: diagnostic probe timed out"
         except (OSError, ValueError):

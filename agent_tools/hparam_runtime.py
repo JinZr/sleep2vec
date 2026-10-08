@@ -17,6 +17,7 @@ import time
 from typing import Any
 
 from . import (
+    execution_snapshot,
     experiment_io as exp_io,
     experiment_workspace,
     managed_scheduler as scheduler,
@@ -46,7 +47,6 @@ from .manifests import utc_now, write_rows
 from .models import JsonValue
 
 LAUNCH_TIMEOUT_SECONDS = scheduler.LAUNCH_TIMEOUT_SECONDS
-EXECUTION_SNAPSHOT_NAME = scheduler.EXECUTION_SNAPSHOT_NAME
 
 
 def read_hparam_plan_under_run_lock(run_dir: Path) -> plan_contract.HparamPlan:
@@ -227,7 +227,7 @@ def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tu
             workspace / "reports" / "status.md",
             run_dir / "launch_manifest.tsv",
             run_dir / "run_status.tsv",
-            run_dir / EXECUTION_SNAPSHOT_NAME,
+            run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME,
         ],
     )
     with experiment_workspace.managed_run_lock(workspace):
@@ -299,7 +299,7 @@ def _launch_hparam_runs(
             workspace / "reports" / "status.md",
             manifest,
             status_path,
-            run_dir / EXECUTION_SNAPSHOT_NAME,
+            run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME,
         ],
     )
     execution_value = recipe.get("execution")
@@ -332,7 +332,7 @@ def _launch_hparam_runs(
         write_status_report=write_status_report,
         validate_run_update=validate_frozen_run_update,
         validated_snapshot=functools.partial(
-            scheduler.validated_execution_snapshot,
+            execution_snapshot.validated_execution_snapshot,
             inspector=_inspect_execution_target,
             plan_label="hparam",
         ),
@@ -364,8 +364,8 @@ def _launch_hparam_runs(
 
 def _inspect_execution_target(
     execution: Mapping[str, JsonValue], runs: Sequence[Mapping[str, JsonValue]]
-) -> scheduler.ExecutionSnapshot:
-    return scheduler.inspect_execution_target(execution, runs, plan_label="hparam")
+) -> execution_snapshot.ExecutionSnapshot:
+    return execution_snapshot.inspect_execution_target(execution, runs, plan_label="hparam")
 
 
 def monitor_hparam_runs(

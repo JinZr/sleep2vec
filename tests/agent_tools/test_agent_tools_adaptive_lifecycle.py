@@ -12,6 +12,7 @@ from agent_tools import (
     adaptive_hparam,
     adaptive_replacement,
     adaptive_state,
+    execution_snapshot,
     experiments,
     hparam_runtime,
     managed_scheduler,
@@ -1022,7 +1023,7 @@ def test_round_target_preflight_failure_does_not_advance_registry_or_workspace(t
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("target argv rejected")),
     )

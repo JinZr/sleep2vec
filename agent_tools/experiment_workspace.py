@@ -891,7 +891,10 @@ def run_identity(
     return {"run_id": run_id, "run_name": semantic_name, "version": version}
 
 
-def managed_run_key(row: Mapping[str, Any]) -> tuple[str, str] | None:
+RunKey = tuple[str, str]
+
+
+def managed_run_key(row: Mapping[str, Any]) -> RunKey | None:
     step_id = str(row.get("step_id") or "")
     run_id = str(row.get("run_id") or "")
     if not step_id.strip() or not run_id.strip():
@@ -899,7 +902,7 @@ def managed_run_key(row: Mapping[str, Any]) -> tuple[str, str] | None:
     return step_id, run_id
 
 
-def validated_run_key(row: Mapping[str, Any]) -> tuple[str, str]:
+def validated_run_key(row: Mapping[str, Any]) -> RunKey:
     """Read identity from an already validated managed row; this does not validate the whole row."""
     key = managed_run_key(row)
     if key is None:

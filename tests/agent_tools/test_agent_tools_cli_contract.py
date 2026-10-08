@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from agent_tools import cli, managed_scheduler, models, plans
+from agent_tools import cli, execution_snapshot, models, plans
 from agent_tools.adapters import get_adapter
 from agent_tools.decisions import evaluate_consultation_gates
 from agent_tools.hparam_postprocess import LogitExportRequest
@@ -466,7 +466,7 @@ def test_doctor_runtime_card_probes_target_versions_without_importing_lightning(
             "",
         )
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", run)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", run)
     recipe = {
         "task": "hparam_tune",
         "execution": {
@@ -492,7 +492,7 @@ def test_doctor_runtime_card_does_not_echo_timed_out_command(monkeypatch):
     def timeout(_execution, _command):
         raise subprocess.TimeoutExpired(["env", "SECRET_TOKEN=do-not-print"], 30)
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", timeout)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", timeout)
     recipe = {"task": "hparam_tune", "execution": {"python": "/opt/python"}}
 
     card = plans.doctor_runtime_card(recipe)
@@ -514,7 +514,7 @@ def test_doctor_runtime_card_uses_manager_python_by_default(monkeypatch):
             "",
         )
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", run)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", run)
 
     plans.doctor_runtime_card({"task": "hparam_tune"})
 
@@ -525,7 +525,7 @@ def test_doctor_runtime_card_handles_rejected_probe(monkeypatch):
     def reject(_execution, _command):
         raise ValueError("private fixture detail")
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", reject)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", reject)
 
     card = plans.doctor_runtime_card({"task": "hparam_tune"})
 
@@ -540,7 +540,7 @@ def test_doctor_runtime_card_does_not_echo_failed_probe_output(monkeypatch):
         "SECRET_TOKEN=do-not-print\n",
         "private target path: /secret/path\n",
     )
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", lambda *_args: result)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", lambda *_args: result)
     recipe = {"task": "hparam_tune", "execution": {"python": "/opt/python"}}
 
     card = plans.doctor_runtime_card(recipe)

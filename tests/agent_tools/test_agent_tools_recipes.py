@@ -7,7 +7,7 @@ import re
 import pytest
 import yaml
 
-from agent_tools import managed_scheduler, plan_context
+from agent_tools import execution_snapshot, plan_context
 from agent_tools.decision_hparam import hparam_recipe_contract_issues, hparam_search_issues
 from agent_tools.decision_models import DecisionStatus
 from agent_tools.experiment_workspace import experiment_metadata_issues
@@ -704,7 +704,7 @@ def test_checked_in_recipe(
                     lambda *_args, **_kwargs: pytest.fail("Unresolved template ownership reached data validation"),
                 )
             guarded.setattr(
-                managed_scheduler,
+                execution_snapshot,
                 "run_execution_command",
                 lambda *_args, **_kwargs: pytest.fail("Unresolved template ownership reached runtime inspection"),
             )

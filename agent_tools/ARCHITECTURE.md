@@ -13,7 +13,7 @@ L0-level domain leaf.
 
 | Layer | Contents | Role |
 |---|---|---|
-| **L0 leaves** | models, decision_models, transport, manifests, schema_map, gpu_rules, repo, plan_rendering, plan_contract, decision_paths, decision_hparam, plan_hparam, adaptive_proposals, experiment_workspace, experiment_io, managed_scheduler, ... | No intra-package deps beyond other L0 leaves; the reusable primitives. |
+| **L0 leaves** | models, decision_models, transport, manifests, schema_map, gpu_rules, repo, plan_rendering, plan_contract, decision_paths, decision_hparam, plan_hparam, adaptive_proposals, experiment_workspace, experiment_io, execution_snapshot, managed_scheduler, ... | No intra-package deps beyond other L0 leaves; the reusable primitives. |
 | **L1 `adapters/`** | `base` (TaskAdapter protocol), `registry` (get_adapter / all_adapters / composite_adapter), 6 per-task plugins, `config_providers` | Generic plugin skeleton + domain plugins. Kernel dispatches through the registry and never hardcodes task names. |
 | **L2 kernel** | configs, decision_rules, decisions, plan_context, plans, experiment_pipeline, experiment_pipeline_attempts | Orchestration over lower-layer owners and adapter declarations; authored task recipes remain governed by schema_map. |
 | **`domain/`** | sidecar_summaries, finetune_summary, finetune_hparam_profile, sex_age_summary, presets, index_csv | sleep2vec-specific summaries/validators. L0-level leaves that must not be aggregated in `domain/__init__` (would trigger a partial-import cycle via configs). |
@@ -21,10 +21,9 @@ L0-level domain leaf.
 ### Import cycle
 
 The one-way direction above is the target, not yet the state. Counting
-function-local (deferred) imports, the import graph holds one 23-module cycle
-spanning L0, L1, L2 and `domain/`. Only four of its members
-(`managed_scheduler → run_evidence → run_artifacts → plan_hparam`) also cycle at
-module top level; deferred imports hold the rest together.
+function-local (deferred) imports, the import graph holds one 12-module cycle
+spanning L0, L1, L2 and `domain/`. None of its members cycle at module top
+level; deferred imports hold the whole cycle together.
 `test_agent_layering.py` freezes both sides of that deviation in `layering.py`:
 `IMPORT_CYCLE_LEDGER` lists the modules inside the cycle and
 `LAZY_IMPORT_LEDGER` the deferred import edges. Each must equal the live graph
@@ -43,7 +42,7 @@ ownership claims or accuracy. This section is the
 split a concern between them — that no single docstring can state. When the two
 disagree, the docstring is next to the code and wins; fix this document.
 
-### Kernel — reusable (41, zero domain signal)
+### Kernel — reusable (42, zero domain signal)
 decision_models, transport, python_programs, manifests, schema_map, gpu_rules, repo,
 runtime_lock, runtime_sync,
 experiment_io, research_log, experiment_workspace, experiment_sources,
@@ -52,7 +51,7 @@ run_artifacts, run_evidence, checkpoint_test_results, hparam_runtime, hparam_sel
 adaptive_hparam, adaptive_evidence, adaptive_handshake, adaptive_proposals, adaptive_replacement, adaptive_state,
 recipes, progress,
 markdown, skills,
-decisions, plans, plan_contract, decision_rules, managed_scheduler, slurm,
+decisions, plans, plan_contract, decision_rules, execution_snapshot, managed_scheduler, slurm,
 experiment_pipeline, experiment_pipeline_attempts, experiment_pipeline_cohort_selection,
 experiment_pipeline_results, experiment_pipeline_spec.
 
@@ -108,7 +107,11 @@ the lifecycle owner.
 
 `managed_scheduler` owns backend selection plus the reusable direct
 GPU-capacity/process lifecycle and Slurm submit/observe lifecycle shared by
-managed launchers. `slurm` owns scheduler resource/script contracts, CLI
+managed launchers. `execution_snapshot` owns the frozen execution snapshot those
+launches check their target against: its shape, the target probe that produces
+it, the frozen-versus-live comparison, and its atomic write. Plan registration
+and the Slurm compute wrapper use it directly rather than through the scheduler.
+`slurm` owns scheduler resource/script contracts, CLI
 transport, machine-readable job and sidecar identity parsing, state
 normalization, compute-wrapper execution, and cancellation primitives.
 `experiment_pipeline` owns the managed external-matrix and cohort-selection

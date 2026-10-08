@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from agent_tools import (
+    execution_snapshot,
     hparam_runtime,
     managed_scheduler,
     plan_contract,
@@ -56,7 +57,7 @@ def test_candidate_budget_validates_only_reachable_joint_configs(
         target_calls.append(runs)
         return _snapshot(execution, runs)
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
     plan_dir = workspace / "plans" / "candidates"
     workspace_before = _workspace_files(workspace)
 
@@ -275,7 +276,7 @@ def test_registration_validates_same_frozen_bytes_as_card_without_commit_reload(
 
     monkeypatch.setattr(plan_hparam, "validate_hparam_run_configs", tracked_validate)
     monkeypatch.setattr(plan_hparam, "render_hparam_preflight_card", tracked_render)
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
     plan_dir = workspace / "plans" / "tune"
 
     report = plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
@@ -293,7 +294,7 @@ def test_preflight_validated_commit_still_rejects_frozen_config_drift(
 ):
     recipe_path, workspace = _recipe(tmp_path)
     monkeypatch.setattr(
-        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+        execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
     )
     commit = plan_hparam.commit_hparam_plan
 

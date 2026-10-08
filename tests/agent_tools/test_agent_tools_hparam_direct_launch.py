@@ -28,6 +28,7 @@ from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  
 import yaml
 
 from agent_tools import (
+    execution_snapshot,
     experiment_workspace,
     hparam_runtime,
     managed_scheduler,
@@ -747,7 +748,7 @@ def test_hparam_launch_revalidates_verified_execution_target_before_start(tmp_pa
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
-    snapshot = json.loads((plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).read_text())
+    snapshot = json.loads((plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_text())
     assert calls == ["identity", "parse", "start"]
     assert snapshot["python"] == json.loads((plan_dir / "plan.json").read_text())["recipe"]["execution"]["python"]
     assert (
@@ -757,7 +758,7 @@ def test_hparam_launch_revalidates_verified_execution_target_before_start(tmp_pa
     assert snapshot["runtime_hostname"] == "test-runtime"
     assert snapshot["module"] == "sleep2vec.finetune"
     assert set(snapshot["required_options"]).issubset(snapshot["supported_options"])
-    assert not list(plan_dir.glob(f".{hparam_runtime.EXECUTION_SNAPSHOT_NAME}.*"))
+    assert not list(plan_dir.glob(f".{execution_snapshot.EXECUTION_SNAPSHOT_NAME}.*"))
 
 
 def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, monkeypatch):
@@ -775,7 +776,7 @@ def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, 
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
     manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "run_execution_command",
         lambda *_args, **_kwargs: pytest.fail("legacy plan must fail before target probing"),
     )
@@ -786,7 +787,7 @@ def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, 
 
     launcher.assert_not_started()
     assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
-    assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
     assert not (plan_dir / "launch_manifest.tsv").exists()
     assert not (plan_dir / "run_status.tsv").exists()
 
@@ -802,7 +803,7 @@ def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch, ta
     monkeypatch.setattr(subprocess, "run", run)
     workdir = "/runtime checkout"
 
-    managed_scheduler.run_execution_command(
+    execution_snapshot.run_execution_command(
         {"target": target, "host": "unit-host", "workdir": workdir, "conda_env": "runtime", "env": {"TOKEN": "value"}},
         ["/runtime/bin/python", "-c", "pass"],
     )
@@ -832,7 +833,7 @@ def test_execution_probe_timeout_propagates_without_retry(monkeypatch, target: s
     monkeypatch.setattr(subprocess, "run", timeout)
 
     with pytest.raises(subprocess.TimeoutExpired):
-        managed_scheduler.run_execution_command(
+        execution_snapshot.run_execution_command(
             {"target": target, "host": "unit-host", "workdir": "/runtime"},
             ["/runtime/bin/python", "-c", "pass"],
         )
@@ -1174,7 +1175,7 @@ def test_execution_probe_allows_untracked_experiment_artifacts(tmp_path: Path):
     script = artifact_dir / "launch.sh"
     script.write_text(f"#!/usr/bin/env bash\n{command}\n")
 
-    snapshot = managed_scheduler.inspect_execution_target(
+    snapshot = execution_snapshot.inspect_execution_target(
         {"workdir": str(repo), "python": sys.executable, "runtime_commit": commit},
         [{"run_id": "run-000", "script": str(script), "command": command}],
         plan_label="hparam",
@@ -1243,7 +1244,7 @@ def test_execution_probe_rejects_runtime_module_outside_verified_repository(tmp_
     script.write_text(f"#!/usr/bin/env bash\n{command}\n")
 
     with pytest.raises(RuntimeError, match="module is outside the verified repository"):
-        managed_scheduler.inspect_execution_target(
+        execution_snapshot.inspect_execution_target(
             {"workdir": str(repo), "python": sys.executable, "runtime_commit": commit},
             [{"run_id": "run-000", "script": str(script), "command": command}],
             plan_label="hparam",
@@ -1261,7 +1262,7 @@ def test_hparam_launch_rejects_runtime_preflight_failure_before_managed_writes(t
         assert command[-1]
         return subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed")
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", reject_protocol)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", reject_protocol)
 
     with pytest.raises(RuntimeError, match="Target runtime preflight failed"):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
@@ -1293,7 +1294,7 @@ def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(t
 
     launcher.assert_not_started()
     assert all(path.read_bytes() == content for path, content in before.items())
-    assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
     assert not (plan_dir / "launch_manifest.tsv").exists()
     assert not (plan_dir / "run_status.tsv").exists()
     row = _read_table(tmp_path / "run_manifest.tsv")[0]
@@ -1313,7 +1314,7 @@ def test_hparam_launch_rejects_frozen_cli_values_before_managed_writes(tmp_path:
 
     launcher.assert_not_started()
     assert calls == ["identity", "parse"]
-    assert (plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME).exists()
+    assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
 
 
@@ -1322,7 +1323,7 @@ def test_hparam_launch_accepts_runtime_commit_drift_and_records_both_commits(tmp
     plan_dir = tmp_path / "plan"
     assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
-    snapshot_path = plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME
+    snapshot_path = plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME
     snapshot_before = snapshot_path.read_bytes()
     calls = _set_execution_probe(monkeypatch, plan_dir, commit="b" * 40)
 
@@ -1368,7 +1369,7 @@ def test_hparam_launch_accepts_runtime_commit_drift_before_next_wave(tmp_path: P
         [{"step_id": first["step_id"], "run_id": first["run_id"], "status": "finished"}],
     )
     _set_execution_probe(monkeypatch, plan_dir, commit="b" * 40)
-    snapshot_path = plan_dir / hparam_runtime.EXECUTION_SNAPSHOT_NAME
+    snapshot_path = plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME
     snapshot_before = snapshot_path.read_bytes()
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
@@ -1685,7 +1686,7 @@ def test_execution_snapshot_preserves_dynamic_identity_and_drift(tmp_path: Path)
         return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
 
     def inspect(execution, runs):
-        return managed_scheduler.inspect_execution_target(execution, runs, command_runner=run_command)
+        return execution_snapshot.inspect_execution_target(execution, runs, command_runner=run_command)
 
     snapshot = inspect(execution, runs)
     assert snapshot["target"] == {"external": True}
@@ -1693,11 +1694,11 @@ def test_execution_snapshot_preserves_dynamic_identity_and_drift(tmp_path: Path)
     assert snapshot["extra_evidence"] == [1, 2]
     assert snapshot["module"] == "runtime_cli"
     assert snapshot["supported_options"] == [1, 2]
-    snapshot_path = tmp_path / managed_scheduler.EXECUTION_SNAPSHOT_NAME
-    managed_scheduler.write_execution_snapshot_file(snapshot_path, snapshot)
+    snapshot_path = tmp_path / execution_snapshot.EXECUTION_SNAPSHOT_NAME
+    execution_snapshot.write_execution_snapshot_file(snapshot_path, snapshot)
     frozen_bytes = snapshot_path.read_bytes()
     assert json.loads(frozen_bytes) == snapshot
-    assert managed_scheduler.validated_execution_snapshot(
+    assert execution_snapshot.validated_execution_snapshot(
         tmp_path,
         execution,
         runs,
@@ -1706,5 +1707,5 @@ def test_execution_snapshot_preserves_dynamic_identity_and_drift(tmp_path: Path)
     ) == (snapshot, False)
     identity["extra_evidence"] = [1, 3]
     with pytest.raises(ValueError, match="Frozen execution snapshot changed: extra_evidence"):
-        managed_scheduler.validated_execution_snapshot(tmp_path, execution, runs, {}, inspector=inspect)
+        execution_snapshot.validated_execution_snapshot(tmp_path, execution, runs, {}, inspector=inspect)
     assert snapshot_path.read_bytes() == frozen_bytes

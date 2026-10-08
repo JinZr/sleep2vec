@@ -27,9 +27,9 @@ import yaml
 
 from . import (
     configs,
+    execution_snapshot,
     experiment_io as exp_io,
     experiment_workspace,
-    managed_scheduler,
     plan_context,
     plan_contract,
     plan_rendering as rendering,
@@ -1118,7 +1118,7 @@ def write_hparam_plan(
 
 def render_hparam_preflight_card(
     recipe: dict[str, Any],
-    snapshot: managed_scheduler.ExecutionSnapshot,
+    snapshot: execution_snapshot.ExecutionSnapshot,
     run_configs: list[tuple[dict[str, Any], bytes]],
 ) -> str:
     variant = str(recipe["variant"])
@@ -1263,14 +1263,14 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
         validation_run["script"] = str(artifacts._physical_plan_path(Path(str(run["script"])), plan_dir, physical_dir))
         validation_runs.append(validation_run)
     snapshot = _inspect_hparam_execution_target(execution, validation_runs)
-    snapshot_path = physical_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
-    managed_scheduler.write_execution_snapshot_file(snapshot_path, snapshot)
+    snapshot_path = physical_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME
+    execution_snapshot.write_execution_snapshot_file(snapshot_path, snapshot)
     card = render_hparam_preflight_card(recipe, snapshot, run_configs)
     plan_markdown = physical_dir / "plan.md"
     write_text(plan_markdown, f"{plan_markdown.read_text().rstrip()}\n\n{card}\n")
     plan_payload = read_json(physical_dir / "plan.json")
     plan_payload["execution_snapshot"] = {
-        "path": str(plan_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME),
+        "path": str(plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME),
         "sha256": file_sha256(snapshot_path),
     }
     # Keep plan.json as the terminal physical-plan manifest after adding the frozen target evidence.
@@ -1281,7 +1281,7 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
         require_workspace_state=False,
         require_adaptive_commit=False,
     )
-    managed_scheduler.validated_execution_snapshot(
+    execution_snapshot.validated_execution_snapshot(
         physical_dir,
         execution,
         validation_runs,
@@ -1296,8 +1296,8 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
 
 def _inspect_hparam_execution_target(
     execution: Mapping[str, JsonValue], runs: Sequence[Mapping[str, JsonValue]]
-) -> managed_scheduler.ExecutionSnapshot:
-    return managed_scheduler.inspect_execution_target(execution, runs, plan_label="hparam")
+) -> execution_snapshot.ExecutionSnapshot:
+    return execution_snapshot.inspect_execution_target(execution, runs, plan_label="hparam")
 
 
 def commit_hparam_plan(
@@ -1337,7 +1337,7 @@ def commit_hparam_plan(
             validate_hparam_output_paths(plan_dir, plan)
             execution_value = recipe.get("execution")
             execution = execution_value if isinstance(execution_value, dict) else {}
-            managed_scheduler.validated_execution_snapshot(
+            execution_snapshot.validated_execution_snapshot(
                 plan_dir,
                 execution,
                 plan["runs"],

@@ -12,7 +12,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             from agent_tools import (
                 adaptive_evidence, adaptive_handshake, adaptive_hparam, adaptive_state,
                 checkpoint_test_results, experiment_tracking,
-                experiments,
+                execution_snapshot, experiments,
                 experiment_io, experiment_sources, experiment_workspace, hparam_selection,
                 managed_scheduler, models, experiment_pipeline, experiment_pipeline_results,
                 experiment_pipeline_cohort_selection, experiment_pipeline_spec,
@@ -66,7 +66,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             slurm.terminal_exit_code(terminal_sidecar)
 
             pipeline_hooks = experiment_pipeline.PipelineHooks(
-                inspect_target=lambda *args, **kwargs: managed_scheduler.inspect_execution_target({}, []),
+                inspect_target=lambda *args, **kwargs: execution_snapshot.inspect_execution_target({}, []),
                 sleep=lambda seconds: None,
             )
             pipeline_hooks.sleep = None  # type: ignore[misc]
@@ -113,33 +113,33 @@ def test_result_types_reach_callers(tmp_path: Path):
             pipeline_metrics[0]["value"] = None  # type: ignore[typeddict-item]
             experiment_pipeline_results.write_rows_atomic(Path("/metrics.csv"), pipeline_metrics)
 
-            def snapshot_result(should_write: bool) -> tuple[managed_scheduler.ExecutionSnapshot, bool]:
+            def snapshot_result(should_write: bool) -> tuple[execution_snapshot.ExecutionSnapshot, bool]:
                 return {}, should_write
 
             managed_scheduler.SchedulerHooks(validated_snapshot=lambda *args: snapshot_result(True))
             managed_scheduler.SchedulerHooks(validated_snapshot=lambda *args: (None, False))
-            invalid_snapshot: managed_scheduler.ExecutionSnapshotResult = (None, True)  # type: ignore[assignment]
+            invalid_snapshot: execution_snapshot.ExecutionSnapshotResult = (None, True)  # type: ignore[assignment]
 
             def missing_snapshot_write() -> tuple[None, Literal[True]]:
                 return None, True
 
             managed_scheduler.SchedulerHooks(validated_snapshot=missing_snapshot_write)  # type: ignore[arg-type]
 
-            for execution_snapshot in (
-                managed_scheduler.inspect_execution_target({}, []),
-                managed_scheduler.validated_execution_snapshot(Path("/plan"), {}, [], {})[0],
+            for snapshot in (
+                execution_snapshot.inspect_execution_target({}, []),
+                execution_snapshot.validated_execution_snapshot(Path("/plan"), {}, [], {})[0],
             ):
-                module_name: str = execution_snapshot["module"]
-                snapshot_commit: str = execution_snapshot["runtime_commit"]
-                options: list[str] = execution_snapshot["required_options"]
-                argv_digest: str = execution_snapshot["validated_argv_sha256"]
-                execution_snapshot["module"] = 1  # type: ignore[typeddict-item]
-                execution_snapshot["required_options"] = [1]  # type: ignore[list-item]
-                execution_snapshot["validated_argv_sha256"] = b"hash"  # type: ignore[typeddict-item]
-                execution_snapshot["module_name"]  # type: ignore[typeddict-item]
-                managed_scheduler.write_execution_snapshot_file(Path("/snapshot"), execution_snapshot)
+                module_name: str = snapshot["module"]
+                snapshot_commit: str = snapshot["runtime_commit"]
+                options: list[str] = snapshot["required_options"]
+                argv_digest: str = snapshot["validated_argv_sha256"]
+                snapshot["module"] = 1  # type: ignore[typeddict-item]
+                snapshot["required_options"] = [1]  # type: ignore[list-item]
+                snapshot["validated_argv_sha256"] = b"hash"  # type: ignore[typeddict-item]
+                snapshot["module_name"]  # type: ignore[typeddict-item]
+                execution_snapshot.write_execution_snapshot_file(Path("/snapshot"), snapshot)
                 managed_scheduler.build_launch_command(
-                    {}, Path("script"), "log", "pid", [], execution_snapshot=execution_snapshot,
+                    {}, Path("script"), "log", "pid", [], execution_snapshot=snapshot,
                 )
 
             from agent_tools.domain.index_csv import index_summary
@@ -230,7 +230,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 if context["config_summary"] is not None:
                     context["config_summary"]["warnings"] = [1]  # type: ignore[list-item]
 
-            minimal_snapshot: managed_scheduler.ExecutionSnapshot = {
+            minimal_snapshot: execution_snapshot.ExecutionSnapshot = {
                 "module": "runtime_cli", "module_origin": "/runtime_cli.py",
             }
             managed_scheduler.build_launch_command(
@@ -330,7 +330,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 candidate_metrics, [{"checkpoint_path": 1}], mode="max",  # type: ignore[dict-item]
             )
 
-            planned: managed_scheduler.PlannedArgv = {"run_id": "run-000", "args": ["--value", "ok"]}
+            planned: execution_snapshot.PlannedArgv = {"run_id": "run-000", "args": ["--value", "ok"]}
             planned["args"] = [1]  # type: ignore[list-item]
             planned["run_id"] = 1  # type: ignore[typeddict-item]
 

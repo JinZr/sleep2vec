@@ -10,7 +10,7 @@ import sys
 import pytest
 import yaml
 
-from agent_tools import managed_scheduler
+from agent_tools import execution_snapshot
 from agent_tools.configs import config_summary
 from agent_tools.decision_models import DecisionStatus
 from agent_tools.plans import build_plan, evaluate_recipe
@@ -19,7 +19,7 @@ from tests.agent_tool_test_helpers import run_execution_preflight_fixture, write
 
 @pytest.fixture(autouse=True)
 def _stub_execution_target(monkeypatch):
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", run_execution_preflight_fixture)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
 
 
 # The baseline reads the signal run's window index; repeated subject keys collapse at load time.

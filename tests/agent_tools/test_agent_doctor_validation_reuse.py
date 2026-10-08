@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from agent_tools import cli, decisions, experiment_workspace, managed_scheduler, plan_context, plans
+from agent_tools import cli, decisions, execution_snapshot, experiment_workspace, managed_scheduler, plan_context, plans
 from agent_tools.configs import config_summary
 from agent_tools.domain import index_csv
 from agent_tools.models import REPO_ROOT
@@ -115,7 +115,7 @@ def runtime_probes(monkeypatch):
             "",
         )
 
-    monkeypatch.setattr(managed_scheduler, "run_execution_command", run)
+    monkeypatch.setattr(execution_snapshot, "run_execution_command", run)
     return calls
 
 

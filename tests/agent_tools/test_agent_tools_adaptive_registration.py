@@ -12,8 +12,8 @@ import yaml
 from agent_tools import (
     adaptive_hparam,
     adaptive_state,
+    execution_snapshot,
     hparam_runtime,
-    managed_scheduler,
     manifests,
     plan_hparam,
     plans,
@@ -252,7 +252,7 @@ def test_adaptive_init_target_preflight_failure_leaves_no_registration(tmp_path:
     workflow_dir = tmp_path / "workflow"
     manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("target argv rejected")),
     )

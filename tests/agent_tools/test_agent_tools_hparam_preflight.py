@@ -16,7 +16,7 @@ from agent_tool_test_helpers import write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import cli, managed_scheduler, plan_hparam, plans, run_artifacts
+from agent_tools import cli, execution_snapshot, plan_hparam, plans, run_artifacts
 from agent_tools.experiment_workspace import (
     ensure_experiment_workspace,
     file_sha256,
@@ -204,7 +204,7 @@ def test_hparam_plan_preflights_before_registration(tmp_path: Path, monkeypatch)
         assert all(str(plan_dir) in run["command"] for run in runs)
         return _snapshot(execution, runs)
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
 
@@ -238,7 +238,7 @@ def test_hparam_plan_rejects_unsafe_results_before_registration(tmp_path: Path, 
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     before = _workspace_files(workspace)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda *_args, **_kwargs: pytest.fail("unsafe output topology must fail before target inspection"),
     )
@@ -265,7 +265,7 @@ def test_hparam_plan_rejects_workdir_ancestor_symlink_before_registration(tmp_pa
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     before = _workspace_files(workspace)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda *_args, **_kwargs: pytest.fail("unsafe output topology must fail before target inspection"),
     )
@@ -308,7 +308,7 @@ def test_hparam_plan_fails_closed_on_remote_output_preflight(
 
     monkeypatch.setattr(plan_hparam.exp_io, "validate_managed_output_paths", validate)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda *_args, **_kwargs: pytest.fail("remote topology must fail before target inspection"),
     )
@@ -342,7 +342,7 @@ def test_hparam_preflight_does_not_probe_storage_capacity(tmp_path: Path, monkey
 
     monkeypatch.setattr(subprocess, "run", reject_df)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda execution, runs, **_kwargs: _snapshot(execution, runs),
     )
@@ -381,7 +381,7 @@ def test_hparam_validate_only_uses_same_provenance_card_without_writes(tmp_path:
         calls.append(plan_label)
         return {**_snapshot(execution, runs), "runtime_commit": live_runtime_commit}
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
 
     exit_code = cli.main(["plan", "--recipe", str(recipe), "--output-dir", str(plan_dir), "--validate-only"])
     validate_only_card = _preflight_card(capsys.readouterr().out)
@@ -475,7 +475,7 @@ def test_hparam_preflight_failure_leaves_no_plan_or_workspace(tmp_path: Path, mo
     plan_dir = workspace / "plans" / "tune"
     before = _workspace_files(workspace)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("target argv rejected")),
     )
@@ -493,7 +493,7 @@ def test_hparam_validate_only_failure_leaves_no_staging_or_canonical_state(tmp_p
     plan_dir = workspace / "plans" / "tune"
     before = _workspace_files(workspace)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("target argv rejected")),
     )
@@ -564,7 +564,7 @@ def test_hparam_registration_recheck_rejects_target_drift_without_writes(tmp_pat
             snapshot["runtime_hostname"] = "changed-host"
         return snapshot
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
 
@@ -579,7 +579,7 @@ def test_hparam_registration_rejects_snapshot_drift_without_writes(tmp_path: Pat
     plan_dir = workspace / "plans" / "tune"
     before = _workspace_files(workspace)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda execution, runs, **_kwargs: _snapshot(execution, runs),
     )
@@ -627,7 +627,7 @@ def test_hparam_registration_rejects_partial_canonical_rows_before_workspace_wri
             merge_run_manifest(workspace, [row])
         return _snapshot(execution, runs)
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inject_partial_registration)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inject_partial_registration)
 
     report = plans.build_plan(
         recipe_path=recipe,
@@ -667,7 +667,7 @@ def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = workspace if root_resident else workspace / "plans" / "tune"
     monkeypatch.setattr(
-        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+        execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
     )
 
     if failure_stage == "rows":
@@ -728,7 +728,7 @@ def test_root_hparam_registration_recovery_rejects_plan_drift(tmp_path: Path, mo
     recipe = tmp_path / "root-drift.yaml"
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda execution, runs, **_kwargs: _snapshot(execution, runs),
     )
@@ -771,7 +771,7 @@ def test_hparam_plan_handles_unowned_publication(
         recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = workspace / "plans" / "tune"
     monkeypatch.setattr(
-        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+        execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
     )
     real_publish = plans.publish_staged_plan_locked
 
@@ -814,7 +814,7 @@ def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, 
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     monkeypatch.setattr(
-        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+        execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
     )
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     manifest_path = workspace / "run_manifest.tsv"
@@ -858,7 +858,7 @@ def test_hparam_registration_drift_preserves_existing_overwrite_destination(tmp_
             snapshot["runtime_hostname"] = "changed-host"
         return snapshot
 
-    monkeypatch.setattr(managed_scheduler, "inspect_execution_target", inspect)
+    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
 
@@ -881,7 +881,7 @@ def test_hparam_staging_uses_destination_filesystem_ancestor(tmp_path: Path, mon
 
     monkeypatch.setattr(Path, "replace", reject_parent_filesystem_staging)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda execution, runs, **_kwargs: _snapshot(execution, runs),
     )
@@ -901,7 +901,7 @@ def test_hparam_plan_directory_may_equal_experiment_root(tmp_path: Path, monkeyp
     recipe = tmp_path / "root-plan.yaml"
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda execution, runs, **_kwargs: _snapshot(execution, runs),
     )
@@ -940,7 +940,7 @@ def test_hparam_overwrite_publish_failure_restores_existing_plan(tmp_path: Path,
 
     monkeypatch.setattr(Path, "replace", fail_during_publish)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda execution, runs, **_kwargs: _snapshot(execution, runs),
     )
@@ -1049,7 +1049,7 @@ def test_hparam_plan_rejects_destination_appearing_during_preflight(tmp_path: Pa
 
     monkeypatch.setattr(plan_hparam, "preflight_hparam_plan", create_destination)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda execution, runs, **_kwargs: _snapshot(execution, runs),
     )
@@ -1079,7 +1079,7 @@ def test_hparam_plan_rechecks_blocked_artifacts_created_after_preflight(tmp_path
 
     monkeypatch.setattr(plans, "_validate_bound_recipe", inject_competitor)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda execution, runs, **_kwargs: _snapshot(execution, runs),
     )
@@ -1124,7 +1124,7 @@ def test_hparam_plan_rolls_back_blocked_artifact_created_after_final_guard(
 
     monkeypatch.setattr(plans, "_guard_pass_plan_publication", inject_after_final_guard)
     monkeypatch.setattr(
-        managed_scheduler,
+        execution_snapshot,
         "inspect_execution_target",
         lambda execution, runs, **_kwargs: _snapshot(execution, runs),
     )
@@ -1162,7 +1162,7 @@ def test_hparam_reader_preserves_full_mapping_and_read_modes(
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     monkeypatch.setattr(
-        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+        execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
     )
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     plan_path = plan_dir / "plan.json"
@@ -1206,7 +1206,7 @@ def test_hparam_reader_skips_missing_workspace_registration_when_disabled(tmp_pa
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     monkeypatch.setattr(
-        managed_scheduler, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+        execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
     )
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     (workspace / "experiment.yaml").unlink()

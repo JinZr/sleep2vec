@@ -27,11 +27,10 @@ import traceback
 from types import FrameType
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from . import manifests, python_programs, transport
+from . import execution_snapshot, manifests, python_programs, transport
 from .runtime_lock import runtime_lock
 
 if TYPE_CHECKING:
-    from .managed_scheduler import ExecutionSnapshot
     from .models import JsonValue
 
 
@@ -121,7 +120,7 @@ class AllocationSidecar(TypedDict):
     scheduler_submit_token: str
     node: str
     started_at: str
-    execution_snapshot: ExecutionSnapshot
+    execution_snapshot: execution_snapshot.ExecutionSnapshot
 
 
 class TerminalSidecar(TypedDict):
@@ -461,8 +460,6 @@ def run_frozen_job(
     try:
         with log_target.open("a") as log:
             try:
-                from .managed_scheduler import inspect_execution_target
-
                 expected_tasks = _positive_int(expected_tasks, "gpus_per_run")
                 if os.environ.get("SLURM_NTASKS") != str(expected_tasks):
                     raise ValueError(
@@ -472,7 +469,7 @@ def run_frozen_job(
 
                 verify_frozen_artifacts("before allocation start")
                 with runtime_lock(workdir):
-                    snapshot = inspect_execution_target(
+                    snapshot = execution_snapshot.inspect_execution_target(
                         {
                             "target": "local",
                             "workdir": workdir,

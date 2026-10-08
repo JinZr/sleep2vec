@@ -22,6 +22,7 @@ from test_agent_tools_experiment_pipeline_cohort_selection import _spec as _coho
 import yaml
 
 from agent_tools import (
+    execution_snapshot,
     experiment_pipeline,
     experiment_pipeline_attempts as pipeline_attempts,
     experiment_pipeline_results,
@@ -839,7 +840,7 @@ def test_initial_registration_preflight_groups_variants_before_publishing_any_at
     assert read_run_manifest(root) == []
     assert not list((pipeline_dir / "plans").rglob("attempt-001"))
     assert not list(pipeline_dir.rglob("*.staging"))
-    assert not list(pipeline_dir.rglob(managed_scheduler.EXECUTION_SNAPSHOT_NAME))
+    assert not list(pipeline_dir.rglob(execution_snapshot.EXECUTION_SNAPSHOT_NAME))
 
 
 @pytest.mark.parametrize("drift", [False, True])
@@ -849,7 +850,7 @@ def test_registration_preflight_freezes_complete_group_and_rejects_drift(tmp_pat
     spec_path = prepare_pipeline_sources(tmp_path, monkeypatch, spec)
     pipeline_dir = root / "pipelines" / "external-v1"
     jobs_path = pipeline_dir / "jobs.tsv"
-    snapshot_path = pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
+    snapshot_path = pipeline_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME
     runtime = FakePipelineRuntime(spec)
     target_snapshot = {"validated_argv_sha256": "a" * 64}
 
@@ -1015,7 +1016,7 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
             stderr="",
         )
 
-    snapshot = managed_scheduler.inspect_execution_target(
+    snapshot = execution_snapshot.inspect_execution_target(
         {
             "target": "local",
             "workdir": "/runtime/snapshot",
@@ -1029,7 +1030,7 @@ def test_atomic_generic_plan_freezes_single_runtime_command(tmp_path: Path, monk
     assert snapshot["required_options"] == planned_options
     runtime_commit = "a" * 64
     with pytest.raises(ValueError, match="invalid runtime commit"):
-        managed_scheduler.inspect_execution_target(
+        execution_snapshot.inspect_execution_target(
             {
                 "target": "local",
                 "workdir": "/runtime/snapshot",
@@ -1402,7 +1403,7 @@ def test_pipeline_attempt_polls_read_canonical_state_only_under_run_lock(tmp_pat
         # Stub the frozen-artifact checks so the loop's canonical reads are the first managed manifest reads; an
         # existing execution snapshot moves the first one to the pre-launch snapshot check.
         if reader == "run_attempts_with_snapshot":
-            (pipeline_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME).write_text("{}\n")
+            (pipeline_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).write_text("{}\n")
         monkeypatch.setattr(experiment_pipeline, "_validate_frozen_pipeline", lambda *_args: {})
         monkeypatch.setattr(pipeline_attempts, "validate_attempt_rows", lambda *_args: None)
         monkeypatch.setattr(pipeline_attempts, "planned_runs", lambda rows: [dict(row) for row in rows])
