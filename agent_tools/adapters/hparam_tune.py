@@ -70,14 +70,15 @@ class HparamTuneAdapter(TaskAdapter):
 
     def bind_effective_recipe(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         *,
         source_recipe: dict[str, Any] | None = None,
     ) -> list[DecisionIssue]:
         source = source_recipe or recipe
-        if isinstance(source.get("_local_recipe"), dict):
-            source = source["_local_recipe"]
+        local_recipe = source.get("_local_recipe")
+        if isinstance(local_recipe, dict):
+            source = local_recipe
         authored_search = source.get("search")
         if not isinstance(authored_search, dict):
             authored_search = {}
@@ -95,7 +96,7 @@ class HparamTuneAdapter(TaskAdapter):
 
     def task_issues(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
@@ -386,7 +387,7 @@ class HparamTuneAdapter(TaskAdapter):
 
     def planned_plan_paths(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         out: Path,
         report: DecisionReport,
         *,
@@ -398,7 +399,8 @@ class HparamTuneAdapter(TaskAdapter):
 
         if report.exit_code != 0:
             paths = plan_contract.blocked_plan_control_paths(out)
-            evaluation = recipe.get("evaluation_policy") or {}
+            evaluation_value = recipe.get("evaluation_policy")
+            evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
             if plan_hparam.final_test_unlocked(evaluation, unlock_final_test):
                 paths.extend(
                     [
@@ -417,7 +419,10 @@ class HparamTuneAdapter(TaskAdapter):
             out / "config.source.yaml",
             out / plan_hparam.FROZEN_FINAL_EVAL_CONFIG_NAME,
         ]
-        scheduler = (recipe.get("execution") or {}).get("scheduler") or {}
+        execution_value = recipe.get("execution")
+        execution = execution_value if isinstance(execution_value, dict) else {}
+        scheduler_value = execution.get("scheduler")
+        scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
         for layout in plan_hparam.hparam_run_layouts(recipe, out, next_run_index(recipe)):
             run_dir = layout["run_dir"]
             paths.extend(

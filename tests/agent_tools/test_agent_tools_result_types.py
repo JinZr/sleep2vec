@@ -19,7 +19,8 @@ def test_result_types_reach_callers(tmp_path: Path):
                 plan_contract, plan_hparam, run_artifacts, run_evidence, slurm,
             )
 
-            from agent_tools.adapters.base import TaskAdapter
+            from agent_tools.adapters.base import TaskAdapter, recipe_inputs
+            from agent_tools.decision_models import DecisionIssue
             from agent_tools.adapters.hparam_tune import HPARAM_TUNE_ADAPTER
 
             from typing import Any, Literal
@@ -469,6 +470,31 @@ def test_result_types_reach_callers(tmp_path: Path):
                 required_search: dict[str, models.JsonValue] = compiled_search  # type: ignore[assignment]
                 if compiled_search is not None:
                     compiled_search["configurations"] = b"points"  # type: ignore[assignment]
+
+            class FrozenRecipeHookAdapter(TaskAdapter):
+                def bind_effective_recipe(
+                    self,
+                    recipe: dict[str, models.JsonValue],
+                    config_summary: models.ConfigSummaryInput | None,
+                    *,
+                    source_recipe: dict[str, Any] | None = None,
+                ) -> list[DecisionIssue]:
+                    recipe["runtime"] = {"devices": [0]}
+                    recipe["runtime"] = b"runtime"  # type: ignore[assignment]
+                    return []
+
+            class ByteRecipeHookAdapter(TaskAdapter):
+                def bind_effective_recipe(  # type: ignore[override]
+                    self,
+                    recipe: dict[str, bytes],
+                    config_summary: models.ConfigSummaryInput | None,
+                    *,
+                    source_recipe: dict[str, Any] | None = None,
+                ) -> list[DecisionIssue]:
+                    return []
+
+            frozen_inputs: dict[str, models.JsonValue] = recipe_inputs({})
+            recipe_inputs({})["config"] = b"config"  # type: ignore[assignment]
 
             final_descriptor: plan_contract.FinalEvalConfigDescriptor = {
                 "path": "/plan/config.final_eval.yaml", "sha256": "a" * 64, "source_path": "relative.yaml",

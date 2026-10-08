@@ -35,7 +35,7 @@ class PlanRegistrationPreflightError(ValueError):
     pass
 
 
-def recipe_inputs(recipe: dict[str, Any]) -> dict[str, Any]:
+def recipe_inputs(recipe: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """The recipe's ``inputs`` mapping, or an empty one when absent or malformed."""
     inputs = recipe.get("inputs")
     return inputs if isinstance(inputs, dict) else {}
@@ -164,7 +164,7 @@ class TaskAdapter:
 
     def bind_effective_recipe(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         *,
         source_recipe: dict[str, Any] | None = None,
@@ -232,7 +232,7 @@ class TaskAdapter:
 
     def planned_plan_paths(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         out: Path,
         report: DecisionReport,
         *,
@@ -255,7 +255,7 @@ class TaskAdapter:
         decision_paths cannot import the registry."""
         return []
 
-    def frozen_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Path]]:
+    def frozen_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, Path]]:
         """Local external inputs whose content identity is frozen in the plan."""
         return []
 
@@ -278,7 +278,7 @@ class TaskAdapter:
 
     def task_issues(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
@@ -288,7 +288,7 @@ class TaskAdapter:
         return []
 
     def configured_input_issues(
-        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue]:
         """Existence checks for task-specific configured input paths."""
         return []
@@ -298,7 +298,7 @@ class TaskAdapter:
         rendered (the kernel reports it as unsupported)."""
         return []
 
-    def frozen_commands(self, recipe: dict[str, Any], config_bytes: bytes) -> list[str]:
+    def frozen_commands(self, recipe: dict[str, JsonValue], config_bytes: bytes) -> list[str]:
         """Rebuild commands from a frozen plan-owned config snapshot."""
         return self.commands(recipe, None)
 
