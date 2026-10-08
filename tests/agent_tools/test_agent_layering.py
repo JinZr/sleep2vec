@@ -6,13 +6,21 @@ KERNEL_MODULES or MIXED_MODULES that imports a DOMAIN_MODULES module is a
 reverse edge, allowed only if it is in KNOWN_DOMAIN_IMPORT_EXEMPTIONS.
 
 Pure-kernel modules carry no exemptions, so they must stay domain-free. The
-mixed bridges carry exactly the eight grandfathered edges; a ninth fails.
+mixed bridges carry only the grandfathered edges in
+KNOWN_DOMAIN_IMPORT_EXEMPTIONS; a new one fails.
+
+It also freezes the package import graph's deviation from the one-way layering.
+Counting function-local imports and the implicit package ``__init__`` edges, the
+members of every import cycle must equal IMPORT_CYCLE_LEDGER, and the edges that
+function-local imports create must equal LAZY_IMPORT_LEDGER. Both ledgers only
+shrink. Imports under ``if TYPE_CHECKING:`` never run, so they do not count.
 
 Reads only ast + agent_tools.layering (a zero-dependency data module), so it
 runs in the domain-free CI environment.
 """
 
 import ast
+from collections.abc import Iterator
 from pathlib import Path
 
 from agent_tools import layering
@@ -276,3 +284,104 @@ def test_retired_compatibility_paths_stay_removed():
     assert not hasattr(agent_tools.configs, "sleep2stat_config_summary")
     assert not hasattr(agent_tools.recipes, "recipe_name")
     assert not hasattr(agent_tools.experiment_io, "SSH_TIMEOUT_SECONDS")
+
+
+def _executed_imports(node: ast.AST, local: bool = False) -> Iterator[tuple[ast.Import | ast.ImportFrom, bool]]:
+    """(import, is function-local) for each import under ``node`` that runs, i.e. outside ``if TYPE_CHECKING:``."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.Import, ast.ImportFrom)):
+            yield child, local
+        elif not (isinstance(child, ast.If) and ast.unparse(child.test).endswith("TYPE_CHECKING")):
+            yield from _executed_imports(child, local or isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)))
+
+
+def _import_edges(sources: dict[str, str]) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """(all, function-local) intra-package import edges among the modules in ``sources``.
+
+    ``sources`` maps each module's ``_normalize_import`` source name to its text;
+    a package is spelled ``adapters.__init__`` there and is the node ``adapters``.
+    Targets that are not modules in ``sources`` (imported symbols) drop out.
+    """
+    modules = {name.removesuffix(".__init__") for name in sources}
+    edges: set[tuple[str, str]] = set()
+    lazy: set[tuple[str, str]] = set()
+    for name, text in sources.items():
+        source = name.removesuffix(".__init__")
+        for node, local in _executed_imports(ast.parse(text, name)):
+            targets = {target for target in _normalize_import(node, name) if target in modules}
+            # Importing ``adapters.x`` first runs ``adapters/__init__.py``. The package
+            # itself and the modules inside it are already running it: no edge.
+            targets |= {target.rpartition(".")[0] for target in targets}
+            for target in targets & modules:
+                if not f"{source}.".startswith(f"{target}."):
+                    edges.add((source, target))
+                    if local:
+                        lazy.add((source, target))
+    return edges, lazy
+
+
+def _cycle_members(edges: set[tuple[str, str]]) -> set[str]:
+    """Modules that reach themselves: the members of every strongly connected component larger than one.
+
+    ``_import_edges`` emits no self-edge, so a module can only reach itself through another module.
+    """
+    successors: dict[str, set[str]] = {}
+    for source, target in edges:
+        successors.setdefault(source, set()).add(target)
+    members: set[str] = set()
+    for start in successors:
+        reached: set[str] = set()
+        frontier = [start]
+        while frontier:
+            for module in successors.get(frontier.pop(), set()) - reached:
+                reached.add(module)
+                frontier.append(module)
+        if start in reached:
+            members.add(start)
+    return members
+
+
+def _package_sources() -> dict[str, str]:
+    root = _package_dir()
+    return {
+        str(path.relative_to(root).with_suffix("")).replace("/", "."): path.read_text() for path in root.rglob("*.py")
+    }
+
+
+def test_import_cycle_ledger_is_exact():
+    edges, _ = _import_edges(_package_sources())
+    live, ledger = _cycle_members(edges), layering.IMPORT_CYCLE_LEDGER
+    assert live == ledger, (
+        f"joined an import cycle (fix the import instead of growing IMPORT_CYCLE_LEDGER): {sorted(live - ledger)}\n"
+        f"left the import cycle (delete them from IMPORT_CYCLE_LEDGER in this commit): {sorted(ledger - live)}"
+    )
+
+
+def test_lazy_import_ledger_is_exact():
+    _, lazy = _import_edges(_package_sources())
+    ledger = layering.LAZY_IMPORT_LEDGER
+    assert lazy == ledger, (
+        f"new function-local import edges (fix the import instead of growing LAZY_IMPORT_LEDGER): "
+        f"{sorted(lazy - ledger)}\n"
+        f"function-local import edges that are gone (delete them from LAZY_IMPORT_LEDGER in this commit): "
+        f"{sorted(ledger - lazy)}"
+    )
+
+
+def test_import_graph_guard_catches_synthetic_cycle():
+    # ``a`` imports ``pkg.b`` at top level, which first runs ``pkg/__init__``; ``pkg.b``
+    # imports ``a`` back only inside a function: a lazy 2-cycle. The TYPE_CHECKING
+    # import of ``c`` never runs, and ``pkg.b`` importing its sibling ``pkg.d`` adds
+    # no edge to the ``pkg`` __init__ that is already running.
+    edges, lazy = _import_edges(
+        {
+            "a": "from typing import TYPE_CHECKING\nfrom .pkg.b import f\nif TYPE_CHECKING:\n    from .c import C\n",
+            "c": "",
+            "pkg.__init__": "",
+            "pkg.b": "from .d import g\n\n\ndef f():\n    from ..a import h\n",
+            "pkg.d": "",
+        }
+    )
+    assert edges == {("a", "pkg"), ("a", "pkg.b"), ("pkg.b", "a"), ("pkg.b", "pkg.d")}
+    assert lazy == {("pkg.b", "a")}
+    assert _cycle_members(edges) == {"a", "pkg.b"}

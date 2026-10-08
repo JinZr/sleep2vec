@@ -25,6 +25,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
+from .. import plan_contract, plan_rendering, slurm
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
 from ..models import BoundFinalEvalConfigSnapshot, ConfigSummary, ConfigSummaryInput, JsonValue, coerce_list
 from ..plan_contract import CompiledPlanContract, GenericCompiledPlanContract
@@ -310,8 +311,6 @@ class TaskAdapter:
         run_index_offset: int,
         config_bytes: bytes,
     ) -> CompiledPlanContract:
-        from .. import plan_contract, plan_rendering, slurm
-
         frozen_inputs = plan_contract.frozen_input_snapshots(recipe)
         source_config = plan_contract.resolve_frozen_repo_path(recipe, (recipe.get("inputs") or {}).get("config"))
         if source_config is None:

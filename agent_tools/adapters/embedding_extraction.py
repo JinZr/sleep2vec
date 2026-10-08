@@ -14,6 +14,7 @@ from typing import Any
 
 from data.whole_night_index import validate_whole_night_index
 
+from .. import plan_contract
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from ..experiment_workspace import experiment_root
 from ..models import REPO_ROOT, SUPPORTED_VARIANTS, ConfigSummaryInput, JsonValue, coerce_list, resolve_repo_path
@@ -123,8 +124,6 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         return paths
 
     def frozen_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, Path]]:
-        from .. import plan_contract
-
         paths: list[tuple[str, Path]] = []
         for field, path in self.required_input_paths(recipe):
             resolved = plan_contract.resolve_frozen_repo_path(recipe, path)
