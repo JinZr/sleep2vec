@@ -60,6 +60,7 @@ jobs:
               ".github/workflows/unit_tests.yml",
               "requirements-agent-tools.txt",
               "utils/test_agent_tools.py",
+              "tests/conftest.py",
               "requirements-unit-tests.txt",
               "sleep2stat/config.py",
               "tests/agent_tools/test_agent_tools_recipes.py",
@@ -167,6 +168,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10"]
+        shard: [0, 1, 2, 3]
       fail-fast: false
 
     steps:
@@ -197,11 +199,16 @@ jobs:
       # agent_tools_recipe_tests job above. The deselected hparam cases assert
       # generated scripts whose frozen-identity preflight imports the variant
       # module (and thus torch) in the invoking python.
+      #
+      # The suite runs as four shards selected by the crc32 of each test's node
+      # id in tests/conftest.py, so every test runs in exactly one shard
+      # regardless of collection order or xdist worker count. --durations keeps
+      # each shard's slowest tests visible in its log.
       - name: Run agent tools kernel tests
         env:
           PYTEST_ADDOPTS: --randomly-seed=${{ github.run_number }}
         run: |
-          echo "pytest random seed: ${GITHUB_RUN_NUMBER}"
+          echo "pytest random seed: ${GITHUB_RUN_NUMBER}, shard index: ${{ matrix.shard }} of 4"
           python utils/test_agent_tools.py -q -n auto tests/agent_tools \
             --ignore=tests/agent_tools/test_agent_run_manifest.py \
             --ignore=tests/agent_tools/test_agent_tools_sleep2stat.py \
@@ -209,7 +216,8 @@ jobs:
             --ignore=tests/agent_tools/test_agent_tools_recipes.py \
             --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_model_variant_controls_generated_hparam_module" \
             --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_hparam_plan_allows_test_after_fit_when_explicitly_unlocked" \
-            --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_unlock_final_test_with_explicit_ckpt_generates_final_script"
+            --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_unlock_final_test_with_explicit_ckpt_generates_final_script" \
+            --shard-count 4 --shard-index ${{ matrix.shard }} --durations=25 --durations-min=1.0
 
   unit_tests:
     needs: detect_changes

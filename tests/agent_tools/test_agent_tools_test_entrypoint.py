@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import zlib
 
 import pytest
 
@@ -84,6 +85,39 @@ def test_runner_seed_controls_collection_order_without_changing_membership(tmp_p
         orders.append(order)
     assert orders[0] == orders[1]
     assert orders[0] != orders[2]
+
+
+def test_runner_shards_partition_collected_tests():
+    # pytest applies tests/conftest.py only to paths below tests/, so the probe is an existing module there.
+    module = REPO_ROOT / "tests" / "agent_tools" / "test_agent_layering.py"
+    command = [sys.executable, str(RUNNER), str(module), "--collect-only", "-q"]
+    env = os.environ.copy()
+    env.pop("PYTEST_ADDOPTS", None)
+    outputs = []
+    # Each shard runs in its own process under a different shuffled collection order.
+    for options in (
+        ["-p", "no:randomly"],
+        ["--randomly-seed=1729", "--shard-count", "2", "--shard-index", "0"],
+        ["--randomly-seed=2718", "--shard-count", "2", "--shard-index", "1"],
+    ):
+        result = subprocess.run([*command, *options], env=env, capture_output=True, text=True, timeout=120)
+        assert result.returncode == 0, result.stdout + result.stderr
+        outputs.append(result.stdout)
+    full, shard_0, shard_1 = [
+        {line for line in output.splitlines() if "test_agent_layering.py::" in line} for output in outputs
+    ]
+    assert shard_0 and shard_1
+    assert shard_0.isdisjoint(shard_1)
+    assert shard_0 | shard_1 == full
+    # Recomputing the documented crc32 rule here pins that membership depends only on the node id.
+    assert shard_0 == {node for node in full if zlib.crc32(node.encode()) % 2 == 0}
+    assert f"{len(shard_0)}/{len(full)} tests collected ({len(shard_1)} deselected)" in outputs[1]
+
+    result = subprocess.run(
+        [*command, "--shard-count", "2", "--shard-index", "2"], env=env, capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == pytest.ExitCode.USAGE_ERROR, result.stdout + result.stderr
+    assert "--shard-count 2 --shard-index 2" in result.stderr
 
 
 @pytest.mark.parametrize("source", ["cli", "environment"])
