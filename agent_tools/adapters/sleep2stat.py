@@ -1,7 +1,9 @@
 """The ``sleep2stat`` task adapter and its config-summary owner.
 
 Layer 1, domain. The one variantless task (see ``models.VARIANTLESS_TASKS``).
-Also owns ``sleep2stat_config_summary``.
+Also owns ``sleep2stat_config_summary`` and its config-shape probe
+``looks_like_sleep2stat_config_data``, which ``adapters.config_providers``
+pairs for ``configs``.
 """
 
 from __future__ import annotations
@@ -97,6 +99,10 @@ def _sleep2stat_existing_run_dir_issue(recipe: dict, raw_path: Any) -> DecisionI
         "Use a fresh run.output_dir or manually clear the existing directory before generating commands.",
         {"path": str(raw_path), "resolved_path": str(path)},
     )
+
+
+def looks_like_sleep2stat_config_data(data: dict[str, Any]) -> bool:
+    return {"run", "data", "signals", "analyzers", "reducers", "outputs"}.issubset(set(data))
 
 
 def sleep2stat_config_summary(config_path: str | Path) -> Sleep2statConfigSummary:
@@ -231,12 +237,6 @@ class Sleep2statAdapter(TaskAdapter):
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         return ("python", "-m", "sleep2stat")
-
-    def matches_config_data(self, data: dict[str, Any]) -> bool:
-        return {"run", "data", "signals", "analyzers", "reducers", "outputs"}.issubset(set(data))
-
-    def config_summary(self, config_path: str | Path) -> Sleep2statConfigSummary:
-        return sleep2stat_config_summary(config_path)
 
     def task_issues(
         self,

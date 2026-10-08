@@ -32,6 +32,7 @@ from typing import Any
 import yaml
 
 from . import (
+    configs,
     decision_rules as task_rules,
     experiment_io as exp_io,
     experiment_workspace,
@@ -43,8 +44,8 @@ from . import (
     run_evidence,
     schema_map,
 )
-from .adapters import SUPPORTED_TASKS, composite_adapter, get_adapter
 from .adapters.base import TaskAdapter
+from .adapters.registry import SUPPORTED_TASKS, composite_adapter, get_adapter
 from .configs import config_summary
 from .decision_hparam import uses_agent_proposals
 from .decision_models import USER_DECISIONS_FILENAME
@@ -498,7 +499,7 @@ def _evaluate_config_consultation(
     config_error = None
     validated_sidecar_keys: dict[str, set[str]] = {}
     try:
-        cfg = context.load_config_summary_for_recipe(
+        cfg = configs.load_config_summary_for_recipe(
             recipe,
             config_bytes=source_config_bytes,
             validated_sidecar_keys=validated_sidecar_keys,

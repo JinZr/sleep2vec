@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from agent_tools import decision_rules
-from agent_tools.adapters import SUPPORTED_TASKS, get_adapter
+from agent_tools.adapters.registry import SUPPORTED_TASKS, get_adapter
 from agent_tools.models import REPO_ROOT
 from agent_tools.plans import evaluate_recipe
 from agent_tools.recipes import load_recipe_with_base, load_yaml_file

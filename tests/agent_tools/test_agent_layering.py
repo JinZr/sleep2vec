@@ -9,11 +9,10 @@ Pure-kernel modules carry no exemptions, so they must stay domain-free. The
 mixed bridges carry only the grandfathered edges in
 KNOWN_DOMAIN_IMPORT_EXEMPTIONS; a new one fails.
 
-It also freezes the package import graph's deviation from the one-way layering.
-Counting function-local imports and the implicit package ``__init__`` edges, the
-members of every import cycle must equal IMPORT_CYCLE_LEDGER, and the edges that
-function-local imports create must equal LAZY_IMPORT_LEDGER. Both ledgers only
-shrink. Imports under ``if TYPE_CHECKING:`` never run, so they do not count.
+It also checks the package import graph itself. Counting the implicit package
+``__init__`` edges, the graph must be acyclic, and no module may import another
+package module inside a function. Imports under ``if TYPE_CHECKING:`` never run,
+so they do not count.
 
 Reads only ast + agent_tools.layering (a zero-dependency data module), so it
 runs in the domain-free CI environment.
@@ -276,17 +275,23 @@ def test_docstring_guard_catches_missing_and_empty():
 
 def test_retired_compatibility_paths_stay_removed():
     # Each name is imported from its defining module; the old spellings must not return.
+    import agent_tools.adapters
     import agent_tools.adapters.base
+    import agent_tools.adapters.registry
     import agent_tools.configs
     import agent_tools.experiment_io
     import agent_tools.hparam_runtime
     import agent_tools.managed_scheduler
+    import agent_tools.plan_context
     import agent_tools.plan_hparam
     import agent_tools.recipes
     import agent_tools.run_artifacts
 
     assert not (_package_dir() / "index_csv.py").exists()
     assert not hasattr(agent_tools.configs, "sleep2stat_config_summary")
+    assert not hasattr(agent_tools.plan_context, "load_config_summary_for_recipe")
+    for name in ("get_adapter", "all_adapters", "SUPPORTED_TASKS", "composite_adapter", "TaskAdapter"):
+        assert not hasattr(agent_tools.adapters, name), name
     assert not hasattr(agent_tools.recipes, "recipe_name")
     assert not hasattr(agent_tools.experiment_io, "SSH_TIMEOUT_SECONDS")
     assert not hasattr(agent_tools.managed_scheduler, "managed_run_lock")
@@ -308,9 +313,9 @@ def test_retired_compatibility_paths_stay_removed():
     for name in ("HparamRegistrationPreflightError", "preflight_hparam_plan", "commit_hparam_plan"):
         assert not hasattr(agent_tools.plan_hparam, name), name
     assert not hasattr(agent_tools.adapters.base, "PlanRegistrationPreflightError")
-    for adapter in agent_tools.adapters.all_adapters():
-        assert not hasattr(adapter, "precommit_plan"), adapter.task
-        assert not hasattr(adapter, "commit_plan"), adapter.task
+    for adapter in agent_tools.adapters.registry.all_adapters():
+        for hook in ("precommit_plan", "commit_plan", "matches_config_data", "config_summary"):
+            assert not hasattr(adapter, hook), (adapter.task, hook)
 
 
 def _executed_imports(node: ast.AST, local: bool = False) -> Iterator[tuple[ast.Import | ast.ImportFrom, bool]]:
@@ -378,24 +383,19 @@ def _package_sources() -> dict[str, str]:
     }
 
 
-def test_import_cycle_ledger_is_exact():
+def test_import_graph_is_acyclic():
     edges, _ = _import_edges(_package_sources())
-    live, ledger = _cycle_members(edges), layering.IMPORT_CYCLE_LEDGER
-    assert live == ledger, (
-        f"joined an import cycle (fix the import instead of growing IMPORT_CYCLE_LEDGER): {sorted(live - ledger)}\n"
-        f"left the import cycle (delete them from IMPORT_CYCLE_LEDGER in this commit): {sorted(ledger - live)}"
+    members = _cycle_members(edges)
+    inside = sorted((source, target) for source, target in edges if source in members and target in members)
+    assert not members, (
+        f"import cycle among {sorted(members)} through the edges {inside}; "
+        "point the import down the layers instead of closing the cycle"
     )
 
 
-def test_lazy_import_ledger_is_exact():
+def test_no_function_local_intra_package_imports():
     _, lazy = _import_edges(_package_sources())
-    ledger = layering.LAZY_IMPORT_LEDGER
-    assert lazy == ledger, (
-        f"new function-local import edges (fix the import instead of growing LAZY_IMPORT_LEDGER): "
-        f"{sorted(lazy - ledger)}\n"
-        f"function-local import edges that are gone (delete them from LAZY_IMPORT_LEDGER in this commit): "
-        f"{sorted(ledger - lazy)}"
-    )
+    assert not lazy, f"function-local intra-package import edges (hoist them to module level): {sorted(lazy)}"
 
 
 def test_import_graph_guard_catches_synthetic_cycle():

@@ -15,26 +15,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, TypedDict
 
-import yaml
-
 from . import plan_rendering as rendering
-from .adapters import all_adapters, get_adapter
-from .configs import config_summary
+from .adapters.registry import all_adapters, get_adapter
+from .configs import runtime_path_base, skips_local_path_validation
 from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
-from .decision_paths import path_context, path_validation
 from .domain.index_csv import IndexSummary, index_summary
 from .domain.presets import PresetSummary, preset_summary
 from .markdown import ConsultationQuestion
-from .models import (
-    CONFIG_FINETUNE_SECTION,
-    REPO_ROOT,
-    SUPPORTED_VARIANTS,
-    ConfigSummary,
-    ConfigSummaryInput,
-    coerce_list,
-    load_yaml,
-    resolve_repo_path,
-)
+from .models import CONFIG_FINETUNE_SECTION, SUPPORTED_VARIANTS, ConfigSummary, ConfigSummaryInput, coerce_list
 from .repo import RepoSummary
 from .skills import list_skills
 
@@ -68,71 +56,6 @@ class ContextPayload(TypedDict):
     validation_commands: list[str]
     warnings: list[str]
     blocking_issues: list[str]
-
-
-def load_config_summary_for_recipe(
-    recipe: dict,
-    *,
-    config_bytes: bytes | None = None,
-    validated_sidecar_keys: dict[str, set[str]] | None = None,
-) -> ConfigSummary | None:
-    inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
-    config = inputs.get("config")
-    if not config:
-        return None
-    resolved = resolve_repo_path(config)
-    if resolved is None or (config_bytes is None and not resolved.exists()):
-        return None
-    try:
-        config_data = load_yaml(config) if config_bytes is None else yaml.safe_load(config_bytes)
-    except Exception:
-        config_data = {}
-    return config_summary(
-        config,
-        variant=recipe.get("variant"),
-        validate_survival_local_paths=not _skips_local_path_validation(
-            recipe,
-            _survival_validation_paths(config_data),
-        ),
-        local_path_base=_runtime_path_base(recipe),
-        config_bytes=config_bytes,
-        validated_sidecar_keys=validated_sidecar_keys,
-    )
-
-
-def _skips_local_path_validation(recipe: dict, raw_paths: list[Any] | None = None) -> bool:
-    for raw_path in raw_paths or [""]:
-        context = path_context(recipe, raw_path, relative_to_workdir=True)
-        if context == "remote" and path_validation(recipe, context) in {"defer", "ssh", "remote"}:
-            return True
-    return False
-
-
-def _runtime_path_base(recipe: dict) -> Path:
-    execution = recipe["execution"] if isinstance(recipe.get("execution"), dict) else {}
-    workdir = execution.get("workdir")
-    if workdir not in (None, "") and Path(str(workdir)).is_absolute():
-        return Path(str(workdir))
-    return REPO_ROOT
-
-
-def _survival_validation_paths(config_data: dict | None) -> list[Any]:
-    if not isinstance(config_data, dict):
-        return []
-    data = config_data["data"] if isinstance(config_data.get("data"), dict) else {}
-    finetune = (
-        config_data[CONFIG_FINETUNE_SECTION] if isinstance(config_data.get(CONFIG_FINETUNE_SECTION), dict) else {}
-    )
-    survival = finetune["survival"] if isinstance(finetune.get("survival"), dict) else {}
-    multilabel = finetune["multilabel"] if isinstance(finetune.get("multilabel"), dict) else {}
-    paths = [data.get("finetune_data_index"), data.get("finetune_preset_path")]
-    paths.extend(data.get(field) for field in ("kaldi_data_root", "kaldi_manifest"))
-    paths.extend(
-        survival.get(field)
-        for field in ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index")
-    )
-    paths.extend(multilabel.get(field) for field in ("disease_columns_index", "label_index", "has_label_index"))
-    return [path for path in paths if path not in (None, "")]
 
 
 def validation_commands(recipe: dict) -> list[str]:
@@ -180,7 +103,7 @@ def context_index_summary(
         label_sidecars_valid = (finetune.get("survival") or {}).get("valid") is True
     elif task_type == "multilabel_classification":
         label_sidecars_valid = (finetune.get("multilabel") or {}).get("valid") is True
-    if not paths or _skips_local_path_validation(recipe, paths):
+    if not paths or skips_local_path_validation(recipe, paths):
         return None
     validated_summary = None
     if (
@@ -199,7 +122,7 @@ def context_index_summary(
             paths,
             config=config,
             config_bytes=(cfg or {}).get("_source_config_bytes"),
-            local_path_base=_runtime_path_base(recipe),
+            local_path_base=runtime_path_base(recipe),
             split_values=split_values,
             validated_summary=validated_summary,
         )
@@ -249,7 +172,7 @@ def context_preset_summary(recipe: dict, cfg: ConfigSummaryInput | None) -> Pres
     if preset_path in (None, ""):
         return None
     try:
-        return preset_summary(preset_path, local_path_base=_runtime_path_base(recipe))
+        return preset_summary(preset_path, local_path_base=runtime_path_base(recipe))
     except Exception as exc:
         return {"blocking_issues": [f"Failed to summarize preset: {exc}"]}
 

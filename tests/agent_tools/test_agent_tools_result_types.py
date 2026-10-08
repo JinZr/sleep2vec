@@ -190,7 +190,7 @@ def test_result_types_reach_callers(tmp_path: Path):
 
                 for diagnostic in (
                     configs.config_summary(Path("config.yaml")),
-                    TaskAdapter().config_summary(Path("config.yaml")),
+                    sleep2stat_config_summary(Path("config.yaml")),
                     CONFIG_SUMMARY_PROVIDERS[0].summarize(Path("config.yaml")),
                 ):
                     warnings: list[str] = diagnostic["warnings"]

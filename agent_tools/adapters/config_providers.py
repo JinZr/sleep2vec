@@ -1,17 +1,29 @@
-"""Config-shape providers: variants claimed by the config rather than by the task.
+"""Config-shape providers: config families claimed by the config rather than by the task.
 
-Layer 1. A provider either forces a variant outright or probes the raw loaded
-mapping. ``configs`` walks this tuple before falling back to the generic
-finetune summary body, so a config is summarized under the family it actually
-belongs to even when the caller names a different task.
+Layer 1. ``configs`` walks two tables, in order, before falling back to the
+generic finetune summary body, so a config is summarized under the family it
+actually belongs to even when the caller names a different task or variant:
+
+1. ``CONFIG_SHAPE_SUMMARIES`` runs first: a probe on the raw loaded mapping
+   paired with a summary that takes only the config path. A shape claim here
+   wins over any variant a provider below would force.
+2. ``CONFIG_SUMMARY_PROVIDERS``: a provider either forces a variant outright or
+   probes the raw loaded mapping, and its summary takes the finetune-family
+   validation keywords.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
 from ..domain.sex_age_summary import _looks_like_sex_age_baseline_config_data, sex_age_baseline_config_summary
-from ..models import SexAgeConfigSummary
+from ..models import ConfigSummary, SexAgeConfigSummary
+from .sleep2stat import looks_like_sleep2stat_config_data, sleep2stat_config_summary
+
+CONFIG_SHAPE_SUMMARIES: tuple[tuple[Callable[[dict[str, Any]], bool], Callable[[str | Path], ConfigSummary]], ...] = (
+    (looks_like_sleep2stat_config_data, sleep2stat_config_summary),
+)
 
 
 class ConfigSummaryProvider(NamedTuple):

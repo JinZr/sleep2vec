@@ -18,16 +18,16 @@ import yaml
 
 from agent_tools import (
     cli,
+    configs,
     decision_paths,
     decisions,
     experiment_io,
     experiment_tracking,
     experiments,
-    plan_context,
     plans,
     recipes,
 )
-from agent_tools.adapters import all_adapters
+from agent_tools.adapters.registry import all_adapters
 from agent_tools.manifests import write_rows
 
 
@@ -61,7 +61,7 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
     monkeypatch.setattr(decisions, "evaluate_consultation_gates", unexpected)
     monkeypatch.setattr(recipes, "load_consultation_policy", unexpected)
     monkeypatch.setattr(decision_paths, "path_issues", unexpected)
-    monkeypatch.setattr(plan_context, "load_config_summary_for_recipe", unexpected)
+    monkeypatch.setattr(configs, "load_config_summary_for_recipe", unexpected)
     for adapter_type in {type(adapter) for adapter in all_adapters()}:
         for name in ("task_issues", "preflight_issues", "configured_input_issues"):
             monkeypatch.setattr(adapter_type, name, unexpected)

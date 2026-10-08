@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from . import plan_hparam
 from .adaptive_proposals import validate_configurations, validate_parameter_envelopes
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import (
@@ -541,9 +542,7 @@ def _hparam_evaluation_issues(
             )
         )
         if search_space_is_plannable:
-            from .plan_hparam import hparam_combos
-
-            planned_combos = hparam_combos(recipe)
+            planned_combos = plan_hparam.hparam_combos(recipe)
             checkpoint_intervals = [
                 combo.get("runtime.ckpt_every_n_epochs", runtime.get("ckpt_every_n_epochs", 1))
                 for combo in planned_combos

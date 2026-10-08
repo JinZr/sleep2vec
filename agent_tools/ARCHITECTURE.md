@@ -8,28 +8,22 @@ mixed-module set drifts.
 
 ## Layers
 
-Import direction is strictly one-way: **L2 → L1 → L0**, with `domain/` a
-L0-level domain leaf.
+Imports point down the layers, **L2 → L1 → L0**, with `domain/` a L0-level
+domain leaf. The bridges below the registry sit between L1 and L0: adapters
+import them, and `configs` in turn reads `adapters/config_providers`, so the
+order is a DAG rather than a strict ladder.
 
 | Layer | Contents | Role |
 |---|---|---|
-| **L0 leaves** | models, decision_models, transport, manifests, schema_map, gpu_rules, repo, plan_rendering, plan_contract, decision_paths, decision_hparam, plan_hparam, adaptive_proposals, experiment_workspace, experiment_io, execution_snapshot, managed_scheduler, ... | No intra-package deps beyond other L0 leaves; the reusable primitives. |
-| **L1 `adapters/`** | `base` (TaskAdapter protocol), `registry` (get_adapter / all_adapters / composite_adapter), 6 per-task plugins, `config_providers` | Generic plugin skeleton + domain plugins. Kernel dispatches through the registry and never hardcodes task names. |
-| **L2 kernel** | configs, decision_rules, decisions, plan_context, plans, experiment_pipeline, experiment_pipeline_attempts | Orchestration over lower-layer owners and adapter declarations; authored task recipes remain governed by schema_map. |
+| **L0 leaves** | models, decision_models, transport, manifests, schema_map, gpu_rules, repo, plan_rendering, plan_contract, decision_paths, adaptive_proposals, experiment_workspace, experiment_io, execution_snapshot, managed_scheduler, ... | No intra-package deps beyond other L0 leaves; the reusable primitives. |
+| **Bridges below the registry** | configs, plan_hparam, decision_hparam | Mixed bridges that never import the registry or L2. `adapters/hparam_tune` imports both hparam bridges, plan_hparam loads its config summary through configs, and configs reaches the adapters only through `adapters/config_providers`, which pairs the sleep2stat adapter's config-shape summary. |
+| **L1 `adapters/`** | `base` (TaskAdapter protocol), `registry` (get_adapter / all_adapters / composite_adapter / SUPPORTED_TASKS), 6 per-task plugins, `config_providers` | Generic plugin skeleton + domain plugins. The package `__init__` re-exports nothing: import from `adapters.base` and `adapters.registry`. Kernel dispatches through the registry and never hardcodes task names; `run_artifacts` reads it to validate registered plans and owns hparam plan registration. |
+| **L2 kernel** | decision_rules, decisions, plan_context, plans, experiment_pipeline, experiment_pipeline_attempts | Orchestration over lower-layer owners and adapter declarations; authored task recipes remain governed by schema_map. |
 | **`domain/`** | sidecar_summaries, finetune_summary, finetune_hparam_profile, sex_age_summary, presets, index_csv | sleep2vec-specific summaries/validators. L0-level leaves that must not be aggregated in `domain/__init__` (would trigger a partial-import cycle via configs). |
 
-### Import cycle
-
-The one-way direction above is the target, not yet the state. Counting
-function-local (deferred) imports, the import graph holds one 11-module cycle
-spanning L0, L1, L2 and `domain/`. None of its members cycle at module top
-level; deferred imports hold the whole cycle together.
-`test_agent_layering.py` freezes both sides of that deviation in `layering.py`:
-`IMPORT_CYCLE_LEDGER` lists the modules inside the cycle and
-`LAZY_IMPORT_LEDGER` the deferred import edges. Each must equal the live graph
-exactly, and both may only shrink: delete entries in the commit that removes a
-deferred import or takes a module out of the cycle, and fix a new import instead
-of growing either ledger.
+`test_agent_layering.py` requires the intra-package import graph, counting the
+implicit package `__init__` edges, to be acyclic with no deferred
+(function-local) imports.
 
 ## Module ownership
 
@@ -194,16 +188,22 @@ The same guard scans every `adapters/` module and rejects imports into the
 
 | Source → Target | Layer | Why tolerated | Future removal |
 |---|---|---|---|
-| `configs → domain.finetune_summary` | L2 → domain | configs shell delegates the generic finetune summary body | Would need a registry/provider indirection for the finetune-family summary |
+| `configs → domain.finetune_summary` | mixed → domain | configs shell delegates the generic finetune summary body | Would need a `config_providers` entry for the finetune-family summary |
 | `plan_context → domain.presets` | L2 → domain | preset summary in plan context; task-independent with one implementation, adapters vary only its inputs via `effective_preset_path` | None planned: a per-task hook would only forward to the same function |
 | `plan_context → domain.index_csv` | L2 → domain | index summary in plan context; task-independent with one implementation, adapters vary only its inputs via `index_summary_inputs_override` | None planned: a per-task hook would only forward to the same function |
 | `cli → domain.presets` | mixed → domain | `preset-summary` command | Domain CLI split |
 | `cli → domain.index_csv` | mixed → domain | `index-summary` command | Domain CLI split |
-| `domain.index_csv → configs` | domain → L2 | index_csv is a config-summary consumer, not a leaf; configs never imports it back, so the edge is one-way | Would need index summary to take config_summary as an argument |
+| `domain.index_csv → configs` | domain → mixed | index_csv is a config-summary consumer, not a leaf; configs never imports it back, so the edge is one-way | Would need index summary to take config_summary as an argument |
 
 Legal edges outside the reverse-edge table:
 - `adapters/config_providers → domain.sex_age_summary` — L1 → L0, a legal
   direction.
+- `configs → adapters/config_providers → adapters/sleep2stat` — bridge → L1:
+  configs reads the config-summary tables, never the registry.
+- `plan_hparam → configs` — bridge → bridge: the hparam plan loads its config
+  summary through the recipe-level loader.
+- `run_artifacts → plan_hparam` — kernel → bridge: hparam plan registration
+  checks candidate configs and output paths through plan_hparam.
 - `markdown → decisions`, `experiment_workspace → experiment_io` — core → core.
 
 ## Frozen surfaces
@@ -219,8 +219,9 @@ Legal edges outside the reverse-edge table:
   non-empty summary line. A new module without one fails
   `test_every_module_has_nonempty_docstring`; content accuracy needs code review.
 - No compatibility re-exports: import a name from the module that defines it.
-  The former `index_csv` shim and the `configs`, `recipes` and `experiment_io`
-  re-exports were removed, and `test_agent_layering.py` rejects their return.
+  The former `index_csv` shim and the `configs`, `recipes`, `experiment_io` and
+  `adapters` package re-exports were removed, and `test_agent_layering.py`
+  rejects their return.
 - External importers: 22+ preprocess/util scripts import `agent_tools.progress`;
   `agent_tools.models` is imported outside the package too. Moving either would
   break them, so they stay at the package top level.

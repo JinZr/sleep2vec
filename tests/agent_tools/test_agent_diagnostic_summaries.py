@@ -56,16 +56,14 @@ def test_config_dispatch_preserves_summary_identity_and_original_path(tmp_path: 
     payload = {"config_path": "temporary", "warnings": [], "blocking_issues": [], "extra": {"raw": True}}
     seen_paths = []
 
-    class Adapter:
-        def matches_config_data(self, data):
-            return data == {"authored": "snapshot"}
+    def fake_summary(summary_path):
+        seen_paths.append(summary_path)
+        assert summary_path.read_bytes() == b"authored: snapshot\n"
+        return payload
 
-        def config_summary(self, summary_path):
-            seen_paths.append(summary_path)
-            assert summary_path.read_bytes() == b"authored: snapshot\n"
-            return payload
-
-    monkeypatch.setattr(configs, "all_adapters", lambda: [Adapter()])
+    monkeypatch.setattr(
+        configs, "CONFIG_SHAPE_SUMMARIES", ((lambda data: data == {"authored": "snapshot"}, fake_summary),)
+    )
     result = configs.config_summary(path, config_bytes=b"authored: snapshot\n")
     assert result is payload
     assert result["extra"] == {"raw": True}

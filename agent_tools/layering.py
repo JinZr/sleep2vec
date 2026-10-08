@@ -2,24 +2,23 @@
 which modules are the reusable experiment-control kernel, which are sleep2vec
 domain specifics, and which are the mixed bridges in between.
 
-This module holds only data (module-name frozensets, an exemption set and two
-import-graph ledgers) and imports nothing from agent_tools, so the layering
-guard test can read it without pulling in torch or any domain package. The
-human-readable companion is ARCHITECTURE.md; keep the two in sync (a meta test
-checks the partition).
+This module holds only data (module-name frozensets and an exemption set) and
+imports nothing from agent_tools, so the layering guard test can read it without
+pulling in torch or any domain package. The human-readable companion is
+ARCHITECTURE.md; keep the two in sync (a meta test checks the partition).
 
-Layering (the target import direction is one-way: L2 -> L1 -> L0, with domain/
-a L0-level domain leaf):
+Layering (imports point down: L2 -> L1 -> L0, with domain/ a L0-level domain
+leaf):
   L0 leaves      -- models, decision_models, transport, ...
   L1 adapters/   -- TaskAdapter protocol + registry (generic) + per-task plugins
-  L2 kernel      -- configs, decision_rules, decisions, plan_context, plans, experiment_pipeline,
+  L2 kernel      -- decision_rules, decisions, plan_context, plans, experiment_pipeline,
                     experiment_pipeline_attempts
   domain/        -- sleep2vec summary/validator leaves
 
-That direction is the target, not yet the state: function-local imports still
-close an import cycle across these layers. IMPORT_CYCLE_LEDGER (the modules
-inside the cycle) and LAZY_IMPORT_LEDGER (the function-local import edges)
-freeze that deviation; both may only shrink.
+configs and the hparam bridges (plan_hparam, decision_hparam) sit below the
+adapter registry: none of them imports the registry or L2, and configs reaches
+the adapters only through adapters/config_providers. The guard requires the
+whole import graph to be acyclic, with no function-local intra-package imports.
 
 The guard scans KERNEL_MODULES | MIXED_MODULES for imports that reach into
 DOMAIN_MODULES. Pure-kernel modules must stay domain-free (no exemptions);
@@ -119,7 +118,6 @@ MIXED_MODULES: frozenset[str] = frozenset(
 #: documented L2 -> L1 direction without forbidding legal adapter imports of L0 leaves.
 L2_MODULES: frozenset[str] = frozenset(
     {
-        "configs",
         "decision_rules",
         "decisions",
         "experiment_pipeline",
@@ -141,37 +139,5 @@ KNOWN_DOMAIN_IMPORT_EXEMPTIONS: frozenset[tuple[str, str]] = frozenset(
         ("cli", "domain.presets"),
         ("cli", "domain.index_csv"),
         ("domain.index_csv", "configs"),  # domain leaf re-entering configs (partial-import break)
-    }
-)
-
-#: Modules inside an intra-package import cycle, counting function-local imports
-#: and the implicit package ``__init__`` edges: the members of every strongly
-#: connected component larger than one module. Shrink-only: the guard requires
-#: the live set to equal this exactly. Delete a module here in the commit that
-#: takes it out of the cycle; never add one. See ARCHITECTURE.md "Import cycle".
-IMPORT_CYCLE_LEDGER: frozenset[str] = frozenset(
-    {
-        "adapters",
-        "adapters.hparam_tune",
-        "adapters.registry",
-        "configs",
-        "decision_hparam",
-        "decision_rules",
-        "decisions",
-        "domain.index_csv",
-        "markdown",
-        "plan_context",
-        "plan_hparam",
-    }
-)
-
-#: (source, target) edges created by a function-local (deferred) import -- the
-#: imports that hold the cycle above together. Shrink-only: the guard requires
-#: the live set to equal this exactly. Delete an edge here in the commit that
-#: removes its last function-local import; never add one.
-LAZY_IMPORT_LEDGER: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("adapters.hparam_tune", "plan_hparam"),
-        ("decision_hparam", "plan_hparam"),
     }
 )

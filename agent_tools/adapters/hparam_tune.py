@@ -17,7 +17,7 @@ import subprocess
 import sys
 from typing import Any
 
-from .. import execution_snapshot, experiment_workspace, plan_contract, slurm
+from .. import execution_snapshot, experiment_workspace, plan_contract, plan_hparam, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
 from ..domain import finetune_hparam_profile
@@ -105,8 +105,6 @@ class HparamTuneAdapter(TaskAdapter):
     def config_override_issues(
         self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue] | None:
-        from .. import plan_hparam
-
         # Override checks must consume the same snapshot that build_plan will freeze, not reopen a mutable path.
         config_bytes = (config_summary or {}).get("_source_config_bytes")
         if not isinstance(config_bytes, bytes):
@@ -129,8 +127,6 @@ class HparamTuneAdapter(TaskAdapter):
         unlock_final_test: bool,
         output_dir: Path | None = None,
     ) -> list[DecisionIssue]:
-        from .. import plan_hparam
-
         return plan_hparam.final_test_checkpoint_issues(
             recipe,
             config_summary,
@@ -138,8 +134,6 @@ class HparamTuneAdapter(TaskAdapter):
         )
 
     def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
-        from .. import plan_hparam
-
         execution = recipe.get("execution")
         if not isinstance(execution, dict):
             execution = {}
@@ -304,8 +298,6 @@ class HparamTuneAdapter(TaskAdapter):
         source_config_sha256: str,
         final_eval_config: BoundFinalEvalConfigSnapshot | None,
     ) -> None:
-        from .. import plan_hparam
-
         search = recipe.get("search")
         if not isinstance(search, dict):
             search = {}
@@ -328,8 +320,6 @@ class HparamTuneAdapter(TaskAdapter):
         )
 
     def registration_rows(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
-        from .. import plan_hparam
-
         return plan_hparam.hparam_manifest_rows(plan)
 
     def compile_plan_contract(
@@ -340,8 +330,6 @@ class HparamTuneAdapter(TaskAdapter):
         run_index_offset: int,
         config_bytes: bytes,
     ) -> plan_contract.HparamCompiledPlanContract:
-        from .. import plan_hparam
-
         return plan_hparam.compile_hparam_plan_contract(
             recipe, out, run_index_offset=run_index_offset, config_bytes=config_bytes
         )
@@ -355,8 +343,6 @@ class HparamTuneAdapter(TaskAdapter):
         allow_unresolved: bool,
         unlock_final_test: bool,
     ) -> list[Path] | None:
-        from .. import plan_hparam
-
         if report.exit_code != 0:
             paths = plan_contract.blocked_plan_control_paths(out)
             evaluation_value = recipe.get("evaluation_policy")

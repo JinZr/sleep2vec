@@ -1,11 +1,9 @@
 """Layer 1: the task-adapter protocol and registry.
 
-Import ``TaskAdapter`` and the registry helpers from here. Per-task adapters
-are imported by ``registry`` in a deliberate order; callers should use the
-registry helpers rather than importing adapter implementations directly.
+Import ``TaskAdapter`` from ``adapters.base`` and the registry helpers from
+``adapters.registry``. The package re-exports nothing, so importing one adapter
+module does not load the registry and, through it, every other adapter.
+Per-task adapters are registered by ``registry`` in a deliberate order; callers
+should use the registry helpers rather than importing adapter implementations
+directly.
 """
-
-from .base import TaskAdapter
-from .registry import SUPPORTED_TASKS, all_adapters, composite_adapter, get_adapter
-
-__all__ = ["SUPPORTED_TASKS", "TaskAdapter", "all_adapters", "composite_adapter", "get_adapter"]

@@ -10,7 +10,7 @@ import sys
 import pytest
 
 from agent_tools import cli, execution_snapshot, models, plans
-from agent_tools.adapters import get_adapter
+from agent_tools.adapters.registry import get_adapter
 from agent_tools.decisions import evaluate_consultation_gates
 from agent_tools.hparam_postprocess import LogitExportRequest
 from agent_tools.manifests import write_rows

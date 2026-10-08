@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import decision_paths as paths, plan_rendering as rendering
-from .adapters import SUPPORTED_TASKS, all_adapters, get_adapter
+from .adapters.registry import SUPPORTED_TASKS, all_adapters, get_adapter
 from .decision_models import DecisionIssue, DecisionStatus
 from .models import SUPPORTED_VARIANTS
 
