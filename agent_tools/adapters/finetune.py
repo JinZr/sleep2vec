@@ -13,7 +13,7 @@ from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status, needs_issue
 from ..decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
-from ..models import REPO_ROOT, ConfigSummaryInput, recipe_name
+from ..models import REPO_ROOT, ConfigSummaryInput, JsonValue, recipe_name
 from ..plan_rendering import (
     FINETUNE_RUNTIME_FIELDS,
     finetune_input_cli_args,
@@ -41,15 +41,15 @@ class FinetuneAdapter(TaskAdapter):
     uses_finetune_config = True
     enforces_required_channels = True
 
-    def runtime_fields(self, variant: Any) -> frozenset[str]:
+    def runtime_fields(self, variant: JsonValue) -> frozenset[str]:
         return FINETUNE_RUNTIME_FIELDS
 
-    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
+    def frozen_command_prefix(self, recipe: dict[str, JsonValue]) -> tuple[str, ...]:
         return ("python", "-m", variant_module(recipe, "finetune"))
 
-    def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
+    def required_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, JsonValue]]:
         inputs = recipe_inputs(recipe)
-        required: list[tuple[str, Any]] = []
+        required: list[tuple[str, JsonValue]] = []
         for input_field in ("pretrained_backbone_path", "ckpt_path"):
             value = inputs.get(input_field)
             if value not in (None, "", "ASK_USER"):
@@ -58,7 +58,7 @@ class FinetuneAdapter(TaskAdapter):
 
     def task_issues(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
@@ -72,9 +72,10 @@ class FinetuneAdapter(TaskAdapter):
         if config_summary:
             try:
                 summary: Any = config_summary
-                validate_finetune_runtime(
-                    recipe, recipe.get("runtime") or {}, summary.get("finetune", {}).get("task") or {}
-                )
+                runtime = recipe.get("runtime")
+                if not isinstance(runtime, dict):
+                    runtime = {}
+                validate_finetune_runtime(recipe, runtime, summary.get("finetune", {}).get("task") or {})
             except (TypeError, ValueError) as exc:
                 issues.append(
                     DecisionIssue(DecisionStatus.FAIL, "runtime", str(exc), None, {"preflight_before_workspace": True})
@@ -132,7 +133,7 @@ class FinetuneAdapter(TaskAdapter):
 
     def preflight_issues(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         *,
         unlock_final_test: bool,
@@ -154,13 +155,13 @@ class FinetuneAdapter(TaskAdapter):
             )
         ]
 
-    def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
+    def prepare_doctor_report(self, recipe: dict[str, JsonValue], report: DecisionReport) -> DecisionReport:
         if report.exit_code != 0:
             return report
         issues = [*report.issues, *self.preflight_issues(recipe, None, unlock_final_test=False)]
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
 
-    def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
+    def commands(self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None) -> list[str]:
         inputs = recipe_inputs(recipe)
         runtime = recipe.get("runtime")
         if not isinstance(runtime, dict):
@@ -191,7 +192,7 @@ class FinetuneAdapter(TaskAdapter):
             pieces.append("--no-test-after-fit")
         return [render_command(pieces)]
 
-    def managed_runtime_dir(self, recipe: dict[str, Any], version: str) -> Path | None:
+    def managed_runtime_dir(self, recipe: dict[str, JsonValue], version: str) -> Path | None:
         execution = recipe.get("execution")
         if not isinstance(execution, dict):
             execution = {}

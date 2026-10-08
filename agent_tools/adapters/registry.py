@@ -11,9 +11,7 @@ the code below.
 
 from __future__ import annotations
 
-from typing import Any
-
-from ..models import VARIANTLESS_TASKS
+from ..models import VARIANTLESS_TASKS, JsonValue
 from .base import TaskAdapter
 from .embedding_extraction import EMBEDDING_EXTRACTION_ADAPTER
 
@@ -41,7 +39,7 @@ TASK_ADAPTERS: dict[str, TaskAdapter] = {adapter.task: adapter for adapter in _R
 SUPPORTED_TASKS = frozenset(TASK_ADAPTERS)
 
 
-def get_adapter(task: Any) -> TaskAdapter | None:
+def get_adapter(task: JsonValue) -> TaskAdapter | None:
     if task in (None, ""):
         return None
     return TASK_ADAPTERS.get(str(task))

@@ -20,7 +20,7 @@ from typing import Any
 from .. import plan_contract, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
-from ..models import ConfigSummaryInput
+from ..models import ConfigSummaryInput, JsonValue
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, variant_module
 from .base import PlanRegistrationPreflightError, TaskAdapter
 
@@ -53,19 +53,19 @@ class HparamTuneAdapter(TaskAdapter):
         "hparam_budget": ("search", "max_runs"),
     }
 
-    def runtime_fields(self, variant: Any) -> frozenset[str]:
+    def runtime_fields(self, variant: JsonValue) -> frozenset[str]:
         return FINETUNE_RUNTIME_FIELDS | INFER_RUNTIME_FIELDS
 
-    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
+    def frozen_command_prefix(self, recipe: dict[str, JsonValue]) -> tuple[str, ...]:
         execution = recipe.get("execution")
         if not isinstance(execution, dict):
             execution = {}
         return (str(execution.get("python") or "python"), "-m", variant_module(recipe, "finetune"))
 
-    def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
+    def section_contract_issues(self, recipe: dict[str, JsonValue], *, source_layer: str) -> list[DecisionIssue] | None:
         return hparam_recipe_contract_issues(recipe, source_layer=source_layer)
 
-    def recipe_input_issues(self, recipe: dict[str, Any]) -> list[DecisionIssue]:
+    def recipe_input_issues(self, recipe: dict[str, JsonValue]) -> list[DecisionIssue]:
         return [issue for issue in hparam_search_issues(recipe, high_impact={}) if issue.status == DecisionStatus.FAIL]
 
     def bind_effective_recipe(
@@ -95,7 +95,7 @@ class HparamTuneAdapter(TaskAdapter):
 
     def task_issues(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
@@ -103,7 +103,7 @@ class HparamTuneAdapter(TaskAdapter):
         return hparam_tune_issues(recipe, config_summary, decisions, high_impact)
 
     def config_override_issues(
-        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue] | None:
         from .. import plan_hparam
 
@@ -123,7 +123,7 @@ class HparamTuneAdapter(TaskAdapter):
 
     def preflight_issues(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         *,
         unlock_final_test: bool,
@@ -137,7 +137,7 @@ class HparamTuneAdapter(TaskAdapter):
             unlock_final_test=unlock_final_test,
         )
 
-    def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
+    def prepare_doctor_report(self, recipe: dict[str, JsonValue], report: DecisionReport) -> DecisionReport:
         from .. import plan_hparam
 
         execution = recipe.get("execution")
@@ -254,7 +254,7 @@ class HparamTuneAdapter(TaskAdapter):
         issues = [*report.issues, capability_issue, capacity_issue]
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
 
-    def doctor_runtime_card(self, recipe: dict[str, Any]) -> str | None:
+    def doctor_runtime_card(self, recipe: dict[str, JsonValue]) -> str | None:
         from .. import managed_scheduler
 
         execution = recipe.get("execution")
@@ -296,7 +296,7 @@ class HparamTuneAdapter(TaskAdapter):
 
     def write_plan(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         out: Path,
         *,
         write_out: Path | None = None,
@@ -384,7 +384,7 @@ class HparamTuneAdapter(TaskAdapter):
 
     def planned_plan_paths(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         out: Path,
         report: DecisionReport,
         *,
@@ -396,7 +396,9 @@ class HparamTuneAdapter(TaskAdapter):
 
         if report.exit_code != 0:
             paths = plan_contract.blocked_plan_control_paths(out)
-            evaluation = recipe.get("evaluation_policy") or {}
+            evaluation = recipe.get("evaluation_policy")
+            if not isinstance(evaluation, dict):
+                evaluation = {}
             if plan_hparam.final_test_unlocked(evaluation, unlock_final_test):
                 paths.extend(
                     [
@@ -415,7 +417,12 @@ class HparamTuneAdapter(TaskAdapter):
             out / "config.source.yaml",
             out / plan_hparam.FROZEN_FINAL_EVAL_CONFIG_NAME,
         ]
-        scheduler = (recipe.get("execution") or {}).get("scheduler") or {}
+        execution = recipe.get("execution")
+        if not isinstance(execution, dict):
+            execution = {}
+        scheduler = execution.get("scheduler")
+        if not isinstance(scheduler, dict):
+            scheduler = {}
         for layout in plan_hparam.hparam_run_layouts(recipe, out, next_run_index(recipe)):
             run_dir = layout["run_dir"]
             paths.extend(

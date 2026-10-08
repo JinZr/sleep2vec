@@ -79,7 +79,7 @@ from .experiment_workspace import (
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import REPO_ROOT, ConfigSummaryInput, json_ready, resolve_repo_path
+from .models import REPO_ROOT, ConfigSummaryInput, JsonValue, json_ready, resolve_repo_path
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions
 
 
@@ -175,7 +175,7 @@ def _source_recipe_contract_issues(
     return issues
 
 
-def _recipe_contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
+def _recipe_contract_issue(field: str, message: str, value: JsonValue, source_layer: str) -> DecisionIssue:
     return DecisionIssue(
         DecisionStatus.FAIL,
         field,
@@ -185,7 +185,7 @@ def _recipe_contract_issue(field: str, message: str, value: Any, source_layer: s
     )
 
 
-def _decision_value(raw: Any) -> Any:
+def _decision_value(raw: JsonValue) -> JsonValue:
     return raw.get("value") if isinstance(raw, dict) else raw
 
 
@@ -317,7 +317,7 @@ def _materialize_task_defaults(recipe: dict, policy: dict, user_decisions: dict)
         recipe["decisions"] = decisions
 
 
-def _normalize_runtime_commit(recipe: dict[str, Any]) -> None:
+def _normalize_runtime_commit(recipe: dict[str, JsonValue]) -> None:
     execution = recipe.get("execution")
     if not isinstance(execution, dict):
         return
@@ -598,7 +598,7 @@ def _evaluate_required_channels_decision(
 
 def _evaluate_config_override_decisions(
     report: DecisionReport,
-    recipe: dict[str, Any],
+    recipe: dict[str, JsonValue],
     cfg: ConfigSummaryInput | None,
     recipe_adapter: TaskAdapter | None,
 ) -> tuple[DecisionReport, list[DecisionIssue] | None]:
@@ -878,12 +878,12 @@ def prepare_doctor_report(output_dir: str | Path | None, recipe: dict, report: D
     return adapter.prepare_doctor_report(recipe, report) if adapter is not None else report
 
 
-def doctor_runtime_diagnostics_supported(recipe: dict[str, Any]) -> bool:
+def doctor_runtime_diagnostics_supported(recipe: dict[str, JsonValue]) -> bool:
     adapter = get_adapter(recipe.get("task"))
     return bool(adapter is not None and adapter.supports_doctor_runtime_diagnostics)
 
 
-def doctor_runtime_card(recipe: dict[str, Any]) -> str | None:
+def doctor_runtime_card(recipe: dict[str, JsonValue]) -> str | None:
     adapter = get_adapter(recipe.get("task"))
     return adapter.doctor_runtime_card(recipe) if adapter is not None else None
 
@@ -1063,13 +1063,13 @@ def build_context(
 
 
 def _validate_bound_recipe(
-    recipe: dict[str, Any],
+    recipe: dict[str, JsonValue],
     cfg: ConfigSummaryInput | None,
     report: DecisionReport,
     out: Path,
     *,
-    expected_recipe: dict[str, Any] | None,
-    expected_base_recipe: dict[str, Any] | None,
+    expected_recipe: dict[str, JsonValue] | None,
+    expected_base_recipe: dict[str, JsonValue] | None,
     registered_recipe_path: str | Path | None,
     source_config_sha256: str | None,
 ) -> tuple[bytes, str] | None:
@@ -1105,8 +1105,9 @@ def _validate_bound_recipe(
                 f"Registered plan recipe must be inside the final plan directory: {frozen_recipe_path}"
             ) from exc
         recipe["_recipe_path"] = str(frozen_recipe_path)
-        if isinstance(recipe.get("_local_recipe"), dict):
-            recipe["_local_recipe"]["_recipe_path"] = str(frozen_recipe_path)
+        local_recipe = recipe.get("_local_recipe")
+        if isinstance(local_recipe, dict):
+            local_recipe["_recipe_path"] = str(frozen_recipe_path)
     validated_config_bytes = cfg.get("_source_config_bytes") if isinstance(cfg, dict) else None
     validated_config_sha256 = cfg.get("_source_config_sha256") if isinstance(cfg, dict) else None
     if report.exit_code == 0:
@@ -1123,7 +1124,7 @@ def _validate_bound_recipe(
 def _materialize_adapter_plan(
     *,
     plan_adapter: TaskAdapter,
-    recipe: dict[str, Any],
+    recipe: dict[str, JsonValue],
     report: DecisionReport,
     out: Path,
     write_out: Path,
@@ -1396,8 +1397,8 @@ class PlanBuildRequest:
     allow_unresolved: bool
     unlock_final_test: bool
     source_config_sha256: str | None
-    expected_recipe: dict[str, Any] | None
-    expected_base_recipe: dict[str, Any] | None
+    expected_recipe: dict[str, JsonValue] | None
+    expected_base_recipe: dict[str, JsonValue] | None
     staging_dir: str | Path | None
     defer_commit: bool
     registered_recipe_path: str | Path | None
@@ -1415,8 +1416,8 @@ def build_plan(
     allow_unresolved: bool = False,
     unlock_final_test: bool = False,
     source_config_sha256: str | None = None,
-    expected_recipe: dict[str, Any] | None = None,
-    expected_base_recipe: dict[str, Any] | None = None,
+    expected_recipe: dict[str, JsonValue] | None = None,
+    expected_base_recipe: dict[str, JsonValue] | None = None,
     staging_dir: str | Path | None = None,
     defer_commit: bool = False,
     registered_recipe_path: str | Path | None = None,
@@ -2083,7 +2084,7 @@ def _has_output_artifact_issue(report: DecisionReport) -> bool:
     return any(issue.field == "output_artifacts" for issue in report.issues)
 
 
-def _overwrite_policy(recipe: dict) -> Any:
+def _overwrite_policy(recipe: dict) -> JsonValue:
     section, key = _resolve_write_targets(recipe.get("task"))["overwrite_policy"]
     owner_value = recipe.get(section)
     owner = owner_value if isinstance(owner_value, dict) else {}
@@ -2104,7 +2105,7 @@ def _registered_plan_owners(recipe: dict[str, Any], out: Path) -> list[dict[str,
     ]
 
 
-def _is_unowned_published_plan(recipe: dict[str, Any], out: Path) -> bool:
+def _is_unowned_published_plan(recipe: dict[str, JsonValue], out: Path) -> bool:
     return exp_io.path_exists_at(out / "plan.json") and not _registered_plan_owners(recipe, out)
 
 
@@ -2253,7 +2254,7 @@ def _registered_plan_immutable_report(report: DecisionReport, out: Path) -> Deci
 def _guard_existing_outputs(
     report: DecisionReport,
     paths: list[Path],
-    overwrite_policy: Any,
+    overwrite_policy: JsonValue,
     *,
     root: Path,
     allow_existing: bool = False,

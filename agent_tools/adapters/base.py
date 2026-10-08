@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
-from ..models import ConfigSummary, ConfigSummaryInput, coerce_list
+from ..models import ConfigSummary, ConfigSummaryInput, JsonValue, coerce_list
 from ..plan_contract import CompiledPlanContract, GenericCompiledPlanContract
 from ..plan_rendering import finetune_loaded_split_values
 
@@ -35,13 +35,15 @@ class PlanRegistrationPreflightError(ValueError):
     pass
 
 
-def recipe_inputs(recipe: dict[str, Any]) -> dict[str, Any]:
+def recipe_inputs(recipe: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """The recipe's ``inputs`` mapping, or an empty one when absent or malformed."""
     inputs = recipe.get("inputs")
     return inputs if isinstance(inputs, dict) else {}
 
 
-def config_summary_issues(recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[DecisionIssue]:
+def config_summary_issues(
+    recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
+) -> list[DecisionIssue]:
     """Issues a task raises from its loaded config summary: the config's own
     blocking issues, plus an explicit recipe/config variant conflict."""
     if not config_summary:
@@ -144,18 +146,18 @@ class TaskAdapter:
     #: Task owns a read-only target runtime diagnostic for doctor.
     supports_doctor_runtime_diagnostics: bool = False
 
-    def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
+    def section_contract_issues(self, recipe: dict[str, JsonValue], *, source_layer: str) -> list[DecisionIssue] | None:
         """Full replacement for the kernel's per-section recipe contract walk
         (task_recipe_contract_issues + execution_contract_issues); None means
         use the generic path."""
         return None
 
-    def recipe_input_issues(self, recipe: dict[str, Any]) -> list[DecisionIssue]:
+    def recipe_input_issues(self, recipe: dict[str, JsonValue]) -> list[DecisionIssue]:
         """Known hard failures after decision materialization, without config or I/O."""
         return []
 
     def config_override_issues(
-        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue] | None:
         """None: the kernel runs its generic flat config-contract block.
         Non-None: the kernel skips that block and appends these issues at the
@@ -178,7 +180,7 @@ class TaskAdapter:
 
     def preflight_issues(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         *,
         unlock_final_test: bool,
@@ -187,17 +189,17 @@ class TaskAdapter:
         """Extra issues evaluated only during preflight_plan (not doctor)."""
         return []
 
-    def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
+    def prepare_doctor_report(self, recipe: dict[str, JsonValue], report: DecisionReport) -> DecisionReport:
         """Add task-specific read-only doctor findings."""
         return report
 
-    def doctor_runtime_card(self, recipe: dict[str, Any]) -> str | None:
+    def doctor_runtime_card(self, recipe: dict[str, JsonValue]) -> str | None:
         """Return a read-only target runtime diagnostic for doctor."""
         return None
 
     def write_plan(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         out: Path,
         *,
         write_out: Path | None = None,
@@ -231,7 +233,7 @@ class TaskAdapter:
 
     def planned_plan_paths(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         out: Path,
         report: DecisionReport,
         *,
@@ -243,26 +245,26 @@ class TaskAdapter:
         single-run path list."""
         return None
 
-    def managed_runtime_dir(self, recipe: dict[str, Any], version: str) -> Path | None:
+    def managed_runtime_dir(self, recipe: dict[str, JsonValue], version: str) -> Path | None:
         """Externally-managed runtime directory for a planned managed run;
         None means the kernel records empty runtime/checkpoint dirs."""
         return None
 
-    def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
+    def required_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, JsonValue]]:
         """Task-specific required input paths, validated by
         decision_paths.path_issues; passed through decisions.py because
         decision_paths cannot import the registry."""
         return []
 
-    def frozen_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Path]]:
+    def frozen_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, Path]]:
         """Local external inputs whose content identity is frozen in the plan."""
         return []
 
-    def runtime_fields(self, variant: Any) -> frozenset[str]:
+    def runtime_fields(self, variant: JsonValue) -> frozenset[str]:
         """Allowed ``runtime.*`` fields; variant-sensitive for some tasks."""
         return frozenset()
 
-    def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
+    def frozen_command_prefix(self, recipe: dict[str, JsonValue]) -> tuple[str, ...]:
         """Task-owned prefix required for every command in a frozen plan."""
         raise NotImplementedError
 
@@ -277,7 +279,7 @@ class TaskAdapter:
 
     def task_issues(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
@@ -287,17 +289,17 @@ class TaskAdapter:
         return []
 
     def configured_input_issues(
-        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue]:
         """Existence checks for task-specific configured input paths."""
         return []
 
-    def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
+    def commands(self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None) -> list[str]:
         """Runnable commands for this task; [] means the recipe cannot be
         rendered (the kernel reports it as unsupported)."""
         return []
 
-    def frozen_commands(self, recipe: dict[str, Any], config_bytes: bytes) -> list[str]:
+    def frozen_commands(self, recipe: dict[str, JsonValue], config_bytes: bytes) -> list[str]:
         """Rebuild commands from a frozen plan-owned config snapshot."""
         return self.commands(recipe, None)
 
@@ -386,18 +388,18 @@ class TaskAdapter:
             )
         return contract
 
-    def validation_commands(self, recipe: dict[str, Any]) -> list[str] | None:
+    def validation_commands(self, recipe: dict[str, JsonValue]) -> list[str] | None:
         """Full replacement for the kernel's generic validation command list;
         None means use the generic path."""
         return None
 
     def expected_artifacts(
-        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
     ) -> list[dict[str, str]]:
         """Expected output artifacts for context/plan documents."""
         return []
 
-    def effective_preset_path(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> Any:
+    def effective_preset_path(self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None) -> Any:
         """The preset this task actually loads: the recipe's declared
         ``preset_path_recipe_field`` override when concrete, else the config's
         ``finetune_preset_path``. None when neither is."""
@@ -411,14 +413,14 @@ class TaskAdapter:
         value = data.get("finetune_preset_path")
         return value if value not in (None, "", "ASK_USER") else None
 
-    def index_summary_split_values(self, recipe: dict[str, Any]) -> list[Any]:
+    def index_summary_split_values(self, recipe: dict[str, JsonValue]) -> list[Any]:
         """Splits the index summary reports for this task. The default is the
         finetune family's loaded splits; tasks that name their evaluation split
         in the recipe override it."""
         return finetune_loaded_split_values(recipe)
 
     def index_summary_inputs_override(
-        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
     ) -> tuple[list[Any], Any, list[Any]] | None:
         """(index_paths, config, split_values) when this adapter claims the
         recipe/config combination, else None. Claiming is by config shape,

@@ -11,17 +11,15 @@ observation.
 
 from __future__ import annotations
 
-from typing import Any
-
 from . import decision_paths as paths, plan_rendering as rendering
 from .adapters import SUPPORTED_TASKS, all_adapters, get_adapter
 from .decision_models import DecisionIssue, DecisionStatus
-from .models import SUPPORTED_VARIANTS
+from .models import SUPPORTED_VARIANTS, JsonValue
 
 _COMMON_RECIPE_FIELDS = frozenset({"decisions", "experiment", "input_snapshots", "name", "step", "task", "variant"})
 
 
-def recipe_structure_issues(task: Any, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue]:
+def recipe_structure_issues(task: JsonValue, recipe: dict[str, JsonValue], *, source_layer: str) -> list[DecisionIssue]:
     if not isinstance(task, str) or task not in SUPPORTED_TASKS:
         return [_contract_issue("task", f"Unsupported task: {task}", task, source_layer)]
     adapter = get_adapter(task)
@@ -61,7 +59,7 @@ def recipe_structure_issues(task: Any, recipe: dict[str, Any], *, source_layer: 
     return issues
 
 
-def variant_structure_issues(task: str, variant: Any, *, source_layer: str) -> list[DecisionIssue]:
+def variant_structure_issues(task: str, variant: JsonValue, *, source_layer: str) -> list[DecisionIssue]:
     adapter = get_adapter(task)
     if adapter is None:
         return []
@@ -180,7 +178,7 @@ def _artifact_contract_issues(task: str, recipe: dict, *, source_layer: str) -> 
     ]
 
 
-def _contract_issue(field: str, message: str, value: Any, source_layer: str) -> DecisionIssue:
+def _contract_issue(field: str, message: str, value: JsonValue, source_layer: str) -> DecisionIssue:
     return DecisionIssue(
         DecisionStatus.FAIL,
         field,
