@@ -20,7 +20,7 @@ from typing import Any
 from .. import plan_contract, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
-from ..models import ConfigSummaryInput
+from ..models import ConfigSummaryInput, JsonValue
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, variant_module
 from .base import PlanRegistrationPreflightError, TaskAdapter
 
@@ -65,7 +65,7 @@ class HparamTuneAdapter(TaskAdapter):
     def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
         return hparam_recipe_contract_issues(recipe, source_layer=source_layer)
 
-    def recipe_input_issues(self, recipe: dict[str, Any]) -> list[DecisionIssue]:
+    def recipe_input_issues(self, recipe: dict[str, JsonValue]) -> list[DecisionIssue]:
         return [issue for issue in hparam_search_issues(recipe, high_impact={}) if issue.status == DecisionStatus.FAIL]
 
     def bind_effective_recipe(

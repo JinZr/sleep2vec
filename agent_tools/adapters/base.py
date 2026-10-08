@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
-from ..models import ConfigSummary, ConfigSummaryInput, coerce_list
+from ..models import ConfigSummary, ConfigSummaryInput, JsonValue, coerce_list
 from ..plan_contract import CompiledPlanContract, GenericCompiledPlanContract
 from ..plan_rendering import finetune_loaded_split_values
 
@@ -150,7 +150,7 @@ class TaskAdapter:
         use the generic path."""
         return None
 
-    def recipe_input_issues(self, recipe: dict[str, Any]) -> list[DecisionIssue]:
+    def recipe_input_issues(self, recipe: dict[str, JsonValue]) -> list[DecisionIssue]:
         """Known hard failures after decision materialization, without config or I/O."""
         return []
 
