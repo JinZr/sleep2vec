@@ -840,7 +840,7 @@ def _json_pointer_parts(pointer: str) -> list[str]:
     return [part.replace("~1", "/").replace("~0", "~") for part in pointer.split("/")[1:]]
 
 
-def freeze_hparam_execution(recipe: dict) -> dict:
+def freeze_hparam_execution(recipe: dict[str, JsonValue]) -> dict[str, JsonValue]:
     recipe = copy.deepcopy(recipe)
     execution_value = recipe.get("execution")
     execution = dict(execution_value) if isinstance(execution_value, dict) else {}
@@ -907,7 +907,7 @@ def compile_hparam_run_all_script(recipe: dict[str, Any], out: Path) -> str:
 
 
 def write_hparam_plan(
-    recipe: dict,
+    recipe: dict[str, JsonValue],
     out: Path,
     *,
     write_out: Path | None = None,
@@ -925,11 +925,15 @@ def write_hparam_plan(
     if not physical_out.is_absolute():
         physical_out = physical_out.resolve()
     recipe = freeze_hparam_execution(recipe)
+    # A passing hparam recipe holds evaluation_policy as a mapping, since test_after_fit is materialized into it.
     if unlock_final_test:
-        evaluation = dict(recipe.get("evaluation_policy") or {})
+        evaluation_value = recipe.get("evaluation_policy")
+        evaluation = dict(evaluation_value) if isinstance(evaluation_value, dict) else {}
         evaluation.update({"external_test_locked": False, "final_test_unlocked": True})
         recipe["evaluation_policy"] = evaluation
-    execution = recipe["execution"]
+    # freeze_hparam_execution wrote execution as a mapping.
+    execution_value = recipe["execution"]
+    execution = execution_value if isinstance(execution_value, dict) else {}
     scheduler = execution.get("scheduler") or {}
     if not isinstance(scheduler, dict):
         raise ValueError("execution.scheduler must be a mapping.")
@@ -938,7 +942,8 @@ def write_hparam_plan(
         raise ValueError("execution.scheduler.type must be direct or slurm.")
     inputs_value = recipe.get("inputs")
     inputs = inputs_value if isinstance(inputs_value, dict) else {}
-    evaluation = recipe.get("evaluation_policy") or {}
+    evaluation_value = recipe.get("evaluation_policy")
+    evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     final_allowed = _final_script_allowed(recipe, evaluation, False)
     frozen_final_eval_config = out / FROZEN_FINAL_EVAL_CONFIG_NAME
     write_frozen_final_eval_config = physical_out / FROZEN_FINAL_EVAL_CONFIG_NAME
@@ -949,11 +954,13 @@ def write_hparam_plan(
         if hashlib.sha256(final_eval_config["bytes"]).hexdigest() != final_eval_config["sha256"]:
             raise ValueError("Final evaluation config bytes do not match their bound SHA-256.")
         bound_final_config = final_eval_config
-    if not inputs.get("config"):
+    source_config = inputs.get("config")
+    if not source_config:
         raise FileNotFoundError("Config path is required.")
     if hashlib.sha256(source_config_bytes).hexdigest() != source_config_sha256:
         raise ValueError("Hparam source config does not match the bound SHA-256.")
-    source_config_path = resolve_repo_path(inputs.get("config"))
+    # Plan preflight already resolved inputs.config as a path, so it is a string here.
+    source_config_path = resolve_repo_path(source_config if isinstance(source_config, str) else None)
     if source_config_path is None:
         raise ValueError("Hparam source config path is required.")
     plan_contract.bind_frozen_input_snapshot(

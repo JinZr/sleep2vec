@@ -25,7 +25,7 @@ from typing_extensions import Never, NotRequired
 from . import plan_rendering as rendering, python_programs, slurm
 from .decision_models import USER_DECISIONS_FILENAME
 from .experiment_workspace import RunIdentity, run_identity, safe_artifact_name
-from .models import REPO_ROOT, recipe_name
+from .models import REPO_ROOT, JsonValue, recipe_name
 
 FROZEN_FINAL_EVAL_CONFIG_NAME = "config.final_eval.yaml"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -180,13 +180,12 @@ def pass_plan_artifact_paths(plan_dir: Path) -> list[Path]:
     return [*pass_plan_control_paths(plan_dir), *(plan_dir / name for name in _PASS_PLAN_RESIDUE_NAMES)]
 
 
-def bind_plan_context(recipe: dict[str, Any]) -> None:
-    context: FrozenPlanContext = {
+def bind_plan_context(recipe: dict[str, JsonValue]) -> None:
+    recipe["_plan_context"] = {
         "home": str(Path.home()),
         "python": sys.executable,
         "repo_root": str(REPO_ROOT),
     }
-    recipe["_plan_context"] = context
 
 
 def frozen_plan_context(recipe: dict[str, Any]) -> FrozenPlanContext:
@@ -246,18 +245,17 @@ def frozen_input_snapshot(recipe: dict[str, Any], field: str) -> FrozenInputSnap
     return matches[0]
 
 
-def bind_frozen_input_snapshot(recipe: dict[str, Any], field: str, path: str | Path, sha256: str) -> None:
+def bind_frozen_input_snapshot(recipe: dict[str, JsonValue], field: str, path: str | Path, sha256: str) -> None:
     if _SHA256_RE.fullmatch(sha256) is None:
         raise ValueError(f"Frozen input snapshot for {field} requires a lowercase SHA-256.")
     snapshots = recipe.get("input_snapshots")
-    retained: list[FrozenInputSnapshot | dict[str, Any]] = (
+    retained: list[dict[str, JsonValue]] = (
         [snapshot for snapshot in snapshots if isinstance(snapshot, dict) and snapshot.get("field") != field]
         if isinstance(snapshots, list)
         else []
     )
-    snapshot: FrozenInputSnapshot = {"field": field, "path": str(path), "sha256": sha256}
-    retained.append(snapshot)
-    recipe["input_snapshots"] = sorted(retained, key=lambda item: (item["field"], item["path"]))
+    retained.append({"field": field, "path": str(path), "sha256": sha256})
+    recipe["input_snapshots"] = [*sorted(retained, key=lambda item: (item["field"], item["path"]))]
 
 
 def generic_run_contract(

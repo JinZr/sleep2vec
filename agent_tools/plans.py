@@ -84,6 +84,7 @@ from .models import (
     REPO_ROOT,
     BoundFinalEvalConfigSnapshot,
     ConfigSummaryInput,
+    JsonValue,
     json_ready,
     resolve_repo_path,
     validate_json_value,
@@ -1071,7 +1072,7 @@ def build_context(
 
 
 def _validate_bound_recipe(
-    recipe: dict[str, Any],
+    recipe: dict[str, JsonValue],
     cfg: ConfigSummaryInput | None,
     report: DecisionReport,
     out: Path,
@@ -1113,8 +1114,9 @@ def _validate_bound_recipe(
                 f"Registered plan recipe must be inside the final plan directory: {frozen_recipe_path}"
             ) from exc
         recipe["_recipe_path"] = str(frozen_recipe_path)
-        if isinstance(recipe.get("_local_recipe"), dict):
-            recipe["_local_recipe"]["_recipe_path"] = str(frozen_recipe_path)
+        local_recipe = recipe.get("_local_recipe")
+        if isinstance(local_recipe, dict):
+            local_recipe["_recipe_path"] = str(frozen_recipe_path)
     validated_config_bytes = cfg.get("_source_config_bytes") if isinstance(cfg, dict) else None
     validated_config_sha256 = cfg.get("_source_config_sha256") if isinstance(cfg, dict) else None
     final_eval_config: BoundFinalEvalConfigSnapshot | None = (
@@ -1264,7 +1266,7 @@ def _materialize_adapter_plan(
 
 def _materialize_single_run_plan(
     *,
-    task: str,
+    run_adapter: TaskAdapter | None,
     recipe: dict[str, Any],
     report: DecisionReport,
     out: Path,
@@ -1281,7 +1283,6 @@ def _materialize_single_run_plan(
     root = experiment_root(recipe)
     if root is None:
         raise ValueError("experiment.root is required.")
-    run_adapter = get_adapter(task)
     assert run_adapter is not None
     run_index = next_run_index(recipe) if run_index_offset is None else run_index_offset
     run: plan_contract.GenericRunContract | dict[str, Any] = plan_contract.generic_run_contract(
@@ -1614,12 +1615,14 @@ def _build_plan(
         return report
 
     validated_config_bytes, validated_config_sha256, final_eval_config = bound_config
-    task: str = recipe["task"]
     root = experiment_root(recipe)
     if root is None:
         raise ValueError("experiment.root is required.")
-    recipe["experiment"]["root"] = str(root)
-    input_snapshots = []
+    # experiment_root resolved a root, so experiment is a mapping.
+    experiment = recipe.get("experiment")
+    if isinstance(experiment, dict):
+        experiment["root"] = str(root)
+    input_snapshots: list[JsonValue] = []
     if plan_adapter is not None:
         input_paths = plan_adapter.frozen_input_paths(recipe)
         try:
@@ -1659,7 +1662,10 @@ def _build_plan(
                 )
         if report.exit_code != 0:
             return report
-    source_config_path = resolve_repo_path((recipe.get("inputs") or {}).get("config"))
+    # Preflight already resolved inputs.config as a path, so a passing recipe holds it as a string.
+    inputs = recipe.get("inputs")
+    source_config = inputs.get("config") if isinstance(inputs, dict) else None
+    source_config_path = resolve_repo_path(source_config if isinstance(source_config, str) else None)
     if source_config_path is None:
         raise ValueError("Successful plan preflight did not bind the source config path.")
     recipe["input_snapshots"] = input_snapshots
@@ -1716,7 +1722,7 @@ def _build_plan(
             final_eval_config=final_eval_config,
         )
     return _materialize_single_run_plan(
-        task=task,
+        run_adapter=plan_adapter,
         recipe=recipe,
         report=report,
         out=out,
@@ -1859,7 +1865,7 @@ def preflight_plan(
     unlock_final_test: bool = False,
     allow_existing_output_artifacts: bool = False,
     allow_adaptive_workflow: bool = False,
-) -> tuple[dict, ConfigSummaryInput | None, DecisionReport]:
+) -> tuple[dict[str, JsonValue], ConfigSummaryInput | None, DecisionReport]:
     """Check whether a recipe can be published at output_dir, without publishing it.
 
     Returns (recipe, optional config summary, DecisionReport), retaining
@@ -1873,7 +1879,11 @@ def preflight_plan(
     substitute for it. allow_existing_output_artifacts relaxes the publication
     artifact guard for staged callers; allow_adaptive_workflow is for the
     adaptive controller. A passing report does not reserve the output: build_plan
-    rechecks publication under its locks."""
+    rechecks publication under its locks.
+
+    The recipe type is the writers' contract: evaluate_recipe's freeze check
+    establishes it at runtime, but contract-blocked early returns precede that
+    check and reach only the blocked-publication guard (_planned_plan_paths)."""
     recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path, check_existing_experiment=True)
     # Static blockers, including NEEDS_USER_INPUT, must not restart reads through the later freeze checks.
     if cfg is None and any(
