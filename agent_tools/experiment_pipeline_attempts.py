@@ -31,6 +31,7 @@ from . import (
     managed_scheduler,
     run_artifacts as artifacts,
 )
+from .experiment_pipeline_spec import FrozenCheckpointCandidate, JobSpec, PipelineSpec
 from .experiment_workspace import (
     SUCCESS_STATUSES,
     append_event,
@@ -48,6 +49,7 @@ from .experiment_workspace import (
     validate_step_registration,
 )
 from .manifests import read_json, read_rows
+from .models import JsonValue
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 
 RETRYABLE_STATUSES = pipeline_results.RETRYABLE_STATUSES
@@ -65,13 +67,13 @@ class PipelineRegistrationRecoveryError(RuntimeError):
     pass
 
 
-def pipeline_execution(spec: dict[str, Any]) -> dict[str, Any]:
+def pipeline_execution(spec: PipelineSpec) -> dict[str, JsonValue]:
     return {
         "target": "local",
         "workdir": spec["runtime"]["workdir"],
         "python": spec["runtime"]["python"],
         "runtime_commit": spec["runtime"]["runtime_commit"],
-        "gpu_pool": spec["execution"]["gpu_pool"],
+        "gpu_pool": list(spec["execution"]["gpu_pool"]),
         "gpus_per_run": spec["execution"]["gpus_per_run"],
         "max_concurrent": spec["execution"]["max_concurrent"],
     }
@@ -90,8 +92,8 @@ def _freeze_attempt_recipe(recipe: dict[str, Any], recipe_path: Path, *, drift_m
 def load_or_create_initial_attempts(
     root: Path,
     pipeline_dir: Path,
-    spec: dict[str, Any],
-    selections: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    selections: Mapping[str, FrozenCheckpointCandidate],
     *,
     inspect_target: Callable[..., managed_scheduler.ExecutionSnapshot] | None = None,
 ) -> list[dict[str, Any]]:
@@ -159,7 +161,7 @@ def load_or_create_initial_attempts(
     return attempt_rows
 
 
-def _reconcile_pipeline_jobs_planned_event(root: Path, spec: dict[str, Any]) -> None:
+def _reconcile_pipeline_jobs_planned_event(root: Path, spec: PipelineSpec) -> None:
     payload = {"pipeline_id": spec["pipeline"]["id"], "job_count": len(spec["jobs"])}
     identity_fields: tuple[str, ...] = ("pipeline_id",)
     if spec.get("_execution_stage"):
@@ -168,7 +170,7 @@ def _reconcile_pipeline_jobs_planned_event(root: Path, spec: dict[str, Any]) -> 
     reconcile_pipeline_event(root, "pipeline_jobs_planned", payload, identity_fields=identity_fields)
 
 
-def _reconcile_pipeline_retry_planned_event(root: Path, spec: dict[str, Any], attempt: dict[str, Any]) -> None:
+def _reconcile_pipeline_retry_planned_event(root: Path, spec: PipelineSpec, attempt: dict[str, Any]) -> None:
     payload = {
         "pipeline_id": spec["pipeline"]["id"],
         "job_id": str(attempt["job_id"]),
@@ -222,8 +224,8 @@ def reconcile_pipeline_event(
 
 def _ensure_initial_preflight(
     pipeline_dir: Path,
-    spec: dict[str, Any],
-    recipes: list[tuple[dict[str, Any], Mapping[str, Any], int, Path, Path, Path]],
+    spec: PipelineSpec,
+    recipes: list[tuple[JobSpec, FrozenCheckpointCandidate, int, Path, Path, Path]],
 ) -> None:
     path = pipeline_dir / "preflight.json"
     expected = {
@@ -255,7 +257,7 @@ def _ensure_initial_preflight(
 
 def _prepare_attempt_plan(
     job_id: str,
-    selection: Mapping[str, Any],
+    selection: FrozenCheckpointCandidate,
     recipe_path: Path,
     plan_dir: Path,
     *,
@@ -289,9 +291,9 @@ def _prepare_attempt_plan(
 
 def _materialize_attempt(
     root: Path,
-    spec: dict[str, Any],
-    job: dict[str, Any],
-    selection: Mapping[str, Any],
+    spec: PipelineSpec,
+    job: JobSpec,
+    selection: FrozenCheckpointCandidate,
     attempt: int,
     *,
     recipe_path: Path,
@@ -316,9 +318,9 @@ def _materialize_attempt(
 
 def _materialize_attempt_locked(
     root: Path,
-    spec: dict[str, Any],
-    job: dict[str, Any],
-    selection: Mapping[str, Any],
+    spec: PipelineSpec,
+    job: JobSpec,
+    selection: FrozenCheckpointCandidate,
     attempt: int,
     *,
     recipe_path: Path,
@@ -405,8 +407,8 @@ def _materialize_attempt_locked(
 
 def _prepare_attempt_registration_groups(
     root: Path,
-    spec: dict[str, Any],
-    attempts: list[tuple[dict[str, Any], Mapping[str, Any], int, Path, Path, Path]],
+    spec: PipelineSpec,
+    attempts: list[tuple[JobSpec, FrozenCheckpointCandidate, int, Path, Path, Path]],
     *,
     snapshot_owner_dirs: dict[str, Path],
     inspect_target: Callable[..., managed_scheduler.ExecutionSnapshot] | None = None,
@@ -511,9 +513,9 @@ def _prepare_attempt_registration_groups(
 
 
 def _validate_physical_attempt_plan(
-    spec: dict[str, Any],
-    job: dict[str, Any],
-    selection: Mapping[str, Any],
+    spec: PipelineSpec,
+    job: JobSpec,
+    selection: FrozenCheckpointCandidate,
     recipe_path: Path,
     plan_dir: Path,
     physical_plan_dir: Path,
@@ -534,8 +536,8 @@ def _validate_physical_attempt_plan(
         "script": run_dir / "launch.sh",
         "artifacts": run_dir / "artifacts.json",
     }
-    for field, value in expected_paths.items():
-        if Path(str(run.get(field) or "")) != value:
+    for field, expected_path in expected_paths.items():
+        if Path(str(run.get(field) or "")) != expected_path:
             raise ValueError(f"External attempt plan path differs from its managed directory: {field}")
     physical_config = artifacts._physical_plan_path(Path(run["config"]), plan_dir, physical_plan_dir)
     if file_sha256(physical_config) != selection["config_sha256"]:
@@ -549,9 +551,9 @@ def _validate_physical_attempt_plan(
 
 def _attempt_recipe(
     pipeline_dir: Path,
-    spec: dict[str, Any],
-    job: dict[str, Any],
-    selection: Mapping[str, Any],
+    spec: PipelineSpec,
+    job: JobSpec,
+    selection: FrozenCheckpointCandidate,
     attempt: int,
 ) -> tuple[dict[str, Any], Path, Path, Path]:
     attempt_name = f"attempt-{attempt:03d}"
@@ -619,8 +621,8 @@ def _validate_new_attempt_paths(plan_dir: Path, result_root: Path, *, allow_exis
 
 
 def _attempt_projection(
-    job: dict[str, Any],
-    selection: Mapping[str, Any],
+    job: JobSpec,
+    selection: FrozenCheckpointCandidate,
     run: dict[str, Any],
     *,
     recipe_path: Path,
@@ -660,8 +662,8 @@ def _attempt_projection(
 def validate_attempt_rows(
     root: Path,
     pipeline_dir: Path,
-    spec: dict[str, Any],
-    selections: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    selections: Mapping[str, FrozenCheckpointCandidate],
     rows: list[dict[str, Any]],
     *,
     require_all_jobs: bool = True,
@@ -851,8 +853,8 @@ def planned_runs(attempt_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def create_needed_retries(
     root: Path,
     pipeline_dir: Path,
-    spec: dict[str, Any],
-    selections: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    selections: Mapping[str, FrozenCheckpointCandidate],
     attempts: list[dict[str, Any]],
     *,
     inspect_target: Callable[..., managed_scheduler.ExecutionSnapshot] | None = None,

@@ -571,6 +571,70 @@ def test_target_gate_comparison_uses_raw_values_and_explicit_strictness(tmp_path
     assert decision["selector"] == spec["selector"]
 
 
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("metric", 1, r"selector\.gates\[0\]\.metric must be a non-empty string"),
+        ("job", ["selection-internal"], r"selector\.gates\[0\]\.job must identify a selection job"),
+    ],
+)
+def test_gate_rejects_non_string_job_and_metric(tmp_path: Path, field: str, value, message: str):
+    spec = _spec(tmp_path)
+    spec["selector"]["gates"][0][field] = value
+    with pytest.raises(ValueError, match=message):
+        pipeline_spec.validate_spec(spec, tmp_path, unlock_final_test=True)
+
+
+@pytest.mark.parametrize("mutation", [{"extra_evidence": {"notes": ["frozen"]}}, {"source_plan_task": None}])
+def test_frozen_candidates_reject_open_key_set(tmp_path: Path, monkeypatch, mutation: dict):
+    spec = _spec(tmp_path / "workspace")
+    config = tmp_path / "config.yaml"
+    checkpoint = tmp_path / "model.ckpt"
+    config.write_text("model: unit\n")
+    checkpoint.write_bytes(b"checkpoint")
+    candidate = {
+        "candidate_id": "age-rank-001",
+        "source_rank": 1,
+        "source_id": "age",
+        "plan": spec["checkpoint_sources"]["age"]["plan"],
+        "step_id": "train-age",
+        "run_id": "run-001",
+        "run_name": "lr-1e-4",
+        "selection_metric": "val_mae",
+        "selection_mode": "min",
+        "score": 4.0,
+        "config": str(config),
+        "config_sha256": file_sha256(config),
+        "checkpoint": str(checkpoint),
+        "checkpoint_sha256": file_sha256(checkpoint),
+        "variant": "sleep2vec2",
+        "label_name": "age",
+        "source_task": "age",
+        "source_plan_task": "hparam_tune",
+        "inference_task": "infer",
+        "state_dict_key_count": 1,
+        "has_ahi_eval_threshold": False,
+    }
+    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_selection_owner", lambda *_args: None)
+    path = tmp_path / "candidates.json"
+
+    def write(item: dict) -> None:
+        scope = {"kind": "top_k", "requested_count": 2, "realized_count": 1}
+        path.write_text(json.dumps({"pipeline_id": "cohort-gate", "candidates": [item], "candidate_scope": scope}))
+
+    write(candidate)
+    assert experiment_pipeline._read_frozen_selections(path, spec) == {"age-rank-001": candidate}
+
+    for field, value in mutation.items():
+        if value is None:
+            del candidate[field]
+        else:
+            candidate[field] = value
+    write(candidate)
+    with pytest.raises(ValueError, match="frozen candidate contract: age"):
+        experiment_pipeline._read_frozen_selections(path, spec)
+
+
 @pytest.mark.parametrize("strict", ["true", "false", 0, 1, None])
 def test_gate_strict_rejects_nonboolean_values(tmp_path: Path, strict):
     spec = _spec(tmp_path)

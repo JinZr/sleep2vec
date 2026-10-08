@@ -234,7 +234,7 @@ def _result_manifest_context(tmp_path: Path) -> tuple[dict, dict, dict, Path, di
 def test_schema_rejects_duplicate_job_ids_illegal_phase_and_missing_unlock(tmp_path: Path):
     root = tmp_path / "workspace"
     spec = _spec(root)
-    pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
+    assert pipeline_spec.validate_spec(spec, root, unlock_final_test=True) is True
 
     duplicate = copy.deepcopy(spec)
     duplicate["jobs"].append(copy.deepcopy(duplicate["jobs"][0]))
@@ -271,6 +271,54 @@ def test_freeze_pipeline_rejects_step_controller_conflict_before_writing_state(t
     staging_dirs = list((root / "pipelines").glob(".external-v1.*.staging"))
     assert [list(path.iterdir()) for path in staging_dirs] == [[]]
     assert not (root / "pipelines" / "external-v1").exists()
+
+
+@pytest.mark.parametrize(
+    "path,value,message",
+    [
+        (("pipeline", "step", "purpose"), 5, r"pipeline\.step\.purpose must be a non-empty string"),
+        (
+            ("checkpoint_sources", "age", "selection_metric"),
+            1,
+            r"checkpoint_sources\.age\.selection_metric must be a non-empty string",
+        ),
+        (("checkpoint_sources", "age", "task"), 7, r"checkpoint_sources\.age\.task must be a string or null"),
+        (("jobs", 0, "cohort"), 2024, r"jobs\[0\]\.cohort must be a non-empty string"),
+        (("jobs", 0, "modality"), ["psg"], r"jobs\[0\]\.modality must be a non-empty string"),
+        (("jobs", 0, "task"), 7, r"jobs\[0\]\.task must be a string or null"),
+        (("jobs", 0, "variant"), ["sleep2vec2"], r"jobs\[0\]\.variant must be a string or null"),
+    ],
+)
+def test_schema_rejects_non_string_identities_and_assertions(tmp_path: Path, path: tuple, value, message: str):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    *parents, field = path
+    target = spec
+    for key in parents:
+        target = target[key]
+    target[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
+
+
+def test_schema_rejects_non_string_checkpoint_source_key(tmp_path: Path):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    spec["checkpoint_sources"] = {1: spec["checkpoint_sources"]["age"]}
+    spec["jobs"][0]["checkpoint_source"] = 1
+
+    with pytest.raises(ValueError, match="Invalid checkpoint source id: 1"):
+        pipeline_spec.validate_spec(spec, root, unlock_final_test=True)
+
+
+def test_schema_accepts_null_assertions(tmp_path: Path):
+    root = tmp_path / "workspace"
+    spec = _spec(root)
+    for payload in (spec["checkpoint_sources"]["age"], spec["jobs"][0]):
+        payload.update({"task": None, "variant": None, "label_name": None})
+
+    assert pipeline_spec.validate_spec(spec, root, unlock_final_test=True) is True
 
 
 @pytest.mark.parametrize("field", ["workdir", "python", "runtime_commit"])
@@ -553,7 +601,11 @@ def cross_round_source(tmp_path: Path, monkeypatch):
         lambda *_args, **_kwargs: hparam_selection.tracking.hparam_ranking_projection(canonical),
     )
     monkeypatch.setattr(experiment_pipeline, "select_hparam_candidates", lambda *_args: None)
-    monkeypatch.setattr(experiment_pipeline, "_validate_checkpoint_payload", lambda *_args: {})
+    monkeypatch.setattr(
+        experiment_pipeline,
+        "_validate_checkpoint_payload",
+        lambda *_args: {"state_dict_key_count": 1, "has_ahi_eval_threshold": False},
+    )
     return root, spec, registered, canonical
 
 
@@ -971,23 +1023,31 @@ def test_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path, monk
     assert not (root / "pipelines" / spec["pipeline"]["id"] / "checkpoints.json").exists()
 
 
-def test_frozen_checkpoint_selection_preserves_unknown_fields_and_decoded_identity(tmp_path: Path, monkeypatch):
-    spec = _spec(tmp_path / "workspace")
+def _frozen_source_selection(tmp_path: Path, spec: dict) -> dict:
     selection = _selection(tmp_path)
-    selection.update({"step_id": "train-age", "run_id": "run-001"})
+    selection.update(
+        {
+            "plan": spec["checkpoint_sources"]["age"]["plan"],
+            "step_id": "train-age",
+            "run_id": "run-001",
+            "run_name": "lr-1e-4",
+            "source_task": "age",
+            "source_plan_task": "hparam_tune",
+            "inference_task": "infer",
+            "state_dict_key_count": 1,
+            "has_ahi_eval_threshold": False,
+        }
+    )
+    return selection
+
+
+def test_frozen_checkpoint_selection_returns_decoded_identity(tmp_path: Path, monkeypatch):
+    spec = _spec(tmp_path / "workspace")
+    selection = _frozen_source_selection(tmp_path, spec)
     monkeypatch.setattr(
         experiment_pipeline,
         "_validate_frozen_selection_owner",
         lambda *_args: None,
-    )
-    selection.update(
-        {
-            "plan": spec["checkpoint_sources"]["age"]["plan"],
-            "source_task": "age",
-            "source_plan_task": "hparam_tune",
-            "inference_task": "infer",
-            "extra_evidence": {"notes": ["frozen"], "optional": None},
-        }
     )
     path = tmp_path / "checkpoints.json"
     path.write_text(json.dumps({"pipeline_id": "external-v1", "sources": [selection]}) + "\n")
@@ -999,10 +1059,32 @@ def test_frozen_checkpoint_selection_preserves_unknown_fields_and_decoded_identi
     selected = selections["age"]
     assert selected == selection
     assert selected is decoded["sources"][0]
-    assert selected["extra_evidence"] is decoded["sources"][0]["extra_evidence"]
-    selected["extra_evidence"]["notes"].append("reviewed")
-    assert decoded["sources"][0]["extra_evidence"]["notes"] == ["frozen", "reviewed"]
     assert json.loads(path.read_text())["sources"][0] == selection
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"extra_evidence": {"notes": ["frozen"]}},
+        {"candidate_id": "age-rank-001", "source_rank": 1},
+        {"run_name": None},
+        {"state_dict_key_count": None},
+    ],
+)
+def test_frozen_checkpoint_selection_rejects_open_key_set(tmp_path: Path, monkeypatch, mutation: dict):
+    spec = _spec(tmp_path / "workspace")
+    selection = _frozen_source_selection(tmp_path, spec)
+    for field, value in mutation.items():
+        if value is None:
+            del selection[field]
+        else:
+            selection[field] = value
+    monkeypatch.setattr(experiment_pipeline, "_validate_frozen_selection_owner", lambda *_args: None)
+    path = tmp_path / "checkpoints.json"
+    path.write_text(json.dumps({"pipeline_id": "external-v1", "sources": [selection]}) + "\n")
+
+    with pytest.raises(ValueError, match="frozen candidate contract: age"):
+        experiment_pipeline._read_frozen_selections(path, spec)
 
 
 def test_frozen_checkpoint_selection_rejects_hardlinked_checkpoint(tmp_path: Path, monkeypatch):
@@ -1265,6 +1347,16 @@ def test_result_manifest_validation_rejects_non_integer_or_wrong_avg_ckpts(tmp_p
     manifest_path.write_text(json.dumps(manifest) + "\n")
 
     with pytest.raises(ValueError, match="does not prove avg_ckpts=1"):
+        pipeline_results.validate_result_manifest(spec, attempt, run)
+
+
+@pytest.mark.parametrize("field,value", [("batch_size", 64), ("accelerator", "cpu")])
+def test_result_manifest_validation_names_the_drifted_runtime_field(tmp_path: Path, field: str, value: object):
+    spec, attempt, run, manifest_path, manifest = _result_manifest_context(tmp_path)
+    manifest["runtime"][field] = value
+    manifest_path.write_text(json.dumps(manifest) + "\n")
+
+    with pytest.raises(ValueError, match=rf"runtime\.{field} differs from the frozen job"):
         pipeline_results.validate_result_manifest(spec, attempt, run)
 
 

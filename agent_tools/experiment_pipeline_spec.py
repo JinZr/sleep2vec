@@ -4,6 +4,13 @@ Layer 0 leaf behind the ``experiment_pipeline`` orchestrator. Validates the
 parsed spec, including resolved source-plan containment in the experiment root,
 before workspace publication or run registration. Does not read run state,
 publish plans, or call the scheduler.
+
+``validate_spec`` raises ``ValueError`` on an invalid spec and otherwise narrows
+the same parsed mapping to ``PipelineSpec``, whose TypedDicts mirror the closed
+field sets below. The mapping is not rebuilt, so its YAML key order stays part
+of the frozen spec bytes. ``FrozenCheckpointCandidate`` is the spec-derived
+checkpoint selection that the orchestrator freezes and the attempt, result, and
+cohort-selection leaves consume.
 """
 
 from __future__ import annotations
@@ -11,7 +18,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Literal, TypedDict, TypeGuard
 
 from .models import is_full_git_object_id
 
@@ -72,9 +79,171 @@ _COHORT_JOB_FIELDS = (_JOB_FIELDS - {"checkpoint_source"}) | {"role", "provenanc
 _CANDIDATE_FIELDS = {"kind", "count"}
 _SELECTOR_FIELDS = {"strategy", "gates", "tie_breaker", "on_no_feasible"}
 _GATE_FIELDS = {"job", "metric", "mode", "threshold", "strict"}
+_ASSERTION_FIELDS = ("task", "variant", "label_name")
 
 
-def validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool | None) -> None:
+class StepSpec(TypedDict):
+    id: str
+    phase: Literal["evaluate"]
+    purpose: str
+
+
+class PipelineHeader(TypedDict):
+    id: str
+    kind: Literal["external_matrix", "cohort_selection"]
+    experiment_id: str
+    step: StepSpec
+    finalize: Literal[True]
+
+
+class RuntimeSpec(TypedDict):
+    workdir: str
+    python: str
+    runtime_commit: str
+    accelerator: Literal["gpu"]
+    device: Literal["cuda"]
+    precision: int | str
+    batch_size: int
+    seed: int
+
+
+class SchedulerSpec(TypedDict):
+    type: Literal["direct"]
+
+
+class _ExecutionSpecCore(TypedDict):
+    gpu_pool: list[int]
+    gpus_per_run: int
+    max_concurrent: int
+    max_attempts: int
+
+
+class ExecutionSpec(_ExecutionSpecCore, total=False):
+    scheduler: SchedulerSpec
+
+
+class EvaluationPolicySpec(TypedDict):
+    external_test_locked: Literal[False]
+    final_test_unlocked: Literal[True]
+
+
+class CheckpointPolicySpec(TypedDict):
+    avg_ckpts: int
+    require_no_model_averaging: Literal[True]
+    forbidden_state_dict_prefixes: list[str]
+    require_ahi_eval_threshold: Literal[True]
+
+
+class _CheckpointSourceSpecCore(TypedDict):
+    plan: str
+    selection_metric: str
+    selection_mode: Literal["min", "max"]
+
+
+class CheckpointSourceSpec(_CheckpointSourceSpecCore, total=False):
+    task: str | None
+    variant: str | None
+    label_name: str | None
+
+
+class _JobSpecCore(TypedDict):
+    id: str
+    cohort: str
+    modality: str
+    inference_preset_path: str
+    num_workers: int
+
+
+class JobSpec(_JobSpecCore, total=False):
+    checkpoint_source: str
+    role: Literal["selection", "report_only"]
+    provenance: Literal["internal", "external"]
+    task: str | None
+    variant: str | None
+    label_name: str | None
+    # Added in process by ``experiment_pipeline_cohort_selection.build_phase_jobs``.
+    job_template_id: str
+    candidate_id: str
+
+
+class _CandidatesSpecCore(TypedDict):
+    kind: Literal["top_k", "all"]
+
+
+class CandidatesSpec(_CandidatesSpecCore, total=False):
+    count: int
+
+
+class _GateSpecCore(TypedDict):
+    job: str
+    metric: str
+    mode: Literal["min", "max"]
+    threshold: float | int
+
+
+class GateSpec(_GateSpecCore, total=False):
+    strict: bool
+
+
+class SelectorSpec(TypedDict):
+    strategy: Literal["target_gate"]
+    gates: list[GateSpec]
+    tie_breaker: Literal["internal_rank"]
+    on_no_feasible: Literal["no_winner"]
+
+
+class _PipelineSpecCore(TypedDict):
+    pipeline: PipelineHeader
+    runtime: RuntimeSpec
+    execution: ExecutionSpec
+    evaluation_policy: EvaluationPolicySpec
+    checkpoint_policy: CheckpointPolicySpec
+    checkpoint_sources: dict[str, CheckpointSourceSpec]
+    jobs: list[JobSpec]
+
+
+class PipelineSpec(_PipelineSpecCore, total=False):
+    schema_version: int
+    candidates: CandidatesSpec
+    selector: SelectorSpec
+    # Attached in process by ``experiment_pipeline`` to a cohort phase's spec.
+    _execution_stage: str
+    _controller_dir: str
+
+
+class CheckpointEvidence(TypedDict):
+    state_dict_key_count: int
+    has_ahi_eval_threshold: bool
+
+
+class _CohortCandidateFields(TypedDict, total=False):
+    candidate_id: str
+    source_rank: int
+
+
+class FrozenCheckpointCandidate(CheckpointEvidence, _CohortCandidateFields):
+    """One frozen ``checkpoints.json`` source or ``candidates.json`` candidate; only candidates carry cohort keys."""
+
+    source_id: str
+    plan: str
+    step_id: str
+    run_id: str
+    run_name: str
+    selection_metric: str
+    selection_mode: Literal["min", "max"]
+    score: float
+    config: str
+    config_sha256: str
+    checkpoint: str
+    checkpoint_sha256: str
+    variant: str
+    label_name: str
+    source_task: str
+    source_plan_task: str
+    inference_task: Literal["infer"]
+
+
+def validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool | None) -> TypeGuard[PipelineSpec]:
     raw_pipeline = spec.get("pipeline")
     kind = raw_pipeline.get("kind") if isinstance(raw_pipeline, dict) else None
     legacy_version = spec.get("schema_version")
@@ -96,8 +265,9 @@ def validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool |
     _required_slug(step, "id", "pipeline.step")
     if step.get("phase") != "evaluate":
         raise ValueError("pipeline.step.phase must be 'evaluate'.")
-    if not str(step.get("purpose") or "").strip():
-        raise ValueError("pipeline.step.purpose is required.")
+    purpose = step.get("purpose")
+    if not isinstance(purpose, str) or not purpose.strip():
+        raise ValueError("pipeline.step.purpose must be a non-empty string.")
     if pipeline.get("finalize") is not True:
         raise ValueError("pipeline.finalize must be true.")
 
@@ -133,6 +303,7 @@ def validate_spec(spec: dict[str, Any], root: Path, *, unlock_final_test: bool |
         _validate_cohort_selection_contract(spec)
     if not pipeline_id:
         raise AssertionError("validated pipeline id is empty")
+    return True
 
 
 def _validate_runtime_execution(spec: dict[str, Any]) -> None:
@@ -203,7 +374,7 @@ def _validate_pipeline_sources_and_jobs(spec: dict[str, Any], *, root: Path, kin
     if not sources:
         raise ValueError("checkpoint_sources must not be empty.")
     for source_id, source in sources.items():
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", str(source_id)):
+        if not isinstance(source_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", source_id):
             raise ValueError(f"Invalid checkpoint source id: {source_id}")
         if not isinstance(source, dict):
             raise ValueError(f"checkpoint_sources.{source_id} must be a mapping.")
@@ -215,10 +386,12 @@ def _validate_pipeline_sources_and_jobs(spec: dict[str, Any], *, root: Path, kin
             plan.resolve().relative_to(root)
         except ValueError as exc:
             raise ValueError(f"checkpoint_sources.{source_id}.plan must be inside the experiment root.") from exc
-        if not str(source.get("selection_metric") or ""):
-            raise ValueError(f"checkpoint_sources.{source_id}.selection_metric is required.")
+        selection_metric = source.get("selection_metric")
+        if not isinstance(selection_metric, str) or not selection_metric:
+            raise ValueError(f"checkpoint_sources.{source_id}.selection_metric must be a non-empty string.")
         if source.get("selection_mode") not in {"min", "max"}:
             raise ValueError(f"checkpoint_sources.{source_id}.selection_mode must be min or max.")
+        _reject_non_string_assertions(source, f"checkpoint_sources.{source_id}")
 
     if kind == COHORT_SELECTION_KIND and len(sources) != 1:
         raise ValueError("cohort_selection requires exactly one checkpoint source.")
@@ -240,9 +413,9 @@ def _validate_pipeline_sources_and_jobs(spec: dict[str, Any], *, root: Path, kin
             raise ValueError(f"Duplicate external job id: {job_id}")
         seen.add(job_id)
         if kind == PIPELINE_KIND:
-            source_id = str(job.get("checkpoint_source") or "")
-            if source_id not in sources:
-                raise ValueError(f"jobs[{index}].checkpoint_source is unknown: {source_id}")
+            checkpoint_source = job.get("checkpoint_source")
+            if not isinstance(checkpoint_source, str) or checkpoint_source not in sources:
+                raise ValueError(f"jobs[{index}].checkpoint_source is unknown: {checkpoint_source}")
         else:
             if job.get("role") not in {"selection", "report_only"}:
                 raise ValueError(f"jobs[{index}].role must be selection or report_only.")
@@ -251,8 +424,9 @@ def _validate_pipeline_sources_and_jobs(spec: dict[str, Any], *, root: Path, kin
             if job["role"] == "report_only" and job["provenance"] != "external":
                 raise ValueError(f"jobs[{index}].provenance must be external for report_only jobs.")
         for field in ("cohort", "modality"):
-            if not str(job.get(field) or "").strip():
-                raise ValueError(f"jobs[{index}].{field} is required.")
+            value = job.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"jobs[{index}].{field} must be a non-empty string.")
         preset = Path(str(job.get("inference_preset_path") or ""))
         if not preset.is_absolute():
             raise ValueError(f"jobs[{index}].inference_preset_path must be absolute.")
@@ -262,6 +436,7 @@ def _validate_pipeline_sources_and_jobs(spec: dict[str, Any], *, root: Path, kin
         expected_workers = {"psg": 8, "bcg": 16}.get(str(job["modality"]).lower())
         if expected_workers is not None and workers != expected_workers:
             raise ValueError(f"jobs[{index}].num_workers must be {expected_workers} for {job['modality']} inference.")
+        _reject_non_string_assertions(job, f"jobs[{index}]")
 
 
 def _validate_cohort_selection_contract(spec: dict[str, Any]) -> None:
@@ -309,12 +484,12 @@ def _validate_cohort_selection_contract(spec: dict[str, Any]) -> None:
         if not isinstance(gate, dict):
             raise ValueError(f"selector.gates[{index}] must be a mapping.")
         _reject_unknown_fields(gate, _GATE_FIELDS, f"selector.gates[{index}]")
-        job_id = str(gate.get("job") or "")
-        metric = str(gate.get("metric") or "")
-        if job_id not in jobs or jobs[job_id]["role"] != "selection":
+        job_id = gate.get("job")
+        metric = gate.get("metric")
+        if not isinstance(job_id, str) or job_id not in jobs or jobs[job_id]["role"] != "selection":
             raise ValueError(f"selector.gates[{index}].job must identify a selection job.")
-        if not metric:
-            raise ValueError(f"selector.gates[{index}].metric is required.")
+        if not isinstance(metric, str) or not metric:
+            raise ValueError(f"selector.gates[{index}].metric must be a non-empty string.")
         if gate.get("mode") not in {"min", "max"}:
             raise ValueError(f"selector.gates[{index}].mode must be min or max.")
         if "strict" in gate and not isinstance(gate["strict"], bool):
@@ -343,6 +518,14 @@ def _reject_unknown_fields(payload: dict[str, Any], allowed: set[str], label: st
     unknown = sorted(set(payload) - allowed)
     if unknown:
         raise ValueError(f"Unknown {label} field(s): {', '.join(unknown)}")
+
+
+def _reject_non_string_assertions(payload: dict[str, Any], label: str) -> None:
+    # Assertions are compared with plan-derived strings; null or "" leaves one unset.
+    for field in _ASSERTION_FIELDS:
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"{label}.{field} must be a string or null.")
 
 
 def _required_slug(payload: dict[str, Any], field: str, label: str) -> str:

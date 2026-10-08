@@ -11,21 +11,23 @@ from __future__ import annotations
 import math
 from typing import Any, Literal, Mapping, Sequence, TypedDict
 
+from .experiment_pipeline_spec import FrozenCheckpointCandidate, JobSpec, PipelineSpec, SelectorSpec
+
 
 class SelectionEvidence(TypedDict):
     job_id: str
     job_template_id: str
     candidate_id: str
-    cohort: Any
+    cohort: str
     metrics: dict[str, Any]
     result_manifest: str
     result_manifest_sha256: str
 
 
 class GateContributingEvidence(TypedDict):
-    job: Any
-    cohort: Any
-    metric: Any
+    job: str
+    cohort: str
+    metric: str
     mode: Literal["min", "max"]
     threshold: float
     value: int | float
@@ -49,24 +51,24 @@ class DecisionCandidate(TypedDict):
 
 class CohortDecision(TypedDict):
     pipeline_id: str
-    source_id: Any
-    selector: dict[str, Any]
+    source_id: str
+    selector: SelectorSpec
     candidates: list[DecisionCandidate]
     winner: DecisionCandidate | None
 
 
-def candidate_for_job(job: dict[str, Any], candidates: Mapping[str, Mapping[str, Any]]) -> Mapping[str, Any]:
+def candidate_for_job(job: JobSpec, candidates: Mapping[str, FrozenCheckpointCandidate]) -> FrozenCheckpointCandidate:
     key = str(job.get("candidate_id") or job.get("checkpoint_source") or "")
     return candidates[key]
 
 
 def build_phase_jobs(
-    spec: dict[str, Any],
-    candidates: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    candidates: Mapping[str, FrozenCheckpointCandidate],
     *,
     role: str,
     winner_id: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[JobSpec]:
     templates = sorted((job for job in spec["jobs"] if job["role"] == role), key=lambda job: job["id"])
     if role == "selection":
         selected = sorted(candidates.values(), key=_candidate_order)
@@ -75,7 +77,7 @@ def build_phase_jobs(
             raise ValueError("Report-only jobs require a frozen cohort-selection winner.")
         selected = [candidates[winner_id]]
 
-    jobs = []
+    jobs: list[JobSpec] = []
     for candidate in selected:
         for template in templates:
             candidate_id = str(candidate["candidate_id"])
@@ -92,8 +94,8 @@ def build_phase_jobs(
 
 
 def rank_candidates(
-    spec: dict[str, Any],
-    candidates: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    candidates: Mapping[str, FrozenCheckpointCandidate],
     evidence: Sequence[SelectionEvidence],
 ) -> tuple[list[dict[str, Any]], CohortDecision]:
     selection_jobs = {job["id"]: job for job in spec["jobs"] if job["role"] == "selection"}
@@ -187,5 +189,5 @@ def rank_candidates(
     return ranking, decision
 
 
-def _candidate_order(candidate: Mapping[str, Any]) -> tuple[int, str]:
+def _candidate_order(candidate: FrozenCheckpointCandidate | DecisionCandidate) -> tuple[int, str]:
     return int(candidate["source_rank"]), str(candidate["run_id"])

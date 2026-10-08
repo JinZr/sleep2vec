@@ -106,6 +106,10 @@ Its closed sections are:
 - `jobs`: stable id, source id, cohort, modality, absolute inference preset,
   workers, and optional task/variant/label assertions.
 
+Step purpose, source ids and selection metrics, job source ids, cohorts and
+modalities, and selector gate jobs and metrics must be YAML strings, not values
+that only stringify to one; task/variant/label assertions are strings or `null`.
+
 ## Source and checkpoint gates
 
 Each source plan identifies its managed hparam step. Candidate selection and
