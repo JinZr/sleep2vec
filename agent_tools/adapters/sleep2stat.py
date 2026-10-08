@@ -18,6 +18,7 @@ from ..decision_paths import path_context, path_validation, validate_input_path
 from ..domain.sidecar_summaries import looks_like_placeholder_path
 from ..models import (
     REPO_ROOT,
+    YAML_SAFE_LOADER,
     AnalyzerSummary,
     ConfigSummaryInput,
     JsonValue,
@@ -423,7 +424,7 @@ class Sleep2statAdapter(TaskAdapter):
         return commands
 
     def frozen_commands(self, recipe: dict[str, JsonValue], config_bytes: bytes) -> list[str]:
-        config = yaml.safe_load(config_bytes)
+        config = yaml.load(config_bytes, Loader=YAML_SAFE_LOADER)
         if not isinstance(config, dict):
             raise ValueError("Frozen sleep2stat config must be a mapping.")
         summary = {

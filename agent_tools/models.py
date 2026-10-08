@@ -29,6 +29,10 @@ VARIANTLESS_TASKS = {"sleep2stat"}
 # guard matches raw task-name constants, so kernel modules read the section
 # through this constant).
 CONFIG_FINETUNE_SECTION: Final = "finetune"
+# libyaml parses the frozen recipes and configs about ten times faster than PyYAML's pure-Python
+# scanner and composes the same node tree. The pinned pyyaml wheels bundle it; an environment
+# without it fails here at import instead of silently falling back to the slow loader.
+YAML_SAFE_LOADER = yaml.CSafeLoader
 _FULL_GIT_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}")
 #: A value of the JSON data model, as ``json.loads`` returns it and JSON-backed records hold it.
 JsonValue: TypeAlias = "str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]"
@@ -328,7 +332,7 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     resolved = resolve_repo_path(path)
     if resolved is None:
         raise FileNotFoundError("Config path is required.")
-    data = yaml.safe_load(resolved.read_text())
+    data = yaml.load(resolved.read_text(), Loader=YAML_SAFE_LOADER)
     if not isinstance(data, dict):
         raise ValueError(f"YAML must be a mapping: {resolved}")
     return data

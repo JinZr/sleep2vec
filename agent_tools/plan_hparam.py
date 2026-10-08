@@ -59,6 +59,7 @@ from .manifests import write_json, write_text
 from .models import (
     CONFIG_FINETUNE_SECTION,
     REPO_ROOT,
+    YAML_SAFE_LOADER,
     BoundFinalEvalConfigSnapshot,
     ConfigSummaryInput,
     JsonValue,
@@ -270,7 +271,7 @@ def validate_finetune_config_bytes(recipe: dict, config_bytes: bytes) -> None:
 def validate_hparam_run_configs(recipe: dict, run_configs: list[tuple[dict[str, Any], bytes]]) -> None:
     validated_configs: set[bytes] = set()
     for run, config_bytes in run_configs:
-        config = yaml.safe_load(config_bytes)
+        config = yaml.load(config_bytes, Loader=YAML_SAFE_LOADER)
         runtime = {
             **(recipe.get("runtime") or {}),
             **{
@@ -368,7 +369,7 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
     if not config_path:
         return []
     try:
-        base_config = yaml.safe_load(config_bytes)
+        base_config = yaml.load(config_bytes, Loader=YAML_SAFE_LOADER)
         if not isinstance(base_config, dict):
             raise ValueError(f"YAML must be a mapping: {config_path}")
         base_data_value = base_config.get("data")
@@ -577,7 +578,7 @@ def compile_hparam_run_contracts(
             or source_snapshot["sha256"] != source_sha256
         ):
             raise ValueError("Frozen hparam source config differs from its recipe digest.")
-        base_config = yaml.safe_load(source_config_bytes)
+        base_config = yaml.load(source_config_bytes, Loader=YAML_SAFE_LOADER)
         if not isinstance(base_config, dict):
             raise ValueError("Frozen hparam source config must be a mapping.")
     run_inputs = {key: value for key, value in inputs.items() if key != "ckpt_path"}

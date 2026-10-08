@@ -84,6 +84,7 @@ from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
 from .models import (
     REPO_ROOT,
+    YAML_SAFE_LOADER,
     BoundFinalEvalConfigSnapshot,
     ConfigSummaryInput,
     JsonValue,
@@ -842,7 +843,7 @@ def write_user_decision_template(
         except ValueError as exc:
             raise ValueError(f"Managed output paths must be independent regular files: {target}") from exc
         try:
-            existing_payload = yaml.safe_load(existing_text) if existing_text is not None else None
+            existing_payload = yaml.load(existing_text, Loader=YAML_SAFE_LOADER) if existing_text is not None else None
         except (TypeError, yaml.YAMLError):
             existing_payload = None
         existing_decisions = existing_payload.get("decisions") if isinstance(existing_payload, dict) else None
@@ -2076,7 +2077,7 @@ def _wandb_summary_for_run(run_dir: Path) -> dict[str, Any]:
     if not candidates:
         return {}
     try:
-        data = yaml.safe_load(candidates[-1].read_text())
+        data = yaml.load(candidates[-1].read_text(), Loader=YAML_SAFE_LOADER)
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}

@@ -57,7 +57,7 @@ from .experiment_workspace import (
     write_status_report,
 )
 from .manifests import utc_now
-from .models import REPO_ROOT, JsonValue, is_full_git_object_id
+from .models import REPO_ROOT, YAML_SAFE_LOADER, JsonValue, is_full_git_object_id
 
 ACTIVE_STATUSES = frozenset(
     {"submitting", "queued", "launched", "running", "stopping", "unknown_remote", "unknown_scheduler", "missing_pid"}
@@ -926,7 +926,7 @@ def _managed_launch_preflight(
             snapshot_path,
         ],
     )
-    experiment_manifest = yaml.safe_load((workspace / "experiment.yaml").read_text()) or {}
+    experiment_manifest = yaml.load((workspace / "experiment.yaml").read_text(), Loader=YAML_SAFE_LOADER) or {}
     experiment = experiment_manifest.get("experiment") if isinstance(experiment_manifest, dict) else None
     if isinstance(experiment, dict) and experiment.get("status") == "completed":
         raise ValueError(f"Experiment is completed and cannot launch runs: {workspace}")

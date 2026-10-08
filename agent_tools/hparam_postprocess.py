@@ -26,7 +26,7 @@ from . import experiment_io as exp_io, plan_contract, python_programs, run_artif
 from .experiment_workspace import canonical_local_experiment_root, validated_run_key
 from .hparam_selection import resolve_hparam_candidates
 from .manifests import read_rows, write_rows, write_text
-from .models import REPO_ROOT, module_for_variant
+from .models import REPO_ROOT, YAML_SAFE_LOADER, module_for_variant
 from .plan_rendering import infer_runtime_cli_args, render_command
 
 
@@ -468,7 +468,7 @@ def _copy_config_with_data_paths(
     kaldi_manifest: str | None,
     finetune_data_index: str | None,
 ) -> None:
-    config = yaml.safe_load(source.read_text())
+    config = yaml.load(source.read_text(), Loader=YAML_SAFE_LOADER)
     data = config.setdefault("data", {})
     uses_kaldi_override = kaldi_data_root is not None or kaldi_manifest is not None
     if uses_kaldi_override:
