@@ -294,6 +294,40 @@ def test_result_types_reach_callers(tmp_path: Path):
             monitor_result["runs"] = ["run-000"]  # type: ignore[list-item]
             monitor_result["report"] = Path("/report")  # type: ignore[typeddict-item]
             monitor_result["decision"]  # type: ignore[typeddict-item]
+            monitor_result["runs"][0]["status"] = None  # type: ignore[assignment]
+            canonical_rows = experiment_tracking.experiment_run_rows(Path("/workspace"))
+            canonical_status: str = canonical_rows[0]["status"]
+            canonical_rows[0]["status"] = None  # type: ignore[assignment]
+            monitored_row = experiment_tracking.monitor_run_row(Path("/workspace"), canonical_rows[0], canonical_rows)
+            monitored_status: models.JsonValue = monitored_row["status"]
+            monitored_text: str = monitored_row["status"]  # type: ignore[assignment]
+            experiment_tracking.monitor_run_row(Path("/workspace"), monitored_row, [])  # type: ignore[arg-type]
+            run_evidence.status_row(
+                Path("/run"), canonical_rows[0], monitored_row, script_commits_terminal_status=False,
+            )
+            run_evidence.status_row(
+                Path("/run"), monitored_row, canonical_rows[0], script_commits_terminal_status=False,
+            )
+            run_evidence.status_row(
+                Path("/run"), {"pid_path": Path("/pid")},  # type: ignore[dict-item]
+                script_commits_terminal_status=False,
+            )
+            experiment_events = experiment_workspace.read_experiment_events("/workspace")
+            event_value: models.JsonValue = experiment_events[0]["event"]
+            event_text: str = experiment_events[0]["event"]  # type: ignore[assignment]
+            resolved_canonical = experiment_workspace.resolve_run_row(canonical_rows, experiment_events[0])
+            if resolved_canonical is not None:
+                resolved_status: str = resolved_canonical["status"]
+            resolved_observed = experiment_workspace.resolve_run_row([monitored_row], experiment_events[0])
+            if resolved_observed is not None:
+                resolved_observed_text: str = resolved_observed["status"]  # type: ignore[assignment]
+            candidate_metrics = experiment_tracking.candidate_rows(canonical_rows, canonical_rows, "score")
+            ranked_candidates = experiment_tracking.rank_candidates(candidate_metrics, canonical_rows, mode="max")
+            candidate_value: models.JsonValue = ranked_candidates[0]["value"]
+            candidate_score: float = ranked_candidates[0]["value"]  # type: ignore[assignment]
+            experiment_tracking.rank_candidates(
+                candidate_metrics, [{"checkpoint_path": 1}], mode="max",  # type: ignore[dict-item]
+            )
 
             planned: managed_scheduler.PlannedArgv = {"run_id": "run-000", "args": ["--value", "ok"]}
             planned["args"] = [1]  # type: ignore[list-item]
@@ -654,12 +688,15 @@ def test_result_types_reach_callers(tmp_path: Path):
             selected_step["rankings"]  # type: ignore[typeddict-item]
             selected_step["ranked"] = ["run-001"]  # type: ignore[list-item]
             selected_step["legacy_selection"] = "yes"  # type: ignore[typeddict-item]
+            selected_row_status: str = selected_step["rows"][0]["status"]
+            selected_step["rows"][0]["status"] = None  # type: ignore[assignment]
             if "checkpoint_audit_rows" in selected_step:
                 audit_score: str = selected_step["checkpoint_audit_rows"][0]["score"]
                 selected_step["checkpoint_audit_rows"][0]["score"] = 0.5  # type: ignore[assignment]
             report_steps = hparam_selection._selection_report_steps([])
             report_steps[0]["step_id"] = 1  # type: ignore[typeddict-item]
             report_steps[0]["ranked"] = ["run-001"]  # type: ignore[list-item]
+            report_steps[0]["rows"][0]["status"] = 1  # type: ignore[assignment]
             ranking_input: experiment_tracking.HparamSelectionReportStep = {
                 "step_id": "step", "selection": {"metric": "score", "mode": "max", "split": "val"}, "rows": [],
             }

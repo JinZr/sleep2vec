@@ -570,7 +570,7 @@ def register_experiment_step(run_dir: str | Path, spec_path: str | Path, *, remo
 
 
 def _validate_hparam_checkpoints(
-    rows: list[dict[str, Any]],
+    rows: list[dict[str, str]],
     selected_steps: Sequence[tracking.HparamSelectionReportStep],
     *,
     remote: str | None,
@@ -962,7 +962,7 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> trac
 def _registered_plan_steps(
     root: Path,
     experiment: dict[str, Any],
-    rows: list[dict[str, Any]],
+    rows: list[dict[str, str]],
     *,
     remote: str | None,
     require_registered_rows: bool,
@@ -1242,8 +1242,8 @@ def _managed_workspace(
 
 
 def _validate_evidence_rows(
-    managed_rows: list[dict[str, Any]],
-    evidence_rows: list[dict[str, Any]],
+    managed_rows: list[dict[str, str]],
+    evidence_rows: list[dict[str, str]],
     source: str,
     *,
     checkpoint_evidence: bool = False,

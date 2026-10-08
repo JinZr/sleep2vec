@@ -10,7 +10,7 @@ product through the hparam adapter and ``plan_hparam``.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 import csv
 from dataclasses import dataclass
 import hashlib
@@ -47,6 +47,7 @@ from .experiment_workspace import (
     validated_run_key,
 )
 from .manifests import read_json, read_rows, write_rows
+from .models import JsonValue
 
 
 @dataclass(frozen=True)
@@ -78,8 +79,8 @@ class _HparamSelectionInputs:
     out: Path
     selection_report_out: Path
     checkpoint_out: Path
-    canonical_rows: list[dict[str, Any]]
-    canonical_by_key: dict[tuple[str, str] | None, dict[str, Any]]
+    canonical_rows: list[dict[str, str]]
+    canonical_by_key: dict[tuple[str, str] | None, dict[str, str]]
     existing_report_steps: list[tracking.HparamSelectionReportStep]
     step_runs: list[dict[str, Any]]
     evidence_runs_by_key: dict[tuple[str, str] | None, dict[str, Any]]
@@ -112,7 +113,7 @@ def select_hparam_candidates(
 
 def resolve_hparam_candidates(
     run_dir: str | Path,
-    candidate_rows: list[dict[str, Any]],
+    candidate_rows: Sequence[Mapping[str, JsonValue]],
     *,
     top_k: int = 1,
     all_candidates: bool = False,
@@ -233,12 +234,12 @@ def resolve_hparam_candidates(
 
 def _validated_candidate_selectors(
     *,
-    candidate_rows: list[dict[str, Any]],
-    workspace_by_key: dict[tuple[str, str], dict[str, Any]],
+    candidate_rows: Sequence[Mapping[str, JsonValue]],
+    workspace_by_key: Mapping[tuple[str, str], Mapping[str, str]],
     owner_runs_by_key: dict[tuple[str, str], dict[str, Any]],
     step_id: str,
     active_runs: list[str],
-) -> dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]]:
+) -> dict[tuple[str, str], tuple[dict[str, JsonValue], dict[str, Any]]]:
     selectors_by_key = {}
     matched_current_step = False
     for row in candidate_rows:
@@ -305,9 +306,9 @@ def _validated_candidate_selectors(
 
 def _resolve_ranked_candidates(
     *,
-    selectors_by_key: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]],
+    selectors_by_key: dict[tuple[str, str], tuple[dict[str, JsonValue], dict[str, Any]]],
     ranking_by_key: dict[tuple[str, str], dict[str, Any]],
-    workspace_by_key: dict[tuple[str, str], dict[str, Any]],
+    workspace_by_key: Mapping[tuple[str, str], Mapping[str, str]],
     selection_split: str,
     top_k: int,
     all_candidates: bool,
@@ -584,7 +585,7 @@ def _preflight_hparam_selection(
 
 def _validate_existing_hparam_selection(
     inputs: _HparamSelectionInputs,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     checkpoint_evidence_runs = [
         inputs.evidence_runs_by_key.get(managed_run_key(row), row) for row in inputs.canonical_rows
     ]
@@ -605,7 +606,7 @@ def _validate_existing_hparam_selection(
             inputs.evidence_runs_by_key,
             step_id=inputs.step_id,
         )
-    existing_checkpoint_ranked = []
+    existing_checkpoint_ranked: list[dict[str, str]] = []
     if inputs.selection_split == "test":
         existing_checkpoint_ranked = read_rows(inputs.checkpoint_out, require_managed_identity=True)
         validate_managed_run_rows(
@@ -660,7 +661,7 @@ def _validate_existing_hparam_selection(
 def _rank_hparam_selection_candidates(
     inputs: _HparamSelectionInputs,
     preserved: list[dict[str, Any]],
-    existing_checkpoint_ranked: list[dict[str, Any]],
+    existing_checkpoint_ranked: list[dict[str, str]],
 ) -> _HparamSelectionBuild:
     rows = []
     unscored_rows = []
@@ -945,7 +946,7 @@ def _commit_hparam_selection(selection: _HparamSelectionBuild) -> Path:
     return selection.out
 
 
-def _selection_report_steps(rows: list[dict[str, Any]]) -> list[tracking.HparamSelectionReportStep]:
+def _selection_report_steps(rows: list[dict[str, str]]) -> list[tracking.HparamSelectionReportStep]:
     selected_steps: list[tracking.HparamSelectionReportStep] = []
     selected_step_ids = sorted(
         {
@@ -1056,8 +1057,8 @@ def _validate_test_selection_events(
     metric: str,
     mode: str,
     registered: list[tuple[Path, plan_contract.HparamPlan]],
-    canonical_rows: list[dict[str, Any]],
-    canonical_by_key: dict[tuple[str, str] | None, dict[str, Any]],
+    canonical_rows: Sequence[Mapping[str, str]],
+    canonical_by_key: Mapping[tuple[str, str] | None, Mapping[str, str]],
     *,
     skip_signature_root: Path | None = None,
 ) -> None:
@@ -1219,8 +1220,8 @@ def _registered_test_checkpoint_ranking(
 
 
 def _validate_stored_checkpoint_hashes(
-    rows: list[dict[str, Any]],
-    runs_by_key: dict[tuple[str, str] | None, dict[str, Any]],
+    rows: Sequence[Mapping[str, str]],
+    runs_by_key: Mapping[tuple[str, str] | None, Mapping[str, JsonValue]],
     *,
     step_id: str,
     required: bool = False,
@@ -1243,7 +1244,7 @@ def _validate_stored_checkpoint_hashes(
             raise ValueError(f"Frozen checkpoint SHA-256 differs: {row['checkpoint_path']}")
 
 
-def _checkpoint_ranking_signature(rows: list[dict[str, Any]]) -> tuple[tuple[str, ...], ...]:
+def _checkpoint_ranking_signature(rows: Sequence[Mapping[str, JsonValue]]) -> tuple[tuple[str, ...], ...]:
     fields = (
         "step_id",
         "run_id",
@@ -1261,8 +1262,8 @@ def _checkpoint_ranking_signature(rows: list[dict[str, Any]]) -> tuple[tuple[str
 
 
 def _existing_checkpoint_ranking_is_consistent(
-    existing_rows: list[dict[str, Any]],
-    current_rows: list[dict[str, Any]],
+    existing_rows: Sequence[Mapping[str, str]],
+    current_rows: Sequence[Mapping[str, JsonValue]],
 ) -> bool:
     current_by_run = {managed_run_key(row): row for row in current_rows}
     existing_keys = {managed_run_key(row) for row in existing_rows}

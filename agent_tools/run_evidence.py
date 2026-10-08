@@ -112,8 +112,8 @@ class ProcessIdentityError(RuntimeError):
 
 def status_row(
     run_dir: Path,
-    row: dict[str, Any],
-    previous: Mapping[str, Any] | None = None,
+    row: Mapping[str, JsonValue],
+    previous: Mapping[str, JsonValue] | None = None,
     *,
     script_commits_terminal_status: bool,
     health: bool = False,
@@ -177,7 +177,7 @@ def status_row(
             running_state = process_running(row, pid) if pid is not None else False
     except ProcessIdentityError as exc:
         # Corrupt, incomplete, or reused identity is confirmed unsafe evidence, not a transient probe failure.
-        observed_status = previous.get("status") or row.get("status") or "missing_pid"
+        observed_status: JsonValue = previous.get("status") or row.get("status") or "missing_pid"
         pid = _to_int(previous.get("pid") or row.get("pid"))
         running_state = None
         process_identity_error = str(exc)
@@ -242,15 +242,15 @@ def status_row(
 
 def _direct_run_status(
     *,
-    row: dict[str, Any],
-    previous: Mapping[str, Any],
-    observed_status: str,
+    row: Mapping[str, JsonValue],
+    previous: Mapping[str, JsonValue],
+    observed_status: JsonValue,
     pid: int | None,
     running_state: bool | None,
     managed_process_identity: bool,
     dead_unbound_process_identity: bool,
     script_commits_terminal_status: bool,
-) -> str:
+) -> JsonValue:
     running = bool(running_state)
     if observed_status in TERMINAL_STATUSES:
         pass
@@ -305,7 +305,7 @@ def _direct_run_status(
     return observed_status
 
 
-def runtime_artifacts(row: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]] | None:
+def runtime_artifacts(row: Mapping[str, JsonValue]) -> tuple[str, dict[str, Any], list[str]] | None:
     """Observe a runtime manifest and checkpoint inventory on the row's host.
 
     Returns (manifest path or empty string, parsed mapping, checkpoint basenames).
@@ -349,7 +349,7 @@ def runtime_artifacts(row: dict[str, Any]) -> tuple[str, dict[str, Any], list[st
     return str(manifest_path or ""), manifest, artifacts.checkpoint_names(row)
 
 
-def checkpoint_file_sha256(row: dict[str, Any], checkpoint_path: str | Path) -> str:
+def checkpoint_file_sha256(row: Mapping[str, JsonValue], checkpoint_path: str | Path) -> str:
     # Checkpoint bytes belong to the frozen execution target; a manager-local namesake is not SSH evidence.
     if row.get("target") == "ssh" and not row.get("host"):
         raise ValueError("Managed SSH checkpoint evidence requires a host.")
@@ -373,7 +373,7 @@ def checkpoint_file_sha256(row: dict[str, Any], checkpoint_path: str | Path) -> 
 
 def read_pid(
     path: Any,
-    row: dict[str, Any] | None = None,
+    row: Mapping[str, JsonValue] | None = None,
     *,
     expected_script: str | Path | None = None,
 ) -> int | None:
@@ -401,7 +401,7 @@ def read_pid(
 
 def read_process_identity(
     path: Any,
-    row: dict[str, Any] | None = None,
+    row: Mapping[str, JsonValue] | None = None,
     *,
     expected_script: str | Path | None = None,
 ) -> ProcessIdentity | None:
@@ -431,7 +431,7 @@ def read_process_identity(
     return identity
 
 
-def _require_process_script(pid: int, expected_script: str | Path | None, row: dict[str, Any] | None) -> None:
+def _require_process_script(pid: int, expected_script: JsonValue | Path, row: Mapping[str, JsonValue] | None) -> None:
     script_path = Path(str(expected_script or ""))
     if not script_path.is_absolute():
         raise RuntimeError(f"Frozen run script is not absolute: {expected_script}")
@@ -448,7 +448,7 @@ def _require_process_script(pid: int, expected_script: str | Path | None, row: d
         raise ProcessIdentityError(f"PID {pid} process identity does not match frozen script: {script_path}")
 
 
-def _read_pid_text(path: Any, row: dict[str, Any] | None) -> str | None:
+def _read_pid_text(path: Any, row: Mapping[str, JsonValue] | None) -> str | None:
     if not path:
         return None
     if is_remote_row(row):
@@ -512,7 +512,7 @@ def _parse_process_identity(text: str, path: Any) -> ProcessIdentity:
     return identity
 
 
-def process_identity_running(row: dict[str, Any], identity: ProcessIdentity) -> bool | None:
+def process_identity_running(row: Mapping[str, JsonValue], identity: ProcessIdentity) -> bool | None:
     """Probe a managed process group after checking populated canonical identity.
 
     True/False reports the probe's group_running value; None means the command
@@ -549,14 +549,14 @@ def process_identity_running(row: dict[str, Any], identity: ProcessIdentity) -> 
     return payload["group_running"]
 
 
-def _require_matching_process_identity(row: dict[str, Any], identity: ProcessIdentity) -> None:
+def _require_matching_process_identity(row: Mapping[str, JsonValue], identity: ProcessIdentity) -> None:
     for field in PROCESS_IDENTITY_FIELDS:
         expected = row.get(field)
         if expected not in (None, "") and str(expected) != str(identity[field]):
             raise ProcessIdentityError(f"PID file differs from canonical {field}: {identity['pid']}")
 
 
-def process_running(row: dict[str, Any], pid: int | None) -> bool | None:
+def process_running(row: Mapping[str, JsonValue], pid: int | None) -> bool | None:
     if pid is None:
         return False
     if row.get("target") == "ssh" and row.get("host"):
@@ -573,7 +573,7 @@ def process_running(row: dict[str, Any], pid: int | None) -> bool | None:
     return True
 
 
-def stop_process_group(row: dict[str, Any], identity: ProcessIdentity, *, timeout: float = 5.0) -> None:
+def stop_process_group(row: Mapping[str, JsonValue], identity: ProcessIdentity, *, timeout: float = 5.0) -> None:
     _require_matching_process_identity(row, identity)
     pid = identity["pid"]
     pgid = identity["process_group_id"]
@@ -617,7 +617,7 @@ def stop_process_group(row: dict[str, Any], identity: ProcessIdentity, *, timeou
 
 def log_has_failure(
     path: Any,
-    row: dict[str, Any] | None = None,
+    row: Mapping[str, JsonValue] | None = None,
     *,
     require_exit_code: bool = False,
 ) -> bool | None:
@@ -677,7 +677,7 @@ def log_has_failure(
     )
 
 
-def log_tail(path: Any, row: dict[str, Any] | None = None, lines: int = 8) -> str:
+def log_tail(path: Any, row: Mapping[str, JsonValue] | None = None, lines: int = 8) -> str:
     if not path:
         return ""
     if is_remote_row(row):
@@ -714,7 +714,7 @@ def _local_log_tail(path: Path, lines: int) -> str:
             window *= 2
 
 
-def log_tail_and_age(path: Any, row: dict[str, Any], lines: int = 8) -> tuple[str, int | None]:
+def log_tail_and_age(path: Any, row: Mapping[str, JsonValue], lines: int = 8) -> tuple[str, int | None]:
     if not path or not is_remote_row(row):
         return log_tail(path, row, lines), log_age_seconds(path, row)
     result = run_row_command(
@@ -752,8 +752,8 @@ def log_tail_and_age(path: Any, row: dict[str, Any], lines: int = 8) -> tuple[st
 
 def health_fields(
     run_dir: Path,
-    row: dict[str, Any],
-    previous: Mapping[str, Any],
+    row: Mapping[str, JsonValue],
+    previous: Mapping[str, JsonValue],
     pid: int | None,
     running_state: bool | None,
     status: str,
@@ -797,7 +797,7 @@ def health_fields(
     }
 
 
-def read_run_progress(run_dir: Path, row: dict[str, Any]) -> dict[str, Any]:
+def read_run_progress(run_dir: Path, row: Mapping[str, Any]) -> dict[str, Any]:
     progress_dir = row.get("progress_dir") or row.get("workdir") or run_dir
     try:
         return read_progress(progress_dir, remote=row.get("host") if is_remote_row(row) else None)
@@ -805,7 +805,7 @@ def read_run_progress(run_dir: Path, row: dict[str, Any]) -> dict[str, Any]:
         return {"status": "unknown", "message": str(exc)}
 
 
-def proc_io(row: dict[str, Any], pid: int | None) -> dict[str, int]:
+def proc_io(row: Mapping[str, JsonValue], pid: int | None) -> dict[str, int]:
     if pid is None:
         return {}
     result = run_row_command(row, f"cat /proc/{int(pid)}/io")
@@ -823,7 +823,7 @@ def proc_io(row: dict[str, Any], pid: int | None) -> dict[str, int]:
     return counts
 
 
-def gpu_summary(row: dict[str, Any], pid: int | None) -> str | None:
+def gpu_summary(row: Mapping[str, JsonValue], pid: int | None) -> str | None:
     if pid is None:
         return ""
     gpu_probe_required = bool(str(row.get("gpus") or "").strip())
@@ -869,7 +869,7 @@ def gpu_summary(row: dict[str, Any], pid: int | None) -> str | None:
     return summary
 
 
-def log_age_seconds(path: Any, row: dict[str, Any]) -> int | None:
+def log_age_seconds(path: Any, row: Mapping[str, JsonValue]) -> int | None:
     if not path:
         return None
     if is_remote_row(row):
@@ -953,7 +953,7 @@ def _to_int(value: Any) -> int | None:
         return None
 
 
-def progress_is_fresh(progress: dict[str, Any], previous: Mapping[str, Any]) -> bool:
+def progress_is_fresh(progress: dict[str, Any], previous: Mapping[str, JsonValue]) -> bool:
     if progress.get("status") != "running":
         return False
     processed = _to_int(progress.get("processed"))
@@ -975,10 +975,10 @@ def progress_age_seconds(progress: dict[str, Any]) -> int | None:
     return max(int(time.time() - calendar.timegm(parsed)), 0)
 
 
-def run_row_command(row: dict[str, Any], command: str) -> subprocess.CompletedProcess:
+def run_row_command(row: Mapping[str, JsonValue], command: str) -> subprocess.CompletedProcess:
     host = str(row["host"]) if is_remote_row(row) else None
     return transport.run_shell(host, command, timeout=SSH_TIMEOUT_SECONDS, swallow_timeout=True)
 
 
-def is_remote_row(row: dict[str, Any] | None) -> TypeGuard[dict[str, Any]]:
+def is_remote_row(row: Mapping[str, JsonValue] | None) -> TypeGuard[Mapping[str, Any]]:
     return bool(row and row.get("target") == "ssh" and row.get("host"))

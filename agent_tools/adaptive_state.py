@@ -11,7 +11,7 @@ digest, proposal, registration and launch steps on top of this state.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 import csv
 import io
 import json
@@ -72,14 +72,14 @@ EXECUTION_ROUTE_FIELDS = (
 _SLURM_ACCEPTED_STATUSES = {"queued", "running", "stopping", "completed", "finished", "failed", "stopped"}
 
 
-def _is_accepted_start(row: dict[str, Any]) -> bool:
+def _is_accepted_start(row: Mapping[str, JsonValue]) -> bool:
     if scheduler_type(row) == "direct":
         return row.get("status") in {"launched", "running"}
     job_id = str(row.get("scheduler_job_id") or "")
     return row.get("status") in _SLURM_ACCEPTED_STATUSES and job_id.isdigit() and int(job_id) > 0
 
 
-def accepted_start_keys(rows: list[dict[str, Any]]) -> set[tuple[str, str]]:
+def accepted_start_keys(rows: Sequence[Mapping[str, JsonValue]]) -> set[tuple[str, str]]:
     return {validated_run_key(row) for row in rows if _is_accepted_start(row)}
 
 
@@ -158,7 +158,7 @@ def validate_workflow_payload(
     workflow: _WorkflowPayload,
     *,
     require_adaptive_commit: bool = True,
-    registry_rows: list[dict[str, Any]] | None = None,
+    registry_rows: Sequence[Mapping[str, str]] | None = None,
 ) -> _WorkflowPayload:
     path = root / "adaptive" / "workflow.json"
     if not isinstance(workflow, dict):
@@ -227,7 +227,7 @@ def validate_round_registry(
     root: Path,
     round_index: int,
     plan: Mapping[str, Any],
-    registry_rows: list[dict[str, Any]],
+    registry_rows: Sequence[Mapping[str, str]],
 ) -> None:
     round_dir = round_path(root, round_index)
     registry_by_key = {validated_run_key(row): row for row in registry_rows}
@@ -270,7 +270,7 @@ def _parse_registry(text: str | None, path: Path) -> list[dict[str, str]]:
     return rows
 
 
-def _registry_text(rows: list[dict[str, Any]]) -> str:
+def _registry_text(rows: Sequence[Mapping[str, JsonValue]]) -> str:
     fieldnames = sorted({key for row in rows for key in row})
     buffer = io.StringIO(newline="")
     writer = csv.DictWriter(buffer, fieldnames=fieldnames, delimiter="\t")
@@ -344,7 +344,7 @@ def validate_event_history(
     return bool(exact)
 
 
-def agent_proposal_accepted_event(events: list[dict[str, Any]], round_index: int) -> dict[str, Any]:
+def agent_proposal_accepted_event(events: Sequence[Mapping[str, JsonValue]], round_index: int) -> dict[str, Any]:
     related = [
         event
         for event in events
@@ -359,7 +359,7 @@ def agent_proposal_accepted_event(events: list[dict[str, Any]], round_index: int
 
 
 def _round_event_index(
-    events: list[dict[str, Any]],
+    events: Sequence[Mapping[str, JsonValue]],
     event_type: str,
     payload: Mapping[str, Any],
 ) -> int | None:
@@ -377,7 +377,7 @@ def _round_event_index(
 
 
 def validate_agent_proposal_execute_events(
-    events: list[dict[str, Any]],
+    events: Sequence[Mapping[str, JsonValue]],
     accepted_event: Mapping[str, Any],
     round_dir: Path,
 ) -> None:
@@ -399,7 +399,7 @@ def validate_agent_proposal_execute_events(
 
 
 def _is_related_event(
-    event: dict[str, Any],
+    event: Mapping[str, JsonValue],
     event_type: str,
     payload: Mapping[str, Any],
     identity_field: str,
@@ -573,7 +573,7 @@ def append_registry_rows(root: Path, round_index: int, round_dir: Path) -> None:
 
 def reconcile_interrupted_launch(
     workspace: Path, plan_dir: Path, plan_keys: set[tuple[str, str]]
-) -> tuple[list[dict[str, Any]], set[tuple[str, str]], set[tuple[str, str]]]:
+) -> tuple[list[dict[str, str]], set[tuple[str, str]], set[tuple[str, str]]]:
     # Slurm observation may reach a remote scheduler and merge_run_manifest takes the run lock, so only the reads
     # hold it; the merge re-applies lifecycle rules to the rows it reads under the lock.
     with managed_scheduler.managed_run_lock(workspace):
@@ -627,7 +627,7 @@ def reconcile_interrupted_launch(
 
 def finish_interrupted_launch(
     round_dir: Path, workspace: Path, started_keys: set[tuple[str, str]]
-) -> list[dict[str, Any]]:
+) -> list[dict[str, str]]:
     hparam_runtime.reconcile_hparam_launch_artifacts(round_dir, started_keys)
     with managed_scheduler.managed_run_lock(workspace):
         return read_run_manifest(workspace)
@@ -636,7 +636,7 @@ def finish_interrupted_launch(
 def uncommitted_launch_attempts(
     root: Path,
     workspace: Path,
-) -> tuple[list[tuple[int, str]], list[tuple[int, dict[str, Any]]]]:
+) -> tuple[list[tuple[int, str]], list[tuple[int, dict[str, str]]]]:
     committed_rounds = committed_round_indexes(root)
     registry = read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True)
     # Process-identity reads and plan_registration_rows_state below must not hold the run lock.
@@ -764,7 +764,9 @@ def committed_round_indexes(root: Path) -> set[int]:
     workspace = experiment_root(recipe)
     if workspace is None:
         return committed
-    for event in read_experiment_events(workspace):
+    # The launch_round event's round is consumed numerically below.
+    events: list[dict[str, Any]] = read_experiment_events(workspace)
+    for event in events:
         if event.get("event_type") != "launch_round":
             continue
         round_index = int(event["round"])

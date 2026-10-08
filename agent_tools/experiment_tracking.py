@@ -51,6 +51,7 @@ from .experiment_workspace import (
     validated_run_key,
 )
 from .manifests import utc_now
+from .models import JsonValue
 
 
 class CheckpointMetric(TypedDict):
@@ -70,7 +71,7 @@ class HparamSelectionReportSnapshot(TypedDict):
 class _HparamSelectionStepCore(TypedDict):
     step_id: str
     selection: artifacts.RegisteredPlanSelection
-    rows: list[dict[str, Any]]
+    rows: list[dict[str, str]]
 
 
 class HparamSelectionReportStep(_HparamSelectionStepCore, total=False):
@@ -193,7 +194,7 @@ class ExperimentStatusRun(TypedDict):
 
 class ExperimentMonitorResult(TypedDict):
     run_dir: str
-    runs: list[dict[str, Any]]
+    runs: list[dict[str, str]]
     report: str
 
 
@@ -294,10 +295,10 @@ def update_experiment_wandb(root: Path, *, entity: str, project: str, group: str
 
 
 def wandb_run_observations(
-    run_rows: list[dict[str, Any]], wandb_rows: Sequence[Mapping[str, Any]]
-) -> list[dict[str, Any]]:
+    run_rows: Sequence[Mapping[str, str]], wandb_rows: Sequence[Mapping[str, Any]]
+) -> list[dict[str, JsonValue]]:
     validate_managed_run_rows(run_rows, source="run_manifest.tsv", cardinality="one_per_run")
-    observations: dict[tuple[str, str], dict[str, Any]] = {}
+    observations: dict[tuple[str, str], dict[str, JsonValue]] = {}
     wandb_run_ids: dict[tuple[str, str], str] = {}
     for row in wandb_rows:
         if "trial_id" in row:
@@ -329,14 +330,14 @@ def wandb_run_observations(
     return rows
 
 
-def experiment_run_rows(root: Path, *, remote: str | None = None) -> list[dict[str, Any]]:
+def experiment_run_rows(root: Path, *, remote: str | None = None) -> list[dict[str, str]]:
     # SSH reads use the remote workspace, whose run lock this process cannot take.
     with nullcontext() if remote else managed_scheduler.managed_run_lock(root):
         return read_run_manifest(root, remote=remote)
 
 
 def managed_metric_rows(
-    run_rows: list[dict[str, Any]], metric_rows: Sequence[Mapping[str, Any]]
+    run_rows: Sequence[Mapping[str, str]], metric_rows: Sequence[Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
     validate_managed_run_rows(run_rows, source="run_manifest.tsv", cardinality="one_per_run")
     rows = []
@@ -465,23 +466,24 @@ def best_metric_for_checkpoint(row: Mapping[str, Any], metrics: list[dict[str, s
 
 def monitor_run_row(
     root: Path,
-    row: dict[str, Any],
-    previous_rows: list[dict[str, str]],
+    row: Mapping[str, str],
+    previous_rows: Sequence[Mapping[str, str]],
     *,
     remote: str | None = None,
     monitor_context: managed_scheduler.SlurmMonitorContext | None = None,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     previous = resolve_run_row(previous_rows, row) or {}
     observation_row = dict(row)
-    transport_override = bool(remote and not observation_row.get("host"))
-    if transport_override:
+    transport_override = False
+    if remote and not observation_row.get("host"):
+        transport_override = True
         observation_row["target"] = "ssh"
         observation_row["host"] = remote
     scheduler_row = previous if previous.get("scheduler_type") not in (None, "") else row
     if scheduler_type(scheduler_row) == "slurm":
         has_execution_identity = any(source.get("target") not in (None, "") for source in (row, previous))
         if has_execution_identity:
-            execution = {"target": observation_row.get("target") or "local"}
+            execution: dict[str, JsonValue] = {"target": observation_row.get("target") or "local"}
             if execution["target"] == "ssh":
                 execution["host"] = observation_row.get("host")
             if scheduler_direct_controller(scheduler_row):
@@ -494,7 +496,7 @@ def monitor_run_row(
                 monitor_context=None if transport_override else monitor_context,
             )
         else:
-            status = observation_row
+            status = {**observation_row}
     else:
         has_managed_script = any(source.get("script") not in (None, "") for source in (row, previous))
         has_process_identity = any(source.get("pid_path") not in (None, "") for source in (row, previous))
@@ -571,8 +573,8 @@ def monitor_run_row(
 
 
 def candidate_rows(
-    run_rows: list[dict[str, Any]], metric_rows: list[dict[str, str]], metric: str
-) -> list[dict[str, Any]]:
+    run_rows: Sequence[Mapping[str, str]], metric_rows: Sequence[Mapping[str, str]], metric: str
+) -> list[dict[str, JsonValue]]:
     validate_managed_run_rows(run_rows, source="run_manifest.tsv", cardinality="one_per_run")
     validate_managed_run_rows(metric_rows, source="metrics_manifest.tsv", cardinality="many_per_run")
     runs_by_key = {managed_run_key(run): run for run in run_rows}
@@ -586,7 +588,7 @@ def candidate_rows(
             )
         validate_frozen_run_update(run_row, metric_row)
         owned_metrics.append((metric_row, run_row))
-    rows = []
+    rows: list[dict[str, JsonValue]] = []
     for metric_row, run_row in owned_metrics:
         if metric_row.get("metric") != metric:
             continue
@@ -614,8 +616,8 @@ def candidate_rows(
 
 
 def rank_candidates(
-    rows: list[dict[str, Any]], checkpoints: list[dict[str, str]], *, mode: str
-) -> list[dict[str, Any]]:
+    rows: list[dict[str, JsonValue]], checkpoints: Sequence[Mapping[str, str]], *, mode: str
+) -> list[dict[str, JsonValue]]:
     validate_managed_run_rows(rows, source="candidate metrics", cardinality="many_per_run")
     validate_managed_run_rows(checkpoints, source="checkpoint_manifest.tsv", cardinality="many_per_run")
     for checkpoint in checkpoints:
@@ -631,7 +633,7 @@ def rank_candidates(
     return ranked
 
 
-def write_history_csv(path: Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> None:
+def write_history_csv(path: Path, rows: Sequence[Mapping[str, Any]], *, remote: str | None = None) -> None:
     if not rows:
         exp_io.write_rows_at(path, [], remote=remote)
         return
@@ -696,10 +698,10 @@ def monitor_report(rows: Sequence[Mapping[str, Any]]) -> str:
 def _experiment_lifecycle_decision(
     *,
     completed: bool,
-    rows: list[dict[str, Any]],
-    sorted_rows: list[dict[str, Any]],
+    rows: Sequence[Mapping[str, str]],
+    sorted_rows: Sequence[Mapping[str, str]],
     plan_blockers: list[ExperimentStatusBlocker],
-    missing_stop_reason_rows: list[dict[str, Any]],
+    missing_stop_reason_rows: Sequence[Mapping[str, str]],
     hparam: HparamSelectionLifecycle,
     candidates: list[ExperimentStatusAction],
     blockers: list[ExperimentStatusBlocker],
@@ -861,7 +863,7 @@ def _experiment_lifecycle_decision(
 def experiment_status_snapshot(
     experiment: dict[str, Any],
     registered_steps: list[artifacts.RegisteredPlanStep],
-    rows: list[dict[str, Any]],
+    rows: list[dict[str, str]],
     *,
     root: Path,
     remote: str | None = None,
@@ -1001,7 +1003,7 @@ def experiment_status_snapshot(
 
 def hparam_selection_lifecycle(
     registered_steps: list[artifacts.RegisteredPlanStep],
-    rows: list[dict[str, Any]],
+    rows: list[dict[str, str]],
     *,
     root: Path,
     report: HparamSelectionReportSnapshot | None = None,
@@ -1024,7 +1026,7 @@ def hparam_selection_lifecycle(
     if misowned_selection:
         rendered = ", ".join(f"{step_id} / {run_id}" for step_id, run_id in misowned_selection)
         raise ValueError(f"Canonical hparam selection metadata is not owned by a registered hparam plan: {rendered}")
-    rows_by_step: dict[str, list[dict[str, Any]]] = {}
+    rows_by_step: dict[str, list[dict[str, str]]] = {}
     for row in rows:
         rows_by_step.setdefault(str(row["step_id"]), []).append(row)
     hparam_steps: list[HparamSelectionStep] = []
@@ -1249,7 +1251,7 @@ def _validate_test_checkpoint_audits(
         ),
     )
     globally_ranked = artifacts.assign_ranks(candidates, key="score", reverse=reverse)
-    best_by_run: dict[tuple[str, str] | None, dict[str, Any]] = {}
+    best_by_run: dict[tuple[str, str] | None, dict[str, JsonValue]] = {}
     for row in globally_ranked:
         candidate = {**row, "checkpoint_rank": row["rank"]}
         best_by_run.setdefault(managed_run_key(row), candidate)
@@ -1278,7 +1280,7 @@ def _validate_test_checkpoint_audits(
     step["checkpoint_audit_rows"] = all_audit_rows
 
 
-def _hparam_ranking_matches(selected_steps: Sequence[HparamSelectionReportStep], ranking_text: Any) -> bool:
+def _hparam_ranking_matches(selected_steps: Sequence[HparamSelectionReportStep], ranking_text: str | None) -> bool:
     ranked_rows = [row for step in selected_steps for row in step["ranked"]]
     expected_rows = hparam_ranking_projection(ranked_rows)
     if not expected_rows:
@@ -1372,7 +1374,7 @@ def validated_hparam_ranking(step: HparamSelectionReportStep) -> list[dict[str, 
     evidence_fields = ("metric", "selection_mode", "selection_split", "rank", "score", "checkpoint_path")
     if not any(any(row.get(field) not in (None, "") for field in evidence_fields) for row in rows):
         return None
-    ranked = []
+    ranked: list[dict[str, Any]] = []
     for row in rows:
         for field, expected in (
             ("metric", selection["metric"]),
@@ -1570,7 +1572,7 @@ def format_experiment_status(snapshot: ExperimentStatusSnapshot) -> str:
 
 def _plan_advice(
     registered_steps: list[artifacts.RegisteredPlanStep],
-    rows: list[dict[str, Any]],
+    rows: Sequence[Mapping[str, str]],
     *,
     remote: str | None = None,
 ) -> tuple[list[ExperimentStatusBlocker], list[ExperimentStatusAction]]:
@@ -1661,7 +1663,7 @@ def _plan_advice(
     return blockers, candidates
 
 
-def _status_run_payload(row: dict[str, Any]) -> ExperimentStatusRun:
+def _status_run_payload(row: Mapping[str, str]) -> ExperimentStatusRun:
     return {
         "step_id": str(row["step_id"]),
         "run_id": str(row["run_id"]),
@@ -1699,11 +1701,11 @@ def _status_run_payload(row: dict[str, Any]) -> ExperimentStatusRun:
     }
 
 
-def _status_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+def _status_counts(rows: Sequence[Mapping[str, str]]) -> dict[str, int]:
     return dict(sorted(Counter(str(row["status"]) for row in rows).items()))
 
 
-def _status_reason(rows: list[dict[str, Any]]) -> str:
+def _status_reason(rows: Sequence[Mapping[str, str]]) -> str:
     reasons = sorted({str(row["scheduler_reason"]) for row in rows if row.get("scheduler_reason") not in (None, "")})
     return "; ".join(reasons) if reasons else "Canonical execution identity is uncertain and must be refreshed."
 
@@ -1713,7 +1715,7 @@ def _status_blocker(
     message: str,
     *,
     step_id: str | None = None,
-    rows: list[dict[str, Any]] | None = None,
+    rows: Sequence[Mapping[str, str]] | None = None,
     blocked_actions: list[str] | None = None,
 ) -> ExperimentStatusBlocker:
     rows = rows or []
@@ -1774,7 +1776,7 @@ def write_wandb_report(root: Path, rows: Sequence[Mapping[str, Any]], *, remote:
 
 
 def write_rank_report(
-    root: Path, metric: str, mode: str, rows: list[dict[str, Any]], *, remote: str | None = None
+    root: Path, metric: str, mode: str, rows: Sequence[Mapping[str, JsonValue]], *, remote: str | None = None
 ) -> None:
     lines = ["# Candidate Ranking", "", f"Metric: `{metric}` ({mode})", ""]
     if rows:
@@ -1792,7 +1794,7 @@ def write_rank_report(
     exp_io.write_text_at(root / "reports" / "experiment_ranking.md", "\n".join(lines) + "\n", remote=remote)
 
 
-def _checkpoint_for_metric_row(row: dict[str, Any], checkpoints: list[dict[str, str]]) -> str:
+def _checkpoint_for_metric_row(row: Mapping[str, JsonValue], checkpoints: Sequence[Mapping[str, str]]) -> str:
     raw_epoch = row.get("epoch")
     key = managed_run_key(row)
     same_run = [item for item in checkpoints if managed_run_key(item) == key]
@@ -1815,9 +1817,9 @@ def _checkpoint_for_metric_row(row: dict[str, Any], checkpoints: list[dict[str, 
     return last[0].get("checkpoint_path", "") if last else ""
 
 
-def _best_rows(rows: list[dict[str, Any]], *, mode: str) -> list[dict[str, Any]]:
+def _best_rows(rows: list[dict[str, JsonValue]], *, mode: str) -> list[dict[str, JsonValue]]:
     reverse = mode == "max"
-    best: dict[tuple[str, ...], dict[str, Any]] = {}
+    best: dict[tuple[str, ...], dict[str, JsonValue]] = {}
     for row in rows:
         key = managed_run_key(row)
         if key is None:

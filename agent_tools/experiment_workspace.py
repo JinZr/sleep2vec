@@ -22,12 +22,15 @@ import os
 from pathlib import Path
 import re
 import threading
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, TypedDict, TypeVar, cast
 
 import yaml
 
 from . import experiment_io as exp_io, research_log, transport
 from .models import REPO_ROOT, JsonValue, is_full_git_object_id, json_ready
+
+# resolve_run_row returns the caller's own row, so its precision follows the caller's row type.
+_Row = TypeVar("_Row", bound=Mapping[str, Any])
 
 
 class RunIdentity(TypedDict):
@@ -833,7 +836,7 @@ def append_event(root: str | Path, event_type: str, payload: dict[str, Any] | Ad
     exp_io.append_managed_text_at(path, json.dumps(row, sort_keys=True) + "\n", managed_root=root)
 
 
-def read_experiment_events(root: str | Path) -> list[dict[str, Any]]:
+def read_experiment_events(root: str | Path) -> list[dict[str, JsonValue]]:
     root = Path(root)
     path = root / "events.jsonl"
     lock_path = path.with_name(f".{path.name}.cas.lock")
@@ -844,7 +847,7 @@ def read_experiment_events(root: str | Path) -> list[dict[str, Any]]:
     # managed read cannot observe a replacement between its stat and open.
     with exp_io.blocking_file_lock(lock_path):
         snapshot = exp_io.read_managed_files_at(root, [path])[str(path)]
-    events = []
+    events: list[dict[str, JsonValue]] = []
     # This managed read uses strict UTF-8 mode, so text cannot be None.
     text = snapshot["text"]
     for line_number, line in enumerate(text.splitlines(), start=1):
@@ -858,7 +861,7 @@ def read_experiment_events(root: str | Path) -> list[dict[str, Any]]:
     return events
 
 
-def event_matches(event: dict[str, Any], event_type: str, payload: Mapping[str, Any]) -> bool:
+def event_matches(event: Mapping[str, Any], event_type: str, payload: Mapping[str, Any]) -> bool:
     return event.get("event_type") == event_type and all(
         field in event and type(event[field]) is type(value) and event[field] == value
         for field, value in payload.items()
@@ -892,7 +895,7 @@ def validated_run_key(row: Mapping[str, Any]) -> tuple[str, str]:
     return key
 
 
-def stopped_runs_without_reason(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def stopped_runs_without_reason(rows: Sequence[Mapping[str, str]]) -> list[Mapping[str, str]]:
     return [row for row in rows if row.get("status") == "stopped" and not str(row.get("stop_reason") or "").strip()]
 
 
@@ -938,7 +941,7 @@ def validate_managed_run_rows(rows: Sequence[Mapping[str, Any]], *, source: str,
         seen.add(key)
 
 
-def resolve_run_row(rows: list[dict[str, Any]], evidence: Mapping[str, Any]) -> dict[str, Any] | None:
+def resolve_run_row(rows: Sequence[_Row], evidence: Mapping[str, Any]) -> _Row | None:
     key = managed_run_key(evidence)
     if key is not None:
         matches = [row for row in rows if managed_run_key(row) == key]
@@ -966,7 +969,7 @@ def resolve_run_row(rows: list[dict[str, Any]], evidence: Mapping[str, Any]) -> 
     return None
 
 
-def resolve_external_run_row(rows: list[dict[str, Any]], evidence: Mapping[str, Any]) -> dict[str, Any] | None:
+def resolve_external_run_row(rows: Sequence[_Row], evidence: Mapping[str, Any]) -> _Row | None:
     if evidence.get("experiment_id") in (None, ""):
         return resolve_run_row(rows, {"version": evidence.get("version")})
     matched = resolve_run_row(rows, evidence)
@@ -1219,7 +1222,7 @@ def has_managed_launch_evidence(row: Mapping[str, Any]) -> bool:
     return any(row.get(field) not in (None, "") for field in fields)
 
 
-def validate_scheduler_run_identity(row: dict[str, Any]) -> None:
+def validate_scheduler_run_identity(row: Mapping[str, JsonValue]) -> None:
     backend = scheduler_type(row)
     scheduler_direct_controller(row)
     populated_process = {field for field in PROCESS_IDENTITY_FIELDS if row.get(field) not in (None, "")}

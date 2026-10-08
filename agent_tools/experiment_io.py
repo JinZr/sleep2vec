@@ -13,7 +13,7 @@ evidence.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 import csv
 import ctypes
@@ -565,7 +565,7 @@ def read_text_at(path: str | Path, *, remote: str | None = None) -> str:
     raise RuntimeError(f"SSH read returned no valid result for {path} on {remote}.")
 
 
-def write_rows_at(path: str | Path, rows: list[dict[str, Any]], *, remote: str | None = None) -> None:
+def write_rows_at(path: str | Path, rows: Sequence[Mapping[str, Any]], *, remote: str | None = None) -> None:
     if not remote:
         write_rows(path, rows)
         return
