@@ -1,7 +1,7 @@
 # Agent Contracts
 
 Use the question router before reading a whole contract. The engineering
-[index](../codex_index/README.md) locates code owners; these contracts define
+[index](../code_index/README.md) locates code owners; these contracts define
 operation and evidence boundaries.
 
 ## Quickstart: the first five commands

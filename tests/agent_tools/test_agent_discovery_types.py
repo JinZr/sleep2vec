@@ -59,8 +59,8 @@ def test_discovery_mypy_consumer_contract(tmp_path):
             assert_type(summary["git"]["branch"], str)
             assert_type(summary["git"]["commit"], str)
             assert_type(summary["git"]["dirty"], bool)
-            assert_type(summary["codex_index"]["path"], str)
-            assert_type(summary["codex_index"]["exists"], bool)
+            assert_type(summary["code_index"]["path"], str)
+            assert_type(summary["code_index"]["exists"], bool)
             assert_type(summary["important_paths"]["skills_manifest"], str)
             assert_type(summary["python"]["version"], str)
             entries = list_skills()
@@ -93,7 +93,7 @@ def test_discovery_mypy_consumer_contract(tmp_path):
     with probe.open("a") as stream:
         stream.write(
             '\nsummary["git"]["available"] = "yes"\n'
-            'summary["codex_index"]["missing"]\n'
+            'summary["code_index"]["missing"]\n'
             'summary["important_paths"]["tests"] = 1\n'
             'summary["python"]["version"] = 1\n'
             'entries[0]["unknown"]\n'

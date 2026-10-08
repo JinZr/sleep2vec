@@ -81,4 +81,4 @@ Missing `path`, `split`, or `duration` columns; missing mask columns; missing co
 
 ## Relevant owners and index pages
 Owners: `preset-pipeline`, `data-contract-guardian`, `agent-tooling-maintainer`.
-Index: [preprocessing workflow](../../doc/codex_index/WORKFLOWS.md#preprocessing-and-presets).
+Index: [preprocessing workflow](../../doc/code_index/WORKFLOWS.md#preprocessing-and-presets).

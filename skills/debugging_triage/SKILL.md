@@ -61,4 +61,4 @@ do not assume every consultation failure is a subprocess timeout.
 
 ## Relevant owners and index pages
 
-Owner: `agent-tooling-maintainer`. Index: shared [Codex navigation](../../doc/codex_index/README.md).
+Owner: `agent-tooling-maintainer`. Index: shared [code index](../../doc/code_index/README.md).

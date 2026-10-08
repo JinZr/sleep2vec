@@ -29,4 +29,4 @@ Planning strictly loads the selected pretrain or finetune config, validates the 
 Unsupported config-window, preset, Kaldi, source-override, remote-runtime, or alternate-workdir fields; empty split; duplicate headers or paths; non-30-second duration; missing NPZ; token-cap overflow; locked test split; or a reused output directory.
 
 ## Relevant owners and index pages
-Owners: `agent-tooling-maintainer`, `runtime-orchestrator`, `variant-maintainer`, `regression-guard`. Index: `doc/codex_index/WORKFLOWS.md` and `doc/codex_index/REUSE_GUIDE.md`.
+Owners: `agent-tooling-maintainer`, `runtime-orchestrator`, `variant-maintainer`, `regression-guard`. Index: `doc/code_index/WORKFLOWS.md` and `doc/code_index/REUSE_GUIDE.md`.

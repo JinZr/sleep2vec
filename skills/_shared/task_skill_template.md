@@ -28,4 +28,4 @@ List fast checks, targeted tests, and optional smoke tests.
 List failure symptoms and the first file/command to inspect.
 
 ## Relevant owners and index pages
-List AGENTS subagents and Codex index docs.
+List AGENTS subagents and code index docs.

@@ -42,7 +42,7 @@ class RepoPythonSummary(TypedDict):
 class RepoSummary(TypedDict):
     repo_root: str
     git: RepoGitSummary
-    codex_index: RepoIndexSummary
+    code_index: RepoIndexSummary
     important_paths: RepoImportantPaths
     python: RepoPythonSummary
 
@@ -74,7 +74,7 @@ def repo_summary() -> RepoSummary:
         ok, status = _git(["status", "--short"])
         dirty = bool(status) if ok else False
 
-    index_path = REPO_ROOT / "doc" / "codex_index"
+    index_path = REPO_ROOT / "doc" / "code_index"
     return {
         "repo_root": str(REPO_ROOT),
         "git": {
@@ -83,7 +83,7 @@ def repo_summary() -> RepoSummary:
             "commit": commit,
             "dirty": dirty,
         },
-        "codex_index": {
+        "code_index": {
             "path": str(index_path.relative_to(REPO_ROOT)),
             "exists": index_path.exists(),
         },

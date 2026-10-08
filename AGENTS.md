@@ -94,8 +94,8 @@ bash utils/style_check.sh
 - Write terminal manifests only after the run has completed successfully. Interrupted or failed directories should be considered invalid rather than interpreted through sidecars, shards, or partial tables.
 - Keep summary commands read-only unless their contract explicitly says they repair or rebuild data. A `summarize`-style command should inspect committed outputs, not infer completion from partial intermediate files.
 
-## Codex Index Usage Policy
-- `doc/codex_index/` is a shared navigation layer, not a branch-specific or exhaustive source of truth. Source code, tests, `AGENTS.md`, and dedicated contract documents remain authoritative.
+## Code Index Usage Policy
+- `doc/code_index/` is a shared navigation layer, not a branch-specific or exhaustive source of truth. Source code, tests, `AGENTS.md`, and dedicated contract documents remain authoritative.
 - Small localized fixes and routine updates may inspect source and tests directly without consulting the index.
 - Consult the shared index when a change crosses modules, adds a reusable implementation, or has unclear ownership. Start with `README.md`, then use `MODULE_MAP.md`, `REUSE_GUIDE.md`, or `WORKFLOWS.md` as needed.
 - Before adding a function, method, helper, wrapper, or utility, search the source and `REUSE_GUIDE.md` for an existing implementation with the same responsibility. Prefer minimally extending the canonical owner.
