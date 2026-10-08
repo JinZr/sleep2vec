@@ -291,7 +291,10 @@ def _executed_imports(node: ast.AST, local: bool = False) -> Iterator[tuple[ast.
     for child in ast.iter_child_nodes(node):
         if isinstance(child, (ast.Import, ast.ImportFrom)):
             yield child, local
-        elif not (isinstance(child, ast.If) and ast.unparse(child.test).endswith("TYPE_CHECKING")):
+        elif isinstance(child, ast.If) and ast.unparse(child.test) in ("TYPE_CHECKING", "typing.TYPE_CHECKING"):
+            # Only the guarded body never runs; an ``else:`` branch does.
+            yield from _executed_imports(ast.Module(body=child.orelse, type_ignores=[]), local)
+        else:
             yield from _executed_imports(child, local or isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)))
 
 
@@ -371,17 +374,22 @@ def test_lazy_import_ledger_is_exact():
 def test_import_graph_guard_catches_synthetic_cycle():
     # ``a`` imports ``pkg.b`` at top level, which first runs ``pkg/__init__``; ``pkg.b``
     # imports ``a`` back only inside a function: a lazy 2-cycle. The TYPE_CHECKING
-    # import of ``c`` never runs, and ``pkg.b`` importing its sibling ``pkg.d`` adds
-    # no edge to the ``pkg`` __init__ that is already running.
+    # import of ``c`` never runs but the ``else:`` import of ``e`` does, and ``pkg.b``
+    # importing its sibling ``pkg.d`` adds no edge to the ``pkg`` __init__ that is
+    # already running.
     edges, lazy = _import_edges(
         {
-            "a": "from typing import TYPE_CHECKING\nfrom .pkg.b import f\nif TYPE_CHECKING:\n    from .c import C\n",
+            "a": (
+                "from typing import TYPE_CHECKING\nfrom .pkg.b import f\n"
+                "if TYPE_CHECKING:\n    from .c import C\nelse:\n    from .e import E\n"
+            ),
             "c": "",
+            "e": "",
             "pkg.__init__": "",
             "pkg.b": "from .d import g\n\n\ndef f():\n    from ..a import h\n",
             "pkg.d": "",
         }
     )
-    assert edges == {("a", "pkg"), ("a", "pkg.b"), ("pkg.b", "a"), ("pkg.b", "pkg.d")}
+    assert edges == {("a", "e"), ("a", "pkg"), ("a", "pkg.b"), ("pkg.b", "a"), ("pkg.b", "pkg.d")}
     assert lazy == {("pkg.b", "a")}
     assert _cycle_members(edges) == {"a", "pkg.b"}
