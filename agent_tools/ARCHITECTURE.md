@@ -18,6 +18,20 @@ L0-level domain leaf.
 | **L2 kernel** | configs, decision_rules, decisions, plan_context, plans, experiment_pipeline, experiment_pipeline_attempts | Orchestration over lower-layer owners and adapter declarations; authored task recipes remain governed by schema_map. |
 | **`domain/`** | sidecar_summaries, finetune_summary, finetune_hparam_profile, sex_age_summary, presets, index_csv | sleep2vec-specific summaries/validators. L0-level leaves that must not be aggregated in `domain/__init__` (would trigger a partial-import cycle via configs). |
 
+### Import cycle
+
+The one-way direction above is the target, not yet the state. Counting
+function-local (deferred) imports, the import graph holds one 27-module cycle
+spanning L0, L1, L2 and `domain/`. Only four of its members
+(`managed_scheduler → run_evidence → run_artifacts → plan_hparam`) also cycle at
+module top level; deferred imports hold the rest together.
+`test_agent_layering.py` freezes both sides of that deviation in `layering.py`:
+`IMPORT_CYCLE_LEDGER` lists the modules inside the cycle and
+`LAZY_IMPORT_LEDGER` the deferred import edges. Each must equal the live graph
+exactly, and both may only shrink: delete entries in the commit that removes a
+deferred import or takes a module out of the cycle, and fix a new import instead
+of growing either ledger.
+
 ## Module ownership
 
 Mirrors the three frozensets in `layering.py`.

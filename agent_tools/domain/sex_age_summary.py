@@ -16,6 +16,7 @@ from ..models import (
     SexAgeConfigSummary,
     SexAgeDataSummary,
     TaskConfigSummary,
+    load_yaml,
     repo_relative,
     resolve_repo_path,
 )
@@ -36,8 +37,6 @@ def sex_age_baseline_config_summary(
     local_path_base: str | Path | None = None,
     validated_sidecar_keys: dict[str, set[str]] | None = None,
 ) -> SexAgeConfigSummary:
-    from ..models import load_yaml
-
     resolved = resolve_repo_path(config_path)
     if resolved is None:
         raise FileNotFoundError("Config path is required.")

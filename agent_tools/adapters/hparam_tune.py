@@ -17,9 +17,10 @@ import subprocess
 import sys
 from typing import Any
 
-from .. import plan_contract, slurm
+from .. import experiment_workspace, plan_contract, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
+from ..domain import finetune_hparam_profile
 from ..models import BoundFinalEvalConfigSnapshot, ConfigSummaryInput, JsonValue
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, variant_module
 from .base import PlanRegistrationPreflightError, TaskAdapter
@@ -87,9 +88,7 @@ class HparamTuneAdapter(TaskAdapter):
             effective_search = {}
         if "profile" not in authored_search or "profile" not in effective_search:
             return []
-        from ..domain.finetune_hparam_profile import compile_finetune_balanced_profile
-
-        compiled, issues = compile_finetune_balanced_profile(recipe, config_summary)
+        compiled, issues = finetune_hparam_profile.compile_finetune_balanced_profile(recipe, config_summary)
         if compiled is not None:
             recipe["search"] = compiled
         return issues
@@ -308,13 +307,14 @@ class HparamTuneAdapter(TaskAdapter):
         final_eval_config: BoundFinalEvalConfigSnapshot | None,
     ) -> None:
         from .. import plan_hparam
-        from ..domain.finetune_hparam_profile import finetune_balanced_profile_audit
 
         search = recipe.get("search")
         if not isinstance(search, dict):
             search = {}
         profile_audit = (
-            finetune_balanced_profile_audit(search) if search.get("profile") == "finetune_balanced" else None
+            finetune_hparam_profile.finetune_balanced_profile_audit(search)
+            if search.get("profile") == "finetune_balanced"
+            else None
         )
 
         plan_hparam.write_hparam_plan(
@@ -358,7 +358,7 @@ class HparamTuneAdapter(TaskAdapter):
         run_index_offset: int,
         config_bytes: bytes,
     ) -> plan_contract.HparamCompiledPlanContract:
-        from .. import plan_contract, plan_hparam
+        from .. import plan_hparam
 
         contracts = plan_hparam.compile_hparam_run_contracts(
             recipe,
@@ -395,7 +395,6 @@ class HparamTuneAdapter(TaskAdapter):
         unlock_final_test: bool,
     ) -> list[Path] | None:
         from .. import plan_hparam
-        from ..experiment_workspace import next_run_index
 
         if report.exit_code != 0:
             paths = plan_contract.blocked_plan_control_paths(out)
@@ -423,7 +422,7 @@ class HparamTuneAdapter(TaskAdapter):
         execution = execution_value if isinstance(execution_value, dict) else {}
         scheduler_value = execution.get("scheduler")
         scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
-        for layout in plan_hparam.hparam_run_layouts(recipe, out, next_run_index(recipe)):
+        for layout in plan_hparam.hparam_run_layouts(recipe, out, experiment_workspace.next_run_index(recipe)):
             run_dir = layout["run_dir"]
             paths.extend(
                 [run_dir / "launch.sh", run_dir / "config.yaml", run_dir / "run.json", run_dir / "artifacts.json"]

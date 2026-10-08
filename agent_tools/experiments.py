@@ -19,12 +19,13 @@ from datetime import datetime, timezone
 import functools
 import hashlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 import yaml
 
 from . import (
     experiment_io as exp_io,
+    experiment_pipeline,
     experiment_tracking as tracking,
     managed_scheduler,
     python_programs,
@@ -62,9 +63,6 @@ from .experiment_workspace import (
     write_status_report,
 )
 from .manifests import read_json, utc_now
-
-if TYPE_CHECKING:
-    from .experiment_pipeline import PipelineResult
 
 
 class ExperimentNoteResult(TypedDict):
@@ -417,10 +415,8 @@ def run_experiment_pipeline(
     execute: bool = False,
     resume: bool = False,
     poll_seconds: float = 60,
-) -> PipelineResult:
-    from .experiment_pipeline import run_experiment_pipeline as run_pipeline
-
-    return run_pipeline(
+) -> experiment_pipeline.PipelineResult:
+    return experiment_pipeline.run_experiment_pipeline(
         run_dir,
         spec_path,
         unlock_final_test=unlock_final_test,
