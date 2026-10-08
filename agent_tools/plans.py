@@ -13,6 +13,7 @@ diagnostic outputs, not a frozen registered plan or authorization to execute.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 import copy
 import csv
@@ -740,7 +741,7 @@ _LOCAL_PLAN_LOCKS_GUARD = threading.Lock()
 
 
 @contextmanager
-def plan_publication_lock(out: Path):
+def plan_publication_lock(out: Path) -> Iterator[None]:
     """Block until the publication lock for the canonical output path is held.
 
     Coordinates threads and cooperating processes for the same output path,

@@ -13,11 +13,21 @@ from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 import re
-from typing import Any, TypedDict
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict
 
 from typing_extensions import Never, NotRequired
 
 from . import experiment_io as exp_io
+
+if TYPE_CHECKING:
+    from .models import JsonValue
+
+
+class StepManifestReader(Protocol):
+    """The workspace's step-manifest reader, injected so this leaf does not import the workspace."""
+
+    def __call__(self, root: Path, step_id: str, *, remote: str | None) -> Mapping[str, JsonValue] | None: ...
 
 
 class ResearchLogEvidence(TypedDict):
@@ -107,7 +117,7 @@ def _normalized_research_log_scope(
     managed_rows: list[dict[str, Any]],
     root: Path,
     remote: str | None,
-    read_step_manifest,
+    read_step_manifest: StepManifestReader,
     managed_run_key: Callable[[Mapping[str, Any]], tuple[str, str] | None],
 ) -> ResearchLogScope | _EmptyResearchLogScope:
     scope = entry.get("scope")
@@ -126,6 +136,7 @@ def _normalized_research_log_scope(
                 "Research log entry scope.step_id must use lowercase letters, digits, hyphens, and underscores."
             )
         step_manifest = read_step_manifest(root, step_id, remote=remote)
+        assert step_manifest is not None  # Missing steps raise unless allow_missing is explicitly enabled.
         if step_manifest["experiment_id"] != experiment_id:
             raise ValueError("Research log entry scope.step_id belongs to a different experiment.")
         normalized_scope = {"step_id": step_id}
@@ -153,7 +164,7 @@ def _normalized_research_log_entry(
     managed_rows: list[dict[str, Any]],
     root: Path,
     remote: str | None,
-    read_step_manifest,
+    read_step_manifest: StepManifestReader,
     managed_run_key: Callable[[Mapping[str, Any]], tuple[str, str] | None],
 ) -> NormalizedResearchLogEntry:
     unexpected = sorted(set(entry) - RESEARCH_LOG_ENTRY_FIELDS)
@@ -333,9 +344,9 @@ def append_research_log(
     experiment_id: str,
     managed_rows: list[dict[str, Any]],
     remote: str | None,
-    read_step_manifest,
+    read_step_manifest: StepManifestReader,
     managed_run_key: Callable[[Mapping[str, Any]], tuple[str, str] | None],
-    io=exp_io,
+    io: ModuleType = exp_io,
 ) -> tuple[Path, str, bool]:
     root = Path(root)
     path = root / RESEARCH_LOG_NAME

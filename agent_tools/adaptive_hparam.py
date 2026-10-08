@@ -43,6 +43,7 @@ from . import (
     plan_hparam,
     run_artifacts as artifacts,
 )
+from .decision_models import DecisionReport
 from .experiment_workspace import (
     AdaptiveInitEvent,
     AdaptiveProposalAcceptedEvent,
@@ -63,12 +64,12 @@ from .plans import build_plan, plan_publication_lock, preflight_plan, publish_st
 from .recipes import load_recipe_with_base, strip_internal_recipe_keys
 
 
-def _preflight_details(report) -> str:
+def _preflight_details(report: DecisionReport) -> str:
     """Every blocking issue in a preflight report, as one message line."""
     return "; ".join(f"{issue.field}: {issue.message}" for issue in report.blocking_issues())
 
 
-def _require_preflight_pass(report, subject: str) -> None:
+def _require_preflight_pass(report: DecisionReport, subject: str) -> None:
     """Raise with every blocking issue when ``subject``'s preflight did not pass."""
     if report.exit_code != 0:
         raise RuntimeError(
@@ -88,7 +89,7 @@ def _preflight_candidate(candidate_bytes: bytes, next_dir: Path, subject: str) -
 
 
 class AdaptivePreflightError(RuntimeError):
-    def __init__(self, report):
+    def __init__(self, report: DecisionReport) -> None:
         self.report = report
         details = _preflight_details(report)
         super().__init__(f"Round 000 plan failed preflight with exit code {report.exit_code}: {details}")

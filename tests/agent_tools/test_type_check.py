@@ -117,6 +117,15 @@ def test_missing_import_allowlist_is_limited_to_known_third_party_dependencies()
     assert all(not module.startswith("agent_tools") for module in allowlists[0])
 
 
+def test_complete_function_annotations_are_required_everywhere_in_scope():
+    document = type_check.tomllib.loads((Path(type_check.__file__).parents[1] / "pyproject.toml").read_text())
+    mypy = document["tool"]["mypy"]
+    flags = ("disallow_incomplete_defs", "disallow_untyped_defs")
+
+    assert all(mypy[flag] is True for flag in flags)
+    assert not any(flag in override for override in mypy["overrides"] for flag in flags)
+
+
 def test_toml_reader_works_on_this_interpreter():
     assert type_check.tomllib.__name__ in {"tomli", "tomllib"}
     assert type_check.tomllib.loads('[tool.mypy]\nfiles = ["agent_tools"]\n')["tool"]["mypy"]

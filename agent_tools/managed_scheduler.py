@@ -11,7 +11,7 @@ execution callbacks.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -258,7 +258,7 @@ class LaunchOptions:
 
 
 @contextmanager
-def managed_run_lock(workspace: str | Path):
+def managed_run_lock(workspace: str | Path) -> Iterator[None]:
     root = Path(workspace)
     lock_path = root / "run_manifest.tsv.lock"
     exp_io.validate_managed_output_paths(root, [lock_path])
