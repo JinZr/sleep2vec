@@ -1,13 +1,13 @@
 # Skill: index_maintenance
 
 ## When to use
-Use for `index_maintain` tasks that update the shared Codex navigation docs.
+Use for `index_maintain` tasks that update the shared code index docs.
 
 ## Required inputs
 Requires touched files, changed ownership or contracts, and verification state.
 
 ## First information-gathering commands
-- `rg --files doc/codex_index`
+- `rg --files doc/code_index`
 - `git diff --name-only`
 - Inspect the changed source, tests, and relevant shared index page.
 
@@ -18,13 +18,13 @@ Update the index only for changes to ownership, canonical reusable implementatio
 Stop and ask the user if the owning module or public contract cannot be determined from source, tests, `AGENTS.md`, or dedicated contract documents.
 
 ## Canonical commands
-Use normal file inspection and targeted edits under `doc/codex_index/`. Never create branch copies, `branches/` trees, manifests, changelogs, function catalogs, or delta files.
+Use normal file inspection and targeted edits under `doc/code_index/`. Never create branch copies, `branches/` trees, manifests, changelogs, function catalogs, or delta files.
 
 ## Expected artifacts
 One or more targeted updates to `README.md`, `MODULE_MAP.md`, `REUSE_GUIDE.md`, or `WORKFLOWS.md`.
 
 ## Validation gates
-Confirm `rg --files doc/codex_index` lists exactly the four shared documents, review links against real files, search for references to removed branch-scoped index paths, and run `git diff --check`.
+Confirm `rg --files doc/code_index` lists exactly the four shared documents, review links against real files, search for references to removed branch-scoped index paths, and run `git diff --check`.
 
 ## Common failure modes
 Copying source-level detail into the index, updating it for a local fix, stale deleted-file references, and recreating branch-specific metadata.

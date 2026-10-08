@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_sleep2expert_copied_runtime_uses_local_namespace():
     stale_import = re.compile(r"(^|\s)(from|import) (sleep2vec2|sleep2vec|data|preprocess)(\.|\s|$)", re.MULTILINE)
     # data/whole_night_index.py is the documented single owner of whole-night index validation and embedding
-    # sample keys (doc/codex_index/REUSE_GUIDE.md); the extractor shares it with the agent_tools preflight.
+    # sample keys (doc/code_index/REUSE_GUIDE.md); the extractor shares it with the agent_tools preflight.
     shared_import_path = "sleep2expert/extract_embeddings.py"
     shared_import = "from data.whole_night_index import "
     offenders: list[str] = []

@@ -15,7 +15,7 @@ INDEX_FILES = {
     "REUSE_GUIDE.md",
     "WORKFLOWS.md",
 }
-INDEX_PATHS = {f"doc/codex_index/{name}" for name in INDEX_FILES}
+INDEX_PATHS = {f"doc/code_index/{name}" for name in INDEX_FILES}
 
 
 def test_skills_validate_repository_skill_folder():
@@ -25,8 +25,8 @@ def test_skills_validate_repository_skill_folder():
     assert any(item["name"] == "finetuning" for item in result["skills"])
 
 
-def test_codex_index_contains_only_shared_navigation_files():
-    index_root = REPO_ROOT / "doc/codex_index"
+def test_code_index_contains_only_shared_navigation_files():
+    index_root = REPO_ROOT / "doc/code_index"
     files = {
         path.relative_to(index_root).as_posix()
         for path in index_root.rglob("*")

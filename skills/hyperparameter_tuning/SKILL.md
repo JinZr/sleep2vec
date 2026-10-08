@@ -251,4 +251,4 @@ existing contracts and authority; do not patch frozen artifacts in place.
 ## Relevant owners and index pages
 
 Owners: `agent-tooling-maintainer`, `runtime-orchestrator`, `regression-guard`.
-Index: [agent workflow](../../doc/codex_index/WORKFLOWS.md#agent-planning-and-managed-experiments).
+Index: [agent workflow](../../doc/code_index/WORKFLOWS.md#agent-planning-and-managed-experiments).

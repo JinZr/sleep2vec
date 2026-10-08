@@ -1,6 +1,6 @@
 # Agent Skills
 
-The Codex index maps code ownership and reusable implementations.
+The shared code index maps code ownership and reusable implementations.
 
 The skills in this folder define repeatable task procedures: what information to gather, which command to run, what to validate, which artifacts to expect, and which subagent owner should review the work.
 

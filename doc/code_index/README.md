@@ -1,4 +1,4 @@
-# Codex Engineering Index
+# Code Index
 
 This directory is the shared, branch-independent navigation layer for the repository. It helps an engineer find the owner of a behavior, the implementation to reuse, the runtime path that exercises it, and the tests that define its contract.
 

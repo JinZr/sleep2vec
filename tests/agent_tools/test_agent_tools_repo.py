@@ -5,7 +5,7 @@ from agent_tools import repo
 
 def test_repo_summary_uses_shared_index_on_feature_branch(tmp_path, monkeypatch):
     (tmp_path / ".git").mkdir()
-    (tmp_path / "doc/codex_index").mkdir(parents=True)
+    (tmp_path / "doc/code_index").mkdir(parents=True)
     responses = {
         ("branch", "--show-current"): (True, "feature/lightweight-index"),
         ("rev-parse", "HEAD"): (True, "abc123"),
@@ -17,6 +17,6 @@ def test_repo_summary_uses_shared_index_on_feature_branch(tmp_path, monkeypatch)
     summary = repo.repo_summary()
 
     assert summary["git"]["branch"] == "feature/lightweight-index"
-    assert summary["codex_index"] == {"path": "doc/codex_index", "exists": True}
-    assert "branch_index_path" not in summary["codex_index"]
-    assert "fallback_main_exists" not in summary["codex_index"]
+    assert summary["code_index"] == {"path": "doc/code_index", "exists": True}
+    assert "branch_index_path" not in summary["code_index"]
+    assert "fallback_main_exists" not in summary["code_index"]

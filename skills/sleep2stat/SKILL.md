@@ -184,4 +184,4 @@ Owners: `agent-tooling-maintainer`, `runtime-orchestrator`, `regression-guard`.
 
 Relevant index:
 
-- `doc/codex_index/WORKFLOWS.md`
+- `doc/code_index/WORKFLOWS.md`
