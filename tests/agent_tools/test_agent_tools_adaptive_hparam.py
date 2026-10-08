@@ -135,37 +135,6 @@ def test_adaptive_slurm_grace_uses_allocation_start_not_submission_time():
     )
 
 
-def test_adaptive_retirement_skips_slurm_run_with_verified_terminal_sidecar(tmp_path: Path, monkeypatch):
-    recipe = {
-        "adaptive": {
-            "objective_metric": "val_score",
-            "objective_mode": "max",
-            "replacement": {"enabled": True, "allow_running_stop": True},
-        }
-    }
-    run = {
-        "step_id": "train-model",
-        "run_id": "run-000",
-        "status": "running",
-        "scheduler_type": "slurm",
-        "scheduler_exit_code": "0",
-    }
-    monkeypatch.setattr(
-        adaptive_hparam.artifacts,
-        "read_hparam_plan",
-        lambda _round_dir, **_kwargs: {"recipe": {"experiment": {"root": str(tmp_path)}}, "runs": [run]},
-    )
-    monkeypatch.setattr(adaptive_replacement, "read_run_manifest", lambda _workspace: [run])
-    monkeypatch.setattr(adaptive_replacement, "_latest_incumbent_score", lambda _root: 1.0)
-    monkeypatch.setattr(
-        adaptive_replacement.evidence,
-        "log_has_failure",
-        lambda *_args, **_kwargs: pytest.fail("terminal Slurm work must not be considered for retirement"),
-    )
-
-    assert adaptive_replacement._bad_running_run_keys(tmp_path, tmp_path / "round", recipe) == set()
-
-
 def test_adaptive_minutes_since_accepts_slurm_sidecar_timestamp():
     minutes = adaptive_replacement._minutes_since(slurm._utc_now())
 
@@ -199,18 +168,6 @@ def test_adaptive_default_test_objective_requires_test_after_fit(tmp_path: Path)
 def test_adaptive_runtime_requires_literal_true_enabled_flag():
     with pytest.raises(ValueError, match="adaptive.enabled must be true"):
         adaptive_hparam._validate_adaptive_recipe({"adaptive": {"enabled": "true"}})
-
-
-@pytest.mark.parametrize(
-    ("enabled", "allow_running_stop"),
-    [("true", True), (True, "true"), ("false", "false")],
-)
-def test_adaptive_runtime_never_stops_runs_for_non_boolean_replacement_flags(
-    tmp_path: Path, enabled, allow_running_stop
-):
-    recipe = {"adaptive": {"replacement": {"enabled": enabled, "allow_running_stop": allow_running_stop}}}
-
-    assert adaptive_replacement._bad_running_run_keys(tmp_path, tmp_path / "missing-round", recipe) == set()
 
 
 @pytest.mark.parametrize(

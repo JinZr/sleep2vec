@@ -235,31 +235,47 @@ def test_experiment_status_separates_control_host_from_execution_transport(remot
 
 
 def test_experiment_status_projects_recorded_scheduler_node():
-    run = experiment_tracking._status_run_payload(
-        {
-            "step_id": "train",
-            "run_id": "run-000",
-            "status": "running",
-            "scheduler_type": "slurm",
-            "scheduler_node": "gpu-node-02",
-        }
-    )
-    snapshot = {
-        "experiment": {"id": "status-unit", "title": "Scheduler status", "root": "/experiment"},
-        "summary": {"state": "active"},
-        "lifecycle_source": "run_manifest.tsv",
-        "steps": [],
-        "runs": [run],
-        "blockers": [],
-        "decision": {
-            "recommended_next": None,
-            "other_legal_actions": [],
-            "manual_choice_required": False,
-            "blocked_actions": [],
-        },
+    root = Path("/experiment")
+    plan_dir = root / "plans" / "train"
+    row = {
+        "step_id": "train",
+        "run_id": "run-000",
+        "run_name": "default",
+        "status": "running",
+        "scheduler_type": "slurm",
+        "scheduler_submit_token": "unit-token",
+        "scheduler_script": str(plan_dir / "run-000.sbatch"),
+        "scheduler_script_sha256": "a" * 64,
+        "scheduler_result_path": str(plan_dir / "run-000.result.json"),
+        "allocation_identity_path": str(plan_dir / "run-000.allocation.json"),
+        "scheduler_job_id": "3880",
+        "scheduler_node": "gpu-node-02",
     }
+    registered_steps = [
+        {
+            "manifest": {
+                "step": {"id": "train", "phase": "train", "purpose": "Train."},
+                "plan_controller": "ordinary",
+            },
+            "plans": [
+                {
+                    "path": str(plan_dir),
+                    "task": "finetune",
+                    "run_keys": [("train", "run-000")],
+                    "launch_script": str(plan_dir / "run.sh"),
+                }
+            ],
+        }
+    ]
 
-    assert run["scheduler"]["node"] == "gpu-node-02"
+    snapshot = experiment_tracking.experiment_status_snapshot(
+        {"id": "status-unit", "title": "Scheduler status"},
+        registered_steps,
+        [row],
+        root=root,
+    )
+
+    assert snapshot["runs"][0]["scheduler"]["node"] == "gpu-node-02"
     assert "node=gpu-node-02" in experiment_tracking.format_experiment_status(snapshot)
 
 

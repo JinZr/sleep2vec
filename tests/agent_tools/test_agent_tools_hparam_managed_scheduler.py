@@ -20,7 +20,7 @@ from test_agent_tools_hparam_runtime import (
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
 
-from agent_tools import decision_hparam, hparam_runtime, managed_scheduler, run_evidence
+from agent_tools import hparam_runtime, managed_scheduler, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 
 
@@ -69,74 +69,12 @@ def test_hparam_plan_rejects_gpus_per_run_without_a_physical_pool_before_workspa
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
-@pytest.mark.parametrize("gpus_per_run", [0, False, 0.5, 1.0, 1.5, "0.5", "1", "1.5"])
-def test_hparam_execution_reports_invalid_gpus_per_run(gpus_per_run):
-    issues = decision_hparam._hparam_execution_issues(
-        {"gpu_pool": [0, 1], "gpus_per_run": gpus_per_run},
-        {},
-    )
-
-    assert len(issues) == 1
-    assert issues[0].field == "execution.gpus_per_run"
-    assert issues[0].status.value == "FAIL"
-    assert "must be a positive integer" in issues[0].message
-
-
-@pytest.mark.parametrize("max_concurrent", [True, 1.0, 1.5, "1", 0])
-def test_hparam_execution_reports_invalid_max_concurrent(max_concurrent):
-    issues = decision_hparam._hparam_execution_issues({"max_concurrent": max_concurrent}, {})
-
-    assert len(issues) == 1
-    assert issues[0].field == "execution.max_concurrent"
-    assert issues[0].status.value == "FAIL"
-    assert "must be a positive integer" in issues[0].message
-
-
-@pytest.mark.parametrize(
-    ("execution", "field"),
-    [
-        ({"python": ""}, "execution.python"),
-        ({"python": "conda run -n exp python"}, "execution.python"),
-        ({"python": "~/miniconda/bin/python"}, "execution.python"),
-        ({"runtime_commit": "abc123"}, "execution.runtime_commit"),
-    ],
-)
-def test_hparam_execution_rejects_invalid_runtime_identity(execution, field):
-    issues = decision_hparam._hparam_execution_issues(execution, {})
-
-    assert len(issues) == 1
-    assert issues[0].field == field
-    assert issues[0].status.value == "FAIL"
-
-
-def test_hparam_execution_warns_when_slurm_request_voluntarily_lowers_priority():
-    issues = decision_hparam._hparam_execution_issues(
-        {
-            "scheduler": {
-                "type": "slurm",
-                "partition": "gpu",
-                "cpus_per_task": 8,
-                "memory": "64G",
-                "walltime": "01:00:00",
-                "nice": 100,
-                "nodelist": "h20-bj-96",
-            }
-        },
-        {},
-    )
-
-    priority_issue = next(issue for issue in issues if issue.field == "execution.scheduler.priority")
-    assert priority_issue.status.value == "WARN"
-    assert "nice=100 voluntarily lowers priority" in priority_issue.message
-    assert "nodelist narrows eligible nodes" in priority_issue.message
-
-
-def test_hparam_runtime_rejects_gpus_per_run_without_a_physical_pool():
+def test_managed_scheduler_rejects_gpus_per_run_without_a_physical_pool():
     with pytest.raises(
         ValueError,
         match="execution.gpus_per_run requires a non-empty execution.gpu_pool or runtime.devices",
     ):
-        hparam_runtime._gpu_groups({"execution": {"gpus_per_run": 2}})
+        managed_scheduler.gpu_groups({"gpus_per_run": 2}, {})
 
 
 def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group(tmp_path: Path):

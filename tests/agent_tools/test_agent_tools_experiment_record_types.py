@@ -82,7 +82,10 @@ def test_step_merge_retains_dynamic_values_and_raw_reader_identity(tmp_path, mon
     assert existing["plans"] == [Path("/plans/b")]
     payload = {**merged, "recipe_path": "", "plan_controller": "ordinary"}
     monkeypatch.setattr(experiment_workspace, "read_managed_yaml_mapping", lambda *args, **kwargs: payload)
-    read = experiment_workspace._validated_step_manifest("fixture", tmp_path / "step.yaml", "train")
+    step_path = tmp_path / "steps" / "train" / "step.yaml"
+    step_path.parent.mkdir(parents=True)
+    step_path.write_text("fixture")
+    read = experiment_workspace.read_step_manifest(tmp_path, "train")
     assert read is payload
     assert read["step"]["purpose"] == 7
     assert read["experiment_id"] == 12
@@ -172,8 +175,6 @@ def test_experiment_record_types_reach_callers(tmp_path):
             scope: research_log.ResearchLogScope = {"step_id": "train"}
             scope["run_ids"] = [1]  # type: ignore[list-item]
             no_step: research_log.ResearchLogScope = {"run_ids": ["run-001"]}  # type: ignore[typeddict-item]
-            research_log._research_log_block(normalized, "unit")
-            experiment_workspace_block: str = workspace._research_log_block(normalized, "unit")
             raw_input: Any = None
             experiments._normalized_completed_metadata(raw_input, root=Path("/workspace"), allow_completed=True)
             """),

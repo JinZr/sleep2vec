@@ -635,11 +635,3 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
             )
         write_status_report(workspace)
     return status_path
-
-
-def _gpu_groups(recipe: dict[str, Any]) -> list[list[Any]]:
-    execution_value = recipe.get("execution")
-    execution = execution_value if isinstance(execution_value, dict) else {}
-    runtime_value = recipe.get("runtime")
-    runtime = runtime_value if isinstance(runtime_value, dict) else {}
-    return scheduler.gpu_groups(execution, runtime)

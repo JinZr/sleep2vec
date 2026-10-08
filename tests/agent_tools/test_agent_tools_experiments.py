@@ -523,8 +523,12 @@ def test_remote_research_log_retries_conflict_and_preserves_competing_entry(tmp_
     entry = json.loads(_research_entry(tmp_path, "obs-new").read_text())
     competing = dict(entry)
     competing.update({"id": "obs-competing", "title": "Competing observation"})
-    competing_block = experiment_workspace._research_log_block(competing, "unit")
-    competing_digest = experiment_workspace.hashlib.sha256(competing_block.encode()).hexdigest()
+    competing_root = tmp_path / "competing"
+    competing_root.mkdir()
+    competing_path, _competing_id, _competing_appended = experiment_workspace.append_research_log(
+        competing_root, competing, experiment_id="unit", managed_rows=[]
+    )
+    competing_text = competing_path.read_text()
     state = {
         "text": experiment_workspace.RESEARCH_LOG_PREAMBLE,
         "attempts": 0,
@@ -538,8 +542,7 @@ def test_remote_research_log_retries_conflict_and_preserves_competing_entry(tmp_
     def commit(_path, replacement, _expected_sha256, *, remote=None, **_kwargs):
         state["attempts"] += 1
         if state["attempts"] == 1:
-            marker = "<!-- agent-tools-research-entry " f'id="obs-competing" sha256="{competing_digest}" -->\n'
-            state["text"] += marker + competing_block
+            state["text"] = competing_text
             return False
         state["text"] = replacement
         return True

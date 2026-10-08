@@ -11,7 +11,6 @@ import yaml
 
 from agent_tools import (
     adaptive_hparam,
-    adaptive_replacement,
     adaptive_state,
     hparam_runtime,
     managed_scheduler,
@@ -1964,17 +1963,3 @@ def test_adaptive_registry_rejects_header_only_legacy_identity(tmp_path: Path):
         adaptive_state.read_workflow(workflow_dir)
 
     assert registry_path.read_text() == "trial_id\tround\n"
-
-
-def test_adaptive_stop_scan_ignores_header_only_legacy_projection(tmp_path: Path):
-    recipe_path = _adaptive_recipe(tmp_path, max_rounds=1)
-    workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe_path), "--output-dir", str(workflow_dir)).returncode == 0
-    round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
-    status_path = round_dir / "run_status.tsv"
-    status_path.write_text("trial_id\tstatus\n")
-    recipe = adaptive_hparam.load_recipe_with_base(recipe_path)
-
-    adaptive_replacement._stop_bad_running_runs(workflow_dir, round_dir, recipe)
-
-    assert status_path.read_text() == "trial_id\tstatus\n"

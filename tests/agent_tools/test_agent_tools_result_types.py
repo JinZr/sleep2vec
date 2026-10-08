@@ -13,7 +13,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 adaptive_evidence, adaptive_handshake, adaptive_hparam, adaptive_state,
                 checkpoint_test_results, experiment_tracking,
                 experiments,
-                experiment_io, experiment_sources, experiment_workspace, hparam_runtime, hparam_selection,
+                experiment_io, experiment_sources, experiment_workspace, hparam_selection,
                 managed_scheduler, models, experiment_pipeline, experiment_pipeline_results,
                 experiment_pipeline_cohort_selection,
                 plan_contract, plan_hparam, run_artifacts, run_evidence, slurm,
@@ -62,8 +62,6 @@ def test_result_types_reach_callers(tmp_path: Path):
             allocation_sidecar["schema_version"] = 2  # type: ignore[typeddict-item]
             for generated_sidecar in (allocation_sidecar, terminal_sidecar):
                 slurm.sidecar_identity(generated_sidecar, "token")
-                managed_scheduler._slurm_sidecar_runtime_commit(generated_sidecar)
-                slurm._atomic_create_json(Path("/sidecar"), generated_sidecar)
             slurm.terminal_exit_code(terminal_sidecar)
 
             pipeline_hooks = experiment_pipeline.PipelineHooks(
@@ -85,17 +83,15 @@ def test_result_types_reach_callers(tmp_path: Path):
             logical_jobs = experiment_pipeline_results.logical_job_states({}, [])
             attempt_count: int = logical_jobs[0]["attempt_count"]
             logical_jobs[0]["status"] = "ready"  # type: ignore[typeddict-item]
-            execution_result = experiment_pipeline._run_attempts(
-                Path("/workspace"), Path("/pipeline"), {}, {}, [], poll_seconds=0, hooks=pipeline_hooks,
-            )
-            execution_result["jobs"][0]["attempt_count"] = "1"  # type: ignore[typeddict-item]
-            if "missing_pid_blocker" in execution_result:
-                execution_result["missing_pid_blocker"]["status"] = "running"  # type: ignore[typeddict-item]
             for pipeline_result in (
                 experiment_pipeline.run_experiment_pipeline(Path("/workspace"), Path("/spec"), hooks=pipeline_hooks),
                 experiments.run_experiment_pipeline(Path("/workspace"), Path("/spec")),
             ):
                 pipeline_result["status"] = "unknown"  # type: ignore[arg-type]
+                if "dry_run" not in pipeline_result:
+                    pipeline_result["jobs"][0]["attempt_count"] = "1"  # type: ignore[typeddict-item]
+                    if "missing_pid_blocker" in pipeline_result:
+                        pipeline_result["missing_pid_blocker"]["status"] = "running"  # type: ignore[typeddict-item]
 
             selection_evidence = experiment_pipeline_results.selection_evidence(Path("/phase"), {}, {})
             evidence_hash: str = selection_evidence[0]["result_manifest_sha256"]
@@ -107,11 +103,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 cohort_winner["source_rank"] = "1"  # type: ignore[typeddict-item]
                 gate_value: int | float = cohort_winner["selection_evidence"][0]["value"]
                 cohort_winner["selection_evidence"][0]["value"] = "1"  # type: ignore[typeddict-item]
-            experiment_pipeline._write_no_winner_report(Path("/pipeline"), {}, cohort_decision)
-            _, typed_decision = experiment_pipeline._validate_cohort_decision(
-                Path("/pipeline"), {}, {}, selection_evidence,
-            )
-            typed_decision["winner"] = "none"  # type: ignore[typeddict-item]
+            cohort_decision["winner"] = "none"  # type: ignore[typeddict-item]
             _, pipeline_metrics = experiment_pipeline_results.build_result_rows({}, {}, {})
             scalar_value: int | float | str = pipeline_metrics[0]["value"]
             pipeline_metrics[0]["value"] = None  # type: ignore[typeddict-item]
@@ -132,8 +124,6 @@ def test_result_types_reach_callers(tmp_path: Path):
             for execution_snapshot in (
                 managed_scheduler.inspect_execution_target({}, []),
                 managed_scheduler.validated_execution_snapshot(Path("/plan"), {}, [], {})[0],
-                hparam_runtime._inspect_execution_target({}, []),
-                plan_hparam._inspect_hparam_execution_target({}, []),
             ):
                 module_name: str = execution_snapshot["module"]
                 snapshot_commit: str = execution_snapshot["runtime_commit"]
@@ -204,11 +194,8 @@ def test_result_types_reach_callers(tmp_path: Path):
                     diagnostic["blocking_issues"] = [1]  # type: ignore[list-item]
                     diagnostic["_source_config_bytes"] = "bytes"  # type: ignore[arg-type]
                 from types import MappingProxyType
-                from agent_tools import decision_paths
                 from agent_tools.domain.finetune_hparam_profile import compile_finetune_balanced_profile
                 readonly: MappingProxyType[str, Any] = MappingProxyType({"data": {}, "finetune": {}})
-                decision_paths._config_data(readonly)  # type: ignore[arg-type]
-                decision_paths._config_finetune(readonly)  # type: ignore[arg-type]
                 compile_finetune_balanced_profile({}, readonly)  # type: ignore[arg-type]
                 fine = finetune_summary_body(Path("config.yaml"))
                 fine["model"]["channels"][0]["unknown"] = 1  # type: ignore[typeddict-unknown-key]
@@ -264,28 +251,22 @@ def test_result_types_reach_callers(tmp_path: Path):
             metric_row["epoch"] = 1  # type: ignore[typeddict-item]
             metric_row["metric_name"]  # type: ignore[typeddict-item]
             metric_row["value"] = "0.750"
-            history_metrics = experiment_sources._history_metric_rows("id", "version", wandb_row, [])
-            history_metrics[0]["updated_at"] = None  # type: ignore[typeddict-item]
+            metric_row["updated_at"] = None  # type: ignore[typeddict-item]
             experiment_tracking.wandb_run_observations([], [wandb_row])
             experiment_tracking.managed_metric_rows([], [metric_row])
-            for checkpoint_observations in (
-                experiment_sources._local_checkpoint_rows([]),
-                experiment_sources._remote_checkpoint_rows([], None),
-                experiment_sources._parse_remote_checkpoint_rows("", [], remote="host"),
-                experiment_tracking.checkpoint_rows(Path("/workspace")),
-            ):
-                checkpoint_observation = checkpoint_observations[0]
-                observed_checkpoint_path: str = checkpoint_observation["checkpoint_path"]
-                checkpoint_observation["mtime"] = 1.0  # type: ignore[typeddict-item]
-                checkpoint_observation["is_last"] = True  # type: ignore[typeddict-item]
-                checkpoint_observation["checkpoint"]  # type: ignore[typeddict-item]
-                experiment_sources.validate_checkpoint_evidence_rows([], checkpoint_observations)
-                experiment_workspace.validate_managed_run_rows(
-                    checkpoint_observations, source="checkpoint scan", cardinality="many_per_run",
-                )
-                checkpoint_metric = experiment_tracking.best_metric_for_checkpoint(checkpoint_observation, [])
-                checkpoint_metric["value"] = 1.0  # type: ignore[typeddict-item]
-                checkpoint_observation.update(checkpoint_metric)
+            checkpoint_observations = experiment_tracking.checkpoint_rows(Path("/workspace"))
+            checkpoint_observation = checkpoint_observations[0]
+            observed_checkpoint_path: str = checkpoint_observation["checkpoint_path"]
+            checkpoint_observation["mtime"] = 1.0  # type: ignore[typeddict-item]
+            checkpoint_observation["is_last"] = True  # type: ignore[typeddict-item]
+            checkpoint_observation["checkpoint"]  # type: ignore[typeddict-item]
+            experiment_sources.validate_checkpoint_evidence_rows([], checkpoint_observations)
+            experiment_workspace.validate_managed_run_rows(
+                checkpoint_observations, source="checkpoint scan", cardinality="many_per_run",
+            )
+            checkpoint_metric = experiment_tracking.best_metric_for_checkpoint(checkpoint_observation, [])
+            checkpoint_metric["value"] = 1.0  # type: ignore[typeddict-item]
+            checkpoint_observation.update(checkpoint_metric)
 
             direct_health = run_evidence.health_fields(Path("/run"), {}, {}, None, None, "running", None)
             health_count: int | Literal[""] = direct_health["checkpoint_count"]
@@ -322,6 +303,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             proposal_document["request_id"] = None  # type: ignore[typeddict-item]
             proposal_document["input"]["remaining_budget"]["runs"] = "1"  # type: ignore[typeddict-item]
             proposal_document["input"]["objective"]["mode"] = 1  # type: ignore[typeddict-item]
+            proposal_document["input"]["source_config_sha256"] = None  # type: ignore[typeddict-item]
             proposal_document["input"]["digest_rows"][0]["custom"] = None
             proposal_document["input"]["execution_identity"]["host"] = None
             checked_document = adaptive_proposals.validate_proposal_input(proposal_document)
@@ -342,8 +324,6 @@ def test_result_types_reach_callers(tmp_path: Path):
                 workflow: adaptive_state.InitialAdaptiveWorkflow,
                 accepted_payload: adaptive_handshake.AcceptedProposalPayload,
             ) -> None:
-                snapshot = adaptive_handshake._agent_proposal_input_payload(Path("/workflow"), {}, {}, [])
-                snapshot["source_config_sha256"] = None  # type: ignore[typeddict-item]
                 generated_binding = adaptive_handshake._proposal_request_event_fields(
                     proposal_document, Path("/input"), "a" * 64, Path("/proposal"),
                 )
@@ -514,9 +494,6 @@ def test_result_types_reach_callers(tmp_path: Path):
                 HPARAM_TUNE_ADAPTER.compile_plan_contract(
                     {}, Path("/plan"), run_index_offset=7, config_bytes=b"config",
                 ),
-                run_artifacts._compile_registered_plan_contract(
-                    adapter, {}, Path("/plan"), run_index_offset=7, config_bytes=b"config",
-                ),
             ):
                 launch_text: str = plan_result["launch_script_text"]
                 final_command: str | None = plan_result["final_command"]
@@ -604,13 +581,6 @@ def test_result_types_reach_callers(tmp_path: Path):
             winner["checkpoint_sha256"] = 1  # type: ignore[typeddict-item]
             winner["checkpoint_sha"]  # type: ignore[typeddict-item]
 
-            identity = run_evidence._parse_process_identity("{}", "/identity.json")
-            pid: int = identity["pid"]
-            process_group: int = identity["process_group_id"]
-            start_token: str = identity["process_start_token"]
-            identity["process_start_tokens"]  # type: ignore[typeddict-item]
-            identity["pid"] = "12"  # type: ignore[typeddict-item]
-            identity["runtime_commit"] = 1  # type: ignore[typeddict-item]
             minimal_identity: run_evidence.ProcessIdentity = {
                 "pid": 12, "process_group_id": 12, "process_start_token": "token",
             }
@@ -623,7 +593,11 @@ def test_result_types_reach_callers(tmp_path: Path):
             read_identity["pid"]  # type: ignore[index]
             if read_identity is not None:
                 read_pid: int = read_identity["pid"]
+                process_group: int = read_identity["process_group_id"]
+                start_token: str = read_identity["process_start_token"]
                 read_identity["process_start_tokens"]  # type: ignore[typeddict-item]
+                read_identity["pid"] = "12"  # type: ignore[typeddict-item]
+                read_identity["runtime_commit"] = 1  # type: ignore[typeddict-item]
                 if "runtime_commit" in read_identity:
                     runtime_commit: str = read_identity["runtime_commit"]
 
@@ -689,14 +663,11 @@ def test_result_types_reach_callers(tmp_path: Path):
             experiment_tracking.validated_hparam_ranking(ranking_input)
             experiment_tracking.hparam_selection_report_text(report_steps, root=Path("/workspace"))
             experiment_tracking.hparam_selection_report_text(lifecycle["selected_steps"], root=Path("/workspace"))
-            experiment_tracking._hparam_ranking_matches(report_steps, "csv")
-            experiments._validate_hparam_checkpoints([], lifecycle["selected_steps"], remote=None)
             invalid_report_step = {"step_id": "step", "selection": {}, "rows": "bad"}
             experiment_tracking.validated_hparam_ranking(invalid_report_step)  # type: ignore[arg-type]
             experiment_tracking.hparam_selection_report_text(
                 [invalid_report_step], root=Path("/workspace"),  # type: ignore[list-item]
             )
-            experiments._validate_hparam_checkpoints([], [invalid_report_step], remote=None)  # type: ignore[list-item]
             expected_report: str | None = lifecycle["expected_report"]
             report_valid: bool = lifecycle["report_valid"]
             lifecycle["selected_step"]  # type: ignore[typeddict-item]
@@ -726,8 +697,6 @@ def test_result_types_reach_callers(tmp_path: Path):
             status_run["blockers"] = [1]  # type: ignore[list-item]
             optional_pid: str | None = status_run["process"]["pid"]
             required_pid: str = status_run["process"]["pid"]  # type: ignore[assignment]
-            constructed_run = experiment_tracking._status_run_payload({})
-            constructed_run["evidence"]["checkpoint_count"] = 2  # type: ignore[typeddict-item]
             missing_execution_host: experiment_tracking.ExperimentStatusExecution = {  # type: ignore[typeddict-item]
                 "target": None,
             }
@@ -744,8 +713,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             blocker_runs: list[str] = status_blocker["run_ids"]
             status_blocker["run_id"]  # type: ignore[typeddict-item]
             status_blocker["blocked_actions"] = [1]  # type: ignore[list-item]
-            constructed_blocker = experiment_tracking._status_blocker("missing_stop_reason", "Record a reason")
-            constructed_blocker["message"] = None  # type: ignore[typeddict-item]
+            status_blocker["message"] = None  # type: ignore[typeddict-item]
             manual_choice: bool = status_snapshot["decision"]["manual_choice_required"]
             blocked_actions: list[str] = status_snapshot["decision"]["blocked_actions"]
             status_snapshot["decisions"]  # type: ignore[typeddict-item]
@@ -762,8 +730,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                     required_inputs: list[str] = recommended["required_inputs"]
             alternative = status_snapshot["decision"]["other_legal_actions"][0]
             alternative["reason"] = 1  # type: ignore[typeddict-item]
-            constructed_action = experiment_tracking._status_action("monitor", "Refresh evidence", ["python"])
-            constructed_action["argv"] = "python"  # type: ignore[typeddict-item]
+            alternative["argv"] = "python"  # type: ignore[typeddict-item]
             missing_action_fields: experiment_tracking.ExperimentStatusAction = {  # type: ignore[typeddict-item]
                 "id": "monitor",
             }
@@ -788,16 +755,12 @@ def test_result_types_reach_callers(tmp_path: Path):
                 experiment_tracking.experiment_status_snapshot(
                     {}, steps, [], root=Path("/workspace"), hparam_selection_report=report,
                 )
-                experiments._validate_hparam_selection_files_unchanged(Path("/workspace"), report, {}, remote=None)
                 experiment_tracking.hparam_selection_lifecycle(
                     steps, [], root=Path("/workspace"), report={**report, "sha256": None},  # type: ignore[arg-type]
                 )
                 experiment_tracking.experiment_status_snapshot(
                     {}, steps, [], root=Path("/workspace"),
                     hparam_selection_report={**report, "ranking_text": 1},  # type: ignore[arg-type]
-                )
-                experiments._validate_hparam_selection_files_unchanged(
-                    Path("/workspace"), {**report, "path": None}, {}, remote=None,  # type: ignore[typeddict-item]
                 )
             """),
         encoding="utf-8",

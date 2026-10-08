@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from agent_tools import cli, managed_scheduler, models, plans
+from agent_tools.adapters import get_adapter
 from agent_tools.decisions import evaluate_consultation_gates
 from agent_tools.hparam_postprocess import LogitExportRequest
 from agent_tools.manifests import write_rows
@@ -347,12 +348,9 @@ def test_experiment_run_cli_contract():
 
 @pytest.mark.parametrize(("status", "exit_code"), [("completed", 0), ("failed", 1), ("blocked", 1)])
 def test_experiment_run_execute_exit_code_reflects_terminal_status(monkeypatch, status: str, exit_code: int):
-    parser, _subcommands = _parser_contract()
-    args = parser.parse_args(["experiment-run", "--run-dir", "experiment", "--spec", "matrix.yaml", "--execute"])
     monkeypatch.setattr(cli, "run_experiment_pipeline", lambda *_args, **_kwargs: {"status": status})
-    monkeypatch.setattr(cli, "_emit", lambda *_args, **_kwargs: None)
 
-    assert cli._cmd_experiment_run(args) == exit_code
+    assert cli.main(["experiment-run", "--run-dir", "experiment", "--spec", "matrix.yaml", "--execute"]) == exit_code
 
 
 def test_hparam_adaptive_step_cli_contract():
@@ -629,19 +627,19 @@ def test_hparam_run_queue_reports_execute_and_lifecycle_counts(tmp_path: Path, m
 def test_hparam_monitor_cli_contract(tmp_path: Path, monkeypatch):
     parser, subcommands = _parser_contract()
     actions = _actions(subcommands["hparam-monitor"])
-    defaults = parser.parse_args(["hparam-monitor", "--run-dir", "run-dir"])
-    args = parser.parse_args(
-        [
-            "hparam-monitor",
-            "--run-dir",
-            "run-dir",
-            "--once",
-            "--health",
-            "--include-log-tail",
-            "--poll-seconds",
-            "17",
-        ]
-    )
+    default_argv = ["hparam-monitor", "--run-dir", "run-dir"]
+    argv = [
+        "hparam-monitor",
+        "--run-dir",
+        "run-dir",
+        "--once",
+        "--health",
+        "--include-log-tail",
+        "--poll-seconds",
+        "17",
+    ]
+    defaults = parser.parse_args(default_argv)
+    args = parser.parse_args(argv)
     status = tmp_path / "run_status.tsv"
     calls = []
 
@@ -657,8 +655,8 @@ def test_hparam_monitor_cli_contract(tmp_path: Path, monkeypatch):
     assert defaults.include_log_tail is False
     assert defaults.poll_seconds == 60
     assert args.include_log_tail is True
-    assert cli._cmd_hparam_monitor(defaults) == 0
-    assert cli._cmd_hparam_monitor(args) == 0
+    assert cli.main(default_argv) == 0
+    assert cli.main(argv) == 0
     assert calls == [
         ("run-dir", False, False, 60),
         ("run-dir", True, True, 17),
@@ -760,6 +758,20 @@ def test_experiment_rank_cli_contract():
     assert args.remote is None
 
 
+@pytest.mark.parametrize("command", ["preset-launch", "preset-stop"])
+def test_preset_cli_required_arguments_and_launch_default(command):
+    parser, _subcommands = _parser_contract()
+    args = [command, "--plan-dir", "/tmp/plan"]
+    if command == "preset-stop":
+        with pytest.raises(SystemExit):
+            parser.parse_args(args)
+        args += ["--reason", "authorized stop"]
+    parsed = parser.parse_args(args)
+    assert parsed.plan_dir == "/tmp/plan"
+    if command == "preset-launch":
+        assert parsed.execute is False
+
+
 @pytest.mark.parametrize(("task", "variant", "target"), RUNNABLE_TASK_VARIANT_MATRIX)
 def test_runnable_task_variant_contract_matrix(task: str, variant: str | None, target: str):
     recipe = {
@@ -777,8 +789,9 @@ def test_runnable_task_variant_contract_matrix(task: str, variant: str | None, t
         "preset": {"n_tokens": 1, "split": ["train"]},
         "evaluation_policy": {"test_after_fit": False},
     }
+    adapter = get_adapter(task)
     if task == "sleep2stat":
-        commands = plans._commands_for_recipe(
+        commands = adapter.commands(
             recipe,
             {"is_sleep2stat": True, "sleep2stat": {"run": {"output_dir": "runs/unit"}}},
         )
@@ -786,12 +799,12 @@ def test_runnable_task_variant_contract_matrix(task: str, variant: str | None, t
         assert models.task_requires_variant(task) is False
         return
     if task == "preset_prepare":
-        assert target in plans._commands_for_recipe(recipe)[0]
+        assert target in adapter.commands(recipe, None)[0]
     elif task == "hparam_tune":
         # Hparam plans compile finetune scripts separately, but use the same variant namespace resolver.
         assert models.module_for_variant(str(variant), "finetune") == target
     else:
-        assert f"python -m {target}" in plans._commands_for_recipe(recipe)[0]
+        assert f"python -m {target}" in adapter.commands(recipe, None)[0]
     module_path = Path(target) if target.endswith(".py") else Path(target.replace(".", "/") + ".py")
     assert (models.REPO_ROOT / module_path).is_file()
     assert models.task_requires_variant(task) is True
