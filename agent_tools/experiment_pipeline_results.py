@@ -121,7 +121,7 @@ def read_result_manifest(attempt: dict[str, Any]) -> tuple[Path, dict[str, Any]]
         raise ValueError(f"Inference result root must contain exactly one run_manifest.json: {result_root}")
     manifest_path = manifests[0]
     manifest = read_json(manifest_path)
-    if not isinstance(manifest, dict) or not manifest:
+    if not manifest:
         raise ValueError(f"Inference result manifest is malformed: {manifest_path}")
     manifest_paths = manifest.get("paths")
     if not isinstance(manifest_paths, dict):

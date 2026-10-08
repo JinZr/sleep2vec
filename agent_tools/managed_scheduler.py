@@ -1878,8 +1878,6 @@ def validated_execution_snapshot(
     inspect = inspector or inspect_execution_target
     if snapshot_path.exists():
         frozen = read_json(snapshot_path)
-        if not isinstance(frozen, dict):
-            raise ValueError(f"Execution snapshot must be a mapping: {snapshot_path}")
         actual = inspect(execution, runs)
         # A rolling checkout may advance after registration; its live commit is recorded per run at launch.
         rolling_evidence_fields = {"runtime_commit", "supported_options", "cli_options_sha256"}

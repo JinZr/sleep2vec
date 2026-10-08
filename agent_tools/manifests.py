@@ -27,7 +27,11 @@ from .models import json_ready
 def read_json(path: str | Path | None) -> dict[str, Any]:
     if path is None:
         return {}
-    return json.loads(Path(path).read_text())
+    source = Path(path)
+    payload = json.loads(source.read_text())
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON must be a mapping: {source}")
+    return payload
 
 
 def write_json(path: str | Path, payload: Any) -> None:

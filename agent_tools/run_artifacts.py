@@ -972,9 +972,7 @@ def _validate_hparam_execution_snapshot(
         raise ValueError(f"Hparam execution snapshot is not an independent regular file: {snapshot_path}")
     if file_sha256(snapshot_path) != binding["sha256"]:
         raise ValueError(f"Hparam execution snapshot changed after planning: {snapshot_path}")
-    snapshot = read_json(snapshot_path)
-    if not isinstance(snapshot, dict):
-        raise ValueError(f"Hparam execution snapshot must be a mapping: {snapshot_path}")
+    read_json(snapshot_path)  # Must parse as a JSON object.
 
 
 def plan_tree_sha256(root: Path, *, top_level_entries: frozenset[str] | None = None) -> str:
@@ -1036,7 +1034,7 @@ def _validate_adaptive_workflow_commit(run_dir: Path, recipe: dict[str, Any], pl
     if workflow_path.is_symlink() or not workflow_path.is_file():
         raise FileNotFoundError(f"Adaptive workflow initialization is not committed: {workflow_path}")
     workflow = read_json(workflow_path)
-    if not isinstance(workflow, dict) or str(workflow.get("root") or "") != str(workflow_root):
+    if str(workflow.get("root") or "") != str(workflow_root):
         raise ValueError(f"Adaptive workflow commit marker differs from the plan root: {workflow_path}")
     initial_round = workflow_root / "adaptive" / "rounds" / "round_000"
     if run_dir == initial_round:
@@ -1226,11 +1224,9 @@ def find_run_manifest(run: Mapping[str, JsonValue]) -> Path | None:
     if not path.is_file() or path.stat().st_nlink != 1:
         raise ValueError(f"Runtime run manifest is not an independent regular file: {path}")
     try:
-        manifest = read_json(path)
+        read_json(path)  # Must parse as a JSON object.
     except (OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"Runtime run manifest is corrupt: {path}") from exc
-    if not isinstance(manifest, dict):
-        raise ValueError(f"Runtime run manifest is corrupt: {path}")
     return path
 
 
