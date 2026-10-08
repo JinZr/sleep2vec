@@ -21,7 +21,7 @@ import stat
 import subprocess
 from typing import Any, Literal, TypedDict
 
-from . import experiment_io as exp_io, run_artifacts as artifacts, transport
+from . import experiment_io as exp_io, run_artifacts as artifacts, run_evidence, transport
 from .experiment_workspace import managed_run_key, validate_checkpoint_ownership, validate_frozen_run_update
 from .manifests import read_json, utc_now
 from .models import json_ready
@@ -232,7 +232,7 @@ def _local_checkpoint_rows(runs: list[dict[str, str]]) -> list[CheckpointObserva
             raise ValueError(
                 f"Managed checkpoint_dir is not a directory: " f"{run['step_id']} / {run['run_id']} / {checkpoint_dir}"
             )
-        manifest_path = artifacts.find_run_manifest(run)
+        manifest_path = run_evidence.find_run_manifest(run)
         manifest = read_json(manifest_path) if manifest_path else {}
         best_path = artifacts.fixed_checkpoint_path(manifest, checkpoint_dir)
         has_explicit_epoch = manifest.get("epoch") not in (None, "")

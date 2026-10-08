@@ -40,6 +40,7 @@ from . import (
     plan_rendering as rendering,
     repo as repo_tools,
     run_artifacts as artifacts,
+    run_evidence,
     schema_map,
 )
 from .adapters import SUPPORTED_TASKS, composite_adapter, get_adapter
@@ -2042,7 +2043,7 @@ def collect_runs(root: str | Path, metric: str | None, output: str | Path) -> No
         managed_rows = read_run_manifest(root_path)
     for managed in managed_rows:
         runtime_dir = Path(managed["runtime_dir"]) if managed.get("runtime_dir") else None
-        manifest = artifacts.find_run_manifest(managed)
+        manifest = run_evidence.find_run_manifest(managed)
         data = read_json(manifest) if manifest is not None else {}
         wandb_summary = _wandb_summary_for_run(runtime_dir) if runtime_dir is not None else {}
         row = {
