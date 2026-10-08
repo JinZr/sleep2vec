@@ -10,7 +10,7 @@ def test_result_types_reach_callers(tmp_path: Path):
         textwrap.dedent("""\
             from pathlib import Path
             from agent_tools import (
-                adaptive_handshake, adaptive_hparam, adaptive_state,
+                adaptive_evidence, adaptive_handshake, adaptive_hparam, adaptive_state,
                 checkpoint_test_results, experiment_tracking,
                 experiments,
                 experiment_io, experiment_sources, experiment_workspace, hparam_selection,
@@ -565,6 +565,12 @@ def test_result_types_reach_callers(tmp_path: Path):
             checkpoint_rows[0]["checkpoint_paths"]  # type: ignore[typeddict-item]
             checkpoint_rows[0]["score"] = "0.5"  # type: ignore[typeddict-item]
             checkpoint_rows[0]["epoch"] = 1.5  # type: ignore[typeddict-item]
+            objective_evidence = adaptive_evidence._test_checkpoint_evidence({}, {}, "/checkpoints", [])
+            objective_evidence[0]  # type: ignore[index]
+            if objective_evidence is not None:
+                objective_result, checkpoint_trajectory = objective_evidence
+                objective_score: float = objective_result["score"]
+                objective_result["checkpoint_paths"]  # type: ignore[typeddict-item]
 
             class RankingRow(checkpoint_test_results.CheckpointTestResult):
                 checkpoint_sha256: str
