@@ -1750,6 +1750,17 @@ def test_managed_header_contract_messages_are_identical_across_readers(
     assert str(excinfo.value) == message.format(path=path)
 
 
+@pytest.mark.parametrize("document", ["[]", '"plan"', "1", "null"])
+def test_json_reader_rejects_a_document_that_is_not_an_object(tmp_path: Path, document: str):
+    path = tmp_path / "plan.json"
+    path.write_text(document + "\n")
+
+    with pytest.raises(ValueError) as excinfo:
+        manifests.read_json(path)
+
+    assert str(excinfo.value) == f"JSON must be a mapping: {path}"
+
+
 @pytest.mark.parametrize(
     "contents",
     [

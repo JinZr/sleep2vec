@@ -342,7 +342,7 @@ def _materialize_attempt_locked(
             raise ValueError(f"External attempt plan appeared after registration preflight: {plan_dir}")
 
     plan = read_json(physical_plan_dir / "plan.json")
-    runs = plan.get("runs") if isinstance(plan, dict) else None
+    runs = plan.get("runs")
     if not isinstance(runs, list) or len(runs) != 1 or not isinstance(runs[0], dict):
         raise ValueError(f"External job plan must contain exactly one managed run: {physical_plan_dir}")
     run = dict(runs[0])
@@ -462,7 +462,7 @@ def _prepare_attempt_registration_groups(
                 physical_plan_dir = plan_dir
 
             plan = read_json(physical_plan_dir / "plan.json")
-            runs = plan.get("runs") if isinstance(plan, dict) else None
+            runs = plan.get("runs")
             if not isinstance(runs, list) or len(runs) != 1 or not isinstance(runs[0], dict):
                 raise ValueError(f"External job plan must contain exactly one managed run: {plan_dir}")
             run = dict(runs[0])
@@ -757,7 +757,7 @@ def _validate_attempt_plan(
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"Pipeline attempt plan artifact is missing or aliased: {path}")
     plan = read_json(plan_path)
-    planned_runs = plan.get("runs") if isinstance(plan, dict) else None
+    planned_runs = plan.get("runs")
     if not isinstance(planned_runs, list) or len(planned_runs) != 1:
         raise ValueError(f"Pipeline attempt plan must contain exactly one run: {plan_path}")
     planned = planned_runs[0]

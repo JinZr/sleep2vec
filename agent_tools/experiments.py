@@ -84,7 +84,7 @@ def _preset_direct_workspace(plan_dir: Path) -> Path:
     # The locator is untrusted and only names the workspace to lock; run_manifest.tsv may be replaced by a concurrent
     # lock holder, so callers read workspace state through _read_preset_direct_plan under the run lock.
     initial = read_json(plan_dir / "plan.json")
-    recipe = initial.get("recipe") if isinstance(initial, dict) else None
+    recipe = initial.get("recipe")
     if not isinstance(recipe, dict) or recipe.get("task") != "preset_prepare":
         raise ValueError("preset-launch and preset-stop require a preset preparation plan.")
     issues = experiment_metadata_issues(recipe)
@@ -319,7 +319,7 @@ def _infer_slurm_workspace(plan_dir: Path) -> Path:
     # The initial document only locates the workspace to lock; run_manifest.tsv may be replaced by a concurrent lock
     # holder, so callers read workspace state through _read_infer_slurm_plan under the run lock.
     initial = read_json(plan_dir / "plan.json")
-    recipe = initial.get("recipe") if isinstance(initial, dict) else None
+    recipe = initial.get("recipe")
     if not isinstance(recipe, dict) or recipe.get("task") not in {"infer", "evaluate"}:
         raise ValueError("infer-launch and infer-stop require an ordinary infer/evaluate plan.")
     issues = experiment_metadata_issues(recipe)

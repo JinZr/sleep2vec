@@ -24,7 +24,7 @@ from agent_tools.hparam_runtime import monitor_hparam_runs
 
 @pytest.mark.parametrize(
     "failure",
-    ["runtime_dir_file", "symlink", "dangling_symlink", "directory", "bad_encoding", "bad_json"],
+    ["runtime_dir_file", "symlink", "dangling_symlink", "directory", "bad_encoding", "bad_json", "non_object"],
 )
 def test_local_runtime_manifest_corruption_fails_closed(tmp_path: Path, monkeypatch, failure: str):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
@@ -47,12 +47,16 @@ def test_local_runtime_manifest_corruption_fails_closed(tmp_path: Path, monkeypa
         manifest.mkdir()
     elif failure == "bad_encoding":
         manifest.write_bytes(b"\xff")
+    elif failure == "non_object":
+        manifest.write_text("[]")
     else:
         manifest.write_text("{")
     monkeypatch.setattr(run_evidence, "process_running", lambda *_args: True)
 
-    with pytest.raises((ValueError, UnicodeError), match="run manifest"):
+    with pytest.raises((ValueError, UnicodeError), match="run manifest") as excinfo:
         run_evidence.status_row(tmp_path, rows[0], rows[0], script_commits_terminal_status=False)
+    if failure == "non_object":
+        assert str(excinfo.value) == f"Runtime run manifest is corrupt: {manifest}"
 
 
 @pytest.mark.parametrize(

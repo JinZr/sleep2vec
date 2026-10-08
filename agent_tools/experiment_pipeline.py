@@ -489,7 +489,7 @@ def _inspect_sources(root: Path, spec: PipelineSpec, *, refresh: bool, hooks: Pi
                 if manifest_path is None or manifest_path.is_symlink() or not manifest_path.is_file():
                     raise ValueError(f"Successful source run lacks a valid run_manifest.json: {run['run_id']}")
                 manifest = read_json(manifest_path)
-                if not isinstance(manifest, dict) or not manifest:
+                if not manifest:
                     raise ValueError(f"Successful source run manifest is invalid: {manifest_path}")
                 manifest_status = manifest.get("status")
                 if manifest_status not in (None, "", *SOURCE_MANIFEST_SUCCESS_STATUSES):
@@ -1174,7 +1174,7 @@ def _read_frozen_selections(path: Path, spec: PipelineSpec) -> dict[str, FrozenC
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"Frozen checkpoint selection manifest is missing or aliased: {path}")
     payload = read_json(path)
-    if not isinstance(payload, dict) or payload.get("pipeline_id") != spec["pipeline"]["id"]:
+    if payload.get("pipeline_id") != spec["pipeline"]["id"]:
         raise ValueError(f"Frozen checkpoint selection manifest has the wrong pipeline id: {path}")
     cohort_kind = spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND
     selections = payload.get("candidates" if cohort_kind else "sources")
