@@ -27,6 +27,7 @@ from . import (
     experiment_io as exp_io,
     experiment_pipeline,
     experiment_tracking as tracking,
+    experiment_workspace,
     managed_scheduler,
     python_programs,
     run_artifacts as artifacts,
@@ -145,7 +146,7 @@ def _record_definitely_unlaunched_failure(workspace: Path, key: tuple[str, str],
 def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_scheduler.LaunchResult:
     owner_dir = Path(plan_dir).absolute()
     workspace = _preset_direct_workspace(owner_dir)
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         locked_workspace, plan, rows = _read_preset_direct_plan(owner_dir)
         if locked_workspace != workspace:
             raise ValueError("Preset plan workspace changed before launch.")
@@ -226,7 +227,7 @@ def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
         raise ValueError("Stopping a run requires a non-empty reason.")
     owner_dir = Path(plan_dir).absolute()
     workspace = _preset_direct_workspace(owner_dir)
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         locked_workspace, plan, rows = _read_preset_direct_plan(owner_dir)
         if locked_workspace != workspace:
             raise ValueError("Preset plan workspace changed before stop.")
@@ -297,7 +298,7 @@ def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
                 or evidence.process_identity_running(stopping, identity) is not False
             ):
                 raise
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         locked_workspace, _plan, rows = _read_preset_direct_plan(owner_dir)
         if locked_workspace != workspace:
             raise ValueError("Preset plan workspace changed before stop completion.")
@@ -351,7 +352,7 @@ def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPl
 def launch_infer_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_scheduler.LaunchResult:
     owner_dir = Path(plan_dir).absolute()
     workspace = _infer_slurm_workspace(owner_dir)
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         locked_workspace, plan, _rows = _read_infer_slurm_plan(owner_dir)
         if locked_workspace != workspace:
             raise ValueError("Inference plan workspace changed before launch.")
@@ -378,7 +379,7 @@ def stop_infer_run(plan_dir: str | Path, *, reason: str) -> Path:
         raise ValueError("Stopping a run requires a non-empty reason.")
     owner_dir = Path(plan_dir).absolute()
     workspace = _infer_slurm_workspace(owner_dir)
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         locked_workspace, plan, rows = _read_infer_slurm_plan(owner_dir)
         if locked_workspace != workspace:
             raise ValueError("Inference plan workspace changed before stop.")
@@ -646,12 +647,12 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     root = _target_root(run_dir, remote)
     run_manifest_path = root / "run_manifest.tsv"
     rows = _finalizable_rows(root, remote=remote)
-    with nullcontext() if remote else managed_scheduler.managed_run_lock(root):
+    with nullcontext() if remote else experiment_workspace.managed_run_lock(root):
         run_manifest_snapshot = exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[
             str(run_manifest_path)
         ]
     rows = _finalizable_rows(root, remote=remote)
-    with nullcontext() if remote else managed_scheduler.managed_run_lock(root):
+    with nullcontext() if remote else experiment_workspace.managed_run_lock(root):
         current_run_manifest = exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[
             str(run_manifest_path)
         ]
@@ -1229,7 +1230,7 @@ def _managed_workspace(
 
     # lock_held means the caller already owns the local run lock. SSH reads use the remote workspace,
     # whose lock this process cannot take.
-    with nullcontext() if remote or lock_held else managed_scheduler.managed_run_lock(root):
+    with nullcontext() if remote or lock_held else experiment_workspace.managed_run_lock(root):
         rows = read_run_manifest(root, remote=remote)
     for row in rows:
         if row["experiment_id"] != experiment["id"]:

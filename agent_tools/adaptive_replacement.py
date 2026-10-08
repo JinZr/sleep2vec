@@ -19,7 +19,7 @@ from . import (
     adaptive_evidence,
     adaptive_state,
     experiment_io as exp_io,
-    managed_scheduler,
+    experiment_workspace,
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
@@ -166,7 +166,7 @@ def _launch_initial_replacement(
     _launch_with_recovery(root, workspace, state, round_dir, attempt_run_id=None, before_launch=before_launch)
     # Launches, stops and run scripts replace run_manifest.tsv under the run lock. Every launch, stop, monitor and
     # recovery call in this module takes that lock itself, so only the reads between them hold it.
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         canonical_rows = read_run_manifest(workspace)
     next_round_rows = [row for row in canonical_rows if validated_run_key(row) in state.next_plan_keys]
     refreshed_started_keys = adaptive_state.accepted_start_keys(next_round_rows)
@@ -198,7 +198,7 @@ def _drain_bad_runs(
 ) -> list[dict[str, Any]]:
     bad_index = 0
     while bad_index < len(ordered_bad_run_keys):
-        with managed_scheduler.managed_run_lock(workspace):
+        with experiment_workspace.managed_run_lock(workspace):
             canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if validated_run_key(row) in state.next_plan_keys]
         pending = any(row.get("status") in {"planned", "pending"} for row in next_round_rows)
@@ -212,7 +212,7 @@ def _drain_bad_runs(
         try:
             stopped = _stop_bad_running_runs(root, round_dir, recipe, run_keys={run_key})
         except Exception as exc:
-            with managed_scheduler.managed_run_lock(workspace):
+            with experiment_workspace.managed_run_lock(workspace):
                 canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
             if canonical_by_key[run_key].get("status") == "stopped" and run_key not in state.stopped_run_keys:
                 state.stopped_run_keys.append(run_key)
@@ -222,7 +222,7 @@ def _drain_bad_runs(
                 + _preserved_tail(state.stopped_run_keys, state.superseded_current_keys, state.next_dir)
             ) from exc
         if not stopped:
-            with managed_scheduler.managed_run_lock(workspace):
+            with experiment_workspace.managed_run_lock(workspace):
                 canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
             after_stop = canonical_by_key[run_key]
             if (
@@ -238,7 +238,7 @@ def _drain_bad_runs(
             break
         state.stopped_run_keys.extend(stopped)
         state.retirement_credit -= len(stopped)
-        with managed_scheduler.managed_run_lock(workspace):
+        with experiment_workspace.managed_run_lock(workspace):
             canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if validated_run_key(row) in state.next_plan_keys]
         if not any(row.get("status") in {"planned", "pending"} for row in next_round_rows):
@@ -248,7 +248,7 @@ def _drain_bad_runs(
             validated_run_key(row) for row in next_round_rows if row.get("status") == "launch_failed"
         }
         _launch_with_recovery(root, workspace, state, round_dir, attempt_run_id=run_key[1], before_launch=before_launch)
-        with managed_scheduler.managed_run_lock(workspace):
+        with experiment_workspace.managed_run_lock(workspace):
             canonical_rows = read_run_manifest(workspace)
         next_round_rows = [row for row in canonical_rows if validated_run_key(row) in state.next_plan_keys]
         state.started_keys = adaptive_state.accepted_start_keys(next_round_rows)
@@ -291,13 +291,13 @@ def launch_replacement_round(
     if scheduler.get("type") == "slurm":
         monitor_hparam_runs(round_dir)
     # Both rounds are frozen into this workspace; monitoring and _bad_running_run_keys take its run lock themselves.
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         current_plan = artifacts.read_hparam_plan(round_dir)
     bad_run_keys = _bad_running_run_keys(root, round_dir, recipe)
     ordered_bad_run_keys = [
         validated_run_key(run) for run in current_plan["runs"] if validated_run_key(run) in bad_run_keys
     ]
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         next_plan_keys = {validated_run_key(run) for run in artifacts.read_hparam_plan(next_dir)["runs"]}
         canonical_rows = read_run_manifest(workspace)
     state = _ReplacementState(
@@ -343,7 +343,7 @@ def _supersede_pending_runs(root: Path, round_dir: Path) -> list[tuple[str, str]
         targets.append(launch_path)
     exp_io.validate_managed_output_paths(workspace, targets)
     # merge_run_manifest takes the run lock and re-applies lifecycle rules, so only this read holds it.
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         canonical_rows = read_run_manifest(workspace)
     canonical_by_key = {validated_run_key(row): row for row in canonical_rows}
     transitions = []
@@ -399,7 +399,7 @@ def _bad_running_run_keys(root: Path, round_dir: Path, recipe: dict[str, Any]) -
     plan_keys = {validated_run_key(run) for run in plan["runs"]}
     bad_keys = set()
     # Runtime evidence may be read over SSH, so only the manifest read holds the run lock.
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         canonical_rows = read_run_manifest(workspace)
     for row in canonical_rows:
         key = validated_run_key(row)
@@ -457,7 +457,7 @@ def _stop_bad_running_runs(
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
     # stop_hparam_run takes the run lock itself, so only the reads around it hold it.
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
     stopped = []
     for run in plan["runs"]:
@@ -466,7 +466,7 @@ def _stop_bad_running_runs(
         if key not in keys or row.get("status") != "running":
             continue
         stop_hparam_run(round_dir, str(row["run_id"]), reason="adaptive replacement")
-        with managed_scheduler.managed_run_lock(workspace):
+        with experiment_workspace.managed_run_lock(workspace):
             canonical_by_key = {managed_run_key(item): item for item in read_run_manifest(workspace)}
         if canonical_by_key[key].get("status") == "stopped":
             adaptive_state.append_event(

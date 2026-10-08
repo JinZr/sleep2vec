@@ -26,6 +26,7 @@ from agent_tools import (
     experiment_pipeline_attempts as pipeline_attempts,
     experiment_pipeline_results,
     experiment_pipeline_spec as pipeline_spec,
+    experiment_workspace,
     experiments,
     managed_scheduler,
     plans,
@@ -1601,7 +1602,7 @@ def test_run_attempts_syncs_owned_missing_pid_and_blocks_pending_sibling(tmp_pat
 
     def lose_owned_pid(root, _owner_dir, runs, *_args, **kwargs):
         launches.append(kwargs["fail_on_missing_pid_blocker"])
-        with managed_scheduler.managed_run_lock(root):
+        with experiment_workspace.managed_run_lock(root):
             row = next(row for row in read_run_manifest(root) if row["run_id"] == runs[0]["run_id"])
             merge_run_manifest(root, [{**row, "status": "missing_pid"}], lock_held=True)
         raise managed_scheduler.MissingPidCapacityError(row["step_id"], row["run_id"])

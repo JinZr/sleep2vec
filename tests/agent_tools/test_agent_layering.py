@@ -278,12 +278,14 @@ def test_retired_compatibility_paths_stay_removed():
     # Each name is imported from its defining module; the old spellings must not return.
     import agent_tools.configs
     import agent_tools.experiment_io
+    import agent_tools.managed_scheduler
     import agent_tools.recipes
 
     assert not (_package_dir() / "index_csv.py").exists()
     assert not hasattr(agent_tools.configs, "sleep2stat_config_summary")
     assert not hasattr(agent_tools.recipes, "recipe_name")
     assert not hasattr(agent_tools.experiment_io, "SSH_TIMEOUT_SECONDS")
+    assert not hasattr(agent_tools.managed_scheduler, "managed_run_lock")
 
 
 def _executed_imports(node: ast.AST, local: bool = False) -> Iterator[tuple[ast.Import | ast.ImportFrom, bool]]:

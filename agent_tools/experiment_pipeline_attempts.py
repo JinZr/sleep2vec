@@ -28,6 +28,7 @@ from . import (
     experiment_io as exp_io,
     experiment_pipeline_cohort_selection as cohort_selection,
     experiment_pipeline_results as pipeline_results,
+    experiment_workspace,
     managed_scheduler,
     run_artifacts as artifacts,
 )
@@ -387,7 +388,7 @@ def _materialize_attempt_locked(
 
     # Pipeline jobs commit their own status under the run lock. Callers hold only the registration and publication
     # locks, and merge_run_manifest below takes the run lock itself, so only this read holds it.
-    with managed_scheduler.managed_run_lock(root):
+    with experiment_workspace.managed_run_lock(root):
         canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(root)}
     canonical = canonical_by_key.get(managed_run_key(run))
     if canonical is not None:
@@ -417,7 +418,7 @@ def _prepare_attempt_registration_groups(
     groups: dict[str, list[dict[str, Any]]] = {}
     group_paths: dict[str, list[Path]] = {}
     # Callers hold only the registration lock; the execution-target probe below must not hold the run lock.
-    with managed_scheduler.managed_run_lock(root):
+    with experiment_workspace.managed_run_lock(root):
         canonical_keys = {managed_run_key(row) for row in read_run_manifest(root)}
     pending = []
     for item in attempts:
@@ -669,7 +670,7 @@ def validate_attempt_rows(
     require_all_jobs: bool = True,
 ) -> None:
     # Pipeline jobs commit their own status under the run lock; no caller holds it here.
-    with managed_scheduler.managed_run_lock(root):
+    with experiment_workspace.managed_run_lock(root):
         canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
     jobs = {job["id"]: job for job in spec["jobs"]}
     seen_attempts = set()
@@ -864,7 +865,7 @@ def create_needed_retries(
     for row in attempts:
         if int(row["attempt"]) > 1:
             _reconcile_pipeline_retry_planned_event(root, spec, row)
-    with managed_scheduler.managed_run_lock(root):
+    with experiment_workspace.managed_run_lock(root):
         canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
     by_job: dict[str, list[dict[str, Any]]] = {}
     for row in attempts:

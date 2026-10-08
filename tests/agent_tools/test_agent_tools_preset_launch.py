@@ -17,7 +17,7 @@ from test_agent_preset_runtime_identity import (
     preset_runtime as preset_runtime_fixture,
 )
 
-from agent_tools import cli, experiments, managed_scheduler, plans, run_evidence
+from agent_tools import cli, experiment_workspace, experiments, managed_scheduler, plans, run_evidence
 from agent_tools.experiment_workspace import (
     PROCESS_IDENTITY_FIELDS,
     has_managed_launch_evidence,
@@ -142,7 +142,7 @@ def test_real_preset_consultation_can_generate_a_registered_launchable_plan(tmp_
 def _wait_status(workspace, statuses):
     deadline = time.monotonic() + SUBPROCESS_WAIT_SECONDS
     while True:
-        with managed_scheduler.managed_run_lock(workspace):
+        with experiment_workspace.managed_run_lock(workspace):
             row = read_run_manifest(workspace)[0]
         if row["status"] in statuses:
             return row

@@ -1,10 +1,10 @@
 """Managed manifests and the one-way ``plan_controller`` binding.
 
 Layer 0 leaf, and the workspace facade. Owns ``run_manifest.tsv`` -- the
-lifecycle owner for run status -- the frozen run, scheduler, process, and
-runtime-provenance identity field sets, the phase and status vocabularies, and
-the one-way step ``plan_controller`` binding that classifies a plan as
-ordinary, adaptive, or pipeline.
+lifecycle owner for run status -- its managed run lock, the frozen run,
+scheduler, process, and runtime-provenance identity field sets, the phase and
+status vocabularies, and the one-way step ``plan_controller`` binding that
+classifies a plan as ordinary, adaptive, or pipeline.
 
 ``research_log`` publishes behind this facade rather than writing to the
 workspace directly.
@@ -356,6 +356,16 @@ def plan_registration_lock(root: str | Path) -> Iterator[None]:
     with _PLAN_REGISTRATION_LOCKS_GUARD:
         local_lock = _PLAN_REGISTRATION_LOCKS.setdefault(lock_path, threading.Lock())
     with local_lock, exp_io.blocking_file_lock(lock_path):
+        yield
+
+
+@contextmanager
+def managed_run_lock(workspace: str | Path) -> Iterator[None]:
+    """Guard run_manifest.tsv replacement by launches and run scripts; registration/publication locks order first."""
+    root = Path(workspace)
+    lock_path = root / "run_manifest.tsv.lock"
+    exp_io.validate_managed_output_paths(root, [lock_path])
+    with exp_io.blocking_file_lock(lock_path):
         yield
 
 
@@ -769,10 +779,7 @@ def ensure_experiment_workspace(
     workspace_rows = []
     if manifest_exists:
         validate_existing_experiment_manifest(manifest_path.read_text(), experiment, root)
-        # managed_scheduler imports this module; planning callers hold only the registration/publication locks.
-        from . import managed_scheduler
-
-        with managed_scheduler.managed_run_lock(root):
+        with managed_run_lock(root):
             workspace_rows = read_run_manifest(root)
         for row in workspace_rows:
             if row["experiment_id"] != experiment["id"]:
@@ -991,10 +998,7 @@ def next_run_index(recipe: dict[str, Any]) -> int:
         return 0
     step_id = str((recipe.get("step") or {}).get("id") or "")
     indices = []
-    # managed_scheduler imports this module; planning callers hold only the registration/publication locks.
-    from . import managed_scheduler
-
-    with managed_scheduler.managed_run_lock(root):
+    with managed_run_lock(root):
         rows = read_run_manifest(root)
     for row in rows:
         if str(row.get("step_id") or "") != step_id:
@@ -1165,11 +1169,7 @@ def plan_registration_rows_state(
     expected_by_key = {cast(tuple[str, str], managed_run_key(row)): row for row in expected_rows}
     existing_rows: list[dict[str, str]] = []
     if exp_io.path_exists_at(root / "run_manifest.tsv"):
-        # managed_scheduler imports this module. Launches and run scripts replace run_manifest.tsv under the
-        # run lock; registration callers hold only the plan registration/publication locks, which order first.
-        from . import managed_scheduler
-
-        with managed_scheduler.managed_run_lock(root):
+        with managed_run_lock(root):
             existing_rows = read_run_manifest(root)
     canonical_by_key = {cast(tuple[str, str], managed_run_key(row)): row for row in existing_rows}
     present_keys = set(expected_by_key) & set(canonical_by_key)

@@ -23,8 +23,8 @@ from . import (
     checkpoint_test_results,
     experiment_io as exp_io,
     experiment_tracking as tracking,
+    experiment_workspace,
     hparam_runtime,
-    managed_scheduler,
     plan_contract,
     run_artifacts as artifacts,
     run_evidence as evidence,
@@ -139,7 +139,7 @@ def resolve_hparam_candidates(
     owner_runs_by_key = {}
     owner_plans_by_key: dict[tuple[str, str], plan_contract.HparamPlan] = {}
     # Registered plans validate their rows against run_manifest.tsv as they are read.
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         workspace_rows = read_run_manifest(workspace)
         for _registered_root, owner_plan in artifacts.iter_registered_hparam_plans(
             workspace,
@@ -425,7 +425,7 @@ def _preflight_hparam_selection(
         raise ValueError("Invalid active experiment owner: " + "; ".join(issue["message"] for issue in active_issues))
     validate_existing_experiment_manifest(experiment_manifest_text, recipe["experiment"], workspace)
     # Keep the canonical snapshot invocation-local; publication rereads it after the first manifest merge.
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         canonical_rows = read_run_manifest(workspace)
     canonical_by_key = {managed_run_key(row): row for row in canonical_rows}
     step_id = str((recipe.get("step") or {}).get("id") or "")
@@ -461,7 +461,7 @@ def _preflight_hparam_selection(
         if len(policies) != 1:
             raise ValueError(f"Canonical hparam rows disagree on selection policy: {selected_step_id}")
         selected_metric, selected_mode, selected_split = next(iter(policies))
-        with managed_scheduler.managed_run_lock(workspace):
+        with experiment_workspace.managed_run_lock(workspace):
             registered = list(
                 artifacts.iter_registered_hparam_plans(
                     workspace,
@@ -496,7 +496,7 @@ def _preflight_hparam_selection(
     step_runs = []
     evidence_runs_by_key = {}
     plan_root_by_key = {}
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         current_registered = list(
             artifacts.iter_registered_hparam_plans(
                 workspace,
@@ -902,7 +902,7 @@ def _commit_hparam_selection(selection: _HparamSelectionBuild) -> Path:
             for row in selection.unscored_rows
         ],
     )
-    with managed_scheduler.managed_run_lock(selection.workspace):
+    with experiment_workspace.managed_run_lock(selection.workspace):
         selected_rows = read_run_manifest(selection.workspace)
     report_steps = _selection_report_steps(
         [row for row in selected_rows if managed_run_key(row) in selection.report_run_keys]
@@ -1329,7 +1329,7 @@ def scan_hparam_checkpoints(run_dir: str | Path, metric: str, mode: str, *, top_
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         canonical_rows = read_run_manifest(workspace)
     out = root / "checkpoint_ranking.csv"
     exp_io.validate_managed_output_paths(root, [out])

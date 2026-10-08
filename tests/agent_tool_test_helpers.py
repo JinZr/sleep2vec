@@ -76,7 +76,7 @@ def call_while_run_lock_holder_commits(monkeypatch, workspace: Path, call: Calla
     The caller signals when it stats run_manifest.tsv or contends for the run lock. A stat then parks it between
     stat and open until the republish has replaced the manifest inode, so any managed read made outside the lock
     fails deterministically. Returns the call's result and re-raises its exception."""
-    from agent_tools import managed_scheduler
+    from agent_tools import experiment_workspace
     from agent_tools.experiment_workspace import merge_run_manifest, read_run_manifest
 
     waiting = threading.Event()
@@ -84,7 +84,7 @@ def call_while_run_lock_holder_commits(monkeypatch, workspace: Path, call: Calla
     outcome: dict[str, _T] = {}
     failures: list[BaseException] = []
     real_lstat = os.lstat
-    real_run_lock = managed_scheduler.managed_run_lock
+    real_run_lock = experiment_workspace.managed_run_lock
 
     def lstat(path, *args, **kwargs):
         info = real_lstat(path, *args, **kwargs)
@@ -108,7 +108,7 @@ def call_while_run_lock_holder_commits(monkeypatch, workspace: Path, call: Calla
 
     caller = threading.Thread(target=target)
     monkeypatch.setattr(os, "lstat", lstat)
-    monkeypatch.setattr(managed_scheduler, "managed_run_lock", run_lock)
+    monkeypatch.setattr(experiment_workspace, "managed_run_lock", run_lock)
     with real_run_lock(workspace):
         caller.start()
         assert waiting.wait(timeout=5)
@@ -500,11 +500,11 @@ class FakePipelineRuntime:
     def launch_runs(self, root, _owner_dir, runs, _execution, _runtime, **_kwargs):
         from types import SimpleNamespace
 
-        from agent_tools import managed_scheduler
+        from agent_tools import experiment_workspace, managed_scheduler
         from agent_tools.experiment_workspace import managed_run_key, merge_run_manifest, read_run_manifest
 
         self.calls.append(("launch", [str(run["run_id"]) for run in runs]))
-        with managed_scheduler.managed_run_lock(root):
+        with experiment_workspace.managed_run_lock(root):
             canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
             updates = []
             for run in runs:

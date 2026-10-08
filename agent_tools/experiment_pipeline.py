@@ -28,6 +28,7 @@ from . import (
     experiment_pipeline_cohort_selection as cohort_selection,
     experiment_pipeline_results as pipeline_results,
     experiment_pipeline_spec as pipeline_spec,
+    experiment_workspace,
     managed_scheduler,
     plan_contract,
     run_artifacts as artifacts,
@@ -247,7 +248,7 @@ def _validate_experiment(root: Path, spec: PipelineSpec, *, allow_completed: boo
     if experiment.get("status") == "completed" and not allow_completed:
         raise ValueError("Experiment is already completed.")
     # Launches and run scripts replace run_manifest.tsv under the run lock; no pipeline caller holds it here.
-    with managed_scheduler.managed_run_lock(root):
+    with experiment_workspace.managed_run_lock(root):
         read_run_manifest(root)
     return experiment
 
@@ -439,7 +440,7 @@ def _source_hparam_plans(source_id: str, source: CheckpointSourceSpec) -> list[t
     evaluation = recipe["evaluation_policy"]
     root = canonical_local_experiment_root(recipe["experiment"]["root"], Path.cwd())
     # Each registered plan's full read validates run_manifest.tsv; no pipeline caller holds the run lock here.
-    with managed_scheduler.managed_run_lock(root):
+    with experiment_workspace.managed_run_lock(root):
         plans = list(
             artifacts.iter_registered_hparam_plans(
                 root,
@@ -456,7 +457,7 @@ def _source_hparam_plans(source_id: str, source: CheckpointSourceSpec) -> list[t
 
 def _inspect_sources(root: Path, spec: PipelineSpec, *, refresh: bool, hooks: PipelineHooks) -> list[SourceState]:
     # Monitoring takes the run lock itself, so only the reads hold it.
-    with managed_scheduler.managed_run_lock(root):
+    with experiment_workspace.managed_run_lock(root):
         canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
     states: list[SourceState] = []
     for source_id, source in spec["checkpoint_sources"].items():
@@ -465,7 +466,7 @@ def _inspect_sources(root: Path, spec: PipelineSpec, *, refresh: bool, hooks: Pi
         if refresh:
             for registered_dir, _plan in plans:
                 (hooks.monitor_runs or monitor_hparam_runs)(registered_dir, once=True, health=True)
-            with managed_scheduler.managed_run_lock(root):
+            with experiment_workspace.managed_run_lock(root):
                 canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
         runs = [run for _plan_dir, plan in plans for run in plan["runs"]]
         rows = [canonical[managed_run_key(run)] for run in runs]
@@ -1363,7 +1364,7 @@ def _run_attempts(
             owner_dir.mkdir(parents=True, exist_ok=True)
             snapshot_path = owner_dir / managed_scheduler.EXECUTION_SNAPSHOT_NAME
             if snapshot_path.exists():
-                with managed_scheduler.managed_run_lock(root):
+                with experiment_workspace.managed_run_lock(root):
                     canonical = {cast(tuple[str, str], managed_run_key(row)): row for row in read_run_manifest(root)}
                 if any(
                     (canonical[cast(tuple[str, str], managed_run_key(run))].get("status") or "planned")
@@ -1391,7 +1392,7 @@ def _run_attempts(
                 missing_pid_blocker = exc
                 break
 
-        with managed_scheduler.managed_run_lock(root):
+        with experiment_workspace.managed_run_lock(root):
             canonical = {cast(tuple[str, str], managed_run_key(row)): row for row in read_run_manifest(root)}
         if any(
             canonical[cast(tuple[str, str], managed_run_key(row))].get("status") in SUCCESS_STATUSES
