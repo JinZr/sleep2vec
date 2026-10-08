@@ -482,15 +482,15 @@ def test_hparam_plan_commit_rereads_workspace_state_only_under_run_lock(tmp_path
     plan = run_artifacts.read_hparam_plan(plan_dir)
     # Skip the registration reads and merge before the final full read, which the harness then races.
     monkeypatch.setattr(
-        plan_hparam, "_hparam_registration_state", lambda _plan: (tmp_path, plan_hparam.hparam_manifest_rows(plan))
+        run_artifacts, "_hparam_registration_state", lambda _plan: (tmp_path, plan_hparam.hparam_manifest_rows(plan))
     )
-    monkeypatch.setattr(plan_hparam, "ensure_experiment_workspace", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(plan_hparam, "merge_run_manifest", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_artifacts, "ensure_experiment_workspace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_artifacts, "merge_run_manifest", lambda *_args, **_kwargs: None)
 
     committed = call_while_run_lock_holder_commits(
         monkeypatch,
         tmp_path,
-        lambda: plan_hparam.commit_hparam_plan(plan_dir, emit_event=False, preflight_validated=True),
+        lambda: run_artifacts.commit_hparam_plan(plan_dir, emit_event=False, preflight_validated=True),
     )
 
     assert committed["runs"] == plan["runs"]

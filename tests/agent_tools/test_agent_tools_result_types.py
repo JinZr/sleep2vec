@@ -416,7 +416,7 @@ def test_result_types_reach_callers(tmp_path: Path):
 
             for hparam_plan in (
                 run_artifacts.read_hparam_plan(Path("/plan")),
-                plan_hparam.commit_hparam_plan(Path("/plan")),
+                run_artifacts.commit_hparam_plan(Path("/plan")),
                 next(run_artifacts.iter_registered_hparam_plans(
                     Path("/workspace"), "step", selection_metric="score", selection_mode="max", selection_split="val",
                 ))[1],

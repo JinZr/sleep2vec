@@ -22,7 +22,7 @@ from test_agent_plan_blocks_on_ambiguity import (
 from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
 import yaml
 
-from agent_tools import configs, models, plan_context, plan_hparam, plans
+from agent_tools import configs, models, plan_context, plans, run_artifacts
 from agent_tools.adapters.hparam_tune import HparamTuneAdapter
 from agent_tools.models import REPO_ROOT
 from agent_tools.plan_hparam import final_test_checkpoint_issues
@@ -624,7 +624,7 @@ def test_hparam_plan_materializes_config_validated_before_workspace_setup(tmp_pa
     base_recipe = Path(yaml.safe_load(recipe.read_text())["base_recipe"])
     config = Path(yaml.safe_load(base_recipe.read_text())["inputs"]["config"])
     validated_bytes = config.read_bytes()
-    real_ensure_workspace = plan_hparam.ensure_experiment_workspace
+    real_ensure_workspace = run_artifacts.ensure_experiment_workspace
 
     def mutate_source_after_preflight(recipe_payload: dict, output_dir: Path, **workspace_options):
         payload = yaml.safe_load(config.read_text())
@@ -632,7 +632,7 @@ def test_hparam_plan_materializes_config_validated_before_workspace_setup(tmp_pa
         config.write_text(yaml.safe_dump(payload, sort_keys=False))
         return real_ensure_workspace(recipe_payload, output_dir, **workspace_options)
 
-    monkeypatch.setattr(plan_hparam, "ensure_experiment_workspace", mutate_source_after_preflight)
+    monkeypatch.setattr(run_artifacts, "ensure_experiment_workspace", mutate_source_after_preflight)
     output_dir = tmp_path / "plan"
 
     report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)

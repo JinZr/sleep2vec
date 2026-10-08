@@ -912,7 +912,7 @@ def test_published_unregistered_round_is_recovered_without_skipping_index(tmp_pa
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
-    commit_plan = adaptive_hparam.plan_hparam.commit_hparam_plan
+    commit_plan = adaptive_hparam.artifacts.commit_hparam_plan
     commit_calls = 0
 
     def interrupt_first_commit(*args, **kwargs):
@@ -931,7 +931,7 @@ def test_published_unregistered_round_is_recovered_without_skipping_index(tmp_pa
         )
         return Path(run_dir) / "launch_manifest.tsv"
 
-    monkeypatch.setattr(adaptive_hparam.plan_hparam, "commit_hparam_plan", interrupt_first_commit)
+    monkeypatch.setattr(adaptive_hparam.artifacts, "commit_hparam_plan", interrupt_first_commit)
     monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
 
     with pytest.raises(RuntimeError, match="registration interrupted"):
@@ -964,19 +964,19 @@ def test_published_unregistered_round_rejects_full_tree_drift(tmp_path: Path, mo
     workflow_dir = adaptive_hparam.init_adaptive_workflow(recipe, tmp_path / "workflow")
     monkeypatch.setattr(adaptive_hparam, "digest_hparam_run", lambda _round_dir: tmp_path / "digest.csv")
     monkeypatch.setattr(adaptive_hparam, "suggest_next_round", lambda _root: recipe)
-    commit_plan = adaptive_hparam.plan_hparam.commit_hparam_plan
+    commit_plan = adaptive_hparam.artifacts.commit_hparam_plan
 
     def interrupt_commit(*_args, **_kwargs):
         raise RuntimeError("registration interrupted")
 
-    monkeypatch.setattr(adaptive_hparam.plan_hparam, "commit_hparam_plan", interrupt_commit)
+    monkeypatch.setattr(adaptive_hparam.artifacts, "commit_hparam_plan", interrupt_commit)
 
     with pytest.raises(RuntimeError, match="registration interrupted"):
         adaptive_hparam.adaptive_step(workflow_dir, execute=True)
 
     next_dir = workflow_dir / "adaptive" / "rounds" / "round_001"
     (next_dir / "run_all.sh").write_text((next_dir / "run_all.sh").read_text() + "# drift\n")
-    monkeypatch.setattr(adaptive_hparam.plan_hparam, "commit_hparam_plan", commit_plan)
+    monkeypatch.setattr(adaptive_hparam.artifacts, "commit_hparam_plan", commit_plan)
     launches = []
     monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", lambda *_args, **_kwargs: launches.append(True))
 

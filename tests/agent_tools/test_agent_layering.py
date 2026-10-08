@@ -276,10 +276,12 @@ def test_docstring_guard_catches_missing_and_empty():
 
 def test_retired_compatibility_paths_stay_removed():
     # Each name is imported from its defining module; the old spellings must not return.
+    import agent_tools.adapters.base
     import agent_tools.configs
     import agent_tools.experiment_io
     import agent_tools.hparam_runtime
     import agent_tools.managed_scheduler
+    import agent_tools.plan_hparam
     import agent_tools.recipes
     import agent_tools.run_artifacts
 
@@ -303,6 +305,12 @@ def test_retired_compatibility_paths_stay_removed():
     assert not hasattr(agent_tools.hparam_runtime, "EXECUTION_SNAPSHOT_NAME")
     assert not hasattr(agent_tools.run_artifacts, "find_run_manifest")
     assert not hasattr(agent_tools.run_artifacts, "checkpoint_names")
+    for name in ("HparamRegistrationPreflightError", "preflight_hparam_plan", "commit_hparam_plan"):
+        assert not hasattr(agent_tools.plan_hparam, name), name
+    assert not hasattr(agent_tools.adapters.base, "PlanRegistrationPreflightError")
+    for adapter in agent_tools.adapters.all_adapters():
+        assert not hasattr(adapter, "precommit_plan"), adapter.task
+        assert not hasattr(adapter, "commit_plan"), adapter.task
 
 
 def _executed_imports(node: ast.AST, local: bool = False) -> Iterator[tuple[ast.Import | ast.ImportFrom, bool]]:

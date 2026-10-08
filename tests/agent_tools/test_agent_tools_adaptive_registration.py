@@ -275,9 +275,9 @@ def test_adaptive_init_recovers_published_round_before_canonical_registration(
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
-    original_commit = plan_hparam.commit_hparam_plan
+    original_commit = run_artifacts.commit_hparam_plan
     monkeypatch.setattr(
-        plan_hparam,
+        run_artifacts,
         "commit_hparam_plan",
         lambda _round_dir, **_kwargs: (_ for _ in ()).throw(OSError("injected canonical registration failure")),
     )
@@ -304,7 +304,7 @@ def test_adaptive_init_recovers_published_round_before_canonical_registration(
     if tamper:
         (round_dir / "plan.md").write_text("tampered\n")
 
-    monkeypatch.setattr(plan_hparam, "commit_hparam_plan", original_commit)
+    monkeypatch.setattr(run_artifacts, "commit_hparam_plan", original_commit)
     original_build_plan = adaptive_hparam.build_plan
     build_calls = 0
 
@@ -334,15 +334,15 @@ def test_concurrent_adaptive_recoveries_publish_single_registration(tmp_path: Pa
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
-    original_commit = plan_hparam.commit_hparam_plan
+    original_commit = run_artifacts.commit_hparam_plan
     monkeypatch.setattr(
-        plan_hparam,
+        run_artifacts,
         "commit_hparam_plan",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected registration failure")),
     )
     with pytest.raises(OSError, match="injected registration failure"):
         adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
-    monkeypatch.setattr(plan_hparam, "commit_hparam_plan", original_commit)
+    monkeypatch.setattr(run_artifacts, "commit_hparam_plan", original_commit)
 
     registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
     original_replace = adaptive_hparam.exp_io.conditional_atomic_replace_text_at
@@ -1272,7 +1272,7 @@ def test_adaptive_rounds_keep_frozen_route_and_python_and_allow_commit_and_capac
         None,
     )
     adaptive_hparam._publish_staged_round_locked(staging_dir, next_dir)
-    plan_hparam.commit_hparam_plan(next_dir)
+    run_artifacts.commit_hparam_plan(next_dir)
 
     assert suggested["execution"]["max_concurrent"] == 2
     assert suggested["execution"]["python"] == frozen_identity["python"]

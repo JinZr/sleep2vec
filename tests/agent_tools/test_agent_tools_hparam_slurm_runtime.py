@@ -773,8 +773,8 @@ def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path:
         source_config_sha256=hashlib.sha256(source_config).hexdigest(),
         final_eval_config=None,
     )
-    plan_hparam.preflight_hparam_plan(slurm_plan_dir, semantic_out=slurm_plan_dir)
-    plan_hparam.commit_hparam_plan(slurm_plan_dir)
+    run_artifacts.preflight_hparam_plan(slurm_plan_dir, semantic_out=slurm_plan_dir)
+    run_artifacts.commit_hparam_plan(slurm_plan_dir)
 
     run = json.loads((slurm_plan_dir / "plan.json").read_text())["runs"][0]
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
