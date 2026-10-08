@@ -59,7 +59,7 @@ from .experiment_workspace import (
 )
 from .hparam_runtime import monitor_hparam_runs, read_hparam_plan_under_run_lock
 from .manifests import read_json, read_rows, utc_now, write_rows, write_text
-from .models import JsonValue, is_full_git_object_id, recipe_name, resolve_repo_path
+from .models import YAML_SAFE_LOADER, JsonValue, is_full_git_object_id, recipe_name, resolve_repo_path
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 from .recipes import load_recipe_with_base, strip_internal_recipe_keys
 
@@ -543,7 +543,7 @@ def _recover_published_agent_suggestion(
     if os.path.lexists(suggestion):
         try:
             published = exp_io.read_managed_files_at(workspace, [suggestion], allow_invalid_utf8=True)[str(suggestion)]
-            published_payload = yaml.safe_load(published["text"])
+            published_payload = yaml.load(published["text"], Loader=YAML_SAFE_LOADER)
         except (ValueError, yaml.YAMLError) as exc:
             raise ValueError(f"Existing adaptive suggestion is invalid: {suggestion}") from exc
         published_execution = published_payload.get("execution") if isinstance(published_payload, dict) else None
@@ -1047,7 +1047,7 @@ def _validate_initial_round(
     round_recipe = round_dir / "round_recipe.yaml"
     if round_recipe.is_symlink() or not round_recipe.is_file():
         raise FileNotFoundError(f"Missing frozen adaptive round recipe: {round_recipe}")
-    actual_recipe = yaml.safe_load(round_recipe.read_text())
+    actual_recipe = yaml.load(round_recipe.read_text(), Loader=YAML_SAFE_LOADER)
     if adaptive_proposals.canonical_sha256(actual_recipe) != adaptive_proposals.canonical_sha256(expected_recipe):
         raise ValueError(f"Frozen adaptive round recipe differs from the requested initialization: {round_recipe}")
     source_config = round_dir / "config.source.yaml"

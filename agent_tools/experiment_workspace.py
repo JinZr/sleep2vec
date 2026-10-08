@@ -27,7 +27,7 @@ from typing import Any, Literal, TypedDict, TypeVar, cast
 import yaml
 
 from . import experiment_io as exp_io, research_log, transport
-from .models import REPO_ROOT, JsonValue, is_full_git_object_id, json_ready
+from .models import REPO_ROOT, YAML_SAFE_LOADER, JsonValue, is_full_git_object_id, json_ready
 
 # resolve_run_row returns the caller's own row, so its precision follows the caller's row type.
 _Row = TypeVar("_Row", bound=Mapping[str, Any])
@@ -373,42 +373,47 @@ def read_managed_yaml_mapping(text: str, *, source: str | Path) -> dict[str, Any
     label = str(source)
     if not text.strip():
         raise ValueError(f"{label} is empty.")
+    loader = YAML_SAFE_LOADER(text)
     try:
-        document = yaml.compose(text)
-    except yaml.YAMLError as exc:
-        raise ValueError(f"{label} is invalid YAML.") from exc
-    pending = [(document, False)]
-    active_nodes: set[int] = set()
-    visited_nodes = set()
-    while pending:
-        node, leaving = pending.pop()
-        node_id = id(node)
-        if leaving:
-            active_nodes.remove(node_id)
-            visited_nodes.add(node_id)
-            continue
-        if node_id in active_nodes:
-            raise ValueError(f"{label} has a recursive YAML alias.")
-        if node_id in visited_nodes:
-            continue
-        active_nodes.add(node_id)
-        pending.append((node, True))
-        if isinstance(node, yaml.MappingNode):
-            keys = set()
-            for key_node, value_node in node.value:
-                if not isinstance(key_node, yaml.ScalarNode):
-                    raise ValueError(f"{label} has a non-scalar key.")
-                key = (key_node.tag, key_node.value)
-                if key in keys:
-                    raise ValueError(f"{label} has a duplicate key: {key_node.value}.")
-                keys.add(key)
-                pending.append((value_node, False))
-        elif isinstance(node, yaml.SequenceNode):
-            pending.extend((item, False) for item in node.value)
-    try:
-        payload = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise ValueError(f"{label} is invalid YAML.") from exc
+        try:
+            document = loader.get_single_node()
+        except yaml.YAMLError as exc:
+            raise ValueError(f"{label} is invalid YAML.") from exc
+        pending = [(document, False)]
+        active_nodes: set[int] = set()
+        visited_nodes = set()
+        while pending:
+            node, leaving = pending.pop()
+            node_id = id(node)
+            if leaving:
+                active_nodes.remove(node_id)
+                visited_nodes.add(node_id)
+                continue
+            if node_id in active_nodes:
+                raise ValueError(f"{label} has a recursive YAML alias.")
+            if node_id in visited_nodes:
+                continue
+            active_nodes.add(node_id)
+            pending.append((node, True))
+            if isinstance(node, yaml.MappingNode):
+                keys = set()
+                for key_node, value_node in node.value:
+                    if not isinstance(key_node, yaml.ScalarNode):
+                        raise ValueError(f"{label} has a non-scalar key.")
+                    key = (key_node.tag, key_node.value)
+                    if key in keys:
+                        raise ValueError(f"{label} has a duplicate key: {key_node.value}.")
+                    keys.add(key)
+                    pending.append((value_node, False))
+            elif isinstance(node, yaml.SequenceNode):
+                pending.extend((item, False) for item in node.value)
+        # Comment-only text composes to no node; like yaml.load, construct nothing for it.
+        try:
+            payload = loader.construct_document(document) if document is not None else None
+        except yaml.YAMLError as exc:
+            raise ValueError(f"{label} is invalid YAML.") from exc
+    finally:
+        loader.dispose()
     if not isinstance(payload, dict) or not payload:
         raise ValueError(f"{label} must contain a non-empty mapping.")
     return payload

@@ -12,7 +12,7 @@ def test_manifest_and_list_preserve_raw_values(tmp_path, monkeypatch):
     manifest_path = tmp_path / "manifest.yaml"
     manifest_path.write_text("skills: {}\n")
     raw = {"skills": {2: {"path": {"raw": True}, "owners": None, "task_types": ("task",)}, 1: {}}}
-    monkeypatch.setattr(skills.yaml, "safe_load", lambda text: raw)
+    monkeypatch.setattr(skills.yaml, "load", lambda text, Loader: raw)
     assert skills.load_manifest(manifest_path) is raw
     monkeypatch.setattr(skills, "load_manifest", lambda: raw)
 

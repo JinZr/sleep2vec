@@ -13,7 +13,7 @@ from typing import Any, TypedDict
 
 import yaml
 
-from .models import REPO_ROOT, SUPPORTED_VARIANTS, task_requires_variant
+from .models import REPO_ROOT, SUPPORTED_VARIANTS, YAML_SAFE_LOADER, task_requires_variant
 
 REQUIRED_HEADINGS = (
     "## When to use",
@@ -48,7 +48,7 @@ class SkillValidationResult(SkillValidationStatus, total=False):
 
 def load_manifest(path: Path | None = None) -> dict[str, Any]:
     manifest_path = path or REPO_ROOT / "skills" / "manifest.yaml"
-    data = yaml.safe_load(manifest_path.read_text())
+    data = yaml.load(manifest_path.read_text(), Loader=YAML_SAFE_LOADER)
     if not isinstance(data, dict):
         raise ValueError("skills/manifest.yaml must be a mapping.")
     return data
@@ -93,7 +93,7 @@ def validate_skills() -> SkillValidationResult:
             if not (REPO_ROOT / index_path).exists():
                 issues.append(f"{name}: relevant index path missing: {index_path}")
     for example in (REPO_ROOT / "skills").glob("*/examples/*.yaml"):
-        data = yaml.safe_load(example.read_text())
+        data = yaml.load(example.read_text(), Loader=YAML_SAFE_LOADER)
         if not isinstance(data, dict):
             issues.append(f"{example}: example must be a mapping")
             continue

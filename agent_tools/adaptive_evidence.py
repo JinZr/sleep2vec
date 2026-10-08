@@ -26,6 +26,7 @@ from . import (
     run_evidence as evidence,
 )
 from .experiment_workspace import managed_run_key, managed_run_parameters
+from .models import YAML_SAFE_LOADER
 
 
 def digest_rows(
@@ -139,7 +140,7 @@ def digest_rows(
         row["stop_reason"] = status.get("stop_reason", "")
         history_monitor = manifest.get("monitor")
         if not history_monitor:
-            run_config = yaml.safe_load(Path(run["config"]).read_text())
+            run_config = yaml.load(Path(run["config"]).read_text(), Loader=YAML_SAFE_LOADER)
             task = run_config.get("finetune", {}).get("task") or {}
             history_monitor = task.get("monitor")
             if not history_monitor:

@@ -18,7 +18,15 @@ import yaml
 from .adapters.config_providers import CONFIG_SHAPE_SUMMARIES, CONFIG_SUMMARY_PROVIDERS
 from .decision_paths import path_context, path_validation
 from .domain.finetune_summary import finetune_summary_body, guess_variant
-from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, ConfigSummary, load_yaml, repo_relative, resolve_repo_path
+from .models import (
+    CONFIG_FINETUNE_SECTION,
+    REPO_ROOT,
+    YAML_SAFE_LOADER,
+    ConfigSummary,
+    load_yaml,
+    repo_relative,
+    resolve_repo_path,
+)
 
 
 def config_summary(
@@ -38,7 +46,7 @@ def config_summary(
     if config_bytes is None:
         data = load_yaml(resolved)
     else:
-        data = yaml.safe_load(config_bytes)
+        data = yaml.load(config_bytes, Loader=YAML_SAFE_LOADER)
         if not isinstance(data, dict):
             raise ValueError(f"YAML must be a mapping: {resolved}")
         # Summary loaders accept paths but preserve configured relative strings, so an immutable snapshot keeps
@@ -96,7 +104,7 @@ def load_config_summary_for_recipe(
     if resolved is None or (config_bytes is None and not resolved.exists()):
         return None
     try:
-        config_data = load_yaml(config) if config_bytes is None else yaml.safe_load(config_bytes)
+        config_data = load_yaml(config) if config_bytes is None else yaml.load(config_bytes, Loader=YAML_SAFE_LOADER)
     except Exception:
         config_data = {}
     return config_summary(
