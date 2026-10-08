@@ -33,7 +33,7 @@ PYPROJECT = Path("pyproject.toml")
 #: (imports are not references), and the ``dict[str, Any]`` subscripts among
 #: them. Lower a number in the commit that removes the spellings; do not
 #: duplicate these counts in documentation.
-ANY_LEDGER = {"Any": 929, "dict[str, Any]": 566}
+ANY_LEDGER = {"Any": 920, "dict[str, Any]": 559}
 
 
 def is_any(node: ast.AST) -> bool:

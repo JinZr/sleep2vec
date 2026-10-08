@@ -740,7 +740,7 @@ def write_initial_experiment_manifest(root: Path, experiment: dict[str, Any], *,
 
 
 def ensure_experiment_workspace(
-    recipe: dict[str, Any],
+    recipe: dict[str, JsonValue],
     output_dir: str | Path,
     *,
     register_step: bool = True,
@@ -754,10 +754,15 @@ def ensure_experiment_workspace(
     output_issue = validate_plan_output(recipe, output_dir, allow_published_plan=allow_published_plan)
     if output_issue:
         raise ValueError(output_issue)
-    recipe["experiment"]["root"] = str(root)
-    experiment = _public_mapping(recipe.get("experiment") or {})
-    step = _public_mapping(recipe.get("step") or {})
-    adaptive = recipe["adaptive"] if isinstance(recipe.get("adaptive"), dict) else {}
+    # experiment_root resolved a root, so experiment is a mapping; step is gated by experiment_metadata_issues.
+    experiment_value = recipe.get("experiment")
+    recipe_experiment = experiment_value if isinstance(experiment_value, dict) else {}
+    recipe_experiment["root"] = str(root)
+    experiment = _public_mapping(recipe_experiment)
+    step_value = recipe.get("step")
+    step = _public_mapping(step_value if isinstance(step_value, dict) else {})
+    adaptive_value = recipe.get("adaptive")
+    adaptive = adaptive_value if isinstance(adaptive_value, dict) else {}
     controller = plan_controller or ("adaptive" if adaptive.get("enabled") is True else "ordinary")
     manifest_path = root / "experiment.yaml"
     manifest_exists = manifest_path.exists()

@@ -453,6 +453,23 @@ def test_result_types_reach_callers(tmp_path: Path):
                 frozen_input["sha256"] = b"hash"  # type: ignore[typeddict-item]
                 frozen_input["source_path"]  # type: ignore[typeddict-item]
                 del frozen_input["sha256"]  # type: ignore[misc]
+
+            def post_freeze_recipe_writers() -> None:
+                from agent_tools.domain.finetune_hparam_profile import compile_finetune_balanced_profile
+                frozen_recipe: dict[str, models.JsonValue] = {"inputs": {"config": "/config.yaml"}}
+                plan_contract.bind_plan_context(frozen_recipe)
+                plan_contract.bind_frozen_input_snapshot(frozen_recipe, "inputs.config", "/config.yaml", "a" * 64)
+                byte_recipe = {"_plan_context": b"context"}
+                plan_contract.bind_plan_context(byte_recipe)  # type: ignore[arg-type]
+                plan_contract.bind_frozen_input_snapshot(
+                    byte_recipe, "inputs.config", "/config.yaml", "a" * 64  # type: ignore[arg-type]
+                )
+                compiled_search, _issues = compile_finetune_balanced_profile({}, None)
+                optional_search: dict[str, models.JsonValue] | None = compiled_search
+                required_search: dict[str, models.JsonValue] = compiled_search  # type: ignore[assignment]
+                if compiled_search is not None:
+                    compiled_search["configurations"] = b"points"  # type: ignore[assignment]
+
             final_descriptor: plan_contract.FinalEvalConfigDescriptor = {
                 "path": "/plan/config.final_eval.yaml", "sha256": "a" * 64, "source_path": "relative.yaml",
             }

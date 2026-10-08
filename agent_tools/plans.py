@@ -84,6 +84,7 @@ from .models import (
     REPO_ROOT,
     BoundFinalEvalConfigSnapshot,
     ConfigSummaryInput,
+    JsonValue,
     json_ready,
     resolve_repo_path,
     validate_json_value,
@@ -1264,7 +1265,7 @@ def _materialize_adapter_plan(
 
 def _materialize_single_run_plan(
     *,
-    task: str,
+    run_adapter: TaskAdapter | None,
     recipe: dict[str, Any],
     report: DecisionReport,
     out: Path,
@@ -1281,7 +1282,6 @@ def _materialize_single_run_plan(
     root = experiment_root(recipe)
     if root is None:
         raise ValueError("experiment.root is required.")
-    run_adapter = get_adapter(task)
     assert run_adapter is not None
     run_index = next_run_index(recipe) if run_index_offset is None else run_index_offset
     run: plan_contract.GenericRunContract | dict[str, Any] = plan_contract.generic_run_contract(
@@ -1528,7 +1528,7 @@ def _build_plan(
     check_locked_root: bool,
 ) -> DecisionReport:
     out = canonical_local_experiment_root(request.output_dir, Path.cwd())
-    recipe, cfg, report = preflight_plan(
+    preflight_recipe, cfg, report = preflight_plan(
         recipe_path=request.recipe_path,
         output_dir=out,
         user_decisions_path=request.user_decisions_path,
@@ -1537,10 +1537,10 @@ def _build_plan(
         allow_existing_output_artifacts=request.defer_commit,
         allow_adaptive_workflow=request.allow_adaptive_workflow,
     )
-    if check_locked_root and experiment_root(recipe) != locked_root:
+    if check_locked_root and experiment_root(preflight_recipe) != locked_root:
         raise ValueError("Experiment root changed while acquiring the plan registration lock.")
     bound_config = _validate_bound_recipe(
-        recipe,
+        preflight_recipe,
         cfg,
         report,
         out,
@@ -1549,7 +1549,7 @@ def _build_plan(
         registered_recipe_path=request.registered_recipe_path,
         source_config_sha256=request.source_config_sha256,
     )
-    plan_adapter = get_adapter(recipe.get("task"))
+    plan_adapter = get_adapter(preflight_recipe.get("task"))
     if _has_output_artifact_issue(report):
         return report
     if request.validate_only and not (plan_adapter is not None and plan_adapter.materializes_plan):
@@ -1568,7 +1568,7 @@ def _build_plan(
     if report.exit_code != 0 or bound_config is None:
         if request.validate_only:
             return report
-        preflight_failed_before_workspace = bool(experiment_metadata_issues(recipe)) or any(
+        preflight_failed_before_workspace = bool(experiment_metadata_issues(preflight_recipe)) or any(
             issue.field in {"experiment", "step", "execution.workdir"}
             or issue.field.startswith("experiment.")
             or issue.field.startswith("step.")
@@ -1580,7 +1580,7 @@ def _build_plan(
         with plan_publication_lock(out):
             report = _guard_blocked_plan_publication(
                 report,
-                recipe,
+                preflight_recipe,
                 out,
                 allow_unresolved=request.allow_unresolved,
                 unlock_final_test=request.unlock_final_test,
@@ -1588,13 +1588,13 @@ def _build_plan(
             if _has_output_artifact_issue(report):
                 return report
             workspace, _step_dir = ensure_experiment_workspace(
-                recipe,
+                preflight_recipe,
                 out,
                 register_step=False,
                 plan_controller=request.plan_controller,
             )
             _write_questions(out, report)
-            template = write_user_decision_template(out, recipe, report, preserve_existing=False)
+            template = write_user_decision_template(out, preflight_recipe, report, preserve_existing=False)
             template_path = template[0] if template is not None else None
             if template_path is not None:
                 report.published_user_decisions_path = str(template_path)
@@ -1605,21 +1605,26 @@ def _build_plan(
             if request.allow_unresolved and report.exit_code == 2:
                 write_json(
                     out / "plan.draft.json",
-                    {"status": report.status.value, "recipe": recipe, "questions": questions_payload(report)},
+                    {"status": report.status.value, "recipe": preflight_recipe, "questions": questions_payload(report)},
                 )
             if not artifacts.is_registered_blocked_plan(out, workspace=workspace):
                 raise ValueError(f"Blocked plan publication did not produce a complete control bundle: {out}")
             # step.yaml is canonical ownership; expose the plan only after its blocked bundle is complete.
-            ensure_experiment_workspace(recipe, out, plan_controller=request.plan_controller)
+            ensure_experiment_workspace(preflight_recipe, out, plan_controller=request.plan_controller)
         return report
 
+    # A bound config exists only when evaluate_recipe reached the config consultation past its freeze
+    # check, so this recipe is the JSON document the writers below take.
+    recipe: dict[str, JsonValue] = preflight_recipe
     validated_config_bytes, validated_config_sha256, final_eval_config = bound_config
-    task: str = recipe["task"]
     root = experiment_root(recipe)
     if root is None:
         raise ValueError("experiment.root is required.")
-    recipe["experiment"]["root"] = str(root)
-    input_snapshots = []
+    # experiment_root resolved a root, so experiment is a mapping.
+    experiment = recipe.get("experiment")
+    if isinstance(experiment, dict):
+        experiment["root"] = str(root)
+    input_snapshots: list[JsonValue] = []
     if plan_adapter is not None:
         input_paths = plan_adapter.frozen_input_paths(recipe)
         try:
@@ -1659,7 +1664,10 @@ def _build_plan(
                 )
         if report.exit_code != 0:
             return report
-    source_config_path = resolve_repo_path((recipe.get("inputs") or {}).get("config"))
+    # Preflight already resolved inputs.config as a path, so a passing recipe holds it as a string.
+    inputs = recipe.get("inputs")
+    source_config = inputs.get("config") if isinstance(inputs, dict) else None
+    source_config_path = resolve_repo_path(source_config if isinstance(source_config, str) else None)
     if source_config_path is None:
         raise ValueError("Successful plan preflight did not bind the source config path.")
     recipe["input_snapshots"] = input_snapshots
@@ -1716,7 +1724,7 @@ def _build_plan(
             final_eval_config=final_eval_config,
         )
     return _materialize_single_run_plan(
-        task=task,
+        run_adapter=plan_adapter,
         recipe=recipe,
         report=report,
         out=out,
@@ -1873,7 +1881,12 @@ def preflight_plan(
     substitute for it. allow_existing_output_artifacts relaxes the publication
     artifact guard for staged callers; allow_adaptive_workflow is for the
     adaptive controller. A passing report does not reserve the output: build_plan
-    rechecks publication under its locks."""
+    rechecks publication under its locks.
+
+    The recipe keeps evaluate_recipe's broad type: contract-blocked early
+    returns precede its freeze check, so only a passing report establishes the
+    JSON shape, and _build_plan narrows the recipe to dict[str, JsonValue] on
+    its pass path."""
     recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path, check_existing_experiment=True)
     # Static blockers, including NEEDS_USER_INPUT, must not restart reads through the later freeze checks.
     if cfg is None and any(

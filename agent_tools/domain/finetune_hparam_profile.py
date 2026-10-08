@@ -20,7 +20,7 @@ import math
 from typing import Any, TypeGuard
 
 from ..decision_models import DecisionIssue, DecisionStatus
-from ..models import ConfigSummaryInput
+from ..models import ConfigSummaryInput, JsonValue
 from ..plan_rendering import DEFAULT_FINETUNE_LR, DEFAULT_FINETUNE_WEIGHT_DECAY
 from ..recipes import load_consultation_policy
 
@@ -33,7 +33,7 @@ _SUPPORTED_LABELS = {"ahi", "arousal", "stage4", "age", "sex"}
 def compile_finetune_balanced_profile(
     recipe: dict[str, Any],
     config_summary: ConfigSummaryInput | None,
-) -> tuple[dict[str, Any] | None, list[DecisionIssue]]:
+) -> tuple[dict[str, JsonValue] | None, list[DecisionIssue]]:
     search_value = recipe.get("search")
     search = search_value if isinstance(search_value, dict) else {}
     if search.get("profile") != PROFILE_ID:
@@ -406,7 +406,7 @@ def _profile_axes(recipe: dict[str, Any], config_summary: ConfigSummaryInput) ->
                         **layer_mix,
                         "enabled": True,
                         "shared_across_modalities": shared,
-                        "layer_indices": indices,
+                        "layer_indices": [*indices],
                     }
                 )
             )
@@ -472,7 +472,7 @@ def _profile_axes(recipe: dict[str, Any], config_summary: ConfigSummaryInput) ->
     return axes
 
 
-def _balanced_configurations(axes: list[dict[str, Any]], max_runs: int) -> list[dict[str, Any]]:
+def _balanced_configurations(axes: list[dict[str, Any]], max_runs: int) -> list[JsonValue]:
     pool = list(product(*(range(len(axis["levels"])) for axis in axes)))
     selected = [pool[0]]
     covered_levels: set[tuple[int, int]] = set()
@@ -492,7 +492,7 @@ def _balanced_configurations(axes: list[dict[str, Any]], max_runs: int) -> list[
         selected.append(chosen)
         _record_coverage(chosen, covered_levels, covered_pairs)
 
-    configurations = []
+    configurations: list[JsonValue] = []
     for indexes in selected:
         point: dict[str, Any] = {}
         for axis, level_index in zip(axes, indexes):
@@ -555,7 +555,7 @@ def _trains_encoder(tuning: dict[str, Any]) -> bool:
     return tuning.get("preset") in _ENCODER_TRAINING_PRESETS
 
 
-def _canonical(value: Any) -> Any:
+def _canonical(value: JsonValue) -> JsonValue:
     if isinstance(value, dict):
         return {str(key): _canonical(value[key]) for key in sorted(value, key=str)}
     if isinstance(value, list):

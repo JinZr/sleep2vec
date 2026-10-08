@@ -59,7 +59,7 @@ from .experiment_workspace import (
 )
 from .hparam_runtime import monitor_hparam_runs, read_hparam_plan_under_run_lock
 from .manifests import read_json, read_rows, utc_now, write_rows, write_text
-from .models import is_full_git_object_id, recipe_name, resolve_repo_path
+from .models import JsonValue, is_full_git_object_id, recipe_name, resolve_repo_path
 from .plans import build_plan, plan_publication_lock, preflight_plan, publish_staged_plan_locked
 from .recipes import load_recipe_with_base, strip_internal_recipe_keys
 
@@ -449,7 +449,8 @@ def suggest_next_round(workflow_dir: str | Path, *, digest_path: str | Path | No
     best = ranked[0]
     source_value = recipe.get("_local_recipe")
     source = source_value if isinstance(source_value, dict) else recipe
-    suggested = copy.deepcopy(source)
+    # The pre-freeze candidate for the next round, serialized to YAML and preflighted before it is written.
+    suggested: dict[str, Any] = copy.deepcopy(source)
     suggested_root = experiment_root(suggested)
     if suggested_root is not None:
         suggested["experiment"]["root"] = str(suggested_root)
@@ -1326,7 +1327,7 @@ def _validate_workflow_scientific_contract(recipe: dict[str, Any], workflow: dic
         raise ValueError("Adaptive source config changed from frozen round 000.")
 
 
-def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any]:
+def _with_workflow_execution(recipe: dict[str, JsonValue], workflow: dict[str, Any]) -> dict[str, JsonValue]:
     frozen = workflow.get("execution_identity")
     if (
         not isinstance(frozen, dict)
@@ -1358,9 +1359,11 @@ def _with_workflow_execution(recipe: dict[str, Any], workflow: dict[str, Any]) -
     if execution.get("runtime_commit") in (None, "", "ASK_USER"):
         execution["runtime_commit"] = copy.deepcopy(frozen["runtime_commit"])
     recipe["execution"] = execution
-    if isinstance(recipe.get("_local_recipe"), dict):
-        local = copy.deepcopy(recipe["_local_recipe"])
-        local_execution = dict(local.get("execution")) if isinstance(local.get("execution"), dict) else {}
+    local_value = recipe.get("_local_recipe")
+    if isinstance(local_value, dict):
+        local = copy.deepcopy(local_value)
+        local_execution_value = local.get("execution")
+        local_execution = dict(local_execution_value) if isinstance(local_execution_value, dict) else {}
         local_execution.update(
             {field: copy.deepcopy(execution[field]) for field in adaptive_state.EXECUTION_IDENTITY_FIELDS}
         )
