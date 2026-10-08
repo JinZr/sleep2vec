@@ -56,10 +56,18 @@ def validate_json_value(value: object, location: str, *, finite: bool = True) ->
     raise ValueError(f"{location} contains a non-JSON value of type {type(value).__name__}.")
 
 
+class BoundFinalEvalConfigSnapshot(TypedDict):
+    source_path: str
+    bytes: bytes
+    sha256: str
+
+
 class _ConfigProvenance(TypedDict, total=False):
     authoritative_variant: str
     _source_config_bytes: bytes
     _source_config_sha256: str
+    # Bound only by hparam plan preflight when an explicit final-eval config is frozen.
+    _final_eval_config_snapshot: BoundFinalEvalConfigSnapshot
 
 
 class ConfigDiagnostics(_ConfigProvenance):

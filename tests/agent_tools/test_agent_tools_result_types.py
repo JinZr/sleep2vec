@@ -458,7 +458,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             }
             final_descriptor["source_path"] = None  # type: ignore[typeddict-item]
             final_descriptor["source_path"] = {"raw": [None, 1]}  # type: ignore[typeddict-item]
-            bound_final: plan_contract.BoundFinalEvalConfigSnapshot = {
+            bound_final: models.BoundFinalEvalConfigSnapshot = {
                 "source_path": "relative.yaml", "bytes": b"config", "sha256": "a" * 64,
             }
             bound_final["source_path"] = Path("relative.yaml")  # type: ignore[typeddict-item]
@@ -495,10 +495,11 @@ def test_result_types_reach_callers(tmp_path: Path):
             raw_plan, raw_recipe = run_artifacts._read_plan_documents(Path("/plan"))
             raw_plan["custom"] = {"raw": [None, 1]}
             raw_recipe["custom"] = None
-            raw_final = plan_hparam.final_eval_config_snapshot({})
-            if raw_final is not None:
-                raw_final["custom"] = [None, {"field": 1}]
-                raw_final["bytes"] = None
+            provenance: models.ConfigDiagnostics = {
+                "config_path": "config.yaml", "data_backend": "npz", "warnings": [], "blocking_issues": [],
+            }
+            provenance["_final_eval_config_snapshot"] = bound_final
+            provenance["_final_eval_config_snapshot"] = {"source_path": "x"}  # type: ignore[typeddict-item]
 
             layouts = plan_hparam.hparam_run_layouts({}, Path("/plan"), 7)
             layout_identity: experiment_workspace.RunIdentity = layouts[0]["identity"]

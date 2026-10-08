@@ -65,12 +65,6 @@ class FrozenInputSnapshot(TypedDict):
     sha256: str
 
 
-class BoundFinalEvalConfigSnapshot(TypedDict):
-    source_path: str
-    bytes: bytes
-    sha256: str
-
-
 class FinalEvalConfigDescriptor(TypedDict):
     path: str
     sha256: str

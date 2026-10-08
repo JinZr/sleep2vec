@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
-from ..models import ConfigSummary, ConfigSummaryInput, JsonValue, coerce_list
+from ..models import BoundFinalEvalConfigSnapshot, ConfigSummary, ConfigSummaryInput, JsonValue, coerce_list
 from ..plan_contract import CompiledPlanContract, GenericCompiledPlanContract
 from ..plan_rendering import finetune_loaded_split_values
 
@@ -205,6 +205,7 @@ class TaskAdapter:
         unlock_final_test: bool,
         source_config_bytes: bytes,
         source_config_sha256: str,
+        final_eval_config: BoundFinalEvalConfigSnapshot | None,
     ) -> None:
         """Materialize the full plan bundle; ``out`` is the final semantic
         root and ``write_out`` may be a physical staging root."""

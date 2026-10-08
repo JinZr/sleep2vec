@@ -20,7 +20,7 @@ from typing import Any
 from .. import plan_contract, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
-from ..models import ConfigSummaryInput, JsonValue
+from ..models import BoundFinalEvalConfigSnapshot, ConfigSummaryInput, JsonValue
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, variant_module
 from .base import PlanRegistrationPreflightError, TaskAdapter
 
@@ -304,6 +304,7 @@ class HparamTuneAdapter(TaskAdapter):
         unlock_final_test: bool,
         source_config_bytes: bytes,
         source_config_sha256: str,
+        final_eval_config: BoundFinalEvalConfigSnapshot | None,
     ) -> None:
         from .. import plan_hparam
         from ..domain.finetune_hparam_profile import finetune_balanced_profile_audit
@@ -322,6 +323,7 @@ class HparamTuneAdapter(TaskAdapter):
             unlock_final_test=unlock_final_test,
             source_config_bytes=source_config_bytes,
             source_config_sha256=source_config_sha256,
+            final_eval_config=final_eval_config,
             profile_audit=profile_audit,
             run_index_offset=run_index_offset,
         )

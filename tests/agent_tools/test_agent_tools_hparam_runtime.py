@@ -139,6 +139,7 @@ def _write_slurm_plan(
         unlock_final_test=False,
         source_config_bytes=source_config,
         source_config_sha256=hashlib.sha256(source_config).hexdigest(),
+        final_eval_config=None,
     )
     plan_hparam.preflight_hparam_plan(plan_dir, semantic_out=plan_dir)
     plan_hparam.commit_hparam_plan(plan_dir)

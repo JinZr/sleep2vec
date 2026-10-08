@@ -60,11 +60,18 @@ from .experiment_workspace import (
     run_identity,
 )
 from .manifests import read_json, write_json, write_text
-from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, ConfigSummaryInput, JsonValue, coerce_list, resolve_repo_path
+from .models import (
+    CONFIG_FINETUNE_SECTION,
+    REPO_ROOT,
+    BoundFinalEvalConfigSnapshot,
+    ConfigSummaryInput,
+    JsonValue,
+    coerce_list,
+    resolve_repo_path,
+)
 from .repo import repo_summary
 
 FROZEN_FINAL_EVAL_CONFIG_NAME = plan_contract.FROZEN_FINAL_EVAL_CONFIG_NAME
-_FINAL_EVAL_CONFIG_SNAPSHOT = "_final_eval_config_snapshot"
 
 
 class HparamRunLayout(TypedDict):
@@ -178,12 +185,14 @@ def final_test_checkpoint_issues(
                 )
             )
             return issues
-        final_config_snapshot: plan_contract.BoundFinalEvalConfigSnapshot = {
+        final_config_snapshot: BoundFinalEvalConfigSnapshot = {
             "source_path": str(final_config),
             "bytes": config_bytes,
             "sha256": hashlib.sha256(config_bytes).hexdigest(),
         }
-        recipe[_FINAL_EVAL_CONFIG_SNAPSHOT] = final_config_snapshot
+        # The bound bytes travel beside the JSON recipe, like the source config bytes.
+        if config_summary is not None:
+            config_summary["_final_eval_config_snapshot"] = final_config_snapshot
         try:
             validate_finetune_config_bytes(recipe, config_bytes)
         except Exception as exc:
@@ -212,7 +221,7 @@ def final_test_checkpoint_issues(
                     {"final_eval_config_path": str(final_config), "preflight_before_workspace": True},
                 )
             )
-        drift_issue = _final_eval_config_drift_issue(recipe)
+        drift_issue = _final_eval_config_drift_issue(recipe, final_config_snapshot)
         if drift_issue is not None:
             issues.append(drift_issue)
     issues.extend(
@@ -244,11 +253,6 @@ def final_test_checkpoint_issues(
     if multilabel_issue is not None:
         issues.append(multilabel_issue)
     return issues
-
-
-def final_eval_config_snapshot(recipe: dict) -> dict[str, Any] | None:
-    snapshot = recipe.get(_FINAL_EVAL_CONFIG_SNAPSHOT)
-    return snapshot if isinstance(snapshot, dict) else None
 
 
 def validate_finetune_config_bytes(recipe: dict, config_bytes: bytes) -> None:
@@ -326,12 +330,9 @@ def _read_final_eval_config_bytes(recipe: dict, config_path: Any) -> bytes:
     return resolved.read_bytes()
 
 
-def _final_eval_config_drift_issue(recipe: dict) -> DecisionIssue | None:
-    snapshot = final_eval_config_snapshot(recipe)
-    if snapshot is None:
-        return None
+def _final_eval_config_drift_issue(recipe: dict, snapshot: BoundFinalEvalConfigSnapshot) -> DecisionIssue | None:
     try:
-        current_bytes = _read_final_eval_config_bytes(recipe, snapshot.get("source_path"))
+        current_bytes = _read_final_eval_config_bytes(recipe, snapshot["source_path"])
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         return DecisionIssue(
             DecisionStatus.FAIL,
@@ -340,7 +341,7 @@ def _final_eval_config_drift_issue(recipe: dict) -> DecisionIssue | None:
             None,
             {"preflight_before_workspace": True},
         )
-    if current_bytes == snapshot.get("bytes"):
+    if current_bytes == snapshot["bytes"]:
         return None
     return DecisionIssue(
         DecisionStatus.FAIL,
@@ -348,7 +349,7 @@ def _final_eval_config_drift_issue(recipe: dict) -> DecisionIssue | None:
         "Final evaluation config changed while plan preflight was validating it.",
         None,
         {
-            "final_eval_config_path": snapshot.get("source_path"),
+            "final_eval_config_path": snapshot["source_path"],
             "preflight_before_workspace": True,
         },
     )
@@ -913,6 +914,7 @@ def write_hparam_plan(
     unlock_final_test: bool,
     source_config_bytes: bytes,
     source_config_sha256: str,
+    final_eval_config: BoundFinalEvalConfigSnapshot | None,
     profile_audit: dict[str, Any] | None = None,
     run_index_offset: int | None = None,
 ) -> None:
@@ -940,18 +942,13 @@ def write_hparam_plan(
     final_allowed = _final_script_allowed(recipe, evaluation, False)
     frozen_final_eval_config = out / FROZEN_FINAL_EVAL_CONFIG_NAME
     write_frozen_final_eval_config = physical_out / FROZEN_FINAL_EVAL_CONFIG_NAME
-    bound_final_config: tuple[dict[str, Any], bytes, str] | None = None
-    final_config_snapshot = final_eval_config_snapshot(recipe)
+    bound_final_config: BoundFinalEvalConfigSnapshot | None = None
     if final_allowed and has_explicit_final_eval_config(recipe):
-        if final_config_snapshot is None:
+        if final_eval_config is None:
             raise ValueError("Explicit final evaluation config requires bound config bytes.")
-        final_config_bytes = final_config_snapshot.get("bytes")
-        final_config_sha256 = final_config_snapshot.get("sha256")
-        if not isinstance(final_config_bytes, bytes) or not isinstance(final_config_sha256, str):
-            raise ValueError("Bound final evaluation config is incomplete.")
-        if hashlib.sha256(final_config_bytes).hexdigest() != final_config_sha256:
+        if hashlib.sha256(final_eval_config["bytes"]).hexdigest() != final_eval_config["sha256"]:
             raise ValueError("Final evaluation config bytes do not match their bound SHA-256.")
-        bound_final_config = (final_config_snapshot, final_config_bytes, final_config_sha256)
+        bound_final_config = final_eval_config
     if not inputs.get("config"):
         raise FileNotFoundError("Config path is required.")
     if hashlib.sha256(source_config_bytes).hexdigest() != source_config_sha256:
@@ -966,12 +963,11 @@ def write_hparam_plan(
         source_config_sha256,
     )
     if bound_final_config is not None:
-        final_config_snapshot, final_config_bytes, final_config_sha256 = bound_final_config
         plan_contract.bind_frozen_input_snapshot(
             recipe,
             "inputs.final_eval_config_path",
-            final_config_snapshot["source_path"],
-            final_config_sha256,
+            bound_final_config["source_path"],
+            bound_final_config["sha256"],
         )
     else:
         snapshots = recipe.get("input_snapshots")
@@ -985,7 +981,7 @@ def write_hparam_plan(
     physical_out.mkdir(parents=True, exist_ok=True)
     write_frozen_source_config.write_bytes(source_config_bytes)
     if bound_final_config is not None:
-        write_frozen_final_eval_config.write_bytes(bound_final_config[1])
+        write_frozen_final_eval_config.write_bytes(bound_final_config["bytes"])
     elif write_frozen_final_eval_config.exists():
         write_frozen_final_eval_config.unlink()
     runs = []
@@ -1037,9 +1033,7 @@ def write_hparam_plan(
         + "\n",
         executable=True,
     )
-    resolved_recipe = {
-        key: value for key, value in recipe.items() if key not in {"_recipe_path", _FINAL_EVAL_CONFIG_SNAPSHOT}
-    }
+    resolved_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
     (physical_out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
     final_script_path = physical_out / "final_external_test.sh"
     final_unlocked = final_test_unlocked(evaluation, False)
@@ -1096,20 +1090,19 @@ def write_hparam_plan(
             plan_lines.append("Final external-test script not generated; explicit unlock is required.")
     write_text(physical_out / "plan.md", "\n".join(plan_lines) + "\n")
 
-    plan_recipe = {key: value for key, value in recipe.items() if key != _FINAL_EVAL_CONFIG_SNAPSHOT}
     plan_payload: plan_contract.HparamPlan = {
         "status": "PASS",
         "runs": runs,
-        "recipe": plan_recipe,
+        "recipe": recipe,
         "resolved_recipe_sha256": file_sha256(physical_out / "recipe.resolved.yaml"),
     }
     if bound_final_config is not None:
-        final_eval_config: plan_contract.FinalEvalConfigDescriptor = {
+        final_eval_descriptor: plan_contract.FinalEvalConfigDescriptor = {
             "path": str(frozen_final_eval_config),
             "sha256": file_sha256(write_frozen_final_eval_config),
-            "source_path": bound_final_config[0]["source_path"],
+            "source_path": bound_final_config["source_path"],
         }
-        plan_payload["final_eval_config"] = final_eval_config
+        plan_payload["final_eval_config"] = final_eval_descriptor
     # plan.json is the terminal physical-plan manifest and is written only after
     # every frozen file in the bundle is complete.
     write_json(physical_out / "plan.json", plan_payload)

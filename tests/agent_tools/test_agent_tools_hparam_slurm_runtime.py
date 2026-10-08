@@ -770,6 +770,7 @@ def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path:
         unlock_final_test=False,
         source_config_bytes=source_config,
         source_config_sha256=hashlib.sha256(source_config).hexdigest(),
+        final_eval_config=None,
     )
     plan_hparam.preflight_hparam_plan(slurm_plan_dir, semantic_out=slurm_plan_dir)
     plan_hparam.commit_hparam_plan(slurm_plan_dir)

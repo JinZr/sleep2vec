@@ -17,11 +17,12 @@ from test_agent_plan_blocks_on_ambiguity import (
     _run,
     _survival_recipe_with_missing_sidecar_key,
     _valid_final_config_bytes,
+    _write_survival_config_with_bad_sidecars,
 )
 from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
 import yaml
 
-from agent_tools import configs, plan_context, plan_hparam, plans
+from agent_tools import configs, models, plan_context, plan_hparam, plans
 from agent_tools.adapters.hparam_tune import HparamTuneAdapter
 from agent_tools.models import REPO_ROOT
 from agent_tools.plan_hparam import final_test_checkpoint_issues
@@ -105,6 +106,54 @@ def test_unlock_final_test_with_yaml_search_uses_explicit_final_config(tmp_path:
     }
     assert "_final_eval_config_snapshot" not in plan["recipe"]
     assert "_final_eval_config_snapshot" not in (output_dir / "recipe.resolved.yaml").read_text()
+
+
+def test_preflight_binds_final_eval_config_beside_a_json_recipe(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    selected_config = tmp_path / "selected_run.yaml"
+    recipe_path = _hparam_recipe(
+        tmp_path,
+        parameters={"yaml:/finetune/task/output_dim": [31]},
+        ckpt_path=ckpt,
+        final_config_path=selected_config,
+    )
+    selected_bytes = _valid_final_config_bytes(tmp_path)
+    selected_config.write_bytes(selected_bytes)
+
+    recipe, cfg, report = plans.preflight_plan(
+        recipe_path=recipe_path, output_dir=tmp_path / "unlocked", unlock_final_test=True
+    )
+
+    assert report.exit_code == 0
+    # The post-freeze recipe is a JSON document; the bound bytes travel on the config summary.
+    assert "_final_eval_config_snapshot" not in recipe
+    models.validate_json_value(recipe, "Recipe", finite=False)
+    assert cfg is not None
+    assert cfg["_final_eval_config_snapshot"] == {
+        "source_path": str(selected_config),
+        "bytes": selected_bytes,
+        "sha256": hashlib.sha256(selected_bytes).hexdigest(),
+    }
+
+
+def test_unresolved_final_eval_sidecars_write_a_json_draft(tmp_path: Path):
+    ckpt = tmp_path / "best.ckpt"
+    ckpt.write_text("checkpoint")
+    final_config = _write_survival_config_with_bad_sidecars(tmp_path)
+    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=final_config)
+    output_dir = tmp_path / "plan"
+
+    # The final-eval bytes are bound before the sidecar check asks for input; they must not reach the draft.
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir, allow_unresolved=True, unlock_final_test=True)
+
+    assert report.exit_code == 2
+    assert [issue.field for issue in report.blocking_issues()] == ["survival_sidecars"]
+    draft = json.loads((output_dir / "plan.draft.json").read_text())
+    assert draft["status"] == "NEEDS_USER_INPUT"
+    assert draft["recipe"]["inputs"]["final_eval_config_path"] == str(final_config)
+    assert "_final_eval_config_snapshot" not in draft["recipe"]
+    assert not (output_dir / "plan.json").exists()
 
 
 def test_relative_final_eval_config_remains_repo_relative_with_execution_workdir(tmp_path: Path):
