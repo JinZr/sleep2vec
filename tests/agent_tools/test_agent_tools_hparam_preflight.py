@@ -583,13 +583,13 @@ def test_hparam_registration_rejects_snapshot_drift_without_writes(tmp_path: Pat
         "inspect_execution_target",
         lambda execution, runs, **_kwargs: _snapshot(execution, runs),
     )
-    commit = plan_hparam.commit_hparam_plan
+    commit = run_artifacts.commit_hparam_plan
 
     def tamper_snapshot(out, **kwargs):
         (Path(out) / "execution_snapshot.json").write_text("{}\n")
         return commit(out, **kwargs)
 
-    monkeypatch.setattr(plan_hparam, "commit_hparam_plan", tamper_snapshot)
+    monkeypatch.setattr(run_artifacts, "commit_hparam_plan", tamper_snapshot)
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
 
@@ -671,17 +671,17 @@ def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
     )
 
     if failure_stage == "rows":
-        real_commit = plan_hparam.merge_run_manifest
+        real_commit = run_artifacts.merge_run_manifest
         monkeypatch.setattr(
-            plan_hparam,
+            run_artifacts,
             "merge_run_manifest",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected canonical rows failure")),
         )
         expected_error = "injected canonical rows failure"
     else:
-        real_commit = plan_hparam.append_event
+        real_commit = run_artifacts.append_event
         monkeypatch.setattr(
-            plan_hparam,
+            run_artifacts,
             "append_event",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected plan event failure")),
         )
@@ -690,7 +690,7 @@ def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
     with pytest.raises(RuntimeError, match=expected_error):
         plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
     monkeypatch.setattr(
-        plan_hparam,
+        run_artifacts,
         "merge_run_manifest" if failure_stage == "rows" else "append_event",
         real_commit,
     )
@@ -732,16 +732,16 @@ def test_root_hparam_registration_recovery_rejects_plan_drift(tmp_path: Path, mo
         "inspect_execution_target",
         lambda execution, runs, **_kwargs: _snapshot(execution, runs),
     )
-    real_merge = plan_hparam.merge_run_manifest
+    real_merge = run_artifacts.merge_run_manifest
     monkeypatch.setattr(
-        plan_hparam,
+        run_artifacts,
         "merge_run_manifest",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected canonical rows failure")),
     )
 
     with pytest.raises(RuntimeError, match="injected canonical rows failure"):
         plans.build_plan(recipe_path=recipe, output_dir=workspace)
-    monkeypatch.setattr(plan_hparam, "merge_run_manifest", real_merge)
+    monkeypatch.setattr(run_artifacts, "merge_run_manifest", real_merge)
     next((workspace / "runs").glob("*/run.json")).write_text('{"tampered": true}\n')
 
     with pytest.raises(ValueError, match="differs from deterministic regeneration"):
@@ -1039,7 +1039,7 @@ def test_staged_plan_publish_failure_restores_appended_runs(tmp_path: Path, monk
 def test_hparam_plan_rejects_destination_appearing_during_preflight(tmp_path: Path, monkeypatch):
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
-    preflight = plan_hparam.preflight_hparam_plan
+    preflight = run_artifacts.preflight_hparam_plan
 
     def create_destination(physical_out, *, semantic_out):
         snapshot = preflight(physical_out, semantic_out=semantic_out)
@@ -1047,7 +1047,7 @@ def test_hparam_plan_rejects_destination_appearing_during_preflight(tmp_path: Pa
         (plan_dir / "other-session.txt").write_text("do not replace\n")
         return snapshot
 
-    monkeypatch.setattr(plan_hparam, "preflight_hparam_plan", create_destination)
+    monkeypatch.setattr(run_artifacts, "preflight_hparam_plan", create_destination)
     monkeypatch.setattr(
         execution_snapshot,
         "inspect_execution_target",

@@ -459,7 +459,7 @@ def test_agent_proposal_recovers_exact_published_unregistered_round_after_runtim
     recipe_payload = yaml.safe_load(recipe.read_text())
     recipe_payload["execution"]["runtime_commit"] = "b" * 40
     recipe.write_text(yaml.safe_dump(recipe_payload, sort_keys=False))
-    commit_plan = adaptive_hparam.plan_hparam.commit_hparam_plan
+    commit_plan = adaptive_hparam.artifacts.commit_hparam_plan
     commit_calls = 0
 
     def interrupt_first_commit(*args, **kwargs):
@@ -477,7 +477,7 @@ def test_agent_proposal_recovers_exact_published_unregistered_round_after_runtim
         )
         return Path(run_dir) / "launch_manifest.tsv"
 
-    monkeypatch.setattr(adaptive_hparam.plan_hparam, "commit_hparam_plan", interrupt_first_commit)
+    monkeypatch.setattr(adaptive_hparam.artifacts, "commit_hparam_plan", interrupt_first_commit)
     monkeypatch.setattr(adaptive_replacement, "launch_hparam_runs", fake_launch)
 
     with pytest.raises(RuntimeError, match="registration interrupted"):

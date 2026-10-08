@@ -9,7 +9,7 @@ from agent_tool_test_helpers import config_payload, write_finetune_recipe
 import pytest
 import yaml
 
-from agent_tools import plan_contract, plans
+from agent_tools import plan_contract, plans, run_artifacts
 from agent_tools.adapters.base import TaskAdapter
 from agent_tools.adapters.hparam_tune import HPARAM_TUNE_ADAPTER
 from agent_tools.experiment_workspace import read_run_manifest
@@ -110,19 +110,24 @@ class _PrecommitFailureAdapter(TaskAdapter):
         write_out.mkdir(parents=True)
         (write_out / "plan.json").write_text("{}\n")
 
-    def precommit_plan(self, out, *, write_out):
-        self.calls.append("precommit")
-        raise ValueError("injected precommit failure")
 
-    def commit_plan(self, out, *, preflight_validated=False) -> None:
-        pytest.fail("failed precommit must not register the plan")
-
-
-def test_adapter_precommit_failure_removes_staging_without_publication(tmp_path: Path):
+def test_adapter_precommit_failure_removes_staging_without_publication(tmp_path: Path, monkeypatch):
     adapter = _PrecommitFailureAdapter()
     out = tmp_path / "plan"
     staging = tmp_path / ".plan.staging"
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS)
+
+    def fail_preflight(physical_out, *, semantic_out):
+        assert (physical_out, semantic_out) == (staging, out)
+        adapter.calls.append("precommit")
+        raise ValueError("injected precommit failure")
+
+    monkeypatch.setattr(run_artifacts, "preflight_hparam_plan", fail_preflight)
+    monkeypatch.setattr(
+        run_artifacts,
+        "commit_hparam_plan",
+        lambda *_args, **_kwargs: pytest.fail("failed precommit must not register the plan"),
+    )
 
     result = plans._materialize_adapter_plan(
         plan_adapter=adapter,

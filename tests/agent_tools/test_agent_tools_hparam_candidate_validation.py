@@ -225,25 +225,25 @@ def test_invalid_frozen_config_blocks_registration_before_target_or_workspace_wr
 ):
     plan_dir, plan = _frozen_plan(tmp_path, invalid=True)
     monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda *_args, **_kwargs: plan)
-    monkeypatch.setattr(plan_hparam, "_hparam_registration_state", lambda _plan: (plan_dir.parent, []))
+    monkeypatch.setattr(run_artifacts, "_hparam_registration_state", lambda _plan: (plan_dir.parent, []))
 
     def ensure_workspace(*_args, **kwargs):
         assert kwargs.get("validate_only"), "Invalid config reached workspace mutation"
 
-    monkeypatch.setattr(plan_hparam, "ensure_experiment_workspace", ensure_workspace)
+    monkeypatch.setattr(run_artifacts, "ensure_experiment_workspace", ensure_workspace)
     monkeypatch.setattr(
-        plan_hparam, "_inspect_hparam_execution_target", lambda *_args: pytest.fail("Invalid config reached target")
+        run_artifacts, "_inspect_hparam_execution_target", lambda *_args: pytest.fail("Invalid config reached target")
     )
     monkeypatch.setattr(
-        plan_hparam, "merge_run_manifest", lambda *_args: pytest.fail("Invalid config reached registration")
+        run_artifacts, "merge_run_manifest", lambda *_args: pytest.fail("Invalid config reached registration")
     )
     before = _workspace_files(plan_dir.parent)
 
     with pytest.raises(ValueError, match="run-000.*model.cls.embedding_type must be set"):
         if boundary == "preflight":
-            plan_hparam.preflight_hparam_plan(plan_dir, semantic_out=plan_dir)
+            run_artifacts.preflight_hparam_plan(plan_dir, semantic_out=plan_dir)
         else:
-            plan_hparam.commit_hparam_plan(plan_dir)
+            run_artifacts.commit_hparam_plan(plan_dir)
 
     assert _workspace_files(plan_dir.parent) == before
     assert not (plan_dir / "plan.md").exists()
@@ -296,7 +296,7 @@ def test_preflight_validated_commit_still_rejects_frozen_config_drift(
     monkeypatch.setattr(
         execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
     )
-    commit = plan_hparam.commit_hparam_plan
+    commit = run_artifacts.commit_hparam_plan
 
     def tamper(out, **kwargs):
         assert kwargs["preflight_validated"] is True
@@ -310,7 +310,7 @@ def test_preflight_validated_commit_still_rejects_frozen_config_drift(
             plan_path.write_text(json.dumps(plan))
         return commit(out, **kwargs)
 
-    monkeypatch.setattr(plan_hparam, "commit_hparam_plan", tamper)
+    monkeypatch.setattr(run_artifacts, "commit_hparam_plan", tamper)
     before = _workspace_files(workspace)
     plan_dir = workspace / "plans" / "tune"
 

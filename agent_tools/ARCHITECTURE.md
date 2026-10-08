@@ -21,7 +21,7 @@ L0-level domain leaf.
 ### Import cycle
 
 The one-way direction above is the target, not yet the state. Counting
-function-local (deferred) imports, the import graph holds one 12-module cycle
+function-local (deferred) imports, the import graph holds one 11-module cycle
 spanning L0, L1, L2 and `domain/`. None of its members cycle at module top
 level; deferred imports hold the whole cycle together.
 `test_agent_layering.py` freezes both sides of that deviation in `layering.py`:
@@ -87,14 +87,21 @@ registered task and variant, top-level closure, runtime, task sections,
 execution, and artifacts. `plans` adds authored/base/local layer orchestration
 and policy-dependent decision validation; `run_artifacts` reuses the structural
 owner for frozen registered plans without consultation, config/path probes, or
-live observation.
+live observation. Hparam plan registration also lives in `run_artifacts` and,
+unlike those reads, does probe: `preflight_hparam_plan` checks a staged plan's
+candidate configs and output paths through `plan_hparam`, probes the execution
+target and freezes that snapshot into the plan, and `commit_hparam_plan`
+registers the published plan's run-manifest rows. `plans` and `adaptive_hparam`
+call both directly; adapters carry no registration hooks.
 
 `plan_contract` and adapter `compile_plan_contract()` hooks own deterministic
 run identities, paths, derived config bytes, complete executable scripts, and
 final-evaluation requirements shared by plan publication and registered-plan
 validation. Task adapters may derive that contract only from the frozen recipe,
 including its strict creator-host plan context and input snapshots, and
-plan-owned config bytes.
+plan-owned config bytes. The hparam adapter's hook delegates to
+`plan_hparam.compile_hparam_plan_contract`, which the hparam reader in
+`run_artifacts` calls directly.
 
 `experiment_workspace` owns managed manifests, the run-manifest lock, and the
 one-way step `plan_controller` binding used to classify ordinary, adaptive, and

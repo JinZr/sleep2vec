@@ -295,7 +295,7 @@ def _init_adaptive_workflow_locked(recipe_path: str | Path, root: Path, *, locke
                     finally:
                         if owns_candidate:
                             shutil.rmtree(candidate_dir)
-                committed_plan = plan_hparam.commit_hparam_plan(
+                committed_plan = artifacts.commit_hparam_plan(
                     round_dir,
                     emit_event=False,
                     preflight_validated=not registered_keys,
@@ -316,12 +316,12 @@ def _init_adaptive_workflow_locked(recipe_path: str | Path, root: Path, *, locke
                     )
                     raise
                 try:
-                    committed_plan = plan_hparam.commit_hparam_plan(
+                    committed_plan = artifacts.commit_hparam_plan(
                         round_dir,
                         emit_event=False,
                         preflight_validated=True,
                     )
-                except plan_hparam.HparamRegistrationPreflightError:
+                except artifacts.HparamRegistrationPreflightError:
                     cleanup_staging = False
                     cleanup_staging = _restore_uncommitted_round(
                         staging_dir,
@@ -704,12 +704,12 @@ def _stage_and_publish_round(
                     raise ValueError(f"Published adaptive round differs from deterministic regeneration: {next_dir}")
                 placeholder_backup = None
             try:
-                committed_plan = plan_hparam.commit_hparam_plan(
+                committed_plan = artifacts.commit_hparam_plan(
                     next_dir,
                     emit_event=False,
                     preflight_validated=True,
                 )
-            except plan_hparam.HparamRegistrationPreflightError:
+            except artifacts.HparamRegistrationPreflightError:
                 if published_now:
                     cleanup_staging = False
                     cleanup_staging = _restore_uncommitted_round(

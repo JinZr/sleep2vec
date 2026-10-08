@@ -32,10 +32,6 @@ from ..plan_contract import CompiledPlanContract, GenericCompiledPlanContract
 from ..plan_rendering import finetune_loaded_split_values
 
 
-class PlanRegistrationPreflightError(ValueError):
-    pass
-
-
 def recipe_inputs(recipe: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """The recipe's ``inputs`` mapping, or an empty one when absent or malformed."""
     inputs = recipe.get("inputs")
@@ -130,7 +126,9 @@ class TaskAdapter:
     enforces_required_channels: bool = False
     #: Task writes its own complete plan bundle (multi-run) via write_plan;
     #: the kernel skips the generic single-run materialization and the flat
-    #: command-emptiness preflight check.
+    #: command-emptiness preflight check, and registers the bundle through
+    #: the hparam registration phase in run_artifacts (preflight_hparam_plan,
+    #: then commit_hparam_plan).
     materializes_plan: bool = False
     #: Task accepts a frozen Python/workdir/commit execution identity.
     supports_runtime_identity: bool = False
@@ -212,11 +210,6 @@ class TaskAdapter:
         root and ``write_out`` may be a physical staging root."""
         raise NotImplementedError
 
-    def commit_plan(self, out: Path, *, preflight_validated: bool = False) -> None:
-        """Register a fully materialized plan; called only when
-        materializes_plan is True."""
-        raise NotImplementedError
-
     def registration_rows(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
         """Project frozen plan runs into their canonical registration rows."""
         return [
@@ -226,10 +219,6 @@ class TaskAdapter:
             }
             for run in plan["runs"]
         ]
-
-    def precommit_plan(self, out: Path, *, write_out: Path) -> str | None:
-        """Validate a materialized plan before publication or registration."""
-        return None
 
     def planned_plan_paths(
         self,

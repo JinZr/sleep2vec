@@ -44,7 +44,7 @@ from . import (
     schema_map,
 )
 from .adapters import SUPPORTED_TASKS, composite_adapter, get_adapter
-from .adapters.base import PlanRegistrationPreflightError, TaskAdapter
+from .adapters.base import TaskAdapter
 from .configs import config_summary
 from .decision_hparam import uses_agent_proposals
 from .decision_models import USER_DECISIONS_FILENAME
@@ -1163,12 +1163,14 @@ def _materialize_adapter_plan(
             source_config_sha256=validated_config_sha256,
             final_eval_config=final_eval_config,
         )
-        preflight_summary = plan_adapter.precommit_plan(out, write_out=write_out)
-        if preflight_summary:
-            report = _append_issues(
-                report,
-                [DecisionIssue(DecisionStatus.PASS, "execution.preflight", preflight_summary)],
-            )
+        try:
+            preflight_summary = artifacts.preflight_hparam_plan(write_out, semantic_out=out)
+        except OSError as exc:
+            raise RuntimeError(f"Target execution preflight failed: {exc}") from exc
+        report = _append_issues(
+            report,
+            [DecisionIssue(DecisionStatus.PASS, "execution.preflight", preflight_summary)],
+        )
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
         if write_out.exists() and not write_out.is_symlink():
             shutil.rmtree(write_out)
@@ -1245,8 +1247,8 @@ def _materialize_adapter_plan(
         elif registration_state != "unregistered":
             shutil.rmtree(write_out)
         try:
-            plan_adapter.commit_plan(out, preflight_validated=True)
-        except PlanRegistrationPreflightError as exc:
+            artifacts.commit_hparam_plan(out, preflight_validated=True)
+        except artifacts.HparamRegistrationPreflightError as exc:
             if not out_preexisted and out.exists() and not out.is_symlink():
                 shutil.rmtree(out)
             return _append_issues(

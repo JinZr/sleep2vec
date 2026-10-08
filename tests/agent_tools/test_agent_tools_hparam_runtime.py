@@ -27,6 +27,7 @@ from agent_tools import (
     manifests,
     plan_hparam,
     python_programs,
+    run_artifacts,
     run_evidence,
     transport,
 )
@@ -142,8 +143,8 @@ def _write_slurm_plan(
         source_config_sha256=hashlib.sha256(source_config).hexdigest(),
         final_eval_config=None,
     )
-    plan_hparam.preflight_hparam_plan(plan_dir, semantic_out=plan_dir)
-    plan_hparam.commit_hparam_plan(plan_dir)
+    run_artifacts.preflight_hparam_plan(plan_dir, semantic_out=plan_dir)
+    run_artifacts.commit_hparam_plan(plan_dir)
     return plan_dir, json.loads((plan_dir / "plan.json").read_text())
 
 

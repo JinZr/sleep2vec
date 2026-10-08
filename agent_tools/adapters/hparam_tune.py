@@ -23,7 +23,7 @@ from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, Res
 from ..domain import finetune_hparam_profile
 from ..models import BoundFinalEvalConfigSnapshot, ConfigSummaryInput, JsonValue
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, variant_module
-from .base import PlanRegistrationPreflightError, TaskAdapter
+from .base import TaskAdapter
 
 
 class HparamTuneAdapter(TaskAdapter):
@@ -327,26 +327,10 @@ class HparamTuneAdapter(TaskAdapter):
             run_index_offset=run_index_offset,
         )
 
-    def commit_plan(self, out: Path, *, preflight_validated: bool = False) -> None:
-        from .. import plan_hparam
-
-        try:
-            plan_hparam.commit_hparam_plan(out, preflight_validated=preflight_validated)
-        except plan_hparam.HparamRegistrationPreflightError as exc:
-            raise PlanRegistrationPreflightError(str(exc)) from exc
-
     def registration_rows(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
         from .. import plan_hparam
 
         return plan_hparam.hparam_manifest_rows(plan)
-
-    def precommit_plan(self, out: Path, *, write_out: Path) -> str:
-        from .. import plan_hparam
-
-        try:
-            return plan_hparam.preflight_hparam_plan(write_out, semantic_out=out)
-        except OSError as exc:
-            raise RuntimeError(f"Target execution preflight failed: {exc}") from exc
 
     def compile_plan_contract(
         self,
@@ -358,30 +342,9 @@ class HparamTuneAdapter(TaskAdapter):
     ) -> plan_contract.HparamCompiledPlanContract:
         from .. import plan_hparam
 
-        contracts = plan_hparam.compile_hparam_run_contracts(
-            recipe,
-            out,
-            run_index_offset,
-            source_config_bytes=config_bytes or None,
+        return plan_hparam.compile_hparam_plan_contract(
+            recipe, out, run_index_offset=run_index_offset, config_bytes=config_bytes
         )
-        final_command = plan_hparam.compile_hparam_final_command(recipe, out)
-        final_config_required = final_command is not None and plan_hparam.has_explicit_final_eval_config(recipe)
-        final_snapshot = None
-        if final_config_required:
-            final_snapshot = plan_contract.frozen_input_snapshot(recipe, "inputs.final_eval_config_path")
-            if final_snapshot["path"] != str((recipe.get("inputs") or {}).get("final_eval_config_path") or ""):
-                raise ValueError("Frozen final evaluation config differs from its recipe path.")
-        return {
-            "runs": [contract["row"] for contract in contracts],
-            "run_files": contracts,
-            "launch_script_text": plan_hparam.compile_hparam_run_all_script(recipe, out),
-            "final_command": final_command,
-            "final_script_text": (
-                plan_hparam.render_hparam_final_script(recipe, final_command) if final_command is not None else None
-            ),
-            "final_eval_config_required": final_config_required,
-            "final_eval_config_sha256": final_snapshot["sha256"] if final_snapshot is not None else None,
-        }
 
     def planned_plan_paths(
         self,

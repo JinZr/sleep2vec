@@ -4,7 +4,9 @@ Mixed bridge -- hparam plan materialization over the domain-aware primitives.
 Owns search-override application (JSON-pointer writes into config bytes), the
 per-run directory layout, and the frozen final-evaluation config snapshot,
 including the test-unlock gate that decides whether a final script may be
-emitted at all.
+emitted at all. Registering a materialized plan (target preflight, then the
+run-manifest commit) belongs to ``run_artifacts``, which calls back into the
+candidate-config and output-path checks and the preflight-card renderer here.
 """
 
 from __future__ import annotations
@@ -29,7 +31,6 @@ from . import (
     configs,
     execution_snapshot,
     experiment_io as exp_io,
-    experiment_workspace,
     plan_context,
     plan_contract,
     plan_rendering as rendering,
@@ -49,18 +50,13 @@ from .decision_paths import (
 from .experiment_workspace import (
     SCHEDULER_PLAN_IDENTITY_FIELDS,
     RunIdentity,
-    append_event,
-    ensure_experiment_workspace,
-    experiment_root,
     file_sha256,
     managed_run_parameters,
-    merge_run_manifest,
     next_run_index,
     parameter_summary,
-    plan_registration_rows_state,
     run_identity,
 )
-from .manifests import read_json, write_json, write_text
+from .manifests import write_json, write_text
 from .models import (
     CONFIG_FINETUNE_SECTION,
     REPO_ROOT,
@@ -79,10 +75,6 @@ class HparamRunLayout(TypedDict):
     identity: RunIdentity
     parameters: dict[str, Any]
     run_dir: Path
-
-
-class HparamRegistrationPreflightError(ValueError):
-    pass
 
 
 def final_test_unlocked(evaluation: dict, unlock_final_test: bool = False) -> bool:
@@ -907,6 +899,37 @@ def compile_hparam_run_all_script(recipe: dict[str, Any], out: Path) -> str:
     )
 
 
+def compile_hparam_plan_contract(
+    recipe: dict[str, JsonValue],
+    out: Path,
+    *,
+    run_index_offset: int,
+    config_bytes: bytes,
+) -> plan_contract.HparamCompiledPlanContract:
+    contracts = compile_hparam_run_contracts(
+        recipe,
+        out,
+        run_index_offset,
+        source_config_bytes=config_bytes or None,
+    )
+    final_command = compile_hparam_final_command(recipe, out)
+    final_config_required = final_command is not None and has_explicit_final_eval_config(recipe)
+    final_snapshot = None
+    if final_config_required:
+        final_snapshot = plan_contract.frozen_input_snapshot(recipe, "inputs.final_eval_config_path")
+        if final_snapshot["path"] != str(_resolved_final_eval_config_path(recipe, None) or ""):
+            raise ValueError("Frozen final evaluation config differs from its recipe path.")
+    return {
+        "runs": [contract["row"] for contract in contracts],
+        "run_files": contracts,
+        "launch_script_text": compile_hparam_run_all_script(recipe, out),
+        "final_command": final_command,
+        "final_script_text": render_hparam_final_script(recipe, final_command) if final_command is not None else None,
+        "final_eval_config_required": final_config_required,
+        "final_eval_config_sha256": final_snapshot["sha256"] if final_snapshot is not None else None,
+    }
+
+
 def write_hparam_plan(
     recipe: dict[str, JsonValue],
     out: Path,
@@ -1232,138 +1255,6 @@ def render_hparam_preflight_card(
     return "\n".join(lines)
 
 
-def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path) -> str:
-    from . import run_artifacts as artifacts
-
-    physical_dir = Path(physical_out)
-    plan_dir = Path(semantic_out)
-    plan = artifacts.read_hparam_plan(
-        physical_dir,
-        semantic_dir=plan_dir,
-        require_workspace_state=False,
-        require_adaptive_commit=False,
-    )
-    recipe_value = plan.get("recipe")
-    recipe = recipe_value if isinstance(recipe_value, dict) else {}
-    run_configs = [
-        (
-            run,
-            artifacts._physical_plan_path(Path(str(run["config"])), plan_dir, physical_dir).read_bytes(),
-        )
-        for run in plan["runs"]
-    ]
-    validate_hparam_run_configs(recipe, run_configs)
-    _hparam_registration_state(plan)
-    validate_hparam_output_paths(plan_dir, plan)
-    execution_value = recipe.get("execution")
-    execution = execution_value if isinstance(execution_value, dict) else {}
-    validation_runs = []
-    for run in plan["runs"]:
-        validation_run = dict(run)
-        validation_run["script"] = str(artifacts._physical_plan_path(Path(str(run["script"])), plan_dir, physical_dir))
-        validation_runs.append(validation_run)
-    snapshot = _inspect_hparam_execution_target(execution, validation_runs)
-    snapshot_path = physical_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME
-    execution_snapshot.write_execution_snapshot_file(snapshot_path, snapshot)
-    card = render_hparam_preflight_card(recipe, snapshot, run_configs)
-    plan_markdown = physical_dir / "plan.md"
-    write_text(plan_markdown, f"{plan_markdown.read_text().rstrip()}\n\n{card}\n")
-    plan_payload = read_json(physical_dir / "plan.json")
-    plan_payload["execution_snapshot"] = {
-        "path": str(plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME),
-        "sha256": file_sha256(snapshot_path),
-    }
-    # Keep plan.json as the terminal physical-plan manifest after adding the frozen target evidence.
-    write_json(physical_dir / "plan.json", plan_payload)
-    artifacts.read_hparam_plan(
-        physical_dir,
-        semantic_dir=plan_dir,
-        require_workspace_state=False,
-        require_adaptive_commit=False,
-    )
-    execution_snapshot.validated_execution_snapshot(
-        physical_dir,
-        execution,
-        validation_runs,
-        {},
-        inspector=_inspect_hparam_execution_target,
-        plan_label="hparam",
-    )
-    _hparam_registration_state(plan)
-    validate_hparam_output_paths(plan_dir, plan)
-    return card
-
-
-def _inspect_hparam_execution_target(
-    execution: Mapping[str, JsonValue], runs: Sequence[Mapping[str, JsonValue]]
-) -> execution_snapshot.ExecutionSnapshot:
-    return execution_snapshot.inspect_execution_target(execution, runs, plan_label="hparam")
-
-
-def commit_hparam_plan(
-    out: str | Path,
-    *,
-    emit_event: bool = True,
-    preflight_validated: bool = False,
-) -> plan_contract.HparamPlan:
-    from . import run_artifacts as artifacts
-
-    plan_dir = Path(out).expanduser()
-    if not plan_dir.is_absolute():
-        plan_dir = plan_dir.resolve()
-    try:
-        plan = artifacts.read_hparam_plan(
-            plan_dir,
-            require_workspace_state=False,
-            require_adaptive_commit=False,
-        )
-        if "execution_snapshot" not in plan:
-            raise ValueError(f"Hparam plan lacks registration preflight evidence: {plan_dir}")
-        recipe_value = plan.get("recipe")
-        recipe = recipe_value if isinstance(recipe_value, dict) else {}
-        ensure_experiment_workspace(
-            recipe,
-            plan_dir,
-            validate_only=True,
-            allow_published_plan=True,
-        )
-        root, manifest_rows = _hparam_registration_state(plan)
-        # Trusted publication callers already checked these bytes; the strict read above still rejects artifact drift.
-        if not preflight_validated:
-            validate_hparam_run_configs(
-                recipe,
-                [(run, Path(str(run["config"])).read_bytes()) for run in plan["runs"]],
-            )
-            validate_hparam_output_paths(plan_dir, plan)
-            execution_value = recipe.get("execution")
-            execution = execution_value if isinstance(execution_value, dict) else {}
-            execution_snapshot.validated_execution_snapshot(
-                plan_dir,
-                execution,
-                plan["runs"],
-                {},
-                inspector=_inspect_hparam_execution_target,
-                plan_label="hparam",
-            )
-    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
-        raise HparamRegistrationPreflightError(str(exc)) from exc
-    ensure_experiment_workspace(recipe, plan_dir, allow_published_plan=True)
-    merge_run_manifest(root, manifest_rows)
-    if emit_event:
-        append_event(
-            root,
-            "plan_created",
-            {
-                "step_id": (recipe.get("step") or {}).get("id"),
-                "plan_dir": str(plan_dir),
-                "run_count": len(manifest_rows),
-            },
-        )
-    with experiment_workspace.managed_run_lock(root):
-        artifacts.read_hparam_plan(plan_dir, require_adaptive_commit=False)
-    return plan
-
-
 def validate_hparam_output_paths(
     out: str | Path,
     plan: Mapping[str, Any],
@@ -1385,17 +1276,6 @@ def validate_hparam_output_paths(
     execution = execution_value if isinstance(execution_value, dict) else {}
     remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
     exp_io.validate_managed_output_paths(Path("/"), paths, remote=remote)
-
-
-def _hparam_registration_state(plan: Mapping[str, Any]) -> tuple[Path, list[dict[str, Any]]]:
-    recipe_value = plan.get("recipe")
-    recipe = recipe_value if isinstance(recipe_value, dict) else {}
-    root = experiment_root(recipe)
-    if root is None:
-        raise ValueError("experiment.root is required.")
-    manifest_rows = hparam_manifest_rows(plan)
-    plan_registration_rows_state(root, manifest_rows, source="Canonical hparam plan")
-    return root, manifest_rows
 
 
 def hparam_manifest_rows(plan: Mapping[str, Any]) -> list[dict[str, Any]]:

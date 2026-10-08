@@ -162,7 +162,6 @@ IMPORT_CYCLE_LEDGER: frozenset[str] = frozenset(
         "markdown",
         "plan_context",
         "plan_hparam",
-        "run_artifacts",
     }
 )
 
@@ -174,6 +173,5 @@ LAZY_IMPORT_LEDGER: frozenset[tuple[str, str]] = frozenset(
     {
         ("adapters.hparam_tune", "plan_hparam"),
         ("decision_hparam", "plan_hparam"),
-        ("plan_hparam", "run_artifacts"),
     }
 )
