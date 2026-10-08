@@ -14,6 +14,7 @@ is config vocabulary, not task dispatch.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import re
 from typing import Any, Final, TypeAlias, TypedDict, TypeGuard, overload
@@ -31,6 +32,28 @@ CONFIG_FINETUNE_SECTION: Final = "finetune"
 _FULL_GIT_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}")
 #: A value of the JSON data model, as ``json.loads`` returns it and JSON-backed records hold it.
 JsonValue: TypeAlias = "str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]"
+
+
+def validate_json_value(value: object, location: str, *, finite: bool = True) -> None:
+    """Reject non-string object keys and any value outside str, int, float, bool, None, list and dict, converting
+    nothing. With ``finite=True`` also reject NaN and infinities, which JSON interchange cannot carry."""
+    if value is None or isinstance(value, (str, bool)) or type(value) is int:
+        return
+    if isinstance(value, float):
+        if finite and not math.isfinite(value):
+            raise ValueError(f"{location} contains a non-finite number.")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            validate_json_value(item, f"{location}[{index}]", finite=finite)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{location} contains a non-string object key.")
+            validate_json_value(item, f"{location}.{key}", finite=finite)
+        return
+    raise ValueError(f"{location} contains a non-JSON value of type {type(value).__name__}.")
 
 
 class _ConfigProvenance(TypedDict, total=False):

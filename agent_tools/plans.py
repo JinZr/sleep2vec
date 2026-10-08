@@ -79,7 +79,7 @@ from .experiment_workspace import (
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import REPO_ROOT, ConfigSummaryInput, JsonValue, json_ready, resolve_repo_path
+from .models import REPO_ROOT, ConfigSummaryInput, JsonValue, json_ready, resolve_repo_path, validate_json_value
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions
 
 
@@ -382,13 +382,13 @@ def evaluate_recipe(
     _materialize_task_defaults(recipe, policy, user_decisions)
 
     try:
-        json.dumps(json_ready(recipe), sort_keys=True)
-    except (TypeError, ValueError) as exc:
+        validate_json_value(recipe, "Recipe", finite=False)
+    except ValueError as exc:
         sources = f"recipe {recipe_path}"
         if user_decisions_path is not None:
             sources += f" and user decisions {user_decisions_path}"
         raise ValueError(
-            f"Cannot freeze {sources} as JSON: {exc}. Quote YAML dates/timestamps if a string was intended."
+            f"Cannot freeze {sources} as JSON: {exc} Quote YAML dates/timestamps if a string was intended."
         ) from exc
 
     recipe_adapter = get_adapter(recipe.get("task"))

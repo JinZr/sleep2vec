@@ -18,6 +18,8 @@ from typing import Any, Literal, TypeAlias, TypedDict
 
 from typing_extensions import Never, NotRequired
 
+from .models import validate_json_value
+
 ProposalValue: TypeAlias = bool | int | float | str | None | list["ProposalValue"] | dict[str, "ProposalValue"]
 
 
@@ -200,7 +202,7 @@ def load_strict_json(text: str, *, source: str = "JSON") -> dict[str, Any]:
         raise ValueError(f"Malformed {source}: {exc.msg}.") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"{source} must contain a JSON object.")
-    _validate_json_value(payload, source)
+    validate_json_value(payload, source)
     return payload
 
 
@@ -226,7 +228,7 @@ def validate_proposal_input(document: Mapping[str, Any]) -> ProposalInputDocumen
         "input": input_payload,
         "expected_proposal_path": expected_path,
     }
-    _validate_json_value(normalized, "Proposal input")
+    validate_json_value(normalized, "Proposal input")
     return normalized
 
 
@@ -238,7 +240,7 @@ def validate_proposal(proposal: Mapping[str, Any], proposal_input: Mapping[str, 
     _validate_closed_fields(proposal, required, _PROPOSAL_FIELDS, "Proposal")
     if ("parameters" in proposal) == ("configurations" in proposal):
         raise ValueError("Proposal must contain exactly one of parameters or configurations.")
-    _validate_json_value(proposal, "Proposal")
+    validate_json_value(proposal, "Proposal")
     if type(proposal["schema_version"]) is not int or proposal["schema_version"] != 1:
         raise ValueError("Proposal schema_version must be 1.")
     if proposal["request_id"] != snapshot["request_id"]:
@@ -374,7 +376,7 @@ def _parameter_kind(key: str, values: Any) -> Literal["categorical", "integer", 
     if key.startswith("yaml:/") and (
         all(isinstance(value, dict) for value in values) or all(isinstance(value, list) for value in values)
     ):
-        _validate_json_value(values, f"Search parameter {key}")
+        validate_json_value(values, f"Search parameter {key}")
         return "categorical"
     raise ValueError(f"Search parameter {key} has unsupported mixed or composite values for agent proposals.")
 
@@ -521,25 +523,5 @@ def _validate_closed_fields(value: Mapping[str, Any], required: set[str], allowe
 
 
 def _canonical_json(value: Any) -> str:
-    _validate_json_value(value, "Canonical input")
+    validate_json_value(value, "Canonical input")
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-
-
-def _validate_json_value(value: Any, location: str) -> None:
-    if value is None or isinstance(value, (str, bool)) or type(value) is int:
-        return
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError(f"{location} contains a non-finite number.")
-        return
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            _validate_json_value(item, f"{location}[{index}]")
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise ValueError(f"{location} contains a non-string object key.")
-            _validate_json_value(item, f"{location}.{key}")
-        return
-    raise ValueError(f"{location} contains a non-JSON value of type {type(value).__name__}.")

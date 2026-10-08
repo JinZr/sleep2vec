@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
+import re
 
 import pytest
 import yaml
@@ -9,7 +11,7 @@ from agent_tools import managed_scheduler, plan_context
 from agent_tools.decision_hparam import hparam_recipe_contract_issues, hparam_search_issues
 from agent_tools.decision_models import DecisionStatus
 from agent_tools.experiment_workspace import experiment_metadata_issues
-from agent_tools.models import resolve_repo_path
+from agent_tools.models import resolve_repo_path, validate_json_value
 from agent_tools.plans import evaluate_recipe
 from agent_tools.recipes import load_recipe_with_base, load_yaml_file
 
@@ -166,6 +168,59 @@ def test_load_yaml_file_rejects_empty_mapping_and_recursive_alias(tmp_path: Path
 
     with pytest.raises(ValueError, match=message):
         load_yaml_file(path)
+
+
+def test_validate_json_value_reports_a_non_string_key_at_its_location():
+    with pytest.raises(ValueError, match=r"^Recipe\.search\.configurations\[0\] contains a non-string object key\.$"):
+        validate_json_value({"search": {"configurations": [{1: 0.1}]}}, "Recipe")
+
+
+@pytest.mark.parametrize(("value", "type_name"), [(datetime.date(2026, 10, 8), "date"), ((0.1, 0.2), "tuple")])
+def test_validate_json_value_rejects_values_outside_the_json_data_model(value, type_name: str):
+    with pytest.raises(
+        ValueError, match=rf"^Recipe\.experiment\.title contains a non-JSON value of type {type_name}\.$"
+    ):
+        validate_json_value({"experiment": {"title": value}}, "Recipe")
+
+
+def test_validate_json_value_allows_non_finite_floats_only_when_finite_is_false():
+    document = {"adaptive": {"replacement": {"kill_margin": float("nan")}}}
+
+    validate_json_value(document, "Recipe", finite=False)
+    with pytest.raises(
+        ValueError, match=r"^Recipe\.adaptive\.replacement\.kill_margin contains a non-finite number\.$"
+    ):
+        validate_json_value(document, "Recipe")
+
+
+def test_evaluate_recipe_rejects_a_non_string_key_at_the_freeze_check(tmp_path: Path):
+    payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
+    payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())
+    payload["search"]["parameters"] = {1: [0.1]}
+    path = tmp_path / "hparam.yaml"
+    path.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    message = (
+        f"Cannot freeze recipe {path} as JSON: Recipe.search.parameters contains a non-string object key. "
+        "Quote YAML dates/timestamps if a string was intended."
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        evaluate_recipe(path)
+
+
+def test_evaluate_recipe_rejects_an_unquoted_yaml_date_at_the_freeze_check(tmp_path: Path):
+    payload = load_yaml_file("recipes/examples/tiny_fixture_finetune.yaml")
+    payload["experiment"]["title"] = datetime.date(2026, 10, 8)
+    path = tmp_path / "finetune.yaml"
+    path.write_text(yaml.safe_dump(payload, sort_keys=False))
+    assert "  title: 2026-10-08\n" in path.read_text()
+
+    message = (
+        f"Cannot freeze recipe {path} as JSON: Recipe.experiment.title contains a non-JSON value of type date. "
+        "Quote YAML dates/timestamps if a string was intended."
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        evaluate_recipe(path)
 
 
 def test_recipe_rejects_unknown_runtime_field(tmp_path: Path):
