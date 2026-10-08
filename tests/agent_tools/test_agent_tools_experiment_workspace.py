@@ -20,6 +20,7 @@ from agent_tool_test_helpers import (
     FakeLauncher,
     call_while_run_lock_holder_commits,
     run_cli,
+    run_cli_subprocess,
     write_finetune_recipe,
     write_yaml,
 )
@@ -3911,15 +3912,10 @@ with plan_publication_lock(output):
 
 def test_plan_registration_lock_cannot_deadlock_with_plan_output(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
-    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
     output = tmp_path / "steps" / "unit-finetune" / "step.yaml"
 
-    result = subprocess.run(
-        [sys.executable, str(runner), "plan", "--recipe", str(recipe), "--output-dir", str(output)],
-        text=True,
-        capture_output=True,
-        timeout=SUBPROCESS_WAIT_SECONDS,
-    )
+    # A real process, so a regression that deadlocks registration against plan output ends in the timeout, not a hang.
+    result = run_cli_subprocess("plan", "--recipe", str(recipe), "--output-dir", str(output))
 
     assert result.returncode != 0
 

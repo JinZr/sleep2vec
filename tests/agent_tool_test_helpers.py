@@ -87,7 +87,7 @@ def validate_local_managed_output_paths(root, paths, *, remote=None):
 def run_cli(*args: str) -> subprocess.CompletedProcess:
     """Run the agent_tools CLI in this process with the stub's two substitutions, saving an interpreter per call.
 
-    Use run_cli_subprocess when a test needs a real process: calls from several threads, or process identity."""
+    Use run_cli_subprocess when a test needs a real process: CLI calls from threads, process identity, or a timeout."""
     stdout, stderr = io.StringIO(), io.StringIO()
     with (
         mock.patch.object(execution_snapshot, "run_execution_command", run_execution_preflight_fixture),
@@ -110,9 +110,11 @@ def run_cli(*args: str) -> subprocess.CompletedProcess:
 
 
 def run_cli_subprocess(*args: str) -> subprocess.CompletedProcess:
-    """Run the agent_tools CLI through the stub in a fresh interpreter; see run_cli for when that is needed."""
+    """Run the agent_tools CLI through the stub in a fresh interpreter, killed after SUBPROCESS_WAIT_SECONDS."""
     runner = Path(__file__).with_name("agent_tools") / "agent_tools_cli_stub.py"
-    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
+    return subprocess.run(
+        [sys.executable, str(runner), *args], text=True, capture_output=True, timeout=SUBPROCESS_WAIT_SECONDS
+    )
 
 
 def call_while_run_lock_holder_commits(monkeypatch, workspace: Path, call: Callable[[], _T]) -> _T:
