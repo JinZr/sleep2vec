@@ -626,13 +626,15 @@ def test_adaptive_init_reconciles_plan_event_after_append_failure(
             raise OSError("injected plan event failure")
         return original_write_event(workspace, event_type, payload)
 
-    monkeypatch.setattr(adaptive_state, "_write_experiment_event", fail_plan_event)
-    with pytest.raises(OSError, match="injected plan event failure"):
-        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+    with monkeypatch.context() as patch:
+        # Append fault injection: events.jsonl is read and validated before every append, so no on-disk
+        # condition fails only this append, or fails it after its bytes landed.
+        patch.setattr(adaptive_state, "_write_experiment_event", fail_plan_event)
+        with pytest.raises(OSError, match="injected plan event failure"):
+            adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
 
     assert len(read_run_manifest(tmp_path)) == 1
     assert not workflow_path.exists()
-    monkeypatch.setattr(adaptive_state, "_write_experiment_event", original_write_event)
 
     adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
     adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
@@ -663,12 +665,14 @@ def test_adaptive_init_reconciles_ready_event_after_append_failure(
             raise OSError("injected adaptive event failure")
         return original_write_event(workspace, event_type, payload)
 
-    monkeypatch.setattr(adaptive_state, "_write_experiment_event", fail_ready_event)
-    with pytest.raises(OSError, match="injected adaptive event failure"):
-        adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
+    with monkeypatch.context() as patch:
+        # Append fault injection: events.jsonl is read and validated before every append, so no on-disk
+        # condition fails only this append, or fails it after its bytes landed.
+        patch.setattr(adaptive_state, "_write_experiment_event", fail_ready_event)
+        with pytest.raises(OSError, match="injected adaptive event failure"):
+            adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
 
     assert workflow_path.is_file()
-    monkeypatch.setattr(adaptive_state, "_write_experiment_event", original_write_event)
 
     adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)
     adaptive_hparam.init_adaptive_workflow(recipe, workflow_dir)

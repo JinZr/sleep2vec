@@ -7,7 +7,7 @@ from agent_tool_test_helpers import write_yaml
 import pytest
 import yaml
 
-from agent_tools import adaptive_hparam, adaptive_replacement, adaptive_state, plan_hparam, slurm
+from agent_tools import adaptive_hparam, adaptive_replacement, adaptive_state, manifests, plan_hparam
 from tests.agent_tools import adaptive_hparam_test_support as test_support
 from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _run
 
@@ -136,7 +136,8 @@ def test_adaptive_slurm_grace_uses_allocation_start_not_submission_time():
 
 
 def test_adaptive_minutes_since_accepts_slurm_sidecar_timestamp():
-    minutes = adaptive_replacement._minutes_since(slurm._utc_now())
+    # Slurm sidecars stamp started_at with the canonical manifests.utc_now format.
+    minutes = adaptive_replacement._minutes_since(manifests.utc_now())
 
     assert minutes is not None
     assert 0 <= minutes < 1
@@ -165,9 +166,23 @@ def test_adaptive_default_test_objective_requires_test_after_fit(tmp_path: Path)
     assert "test-metric adaptive objective requires test_after_fit=true" in result.stdout
 
 
-def test_adaptive_runtime_requires_literal_true_enabled_flag():
-    with pytest.raises(ValueError, match="adaptive.enabled must be true"):
-        adaptive_hparam._validate_adaptive_recipe({"adaptive": {"enabled": "true"}})
+@pytest.mark.parametrize(
+    ("enabled", "error", "message"),
+    [
+        ("true", adaptive_hparam.AdaptivePreflightError, "adaptive.enabled must be a boolean"),
+        (False, ValueError, "adaptive.enabled must be true for adaptive workflow"),
+    ],
+)
+def test_adaptive_runtime_requires_literal_true_enabled_flag(tmp_path: Path, enabled, error, message):
+    recipe_path = _adaptive_recipe(tmp_path)
+    payload = yaml.safe_load(recipe_path.read_text())
+    payload["adaptive"]["enabled"] = enabled
+    write_yaml(recipe_path, payload)
+
+    with pytest.raises(error, match=message):
+        adaptive_hparam.init_adaptive_workflow(recipe_path, tmp_path / "workflow")
+
+    assert not (tmp_path / "workflow" / "adaptive").exists()
 
 
 @pytest.mark.parametrize(

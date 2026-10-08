@@ -119,16 +119,17 @@ def test_generated_infer_worker_commits_only_authenticated_terminal_evidence(
     # Only target identity/argparse probes are fixture-backed. The generated worker,
     # allocation/runtime guards, srun child handling and sidecar writers execute normally.
     bootstrap = (
-        "import os, sys\n"
+        "import os, runpy\n"
         "from agent_tool_test_helpers import run_execution_preflight_fixture\n"
-        "from agent_tools import managed_scheduler, slurm\n"
+        "from agent_tools import managed_scheduler\n"
         "def runtime_preflight(execution, command):\n"
         "    if os.environ['INFER_WORKER_TEST_MODE'] == 'rolling-runtime':\n"
         "        execution = {**execution, 'runtime_commit': '0' * 40}\n"
         "    return run_execution_preflight_fixture(execution, command)\n"
         "managed_scheduler.run_execution_command = runtime_preflight\n"
         "os.environ['INFER_WORKER_TEST_OUTER_PID'] = str(os.getpid())\n"
-        "sys.exit(slurm._main(sys.argv[1:]))\n"
+        # Same entry the bootstrap launches: python -m agent_tools.slurm <worker argv>.
+        "runpy.run_module('agent_tools.slurm', run_name='__main__', alter_sys=True)\n"
     )
     completed = subprocess.run(
         [sys.executable, "-c", bootstrap, *worker_argv],
