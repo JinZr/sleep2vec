@@ -9,7 +9,7 @@ from agent_tool_test_helpers import config_payload, write_finetune_recipe
 import pytest
 import yaml
 
-from agent_tools import plan_contract, plan_hparam, plans
+from agent_tools import plan_contract, plans
 from agent_tools.adapters.base import TaskAdapter
 from agent_tools.adapters.hparam_tune import HPARAM_TUNE_ADAPTER
 from agent_tools.experiment_workspace import read_run_manifest
@@ -104,6 +104,7 @@ class _PrecommitFailureAdapter(TaskAdapter):
         unlock_final_test,
         source_config_bytes,
         source_config_sha256,
+        final_eval_config,
     ) -> None:
         self.calls.append("write")
         write_out.mkdir(parents=True)
@@ -139,6 +140,7 @@ def test_adapter_precommit_failure_removes_staging_without_publication(tmp_path:
         unlock_final_test=False,
         validated_config_bytes=b"model: {}\n",
         validated_config_sha256=hashlib.sha256(b"model: {}\n").hexdigest(),
+        final_eval_config=None,
     )
 
     assert result.exit_code == 1
@@ -149,11 +151,10 @@ def test_adapter_precommit_failure_removes_staging_without_publication(tmp_path:
     assert not out.exists()
 
 
-def test_frozen_readers_copy_snapshots_but_preserve_raw_final_config_mapping(tmp_path: Path):
+def test_frozen_readers_copy_snapshots(tmp_path: Path):
     context = {"home": str(tmp_path), "python": "/python", "repo_root": str(tmp_path)}
     snapshot = {"field": "inputs.config", "path": "relative/../config.yaml", "sha256": "a" * 64}
-    raw_final = {"source_path": None, "bytes": b"config", "custom": {"value": [None, 1]}}
-    recipe = {"_plan_context": context, "input_snapshots": [snapshot], "_final_eval_config_snapshot": raw_final}
+    recipe = {"_plan_context": context, "input_snapshots": [snapshot]}
     before = copy.deepcopy(recipe)
 
     copied_context = plan_contract.frozen_plan_context(recipe)
@@ -168,8 +169,6 @@ def test_frozen_readers_copy_snapshots_but_preserve_raw_final_config_mapping(tmp
     copied_snapshots[0]["sha256"] = "b" * 64
     copied_snapshot["path"] = "/changed"
     assert recipe == before
-    assert plan_hparam.final_eval_config_snapshot(recipe) is raw_final
-    assert raw_final["custom"] is recipe["_final_eval_config_snapshot"]["custom"]
 
 
 @pytest.mark.parametrize("phase", ["generic", "hparam_rows", "hparam_materialized"])

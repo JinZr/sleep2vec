@@ -80,7 +80,14 @@ from .experiment_workspace import (
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import REPO_ROOT, ConfigSummaryInput, json_ready, resolve_repo_path, validate_json_value
+from .models import (
+    REPO_ROOT,
+    BoundFinalEvalConfigSnapshot,
+    ConfigSummaryInput,
+    json_ready,
+    resolve_repo_path,
+    validate_json_value,
+)
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions
 
 
@@ -1073,7 +1080,7 @@ def _validate_bound_recipe(
     expected_base_recipe: dict[str, Any] | None,
     registered_recipe_path: str | Path | None,
     source_config_sha256: str | None,
-) -> tuple[bytes, str] | None:
+) -> tuple[bytes, str, BoundFinalEvalConfigSnapshot | None] | None:
     if expected_recipe is not None:
         recipe_source_value = recipe.get("_local_recipe")
         recipe_source = recipe_source_value if isinstance(recipe_source_value, dict) else recipe
@@ -1110,6 +1117,9 @@ def _validate_bound_recipe(
             recipe["_local_recipe"]["_recipe_path"] = str(frozen_recipe_path)
     validated_config_bytes = cfg.get("_source_config_bytes") if isinstance(cfg, dict) else None
     validated_config_sha256 = cfg.get("_source_config_sha256") if isinstance(cfg, dict) else None
+    final_eval_config: BoundFinalEvalConfigSnapshot | None = (
+        cfg.get("_final_eval_config_snapshot") if isinstance(cfg, dict) else None
+    )
     if report.exit_code == 0:
         if not isinstance(validated_config_bytes, bytes) or not isinstance(validated_config_sha256, str):
             raise ValueError("Successful plan preflight did not bind the source config bytes.")
@@ -1117,7 +1127,7 @@ def _validate_bound_recipe(
             raise ValueError("Validated source config bytes do not match their SHA-256.")
         if source_config_sha256 is not None and source_config_sha256 != validated_config_sha256:
             raise ValueError("Source config does not match the externally bound SHA-256.")
-        return validated_config_bytes, validated_config_sha256
+        return validated_config_bytes, validated_config_sha256, final_eval_config
     return None
 
 
@@ -1138,6 +1148,7 @@ def _materialize_adapter_plan(
     unlock_final_test: bool,
     validated_config_bytes: bytes,
     validated_config_sha256: str,
+    final_eval_config: BoundFinalEvalConfigSnapshot | None,
 ) -> DecisionReport:
     try:
         plan_adapter.write_plan(
@@ -1148,6 +1159,7 @@ def _materialize_adapter_plan(
             unlock_final_test=unlock_final_test,
             source_config_bytes=validated_config_bytes,
             source_config_sha256=validated_config_sha256,
+            final_eval_config=final_eval_config,
         )
         preflight_summary = plan_adapter.precommit_plan(out, write_out=write_out)
         if preflight_summary:
@@ -1601,7 +1613,7 @@ def _build_plan(
             ensure_experiment_workspace(recipe, out, plan_controller=request.plan_controller)
         return report
 
-    validated_config_bytes, validated_config_sha256 = bound_config
+    validated_config_bytes, validated_config_sha256, final_eval_config = bound_config
     task: str = recipe["task"]
     root = experiment_root(recipe)
     if root is None:
@@ -1701,6 +1713,7 @@ def _build_plan(
             unlock_final_test=request.unlock_final_test,
             validated_config_bytes=validated_config_bytes,
             validated_config_sha256=validated_config_sha256,
+            final_eval_config=final_eval_config,
         )
     return _materialize_single_run_plan(
         task=task,
