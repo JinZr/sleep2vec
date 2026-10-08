@@ -159,6 +159,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   at the freeze boundary, and `json_ready` is reserved for writing. Canonical run rows are the `dict[str, str]`
   that `read_run_manifest` and `merge_run_manifest` return; observations, in-flight launch rows and frozen
   plan runs are `dict[str, JsonValue]` or read-only `Mapping[str, JsonValue]`.
+  Builder rows whose `rank`, `score` or `epoch` is consumed numerically stay `dict[str, Any]`, and
+  `experiment_workspace.resolve_run_row` returns the caller's own row type.
 - Reuse `hparam_selection` and `checkpoint_test_results` for
   [selection and selected-candidate consumers](../agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers).
   Append semantic notes through `experiments.append_experiment_note` and `research_log`,

@@ -42,6 +42,7 @@ from .experiment_workspace import (
     verify_run_snapshot,
 )
 from .manifests import read_json
+from .models import JsonValue
 from .recipes import merge_recipe_layers
 
 RUN_METADATA_FIELDS = ("experiment_id", "run_name", "version")
@@ -1202,7 +1203,7 @@ def _validate_run_rows(
         versions.add(version)
 
 
-def find_run_manifest(run: dict[str, Any]) -> Path | None:
+def find_run_manifest(run: Mapping[str, JsonValue]) -> Path | None:
     """Locate and parse-check runtime_dir/run_manifest.json on the local host.
 
     Returns None for an absent/empty runtime_dir value or a missing manifest.
@@ -1395,7 +1396,7 @@ def fixed_checkpoint_path_from_names(
     return ""
 
 
-def checkpoint_names(run: dict[str, Any]) -> list[str]:
+def checkpoint_names(run: Mapping[str, JsonValue]) -> list[str]:
     """List sorted local *.ckpt basenames, excluding symlinks and non-files.
 
     Returns [] when checkpoint_dir is absent, a symlink or not a directory.
