@@ -24,6 +24,7 @@ import socket
 import subprocess
 import tempfile
 import traceback
+from types import FrameType
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from . import manifests, python_programs, transport
@@ -446,7 +447,7 @@ def run_frozen_job(
             if hashlib.sha256(artifact.read_bytes()).hexdigest() != expected:
                 raise ValueError(f"Frozen run artifact changed {when}: {artifact}")
 
-    def forward_signal(signum, _frame):
+    def forward_signal(signum: int, _frame: FrameType | None) -> None:
         nonlocal received_signal
         received_signal = signum
         if child is not None and child.poll() is None:

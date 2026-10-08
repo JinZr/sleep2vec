@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import yaml
 
@@ -102,7 +102,7 @@ def load_finetune_config(path: str | Path) -> BaselineConfig:
     return load_config(path)
 
 
-def load_pretrain_config(path: str | Path):
+def load_pretrain_config(path: str | Path) -> NoReturn:
     raise ValueError("sex_age_baseline does not support pretraining configs.")
 
 

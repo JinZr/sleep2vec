@@ -12,7 +12,7 @@ workspace directly.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 import csv
 import hashlib
@@ -346,7 +346,7 @@ _PLAN_REGISTRATION_LOCKS_GUARD = threading.Lock()
 
 
 @contextmanager
-def plan_registration_lock(root: str | Path):
+def plan_registration_lock(root: str | Path) -> Iterator[None]:
     root = Path(root)
     lock_path = root.parent / f".{root.name}.plan-registration.lock"
     if not root.parent.exists():
