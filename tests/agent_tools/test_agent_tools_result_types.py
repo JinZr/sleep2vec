@@ -32,8 +32,11 @@ def test_result_types_reach_callers(tmp_path: Path):
             direct_launch["log_path"] = Path("/log")  # type: ignore[typeddict-item]
             direct_launch["pid"] = "123"  # type: ignore[typeddict-item]
             direct_launch["planned_runtime_commit"] = None  # type: ignore[typeddict-item]
-            direct_launch["command"] = None  # type: ignore[typeddict-item]
-            direct_launch["execution_snapshot_sha256"] = 1  # type: ignore[typeddict-item]
+            slurm_launch = managed_scheduler._slurm_execution_identity({}, {})
+            submit_command: str = slurm_launch["command"]
+            slurm_launch["command"] = None  # type: ignore[typeddict-item]
+            slurm_launch["execution_snapshot_sha256"] = 1  # type: ignore[typeddict-item]
+            slurm_launch["log_path"] = None
             verification_options: managed_scheduler.LaunchVerificationOptions = {}
             verification_options["checkpoint_path"] = None
             verification_options["checkpoint_sha256"] = None
@@ -627,7 +630,11 @@ def test_result_types_reach_callers(tmp_path: Path):
                 metric: str = selection["metric"]
                 selection["metric"] = 1  # type: ignore[typeddict-item]
 
-            lifecycle = experiment_tracking.hparam_selection_lifecycle([], [], root=Path("/workspace"))
+            steps = experiments._registered_plan_steps(
+                Path("/workspace"), {}, [], remote=None, require_registered_rows=True,
+            )
+            steps[0]["plans"][0]["run_key"]  # type: ignore[typeddict-item]
+            lifecycle = experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"))
             lifecycle_step = lifecycle["hparam_steps"][0]
             selected_step = lifecycle["selected_steps"][0]
             plan_path: str = lifecycle_step["plan_path"]
@@ -660,7 +667,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             lifecycle["selected_step"]  # type: ignore[typeddict-item]
             lifecycle["report_valid"] = "yes"  # type: ignore[typeddict-item]
             required_report: str = lifecycle["expected_report"]  # type: ignore[assignment]
-            status_snapshot = experiment_tracking.experiment_status_snapshot({}, [], [], root=Path("/workspace"))
+            status_snapshot = experiment_tracking.experiment_status_snapshot({}, steps, [], root=Path("/workspace"))
             status_experiment = status_snapshot["experiment"]
             status_title: str = status_experiment["title"]
             status_remote: str | None = status_experiment["remote"]
@@ -738,15 +745,15 @@ def test_result_types_reach_callers(tmp_path: Path):
                 report["sha256"] = None  # type: ignore[typeddict-item]
                 required_ranking: str = report["ranking_text"]  # type: ignore[assignment]
                 required_ranking_sha: str = report["ranking_sha256"]  # type: ignore[assignment]
-                experiment_tracking.hparam_selection_lifecycle([], [], root=Path("/workspace"), report=report)
+                experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"), report=report)
                 experiment_tracking.experiment_status_snapshot(
-                    {}, [], [], root=Path("/workspace"), hparam_selection_report=report,
+                    {}, steps, [], root=Path("/workspace"), hparam_selection_report=report,
                 )
                 experiment_tracking.hparam_selection_lifecycle(
-                    [], [], root=Path("/workspace"), report={**report, "sha256": None},  # type: ignore[arg-type]
+                    steps, [], root=Path("/workspace"), report={**report, "sha256": None},  # type: ignore[arg-type]
                 )
                 experiment_tracking.experiment_status_snapshot(
-                    {}, [], [], root=Path("/workspace"),
+                    {}, steps, [], root=Path("/workspace"),
                     hparam_selection_report={**report, "ranking_text": 1},  # type: ignore[arg-type]
                 )
             """),
