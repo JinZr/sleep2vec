@@ -164,8 +164,10 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Spell decoded JSON values as `models.JsonValue`, not `Any`; `models.validate_json_value` owns narrowing to it
   at the freeze boundary, and `json_ready` is reserved for writing. Canonical run rows are the `dict[str, str]`
   that `read_run_manifest` and `merge_run_manifest` return; observations, in-flight launch rows and frozen
-  plan runs are `dict[str, JsonValue]` or read-only `Mapping[str, JsonValue]`. The recipe `preflight_plan`
-  returns is `dict[str, JsonValue]`, and kernel functions that write into it take that type.
+  plan runs are `dict[str, JsonValue]` or read-only `Mapping[str, JsonValue]`. `preflight_plan` returns the
+  recipe broadly typed, because contract-blocked early returns precede the freeze check; `_build_plan`
+  narrows it to `dict[str, JsonValue]` on its pass path, and kernel functions that write into the frozen
+  recipe take that type.
   Builder rows whose `rank`, `score` or `epoch` is consumed numerically stay `dict[str, Any]`, and
   `experiment_workspace.resolve_run_row` returns the caller's own row type.
 - Reuse `hparam_selection` and `checkpoint_test_results` for

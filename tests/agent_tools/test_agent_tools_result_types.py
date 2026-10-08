@@ -455,11 +455,8 @@ def test_result_types_reach_callers(tmp_path: Path):
                 del frozen_input["sha256"]  # type: ignore[misc]
 
             def post_freeze_recipe_writers() -> None:
-                from agent_tools import plans
                 from agent_tools.domain.finetune_hparam_profile import compile_finetune_balanced_profile
-                frozen_recipe, _cfg, _report = plans.preflight_plan(recipe_path="recipe.yaml", output_dir="/plan")
-                frozen_json: dict[str, models.JsonValue] = frozen_recipe
-                frozen_recipe["input_snapshots"] = b"snapshots"  # type: ignore[assignment]
+                frozen_recipe: dict[str, models.JsonValue] = {"inputs": {"config": "/config.yaml"}}
                 plan_contract.bind_plan_context(frozen_recipe)
                 plan_contract.bind_frozen_input_snapshot(frozen_recipe, "inputs.config", "/config.yaml", "a" * 64)
                 byte_recipe = {"_plan_context": b"context"}
