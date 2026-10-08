@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from agent_tool_test_helpers import run_execution_preflight_fixture, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import run_cli, run_execution_preflight_fixture, write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
@@ -26,11 +26,6 @@ def _stub_execution_snapshot_preflight(monkeypatch):
         "run_execution_command",
         run_execution_preflight_fixture,
     )
-
-
-def _run(*args: str) -> subprocess.CompletedProcess:
-    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
-    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
 
 
 def _read_table(path: Path) -> list[dict[str, str]]:
@@ -170,7 +165,7 @@ def _write_agent_submission(input_path: Path, *, lr: list[float] | None = None) 
 
 def _write_fake_manifest(workflow_dir: Path, *, score: float = 0.7) -> None:
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
-    launched = _run("hparam-launch", "--plan-dir", str(round_dir))
+    launched = run_cli("hparam-launch", "--plan-dir", str(round_dir))
     assert launched.returncode == 0, launched.stderr
     plan = json.loads((round_dir / "plan.json").read_text())
     run = plan["runs"][0]
@@ -205,7 +200,7 @@ def _write_checkpoint_test_manifest(
     best_model_score: float = 0.5,
 ) -> tuple[dict, dict[int, Path]]:
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
-    launched = _run("hparam-launch", "--plan-dir", str(round_dir))
+    launched = run_cli("hparam-launch", "--plan-dir", str(round_dir))
     assert launched.returncode == 0, launched.stderr
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     checkpoint_dir = Path(run["checkpoint_dir"])

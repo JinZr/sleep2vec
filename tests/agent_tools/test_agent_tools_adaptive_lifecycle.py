@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_tool_test_helpers import call_while_run_lock_holder_commits
+from agent_tool_test_helpers import call_while_run_lock_holder_commits, run_cli
 import pytest
 import yaml
 
@@ -24,7 +24,6 @@ from tests.agent_tools.adaptive_hparam_test_support import (
     _adaptive_recipe,
     _mark_failing_running_runs,
     _read_table,
-    _run,
     _write_fake_manifest,
 )
 
@@ -35,7 +34,7 @@ _stub_execution_snapshot_preflight = test_support._stub_execution_snapshot_prefl
 def test_adaptive_step_dry_run_writes_suggestion_without_superseding_current_round(tmp_path: Path, max_rounds):
     recipe = _adaptive_recipe(tmp_path, max_rounds=max_rounds)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     launch = _read_table(round_dir / "launch_manifest.tsv")[0]
@@ -44,7 +43,7 @@ def test_adaptive_step_dry_run_writes_suggestion_without_superseding_current_rou
         [{**launch, "status": "planned"}],
     )
 
-    result = _run("hparam-adaptive-step", "--workflow-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-step", "--workflow-dir", str(workflow_dir))
 
     assert result.returncode == 0, result.stderr
     assert (workflow_dir / "adaptive" / "suggestions" / "round_001.yaml").exists()
@@ -61,7 +60,7 @@ def test_adaptive_step_dry_run_writes_suggestion_without_superseding_current_rou
 def test_execute_supersedes_canonical_pending_run_and_prevents_old_round_launch(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
@@ -171,7 +170,7 @@ def test_adaptive_reads_workspace_state_only_under_run_lock(tmp_path: Path, monk
 def test_supersede_uses_canonical_status_and_repairs_stale_round_mirrors(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
@@ -196,7 +195,7 @@ def test_supersede_uses_canonical_status_and_repairs_stale_round_mirrors(tmp_pat
 def test_supersede_event_uses_the_status_committed_by_the_canonical_owner(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
@@ -221,7 +220,7 @@ def test_supersede_event_uses_the_status_committed_by_the_canonical_owner(tmp_pa
 def test_supersede_does_not_override_run_launched_after_eligibility_check(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
@@ -246,7 +245,7 @@ def test_supersede_does_not_override_run_launched_after_eligibility_check(tmp_pa
 def test_supersede_preflights_round_mirrors_before_canonical_commit(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     mirrors = [{**run, "status": "planned", "target": "local", "pid_path": "", "log_path": ""}]
@@ -267,11 +266,11 @@ def test_supersede_preflights_round_mirrors_before_canonical_commit(tmp_path: Pa
 def test_adaptive_step_blocks_suggestion_without_scored_objective(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
-    assert _run("hparam-launch", "--plan-dir", str(round_dir)).returncode == 0
+    assert run_cli("hparam-launch", "--plan-dir", str(round_dir)).returncode == 0
 
-    result = _run("hparam-adaptive-step", "--workflow-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-step", "--workflow-dir", str(workflow_dir))
 
     assert result.returncode != 0
     assert "No digest rows with finite test_auroc" in result.stderr
@@ -282,7 +281,7 @@ def test_adaptive_step_blocks_suggestion_without_scored_objective(tmp_path: Path
 def test_adaptive_step_execute_resolves_relative_base_recipe_for_next_round(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3, relative_base=True)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
     launched = []
 
@@ -319,7 +318,7 @@ def test_adaptive_step_execute_resolves_relative_base_recipe_for_next_round(tmp_
 def test_adaptive_step_preflights_next_round_before_stop_or_supersede(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     invalid = tmp_path / "invalid-next-round.yaml"
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["max_runs"] = 0
@@ -350,7 +349,7 @@ def test_adaptive_step_preflights_next_round_before_stop_or_supersede(tmp_path: 
 def test_adaptive_step_rejects_source_contract_drift_before_digest(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["max_run"] = 1
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
@@ -372,7 +371,7 @@ def test_adaptive_step_keeps_current_runs_when_replacement_stage_raises(
 ):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     merge_run_manifest(
@@ -423,7 +422,7 @@ def test_adaptive_step_keeps_current_runs_when_replacement_stage_raises(
 def test_adaptive_step_commits_canonical_start_when_initial_launcher_raises(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     current_run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     merge_run_manifest(
@@ -655,7 +654,7 @@ def test_adaptive_step_blocks_retry_when_post_start_reconciliation_fails(
 def test_zero_start_replacement_rejects_aliased_round_commit(tmp_path: Path, monkeypatch, launch_status: str):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     merge_run_manifest(
@@ -1140,7 +1139,7 @@ def test_adaptive_step_mixed_initial_launch_failure_commits_the_live_replacement
     payload["adaptive"]["round_size"] = 2
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     current_runs = json.loads((round_dir / "plan.json").read_text())["runs"]
     _mark_failing_running_runs(tmp_path, round_dir, current_runs)

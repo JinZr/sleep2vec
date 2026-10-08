@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 from agent_tool_test_helpers import (
+    run_cli,
     run_execution_preflight_fixture,
     survival_config_payload,
     write_finetune_recipe,
@@ -29,11 +30,6 @@ _RUNTIME_COMMIT = subprocess.run(
 @pytest.fixture(autouse=True)
 def _stub_execution_target(monkeypatch):
     monkeypatch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
-
-
-def _run(*args: str) -> subprocess.CompletedProcess:
-    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
-    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
 
 
 def _first_run(plan_dir: Path) -> dict:
@@ -250,7 +246,7 @@ def test_plan_does_not_create_run_all_when_consultation_required(tmp_path: Path)
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert "Questions for user" in result.stdout
@@ -269,7 +265,7 @@ def test_plan_with_unresolved_experiment_metadata_does_not_write_output(tmp_path
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "unresolved-plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert not output_dir.exists()
@@ -285,7 +281,7 @@ def test_plan_rejects_non_string_workspace_ids_before_creating_workspace(tmp_pat
     payload[section]["id"] = 123
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plans" / "first"))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plans" / "first"))
 
     assert result.returncode == 1
     assert f"{section}.id must be a string" in result.stdout
@@ -301,7 +297,7 @@ def test_blocked_plan_initializes_workspace_and_retry_uses_new_plan_dir(tmp_path
     recipe.write_text(yaml.safe_dump(payload))
     blocked_dir = workspace / "plans" / "blocked"
 
-    blocked = _run("plan", "--recipe", str(recipe), "--output-dir", str(blocked_dir))
+    blocked = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(blocked_dir))
 
     assert blocked.returncode == 2
     assert (workspace / "experiment.yaml").exists()
@@ -312,7 +308,7 @@ def test_blocked_plan_initializes_workspace_and_retry_uses_new_plan_dir(tmp_path
     decisions.write_text(yaml.safe_dump(decision_payload, sort_keys=False))
     retry_dir = workspace / "plans" / "retry"
 
-    retry = _run(
+    retry = run_cli(
         "plan",
         "--recipe",
         str(recipe),
@@ -340,7 +336,7 @@ def test_blocked_plan_directory_may_equal_fresh_experiment_root(tmp_path: Path, 
     payload["experiment"]["root"] = str(workspace)
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(workspace))
 
     assert result.returncode == 2, (result.stdout, result.stderr)
     assert (workspace / "plan.blocked.md").is_file()
@@ -380,7 +376,7 @@ def test_root_blocked_plan_rejects_interrupted_pass_residue(
     else:
         residue.write_text("interrupted publication\n")
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(workspace))
 
     assert result.returncode == 1
     assert not (workspace / "plan.blocked.md").exists()
@@ -396,7 +392,7 @@ def test_registered_root_blocked_plan_reader_rejects_pass_residue(tmp_path: Path
     workspace = tmp_path / "workspace"
     payload["experiment"]["root"] = str(workspace)
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace)).returncode == 2
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(workspace)).returncode == 2
     (workspace / "run.sh").write_text("interrupted publication\n")
 
     with pytest.raises(ValueError, match="contains PASS planning artifacts"):
@@ -414,7 +410,7 @@ def test_generic_blocked_plan_retry_rejects_same_output_dir(tmp_path: Path):
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     blocked_dir = workspace / "plans" / "blocked"
 
-    blocked = _run("plan", "--recipe", str(recipe), "--output-dir", str(blocked_dir))
+    blocked = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(blocked_dir))
 
     assert blocked.returncode == 2
     decisions = blocked_dir / "decisions.yaml"
@@ -425,7 +421,7 @@ def test_generic_blocked_plan_retry_rejects_same_output_dir(tmp_path: Path):
     manifest = workspace / "run_manifest.tsv"
     manifest_bytes = manifest.read_bytes()
 
-    retry = _run(
+    retry = run_cli(
         "plan",
         "--recipe",
         str(recipe),
@@ -457,7 +453,7 @@ def test_generic_blocked_plan_rejects_foreign_output_entry(tmp_path: Path):
     competitor.write_text("user competitor\n")
     before = {path.relative_to(workspace): path.read_bytes() for path in workspace.rglob("*") if path.is_file()}
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 1
     assert "unexpected entries" in result.stdout
@@ -572,7 +568,7 @@ def test_hparam_blocked_plan_writes_user_decision_template(tmp_path: Path):
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = tmp_path / "hparam-blocked"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]["overwrite_policy"] == {
@@ -647,7 +643,7 @@ def test_hparam_blocked_plan_retry_rejects_same_output_dir_even_with_overwrite(t
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     blocked_dir = tmp_path / "hparam-blocked"
 
-    blocked = _run("plan", "--recipe", str(recipe), "--output-dir", str(blocked_dir))
+    blocked = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(blocked_dir))
 
     assert blocked.returncode == 2
     decisions = blocked_dir / "decisions.yaml"
@@ -659,7 +655,7 @@ def test_hparam_blocked_plan_retry_rejects_same_output_dir_even_with_overwrite(t
     manifest = tmp_path / "run_manifest.tsv"
     manifest_bytes = manifest.read_bytes()
 
-    retry = _run(
+    retry = run_cli(
         "plan",
         "--recipe",
         str(recipe),
@@ -681,7 +677,7 @@ def test_context_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path
     _recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
     output_dir = tmp_path / "context"
 
-    result = _run(
+    result = run_cli(
         "context",
         "--task",
         "finetune",
@@ -707,7 +703,7 @@ def test_context_writes_questions_and_blocked_script(tmp_path: Path):
     config = yaml.safe_load(write_finetune_recipe(tmp_path).read_text())["inputs"]["config"]
     output_dir = tmp_path / "context"
 
-    result = _run("context", "--task", "finetune", "--config", config, "--output-dir", str(output_dir))
+    result = run_cli("context", "--task", "finetune", "--config", config, "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert (output_dir / "questions.md").exists()
@@ -731,7 +727,7 @@ def test_context_writes_questions_for_mixed_fail_and_user_input(tmp_path: Path):
     write_yaml(config, payload)
     output_dir = tmp_path / "context"
 
-    result = _run(
+    result = run_cli(
         "context",
         "--task",
         "finetune",
@@ -759,7 +755,9 @@ def test_plan_blocks_user_decision_test_after_fit_when_finetune_lock_stays_resol
     )
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+    result = run_cli(
+        "plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir)
+    )
 
     assert result.returncode == 2
     assert "test_after_fit=true would evaluate test" in result.stdout
@@ -769,7 +767,7 @@ def test_plan_blocks_user_decision_test_after_fit_when_finetune_lock_stays_resol
 def test_context_without_workspace_writes_blocked_script(tmp_path: Path):
     output_dir = tmp_path / "context"
 
-    result = _run("context", "--task", "pretrain", "--variant", "sleep2vec", "--output-dir", str(output_dir))
+    result = run_cli("context", "--task", "pretrain", "--variant", "sleep2vec", "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "Unsupported task: pretrain" in json.loads((output_dir / "context.json").read_text())["blocking_issues"]

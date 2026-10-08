@@ -4,10 +4,15 @@ from pathlib import Path
 from shlex import quote as shlex_quote
 import sys
 
-from agent_tool_test_helpers import survival_config_payload, write_finetune_recipe, write_survival_sidecars, write_yaml
+from agent_tool_test_helpers import (
+    run_cli,
+    survival_config_payload,
+    write_finetune_recipe,
+    write_survival_sidecars,
+    write_yaml,
+)
 from test_agent_plan_blocks_on_ambiguity import (
     _RUNTIME_COMMIT,
-    _run,
     _survival_recipe_with_missing_sidecar_key,
     _write_infer_recipe,
     _write_preset_recipe,
@@ -20,7 +25,7 @@ import yaml
 def test_doctor_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
     recipe, _config = _survival_recipe_with_missing_sidecar_key(tmp_path)
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
 
     assert result.returncode == 1
     assert "Status: FAIL" in result.stdout
@@ -31,7 +36,7 @@ def test_plan_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
     recipe, _config = _survival_recipe_with_missing_sidecar_key(tmp_path)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "survival key values missing from sidecars" in result.stdout
@@ -48,7 +53,7 @@ def test_plan_skips_survival_index_gate_when_finetune_preset_is_configured(tmp_p
     write_yaml(config, payload)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     assert "survival key values missing from sidecars" not in result.stdout
@@ -65,7 +70,7 @@ def test_plan_skips_missing_index_path_when_finetune_preset_is_configured(tmp_pa
     write_yaml(config, payload)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     assert "finetune_data_index" not in result.stdout
@@ -79,7 +84,7 @@ def test_plan_blocks_missing_finetune_preset_path(tmp_path: Path):
     write_yaml(config, payload)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "finetune_preset_path" in result.stdout
@@ -124,7 +129,7 @@ def test_hparam_plan_skips_survival_index_gate_when_base_preset_is_configured(tm
     )
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     assert "survival key values missing from sidecars" not in result.stdout
@@ -187,7 +192,7 @@ def test_hparam_plan_skips_remote_deferred_survival_index_summary(tmp_path: Path
     )
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     assert "Index CSV not found" not in result.stdout
@@ -221,7 +226,7 @@ def test_infer_invalid_eval_split_blocks_command_generation(tmp_path: Path):
     )
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "eval_split must be one of" in result.stdout
@@ -233,7 +238,7 @@ def test_infer_blocks_missing_inference_preset_path(tmp_path: Path):
     recipe = _write_infer_recipe(tmp_path, config, inference_preset_path=tmp_path / "missing_override.pkl")
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "inference_preset_path" in result.stdout
@@ -246,7 +251,7 @@ def test_infer_blocks_missing_config_finetune_preset_path(tmp_path: Path):
     recipe = _write_infer_recipe(tmp_path, config)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "finetune_preset_path" in result.stdout
@@ -259,7 +264,7 @@ def test_infer_survival_blocks_invalid_sidecars_without_preset(tmp_path: Path):
     recipe = _write_infer_recipe(tmp_path, config)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert "survival_sidecars" in result.stdout
@@ -273,7 +278,7 @@ def test_infer_survival_allows_invalid_sidecars_with_preset(tmp_path: Path):
     recipe = _write_infer_recipe(tmp_path, config)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     assert "survival_sidecars" not in result.stdout
@@ -290,7 +295,7 @@ def test_infer_preset_path_does_not_skip_survival_sidecar_checks(tmp_path: Path)
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "inputs.preset_path" in result.stdout
@@ -307,7 +312,7 @@ def test_infer_checks_survival_sidecar_keys_only_for_eval_split(tmp_path: Path):
     recipe = _write_infer_recipe(tmp_path, config, eval_split="val")
     output_dir = tmp_path / "plan_infer_val"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     assert "survival key values missing from sidecars" not in result.stdout
@@ -346,7 +351,7 @@ def test_preset_plan_checks_inputs_index_even_when_config_has_finetune_preset(tm
     )
     output_dir = tmp_path / "plan_bad_index"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "Index CSV missing required column: path" in result.stdout
@@ -376,7 +381,7 @@ def test_preset_plan_blocks_survival_config_with_invalid_sidecars(tmp_path: Path
     )
     output_dir = tmp_path / "plan_bad_sidecars"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert "survival_sidecars" in result.stdout
@@ -410,7 +415,7 @@ def test_preset_plan_blocks_multilabel_sidecars_missing_from_execution_workdir(t
     )
     output_dir = tmp_path / "plan_multilabel_sidecars"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert "multilabel_sidecars" in result.stdout
@@ -444,7 +449,7 @@ def test_preset_plan_checks_survival_sidecar_keys_only_for_requested_split(tmp_p
     )
     output_dir = tmp_path / "plan_survival_train"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     assert "survival key values missing from sidecars" not in result.stdout
@@ -484,7 +489,7 @@ def test_preset_plan_skips_local_index_summary_for_remote_deferred_index(tmp_pat
     )
     output_dir = tmp_path / "plan_remote_index"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     assert "Index CSV not found" not in result.stdout
@@ -518,7 +523,7 @@ def test_finetune_plan_includes_explicit_input_and_runtime_args(tmp_path: Path):
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     script = (output_dir / "run.sh").read_text()
@@ -545,7 +550,7 @@ def test_finetune_blocks_missing_pretrained_backbone_path(tmp_path: Path):
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "pretrained_backbone_path" in result.stdout
@@ -560,7 +565,7 @@ def test_finetune_blocks_missing_resume_ckpt_path(tmp_path: Path):
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "ckpt_path" in result.stdout

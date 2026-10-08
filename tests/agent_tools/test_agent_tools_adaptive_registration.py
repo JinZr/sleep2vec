@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import threading
 
-from agent_tool_test_helpers import write_finetune_recipe
+from agent_tool_test_helpers import run_cli, write_finetune_recipe
 import pytest
 import yaml
 
@@ -21,7 +21,7 @@ from agent_tools import (
 )
 from agent_tools.experiment_workspace import append_event, file_sha256, read_run_manifest, read_step_manifest
 from tests.agent_tools import adaptive_hparam_test_support as test_support
-from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _agent_recipe, _read_table, _run
+from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _agent_recipe, _read_table
 
 _stub_execution_snapshot_preflight = test_support._stub_execution_snapshot_preflight
 
@@ -49,14 +49,14 @@ def test_adaptive_init_preflight_leaves_blocked_root_untouched_then_retries(tmp_
     payload["decisions"]["label_name"] = {"value": "ASK_USER", "source": "explicit_recipe"}
     recipe.write_text(yaml.safe_dump(payload))
 
-    blocked = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workspace))
+    blocked = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workspace))
 
     assert blocked.returncode != 0
     assert not workspace.exists()
     payload["decisions"]["label_name"] = {"value": "ahi", "source": "explicit_recipe"}
     recipe.write_text(yaml.safe_dump(payload))
 
-    retry = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workspace))
+    retry = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workspace))
 
     assert retry.returncode == 0, retry.stderr
     assert (workspace / "adaptive" / "rounds" / "round_000" / "plan.json").exists()
@@ -70,7 +70,7 @@ def test_generic_plan_rejects_adaptive_recipe_before_workspace_mutation(tmp_path
     payload["experiment"]["root"] = str(workspace)
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    result = _run(
+    result = run_cli(
         "plan",
         "--recipe",
         str(recipe),
@@ -93,7 +93,7 @@ def test_generic_plan_allows_disabled_adaptive_block(tmp_path: Path):
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = workspace / "plans" / "static"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr or result.stdout
     assert (output_dir / "plan.json").exists()
@@ -105,7 +105,7 @@ def test_adaptive_init_creates_round_zero_without_modifying_original_recipe(tmp_
     before = recipe.read_text()
     workflow_dir = tmp_path / "workflow"
 
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
 
     assert result.returncode == 0, result.stderr
     assert recipe.read_text() == before
@@ -1777,7 +1777,7 @@ def test_adaptive_init_initializes_fresh_experiment_root(tmp_path: Path):
     recipe.write_text(yaml.safe_dump(payload))
 
     assert not workflow_dir.exists()
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
 
     assert result.returncode == 0, result.stderr
     assert (workflow_dir / "experiment.yaml").exists()
@@ -1823,14 +1823,14 @@ def test_adaptive_init_rejects_symlink_root_before_writing(tmp_path: Path):
 def test_adaptive_workflow_root_drift_fails_before_suggestion_write(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     workflow_path = workflow_dir / "adaptive" / "workflow.json"
     workflow = json.loads(workflow_path.read_text())
     workflow["root"] = str(tmp_path / "other-workflow")
     workflow_path.write_text(json.dumps(workflow))
     events = (tmp_path / "events.jsonl").read_bytes()
 
-    result = _run("hparam-suggest", "--workflow-dir", str(workflow_dir))
+    result = run_cli("hparam-suggest", "--workflow-dir", str(workflow_dir))
 
     assert result.returncode == 1
     assert "workflow root differs" in result.stderr
@@ -1856,7 +1856,7 @@ def test_adaptive_events_use_frozen_workspace_after_source_root_changes(tmp_path
 def test_adaptive_suggest_rejects_source_contract_drift_before_writing(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
@@ -1866,7 +1866,7 @@ def test_adaptive_suggest_rejects_source_contract_drift_before_writing(tmp_path:
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     events_before = (tmp_path / "events.jsonl").read_bytes()
 
-    result = _run("hparam-suggest", "--workflow-dir", str(workflow_dir))
+    result = run_cli("hparam-suggest", "--workflow-dir", str(workflow_dir))
 
     assert result.returncode == 1
     assert "search.max_run" in result.stdout + result.stderr
@@ -1877,7 +1877,7 @@ def test_adaptive_suggest_rejects_source_contract_drift_before_writing(tmp_path:
 def test_adaptive_relative_recipe_locator_fails_before_suggestion_write(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     workflow_path = workflow_dir / "adaptive" / "workflow.json"
     workflow = json.loads(workflow_path.read_text())
     workflow["recipe_path"] = recipe.name
@@ -1896,11 +1896,11 @@ def test_adaptive_relative_recipe_locator_fails_before_suggestion_write(tmp_path
 def test_adaptive_legacy_registry_fails_before_monitor_or_digest_write(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     (workflow_dir / "adaptive" / "trial_registry.tsv").write_text("trial_id\ntrial_000\n")
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
 
-    result = _run("hparam-digest", "--run-dir", str(workflow_dir))
+    result = run_cli("hparam-digest", "--run-dir", str(workflow_dir))
 
     assert result.returncode == 1
     assert "Legacy adaptive registry is read-only" in result.stderr
@@ -1911,12 +1911,12 @@ def test_adaptive_legacy_registry_fails_before_monitor_or_digest_write(tmp_path:
 def test_adaptive_registry_must_bind_current_round_before_monitor(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     registry = workflow_dir / "adaptive" / "run_registry.tsv"
     registry.write_text("step_id\trun_id\tround\tround_dir\n")
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
 
-    result = _run("hparam-digest", "--run-dir", str(workflow_dir))
+    result = run_cli("hparam-digest", "--run-dir", str(workflow_dir))
 
     assert result.returncode == 1
     assert "registry is missing the current plan run" in result.stderr
@@ -1928,7 +1928,7 @@ def test_adaptive_registry_must_bind_current_round_before_monitor(tmp_path: Path
 def test_adaptive_registry_ownership_fails_before_workflow_mutation(tmp_path: Path, registry_fault: str):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
     registry = _read_table(registry_path)
     if registry_fault == "foreign":
@@ -1959,7 +1959,7 @@ def test_adaptive_registry_ownership_fails_before_workflow_mutation(tmp_path: Pa
 def test_adaptive_registry_rejects_header_only_legacy_identity(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     registry_path = workflow_dir / "adaptive" / "run_registry.tsv"
     registry_path.write_text("trial_id\tround\n")
 

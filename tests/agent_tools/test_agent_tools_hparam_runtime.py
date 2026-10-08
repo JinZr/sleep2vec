@@ -13,6 +13,7 @@ import sys
 from agent_tool_test_helpers import (
     FakeLauncher,
     config_payload,
+    run_cli,
     run_execution_preflight_fixture,
     write_finetune_recipe,
     write_yaml,
@@ -44,11 +45,6 @@ def _stub_execution_snapshot_preflight(monkeypatch, request):
     monkeypatch.setattr(managed_scheduler.slurm, "controller_cluster", lambda *_args, **_kwargs: "wuji-h20")
     if not request.node.name.startswith("test_execution_probe_"):
         monkeypatch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
-
-
-def _run(*args: str) -> subprocess.CompletedProcess:
-    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
-    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
 
 
 def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None, variant: str = "sleep2vec") -> Path:
@@ -114,7 +110,7 @@ def _write_slurm_plan(
         payload["search"]["parameters"]["runtime.lr"] = [1e-6 * (index + 1) for index in range(run_count)]
         recipe_path.write_text(yaml.safe_dump(payload, sort_keys=False))
     source_plan_dir = tmp_path / "source-plan"
-    result = _run("plan", "--recipe", str(recipe_path), "--output-dir", str(source_plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe_path), "--output-dir", str(source_plan_dir))
     assert result.returncode == 0, result.stderr
     source_plan = json.loads((source_plan_dir / "plan.json").read_text())
     recipe = source_plan["recipe"]
@@ -343,7 +339,7 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
 def test_hparam_launch_rejects_plan_without_workspace_binding_before_start(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
     plan["recipe"].pop("experiment")
     (plan_dir / "plan.json").write_text(json.dumps(plan))
@@ -363,8 +359,8 @@ def test_hparam_plan_canonicalizes_relative_workspace_root_consistently(tmp_path
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
 
-    plan_result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-    launch_result = _run("hparam-launch", "--plan-dir", str(plan_dir))
+    plan_result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    launch_result = run_cli("hparam-launch", "--plan-dir", str(plan_dir))
 
     assert plan_result.returncode == 0, plan_result.stderr
     assert launch_result.returncode == 0, launch_result.stderr
@@ -378,7 +374,7 @@ def test_hparam_plan_records_monitor_owned_exit_status_contract(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
@@ -399,7 +395,7 @@ def test_hparam_plan_rejects_duplicate_gpu_assignments_within_a_run(tmp_path: Pa
         execution={"workdir": str(tmp_path), "gpu_pool": [0, 0], "gpus_per_run": 2},
     )
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
 
     assert result.returncode == 1
     assert "must not contain duplicate GPU identifiers" in result.stdout
@@ -412,7 +408,7 @@ def test_hparam_plan_rejects_environment_semantic_aliases(tmp_path: Path, env_na
         execution={"workdir": str(tmp_path), "env": {env_name: "unit"}},
     )
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
 
     assert result.returncode == 1
     assert f"execution.env.{env_name}" in result.stdout
@@ -466,7 +462,7 @@ def test_hparam_runtime_rejects_legacy_status_filename(tmp_path: Path):
 def test_hparam_doctor_rejects_invalid_execution_target(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, execution={"target": "cluster"})
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
 
     assert result.returncode == 1
     assert "execution.target" in result.stdout
@@ -475,7 +471,7 @@ def test_hparam_doctor_rejects_invalid_execution_target(tmp_path: Path):
 def test_hparam_doctor_rejects_deprecated_log_and_pid_dirs(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, execution={"log_dir": "logs", "pid_dir": "pids"})
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
 
     assert result.returncode == 1
     assert "execution.log_dir" in result.stdout

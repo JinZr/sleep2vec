@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from agent_tool_test_helpers import run_cli
 import pytest
 import yaml
 
@@ -14,7 +15,6 @@ from tests.agent_tools.adaptive_hparam_test_support import (
     _agent_recipe,
     _mark_round_terminal,
     _read_table,
-    _run,
     _write_agent_submission,
     _write_fake_manifest,
 )
@@ -33,7 +33,7 @@ def _write_history(workspace: Path, content: str, *, run_id: str = "canonical-id
 def terminal_workflow(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow = tmp_path / "workflow"
-    initialized = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
+    initialized = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
     assert initialized.returncode == 0, initialized.stderr
     _write_fake_manifest(workflow, score=0.73)
     _mark_round_terminal(workflow, tmp_path)

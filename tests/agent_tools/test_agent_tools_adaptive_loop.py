@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shlex
 
+from agent_tool_test_helpers import run_cli
 import pytest
 import yaml
 
@@ -23,7 +24,6 @@ from tests.agent_tools.adaptive_hparam_test_support import (
     _adaptive_recipe,
     _mark_failing_running_runs,
     _read_table,
-    _run,
     _test_selected_adaptive_recipe,
     _write_fake_manifest,
 )
@@ -34,7 +34,7 @@ _stub_execution_snapshot_preflight = test_support._stub_execution_snapshot_prefl
 def test_best_neighborhood_step_replaces_bad_running_run_before_round_terminal(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=2)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: "launched")
     hparam_runtime.launch_hparam_runs(round_dir, dry_run=False)
@@ -109,7 +109,7 @@ def test_adaptive_step_refreshes_terminal_blocker_before_launching_replacement_o
     payload["execution"].update({"gpu_pool": [0], "gpus_per_run": 1})
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     started = []
 
@@ -216,7 +216,7 @@ def test_adaptive_step_zero_start_after_drain_keeps_old_round_authoritative(
     payload["adaptive"]["round_size"] = 2
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     current_runs = json.loads((round_dir / "plan.json").read_text())["runs"]
     _mark_failing_running_runs(tmp_path, round_dir, current_runs)
@@ -295,7 +295,7 @@ def test_adaptive_step_mixed_launch_failure_after_drain_stops_no_additional_run(
     payload["adaptive"]["round_size"] = 2
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     current_runs = json.loads((round_dir / "plan.json").read_text())["runs"]
     _mark_failing_running_runs(tmp_path, round_dir, current_runs)
@@ -354,7 +354,7 @@ def test_adaptive_step_mixed_launch_failure_after_drain_stops_no_additional_run(
 def test_adaptive_step_commits_canonical_start_when_drain_launcher_raises(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     current_run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     _mark_failing_running_runs(tmp_path, round_dir, [current_run])
@@ -508,7 +508,7 @@ def test_adaptive_step_second_handoff_failure_does_not_stop_third_bad_run(tmp_pa
     payload["adaptive"]["max_runs_total"] = 6
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     current_runs = json.loads((round_dir / "plan.json").read_text())["runs"]
     _mark_failing_running_runs(tmp_path, round_dir, current_runs)
@@ -594,7 +594,7 @@ def test_adaptive_step_stop_failure_does_not_relaunch_or_stop_another_run(
     payload["adaptive"]["round_size"] = 2
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     current_runs = json.loads((round_dir / "plan.json").read_text())["runs"]
     _mark_failing_running_runs(tmp_path, round_dir, current_runs)
@@ -664,7 +664,7 @@ def test_adaptive_step_stop_failure_does_not_relaunch_or_stop_another_run(
 def test_adaptive_step_execute_at_budget_keeps_current_runs_unchanged(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=1)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
@@ -700,7 +700,7 @@ def test_adaptive_step_checks_prospective_round_size_against_run_budget(tmp_path
     payload["adaptive"]["round_size"] = 2
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
@@ -733,7 +733,7 @@ def test_adaptive_step_checks_prospective_round_size_against_run_budget(tmp_path
 def test_adaptive_loop_stops_when_step_cannot_create_a_budgeted_round(tmp_path: Path, monkeypatch, execute):
     recipe = _adaptive_recipe(tmp_path, max_rounds=3)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     suggestion = workflow_dir / "adaptive" / "suggestions" / "round_001.yaml"
     calls = []
     monkeypatch.setattr(
@@ -790,7 +790,7 @@ def test_adaptive_loop_materializes_source_before_budget_check(tmp_path: Path, m
 def test_running_stop_passes_remote_status_row_to_failure_log_check(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=1)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     plan = json.loads((round_dir / "plan.json").read_text())
     run = plan["runs"][0]
@@ -953,7 +953,7 @@ def test_async_slurm_stop_dispatch_error_does_not_request_later_runs(tmp_path: P
 def test_metric_based_running_stop_honors_grace(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path, max_rounds=1)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     plan = json.loads((round_dir / "plan.json").read_text())
     run = plan["runs"][0]
@@ -1043,7 +1043,7 @@ def test_test_selected_running_replacement_ignores_checkpoint_objective_until_su
         max_rounds=1,
     )
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     plan = json.loads((round_dir / "plan.json").read_text())
     run = plan["runs"][0]
@@ -1128,7 +1128,7 @@ def test_test_selected_running_replacement_distinguishes_checkpoint_and_run_leve
     payload["adaptive"].update({"objective_metric": objective_metric, "objective_mode": objective_mode})
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     checkpoint_dir = Path(run["checkpoint_dir"])
@@ -1245,7 +1245,9 @@ def test_adaptive_runtime_never_stops_runs_for_non_boolean_replacement_flags(
 def test_adaptive_stop_scan_ignores_header_only_legacy_projection(tmp_path: Path):
     recipe_path = _adaptive_recipe(tmp_path, max_rounds=1)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe_path), "--output-dir", str(workflow_dir)).returncode == 0
+    assert (
+        run_cli("hparam-adaptive-init", "--recipe", str(recipe_path), "--output-dir", str(workflow_dir)).returncode == 0
+    )
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     status_path = round_dir / "run_status.tsv"
     status_path.write_text("trial_id\tstatus\n")
