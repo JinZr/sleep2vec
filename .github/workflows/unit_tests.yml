@@ -196,9 +196,7 @@ jobs:
       # ignored domain-facing test files need those packages in their own
       # environment; test_agent_run_manifest.py runs through the shared runner
       # in the unit_tests job below, and test_agent_tools_recipes.py is owned by the
-      # agent_tools_recipe_tests job above. The deselected hparam cases assert
-      # generated scripts whose frozen-identity preflight imports the variant
-      # module (and thus torch) in the invoking python.
+      # agent_tools_recipe_tests job above.
       #
       # The suite runs as four shards selected by the crc32 of each test's node
       # id in tests/conftest.py, so every test runs in exactly one shard
@@ -214,9 +212,6 @@ jobs:
             --ignore=tests/agent_tools/test_agent_tools_sleep2stat.py \
             --ignore=tests/agent_tools/test_agent_sex_age_baseline.py \
             --ignore=tests/agent_tools/test_agent_tools_recipes.py \
-            --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_model_variant_controls_generated_hparam_module" \
-            --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_hparam_plan_allows_test_after_fit_when_explicitly_unlocked" \
-            --deselect "tests/agent_tools/test_agent_plan_blocks_on_ambiguity.py::test_unlock_final_test_with_explicit_ckpt_generates_final_script" \
             --shard-count 4 --shard-index ${{ matrix.shard }} --durations=25 --durations-min=1.0
 
   unit_tests:
