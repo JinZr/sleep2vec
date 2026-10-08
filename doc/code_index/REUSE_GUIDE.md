@@ -167,7 +167,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   plan runs are `dict[str, JsonValue]` or read-only `Mapping[str, JsonValue]`. `preflight_plan` returns the
   recipe broadly typed, because contract-blocked early returns precede the freeze check; `_build_plan`
   narrows it to `dict[str, JsonValue]` on its pass path, and kernel functions that write into the frozen
-  recipe take that type.
+  recipe take that type, as do the `TaskAdapter` recipe hooks it calls (`bind_effective_recipe`,
+  `frozen_commands`, `planned_plan_paths`, `frozen_input_paths`, `configured_input_issues`, `task_issues`).
   Builder rows whose `rank`, `score` or `epoch` is consumed numerically stay `dict[str, Any]`, and
   `experiment_workspace.resolve_run_row` returns the caller's own row type.
 - Reuse `hparam_selection` and `checkpoint_test_results` for

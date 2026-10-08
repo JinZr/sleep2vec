@@ -12,7 +12,7 @@ from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from ..decision_paths import execution_contract_issues, multilabel_sidecar_issue, survival_sidecar_issue
-from ..models import REPO_ROOT, ConfigSummaryInput, coerce_list
+from ..models import REPO_ROOT, ConfigSummaryInput, JsonValue, coerce_list
 from ..plan_rendering import PRESET_FIELDS, preset_cli_args, render_command
 from ..repo import repo_summary
 from .base import TaskAdapter
@@ -49,13 +49,14 @@ class PresetPrepareAdapter(TaskAdapter):
 
     def bind_effective_recipe(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         *,
         source_recipe: dict[str, Any] | None = None,
     ) -> list[DecisionIssue]:
         issues: list[DecisionIssue] = []
-        execution = recipe.get("execution") or {}
+        execution_value = recipe.get("execution")
+        execution = execution_value if isinstance(execution_value, dict) else {}
         # Bind only new effective recipes, never registered-plan reconstruction.
         if not {"python", "runtime_commit"}.intersection(execution):
             manager_runtime = (
@@ -104,7 +105,9 @@ class PresetPrepareAdapter(TaskAdapter):
                         )
                     )
         # Only new effective recipes acquire managed launch semantics; registered readers never bind defaults.
-        recipe.setdefault("execution", {}).setdefault("scheduler", {"type": "direct"})
+        effective_execution = recipe.setdefault("execution", {})
+        if isinstance(effective_execution, dict):
+            effective_execution.setdefault("scheduler", {"type": "direct"})
         preset_build: Any = (config_summary or {}).get("preset_build") or {}
         if not preset_build:
             return issues
@@ -169,7 +172,7 @@ class PresetPrepareAdapter(TaskAdapter):
 
     def task_issues(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],

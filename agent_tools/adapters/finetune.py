@@ -13,7 +13,7 @@ from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status, needs_issue
 from ..decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
-from ..models import REPO_ROOT, ConfigSummaryInput, recipe_name
+from ..models import REPO_ROOT, ConfigSummaryInput, JsonValue, recipe_name
 from ..plan_rendering import (
     FINETUNE_RUNTIME_FIELDS,
     finetune_input_cli_args,
@@ -58,7 +58,7 @@ class FinetuneAdapter(TaskAdapter):
 
     def task_issues(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
@@ -72,9 +72,9 @@ class FinetuneAdapter(TaskAdapter):
         if config_summary:
             try:
                 summary: Any = config_summary
-                validate_finetune_runtime(
-                    recipe, recipe.get("runtime") or {}, summary.get("finetune", {}).get("task") or {}
-                )
+                runtime_value = recipe.get("runtime")
+                runtime = runtime_value if isinstance(runtime_value, dict) else {}
+                validate_finetune_runtime(recipe, runtime, summary.get("finetune", {}).get("task") or {})
             except (TypeError, ValueError) as exc:
                 issues.append(
                     DecisionIssue(DecisionStatus.FAIL, "runtime", str(exc), None, {"preflight_before_workspace": True})

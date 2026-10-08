@@ -21,7 +21,7 @@ from ..decision_paths import (
     sex_age_pretrained_backbone_issue,
     survival_sidecar_issue,
 )
-from ..models import ConfigSummaryInput, coerce_list
+from ..models import ConfigSummaryInput, JsonValue, coerce_list
 from ..plan_rendering import (
     INFER_RUNTIME_FIELDS,
     infer_input_cli_args,
@@ -76,16 +76,21 @@ class InferEvaluateAdapter(TaskAdapter):
 
     def bind_effective_recipe(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         *,
         source_recipe: dict[str, Any] | None = None,
     ) -> list[DecisionIssue]:
-        execution = recipe.get("execution") or {}
-        if isinstance(execution.get("scheduler"), dict) and execution["scheduler"].get("type") == "slurm":
+        execution_value = recipe.get("execution")
+        execution = execution_value if isinstance(execution_value, dict) else {}
+        scheduler = execution.get("scheduler")
+        if isinstance(scheduler, dict) and scheduler.get("type") == "slurm":
             gpus = execution.get("gpus_per_run", 1)
             if type(gpus) is int and gpus > 0:
-                recipe.setdefault("runtime", {}).setdefault("devices", list(range(gpus)))
+                runtime = recipe.setdefault("runtime", {})
+                if isinstance(runtime, dict):
+                    devices: list[JsonValue] = list(range(gpus))
+                    runtime.setdefault("devices", devices)
         return []
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
@@ -112,7 +117,7 @@ class InferEvaluateAdapter(TaskAdapter):
 
     def task_issues(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],

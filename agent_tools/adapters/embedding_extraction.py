@@ -16,12 +16,12 @@ from data.whole_night_index import validate_whole_night_index
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from ..experiment_workspace import experiment_root
-from ..models import REPO_ROOT, SUPPORTED_VARIANTS, ConfigSummaryInput, coerce_list, resolve_repo_path
+from ..models import REPO_ROOT, SUPPORTED_VARIANTS, ConfigSummaryInput, JsonValue, coerce_list, resolve_repo_path
 from ..plan_rendering import render_command, variant_module
 from .base import TaskAdapter
 
 
-def _mapping(recipe: dict[str, Any], section: str) -> dict[str, Any]:
+def _mapping(recipe: dict[str, JsonValue], section: str) -> dict[str, JsonValue]:
     value = recipe.get(section)
     return value if isinstance(value, dict) else {}
 
@@ -122,7 +122,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
             paths.append((f"data_index[{index}]", path))
         return paths
 
-    def frozen_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Path]]:
+    def frozen_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, Path]]:
         from .. import plan_contract
 
         paths: list[tuple[str, Path]] = []
@@ -157,7 +157,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
 
     def task_issues(
         self,
-        recipe: dict[str, Any],
+        recipe: dict[str, JsonValue],
         config_summary: ConfigSummaryInput | None,
         decisions: dict[str, ResolvedDecision],
         high_impact: dict[str, dict[str, Any]],
@@ -324,7 +324,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         return issues
 
     def configured_input_issues(
-        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue]:
         inputs = _mapping(recipe, "inputs")
         extraction = _mapping(recipe, "extraction")
