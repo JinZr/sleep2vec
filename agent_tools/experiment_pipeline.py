@@ -18,7 +18,7 @@ import math
 import os
 from pathlib import Path
 import time
-from typing import Any, Callable, Literal, TypedDict, cast
+from typing import Any, Callable, Literal, TypedDict, TypeGuard, cast
 
 import yaml
 
@@ -31,6 +31,14 @@ from . import (
     managed_scheduler,
     plan_contract,
     run_artifacts as artifacts,
+)
+from .experiment_pipeline_spec import (
+    CheckpointEvidence,
+    CheckpointPolicySpec,
+    CheckpointSourceSpec,
+    FrozenCheckpointCandidate,
+    JobSpec,
+    PipelineSpec,
 )
 from .experiment_workspace import (
     SUCCESS_STATUSES,
@@ -58,7 +66,7 @@ RETRYABLE_STATUSES = pipeline_results.RETRYABLE_STATUSES
 
 
 class SourcePlanSnapshot(TypedDict):
-    source_id: Any
+    source_id: str
     plan_dir: str
     plan_path: str
     plan_sha256: str
@@ -67,42 +75,12 @@ class SourcePlanSnapshot(TypedDict):
 
 
 class SourceState(TypedDict):
-    source_id: Any
+    source_id: str
     plan: str
     statuses: list[str]
     complete: bool
     failed_runs: list[str]
     uncertain_runs: list[str]
-
-
-class CheckpointEvidence(TypedDict):
-    state_dict_key_count: int
-    has_ahi_eval_threshold: bool
-
-
-class _CohortCandidateFields(TypedDict, total=False):
-    candidate_id: str
-    source_rank: int
-
-
-class FrozenCheckpointCandidate(CheckpointEvidence, _CohortCandidateFields):
-    source_id: Any
-    plan: str
-    step_id: str
-    run_id: str
-    run_name: str
-    selection_metric: Any
-    selection_mode: Literal["min", "max"]
-    score: float
-    config: str
-    config_sha256: str
-    checkpoint: str
-    checkpoint_sha256: str
-    variant: str
-    label_name: str
-    source_task: str
-    source_plan_task: str
-    inference_task: Literal["infer"]
 
 
 class MissingPidBlocker(TypedDict):
@@ -180,7 +158,8 @@ def run_experiment_pipeline(
     runtime = spec.get("runtime")
     if isinstance(runtime, dict) and isinstance(runtime.get("runtime_commit"), str):
         runtime["runtime_commit"] = runtime["runtime_commit"].lower()
-    pipeline_spec.validate_spec(spec, root, unlock_final_test=unlock_final_test if execute else None)
+    if not pipeline_spec.validate_spec(spec, root, unlock_final_test=unlock_final_test if execute else None):
+        raise AssertionError("validate_spec raises on invalid specs")
     pipeline_id = str(spec["pipeline"]["id"])
     pipeline_dir = root / "pipelines" / pipeline_id
     lock_path = pipeline_dir.parent / f".{pipeline_id}.runner.lock"
@@ -255,7 +234,7 @@ def run_experiment_pipeline(
             raise
 
 
-def _validate_experiment(root: Path, spec: dict[str, Any], *, allow_completed: bool = False) -> dict[str, Any]:
+def _validate_experiment(root: Path, spec: PipelineSpec, *, allow_completed: bool = False) -> dict[str, Any]:
     path = root / "experiment.yaml"
     manifest = read_managed_yaml_mapping(path.read_text(), source=f"Managed experiment manifest {path}")
     experiment = manifest.get("experiment")
@@ -273,7 +252,7 @@ def _validate_experiment(root: Path, spec: dict[str, Any], *, allow_completed: b
     return experiment
 
 
-def _freeze_pipeline(root: Path, pipeline_dir: Path, spec_file: Path, source_text: str, spec: dict[str, Any]) -> None:
+def _freeze_pipeline(root: Path, pipeline_dir: Path, spec_file: Path, source_text: str, spec: PipelineSpec) -> None:
     experiment = _validate_experiment(root, spec)
     sources = _source_plan_snapshots(root, spec)
     resolved_text = yaml.safe_dump(spec, sort_keys=False)
@@ -309,7 +288,7 @@ def _freeze_pipeline(root: Path, pipeline_dir: Path, spec_file: Path, source_tex
     append_event(root, "pipeline_frozen", {"pipeline_id": state["pipeline_id"], "spec": str(spec_file)})
 
 
-def _validate_frozen_source_plans(state: dict[str, Any], spec: dict[str, Any]) -> None:
+def _validate_frozen_source_plans(state: dict[str, Any], spec: PipelineSpec) -> None:
     snapshots = state.get("source_plans")
     if not isinstance(snapshots, list):
         raise ValueError("Frozen source plan snapshots are malformed.")
@@ -329,7 +308,7 @@ def _validate_frozen_source_plans(state: dict[str, Any], spec: dict[str, Any]) -
         read_hparam_plan_under_run_lock(Path(str(snapshot["plan_dir"])))
 
 
-def _validate_frozen_pipeline(pipeline_dir: Path, source_text: str, spec: dict[str, Any]) -> dict[str, Any]:
+def _validate_frozen_pipeline(pipeline_dir: Path, source_text: str, spec: PipelineSpec) -> dict[str, Any]:
     state_path = pipeline_dir / "pipeline.json"
     if not state_path.is_file() or state_path.is_symlink():
         raise ValueError(f"Frozen pipeline state is missing or aliased: {state_path}")
@@ -344,7 +323,7 @@ def _validate_frozen_pipeline(pipeline_dir: Path, source_text: str, spec: dict[s
     ):
         raise ValueError("Frozen pipeline spec artifacts are missing or aliased.")
     resolved_text = yaml.safe_dump(spec, sort_keys=False)
-    expected = {
+    expected: dict[str, str | int] = {
         "pipeline_id": spec["pipeline"]["id"],
         "experiment_id": spec["pipeline"]["experiment_id"],
         "spec_source_sha256": _text_sha256(source_text),
@@ -410,7 +389,7 @@ def _validate_frozen_pipeline(pipeline_dir: Path, source_text: str, spec: dict[s
     return state
 
 
-def _source_plan_snapshots(root: Path, spec: dict[str, Any]) -> list[SourcePlanSnapshot]:
+def _source_plan_snapshots(root: Path, spec: PipelineSpec) -> list[SourcePlanSnapshot]:
     snapshots: list[SourcePlanSnapshot] = []
     for source_id, source in spec["checkpoint_sources"].items():
         plan_dir = Path(source["plan"])
@@ -434,7 +413,7 @@ def _source_plan_snapshots(root: Path, spec: dict[str, Any]) -> list[SourcePlanS
     return snapshots
 
 
-def _preset_snapshots(spec: dict[str, Any]) -> list[dict[str, str]]:
+def _preset_snapshots(spec: PipelineSpec) -> list[dict[str, str]]:
     snapshots = []
     for job in spec["jobs"]:
         preset = Path(str(job["inference_preset_path"]))
@@ -453,7 +432,7 @@ def _preset_snapshots(spec: dict[str, Any]) -> list[dict[str, str]]:
     return snapshots
 
 
-def _source_hparam_plans(source_id: str, source: dict[str, Any]) -> list[tuple[Path, plan_contract.HparamPlan]]:
+def _source_hparam_plans(source_id: str, source: CheckpointSourceSpec) -> list[tuple[Path, plan_contract.HparamPlan]]:
     plan = read_hparam_plan_under_run_lock(Path(source["plan"]))
     recipe = plan["recipe"]
     _assert_source_semantics(source_id, source, recipe)
@@ -475,7 +454,7 @@ def _source_hparam_plans(source_id: str, source: dict[str, Any]) -> list[tuple[P
     return plans
 
 
-def _inspect_sources(root: Path, spec: dict[str, Any], *, refresh: bool, hooks: PipelineHooks) -> list[SourceState]:
+def _inspect_sources(root: Path, spec: PipelineSpec, *, refresh: bool, hooks: PipelineHooks) -> list[SourceState]:
     # Monitoring takes the run lock itself, so only the reads hold it.
     with managed_scheduler.managed_run_lock(root):
         canonical = {managed_run_key(row): row for row in read_run_manifest(root)}
@@ -543,7 +522,7 @@ def _source_summary_status(
 def _execute_pipeline(
     root: Path,
     pipeline_dir: Path,
-    spec: dict[str, Any],
+    spec: PipelineSpec,
     *,
     poll_seconds: float,
     finalize_callback: Callable[[str | Path, str | Path], Path] | None,
@@ -627,7 +606,7 @@ def _execute_pipeline(
 def _finalize_completed_pipeline(
     root: Path,
     pipeline_dir: Path,
-    spec: dict[str, Any],
+    spec: PipelineSpec,
     finalize_callback: Callable[[str | Path, str | Path], Path] | None,
 ) -> PipelineReportResult:
     state = read_json(pipeline_dir / "pipeline.json")
@@ -683,7 +662,7 @@ def _finalize_completed_pipeline(
 def _execute_cohort_selection(
     root: Path,
     pipeline_dir: Path,
-    spec: dict[str, Any],
+    spec: PipelineSpec,
     *,
     poll_seconds: float,
     finalize_callback: Callable[[str | Path, str | Path], Path] | None,
@@ -828,11 +807,11 @@ def _execute_cohort_selection(
 def _execute_cohort_phase(
     root: Path,
     pipeline_dir: Path,
-    phase_spec: dict[str, Any],
-    candidates: Mapping[str, Mapping[str, Any]],
+    phase_spec: PipelineSpec,
+    candidates: Mapping[str, FrozenCheckpointCandidate],
     *,
     poll_seconds: float,
-    controller_spec: dict[str, Any],
+    controller_spec: PipelineSpec,
     hooks: PipelineHooks,
 ) -> AttemptExecutionResult:
     phase = str(phase_spec["_execution_stage"])
@@ -855,9 +834,7 @@ def _execute_cohort_phase(
     )
 
 
-def _cohort_phase_spec(
-    spec: dict[str, Any], pipeline_dir: Path, phase: str, jobs: list[dict[str, Any]]
-) -> dict[str, Any]:
+def _cohort_phase_spec(spec: PipelineSpec, pipeline_dir: Path, phase: str, jobs: list[JobSpec]) -> PipelineSpec:
     return {
         **spec,
         "jobs": jobs,
@@ -869,8 +846,8 @@ def _cohort_phase_spec(
 def _load_or_freeze_cohort_decision(
     root: Path,
     pipeline_dir: Path,
-    spec: dict[str, Any],
-    candidates: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    candidates: Mapping[str, FrozenCheckpointCandidate],
     evidence: Sequence[cohort_selection.SelectionEvidence],
 ) -> tuple[list[dict[str, Any]], cohort_selection.CohortDecision]:
     ranking, decision, artifacts_by_field = _cohort_decision_artifacts(pipeline_dir, spec, candidates, evidence)
@@ -902,8 +879,8 @@ def _load_or_freeze_cohort_decision(
 
 def _validate_cohort_decision(
     pipeline_dir: Path,
-    spec: dict[str, Any],
-    candidates: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    candidates: Mapping[str, FrozenCheckpointCandidate],
     evidence: Sequence[cohort_selection.SelectionEvidence],
 ) -> tuple[list[dict[str, Any]], cohort_selection.CohortDecision]:
     ranking, decision, artifacts_by_field = _cohort_decision_artifacts(pipeline_dir, spec, candidates, evidence)
@@ -921,8 +898,8 @@ def _validate_cohort_decision(
 
 def _cohort_decision_artifacts(
     pipeline_dir: Path,
-    spec: dict[str, Any],
-    candidates: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    candidates: Mapping[str, FrozenCheckpointCandidate],
     evidence: Sequence[cohort_selection.SelectionEvidence],
 ) -> tuple[list[dict[str, Any]], cohort_selection.CohortDecision, dict[str, tuple[Path, str]]]:
     ranking, decision = cohort_selection.rank_candidates(spec, candidates, evidence)
@@ -943,9 +920,7 @@ def _cohort_decision_artifacts(
     )
 
 
-def _write_no_winner_report(
-    pipeline_dir: Path, spec: dict[str, Any], decision: cohort_selection.CohortDecision
-) -> Path:
+def _write_no_winner_report(pipeline_dir: Path, spec: PipelineSpec, decision: cohort_selection.CohortDecision) -> Path:
     lines = [
         "# Cohort Selection Pipeline",
         "",
@@ -968,7 +943,7 @@ def _write_no_winner_report(
 def _finalize_completed_cohort_selection(
     root: Path,
     pipeline_dir: Path,
-    spec: dict[str, Any],
+    spec: PipelineSpec,
     report: Path,
     finalize_callback: Callable[[str | Path, str | Path], Path] | None,
 ) -> PipelineReportResult:
@@ -1025,8 +1000,8 @@ def _finalize_completed_cohort_selection(
 def _validated_completed_phase(
     root: Path,
     phase_dir: Path,
-    phase_spec: dict[str, Any],
-    candidates: Mapping[str, Mapping[str, Any]],
+    phase_spec: PipelineSpec,
+    candidates: Mapping[str, FrozenCheckpointCandidate],
 ) -> list[pipeline_results.LogicalJobState]:
     attempts = read_rows(phase_dir / "jobs.tsv", require_managed_identity=True)
     pipeline_attempts.validate_attempt_rows(root, phase_dir, phase_spec, candidates, attempts)
@@ -1039,7 +1014,9 @@ def _validated_completed_phase(
     return logical
 
 
-def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, Any]) -> Mapping[str, Mapping[str, Any]]:
+def _load_or_freeze_selections(
+    root: Path, pipeline_dir: Path, spec: PipelineSpec
+) -> Mapping[str, FrozenCheckpointCandidate]:
     path = _selection_manifest_path(pipeline_dir, spec)
     hash_field = _selection_hash_field(spec)
     cohort_kind = spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND
@@ -1073,7 +1050,7 @@ def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, A
         return selections
 
     frozen = _select_checkpoint_sources(root, spec)
-    payload = {
+    payload: dict[str, Any] = {
         "pipeline_id": spec["pipeline"]["id"],
         "created_at": utc_now(),
         "candidates" if cohort_kind else "sources": frozen,
@@ -1101,7 +1078,7 @@ def _load_or_freeze_selections(root: Path, pipeline_dir: Path, spec: dict[str, A
     return {str(item[key]): item for item in frozen}
 
 
-def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[FrozenCheckpointCandidate]:
+def _select_checkpoint_sources(root: Path, spec: PipelineSpec) -> list[FrozenCheckpointCandidate]:
     policy = spec["checkpoint_policy"]
     frozen: list[FrozenCheckpointCandidate] = []
     for source_id, source in spec["checkpoint_sources"].items():
@@ -1110,14 +1087,12 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[FrozenC
         owner_dirs = {managed_run_key(run): directory for directory, plan in plans for run in plan["runs"]}
         runs = [run for _directory, plan in plans for run in plan["runs"]]
         select_hparam_candidates(plan_dir, source["selection_metric"], source["selection_mode"])
-        if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND:
-            candidate_scope = spec["candidates"]
-            resolver_args = (
-                {"top_k": candidate_scope["count"]} if candidate_scope["kind"] == "top_k" else {"all_candidates": True}
-            )
+        if spec["pipeline"]["kind"] != pipeline_spec.COHORT_SELECTION_KIND:
+            candidates, owner_plans = resolve_hparam_candidates(plan_dir, runs, top_k=1)
+        elif spec["candidates"]["kind"] == "top_k":
+            candidates, owner_plans = resolve_hparam_candidates(plan_dir, runs, top_k=spec["candidates"]["count"])
         else:
-            resolver_args = {"top_k": 1}
-        candidates, owner_plans = resolve_hparam_candidates(plan_dir, runs, **resolver_args)
+            candidates, owner_plans = resolve_hparam_candidates(plan_dir, runs, all_candidates=True)
         for row in candidates:
             key = validated_run_key(row)
             recipe = owner_plans[key]["recipe"]
@@ -1137,14 +1112,14 @@ def _select_checkpoint_sources(root: Path, spec: dict[str, Any]) -> list[FrozenC
 
 
 def _freeze_checkpoint_candidate(
-    spec: dict[str, Any],
-    source_id: Any,
-    source: dict[str, Any],
+    spec: PipelineSpec,
+    source_id: str,
+    source: CheckpointSourceSpec,
     plan_dir: Path,
     step_id: str,
     recipe: dict[str, Any],
     row: dict[str, Any],
-    policy: dict[str, Any],
+    policy: CheckpointPolicySpec,
 ) -> FrozenCheckpointCandidate:
     config = Path(str(row.get("config") or ""))
     checkpoint = Path(str(row.get("checkpoint_path") or ""))
@@ -1195,7 +1170,7 @@ def _freeze_checkpoint_candidate(
     return selection
 
 
-def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _read_frozen_selections(path: Path, spec: PipelineSpec) -> dict[str, FrozenCheckpointCandidate]:
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"Frozen checkpoint selection manifest is missing or aliased: {path}")
     payload = read_json(path)
@@ -1226,6 +1201,7 @@ def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[
             raise ValueError("Frozen candidate ranks must be positive integers.")
         if len(set(ranks)) != len(ranks) or any(item.get("source_id") != source_id for item in selections):
             raise ValueError("Frozen candidate source identities or ranks are invalid.")
+    frozen: dict[str, FrozenCheckpointCandidate] = {}
     for selection in selections:
         source_id = str(selection.get("source_id") or "")
         source = spec["checkpoint_sources"].get(source_id)
@@ -1253,10 +1229,25 @@ def _read_frozen_selections(path: Path, spec: dict[str, Any]) -> dict[str, dict[
             ):
                 raise ValueError(f"Frozen selected {path_field} changed: {selected_path}")
         _assert_job_semantic_assertions(spec, source_id, selection)
-    return by_id
+        if not _is_frozen_checkpoint_candidate(selection, cohort_kind=cohort_kind):
+            raise ValueError(
+                f"Frozen checkpoint selection fields differ from the frozen candidate contract: {source_id}"
+            )
+        frozen[str(selection.get(key_field) or "")] = selection
+    return frozen
 
 
-def _validate_frozen_selection_owner(source_id: str, source: dict[str, Any], selection: dict[str, Any]) -> None:
+def _is_frozen_checkpoint_candidate(
+    selection: dict[str, Any], *, cohort_kind: bool
+) -> TypeGuard[FrozenCheckpointCandidate]:
+    # The read-back field checks and the committed selection SHA-256 bind the values; this closes the key set.
+    expected = FrozenCheckpointCandidate.__required_keys__
+    if cohort_kind:
+        expected = expected | FrozenCheckpointCandidate.__optional_keys__
+    return set(selection) == expected
+
+
+def _validate_frozen_selection_owner(source_id: str, source: CheckpointSourceSpec, selection: dict[str, Any]) -> None:
     source_recipe = read_hparam_plan_under_run_lock(Path(source["plan"]))["recipe"]
     owner_plan = read_hparam_plan_under_run_lock(Path(selection["plan"]))
     recipe = owner_plan["recipe"]
@@ -1273,12 +1264,12 @@ def _validate_frozen_selection_owner(source_id: str, source: dict[str, Any], sel
         raise ValueError(f"Frozen checkpoint source field drifted: {source_id}.plan")
 
 
-def _selection_manifest_path(pipeline_dir: Path, spec: dict[str, Any]) -> Path:
+def _selection_manifest_path(pipeline_dir: Path, spec: PipelineSpec) -> Path:
     name = "candidates.json" if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND else "checkpoints.json"
     return pipeline_dir / name
 
 
-def _selection_hash_field(spec: dict[str, Any]) -> str:
+def _selection_hash_field(spec: PipelineSpec) -> str:
     return (
         "candidate_selection_sha256"
         if spec["pipeline"]["kind"] == pipeline_spec.COHORT_SELECTION_KIND
@@ -1286,7 +1277,7 @@ def _selection_hash_field(spec: dict[str, Any]) -> str:
     )
 
 
-def _validate_checkpoint_payload(checkpoint: Path, label_name: str, policy: dict[str, Any]) -> CheckpointEvidence:
+def _validate_checkpoint_payload(checkpoint: Path, label_name: str, policy: CheckpointPolicySpec) -> CheckpointEvidence:
     try:
         import torch
 
@@ -1311,7 +1302,7 @@ def _validate_checkpoint_payload(checkpoint: Path, label_name: str, policy: dict
     }
 
 
-def _assert_job_semantic_assertions(spec: dict[str, Any], source_id: str, selection: Mapping[str, Any]) -> None:
+def _assert_job_semantic_assertions(spec: PipelineSpec, source_id: str, selection: Mapping[str, Any]) -> None:
     expected = {
         "task": selection["source_task"],
         "variant": selection["variant"],
@@ -1329,13 +1320,13 @@ def _assert_job_semantic_assertions(spec: dict[str, Any], source_id: str, select
 def _run_attempts(
     root: Path,
     pipeline_dir: Path,
-    spec: dict[str, Any],
-    selections: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    selections: Mapping[str, FrozenCheckpointCandidate],
     attempts: list[dict[str, Any]],
     *,
     poll_seconds: float,
     frozen_pipeline_dir: Path | None = None,
-    frozen_spec: dict[str, Any] | None = None,
+    frozen_spec: PipelineSpec | None = None,
     state_dir: Path | None = None,
     hooks: PipelineHooks,
 ) -> AttemptExecutionResult:
@@ -1472,7 +1463,7 @@ def _run_attempts(
 
 
 def _refresh_attempt_results(
-    spec: dict[str, Any],
+    spec: PipelineSpec,
     *,
     attempts: list[dict[str, Any]],
     canonical: dict[tuple[str, str], dict[str, Any]],
@@ -1535,7 +1526,7 @@ def _mapping_key_paths(payload: Any, target: str, prefix: str = "") -> list[str]
     return paths
 
 
-def _assert_source_semantics(source_id: str, source: dict[str, Any], recipe: dict[str, Any]) -> None:
+def _assert_source_semantics(source_id: str, source: CheckpointSourceSpec, recipe: dict[str, Any]) -> None:
     # The controller reads source artifacts locally and has no SSH staging boundary.
     if (recipe.get("execution") or {}).get("target") == "ssh":
         raise ValueError(

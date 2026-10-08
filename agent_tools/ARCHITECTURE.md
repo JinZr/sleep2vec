@@ -103,7 +103,8 @@ state machines and exposes them through the `experiments` facade.
 freezing, registration preflight, attempt materialization and registration,
 jobs-table projection, pipeline-event reconciliation, and retry creation.
 `experiment_pipeline_spec` validates declared pipeline fields, runtime and execution
-settings, source-plan containment, and selection/report contracts before publication.
+settings, source-plan containment, and selection/report contracts before publication,
+narrowing the parsed mapping to its `PipelineSpec` TypedDict.
 `experiment_pipeline_cohort_selection` owns pure candidate-matrix expansion and
 the frozen target-gate decision. `experiment_pipeline_results` owns terminal
 job reduction, result-manifest validation, and final aggregation behind that

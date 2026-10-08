@@ -166,6 +166,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Reuse `managed_scheduler` for backend lifecycle and `slurm` for resource, command, state,
   and sidecar primitives; [run-manifest evidence](../agent_contracts/run_manifest.md#slurm-scheduler-evidence)
   owns their interpretation. Keep declared-spec validation in `experiment_pipeline_spec`,
+  whose `validate_spec` TypeGuard narrows the parsed mapping in place to its `PipelineSpec`
+  TypedDict and which also owns the frozen `FrozenCheckpointCandidate` shape; keep
   managed evaluation orchestration in `experiment_pipeline`, attempt preparation and
   retries in `experiment_pipeline_attempts`, and reduction in
   `experiment_pipeline_results`; see [pipeline gates](../agent_contracts/experiment_pipeline.md#invocation-and-frozen-state).

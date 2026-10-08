@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 from . import experiment_io as exp_io, experiment_pipeline_cohort_selection as cohort_selection
+from .experiment_pipeline_spec import FrozenCheckpointCandidate, PipelineSpec
 from .experiment_workspace import file_sha256, read_managed_yaml_mapping
 from .manifests import read_json, read_rows
 
@@ -40,9 +41,9 @@ class LogicalJobState(_CohortJobFields):
     attempt_count: int
     successful_run_id: Any
     result_manifest: Any
-    cohort: Any
-    modality: Any
-    checkpoint_source: Any
+    cohort: str
+    modality: str
+    checkpoint_source: str
     retry_preparation_error: Any
 
 
@@ -60,7 +61,7 @@ class MetricRow(_MetricCohortFields):
     value: int | float | str
 
 
-def logical_job_states(spec: dict[str, Any], attempts: Sequence[Mapping[str, Any]]) -> list[LogicalJobState]:
+def logical_job_states(spec: PipelineSpec, attempts: Sequence[Mapping[str, Any]]) -> list[LogicalJobState]:
     logical: list[LogicalJobState] = []
     for job in spec["jobs"]:
         rows = sorted(
@@ -149,7 +150,7 @@ def read_result_manifest(attempt: dict[str, Any]) -> tuple[Path, dict[str, Any]]
     return manifest_path, manifest
 
 
-def validate_result_manifest(spec: dict[str, Any], attempt: dict[str, Any], run: dict[str, Any]) -> Path:
+def validate_result_manifest(spec: PipelineSpec, attempt: dict[str, Any], run: dict[str, Any]) -> Path:
     manifest_path, manifest = read_result_manifest(attempt)
     expected_paths = {
         "config_path": Path(str(run["config"])),
@@ -176,8 +177,9 @@ def validate_result_manifest(spec: dict[str, Any], attempt: dict[str, Any], run:
     if type(checkpoint.get("avg_ckpts")) is not int or checkpoint["avg_ckpts"] != 1:
         raise ValueError("Inference result manifest does not prove avg_ckpts=1.")
     expected_runtime = spec["runtime"]
-    for field in ("batch_size", "accelerator"):
-        if runtime.get(field) != expected_runtime[field]:
+    runtime_field: Literal["batch_size", "accelerator"]
+    for runtime_field in ("batch_size", "accelerator"):
+        if runtime.get(runtime_field) != expected_runtime[runtime_field]:
             raise ValueError(f"Inference result manifest runtime.{field} differs from the frozen job.")
     if str(runtime.get("precision")) != str(expected_runtime["precision"]):
         raise ValueError("Inference result manifest runtime.precision differs from the frozen job.")
@@ -196,8 +198,8 @@ def validate_result_manifest(spec: dict[str, Any], attempt: dict[str, Any], run:
 
 
 def build_result_rows(
-    spec: dict[str, Any],
-    selections: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    selections: Mapping[str, FrozenCheckpointCandidate],
     successful: dict[str, dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[MetricRow]]:
     summary_rows = []
@@ -259,7 +261,7 @@ def build_result_rows(
 
 def write_result_summary(
     pipeline_dir: Path,
-    spec: dict[str, Any],
+    spec: PipelineSpec,
     summary_rows: list[dict[str, Any]],
     metric_rows: Sequence[MetricRow],
 ) -> Path:
@@ -275,8 +277,8 @@ def write_result_summary(
 def aggregate_results(
     root: Path,
     pipeline_dir: Path,
-    spec: dict[str, Any],
-    selections: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    selections: Mapping[str, FrozenCheckpointCandidate],
     logical_jobs: Sequence[LogicalJobState],
 ) -> Path:
     if len(logical_jobs) != len(spec["jobs"]) or any(job["status"] != "completed" for job in logical_jobs):
@@ -292,8 +294,8 @@ def aggregate_results(
 
 def selection_evidence(
     phase_dir: Path,
-    spec: dict[str, Any],
-    candidates: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    candidates: Mapping[str, FrozenCheckpointCandidate],
 ) -> list[cohort_selection.SelectionEvidence]:
     attempts = read_rows(phase_dir / "jobs.tsv", require_managed_identity=True)
     successful_rows = [row for row in attempts if str(row.get("verified") or "").lower() == "true"]
@@ -325,11 +327,11 @@ def selection_evidence(
 
 def write_cohort_result_summary(
     pipeline_dir: Path,
-    spec: dict[str, Any],
-    candidates: Mapping[str, Mapping[str, Any]],
+    spec: PipelineSpec,
+    candidates: Mapping[str, FrozenCheckpointCandidate],
     winner: cohort_selection.DecisionCandidate,
-    selection_spec: dict[str, Any],
-    report_spec: dict[str, Any],
+    selection_spec: PipelineSpec,
+    report_spec: PipelineSpec,
 ) -> Path:
     summary_rows = []
     metric_rows: list[MetricRow] = []
@@ -364,7 +366,7 @@ def write_cohort_result_summary(
 
 def _cohort_summary_markdown(
     pipeline_dir: Path,
-    spec: dict[str, Any],
+    spec: PipelineSpec,
     summary_rows: list[dict[str, Any]],
     metric_rows: Sequence[MetricRow],
     winner: cohort_selection.DecisionCandidate,
@@ -421,7 +423,7 @@ def _cohort_summary_markdown(
     return "\n".join(lines)
 
 
-def cohort_gate_markdown(spec: dict[str, Any], decision: Mapping[str, Any]) -> list[str]:
+def cohort_gate_markdown(spec: PipelineSpec, decision: Mapping[str, Any]) -> list[str]:
     gates = {(gate["job"], gate["metric"]): gate for gate in spec["selector"]["gates"]}
     provenances = {job["id"]: job["provenance"] for job in spec["jobs"]}
     lines = [
@@ -453,7 +455,7 @@ def render_scalar(value: int | float) -> int | float | str:
     return value
 
 
-def summary_markdown(spec: dict[str, Any], summary_rows: list[dict[str, Any]], metric_rows: Sequence[MetricRow]) -> str:
+def summary_markdown(spec: PipelineSpec, summary_rows: list[dict[str, Any]], metric_rows: Sequence[MetricRow]) -> str:
     lines = [
         f"# External Evaluation Pipeline: {spec['pipeline']['id']}",
         "",
