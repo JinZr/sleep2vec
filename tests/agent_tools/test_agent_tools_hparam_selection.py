@@ -566,7 +566,7 @@ def test_hparam_selection_publication_order(monkeypatch: pytest.MonkeyPatch, tmp
         yield
         calls.append(("run_unlock", root))
 
-    monkeypatch.setattr(hparam_selection.managed_scheduler, "managed_run_lock", run_lock)
+    monkeypatch.setattr(hparam_selection.experiment_workspace, "managed_run_lock", run_lock)
     monkeypatch.setattr(
         hparam_selection,
         "_selection_report_steps",

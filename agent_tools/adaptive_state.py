@@ -22,6 +22,7 @@ from typing import Any, Literal, TypedDict, TypeVar
 from . import (
     adaptive_proposals,
     experiment_io as exp_io,
+    experiment_workspace,
     hparam_runtime,
     managed_scheduler,
     plan_hparam,
@@ -146,7 +147,7 @@ def round_is_terminal(
     round_dir: Path, workspace: Path, *, read_run_manifest: Callable[[Path], list[dict[str, str]]]
 ) -> bool:
     # Launches and run scripts replace run_manifest.tsv under the run lock; no adaptive caller holds it here.
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(round_dir)
         canonical_by_key = {managed_run_key(row): row for row in read_run_manifest(workspace)}
     run_keys = [managed_run_key(run) for run in plan.get("runs", [])]
@@ -190,7 +191,7 @@ def validate_workflow_payload(
     workspace = experiment_root(frozen_plan["recipe"])
     assert workspace is not None  # read_hparam_plan rejects a plan without experiment.root.
     # Launches and run scripts replace run_manifest.tsv under the run lock; no adaptive caller holds it here.
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(round_dir, require_adaptive_commit=require_adaptive_commit)
         recipe_value = plan.get("recipe")
         recipe = recipe_value if isinstance(recipe_value, dict) else {}
@@ -576,7 +577,7 @@ def reconcile_interrupted_launch(
 ) -> tuple[list[dict[str, str]], set[tuple[str, str]], set[tuple[str, str]]]:
     # Slurm observation may reach a remote scheduler and merge_run_manifest takes the run lock, so only the reads
     # hold it; the merge re-applies lifecycle rules to the rows it reads under the lock.
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         artifacts.read_hparam_plan(plan_dir)
         canonical_rows = read_run_manifest(workspace)
     updates: list[Mapping[str, JsonValue]] = []
@@ -629,7 +630,7 @@ def finish_interrupted_launch(
     round_dir: Path, workspace: Path, started_keys: set[tuple[str, str]]
 ) -> list[dict[str, str]]:
     hparam_runtime.reconcile_hparam_launch_artifacts(round_dir, started_keys)
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         return read_run_manifest(workspace)
 
 
@@ -640,7 +641,7 @@ def uncommitted_launch_attempts(
     committed_rounds = committed_round_indexes(root)
     registry = read_rows(root / "adaptive" / "run_registry.tsv", require_managed_identity=True)
     # Process-identity reads and plan_registration_rows_state below must not hold the run lock.
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
     registered_by_round: dict[int, set[tuple[str, str]]] = {}
     for registered in registry:

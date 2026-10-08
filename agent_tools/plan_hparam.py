@@ -28,6 +28,7 @@ import yaml
 from . import (
     configs,
     experiment_io as exp_io,
+    experiment_workspace,
     managed_scheduler,
     plan_context,
     plan_contract,
@@ -1358,7 +1359,7 @@ def commit_hparam_plan(
                 "run_count": len(manifest_rows),
             },
         )
-    with managed_scheduler.managed_run_lock(root):
+    with experiment_workspace.managed_run_lock(root):
         artifacts.read_hparam_plan(plan_dir, require_adaptive_commit=False)
     return plan
 

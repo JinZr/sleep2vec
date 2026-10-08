@@ -1,8 +1,8 @@
 """Backend selection and reusable managed launch and observation primitives.
 
 Layer 0 leaf. Owns the reusable direct GPU-capacity and process lifecycle, the
-Slurm submit/observe lifecycle, the managed run lock, and the frozen execution
-snapshot each launch commits.
+Slurm submit/observe lifecycle, and the frozen execution snapshot each launch
+commits.
 
 ``_launch_managed_runs`` selects the direct or Slurm backend for one frozen
 ``LaunchOptions``; ``SchedulerHooks`` inside it supplies persistence and
@@ -11,8 +11,7 @@ execution callbacks.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -27,7 +26,15 @@ from typing import Any, Literal, TypedDict
 
 import yaml
 
-from . import experiment_io as exp_io, gpu_rules, python_programs, run_evidence as evidence, slurm, transport
+from . import (
+    experiment_io as exp_io,
+    experiment_workspace,
+    gpu_rules,
+    python_programs,
+    run_evidence as evidence,
+    slurm,
+    transport,
+)
 from .experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     LAUNCHABLE_STATUSES,
@@ -84,7 +91,6 @@ __all__ = [
     "gpu_groups",
     "inspect_execution_target",
     "launch_managed_runs",
-    "managed_run_lock",
     "observe_run",
     "observe_runs",
     "observe_slurm_run",
@@ -255,15 +261,6 @@ class LaunchOptions:
     runtime_output_root: str | Path | None
     projection_writer: Callable[[LaunchResult], None] | None
     hooks: SchedulerHooks
-
-
-@contextmanager
-def managed_run_lock(workspace: str | Path) -> Iterator[None]:
-    root = Path(workspace)
-    lock_path = root / "run_manifest.tsv.lock"
-    exp_io.validate_managed_output_paths(root, [lock_path])
-    with exp_io.blocking_file_lock(lock_path):
-        yield
 
 
 def gpu_groups(execution: Mapping[str, JsonValue], runtime: Mapping[str, Any]) -> list[list[Any]]:
@@ -491,7 +488,7 @@ def launch_managed_runs(
     )
     if lock_held:
         return _launch_managed_runs(root, managed_dir, runs, execution, runtime, options)
-    with managed_run_lock(root):
+    with experiment_workspace.managed_run_lock(root):
         return _launch_managed_runs(root, managed_dir, runs, execution, runtime, options)
 
 

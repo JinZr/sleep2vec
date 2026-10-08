@@ -243,7 +243,7 @@ def test_hparam_unlaunched_stop_serializes_with_launch(tmp_path: Path, monkeypat
     second_acquired = threading.Event()
     failures = []
     stopped = []
-    real_lock = hparam_runtime.scheduler.managed_run_lock
+    real_lock = hparam_runtime.experiment_workspace.managed_run_lock
     real_merge = hparam_runtime.merge_run_manifest
 
     @contextmanager
@@ -280,7 +280,7 @@ def test_hparam_unlaunched_stop_serializes_with_launch(tmp_path: Path, monkeypat
         except BaseException as exc:
             failures.append(exc)
 
-    monkeypatch.setattr(hparam_runtime.scheduler, "managed_run_lock", track_lock)
+    monkeypatch.setattr(hparam_runtime.experiment_workspace, "managed_run_lock", track_lock)
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge)
     # Stop takes no hooks, so the public owner guards it against starting a process.
     monkeypatch.setattr(managed_scheduler, "start_process", launcher.start_process)
@@ -359,7 +359,7 @@ def test_hparam_concurrent_stops_keep_plan_projections_canonical(tmp_path: Path,
     projection_lock_held = []
     failures = []
     real_write = hparam_runtime.write_rows
-    real_lock = hparam_runtime.scheduler.managed_run_lock
+    real_lock = hparam_runtime.experiment_workspace.managed_run_lock
 
     def write_projection(path, rows):
         if threading.current_thread().name == "first-stop" and path == plan_dir / "run_status.tsv":
@@ -392,7 +392,7 @@ def test_hparam_concurrent_stops_keep_plan_projections_canonical(tmp_path: Path,
                 second_done.set()
 
     monkeypatch.setattr(hparam_runtime, "write_rows", write_projection)
-    monkeypatch.setattr(hparam_runtime.scheduler, "managed_run_lock", track_lock)
+    monkeypatch.setattr(hparam_runtime.experiment_workspace, "managed_run_lock", track_lock)
     first = threading.Thread(target=stop, args=(0,), name="first-stop")
     second = threading.Thread(target=stop, args=(1,), name="second-stop")
     first.start()

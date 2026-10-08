@@ -21,7 +21,7 @@ L0-level domain leaf.
 ### Import cycle
 
 The one-way direction above is the target, not yet the state. Counting
-function-local (deferred) imports, the import graph holds one 27-module cycle
+function-local (deferred) imports, the import graph holds one 23-module cycle
 spanning L0, L1, L2 and `domain/`. Only four of its members
 (`managed_scheduler → run_evidence → run_artifacts → plan_hparam`) also cycle at
 module top level; deferred imports hold the rest together.
@@ -97,9 +97,9 @@ validation. Task adapters may derive that contract only from the frozen recipe,
 including its strict creator-host plan context and input snapshots, and
 plan-owned config bytes.
 
-`experiment_workspace` owns managed manifests and the one-way step
-`plan_controller` binding used to classify ordinary, adaptive, and pipeline
-plans. `research_log` owns append-only semantic note validation, rendering, and
+`experiment_workspace` owns managed manifests, the run-manifest lock, and the
+one-way step `plan_controller` binding used to classify ordinary, adaptive, and
+pipeline plans. `research_log` owns append-only semantic note validation, rendering, and
 CAS publication behind the workspace facade. `experiment_sources` owns W&B and
 checkpoint evidence acquisition; `experiment_tracking` consumes those sources
 for projections, status advice, and ranking validation. Recipe and canonical

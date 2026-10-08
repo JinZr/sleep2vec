@@ -18,6 +18,7 @@ from typing import Any
 
 from . import (
     experiment_io as exp_io,
+    experiment_workspace,
     managed_scheduler as scheduler,
     plan_contract,
     plan_hparam,
@@ -58,7 +59,7 @@ def read_hparam_plan_under_run_lock(run_dir: Path) -> plan_contract.HparamPlan:
     plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False, require_adaptive_commit=False)
     workspace = experiment_root(plan["recipe"])
     assert workspace is not None  # read_hparam_plan rejects a plan without experiment.root.
-    with scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         return artifacts.read_hparam_plan(run_dir)
 
 
@@ -101,7 +102,7 @@ def launch_hparam_runs(
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    with scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         return _launch_hparam_runs(
             run_dir,
             dry_run=dry_run,
@@ -145,13 +146,13 @@ def run_hparam_queue(
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    with scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(run_dir)
     expected_keys = {validated_run_key(run) for run in plan["runs"]}
     status_path = run_dir / "run_status.tsv"
     exp_io.validate_managed_output_paths(workspace, [status_path])
     while True:
-        with scheduler.managed_run_lock(workspace):
+        with experiment_workspace.managed_run_lock(workspace):
             rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
         if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
             write_rows(status_path, [rows_by_key[validated_run_key(run)] for run in plan["runs"]])
@@ -162,7 +163,7 @@ def run_hparam_queue(
             raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
 
         monitor_hparam_runs(run_dir)
-        with scheduler.managed_run_lock(workspace):
+        with experiment_workspace.managed_run_lock(workspace):
             rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
         if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
             return status_path
@@ -196,7 +197,7 @@ def run_hparam_queue(
             )
 
         launch_hparam_runs(run_dir, dry_run=False, fail_on_missing_pid_blocker=True)
-        with scheduler.managed_run_lock(workspace):
+        with experiment_workspace.managed_run_lock(workspace):
             rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
         if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
             return status_path
@@ -229,7 +230,7 @@ def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tu
             run_dir / EXECUTION_SNAPSHOT_NAME,
         ],
     )
-    with scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(run_dir)
         canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
     expected_keys = {validated_run_key(run) for run in plan["runs"]}
@@ -264,7 +265,7 @@ def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tu
         except Exception:
             if key not in launched_event_keys():
                 raise
-    with scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         write_status_report(workspace)
     return rows
 
@@ -407,11 +408,11 @@ def monitor_hparam_runs(
         root / "run_status.tsv",
     ]
     exp_io.validate_managed_output_paths(workspace, managed_output_paths)
-    with scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(root)
     expected_keys = {validated_run_key(run) for run in plan["runs"]}
     while True:
-        with scheduler.managed_run_lock(workspace):
+        with experiment_workspace.managed_run_lock(workspace):
             workspace_rows = read_run_manifest(workspace)
         workspace_by_key = {validated_run_key(row): row for row in workspace_rows}
         missing = expected_keys - set(workspace_by_key)
@@ -483,7 +484,7 @@ def monitor_hparam_runs(
                             "reason": row.get("stop_reason", ""),
                         },
                     )
-        with scheduler.managed_run_lock(workspace):
+        with experiment_workspace.managed_run_lock(workspace):
             write_status_report(workspace)
         if once or all(row.get("status") in TERMINAL_STATUSES for row in rows):
             return status_path
@@ -517,7 +518,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
             root / "run_status.tsv",
         ],
     )
-    with scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(root)
         expected_keys = {validated_run_key(run) for run in plan["runs"]}
         workspace_rows = read_run_manifest(workspace)

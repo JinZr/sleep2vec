@@ -20,7 +20,7 @@ from . import (
     adaptive_proposals,
     checkpoint_test_results,
     experiment_sources,
-    managed_scheduler,
+    experiment_workspace,
     plan_rendering,
     run_artifacts as artifacts,
     run_evidence as evidence,
@@ -38,7 +38,7 @@ def digest_rows(
 ) -> list[dict[str, Any]]:
     # Launches and run scripts replace run_manifest.tsv under the run lock; runtime evidence below may be read over
     # SSH, so only the plan and manifest reads hold it. No adaptive caller holds the run lock here.
-    with managed_scheduler.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(round_dir)
         plan_keys = {managed_run_key(run) for run in plan.get("runs", [])}
         status_rows = {

@@ -28,6 +28,7 @@ from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  
 import yaml
 
 from agent_tools import (
+    experiment_workspace,
     hparam_runtime,
     managed_scheduler,
     manifests,
@@ -197,7 +198,7 @@ def test_hparam_launch_serializes_concurrent_execute_calls(tmp_path: Path, monke
     first_done = threading.Event()
     failures = []
     real_lstat = os.lstat
-    real_run_lock = managed_scheduler.managed_run_lock
+    real_run_lock = experiment_workspace.managed_run_lock
 
     def start(_execution, _command):
         entered.set()
@@ -233,7 +234,7 @@ def test_hparam_launch_serializes_concurrent_execute_calls(tmp_path: Path, monke
     first = threading.Thread(target=launch, args=(first_done,))
     second = threading.Thread(target=launch)
     monkeypatch.setattr(os, "lstat", lstat)
-    monkeypatch.setattr(managed_scheduler, "managed_run_lock", run_lock)
+    monkeypatch.setattr(experiment_workspace, "managed_run_lock", run_lock)
     first.start()
     assert entered.wait(timeout=5)
     second.start()
