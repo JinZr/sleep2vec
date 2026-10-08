@@ -13,7 +13,7 @@ from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status, needs_issue
 from ..decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
-from ..models import REPO_ROOT, ConfigSummaryInput, JsonValue, recipe_name
+from ..models import REPO_ROOT, ConfigSummaryInput, recipe_name
 from ..plan_rendering import (
     FINETUNE_RUNTIME_FIELDS,
     finetune_input_cli_args,
@@ -132,7 +132,7 @@ class FinetuneAdapter(TaskAdapter):
 
     def preflight_issues(
         self,
-        recipe: dict[str, JsonValue],
+        recipe: dict[str, Any],
         config_summary: ConfigSummaryInput | None,
         *,
         unlock_final_test: bool,
@@ -191,7 +191,7 @@ class FinetuneAdapter(TaskAdapter):
             pieces.append("--no-test-after-fit")
         return [render_command(pieces)]
 
-    def managed_runtime_dir(self, recipe: dict[str, JsonValue], version: str) -> Path | None:
+    def managed_runtime_dir(self, recipe: dict[str, Any], version: str) -> Path | None:
         execution = recipe.get("execution")
         if not isinstance(execution, dict):
             execution = {}

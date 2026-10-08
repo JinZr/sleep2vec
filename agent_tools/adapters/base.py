@@ -155,7 +155,7 @@ class TaskAdapter:
         return []
 
     def config_override_issues(
-        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue] | None:
         """None: the kernel runs its generic flat config-contract block.
         Non-None: the kernel skips that block and appends these issues at the
@@ -178,7 +178,7 @@ class TaskAdapter:
 
     def preflight_issues(
         self,
-        recipe: dict[str, JsonValue],
+        recipe: dict[str, Any],
         config_summary: ConfigSummaryInput | None,
         *,
         unlock_final_test: bool,
@@ -191,13 +191,13 @@ class TaskAdapter:
         """Add task-specific read-only doctor findings."""
         return report
 
-    def doctor_runtime_card(self, recipe: dict[str, JsonValue]) -> str | None:
+    def doctor_runtime_card(self, recipe: dict[str, Any]) -> str | None:
         """Return a read-only target runtime diagnostic for doctor."""
         return None
 
     def write_plan(
         self,
-        recipe: dict[str, JsonValue],
+        recipe: dict[str, Any],
         out: Path,
         *,
         write_out: Path | None = None,
@@ -243,7 +243,7 @@ class TaskAdapter:
         single-run path list."""
         return None
 
-    def managed_runtime_dir(self, recipe: dict[str, JsonValue], version: str) -> Path | None:
+    def managed_runtime_dir(self, recipe: dict[str, Any], version: str) -> Path | None:
         """Externally-managed runtime directory for a planned managed run;
         None means the kernel records empty runtime/checkpoint dirs."""
         return None
@@ -254,7 +254,7 @@ class TaskAdapter:
         decision_paths cannot import the registry."""
         return []
 
-    def frozen_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, Path]]:
+    def frozen_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Path]]:
         """Local external inputs whose content identity is frozen in the plan."""
         return []
 
@@ -297,7 +297,7 @@ class TaskAdapter:
         rendered (the kernel reports it as unsupported)."""
         return []
 
-    def frozen_commands(self, recipe: dict[str, JsonValue], config_bytes: bytes) -> list[str]:
+    def frozen_commands(self, recipe: dict[str, Any], config_bytes: bytes) -> list[str]:
         """Rebuild commands from a frozen plan-owned config snapshot."""
         return self.commands(recipe, None)
 

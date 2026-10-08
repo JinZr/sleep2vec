@@ -79,7 +79,7 @@ from .experiment_workspace import (
 )
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
-from .models import REPO_ROOT, ConfigSummaryInput, JsonValue, json_ready, resolve_repo_path, validate_json_value
+from .models import REPO_ROOT, ConfigSummaryInput, json_ready, resolve_repo_path, validate_json_value
 from .recipes import load_consultation_policy, load_recipe_with_base, load_user_decisions
 
 
@@ -598,7 +598,7 @@ def _evaluate_required_channels_decision(
 
 def _evaluate_config_override_decisions(
     report: DecisionReport,
-    recipe: dict[str, JsonValue],
+    recipe: dict[str, Any],
     cfg: ConfigSummaryInput | None,
     recipe_adapter: TaskAdapter | None,
 ) -> tuple[DecisionReport, list[DecisionIssue] | None]:
@@ -878,12 +878,12 @@ def prepare_doctor_report(output_dir: str | Path | None, recipe: dict, report: D
     return adapter.prepare_doctor_report(recipe, report) if adapter is not None else report
 
 
-def doctor_runtime_diagnostics_supported(recipe: dict[str, JsonValue]) -> bool:
+def doctor_runtime_diagnostics_supported(recipe: dict[str, Any]) -> bool:
     adapter = get_adapter(recipe.get("task"))
     return bool(adapter is not None and adapter.supports_doctor_runtime_diagnostics)
 
 
-def doctor_runtime_card(recipe: dict[str, JsonValue]) -> str | None:
+def doctor_runtime_card(recipe: dict[str, Any]) -> str | None:
     adapter = get_adapter(recipe.get("task"))
     return adapter.doctor_runtime_card(recipe) if adapter is not None else None
 
@@ -1123,7 +1123,7 @@ def _validate_bound_recipe(
 def _materialize_adapter_plan(
     *,
     plan_adapter: TaskAdapter,
-    recipe: dict[str, JsonValue],
+    recipe: dict[str, Any],
     report: DecisionReport,
     out: Path,
     write_out: Path,

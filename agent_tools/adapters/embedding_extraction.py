@@ -16,7 +16,7 @@ from data.whole_night_index import validate_whole_night_index
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from ..experiment_workspace import experiment_root
-from ..models import REPO_ROOT, SUPPORTED_VARIANTS, ConfigSummaryInput, JsonValue, coerce_list, resolve_repo_path
+from ..models import REPO_ROOT, SUPPORTED_VARIANTS, ConfigSummaryInput, coerce_list, resolve_repo_path
 from ..plan_rendering import render_command, variant_module
 from .base import TaskAdapter
 
@@ -122,7 +122,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
             paths.append((f"data_index[{index}]", path))
         return paths
 
-    def frozen_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, Path]]:
+    def frozen_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Path]]:
         from .. import plan_contract
 
         paths: list[tuple[str, Path]] = []
@@ -133,7 +133,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
         return paths
 
     def config_override_issues(
-        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue] | None:
         variant = recipe.get("variant")
         config_bytes = (config_summary or {}).get("_source_config_bytes")
@@ -358,7 +358,7 @@ class EmbeddingExtractionAdapter(TaskAdapter):
 
     def preflight_issues(
         self,
-        recipe: dict[str, JsonValue],
+        recipe: dict[str, Any],
         config_summary: ConfigSummaryInput | None,
         *,
         unlock_final_test: bool,

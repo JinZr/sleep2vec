@@ -103,7 +103,7 @@ class HparamTuneAdapter(TaskAdapter):
         return hparam_tune_issues(recipe, config_summary, decisions, high_impact)
 
     def config_override_issues(
-        self, recipe: dict[str, JsonValue], config_summary: ConfigSummaryInput | None
+        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue] | None:
         from .. import plan_hparam
 
@@ -123,7 +123,7 @@ class HparamTuneAdapter(TaskAdapter):
 
     def preflight_issues(
         self,
-        recipe: dict[str, JsonValue],
+        recipe: dict[str, Any],
         config_summary: ConfigSummaryInput | None,
         *,
         unlock_final_test: bool,
@@ -254,7 +254,7 @@ class HparamTuneAdapter(TaskAdapter):
         issues = [*report.issues, capability_issue, capacity_issue]
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
 
-    def doctor_runtime_card(self, recipe: dict[str, JsonValue]) -> str | None:
+    def doctor_runtime_card(self, recipe: dict[str, Any]) -> str | None:
         from .. import managed_scheduler
 
         execution = recipe.get("execution")
@@ -296,7 +296,7 @@ class HparamTuneAdapter(TaskAdapter):
 
     def write_plan(
         self,
-        recipe: dict[str, JsonValue],
+        recipe: dict[str, Any],
         out: Path,
         *,
         write_out: Path | None = None,

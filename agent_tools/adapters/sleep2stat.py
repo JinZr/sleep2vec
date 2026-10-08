@@ -18,7 +18,6 @@ from ..models import (
     REPO_ROOT,
     AnalyzerSummary,
     ConfigSummaryInput,
-    JsonValue,
     ReducerSummary,
     Sleep2statConfigSummary,
     Sleep2statSummary,
@@ -422,7 +421,7 @@ class Sleep2statAdapter(TaskAdapter):
             commands.append(render_command(plot_cmd))
         return commands
 
-    def frozen_commands(self, recipe: dict[str, JsonValue], config_bytes: bytes) -> list[str]:
+    def frozen_commands(self, recipe: dict[str, Any], config_bytes: bytes) -> list[str]:
         config = yaml.safe_load(config_bytes)
         if not isinstance(config, dict):
             raise ValueError("Frozen sleep2stat config must be a mapping.")
