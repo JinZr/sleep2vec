@@ -180,7 +180,7 @@ def validate_result_manifest(spec: PipelineSpec, attempt: dict[str, Any], run: d
     runtime_field: Literal["batch_size", "accelerator"]
     for runtime_field in ("batch_size", "accelerator"):
         if runtime.get(runtime_field) != expected_runtime[runtime_field]:
-            raise ValueError(f"Inference result manifest runtime.{field} differs from the frozen job.")
+            raise ValueError(f"Inference result manifest runtime.{runtime_field} differs from the frozen job.")
     if str(runtime.get("precision")) != str(expected_runtime["precision"]):
         raise ValueError("Inference result manifest runtime.precision differs from the frozen job.")
     if runtime.get("devices") != [0]:

@@ -1350,6 +1350,16 @@ def test_result_manifest_validation_rejects_non_integer_or_wrong_avg_ckpts(tmp_p
         pipeline_results.validate_result_manifest(spec, attempt, run)
 
 
+@pytest.mark.parametrize("field,value", [("batch_size", 64), ("accelerator", "cpu")])
+def test_result_manifest_validation_names_the_drifted_runtime_field(tmp_path: Path, field: str, value: object):
+    spec, attempt, run, manifest_path, manifest = _result_manifest_context(tmp_path)
+    manifest["runtime"][field] = value
+    manifest_path.write_text(json.dumps(manifest) + "\n")
+
+    with pytest.raises(ValueError, match=rf"runtime\.{field} differs from the frozen job"):
+        pipeline_results.validate_result_manifest(spec, attempt, run)
+
+
 def test_result_manifest_validation_rejects_missing_and_corrupt_manifest(tmp_path: Path):
     spec, attempt, run, manifest_path, _manifest = _result_manifest_context(tmp_path)
     manifest_path.unlink()
