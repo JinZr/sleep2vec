@@ -31,6 +31,7 @@ from agent_tools import (
     experiments,
     hparam_runtime,
     plans,
+    python_programs,
     run_artifacts,
     transport,
 )
@@ -1163,42 +1164,87 @@ def test_append_event_has_no_failing_tail_after_commit(tmp_path: Path, monkeypat
     assert [event["event_type"] for event in events] == ["before", "committed"]
 
 
-def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch):
+_PROJECTION_PROGRAM = "experiment_workspace.write_run_matrix_if_current"
+
+
+def _run_ssh_locally(monkeypatch, *, before=None, edit_source=None, outcome=None) -> list[SimpleNamespace]:
+    """Run every SSH command as a local child, so remote workspace I/O acts on files under tmp_path.
+
+    ``before(program)`` runs ahead of each child (a concurrent writer), ``edit_source(program, source)`` may rewrite a
+    remote program, and ``outcome(program, command, child)`` may replace the result the caller observes.
+    """
+    names = {python_programs.source(name): name for name in python_programs.registered_programs()}
+    calls = []
+
+    def run_ssh(host, command, *, input=None, text=None, check=None, capture_output=True, timeout=None):
+        argv = shlex.split(command)
+        program = names.get(argv[2]) if argv[:2] == ["python3", "-c"] else None
+        if before is not None:
+            before(program)
+        if program is None:
+            argv = ["bash", "-c", command]
+        else:
+            source = argv[2] if edit_source is None else edit_source(program, argv[2])
+            argv = [sys.executable, "-c", source, *argv[3:]]
+        child = subprocess.run(
+            argv, input=input, text=text, check=bool(check), capture_output=capture_output, timeout=5
+        )
+        calls.append(SimpleNamespace(host=host, program=program, command=command, input=input, child=child))
+        return child if outcome is None else outcome(program, command, child)
+
+    monkeypatch.setattr(transport, "run_ssh", run_ssh)
+    return calls
+
+
+def _remote_workspace(root: Path, manifest_text: str) -> Path:
+    (root / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    manifest = root / "run_manifest.tsv"
+    manifest.write_text(manifest_text)
+    return manifest
+
+
+def _projections(calls: list[SimpleNamespace]) -> list[SimpleNamespace]:
+    return [call for call in calls if call.program == _PROJECTION_PROGRAM]
+
+
+def _matrix_run_ids(root: Path) -> list[str]:
+    with (root / "run_matrix.csv").open(newline="") as file_obj:
+        return [row["run_id"] for row in csv.DictReader(file_obj)]
+
+
+def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(tmp_path: Path, monkeypatch):
+    manifest = _remote_workspace(tmp_path, "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tfailed\n")
     existing = [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "failed"}]
     validations = []
     reads = []
-    writes = {}
+    commits = []
+    real_validate = experiment_io.validate_managed_output_paths
+    real_read = experiment_io.read_text_at
+    real_commit = experiment_io.conditional_atomic_replace_text_at
 
-    def fake_read(path, *, remote=None):
+    def recording_validate(root, paths, *, remote=None):
+        validations.append((root, paths, remote))
+        return real_validate(root, paths, remote=remote)
+
+    def recording_read(path, *, remote=None):
         assert len(validations) == 1
         reads.append((Path(path).name, remote))
-        if Path(path).name == "experiment.yaml":
-            return "experiment:\n  id: unit\n"
-        return "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tfailed\n"
+        return real_read(path, remote=remote)
 
-    def fake_commit(path, text, _expected_sha256, *, remote=None, **kwargs):
-        writes[Path(path).name] = (text, remote, kwargs)
-        return True
+    def recording_commit(path, text, expected_sha256, *, remote=None, **kwargs):
+        commits.append((Path(path).name, remote, kwargs))
+        return real_commit(path, text, expected_sha256, remote=remote, **kwargs)
 
-    def fake_projection(_root, rows, manifest_text, remote):
-        writes["projection"] = ([dict(row) for row in rows], manifest_text, remote)
-        return True
-
-    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        experiment_io,
-        "validate_managed_output_paths",
-        lambda root, paths, *, remote=None: validations.append((root, paths, remote)),
-    )
+    calls = _run_ssh_locally(monkeypatch)
+    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", recording_validate)
     monkeypatch.setattr(
         experiment_io, "blocking_file_lock", lambda *_args: pytest.fail("Remote merge acquired a local lock")
     )
-    monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", fake_commit)
-    monkeypatch.setattr(experiment_workspace, "_write_remote_run_matrix_if_current", fake_projection)
+    monkeypatch.setattr(experiment_io, "read_text_at", recording_read)
+    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", recording_commit)
 
     committed = merge_run_manifest(
-        "/remote/workspace",
+        tmp_path,
         [{"step_id": "train", "run_id": "run-000", "status": "completed"}],
         remote="baichuan3",
     )
@@ -1206,9 +1252,9 @@ def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch
     assert committed == existing
     assert validations == [
         (
-            Path("/remote/workspace"),
+            tmp_path,
             [
-                Path("/remote/workspace") / name
+                tmp_path / name
                 for name in (
                     "run_manifest.tsv",
                     "run_manifest.tsv.lock",
@@ -1222,13 +1268,16 @@ def test_merge_run_manifest_remote_commits_and_renders_the_same_rows(monkeypatch
         )
     ]
     assert reads and set(reads) == {("experiment.yaml", "baichuan3"), ("run_manifest.tsv", "baichuan3")}
-    assert "unit\trun-000\tfailed\ttrain" in writes["run_manifest.tsv"][0]
-    assert writes["run_manifest.tsv"][1] == "baichuan3"
-    assert writes["run_manifest.tsv"][2]["guard_path"] == Path("/remote/workspace/experiment.yaml")
-    assert len(writes["run_manifest.tsv"][2]["expected_guard_sha256"]) == 64
-    assert writes["projection"][0] == existing
-    assert "unit\trun-000\tfailed\ttrain" in writes["projection"][1]
-    assert writes["projection"][2] == "baichuan3"
+    assert "unit\trun-000\tfailed\ttrain" in manifest.read_text()
+    assert [(name, remote) for name, remote, _kwargs in commits] == [("run_manifest.tsv", "baichuan3")]
+    assert commits[0][2]["guard_path"] == tmp_path / "experiment.yaml"
+    assert len(commits[0][2]["expected_guard_sha256"]) == 64
+    assert {call.host for call in calls} == {"baichuan3"}
+    # The projection program publishes only against the committed manifest digest, so it rendered the committed rows.
+    assert [call.child.stdout for call in _projections(calls)] == ["true\n"]
+    with (tmp_path / "run_matrix.csv").open(newline="") as file_obj:
+        assert list(csv.DictReader(file_obj)) == existing
+    assert "| failed |" in (tmp_path / "reports" / "run_matrix.md").read_text()
 
 
 def test_merge_run_manifest_remote_read_failure_writes_nothing(monkeypatch):
@@ -1429,40 +1478,17 @@ def test_empty_canonical_commit_preserves_the_valid_identity_header(tmp_path: Pa
     assert read_run_manifest(tmp_path) == []
 
 
-def test_empty_remote_canonical_commit_preserves_the_valid_matrix_identity_header(monkeypatch):
-    writes = {}
+def test_empty_remote_canonical_commit_preserves_the_valid_matrix_identity_header(tmp_path: Path, monkeypatch):
+    manifest = _remote_workspace(tmp_path, "step_id\trun_id\n")
+    calls = _run_ssh_locally(monkeypatch)
 
-    def fake_read(path, *, remote=None):
-        if Path(path).name == "experiment.yaml":
-            return "experiment:\n  id: unit\n"
-        return "step_id\trun_id\n"
+    assert merge_run_manifest(tmp_path, [], remote="unit-host") == []
 
-    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
-    monkeypatch.setattr(
-        experiment_io,
-        "conditional_atomic_replace_text_at",
-        lambda path, text, _expected_sha256, *, remote=None, **_kwargs: writes.update({Path(path).name: (text, remote)})
-        is None,
-    )
-    monkeypatch.setattr(
-        experiment_workspace,
-        "_write_remote_run_matrix_if_current",
-        lambda _root, rows, manifest_text, remote: writes.update(
-            {"projection": (experiment_workspace._run_matrix_text(rows), manifest_text, remote)}
-        )
-        is None,
-    )
-
-    assert merge_run_manifest("/remote/workspace", [], remote="unit-host") == []
-
-    assert writes["run_manifest.tsv"] == ("step_id\trun_id\n", "unit-host")
-    assert writes["projection"] == (
-        ("step_id,run_id\n", "# Run Matrix\n\nNo runs registered.\n"),
-        "step_id\trun_id\n",
-        "unit-host",
-    )
+    assert manifest.read_text() == "step_id\trun_id\n"
+    assert {call.host for call in calls} == {"unit-host"}
+    assert [call.child.stdout for call in _projections(calls)] == ["true\n"]
+    assert (tmp_path / "run_matrix.csv").read_text() == "step_id,run_id\n"
+    assert (tmp_path / "reports" / "run_matrix.md").read_text() == "# Run Matrix\n\nNo runs registered.\n"
 
 
 def test_concurrent_local_manifest_writers_preserve_distinct_runs(tmp_path: Path):
@@ -1751,99 +1777,75 @@ def test_projection_failure_does_not_roll_back_canonical_commit(tmp_path: Path, 
     assert "running" in (tmp_path / "run_matrix.csv").read_text()
 
 
-def test_remote_manifest_commit_retries_after_digest_conflict_without_losing_rows(monkeypatch):
-    state = {"text": "step_id\trun_id\n", "attempts": 0}
+def test_remote_manifest_commit_retries_after_digest_conflict_without_losing_rows(tmp_path: Path, monkeypatch):
+    manifest = _remote_workspace(tmp_path, "step_id\trun_id\n")
+    commit_attempts = []
 
-    def fake_read(path, *, remote=None):
-        if Path(path).name == "experiment.yaml":
-            return "experiment:\n  id: unit\n"
-        return state["text"]
+    def concurrent_commit_before_first_attempt(program):
+        if program != "experiment_io.conditional_atomic_replace_text":
+            return
+        commit_attempts.append(program)
+        if len(commit_attempts) == 1:
+            # Another manager commits run-001 between this writer's read and its conditional replace.
+            manifest.write_text("experiment_id\tstatus\tstep_id\trun_id\nunit\tplanned\ttrain\trun-001\n")
 
-    def fake_commit(_path, text, _expected_sha256, *, remote=None, **_kwargs):
-        state["attempts"] += 1
-        if state["attempts"] == 1:
-            state["text"] = "experiment_id\tstatus\tstep_id\trun_id\n" "unit\tplanned\ttrain\trun-001\n"
-            return False
-        state["text"] = text
-        return True
-
-    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", fake_commit)
-    monkeypatch.setattr(experiment_workspace, "_write_remote_run_matrix_if_current", lambda *_args: True)
+    _run_ssh_locally(monkeypatch, before=concurrent_commit_before_first_attempt)
 
     committed = merge_run_manifest(
-        "/remote/workspace",
+        tmp_path,
         [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
         remote="unit-host",
     )
 
-    assert state["attempts"] == 2
+    assert len(commit_attempts) == 2
     assert {row["run_id"] for row in committed} == {"run-000", "run-001"}
-    assert "run-000" in state["text"] and "run-001" in state["text"]
+    assert "run-000" in manifest.read_text() and "run-001" in manifest.read_text()
+    assert sorted(_matrix_run_ids(tmp_path)) == ["run-000", "run-001"]
 
 
-def test_remote_projection_replays_when_canonical_manifest_advances(monkeypatch):
-    state = {"text": "step_id\trun_id\n", "projection": [], "writes": 0}
+def test_remote_projection_replays_when_canonical_manifest_advances(tmp_path: Path, monkeypatch):
+    manifest = _remote_workspace(tmp_path, "step_id\trun_id\n")
     concurrent_text = (
         "experiment_id\tstatus\tstep_id\trun_id\n" "unit\tplanned\ttrain\trun-000\n" "unit\tplanned\ttrain\trun-001\n"
     )
+    projections = []
 
-    def fake_read(path, *, remote=None):
-        if Path(path).name == "experiment.yaml":
-            return "experiment:\n  id: unit\n"
-        return state["text"]
-
-    def fake_commit(_path, text, _expected_sha256, *, remote=None, **_kwargs):
-        state["text"] = text
-        return True
-
-    def fake_projection(_root, rows, _manifest_text, _remote):
-        state["writes"] += 1
-        if state["writes"] == 1:
+    def concurrent_commit_before_first_projection(program):
+        if program != _PROJECTION_PROGRAM:
+            return
+        projections.append(program)
+        if len(projections) == 1:
             # Another manager commits and projects first; this writer must not leave its older view behind.
-            state["text"] = concurrent_text
-            return False
-        state["projection"] = [row["run_id"] for row in rows]
-        return True
+            manifest.write_text(concurrent_text)
 
-    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", fake_commit)
-    monkeypatch.setattr(experiment_workspace, "_write_remote_run_matrix_if_current", fake_projection)
+    calls = _run_ssh_locally(monkeypatch, before=concurrent_commit_before_first_projection)
 
     committed = merge_run_manifest(
-        "/remote/workspace",
+        tmp_path,
         [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
         remote="unit-host",
     )
 
-    assert state["writes"] == 2
-    assert state["projection"] == ["run-000", "run-001"]
+    assert [call.child.stdout for call in _projections(calls)] == ["false\n", "true\n"]
+    assert _matrix_run_ids(tmp_path) == ["run-000", "run-001"]
     assert {row["run_id"] for row in committed} == {"run-000", "run-001"}
 
 
-def test_remote_projection_holds_the_canonical_manifest_lock(monkeypatch):
-    calls = []
+def test_remote_projection_holds_the_canonical_manifest_lock(tmp_path: Path, monkeypatch):
+    _remote_workspace(tmp_path, "step_id\trun_id\n")
+    calls = _run_ssh_locally(monkeypatch)
 
-    def fake_run(host, command, **kwargs):
-        calls.append((host, command, kwargs))
-        return subprocess.CompletedProcess([], 0, "true\n", "")
-
-    monkeypatch.setattr(experiment_workspace.transport, "run_ssh", fake_run)
-    rows = [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}]
-
-    assert experiment_workspace._write_remote_run_matrix_if_current(
-        Path("/remote/workspace"), rows, "step_id\trun_id\n", "unit-host"
+    merge_run_manifest(
+        tmp_path,
+        [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
+        remote="unit-host",
     )
 
-    host, command, kwargs = calls[0]
-    assert host == "unit-host"
-    assert 'manifest_path + ".lock"' in command
-    assert "hashlib.sha256(current).hexdigest() != expected" in command
-    payload = json.loads(kwargs["input"])
+    [projection] = _projections(calls)
+    assert projection.host == "unit-host"
+    assert 'manifest_path + ".lock"' in projection.command
+    assert "hashlib.sha256(current).hexdigest() != expected" in projection.command
+    payload = json.loads(projection.input)
     assert "run-000" in payload["matrix"]
     assert "| planned |" in payload["report"]
 
@@ -1852,18 +1854,27 @@ def test_remote_projection_holds_the_canonical_manifest_lock(monkeypatch):
     "outcome", ["success", "conflict", "partial_failure", "lost", "truncated", "ssh255", "timeout"]
 )
 def test_remote_projection_requires_actual_completed_result(tmp_path, monkeypatch, outcome):
-    manifest = tmp_path / "run_manifest.tsv"
-    manifest.write_text("current\n")
-    reports = tmp_path / "reports"
-    reports.mkdir()
-    report = reports / "run_matrix.md"
-    if outcome == "partial_failure":
-        report.mkdir()
-    children = []
+    manifest = _remote_workspace(tmp_path, "step_id\trun_id\n")
+    report = tmp_path / "reports" / "run_matrix.md"
+    manifest_at_projection = []
 
-    def rewritten_exit(_host, command, **kwargs):
-        child = subprocess.run([sys.executable, *shlex.split(command)[1:]], capture_output=True, timeout=5, **kwargs)
-        children.append(child)
+    def before_projection(program):
+        if program != _PROJECTION_PROGRAM:
+            return
+        if outcome == "conflict" and not manifest_at_projection:
+            # A concurrent commit makes this writer's projection digest stale.
+            manifest.write_text("experiment_id\tstatus\tstep_id\trun_id\nunit\tplanned\ttrain\trun-001\n")
+        elif outcome == "conflict":
+            # The conflicting attempt published nothing before the replay.
+            assert not (tmp_path / "run_matrix.csv").exists()
+            assert not report.exists()
+        if outcome == "partial_failure":
+            report.mkdir(parents=True)
+        manifest_at_projection.append(manifest.read_text())
+
+    def projection_result(program, command, child):
+        if program != _PROJECTION_PROGRAM or outcome in {"success", "conflict"}:
+            return child
         if outcome == "timeout":
             raise subprocess.TimeoutExpired(command, 5)
         stdout = child.stdout
@@ -1873,41 +1884,51 @@ def test_remote_projection_requires_actual_completed_result(tmp_path, monkeypatc
             stdout = stdout[:-2]
         return subprocess.CompletedProcess(command, 255 if outcome == "ssh255" else 0, stdout, child.stderr)
 
-    monkeypatch.setattr(experiment_workspace.transport, "run_ssh", rewritten_exit)
+    calls = _run_ssh_locally(monkeypatch, before=before_projection, outcome=projection_result)
     rows = [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}]
-    expected = "stale\n" if outcome == "conflict" else "current\n"
     if outcome in {"success", "conflict"}:
-        assert experiment_workspace._write_remote_run_matrix_if_current(tmp_path, rows, expected, "host") is (
-            outcome == "success"
-        )
+        committed = merge_run_manifest(tmp_path, rows, remote="host")
+        assert {row["run_id"] for row in committed} == ({"run-000"} if outcome == "success" else {"run-001"})
     else:
         with pytest.raises(subprocess.TimeoutExpired if outcome == "timeout" else RuntimeError):
-            experiment_workspace._write_remote_run_matrix_if_current(tmp_path, rows, expected, "host")
-    assert len(children) == 1
-    assert children[0].returncode == (45 if outcome == "conflict" else 1 if outcome == "partial_failure" else 0)
-    assert manifest.read_text() == "current\n"
+            merge_run_manifest(tmp_path, rows, remote="host")
+    children = [call.child for call in _projections(calls)]
     if outcome == "conflict":
-        assert not (tmp_path / "run_matrix.csv").exists()
-        assert not report.exists()
+        assert [child.returncode for child in children] == [45, 0]
+        assert manifest.read_text() == manifest_at_projection[-1]
+        assert _matrix_run_ids(tmp_path) == ["run-001"]
+        assert "run-001" in report.read_text()
+        return
+    assert len(children) == 1
+    assert children[0].returncode == (1 if outcome == "partial_failure" else 0)
+    assert manifest.read_text() == manifest_at_projection[0]
+    assert "run-000" in (tmp_path / "run_matrix.csv").read_text()
+    if outcome == "partial_failure":
+        assert report.is_dir()
     else:
-        assert "run-000" in (tmp_path / "run_matrix.csv").read_text()
-        if outcome == "partial_failure":
-            assert report.is_dir()
-        else:
-            assert "run-000" in report.read_text()
+        assert "run-000" in report.read_text()
 
 
 @pytest.mark.parametrize("manifest_state", ["missing", "stale", "current"])
 def test_remote_projection_result_requires_successful_lock_cleanup(tmp_path, monkeypatch, manifest_state):
-    manifest = tmp_path / "run_manifest.tsv"
-    if manifest_state != "missing":
-        manifest.write_text("current\n")
-    children = []
+    manifest = _remote_workspace(tmp_path, "step_id\trun_id\n")
+    manifest_at_projection = []
 
-    def rewritten_exit(_host, command, **kwargs):
-        argv = [sys.executable, *shlex.split(command)[1:]]
+    def before_projection(program):
+        if program != _PROJECTION_PROGRAM:
+            return
+        # A concurrent writer removes or advances the manifest after this writer's commit.
+        if manifest_state == "missing":
+            manifest.unlink()
+        elif manifest_state == "stale":
+            manifest.write_text("experiment_id\tstatus\tstep_id\trun_id\nunit\tplanned\ttrain\trun-001\n")
+        manifest_at_projection.append(manifest.read_text() if manifest.exists() else None)
+
+    def fail_lock_cleanup(program, source):
+        if program != _PROJECTION_PROGRAM:
+            return source
         marker = "payload = json.load(sys.stdin)\n"
-        assert argv[2].count(marker) == 1
+        assert source.count(marker) == 1
         injection = """
 original_open = open
 
@@ -1928,24 +1949,21 @@ def open_with_failed_lock_close(path, *args, **kwargs):
 
 open = open_with_failed_lock_close
 """
-        argv[2] = argv[2].replace(marker, marker + injection)
-        child = subprocess.run(argv, capture_output=True, timeout=5, **kwargs)
-        children.append(child)
-        return subprocess.CompletedProcess(command, 0, child.stdout, child.stderr)
+        return source.replace(marker, marker + injection)
 
-    monkeypatch.setattr(experiment_workspace.transport, "run_ssh", rewritten_exit)
+    calls = _run_ssh_locally(monkeypatch, before=before_projection, edit_source=fail_lock_cleanup)
     rows = [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}]
-    expected = "current\n" if manifest_state == "current" else "stale\n"
 
     with pytest.raises(RuntimeError, match="(?s)outcome may be unknown.*injected lock cleanup failure"):
-        experiment_workspace._write_remote_run_matrix_if_current(tmp_path, rows, expected, "host")
+        merge_run_manifest(tmp_path, rows, remote="host")
 
+    children = [call.child for call in _projections(calls)]
     assert len(children) == 1
     assert children[0].returncode == 1
     assert children[0].stdout == ""
     assert manifest.exists() is (manifest_state != "missing")
     if manifest_state != "missing":
-        assert manifest.read_text() == "current\n"
+        assert manifest.read_text() == manifest_at_projection[0]
     if manifest_state == "current":
         assert "run-000" in (tmp_path / "run_matrix.csv").read_text()
         assert "run-000" in (tmp_path / "reports" / "run_matrix.md").read_text()
@@ -1954,41 +1972,32 @@ open = open_with_failed_lock_close
         assert not (tmp_path / "reports").exists()
 
 
-def test_remote_projection_conflicts_never_publish_a_stale_matrix(monkeypatch):
-    state = {"text": "step_id\trun_id\n", "attempts": 0, "projection": ["preexisting"]}
+def test_remote_projection_conflicts_never_publish_a_stale_matrix(tmp_path: Path, monkeypatch):
+    manifest = _remote_workspace(tmp_path, "step_id\trun_id\n")
+    (tmp_path / "run_matrix.csv").write_text("preexisting\n")
+    projections = []
 
-    def fake_read(path, *, remote=None):
-        if Path(path).name == "experiment.yaml":
-            return "experiment:\n  id: unit\n"
-        return state["text"]
-
-    def fake_commit(_path, text, _expected_sha256, *, remote=None, **_kwargs):
-        state["text"] = text
-        return True
-
-    def conflicting_projection(_root, _rows, _manifest_text, _remote):
-        state["attempts"] += 1
-        run_ids = range(state["attempts"] + 1)
-        state["text"] = "experiment_id\tstatus\tstep_id\trun_id\n" + "".join(
-            f"unit\tplanned\ttrain\trun-{run_id:03d}\n" for run_id in run_ids
+    def concurrent_commit_before_each_projection(program):
+        if program != _PROJECTION_PROGRAM:
+            return
+        projections.append(program)
+        manifest.write_text(
+            "experiment_id\tstatus\tstep_id\trun_id\n"
+            + "".join(f"unit\tplanned\ttrain\trun-{run_id:03d}\n" for run_id in range(len(projections) + 1))
         )
-        return False
 
-    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", fake_commit)
-    monkeypatch.setattr(experiment_workspace, "_write_remote_run_matrix_if_current", conflicting_projection)
+    _run_ssh_locally(monkeypatch, before=concurrent_commit_before_each_projection)
 
     with pytest.raises(RuntimeError, match="three projection attempts"):
         merge_run_manifest(
-            "/remote/workspace",
+            tmp_path,
             [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
             remote="unit-host",
         )
 
-    assert state["attempts"] == 3
-    assert state["projection"] == ["preexisting"]
+    assert len(projections) == 3
+    assert (tmp_path / "run_matrix.csv").read_text() == "preexisting\n"
+    assert not (tmp_path / "reports" / "run_matrix.md").exists()
 
 
 def test_remote_manifest_commit_fails_after_three_digest_conflicts(monkeypatch):

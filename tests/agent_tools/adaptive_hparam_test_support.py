@@ -257,6 +257,20 @@ def _mark_round_terminal(workflow_dir: Path, workspace: Path, *, status: str = "
     )
 
 
+def _mark_failing_running_runs(workspace: Path, round_dir: Path, runs: list[dict]) -> None:
+    """Mark current-round runs running with failure log evidence, so adaptive replacement retires them."""
+    log_dir = round_dir / "logs"
+    log_dir.mkdir(exist_ok=True)
+    updates = []
+    for run in runs:
+        log_path = log_dir / f"{run['run_id']}.log"
+        log_path.write_text("Traceback\nRuntimeError: failed\n")
+        updates.append(
+            {"step_id": run["step_id"], "run_id": run["run_id"], "status": "running", "log_path": str(log_path)}
+        )
+    merge_run_manifest(workspace, updates)
+
+
 def _write_agent_configuration_submission(input_path: Path) -> Path:
     proposal_input = json.loads(input_path.read_text())
     proposal_path = Path(proposal_input["expected_proposal_path"])
