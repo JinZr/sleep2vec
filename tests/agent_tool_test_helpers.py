@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -10,8 +11,11 @@ import subprocess
 import sys
 import threading
 from typing import TypeVar, cast
+from unittest import mock
 
 import yaml
+
+from agent_tools import cli, execution_snapshot, experiment_io
 
 _T = TypeVar("_T")
 
@@ -67,6 +71,49 @@ def run_execution_preflight_fixture(execution: dict, command: list[str]) -> subp
         0,
         f"AGENT_CLI_PREFLIGHT={json.dumps(evidence, sort_keys=True)}\n",
         "",
+    )
+
+
+# Bound at import, before any test patches it, so the wrapper always reaches the real validator as in the stub.
+_validate_managed_output_paths = experiment_io.validate_managed_output_paths
+
+
+def validate_local_managed_output_paths(root, paths, *, remote=None):
+    """Validate local managed output paths; skip remote validation, which would need a reachable SSH host."""
+    if remote is None:
+        return _validate_managed_output_paths(root, paths)
+
+
+def run_cli(*args: str) -> subprocess.CompletedProcess:
+    """Run the agent_tools CLI in this process with the stub's two substitutions, saving an interpreter per call.
+
+    Use run_cli_subprocess when a test needs a real process: CLI calls from threads, process identity, or a timeout."""
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with (
+        mock.patch.object(execution_snapshot, "run_execution_command", run_execution_preflight_fixture),
+        mock.patch.object(experiment_io, "validate_managed_output_paths", validate_local_managed_output_paths),
+        contextlib.redirect_stdout(stdout),
+        contextlib.redirect_stderr(stderr),
+    ):
+        try:
+            returncode = cli.main(list(args))
+        except SystemExit as exc:
+            # Map exit requests as the interpreter does; argparse usage errors arrive here with code 2.
+            if exc.code is None:
+                returncode = 0
+            elif isinstance(exc.code, int):
+                returncode = exc.code
+            else:
+                print(exc.code, file=sys.stderr)
+                returncode = 1
+    return subprocess.CompletedProcess(list(args), returncode, stdout.getvalue(), stderr.getvalue())
+
+
+def run_cli_subprocess(*args: str) -> subprocess.CompletedProcess:
+    """Run the agent_tools CLI through the stub in a fresh interpreter, killed after SUBPROCESS_WAIT_SECONDS."""
+    runner = Path(__file__).with_name("agent_tools") / "agent_tools_cli_stub.py"
+    return subprocess.run(
+        [sys.executable, str(runner), *args], text=True, capture_output=True, timeout=SUBPROCESS_WAIT_SECONDS
     )
 
 
@@ -127,8 +174,6 @@ def prepare_hparam_plan_fixture(recipe: Path, plan_dir: Path) -> None:
     from io import StringIO
 
     import pytest
-
-    from agent_tools import cli, execution_snapshot, experiment_io
 
     original_validate_paths = experiment_io.validate_managed_output_paths
 

@@ -19,6 +19,8 @@ from agent_tool_test_helpers import (
     SUBPROCESS_WAIT_SECONDS,
     FakeLauncher,
     call_while_run_lock_holder_commits,
+    run_cli,
+    run_cli_subprocess,
     write_finetune_recipe,
     write_yaml,
 )
@@ -65,11 +67,6 @@ from agent_tools.experiment_workspace import (
 )
 
 
-def _run(*args: str) -> subprocess.CompletedProcess:
-    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
-    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
-
-
 def _hparam_recipe(tmp_path: Path) -> Path:
     base = write_finetune_recipe(tmp_path)
     return write_yaml(
@@ -106,7 +103,7 @@ def test_managed_plan_writes_semantic_run_workspace_without_schema_version(tmp_p
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "steps" / "tune" / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     plan = json.loads((plan_dir / "plan.json").read_text())
     run = plan["runs"][0]
@@ -178,15 +175,15 @@ def test_registered_step_is_extended_by_plan_and_allows_dry_run_launch(tmp_path:
         )
     )
 
-    assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(experiment_spec)).returncode == 0
-    registered = _run("experiment-register-step", "--run-dir", str(tmp_path), "--spec", str(step_spec))
+    assert run_cli("experiment-init", "--run-dir", str(tmp_path), "--spec", str(experiment_spec)).returncode == 0
+    registered = run_cli("experiment-register-step", "--run-dir", str(tmp_path), "--spec", str(step_spec))
     assert registered.returncode == 0, registered.stderr
     registered_manifest = yaml.safe_load((tmp_path / "steps" / recipe_payload["step"]["id"] / "step.yaml").read_text())
     assert registered_manifest["plan_controller"] == "unassigned"
     plan_dir = tmp_path / "plans" / "registered"
-    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    planned = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert planned.returncode == 0, planned.stderr
-    launched = _run("hparam-launch", "--plan-dir", str(plan_dir))
+    launched = run_cli("hparam-launch", "--plan-dir", str(plan_dir))
     assert launched.returncode == 0, launched.stderr
 
     step_manifest = yaml.safe_load((tmp_path / "steps" / recipe_payload["step"]["id"] / "step.yaml").read_text())
@@ -234,7 +231,7 @@ def test_init_plan_and_mutation_share_canonical_absolute_root(tmp_path: Path):
     plan_dir = canonical_root / "plans" / "canonical"
 
     experiments.init_experiment(alias_root, spec)
-    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    planned = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert planned.returncode == 0, planned.stderr
     monitored = experiments.monitor_experiment(alias_root)
 
@@ -283,7 +280,7 @@ def test_planning_recipe_source_pointer_is_absolute():
 def test_hparam_plan_rejects_workspace_parameter_contract_drift(tmp_path: Path, mutation: str):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     manifest_path = tmp_path / "run_manifest.tsv"
     with manifest_path.open(newline="") as file_obj:
@@ -324,8 +321,8 @@ def test_hparam_plan_ignores_blank_shared_manifest_parameter_padding(tmp_path: P
     historical_plan = tmp_path / "plans" / "historical"
     current_plan = tmp_path / "plans" / "current"
 
-    first = _run("plan", "--recipe", str(historical_recipe), "--output-dir", str(historical_plan))
-    second = _run("plan", "--recipe", str(current_recipe), "--output-dir", str(current_plan))
+    first = run_cli("plan", "--recipe", str(historical_recipe), "--output-dir", str(historical_plan))
+    second = run_cli("plan", "--recipe", str(current_recipe), "--output-dir", str(current_plan))
 
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
@@ -343,7 +340,7 @@ def test_plan_blocks_missing_experiment_metadata(tmp_path: Path):
     payload.pop("step")
     recipe.write_text(yaml.safe_dump(payload))
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
 
     assert result.returncode == 2
     assert "experiment" in result.stdout
@@ -353,7 +350,7 @@ def test_plan_blocks_missing_experiment_metadata(tmp_path: Path):
 def test_plan_rejects_output_outside_experiment_root(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path / "experiment")
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "outside"))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "outside"))
 
     assert result.returncode == 1
     assert "Plan output must be inside experiment.root" in result.stdout
@@ -368,7 +365,7 @@ def test_plan_rejects_nonempty_unmanaged_experiment_root(tmp_path: Path):
     payload["experiment"]["root"] = str(unmanaged_root)
     recipe.write_text(yaml.safe_dump(payload))
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(unmanaged_root / "plan"))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(unmanaged_root / "plan"))
 
     assert result.returncode == 1
     assert "Experiment root is non-empty" in result.stdout
@@ -401,11 +398,11 @@ def test_workspace_validates_existing_experiment_before_creating_directories(
 def test_launch_rejects_modified_frozen_script(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     Path(run["script"]).write_text("#!/usr/bin/env bash\nexit 0\n")
 
-    result = _run("hparam-launch", "--plan-dir", str(plan_dir))
+    result = run_cli("hparam-launch", "--plan-dir", str(plan_dir))
 
     assert result.returncode == 1
     assert "hash" in result.stderr.lower()
@@ -414,7 +411,7 @@ def test_launch_rejects_modified_frozen_script(tmp_path: Path):
 def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=FakeLauncher(verify_target=False).hooks())
     row = list(csv.DictReader((plan_dir / "launch_manifest.tsv").open(), delimiter="\t"))[0]
     pid_path = Path(row["pid_path"])
@@ -3190,14 +3187,14 @@ def test_step_manifest_commit_rejects_missing_controller_without_writing(tmp_pat
 def test_planner_rejects_corrupt_existing_step_manifest_without_writing(tmp_path: Path, existing: str):
     recipe = _hparam_recipe(tmp_path)
     first = tmp_path / "plans" / "first"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
     payload = json.loads((first / "plan.json").read_text())["recipe"]
     target = tmp_path / "steps" / payload["step"]["id"] / "step.yaml"
     target.write_text(existing)
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     plan_dir = tmp_path / "plans" / "corrupt-step"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 1
     assert "step manifest" in result.stderr
@@ -3210,8 +3207,8 @@ def test_new_plan_continues_run_ids_within_the_same_step(tmp_path: Path):
     first = tmp_path / "plans" / "first"
     second = tmp_path / "plans" / "second"
 
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(second)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(second)).returncode == 0
 
     first_run = json.loads((first / "plan.json").read_text())["runs"][0]
     second_run = json.loads((second / "plan.json").read_text())["runs"][0]
@@ -3223,11 +3220,11 @@ def test_missing_canonical_manifest_never_resets_run_identity(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     first = tmp_path / "plans" / "first"
     second = tmp_path / "plans" / "second"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
     (tmp_path / "run_manifest.tsv").unlink()
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(second))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(second))
 
     assert result.returncode == 1
     assert "run_manifest.tsv" in result.stderr
@@ -3239,14 +3236,14 @@ def test_planner_rejects_duplicate_workspace_ownership_without_writing(tmp_path:
     recipe = _hparam_recipe(tmp_path)
     first = tmp_path / "plans" / "first"
     second = tmp_path / "plans" / "second"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
     manifest = tmp_path / "experiment.yaml"
     manifest.write_text(
         manifest.read_text().replace("  id: unit-experiment\n", "  id: foreign\n  id: unit-experiment\n")
     )
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(second))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(second))
 
     assert result.returncode == 1
     assert "Status: FAIL" in result.stdout
@@ -3259,13 +3256,13 @@ def test_completed_experiment_rejects_new_plan(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     first = tmp_path / "plans" / "first"
     second = tmp_path / "plans" / "second"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
     merge_run_manifest(tmp_path, [{**read_run_manifest(tmp_path)[0], "status": "finished"}])
     report = tmp_path / "final_source.md"
     report.write_text("# Final\n")
-    assert _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report)).returncode == 0
+    assert run_cli("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report)).returncode == 0
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(second))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(second))
 
     assert result.returncode == 1
     assert "completed" in result.stdout
@@ -3280,7 +3277,7 @@ def test_single_run_plan_co_locates_frozen_snapshots(tmp_path: Path):
     source_config = Path(yaml.safe_load(recipe.read_text())["inputs"]["config"])
     plan_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr
     run_dir = plan_dir / "runs" / "run-000--unit"
@@ -3314,8 +3311,8 @@ def test_single_run_versions_are_unique_across_repeated_plans(tmp_path: Path):
     first = tmp_path / "plans" / "first"
     second = tmp_path / "plans" / "second"
 
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(second)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(second)).returncode == 0
 
     first_run = json.loads((first / "runs" / "run-000--unit" / "run.json").read_text())
     second_run = json.loads((second / "runs" / "run-001--unit" / "run.json").read_text())
@@ -3350,7 +3347,7 @@ def test_repeated_single_run_plan_rejects_registered_output_directory(tmp_path: 
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
 
-    first = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    first = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert first.returncode == 0, first.stderr
     first_run_dir = plan_dir / "runs" / "run-000--unit"
     first_run_bytes = {
@@ -3366,7 +3363,7 @@ def test_repeated_single_run_plan_rejects_registered_output_directory(tmp_path: 
         payload["artifacts"]["version_name"] = "unit-follow-up"
         recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    second = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    second = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert second.returncode == 1
     assert "Registered plan directories are immutable" in second.stdout
@@ -3915,15 +3912,10 @@ with plan_publication_lock(output):
 
 def test_plan_registration_lock_cannot_deadlock_with_plan_output(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
-    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
     output = tmp_path / "steps" / "unit-finetune" / "step.yaml"
 
-    result = subprocess.run(
-        [sys.executable, str(runner), "plan", "--recipe", str(recipe), "--output-dir", str(output)],
-        text=True,
-        capture_output=True,
-        timeout=SUBPROCESS_WAIT_SECONDS,
-    )
+    # A real process, so a regression that deadlocks registration against plan output ends in the timeout, not a hang.
+    result = run_cli_subprocess("plan", "--recipe", str(recipe), "--output-dir", str(output))
 
     assert result.returncode != 0
 

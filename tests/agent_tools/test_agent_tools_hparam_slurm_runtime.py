@@ -9,9 +9,9 @@ import re
 import shlex
 import subprocess
 
-from agent_tool_test_helpers import FakeLauncher
+from agent_tool_test_helpers import FakeLauncher, run_cli
 import pytest
-from test_agent_tools_hparam_runtime import _hparam_recipe, _read_table, _run, _write_slurm_plan, write_yaml
+from test_agent_tools_hparam_runtime import _hparam_recipe, _read_table, _write_slurm_plan, write_yaml
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
 
@@ -374,8 +374,8 @@ def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path, variant: str
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-    preview = _run("hparam-launch", "--plan-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    preview = run_cli("hparam-launch", "--plan-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr
     assert "Slurm priority is cluster-managed and cannot be guaranteed" in result.stdout
@@ -623,7 +623,7 @@ def test_slurm_plan_rejects_existing_single_use_artifacts_before_writing(tmp_pat
     artifact.write_text("stale\n")
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 1
     assert "Output artifacts already exist" in result.stdout
@@ -657,7 +657,7 @@ def test_slurm_plan_rejects_scheduler_artifact_symlink_before_writing(tmp_path: 
     artifact = run_dir / "job.sbatch"
     artifact.symlink_to(target)
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 1
     assert "Output artifacts are unsafe" in result.stdout
@@ -694,7 +694,7 @@ def test_public_slurm_hparam_recipe_rejects_direct_scheduler_controls(
     payload.setdefault(section, {})[field] = value
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
 
     assert result.returncode == 1
     assert re.search(message, result.stdout)
@@ -714,7 +714,7 @@ def test_public_slurm_hparam_recipe_rejects_unknown_scheduler_fields(tmp_path: P
     }
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
 
     assert result.returncode == 1
     assert "Unknown hparam execution.scheduler field: sbatch_args" in result.stdout
@@ -737,7 +737,7 @@ def test_public_hparam_recipe_requires_complete_scheduler_contract(tmp_path: Pat
     payload["execution"]["scheduler"] = scheduler
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
 
     assert result.returncode == 1
     assert message in result.stdout
@@ -747,7 +747,7 @@ def test_public_hparam_recipe_requires_complete_scheduler_contract(tmp_path: Pat
 def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path: Path):
     recipe_path = _hparam_recipe(tmp_path)
     direct_plan_dir = tmp_path / "direct-plan"
-    assert _run("plan", "--recipe", str(recipe_path), "--output-dir", str(direct_plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe_path), "--output-dir", str(direct_plan_dir)).returncode == 0
     direct_plan = json.loads((direct_plan_dir / "plan.json").read_text())
     recipe = direct_plan["recipe"]
     recipe["execution"].update(
@@ -802,7 +802,7 @@ def test_hparam_reader_uses_frozen_context_for_implicit_workdir(tmp_path: Path, 
     payload["search"]["parameters"]["runtime.lr"] = [9.87654321e-7]
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
 
     monkeypatch.setattr(plan_contract, "REPO_ROOT", Path("/controller/repo"))
@@ -884,7 +884,7 @@ def test_hparam_launch_rejects_topology_drift_before_launch(
             )
         recipe = _hparam_recipe(tmp_path, execution=execution)
         plan_dir = tmp_path / "plan"
-        result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+        result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
         assert result.returncode == 0, result.stderr
         plan = json.loads((plan_dir / "plan.json").read_text())
         real_execution_parent = tmp_path / "execution-real"
@@ -895,7 +895,7 @@ def test_hparam_launch_rejects_topology_drift_before_launch(
     else:
         recipe = _hparam_recipe(tmp_path)
         plan_dir = tmp_path / "plan"
-        result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+        result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
         assert result.returncode == 0, result.stderr
         plan = json.loads((plan_dir / "plan.json").read_text())
 
@@ -1034,7 +1034,7 @@ def test_hparam_plan_uses_logical_devices_for_scheduled_gpu_groups(
     write_yaml(base_recipe, base_payload)
     plan_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr or result.stdout
     command = json.loads((plan_dir / "plan.json").read_text())["runs"][0]["command"]
@@ -1060,8 +1060,8 @@ def test_slurm_hparam_rejects_coerced_gpu_count_before_plan_write(tmp_path: Path
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
 
-    doctor = _run("doctor", "--recipe", str(recipe))
-    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    doctor = run_cli("doctor", "--recipe", str(recipe))
+    planned = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     for result in (doctor, planned):
         assert result.returncode == 1
@@ -1161,8 +1161,8 @@ def test_slurm_hparam_rejects_scheduler_owned_environment_before_plan_write(tmp_
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
 
-    doctor = _run("doctor", "--recipe", str(recipe))
-    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    doctor = run_cli("doctor", "--recipe", str(recipe))
+    planned = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     for result in (doctor, planned):
         assert result.returncode == 1

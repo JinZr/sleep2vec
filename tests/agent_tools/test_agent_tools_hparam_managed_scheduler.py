@@ -5,14 +5,13 @@ from pathlib import Path
 import subprocess
 import sys
 
-from agent_tool_test_helpers import FakeLauncher
+from agent_tool_test_helpers import FakeLauncher, run_cli
 import pytest
 from test_agent_tools_hparam_runtime import (
     _RUNTIME_COMMIT,
     _hparam_recipe,
     _process_identity,
     _read_table,
-    _run,
     _write_process_identity,
     _write_runtime_rows,
     write_yaml,
@@ -57,8 +56,8 @@ def test_hparam_plan_rejects_gpus_per_run_without_a_physical_pool_before_workspa
     plan_dir = tmp_path / "plan"
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
-    doctor = _run("doctor", "--recipe", str(recipe))
-    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    doctor = run_cli("doctor", "--recipe", str(recipe))
+    planned = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     message = "execution.gpus_per_run requires a non-empty execution.gpu_pool or runtime.devices"
     assert doctor.returncode == 1
@@ -87,7 +86,7 @@ def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6, 3e-6, 4e-6]
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     launcher = FakeLauncher()
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
@@ -135,7 +134,7 @@ def test_hparam_run_queue_executes_each_wave_until_all_runs_are_terminal(tmp_pat
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6, 3e-6]
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     started = []
     sleeps = []
     monkeypatch.setattr(
@@ -167,7 +166,7 @@ def test_hparam_run_queue_executes_each_wave_until_all_runs_are_terminal(tmp_pat
 def test_hparam_run_queue_returns_terminal_plan_without_monitor_or_launch(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     merge_run_manifest(tmp_path, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "finished"}])
     assert not (plan_dir / "run_status.tsv").exists()
@@ -181,7 +180,7 @@ def test_hparam_run_queue_returns_terminal_plan_without_monitor_or_launch(tmp_pa
 def test_hparam_run_queue_fails_instead_of_waiting_on_missing_pid(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     merge_run_manifest(
         tmp_path,
@@ -279,7 +278,7 @@ def test_hparam_run_queue_keeps_monitoring_bound_unknown_remote(tmp_path: Path, 
 def test_hparam_run_queue_records_transition_observed_during_launch(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     launcher = FakeLauncher()
     # The queue takes no hooks, so the public owner guards it against starting a process.
     monkeypatch.setattr(managed_scheduler, "start_process", launcher.start_process)
@@ -309,7 +308,7 @@ def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path:
     execution = {"workdir": str(tmp_path), "gpu_pool": [0], "gpus_per_run": 1}
     first_recipe = _hparam_recipe(tmp_path, execution=execution)
     first_plan = tmp_path / "plan-1"
-    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
     hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=FakeLauncher().hooks())
     first_run = json.loads((first_plan / "plan.json").read_text())["runs"][0]
 
@@ -317,7 +316,7 @@ def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path:
     second_payload["search"]["parameters"]["runtime.lr"] = [2e-6]
     second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
     second_plan = tmp_path / "plan-2"
-    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
     second_run = json.loads((second_plan / "plan.json").read_text())["runs"][0]
     started = []
     monkeypatch.setattr(
@@ -365,7 +364,7 @@ def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path:
 def test_hparam_launch_rejects_partially_executed_plan_without_snapshot(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     launcher = FakeLauncher()
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
     plan = json.loads((plan_dir / "plan.json").read_text())
@@ -396,7 +395,7 @@ def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
     merge_run_manifest(
         tmp_path,
@@ -420,7 +419,7 @@ def test_hparam_launch_blocks_default_gpu_capacity_when_other_active_identity_is
     execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
     first_recipe = _hparam_recipe(tmp_path, execution=execution)
     first_plan = tmp_path / "plan-1"
-    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
     first_run = json.loads((first_plan / "plan.json").read_text())["runs"][0]
     merge_run_manifest(
         tmp_path,
@@ -438,7 +437,7 @@ def test_hparam_launch_blocks_default_gpu_capacity_when_other_active_identity_is
     second_payload["search"]["parameters"]["runtime.lr"] = [2e-6]
     second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
     second_plan = tmp_path / "plan-2"
-    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
     launcher = FakeLauncher()
 
     hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks())
@@ -453,14 +452,14 @@ def test_hparam_launch_counts_active_gpu_load_from_previous_plan(tmp_path: Path)
     execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
     first_recipe = _hparam_recipe(tmp_path, execution=execution)
     first_plan = tmp_path / "plan-1"
-    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
 
     second_payload = yaml.safe_load(first_recipe.read_text())
     second_payload["search"]["max_runs"] = 2
     second_payload["search"]["parameters"]["runtime.lr"] = [2e-6, 3e-6]
     second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
     second_plan = tmp_path / "plan-2"
-    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
     launcher = FakeLauncher()
 
     hparam_runtime.launch_hparam_runs(second_plan, dry_run=True, hooks=launcher.hooks())
@@ -492,14 +491,14 @@ def test_hparam_launch_full_previous_plan_keeps_replacement_pending(tmp_path: Pa
     first_payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
     first_recipe.write_text(yaml.safe_dump(first_payload, sort_keys=False))
     first_plan = tmp_path / "plan-1"
-    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
 
     second_payload = yaml.safe_load(first_recipe.read_text())
     second_payload["search"]["max_runs"] = 1
     second_payload["search"]["parameters"]["runtime.lr"] = [3e-6]
     second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
     second_plan = tmp_path / "plan-2"
-    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
     launcher = FakeLauncher()
 
     hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=launcher.hooks())
@@ -522,14 +521,14 @@ def test_hparam_launch_keeps_cpu_only_concurrency_plan_local(tmp_path: Path):
     first_payload["runtime"] = {"devices": []}
     write_yaml(first_recipe, first_payload)
     first_plan = tmp_path / "plan-1"
-    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
 
     second_payload = yaml.safe_load(first_recipe.read_text())
     second_payload["search"]["max_runs"] = 2
     second_payload["search"]["parameters"]["runtime.lr"] = [2e-6, 3e-6]
     second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
     second_plan = tmp_path / "plan-2"
-    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
     launcher = FakeLauncher()
 
     hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=launcher.hooks())
@@ -557,7 +556,7 @@ def test_hparam_launch_explicit_gpu_oversubscription_warns_and_balances_groups(t
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr
     assert "Status: WARN" in result.stdout
@@ -578,7 +577,7 @@ def test_hparam_launch_explicit_oversubscription_balances_overlapping_previous_g
         execution={"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 2},
     )
     first_plan = tmp_path / "plan-1"
-    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
 
     second_payload = yaml.safe_load(first_recipe.read_text())
     second_payload["execution"].update(
@@ -593,7 +592,7 @@ def test_hparam_launch_explicit_oversubscription_balances_overlapping_previous_g
     second_payload["search"]["parameters"]["runtime.lr"] = [2e-6, 3e-6, 4e-6, 5e-6]
     second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
     second_plan = tmp_path / "plan-2"
-    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
     launcher = FakeLauncher()
 
     hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=launcher.hooks())
@@ -643,7 +642,7 @@ def test_hparam_launch_scopes_active_gpu_load_by_target_and_ssh_host(
         second_execution["host"] = "local-label-b"
     first_recipe = _hparam_recipe(tmp_path, execution=first_execution)
     first_plan = tmp_path / "plan-1"
-    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
 
     second_payload = yaml.safe_load(first_recipe.read_text())
     second_payload["execution"] = second_execution
@@ -651,7 +650,7 @@ def test_hparam_launch_scopes_active_gpu_load_by_target_and_ssh_host(
     second_payload["search"]["parameters"]["runtime.lr"] = [2e-6, 3e-6]
     second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
     second_plan = tmp_path / "plan-2"
-    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
     real_validate = hparam_runtime.exp_io.validate_managed_output_paths
 
     def validate_without_remote(root, paths, remote=None):

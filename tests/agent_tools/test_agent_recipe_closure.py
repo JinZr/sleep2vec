@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import subprocess
-import sys
 
-from agent_tool_test_helpers import write_finetune_recipe, write_survival_sidecars, write_yaml
+from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_survival_sidecars, write_yaml
 import pytest
 import yaml
 
@@ -58,11 +56,6 @@ def test_recipe_structure_rejects_static_contract_errors(task, recipe, field):
     issues = decision_rules.recipe_structure_issues(task, recipe, source_layer="unit")
 
     assert any(issue.field == field for issue in issues)
-
-
-def _run(*args: str) -> subprocess.CompletedProcess:
-    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
-    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
 
 
 def _snapshot(root: Path) -> dict[Path, bytes]:
@@ -952,7 +945,7 @@ def test_user_decision_file_has_a_closed_task_aware_contract(tmp_path: Path, pay
     decisions = tmp_path / "decisions.yaml"
     decisions.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    result = _run("doctor", "--recipe", str(recipe), "--user-decisions", str(decisions))
+    result = run_cli("doctor", "--recipe", str(recipe), "--user-decisions", str(decisions))
 
     assert result.returncode == 1
     assert field in result.stdout + result.stderr
@@ -970,7 +963,7 @@ def test_context_rejects_invalid_user_decisions_before_writing_bundle(tmp_path: 
     )
     output_dir = tmp_path / "context"
 
-    result = _run(
+    result = run_cli(
         "context",
         "--task",
         "finetune",
@@ -999,7 +992,7 @@ def test_plan_closure_failure_does_not_create_or_mutate_workspace(tmp_path: Path
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     before = _snapshot(source)
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plans" / "closure"))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plans" / "closure"))
 
     assert result.returncode == 1
     assert "inputs.confg" in result.stdout + result.stderr
@@ -1017,7 +1010,7 @@ def test_hparam_base_closure_failure_does_not_mutate_existing_workspace(tmp_path
     base.write_text(yaml.safe_dump(base_payload, sort_keys=False))
     before = _snapshot(source)
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(source / "plans" / "closure"))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(source / "plans" / "closure"))
 
     assert result.returncode == 1
     assert "runtime.lrr" in result.stdout + result.stderr
@@ -1053,7 +1046,7 @@ def test_adaptive_init_closure_failure_leaves_target_and_source_untouched(tmp_pa
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     before = _snapshot(source)
 
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
 
     assert result.returncode == 1
     assert "search.max_run" in result.stdout + result.stderr
@@ -1078,7 +1071,7 @@ def test_adaptive_init_consults_before_runtime_validation(tmp_path: Path):
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     before = _snapshot(source)
 
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
 
     assert result.returncode == 2
     assert "Status: NEEDS_USER_INPUT" in result.stdout
@@ -1126,7 +1119,7 @@ def test_agent_proposal_contract_failure_precedes_workspace_writes(
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     before = _snapshot(source)
 
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
 
     assert result.returncode == 1
     assert field in result.stdout + result.stderr
@@ -1165,7 +1158,7 @@ def test_agent_proposal_explicit_control_fields_block_before_workspace_writes(
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     before = _snapshot(source)
 
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
 
     assert result.returncode == 2
     assert "Status: NEEDS_USER_INPUT" in result.stdout
@@ -1209,7 +1202,7 @@ def test_agent_proposal_invalid_objective_blocks_before_workspace_writes(
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     before = _snapshot(source)
 
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
 
     assert result.returncode == expected_exit_code
     assert f"Status: {expected_status}" in result.stdout

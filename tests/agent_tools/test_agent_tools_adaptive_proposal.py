@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import threading
 
+from agent_tool_test_helpers import run_cli
 import pytest
 import yaml
 
@@ -25,7 +26,6 @@ from tests.agent_tools.adaptive_hparam_test_support import (
     _agent_recipe,
     _mark_round_terminal,
     _read_table,
-    _run,
     _test_selected_adaptive_recipe,
     _write_agent_configuration_submission,
     _write_agent_submission,
@@ -70,7 +70,7 @@ def test_agent_proposal_waits_for_terminal_round_then_writes_deterministic_snaps
 ):
     recipe = _agent_recipe(tmp_path, explicit_strategy=explicit_strategy)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     step_manifests = list((tmp_path / "steps").glob("*/step.yaml"))
     assert len(step_manifests) == 1
@@ -119,7 +119,7 @@ def test_agent_proposal_waits_for_terminal_round_then_writes_deterministic_snaps
 def test_agent_proposal_request_recovers_missing_issuance_for_existing_snapshot(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -147,7 +147,7 @@ def test_agent_proposal_request_recovers_missing_issuance_for_existing_snapshot(
 def test_agent_proposal_request_uses_blocking_events_lock(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -167,7 +167,7 @@ def test_agent_proposal_request_uses_blocking_events_lock(tmp_path: Path, monkey
 def test_agent_proposal_request_treats_one_exact_issuance_as_idempotent(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -194,7 +194,7 @@ def test_agent_proposal_request_treats_one_exact_issuance_as_idempotent(tmp_path
 def test_agent_proposal_request_rejects_wrong_request_id_sharing_a_binding(tmp_path: Path, shared_binding: str):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -238,7 +238,7 @@ def test_agent_proposal_request_allows_same_target_round_in_another_workflow(tmp
     second_workflow = tmp_path / "workflow-second"
 
     for recipe, workflow in ((first_recipe, first_workflow), (second_recipe, second_workflow)):
-        result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
+        result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
         assert result.returncode == 0, result.stderr
         _write_fake_manifest(workflow)
         _mark_round_terminal(workflow, tmp_path)
@@ -261,7 +261,7 @@ def test_agent_proposal_request_allows_same_target_round_in_another_workflow(tmp
 def test_agent_proposal_request_rejects_duplicate_exact_issuance(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -285,7 +285,7 @@ def test_agent_proposal_request_rejects_duplicate_exact_issuance(tmp_path: Path)
 def test_agent_proposal_request_validates_events_lock_path(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -300,7 +300,7 @@ def test_agent_proposal_request_validates_events_lock_path(tmp_path: Path):
 def test_agent_proposal_request_rejects_conflicting_existing_issuance(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -321,7 +321,7 @@ def test_agent_proposal_request_rejects_conflicting_existing_issuance(tmp_path: 
 def test_agent_proposal_can_request_after_all_runs_fail_without_a_score(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     run = json.loads((workflow_dir / "adaptive" / "rounds" / "round_000" / "plan.json").read_text())["runs"][0]
     merge_run_manifest(
@@ -346,7 +346,7 @@ def test_agent_proposal_authoritative_snapshot_normalizes_sparse_digest_fields(t
     payload["adaptive"]["round_size"] = 2
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -369,7 +369,7 @@ def test_agent_proposal_authoritative_snapshot_normalizes_sparse_digest_fields(t
 def test_agent_proposal_preview_is_read_only_and_execute_uses_bound_snapshot(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir, score=0.73)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -997,7 +997,7 @@ def test_agent_proposal_execute_replay_requires_committed_launch_event(tmp_path:
 def test_agent_proposal_rejects_tampered_snapshot_before_acceptance(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1020,7 +1020,7 @@ def test_agent_proposal_rejects_tampered_snapshot_before_acceptance(tmp_path: Pa
 def test_agent_proposal_rejects_forged_self_consistent_snapshot_and_issuance(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1125,7 +1125,7 @@ def test_agent_proposal_rejects_terminal_result_drift_after_snapshot(tmp_path: P
 def test_agent_proposal_rejects_source_config_drift_after_snapshot(tmp_path: Path, execute: bool):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1148,7 +1148,7 @@ def test_agent_proposal_rejects_source_config_drift_after_snapshot(tmp_path: Pat
 def test_agent_proposal_rechecks_source_config_after_candidate_preflight(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1182,7 +1182,7 @@ def test_agent_proposal_rechecks_source_config_after_candidate_preflight(tmp_pat
 def test_agent_proposal_refreshes_source_contract_after_candidate_preflight(tmp_path: Path, monkeypatch, drift: str):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1224,7 +1224,7 @@ def test_agent_proposal_refreshes_source_contract_after_candidate_preflight(tmp_
 def test_agent_proposal_rebuilds_candidate_from_refreshed_base_and_local_pair(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1275,7 +1275,7 @@ def test_agent_proposal_rebuilds_candidate_from_refreshed_base_and_local_pair(tm
 def test_agent_proposal_materializes_bound_recipe_and_config_bytes(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1325,7 +1325,7 @@ def test_agent_proposal_materializes_bound_recipe_and_config_bytes(tmp_path: Pat
 def test_agent_proposal_rejects_frozen_config_replacement_inside_plan_builder(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1360,7 +1360,7 @@ def test_agent_proposal_recipe_binding_is_json_type_strict(tmp_path: Path, monke
     recipe_payload["search"]["parameters"]["yaml:/model/projection/enabled"] = [True]
     recipe.write_text(yaml.safe_dump(recipe_payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1396,7 +1396,7 @@ def test_agent_proposal_recipe_binding_is_json_type_strict(tmp_path: Path, monke
 def test_agent_proposal_rejects_recipe_replacement_inside_plan_builder(tmp_path: Path, monkeypatch, recipe_layer: str):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1434,7 +1434,7 @@ def test_agent_proposal_rejects_recipe_replacement_inside_plan_builder(tmp_path:
 def test_agent_proposal_rejects_tampered_expected_path_even_when_request_id_is_unchanged(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1457,7 +1457,7 @@ def test_agent_proposal_rejects_tampered_expected_path_even_when_request_id_is_u
 def test_agent_proposal_rejects_source_recipe_drift_after_snapshot(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1477,7 +1477,7 @@ def test_agent_proposal_rejects_source_recipe_drift_after_snapshot(tmp_path: Pat
 def test_agent_proposal_accepts_source_runtime_commit_drift_after_snapshot(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1501,7 +1501,7 @@ def test_agent_proposal_accepts_source_runtime_commit_drift_after_snapshot(tmp_p
 def test_agent_proposal_rechecks_live_budget_after_snapshot(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1519,7 +1519,7 @@ def test_agent_proposal_rechecks_live_budget_after_snapshot(tmp_path: Path, monk
 def test_agent_proposal_zero_start_recovery_uses_a_fresh_target_round(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1570,7 +1570,7 @@ def test_agent_proposal_zero_start_recovery_uses_a_fresh_target_round(tmp_path: 
 def test_agent_proposal_rejects_aliased_protocol_file(tmp_path: Path, protocol_file: str, alias_kind: str):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1594,7 +1594,7 @@ def test_agent_proposal_rejects_aliased_protocol_file(tmp_path: Path, protocol_f
 def test_agent_proposal_rejects_submission_changed_during_validation(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1619,7 +1619,7 @@ def test_agent_proposal_rejects_submission_changed_during_validation(tmp_path: P
 def test_hparam_suggest_rejects_agent_strategy_without_reusing_latest_digest(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     monkeypatch.setattr(
         adaptive_hparam,
@@ -1636,23 +1636,23 @@ def test_hparam_suggest_rejects_agent_strategy_without_reusing_latest_digest(tmp
 def test_agent_proposal_cli_reports_waiting_and_side_effect_free_preview(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
 
-    waiting = _run("hparam-adaptive-step", "--workflow-dir", str(workflow_dir))
+    waiting = run_cli("hparam-adaptive-step", "--workflow-dir", str(workflow_dir))
     assert waiting.returncode == 0, waiting.stderr
     assert waiting.stdout.strip() == "waiting_for_round_terminal"
 
     _write_fake_manifest(workflow_dir)
     _mark_round_terminal(workflow_dir, tmp_path)
-    requested = _run("hparam-adaptive-step", "--workflow-dir", str(workflow_dir))
+    requested = run_cli("hparam-adaptive-step", "--workflow-dir", str(workflow_dir))
     assert requested.returncode == 0, requested.stderr
     input_path = Path(requested.stdout.strip().removeprefix("Wrote "))
     proposal_path = _write_agent_submission(input_path)
     events_path = tmp_path / "events.jsonl"
     events_before = events_path.read_bytes()
 
-    preview = _run(
+    preview = run_cli(
         "hparam-adaptive-step",
         "--workflow-dir",
         str(workflow_dir),
@@ -1669,7 +1669,7 @@ def test_agent_proposal_cli_reports_waiting_and_side_effect_free_preview(tmp_pat
 def test_agent_proposal_execute_requires_submission_before_digest(tmp_path: Path, monkeypatch):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     monkeypatch.setattr(
         adaptive_hparam,
@@ -1685,7 +1685,7 @@ def test_agent_proposal_execute_requires_submission_before_digest(tmp_path: Path
 def test_adaptive_commands_reject_disabled_source_before_writing(tmp_path: Path, command: str):
     recipe = _agent_recipe(tmp_path, explicit_strategy=False)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     payload = yaml.safe_load(recipe.read_text())
     payload["adaptive"]["enabled"] = False
@@ -1709,7 +1709,7 @@ def test_adaptive_commands_reject_disabled_source_before_writing(tmp_path: Path,
 def test_agent_proposal_loop_fails_without_writing_an_event(tmp_path: Path):
     recipe = _agent_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     events_path = tmp_path / "events.jsonl"
     before = events_path.read_bytes()
@@ -1726,7 +1726,7 @@ def test_agent_proposal_configuration_points_execute_as_exact_runs(tmp_path: Pat
     payload["adaptive"]["round_size"] = 2  # two-point round must fit round_size
     recipe.write_text(yaml.safe_dump(payload))
     workflow_dir = tmp_path / "workflow"
-    result = _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
+    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir))
     assert result.returncode == 0, result.stderr
     _write_fake_manifest(workflow_dir, score=0.73)
     _mark_round_terminal(workflow_dir, tmp_path)
@@ -1857,11 +1857,11 @@ def test_best_neighborhood_preserves_fractional_decay_floor_from_digest(candidat
 def test_explicit_best_neighborhood_uses_existing_numeric_neighbors(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
 
-    digest = _run("hparam-digest", "--run-dir", str(workflow_dir))
-    suggest = _run("hparam-suggest", "--workflow-dir", str(workflow_dir))
+    digest = run_cli("hparam-digest", "--run-dir", str(workflow_dir))
+    suggest = run_cli("hparam-suggest", "--workflow-dir", str(workflow_dir))
 
     assert digest.returncode == 0, digest.stderr
     assert suggest.returncode == 0, suggest.stderr
@@ -1892,7 +1892,7 @@ def test_test_selected_adaptive_evidence_uses_checkpoint_objective_through_agent
 ):
     recipe = _test_selected_adaptive_recipe(tmp_path, objective_mode=objective_mode)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     run, checkpoints = _write_checkpoint_test_manifest(
         workflow_dir,
         scores=scores,
@@ -1933,7 +1933,7 @@ def test_test_selected_adaptive_evidence_uses_checkpoint_objective_through_agent
 def test_failed_test_checkpoint_objective_stays_unscored_through_agent_proposal(tmp_path: Path):
     recipe = _test_selected_adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     run, checkpoints = _write_checkpoint_test_manifest(
         workflow_dir,
         scores={1: 0.8, 2: 0.9},
@@ -1962,7 +1962,7 @@ def test_failed_test_checkpoint_objective_stays_unscored_through_agent_proposal(
 def test_test_selected_adaptive_evidence_ignores_epoch_checkpoint_symlink(tmp_path: Path):
     recipe = _test_selected_adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     run, checkpoints = _write_checkpoint_test_manifest(
         workflow_dir,
         scores={1: 0.8},
@@ -1982,7 +1982,7 @@ def test_test_selected_adaptive_evidence_ignores_epoch_checkpoint_symlink(tmp_pa
 def test_incomplete_test_checkpoint_evidence_fails_adaptive_reduction(tmp_path: Path):
     recipe = _test_selected_adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     run, _checkpoints = _write_checkpoint_test_manifest(
         workflow_dir,
         scores={1: 0.8, 2: 0.9},
@@ -2013,7 +2013,7 @@ def test_unavailable_completed_adaptive_evidence_fails_reduction(
     payload["adaptive"]["objective_metric"] = objective_metric
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     run, _checkpoints = _write_checkpoint_test_manifest(
         workflow_dir,
         scores={1: 0.8},
@@ -2051,7 +2051,7 @@ def test_completed_adaptive_run_requires_finite_run_level_objective(
     payload["adaptive"]["objective_metric"] = "best_model_score"
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     run, _checkpoints = _write_checkpoint_test_manifest(
         workflow_dir,
         scores={1: 0.8},
@@ -2076,7 +2076,7 @@ def test_completed_adaptive_run_requires_finite_run_level_objective(
 def test_val_selected_adaptive_digest_keeps_top_level_objective_and_validation_checkpoint(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _run_manifest, checkpoints = _write_checkpoint_test_manifest(
         workflow_dir,
         scores={1: 0.5, 2: 0.9},
@@ -2097,7 +2097,7 @@ def test_test_selected_adaptive_distinct_test_objective_uses_checkpoint_evidence
     payload["adaptive"].update({"objective_metric": "test_loss", "objective_mode": "min"})
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     run, checkpoints = _write_checkpoint_test_manifest(
         workflow_dir,
         scores={1: 0.5, 2: 0.9, 3: 0.8},
@@ -2145,7 +2145,7 @@ def test_test_selected_adaptive_run_level_objective_keeps_top_level_evidence(tmp
     payload["adaptive"].update({"objective_metric": "best_model_score", "objective_mode": "max"})
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     run, checkpoints = _write_checkpoint_test_manifest(
         workflow_dir,
         scores={1: 0.2, 2: 0.9},
@@ -2174,7 +2174,7 @@ def test_test_selected_adaptive_run_level_objective_keeps_top_level_evidence(tmp
 def test_adaptive_digest_uses_canonical_status_not_runtime_manifest(tmp_path: Path, status: str):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     _write_fake_manifest(workflow_dir, score=0.73)
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
@@ -2203,7 +2203,7 @@ def test_adaptive_digest_uses_canonical_status_not_runtime_manifest(tmp_path: Pa
 def test_adaptive_digest_reads_ssh_artifacts_and_logs_on_the_execution_host(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     plan = json.loads((round_dir / "plan.json").read_text())
     run = plan["runs"][0]
@@ -2267,7 +2267,7 @@ def test_adaptive_digest_reads_ssh_artifacts_and_logs_on_the_execution_host(tmp_
 def test_adaptive_digest_preflights_outputs_before_monitor(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
     digest.parent.mkdir(parents=True)
@@ -2292,7 +2292,7 @@ def test_adaptive_digest_preflights_outputs_before_monitor(tmp_path: Path, monke
 def test_adaptive_suggest_preflights_outputs_before_writing(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"
@@ -2313,7 +2313,7 @@ def test_adaptive_suggest_preflights_outputs_before_writing(tmp_path: Path):
 def test_adaptive_suggest_preflights_generated_candidate_before_writing(tmp_path: Path, monkeypatch):
     recipe = _adaptive_recipe(tmp_path)
     workflow_dir = tmp_path / "workflow"
-    assert _run("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
+    assert run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow_dir)).returncode == 0
     round_dir = workflow_dir / "adaptive" / "rounds" / "round_000"
     run = json.loads((round_dir / "plan.json").read_text())["runs"][0]
     digest = workflow_dir / "adaptive" / "digests" / "round_000.csv"

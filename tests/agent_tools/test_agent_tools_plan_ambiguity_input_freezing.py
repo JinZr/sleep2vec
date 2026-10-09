@@ -8,13 +8,12 @@ from shlex import quote as shlex_quote
 import subprocess
 import sys
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_yaml
 from test_agent_plan_blocks_on_ambiguity import (
     _RUNTIME_COMMIT,
     _first_run,
     _hparam_recipe,
     _local_runtime_execution,
-    _run,
     _survival_recipe_with_missing_sidecar_key,
     _valid_final_config_bytes,
     _write_survival_config_with_bad_sidecars,
@@ -55,7 +54,7 @@ def test_infer_eval_split_ask_user_blocks_command_generation(tmp_path: Path):
     )
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert "eval_split" in result.stdout
@@ -68,7 +67,7 @@ def test_unlock_final_test_with_yaml_search_requires_explicit_final_config(tmp_p
     recipe = _hparam_recipe(tmp_path, parameters={"yaml:/finetune/task/output_dim": [31]}, ckpt_path=ckpt)
     output_dir = tmp_path / "unlocked"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 2
     assert not (output_dir / "final_external_test.sh").exists()
@@ -89,7 +88,7 @@ def test_unlock_final_test_with_yaml_search_uses_explicit_final_config(tmp_path:
     selected_config.write_bytes(selected_bytes)
     output_dir = tmp_path / "unlocked"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 0
     frozen_config = output_dir / "config.final_eval.yaml"
@@ -174,7 +173,7 @@ def test_relative_final_eval_config_remains_repo_relative_with_execution_workdir
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = tmp_path / "unlocked"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 0, result.stderr or result.stdout
     assert (output_dir / "config.final_eval.yaml").read_bytes() == selected_bytes
@@ -192,7 +191,7 @@ def test_hparam_final_inference_resolves_preset_from_execution_workdir(tmp_path:
     write_yaml(recipe, payload)
     output_dir = tmp_path / "unlocked_relative_preset"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 1
     assert "inference_preset_path" in result.stdout
@@ -229,7 +228,7 @@ def test_hparam_final_inference_rejects_npz_preset_for_kaldi_backend(tmp_path: P
     write_yaml(recipe, payload)
     output_dir = tmp_path / "unlocked_kaldi_preset"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 1
     assert "inference_preset_path" in result.stdout
@@ -248,7 +247,7 @@ def test_hparam_final_inference_rejects_ahi_checkpoint_averaging(tmp_path: Path)
     write_yaml(recipe, payload)
     output_dir = tmp_path / "unlocked_ahi_averages"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 1
     assert "runtime.avg_ckpts" in result.stdout
@@ -285,7 +284,7 @@ def test_hparam_final_config_resolves_runtime_inputs_from_execution_workdir(tmp_
     write_yaml(recipe, payload)
     output_dir = tmp_path / "unlocked_relative_final_input"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 1
     assert "finetune_data_index" in result.stdout
@@ -315,7 +314,7 @@ def test_hparam_final_config_resolves_generic_kaldi_inputs_from_execution_workdi
     write_yaml(recipe, payload)
     output_dir = tmp_path / "unlocked_relative_kaldi"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 1
     assert "kaldi_data_root" in result.stdout
@@ -353,7 +352,7 @@ def test_hparam_final_config_resolves_multilabel_sidecars_from_execution_workdir
     write_yaml(recipe, payload)
     output_dir = tmp_path / "unlocked_relative_multilabel"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 2
     assert "multilabel_sidecars" in result.stdout
@@ -374,7 +373,7 @@ def test_unlock_final_test_rejects_invalid_explicit_config_before_workspace_muta
     )
     output_dir = tmp_path / "unlocked"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 1
     assert "Final evaluation config is invalid for variant=sleep2vec" in result.stdout
@@ -391,7 +390,7 @@ def test_unlock_final_test_rejects_variant_incompatible_explicit_config_before_w
     recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
     output_dir = tmp_path / "unlocked"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 1
     assert "Final evaluation config is invalid for variant=sleep2vec" in result.stdout
@@ -444,7 +443,7 @@ def test_unlock_final_test_freezes_explicit_config_without_yaml_search(tmp_path:
     selected_config.write_bytes(selected_bytes)
     output_dir = tmp_path / "unlocked"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 0, result.stderr or result.stdout
     frozen_config = output_dir / "config.final_eval.yaml"
@@ -554,7 +553,7 @@ def test_infer_user_decision_ckpt_path_must_exist(tmp_path: Path):
     )
     output_dir = tmp_path / "plan"
 
-    result = _run(
+    result = run_cli(
         "plan",
         "--recipe",
         str(recipe),

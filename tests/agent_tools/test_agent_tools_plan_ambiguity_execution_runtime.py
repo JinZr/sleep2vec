@@ -9,9 +9,9 @@ from shlex import quote as shlex_quote
 import subprocess
 import sys
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_yaml
 import pytest
-from test_agent_plan_blocks_on_ambiguity import _RUNTIME_COMMIT, _bound_config_summary, _first_run, _hparam_recipe, _run
+from test_agent_plan_blocks_on_ambiguity import _RUNTIME_COMMIT, _bound_config_summary, _first_run, _hparam_recipe
 from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
 import yaml
 
@@ -29,7 +29,7 @@ def test_plan_normalizes_scalar_runtime_devices(tmp_path: Path):
         write_yaml(recipe, payload)
         output_dir = recipe.parent / "plan"
 
-        result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+        result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
         assert result.returncode == 0, result.stderr
         script = (output_dir / "run.sh").read_text()
@@ -44,7 +44,7 @@ def test_finetune_plan_honors_runtime_wandb_mode_cli(tmp_path: Path):
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     script = (output_dir / "run.sh").read_text()
@@ -66,7 +66,7 @@ def test_hparam_plan_expands_explicit_configurations_to_exact_runs(tmp_path: Pat
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr or result.stdout
     runs = json.loads((output_dir / "plan.json").read_text())["runs"]
@@ -87,7 +87,7 @@ def test_hparam_run_script_honors_base_runtime_wandb_mode_cli(tmp_path: Path):
     write_yaml(base_recipe, base_payload)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     script = Path(_first_run(output_dir)["script"]).read_text()
@@ -105,8 +105,8 @@ def test_hparam_plan_and_launch_use_merged_effective_recipe(tmp_path: Path):
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
-    launched = _run("hparam-launch", "--plan-dir", str(output_dir))
+    planned = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    launched = run_cli("hparam-launch", "--plan-dir", str(output_dir))
 
     assert planned.returncode == 0, planned.stderr or planned.stdout
     assert launched.returncode == 0, launched.stderr or launched.stdout
@@ -142,7 +142,7 @@ def test_plan_rejects_symlink_output_root_before_writing(tmp_path: Path):
     output_dir = tmp_path / "plan-alias"
     output_dir.symlink_to(target, target_is_directory=True)
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "must not be a symlink" in result.stderr
@@ -156,7 +156,7 @@ def test_missing_variant_blocks_command_generation(tmp_path: Path):
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert not (output_dir / "run.sh").exists()
@@ -169,7 +169,7 @@ def test_plan_refuses_existing_artifact_when_overwrite_false(tmp_path: Path):
     run_script = output_dir / "run.sh"
     run_script.write_text("keep me")
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert run_script.read_text() == "keep me"
@@ -183,7 +183,7 @@ def test_plan_overwrite_rejects_output_alias_to_canonical_without_writing(tmp_pa
     payload["decisions"]["overwrite_policy"]["value"] = True
     payload["artifacts"]["overwrite"] = True
     recipe.write_text(yaml.safe_dump(payload))
-    initial = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plan-1"))
+    initial = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plan-1"))
     assert initial.returncode == 0, initial.stderr or initial.stdout
     output_dir = workspace / "plan-2"
     output_dir.mkdir()
@@ -192,7 +192,7 @@ def test_plan_overwrite_rejects_output_alias_to_canonical_without_writing(tmp_pa
     step_before = step_manifest.read_bytes()
     (output_dir / "plan.json").hardlink_to(workspace / "run_manifest.tsv")
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert (workspace / "run_manifest.tsv").read_bytes() == canonical_before
@@ -207,8 +207,8 @@ def test_plan_allows_existing_workspace_matrix_and_events_for_new_plan(tmp_path:
     payload["experiment"]["root"] = str(workspace)
     recipe.write_text(yaml.safe_dump(payload))
 
-    first = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plan-1"))
-    second = _run("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plan-2"))
+    first = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plan-1"))
+    second = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plan-2"))
 
     assert first.returncode == 0, first.stderr or first.stdout
     assert second.returncode == 0, second.stderr or second.stdout
@@ -226,7 +226,7 @@ def test_plan_requires_fresh_directory_for_existing_blocked_artifact(tmp_path: P
     blocked_plan = output_dir / "plan.blocked.md"
     blocked_plan.write_text("keep me")
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "Blocked plan artifacts already exist; retry with a fresh --output-dir." in result.stdout
@@ -239,7 +239,7 @@ def test_generated_commands_quote_paths_with_spaces(tmp_path: Path):
     recipe = write_finetune_recipe(root)
     output_dir = root / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     script = (output_dir / "run.sh").read_text()
@@ -323,7 +323,7 @@ def test_hparam_outer_workspace_owns_base_finetune_metadata(tmp_path: Path):
     base_recipe.write_text(yaml.safe_dump(base_payload))
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stdout
     assert "base_finetune.experiment" not in result.stdout
@@ -333,7 +333,7 @@ def test_single_finetune_freezes_runtime_and_checkpoint_paths(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr
     run = _first_run(output_dir)
@@ -361,7 +361,7 @@ def test_single_finetune_uses_explicit_execution_workdir(tmp_path: Path):
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr
     run = _first_run(output_dir)
@@ -395,7 +395,7 @@ def test_hparam_workdir_is_verbatim_run_cwd_for_all_generated_scripts(tmp_path: 
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 0, result.stderr
     run = _first_run(output_dir)
@@ -421,7 +421,7 @@ def test_hparam_plan_freezes_explicit_target_python_and_commit(tmp_path: Path):
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr
     plan = json.loads((output_dir / "plan.json").read_text())
@@ -439,7 +439,7 @@ def test_hparam_plan_rejects_sha256_runtime_commit_before_plan_write(tmp_path: P
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "execution.runtime_commit must be a full 40-character Git commit ID" in result.stdout
@@ -457,7 +457,7 @@ def test_hparam_plan_rejects_compound_target_python_before_plan_write(tmp_path: 
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "execution.python must be a single executable" in result.stdout
@@ -483,7 +483,7 @@ def test_hparam_plan_requires_explicit_identity_for_non_manager_runtime_before_p
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert "execution.python" in result.stdout
@@ -512,7 +512,7 @@ def test_hparam_plan_rejects_unsafe_execution_environment_before_plan_write(tmp_
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert message in result.stdout
@@ -528,7 +528,7 @@ def test_hparam_relative_workdir_fails_before_workspace_creation(tmp_path: Path)
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "execution.workdir must be an absolute path" in result.stdout
@@ -552,7 +552,7 @@ def test_remote_deferred_config_must_be_locally_freezable_before_single_run_work
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "Config cannot be frozen from a local file" in result.stdout
@@ -581,7 +581,7 @@ def test_remote_deferred_config_must_be_locally_freezable_before_hparam_workspac
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "Config cannot be frozen from a local file" in result.stdout
@@ -729,7 +729,7 @@ def test_hparam_run_all_rejects_tampered_leaf_before_execution(tmp_path: Path):
     output_dir = tmp_path / "plan"
     marker = tmp_path / "ran.txt"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
     assert result.returncode == 0
     run_all_text = (output_dir / "run_all.sh").read_text()
     assert (

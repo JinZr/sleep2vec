@@ -11,14 +11,13 @@ import sys
 import threading
 import time
 
-from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS, FakeLauncher
+from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS, FakeLauncher, run_cli
 import pytest
 from test_agent_tools_hparam_runtime import (
     _hparam_recipe,
     _is_remote_python_program,
     _process_identity,
     _read_table,
-    _run,
     _set_execution_probe,
     _write_process_identity,
     _write_runtime_rows,
@@ -63,10 +62,10 @@ def test_registered_step_remains_canonical_through_plan_and_dry_run_launch(tmp_p
     )
     plan_dir = workspace / "plans" / "hparam"
 
-    initialized = _run("experiment-init", "--run-dir", str(workspace), "--spec", str(experiment_spec))
-    registered = _run("experiment-register-step", "--run-dir", str(workspace), "--spec", str(step_spec))
-    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-    launched = _run("hparam-launch", "--plan-dir", str(plan_dir))
+    initialized = run_cli("experiment-init", "--run-dir", str(workspace), "--spec", str(experiment_spec))
+    registered = run_cli("experiment-register-step", "--run-dir", str(workspace), "--spec", str(step_spec))
+    planned = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    launched = run_cli("hparam-launch", "--plan-dir", str(plan_dir))
 
     assert initialized.returncode == 0, initialized.stderr
     assert registered.returncode == 0, registered.stderr
@@ -86,7 +85,7 @@ def test_registered_step_remains_canonical_through_plan_and_dry_run_launch(tmp_p
 def test_hparam_launch_rejects_unregistered_plan_copy_before_start(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     copied_plan = tmp_path / "copied-plan"
     shutil.copytree(plan_dir, copied_plan)
     launcher = FakeLauncher()
@@ -102,7 +101,7 @@ def test_hparam_launch_rejects_unregistered_plan_copy_before_start(tmp_path: Pat
 def test_hparam_launch_rejects_completed_experiment_without_writes(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     experiment_path = tmp_path / "experiment.yaml"
     experiment_manifest = yaml.safe_load(experiment_path.read_text())
     experiment_manifest["experiment"]["status"] = "completed"
@@ -124,7 +123,7 @@ def test_hparam_launch_rejects_completed_experiment_without_writes(tmp_path: Pat
 def test_hparam_launch_does_not_restart_workspace_terminal_run(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
     workspace_rows = _read_table(tmp_path / "run_manifest.tsv")
     workspace_rows[0]["status"] = "failed"
@@ -177,7 +176,7 @@ def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: 
 def test_hparam_launch_records_event_only_for_a_process_started_by_that_call(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     launcher = FakeLauncher()
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True, hooks=launcher.hooks())
@@ -192,7 +191,7 @@ def test_hparam_launch_records_event_only_for_a_process_started_by_that_call(tmp
 def test_hparam_launch_serializes_concurrent_execute_calls(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     entered = threading.Event()
     release = threading.Event()
     second_parked = threading.Event()
@@ -382,7 +381,7 @@ def test_hparam_launch_does_not_start_after_canonical_owner_commits_terminal_sta
 def test_hparam_launch_failure_does_not_record_launched_event(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     launcher = FakeLauncher("launch_failed")
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
@@ -394,7 +393,7 @@ def test_hparam_launch_failure_does_not_record_launched_event(tmp_path: Path):
 def test_hparam_launch_rejects_workspace_frozen_drift_before_start(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     workspace_rows = _read_table(tmp_path / "run_manifest.tsv")
     workspace_rows[0]["config_sha256"] = "changed"
     manifests.write_rows(tmp_path / "run_manifest.tsv", workspace_rows)
@@ -410,7 +409,7 @@ def test_hparam_launch_rejects_workspace_frozen_drift_before_start(tmp_path: Pat
 def test_hparam_launch_rejects_invalid_canonical_output_before_start(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     target = tmp_path / "run_matrix.csv"
     target.unlink()
     target.hardlink_to(tmp_path / "run_manifest.tsv")
@@ -437,7 +436,7 @@ def test_hparam_ssh_launch_validates_run_outputs_remotely_before_start(tmp_path:
         },
     )
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     remote_calls = []
 
     def reject_remote_output(command, **kwargs):
@@ -458,7 +457,7 @@ def test_hparam_ssh_launch_validates_run_outputs_remotely_before_start(tmp_path:
 def test_hparam_runtime_rejects_tampered_relative_workdir_before_start(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan_path = plan_dir / "plan.json"
     plan = json.loads(plan_path.read_text())
     plan["recipe"]["execution"] = {"workdir": "relative/runtime"}
@@ -475,7 +474,7 @@ def test_hparam_runtime_rejects_tampered_relative_workdir_before_start(tmp_path:
 def test_hparam_runtime_rejects_workdir_that_differs_from_frozen_runtime_path(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan_path = plan_dir / "plan.json"
     plan = json.loads(plan_path.read_text())
     plan["recipe"]["execution"] = {"workdir": str(tmp_path / "other-runtime")}
@@ -505,7 +504,7 @@ def test_hparam_launch_rejects_execution_drift_from_resolved_recipe_before_side_
 ):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan_path = plan_dir / "plan.json"
     plan = json.loads(plan_path.read_text())
     plan["recipe"].setdefault("execution", {})[field] = changed
@@ -536,7 +535,7 @@ def test_hparam_launch_rejects_execution_drift_from_resolved_recipe_before_side_
 def test_hparam_launch_rejects_synchronized_recipe_drift_before_side_effects(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan_path = plan_dir / "plan.json"
     plan = json.loads(plan_path.read_text())
     plan["recipe"].setdefault("execution", {})["max_concurrent"] = 2
@@ -559,7 +558,7 @@ def test_hparam_launch_rejects_synchronized_recipe_drift_before_side_effects(tmp
 def test_hparam_launch_rejects_base_runtime_drift_before_side_effects(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan_path = plan_dir / "plan.json"
     plan = json.loads(plan_path.read_text())
     plan["recipe"]["_base_recipe"]["runtime"]["devices"] = [7]
@@ -579,7 +578,7 @@ def test_hparam_launch_rejects_base_runtime_drift_before_side_effects(tmp_path: 
 def test_hparam_runtime_ignores_uncommitted_launch_execution_identity(tmp_path: Path, monkeypatch, operation: str):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     manifests.write_rows(
         plan_dir / "launch_manifest.tsv",
@@ -642,8 +641,8 @@ def test_hparam_launch_binds_ssh_conda_gpu_and_pid_identity_only_after_a_launch_
     )
     plan_dir = tmp_path / "plan"
 
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    result = _run("hparam-launch", "--plan-dir", str(plan_dir))
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    result = run_cli("hparam-launch", "--plan-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr
     rows = _read_table(plan_dir / "launch_manifest.tsv")
@@ -701,7 +700,7 @@ def test_hparam_run_queue_fails_on_missing_pid_capacity_blocker_from_another_pla
     execution = {"workdir": str(tmp_path), "gpu_pool": [0], "gpus_per_run": 1}
     first_recipe = _hparam_recipe(tmp_path, execution=execution)
     first_plan = tmp_path / "plan-1"
-    assert _run("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
     hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=FakeLauncher().hooks())
     first_run = json.loads((first_plan / "plan.json").read_text())["runs"][0]
     merge_run_manifest(
@@ -713,7 +712,7 @@ def test_hparam_run_queue_fails_on_missing_pid_capacity_blocker_from_another_pla
     second_payload["search"]["parameters"]["runtime.lr"] = [2e-6]
     second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
     second_plan = tmp_path / "plan-2"
-    assert _run("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
+    assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
     monkeypatch.setattr(
         hparam_runtime.evidence,
         "status_row",
@@ -742,7 +741,7 @@ def test_hparam_launch_revalidates_verified_execution_target_before_start(tmp_pa
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     calls = _set_execution_probe(monkeypatch, plan_dir)
     launcher = FakeLauncher(lambda _execution, _command: calls.append("start") or "launched")
 
@@ -764,7 +763,7 @@ def test_hparam_launch_revalidates_verified_execution_target_before_start(tmp_pa
 def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
     resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
     for payload in (plan["recipe"], resolved):
@@ -1254,7 +1253,7 @@ def test_execution_probe_rejects_runtime_module_outside_verified_repository(tmp_
 def test_hparam_launch_rejects_runtime_preflight_failure_before_managed_writes(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     launcher = FakeLauncher()
 
     def reject_protocol(_execution, command):
@@ -1284,7 +1283,7 @@ def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(t
     base_payload["runtime"]["wandb_mode"] = "online"
     write_yaml(base_recipe, base_payload)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     _set_execution_probe(monkeypatch, plan_dir, missing_options={"--wandb-mode"})
     launcher = FakeLauncher()
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
@@ -1305,7 +1304,7 @@ def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(t
 def test_hparam_launch_rejects_frozen_cli_values_before_managed_writes(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     calls = _set_execution_probe(monkeypatch, plan_dir, parse_error="invalid choice: bf16-mixed")
     launcher = FakeLauncher()
 
@@ -1321,7 +1320,7 @@ def test_hparam_launch_rejects_frozen_cli_values_before_managed_writes(tmp_path:
 def test_hparam_launch_accepts_runtime_commit_drift_and_records_both_commits(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "runtime_commit": "a" * 40})
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     snapshot_path = plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME
     snapshot_before = snapshot_path.read_bytes()
@@ -1359,7 +1358,7 @@ def test_hparam_launch_accepts_runtime_commit_drift_before_next_wave(tmp_path: P
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     _set_execution_probe(monkeypatch, plan_dir)
     launcher = FakeLauncher()
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
@@ -1381,7 +1380,7 @@ def test_hparam_launch_accepts_runtime_commit_drift_before_next_wave(tmp_path: P
 def test_hparam_launch_accepts_additional_cli_options_on_a_rolling_runtime(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     calls = _set_execution_probe(monkeypatch, plan_dir, extra_options={"--new-unrelated-option"})
     launcher = FakeLauncher("launch_failed")
 
@@ -1403,7 +1402,7 @@ def test_repeated_ssh_dry_run_does_not_observe_runtime_before_execute(tmp_path: 
         },
     )
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     remote_calls = []
 
     def fake_remote_command(row, command):
@@ -1439,7 +1438,7 @@ def test_repeated_ssh_dry_run_does_not_observe_runtime_before_execute(tmp_path: 
 def test_hparam_launch_rejects_unsafe_runtime_root_before_start(tmp_path: Path, runtime_fault: str):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     runtime_dir = Path(run["runtime_dir"])
     if runtime_fault == "existing":
@@ -1468,7 +1467,7 @@ def test_hparam_ssh_launch_rejects_existing_remote_runtime_root_before_start(tmp
         },
     )
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     runtime_dir = Path(run["runtime_dir"])
     real_validate = hparam_runtime.exp_io.validate_managed_output_paths
@@ -1502,7 +1501,7 @@ def test_hparam_launch_remaps_scalar_runtime_device_pool(tmp_path: Path):
     write_yaml(base_recipe, base_payload)
     plan_dir = tmp_path / "plan"
 
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     launcher = FakeLauncher()
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
@@ -1565,7 +1564,7 @@ def test_hparam_launch_does_not_retry_missing_pid(tmp_path: Path):
     payload["execution"].update({"workdir": str(tmp_path), "max_concurrent": 1})
     recipe.write_text(yaml.safe_dump(payload))
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     launcher = FakeLauncher()
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
@@ -1586,7 +1585,7 @@ def test_hparam_launch_fail_flag_reports_owned_missing_pid_before_start(tmp_path
     payload["execution"].update({"workdir": str(tmp_path), "max_concurrent": 1})
     recipe.write_text(yaml.safe_dump(payload))
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
     launcher = FakeLauncher()
 
@@ -1617,7 +1616,7 @@ def test_hparam_launch_validates_every_snapshot_before_starting(tmp_path: Path):
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
     recipe.write_text(yaml.safe_dump(payload))
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
     Path(runs[1]["config"]).write_text("changed: true\n")
     launcher = FakeLauncher()

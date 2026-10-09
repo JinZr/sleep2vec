@@ -8,7 +8,7 @@ import shlex
 import subprocess
 import sys
 
-from agent_tool_test_helpers import prepare_hparam_plan_fixture, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import prepare_hparam_plan_fixture, run_cli, write_finetune_recipe, write_yaml
 import pandas as pd
 import pytest
 import yaml
@@ -21,11 +21,6 @@ from agent_tools.models import REPO_ROOT
 _RUNTIME_COMMIT = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
 ).stdout.strip()
-
-
-def _run(*args: str) -> subprocess.CompletedProcess:
-    runner = Path(__file__).with_name("agent_tools_cli_stub.py")
-    return subprocess.run([sys.executable, str(runner), *args], text=True, capture_output=True)
 
 
 def _hparam_recipe(
@@ -145,7 +140,7 @@ def _freeze_test_selected_candidate(plan_dir: Path) -> tuple[dict, list[Path], d
         )
     )
     _set_run_status(plan_dir, run)
-    result = _run("hparam-select", "--run-dir", str(plan_dir))
+    result = run_cli("hparam-select", "--run-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     return run, checkpoints, _read_table(_ranking_path(plan_dir))[0]
 
@@ -171,7 +166,7 @@ def test_hparam_external_eval_uses_run_runtime_from_candidate_ranking(tmp_path: 
     write_yaml(base_recipe, base_payload)
     write_yaml(recipe, payload)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     _set_run_status(plan_dir, run, canonical_status)
     version = run["version"]
@@ -193,7 +188,7 @@ def test_hparam_external_eval_uses_run_runtime_from_candidate_ranking(tmp_path: 
         )
     )
 
-    selected = _run(
+    selected = run_cli(
         "hparam-select",
         "--run-dir",
         str(plan_dir),
@@ -205,7 +200,7 @@ def test_hparam_external_eval_uses_run_runtime_from_candidate_ranking(tmp_path: 
     assert selected.returncode == 0, selected.stderr
     rows = _read_table(_ranking_path(plan_dir))
     assert rows[0]["runtime.batch_size"] == "48"
-    unlocked = _run(
+    unlocked = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -258,7 +253,7 @@ def test_hparam_external_eval_uses_frozen_plan_fields_and_workdir(tmp_path: Path
             }
         )
 
-    result = _run(
+    result = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -283,7 +278,7 @@ def test_hparam_external_eval_uses_frozen_plan_fields_and_workdir(tmp_path: Path
 def test_hparam_external_eval_rejects_unsuccessful_canonical_run_before_writing(tmp_path: Path, canonical_status: str):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     merge_run_manifest(
         tmp_path,
@@ -295,7 +290,7 @@ def test_hparam_external_eval_rejects_unsuccessful_canonical_run_before_writing(
         f"{run['step_id']},{run['run_id']},1,completed,{Path(run['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
     )
 
-    result = _run(
+    result = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -328,7 +323,7 @@ def test_hparam_external_eval_checks_status_after_top_k_filtering(tmp_path: Path
         f"{Path(runs[1]['checkpoint_dir']) / 'epoch=2.ckpt'}\n"
     )
 
-    top = _run(
+    top = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -336,7 +331,7 @@ def test_hparam_external_eval_checks_status_after_top_k_filtering(tmp_path: Path
         str(selected),
         "--unlock-final-test",
     )
-    all_candidates = _run(
+    all_candidates = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -355,7 +350,7 @@ def test_hparam_external_eval_checks_status_after_top_k_filtering(tmp_path: Path
 def test_hparam_external_eval_rejects_changed_snapshot_before_writing(tmp_path: Path, snapshot_field: str):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     selected = plan_dir / "selected.csv"
     selected.write_text(
@@ -415,7 +410,7 @@ def test_hparam_external_eval_rejects_candidate_parameter_sources_before_writing
     payload["search"]["parameters"] = {"runtime.batch_size": [48]}
     write_yaml(recipe, payload)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     selected = plan_dir / "selected.csv"
     row = {
@@ -430,7 +425,7 @@ def test_hparam_external_eval_rejects_candidate_parameter_sources_before_writing
         writer.writeheader()
         writer.writerow(row)
 
-    result = _run(
+    result = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -493,7 +488,7 @@ def test_hparam_external_eval_filters_workspace_ranking_to_current_step(tmp_path
             }
         )
 
-    result = _run(
+    result = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -511,7 +506,7 @@ def test_hparam_external_eval_filters_workspace_ranking_to_current_step(tmp_path
 def test_postprocess_relative_plan_dir_persists_absolute_management_paths(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     _set_run_status(plan_dir, run)
     checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
@@ -576,7 +571,7 @@ def test_postprocess_relative_plan_dir_persists_absolute_management_paths(tmp_pa
 def test_hparam_postprocess_preflights_outputs_before_side_effects(tmp_path: Path, monkeypatch, mutation: str):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     _set_run_status(plan_dir, run)
     checkpoint = Path(run["checkpoint_dir"]) / "epoch=1.ckpt"
@@ -689,7 +684,7 @@ def test_hparam_external_eval_rejects_checkpoint_symlink_inside_frozen_directory
 def test_hparam_external_eval_validates_other_step_rows_before_filtering(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     ranking = _ranking_path(plan_dir)
     ranking.parent.mkdir(parents=True, exist_ok=True)
@@ -699,7 +694,7 @@ def test_hparam_external_eval_validates_other_step_rows_before_filtering(tmp_pat
         f"{run['step_id']},{run['run_id']},1,{run['config']},{tmp_path / 'epoch=1.ckpt'}\n"
     )
 
-    result = _run(
+    result = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -727,12 +722,12 @@ def test_selected_candidates_reject_legacy_other_step_before_filtering():
 def test_hparam_external_eval_rejects_header_only_removed_candidate_table(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     selected = plan_dir / "selected.csv"
     selected.write_text("trial_id\n")
     before = {path.relative_to(plan_dir): path.read_bytes() for path in plan_dir.rglob("*") if path.is_file()}
 
-    result = _run(
+    result = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -749,7 +744,7 @@ def test_hparam_external_eval_rejects_header_only_removed_candidate_table(tmp_pa
 def test_selected_candidates_reject_foreign_experiment_before_plan_fields_replace_it(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
     _set_run_status(plan_dir, plan["runs"])
     run = plan["runs"][0]
@@ -771,7 +766,7 @@ def test_selected_candidates_reject_foreign_experiment_before_plan_fields_replac
 def test_selected_candidates_reject_foreign_other_step_before_filtering(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
     run = plan["runs"][0]
     merge_run_manifest(
@@ -798,8 +793,8 @@ def test_selected_candidates_keep_managed_same_step_rows_from_registered_plans(t
     recipe = _hparam_recipe(tmp_path)
     first_plan_dir = tmp_path / "plan-1"
     second_plan_dir = tmp_path / "plan-2"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first_plan_dir)).returncode == 0
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(second_plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(first_plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(second_plan_dir)).returncode == 0
     first_run = _first_run(first_plan_dir)
     second_plan = json.loads((second_plan_dir / "plan.json").read_text())
     _set_run_status(second_plan_dir, second_plan["runs"])
@@ -824,8 +819,8 @@ def test_selected_candidates_rank_all_registered_plans_in_current_step(tmp_path:
     recipe = _hparam_recipe(tmp_path, run_count=2)
     first_plan_dir = tmp_path / "plan-1"
     second_plan_dir = tmp_path / "plan-2"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(first_plan_dir)).returncode == 0
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(second_plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(first_plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(second_plan_dir)).returncode == 0
     first_run = _first_run(first_plan_dir)
     second_plan = json.loads((second_plan_dir / "plan.json").read_text())
     _set_run_status(second_plan_dir, second_plan["runs"])
@@ -847,7 +842,7 @@ def test_selected_candidates_rank_all_registered_plans_in_current_step(tmp_path:
 def test_selected_candidates_reject_plan_recipe_drift(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
     _set_run_status(plan_dir, plan["runs"])
     run = plan["runs"][0]
@@ -868,7 +863,7 @@ def test_test_selected_candidates_require_frozen_checkpoint_hash(
 ):
     recipe = _test_selected_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     _run_row, _checkpoints, frozen = _freeze_test_selected_candidate(plan_dir)
     row = {
@@ -894,7 +889,7 @@ def test_test_selected_candidates_require_frozen_checkpoint_hash(
 def test_test_selected_external_eval_rejects_checkpoint_hash_drift_before_writing(tmp_path: Path):
     recipe = _test_selected_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     run, _checkpoints, frozen = _freeze_test_selected_candidate(plan_dir)
     selected = plan_dir / "selected.csv"
@@ -916,7 +911,7 @@ def test_test_selected_external_eval_rejects_checkpoint_hash_drift_before_writin
 def test_test_selected_external_eval_rechecks_checkpoint_hash_when_script_runs(tmp_path: Path):
     recipe = _test_selected_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     _run_row, _checkpoints, _frozen = _freeze_test_selected_candidate(plan_dir)
 
@@ -942,7 +937,7 @@ def test_test_selected_candidate_must_match_frozen_hparam_selection_before_rehas
 ):
     recipe = _test_selected_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     _run_row, checkpoints, frozen = _freeze_test_selected_candidate(plan_dir)
     row = {
@@ -969,7 +964,7 @@ def test_test_selected_candidate_must_match_frozen_hparam_selection_before_rehas
 def test_test_selected_postprocess_manifests_use_frozen_ranking_provenance(tmp_path: Path):
     recipe = _test_selected_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     _run_row, _checkpoints, frozen = _freeze_test_selected_candidate(plan_dir)
     selected = plan_dir / "selected.csv"
@@ -1006,7 +1001,7 @@ def test_test_selected_postprocess_rejects_tampered_workspace_ranking_provenance
 ):
     recipe = _test_selected_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     _freeze_test_selected_candidate(plan_dir)
     ranking_path = _ranking_path(plan_dir)
@@ -1028,7 +1023,7 @@ def test_test_selected_candidate_rank_must_match_frozen_hparam_ranking_before_to
 ):
     recipe = _test_selected_hparam_recipe(tmp_path, run_count=2)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     plan = json.loads((plan_dir / "plan.json").read_text())
     for run, score in zip(plan["runs"], (0.9, 0.8)):
@@ -1050,7 +1045,7 @@ def test_test_selected_candidate_rank_must_match_frozen_hparam_ranking_before_to
             )
         )
     _set_run_status(plan_dir, plan["runs"])
-    selected = _run("hparam-select", "--run-dir", str(plan_dir))
+    selected = run_cli("hparam-select", "--run-dir", str(plan_dir))
     assert selected.returncode == 0, selected.stderr or selected.stdout
     frozen = _read_table(_ranking_path(plan_dir))
     frozen[0]["rank"], frozen[1]["rank"] = frozen[1]["rank"], frozen[0]["rank"]
@@ -1070,7 +1065,7 @@ def test_test_selected_candidate_rank_must_match_frozen_hparam_ranking_before_to
 def test_test_selected_top_k_rehashes_only_retained_checkpoints(tmp_path: Path):
     recipe = _test_selected_hparam_recipe(tmp_path, run_count=2)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     plan = json.loads((plan_dir / "plan.json").read_text())
     for run, score in zip(plan["runs"], (0.9, 0.8)):
@@ -1092,7 +1087,7 @@ def test_test_selected_top_k_rehashes_only_retained_checkpoints(tmp_path: Path):
             )
         )
     _set_run_status(plan_dir, plan["runs"])
-    selection = _run("hparam-select", "--run-dir", str(plan_dir))
+    selection = run_cli("hparam-select", "--run-dir", str(plan_dir))
     assert selection.returncode == 0, selection.stderr or selection.stdout
     frozen = _read_table(_ranking_path(plan_dir))
     frozen_by_rank = {row["rank"]: row for row in frozen}
@@ -1117,7 +1112,7 @@ def test_test_selected_top_k_rehashes_only_retained_checkpoints(tmp_path: Path):
 def test_validation_selected_external_eval_does_not_require_checkpoint_hash(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path)})
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     run = _first_run(plan_dir)
     _set_run_status(plan_dir, run)
@@ -1146,7 +1141,7 @@ def test_hparam_external_eval_rejects_ssh_execution_before_writing(tmp_path: Pat
         },
     )
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     run = _first_run(plan_dir)
     _set_run_status(plan_dir, run)
@@ -1181,7 +1176,7 @@ def test_hparam_export_logits_rejects_ssh_execution_before_writing(
         },
     )
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr or result.stdout
     run = _first_run(plan_dir)
     selected = plan_dir / "selected.csv"
@@ -1208,7 +1203,7 @@ def test_hparam_export_logits_rejects_ssh_execution_before_writing(
 def test_selected_candidates_require_positive_integer_rank(tmp_path: Path, rank):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
     _set_run_status(plan_dir, plan["runs"])
     run = plan["runs"][0]
@@ -1223,7 +1218,7 @@ def test_selected_candidates_require_positive_integer_rank(tmp_path: Path, rank)
 def test_selected_candidates_enforce_top_k_as_hard_limit(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, run_count=2)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
     _set_run_status(plan_dir, plan["runs"])
     rows = [
@@ -1238,7 +1233,7 @@ def test_selected_candidates_enforce_top_k_as_hard_limit(tmp_path: Path):
 def test_selected_candidates_reject_duplicate_ranks(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, run_count=2)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
     _set_run_status(plan_dir, plan["runs"])
     rows = [{"step_id": run["step_id"], "run_id": run["run_id"], "rank": 1} for run in plan["runs"]]
@@ -1251,7 +1246,7 @@ def test_selected_candidates_reject_duplicate_ranks(tmp_path: Path):
 def test_selected_candidates_require_positive_integer_top_k(tmp_path: Path, top_k):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
     run = plan["runs"][0]
 
@@ -1281,12 +1276,12 @@ def test_all_candidate_postprocess_paths_require_rank(
 ):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     selected = tmp_path / "selected.csv"
     selected.write_text("step_id,run_id\n" f"{run['step_id']},{run['run_id']}\n")
 
-    result = _run(
+    result = run_cli(
         command,
         "--run-dir",
         str(plan_dir),
@@ -1303,7 +1298,7 @@ def test_all_candidate_postprocess_paths_require_rank(
 def test_hparam_external_eval_rejects_workspace_ranking_without_current_step(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     other_checkpoint_dir = tmp_path / "other-checkpoints"
     merge_run_manifest(
@@ -1326,7 +1321,7 @@ def test_hparam_external_eval_rejects_workspace_ranking_without_current_step(tmp
         f"other-step,run-000,1,{run['config']},{other_checkpoint_dir / 'epoch=1.ckpt'}\n"
     )
 
-    result = _run(
+    result = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -1366,7 +1361,7 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
     base_config_payload["data"]["finetune_preset_path"] = str(stale_preset)
     write_yaml(base_config, base_config_payload)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
     _set_run_status(plan_dir, runs)
     run_config = Path(runs[0]["config"])
@@ -1378,9 +1373,9 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
         f"unit-hparam-tune,run-002,3,{runs[2]['config']},{Path(runs[2]['checkpoint_dir']) / 'epoch=3.ckpt'}\n"
     )
 
-    locked = _run("hparam-external-eval", "--run-dir", str(plan_dir), "--selected", str(selected))
+    locked = run_cli("hparam-external-eval", "--run-dir", str(plan_dir), "--selected", str(selected))
     assert locked.returncode != 0
-    unlocked = _run(
+    unlocked = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -1408,7 +1403,7 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
     assert "--num-workers 2" in external_script
     assert "--precision 32" in external_script
 
-    kaldi_eval = _run(
+    kaldi_eval = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -1428,7 +1423,7 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
     assert kaldi_external["data"]["finetune_data_index"] is None
     assert kaldi_external["data"]["finetune_preset_path"] is None
 
-    top_two = _run(
+    top_two = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -1441,7 +1436,7 @@ def test_hparam_external_eval_requires_unlock_and_only_replaces_data_fields(
     assert top_two.returncode == 0, top_two.stderr
     assert len(_read_table(plan_dir / "external_eval_manifest.tsv")) == 2
 
-    all_candidates = _run(
+    all_candidates = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -1470,7 +1465,7 @@ def test_postprocess_uses_step_winner_and_owning_frozen_plan_from_caller_plan(tm
     write_yaml(owner_base, owner_base_payload)
     write_yaml(owner_recipe, owner_payload)
     owner_plan_dir = tmp_path / "owner-plan"
-    owner_result = _run("plan", "--recipe", str(owner_recipe), "--output-dir", str(owner_plan_dir))
+    owner_result = run_cli("plan", "--recipe", str(owner_recipe), "--output-dir", str(owner_plan_dir))
     assert owner_result.returncode == 0, owner_result.stderr
     owner_run = _first_run(owner_plan_dir)
     _set_run_status(owner_plan_dir, owner_run)
@@ -1478,7 +1473,7 @@ def test_postprocess_uses_step_winner_and_owning_frozen_plan_from_caller_plan(tm
     caller_workdir = tmp_path / "caller-workdir"
     caller_recipe = _hparam_recipe(tmp_path, execution={"workdir": str(caller_workdir)})
     caller_plan_dir = tmp_path / "caller-plan"
-    caller_result = _run("plan", "--recipe", str(caller_recipe), "--output-dir", str(caller_plan_dir))
+    caller_result = run_cli("plan", "--recipe", str(caller_recipe), "--output-dir", str(caller_plan_dir))
     assert caller_result.returncode == 0, caller_result.stderr
     caller_run = _first_run(caller_plan_dir)
     _set_run_status(caller_plan_dir, caller_run)
@@ -1495,7 +1490,7 @@ def test_postprocess_uses_step_winner_and_owning_frozen_plan_from_caller_plan(tm
         f"{caller_run['step_id']},{caller_run['run_id']},2,{caller_checkpoint}\n"
     )
 
-    external = _run(
+    external = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(caller_plan_dir),
@@ -1519,7 +1514,7 @@ def test_postprocess_uses_step_winner_and_owning_frozen_plan_from_caller_plan(tm
     assert str(caller_workdir) not in external_script
     assert not any(field.startswith("owner") or field.startswith("_") for field in external_row)
 
-    exported = _run(
+    exported = run_cli(
         "hparam-export-logits",
         "--run-dir",
         str(caller_plan_dir),
@@ -1547,8 +1542,8 @@ def test_postprocess_uses_step_winner_and_owning_frozen_plan_from_caller_plan(tm
         f"{caller_run['step_id']},{caller_run['run_id']},2,{val_predictions},{test_predictions}\n"
     )
 
-    threshold = _run("hparam-threshold", "--run-dir", str(caller_plan_dir), "--selected", str(candidates))
-    ensemble = _run("hparam-ensemble", "--run-dir", str(caller_plan_dir), "--candidates", str(candidates))
+    threshold = run_cli("hparam-threshold", "--run-dir", str(caller_plan_dir), "--selected", str(candidates))
+    ensemble = run_cli("hparam-ensemble", "--run-dir", str(caller_plan_dir), "--candidates", str(candidates))
 
     assert threshold.returncode == 0, threshold.stderr
     assert ensemble.returncode == 0, ensemble.stderr
@@ -1575,7 +1570,7 @@ def test_postprocess_rejects_same_step_selection_contract_drift_before_writing(
 ):
     owner_recipe = _hparam_recipe(tmp_path)
     owner_plan_dir = tmp_path / "owner-plan"
-    owner_result = _run("plan", "--recipe", str(owner_recipe), "--output-dir", str(owner_plan_dir))
+    owner_result = run_cli("plan", "--recipe", str(owner_recipe), "--output-dir", str(owner_plan_dir))
     assert owner_result.returncode == 0, owner_result.stderr
     owner_run = _first_run(owner_plan_dir)
     owner_checkpoint = Path(owner_run["checkpoint_dir"]) / "epoch=1.ckpt"
@@ -1591,7 +1586,7 @@ def test_postprocess_rejects_same_step_selection_contract_drift_before_writing(
         )
     )
     _set_run_status(owner_plan_dir, owner_run)
-    selected = _run("hparam-select", "--run-dir", str(owner_plan_dir))
+    selected = run_cli("hparam-select", "--run-dir", str(owner_plan_dir))
     assert selected.returncode == 0, selected.stderr
     ranking = _ranking_path(owner_plan_dir)
 
@@ -1605,10 +1600,10 @@ def test_postprocess_rejects_same_step_selection_contract_drift_before_writing(
     write_yaml(config_path, config_payload)
     write_yaml(caller_recipe, caller_payload)
     caller_plan_dir = tmp_path / "caller-plan"
-    caller_result = _run("plan", "--recipe", str(caller_recipe), "--output-dir", str(caller_plan_dir))
+    caller_result = run_cli("plan", "--recipe", str(caller_recipe), "--output-dir", str(caller_plan_dir))
     assert caller_result.returncode == 0, caller_result.stderr
 
-    result = _run(
+    result = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(caller_plan_dir),
@@ -1636,7 +1631,7 @@ def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: 
     base_config_payload["data"]["finetune_preset_path"] = str(stale_preset)
     write_yaml(base_config, base_config_payload)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
     _set_run_status(plan_dir, runs)
     selected = plan_dir / "selected.csv"
@@ -1646,9 +1641,9 @@ def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: 
         f"unit-hparam-tune,run-001,2,{runs[1]['config']},{Path(runs[1]['checkpoint_dir']) / 'epoch=2.ckpt'}\n"
     )
 
-    locked = _run("hparam-export-logits", "--run-dir", str(plan_dir), "--selected", str(selected))
+    locked = run_cli("hparam-export-logits", "--run-dir", str(plan_dir), "--selected", str(selected))
     assert locked.returncode != 0
-    unlocked = _run(
+    unlocked = run_cli(
         "hparam-export-logits",
         "--run-dir",
         str(plan_dir),
@@ -1677,7 +1672,7 @@ def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: 
     assert "--execute" in script
     assert "--unlock-final-test" in script
 
-    kaldi_logits = _run(
+    kaldi_logits = run_cli(
         "hparam-export-logits",
         "--run-dir",
         str(plan_dir),
@@ -1712,7 +1707,7 @@ def test_hparam_export_logits_requires_unlock_and_writes_stable_paths(tmp_path: 
 def test_hparam_export_logits_dry_run_script_freezes_absolute_inputs(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     selected = plan_dir / "selected.csv"
     selected.write_text(
@@ -1761,7 +1756,7 @@ def test_hparam_export_logits_uses_effective_recipe_label(tmp_path: Path):
     payload["decisions"]["label_name"]["value"] = "effective-label"
     write_yaml(recipe, payload)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     selected = plan_dir / "selected.csv"
     selected.write_text(
@@ -1769,7 +1764,7 @@ def test_hparam_export_logits_uses_effective_recipe_label(tmp_path: Path):
         f"{run['step_id']},{run['run_id']},1,{run['config']},{Path(run['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
     )
 
-    result = _run(
+    result = run_cli(
         "hparam-export-logits",
         "--run-dir",
         str(plan_dir),
@@ -1810,7 +1805,7 @@ def test_hparam_postprocess_rejects_nonpositive_top_k_before_writing(
 ):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     selected = plan_dir / "selected.csv"
     selected.write_text(
@@ -1819,7 +1814,7 @@ def test_hparam_postprocess_rejects_nonpositive_top_k_before_writing(
         f"{Path(run['checkpoint_dir']) / 'epoch=1.ckpt'}\n"
     )
 
-    result = _run(command, "--run-dir", str(plan_dir), "--selected", str(selected), *extra_args)
+    result = run_cli(command, "--run-dir", str(plan_dir), "--selected", str(selected), *extra_args)
 
     assert result.returncode == 1
     assert "top_k must be a positive integer" in result.stderr
@@ -1829,7 +1824,7 @@ def test_hparam_postprocess_rejects_nonpositive_top_k_before_writing(
 def test_hparam_export_logits_rejects_workspace_ranking_without_current_step(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     other_checkpoint_dir = tmp_path / "other-checkpoints"
     merge_run_manifest(
@@ -1852,7 +1847,7 @@ def test_hparam_export_logits_rejects_workspace_ranking_without_current_step(tmp
         f"other-step,run-000,1,{run['config']},{other_checkpoint_dir / 'epoch=1.ckpt'}\n"
     )
 
-    result = _run(
+    result = run_cli(
         "hparam-export-logits",
         "--run-dir",
         str(plan_dir),
@@ -1869,13 +1864,13 @@ def test_hparam_export_logits_rejects_workspace_ranking_without_current_step(tmp
 def test_hparam_postprocess_rejects_unknown_run_in_current_step(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     selected = plan_dir / "selected.csv"
     selected.write_text(
         "step_id,run_id,rank,checkpoint_path\n" f"unit-hparam-tune,run-999,1,{tmp_path / 'epoch=1.ckpt'}\n"
     )
 
-    result = _run(
+    result = run_cli(
         "hparam-external-eval",
         "--run-dir",
         str(plan_dir),
@@ -1895,8 +1890,8 @@ def test_threshold_and_ensemble_require_managed_plan_before_writing(tmp_path: Pa
     selected = run_dir / "selected.csv"
     selected.write_text("step_id,run_id\ntune,run-000\n")
 
-    threshold = _run("hparam-threshold", "--run-dir", str(run_dir), "--selected", str(selected))
-    ensemble = _run("hparam-ensemble", "--run-dir", str(run_dir), "--candidates", str(selected))
+    threshold = run_cli("hparam-threshold", "--run-dir", str(run_dir), "--selected", str(selected))
+    ensemble = run_cli("hparam-ensemble", "--run-dir", str(run_dir), "--candidates", str(selected))
 
     assert threshold.returncode == 1
     assert ensemble.returncode == 1
@@ -1907,7 +1902,7 @@ def test_threshold_and_ensemble_require_managed_plan_before_writing(tmp_path: Pa
 def test_hparam_export_logits_execute_uses_manifest_paths(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     selected = plan_dir / "selected.csv"
     run = _first_run(plan_dir)
     selected.write_text(
@@ -1939,7 +1934,7 @@ def test_hparam_export_logits_execute_uses_manifest_paths(tmp_path: Path, monkey
 def test_hparam_export_logits_does_not_commit_manifest_after_execution_failure(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     selected = plan_dir / "selected.csv"
     run = _first_run(plan_dir)
     selected.write_text(
@@ -1976,12 +1971,12 @@ def test_hparam_export_logits_does_not_commit_manifest_after_execution_failure(t
 def test_hparam_threshold_requires_validation_and_test_inputs(tmp_path: Path, header: str, value: str):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     selected = tmp_path / "selected.csv"
     selected.write_text(f"step_id,run_id,rank,{header}\n" f"{run['step_id']},{run['run_id']},1,{tmp_path / value}\n")
 
-    result = _run("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
+    result = run_cli("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
 
     assert result.returncode == 1
     assert "must define validation and test predictions/logits" in result.stderr
@@ -1992,7 +1987,7 @@ def test_hparam_threshold_requires_validation_and_test_inputs(tmp_path: Path, he
 def test_hparam_threshold_rejects_prediction_files_without_samples(tmp_path: Path, empty_split: str):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = _first_run(plan_dir)
     val = tmp_path / "val.csv"
     test = tmp_path / "test.csv"
@@ -2006,7 +2001,7 @@ def test_hparam_threshold_rejects_prediction_files_without_samples(tmp_path: Pat
         f"{run['step_id']},{run['run_id']},1,{val},{test}\n"
     )
 
-    result = _run("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
+    result = run_cli("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
 
     assert result.returncode == 1
     assert "must contain samples" in result.stderr
@@ -2016,7 +2011,7 @@ def test_hparam_threshold_rejects_prediction_files_without_samples(tmp_path: Pat
 def test_hparam_threshold_and_ensemble_compute_binary_metrics(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, run_count=3)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
     _set_run_status(plan_dir, runs)
     val_a = tmp_path / "val_a.csv"
@@ -2039,8 +2034,8 @@ def test_hparam_threshold_and_ensemble_compute_binary_metrics(tmp_path: Path):
         f"unit-hparam-tune,run-002,3,{val_c},{test_c}\n"
     )
 
-    threshold = _run("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
-    ensemble = _run("hparam-ensemble", "--run-dir", str(plan_dir), "--candidates", str(selected))
+    threshold = run_cli("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
+    ensemble = run_cli("hparam-ensemble", "--run-dir", str(plan_dir), "--candidates", str(selected))
 
     assert threshold.returncode == 0, threshold.stderr
     assert ensemble.returncode == 0, ensemble.stderr
@@ -2050,7 +2045,7 @@ def test_hparam_threshold_and_ensemble_compute_binary_metrics(tmp_path: Path):
     ensemble_rows = _read_table(plan_dir / "ensemble_summary.csv")
     assert ensemble_rows[0]["n_models"] == "3"
 
-    ensemble_search = _run(
+    ensemble_search = run_cli(
         "hparam-ensemble",
         "--run-dir",
         str(plan_dir),
@@ -2075,7 +2070,7 @@ def test_hparam_threshold_and_ensemble_compute_binary_metrics(tmp_path: Path):
 def test_hparam_threshold_and_ensemble_read_repo_prediction_csv_lists(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, run_count=4)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
     _set_run_status(plan_dir, runs)
     val_seq = tmp_path / "val_seq.csv"
@@ -2151,8 +2146,8 @@ def test_hparam_threshold_and_ensemble_read_repo_prediction_csv_lists(tmp_path: 
         f"unit-hparam-tune,run-003,4,custom_label,{val_custom},{test_custom}\n"
     )
 
-    threshold = _run("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
-    ensemble = _run("hparam-ensemble", "--run-dir", str(plan_dir), "--candidates", str(selected))
+    threshold = run_cli("hparam-threshold", "--run-dir", str(plan_dir), "--selected", str(selected))
+    ensemble = run_cli("hparam-ensemble", "--run-dir", str(plan_dir), "--candidates", str(selected))
 
     assert threshold.returncode == 0, threshold.stderr
     threshold_rows = _read_table(plan_dir / "threshold_summary.csv")

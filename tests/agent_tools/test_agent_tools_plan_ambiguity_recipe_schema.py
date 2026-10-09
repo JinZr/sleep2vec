@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 from shlex import quote as shlex_quote
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_yaml
 import pytest
-from test_agent_plan_blocks_on_ambiguity import _first_run, _hparam_recipe, _run
+from test_agent_plan_blocks_on_ambiguity import _first_run, _hparam_recipe
 from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
 import yaml
 
@@ -22,8 +22,8 @@ def test_hparam_recipe_cannot_inherit_experiment_and_step_from_base(tmp_path: Pa
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
-    doctor = _run("doctor", "--recipe", str(recipe))
-    plan = _run("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
+    doctor = run_cli("doctor", "--recipe", str(recipe))
+    plan = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
 
     assert doctor.returncode == 2
     assert plan.returncode == 2
@@ -45,7 +45,7 @@ def test_effective_user_config_fails_before_workspace_mutation(tmp_path: Path):
         )
         before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
-        result = _run(
+        result = run_cli(
             "plan",
             "--recipe",
             str(recipe),
@@ -68,7 +68,7 @@ def test_unresolved_effective_user_config_fails_before_workspace_mutation(tmp_pa
         decisions.write_text(yaml.safe_dump({"decisions": {"config": {"value": value, "source": "explicit_user"}}}))
         before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
-        result = _run(
+        result = run_cli(
             "plan",
             "--recipe",
             str(recipe),
@@ -91,7 +91,7 @@ def test_unresolved_hparam_user_config_fails_before_workspace_mutation(tmp_path:
         decisions.write_text(yaml.safe_dump({"decisions": {"config": {"value": value, "source": "explicit_user"}}}))
         before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
-        result = _run(
+        result = run_cli(
             "plan",
             "--recipe",
             str(recipe),
@@ -119,7 +119,7 @@ def test_resolved_hparam_user_config_owns_consultation_and_snapshot(tmp_path: Pa
         yaml.safe_dump({"decisions": {"config": {"value": str(selected_config), "source": "explicit_user"}}})
     )
 
-    result = _run(
+    result = run_cli(
         "plan",
         "--recipe",
         str(recipe),
@@ -160,7 +160,7 @@ def test_hparam_user_decisions_freeze_one_effective_recipe(tmp_path: Path):
     )
     plan_dir = tmp_path / "plan"
 
-    result = _run(
+    result = run_cli(
         "plan",
         "--recipe",
         str(recipe),
@@ -199,7 +199,7 @@ def test_hparam_user_selection_metric_rechecks_config_monitor(tmp_path: Path):
     )
     plan_dir = tmp_path / "plan"
 
-    result = _run(
+    result = run_cli(
         "plan",
         "--recipe",
         str(recipe),
@@ -227,7 +227,7 @@ def test_resolved_hparam_user_config_rechecks_base_consultation(tmp_path: Path):
         yaml.safe_dump({"decisions": {"config": {"value": str(selected_config), "source": "explicit_user"}}})
     )
 
-    result = _run(
+    result = run_cli(
         "plan",
         "--recipe",
         str(recipe),
@@ -254,7 +254,7 @@ def test_missing_or_unsupported_task_without_workspace_returns_report(tmp_path: 
         recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
         before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
-        result = _run("plan", "--recipe", str(recipe), "--output-dir", str(root / "plan"))
+        result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(root / "plan"))
 
         assert result.returncode == expected_returncode
         assert "task" in result.stdout.lower()
@@ -274,7 +274,9 @@ def test_plan_blocks_non_boolean_test_after_fit_decision(tmp_path: Path, value: 
     )
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+    result = run_cli(
+        "plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir)
+    )
 
     assert result.returncode == 2
     assert "test_after_fit" in result.stdout
@@ -318,7 +320,7 @@ def test_plan_rejects_non_boolean_external_test_lock(tmp_path: Path, value: obje
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = workspace / "plans" / "invalid"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "external_test_locked must be a YAML boolean" in result.stdout
@@ -336,7 +338,7 @@ def test_plan_blocks_unresolved_external_test_lock(tmp_path: Path, value: object
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = workspace / "plans" / "unresolved"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert "external_test_locked must be explicitly true or false" in result.stdout
@@ -351,7 +353,9 @@ def test_plan_rejects_non_boolean_external_test_lock_user_decision(tmp_path: Pat
     )
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+    result = run_cli(
+        "plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir)
+    )
 
     assert result.returncode == 1
     assert "external_test_locked must be a YAML boolean" in result.stdout
@@ -382,7 +386,7 @@ def test_plan_rejects_non_boolean_external_test_lock_with_missing_declared_sourc
     if decisions is not None:
         args.extend(["--user-decisions", str(decisions)])
 
-    result = _run(*args)
+    result = run_cli(*args)
 
     assert result.returncode == 1
     assert "external_test_locked must be a YAML boolean" in result.stdout
@@ -464,7 +468,9 @@ def test_plan_fails_when_decision_differs_from_runtime_config(
     )
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+    result = run_cli(
+        "plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir)
+    )
 
     assert result.returncode == 1
     assert f"{field} decision differs from config {config_field}" in result.stdout
@@ -490,7 +496,9 @@ def test_plan_allows_decision_matching_runtime_config(tmp_path: Path, field: str
     )
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir))
+    result = run_cli(
+        "plan", "--recipe", str(recipe), "--user-decisions", str(decisions), "--output-dir", str(output_dir)
+    )
 
     assert result.returncode == 0, result.stderr or result.stdout
     assert config.read_bytes() == config_before
@@ -507,7 +515,7 @@ def test_plan_blocks_unresolved_recipe_label_before_workspace_mutation(tmp_path:
     output_dir = tmp_path / "plan"
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert "label_name decision is unresolved" in result.stdout
@@ -546,7 +554,7 @@ def test_plan_materializes_recipe_decisions_before_rendering(tmp_path: Path):
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr or result.stdout
     script = (output_dir / "run.sh").read_text()
@@ -568,7 +576,7 @@ def test_hparam_rejects_bare_search_parameter(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, parameters={"lr": [1e-6]})
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert not (output_dir / "run_all.sh").exists()
@@ -578,7 +586,7 @@ def test_hparam_rejects_non_positive_max_runs(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, max_runs=0)
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "hparam_budget" in (output_dir / "questions.md").read_text()
@@ -591,7 +599,7 @@ def test_hparam_rejects_removed_max_trials_field(tmp_path: Path):
     payload["search"]["max_trials"] = payload["search"].pop("max_runs")
     recipe.write_text(yaml.safe_dump(payload))
 
-    result = _run("doctor", "--recipe", str(recipe))
+    result = run_cli("doctor", "--recipe", str(recipe))
 
     assert result.returncode == 1
     assert "search.max_trials is no longer supported" in result.stdout
@@ -603,7 +611,7 @@ def test_hparam_rejects_removed_adaptive_field_when_adaptive_is_disabled(tmp_pat
     payload["adaptive"] = {"enabled": False, "max_trials_total": 4}
     recipe.write_text(yaml.safe_dump(payload))
 
-    result = _run("doctor", "--recipe", str(recipe))
+    result = run_cli("doctor", "--recipe", str(recipe))
 
     assert result.returncode == 1
     assert "adaptive.max_trials_total is no longer supported" in result.stdout
@@ -624,7 +632,7 @@ def test_hparam_rejects_unknown_execution_and_evaluation_fields(
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert f"{section}.{field}" in result.stdout
@@ -635,7 +643,7 @@ def test_hparam_yaml_parameter_updates_run_config(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, parameters={"yaml:/finetune/task/output_dim": [31]})
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
     run_config = yaml.safe_load(Path(_first_run(output_dir)["config"]).read_text())
@@ -676,8 +684,8 @@ def test_hparam_yaml_override_can_match_explicit_decision_when_base_differs(
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    doctor = _run("doctor", "--recipe", str(recipe))
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    doctor = run_cli("doctor", "--recipe", str(recipe))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert doctor.returncode == 0, doctor.stderr or doctor.stdout
     assert result.returncode == 0, result.stderr or result.stdout
@@ -699,8 +707,8 @@ def test_hparam_yaml_backend_override_rejects_any_combo_conflicting_with_explici
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    doctor = _run("doctor", "--recipe", str(recipe))
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    doctor = run_cli("doctor", "--recipe", str(recipe))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert doctor.returncode == 1
     assert "data_backend decision differs from config data.backend after hparam YAML overrides" in doctor.stdout
@@ -716,8 +724,8 @@ def test_hparam_backend_decision_must_match_base_without_yaml_override(tmp_path:
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    doctor = _run("doctor", "--recipe", str(recipe))
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    doctor = run_cli("doctor", "--recipe", str(recipe))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert doctor.returncode == 1
     assert "data_backend decision differs from config data.backend after hparam YAML overrides" in doctor.stdout
@@ -745,7 +753,7 @@ def test_hparam_yaml_parameter_cannot_conflict_with_decision_contract(
     manifest = tmp_path / "run_manifest.tsv"
     manifest_before = manifest.read_bytes() if manifest.exists() else None
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert f"{field} decision differs from config" in result.stdout
@@ -804,7 +812,7 @@ def test_hparam_yaml_parameter_handles_empty_recipe_semantics(
     manifest = tmp_path / "run_manifest.tsv"
     manifest_before = manifest.read_bytes() if manifest.exists() else None
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert expected_message in result.stdout
@@ -827,7 +835,7 @@ def test_hparam_yaml_parameter_rejects_ask_user_backend_after_null_input(tmp_pat
     manifest = tmp_path / "run_manifest.tsv"
     manifest_before = manifest.read_bytes() if manifest.exists() else None
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "runtime.data_backend" in result.stdout
@@ -844,7 +852,7 @@ def test_hparam_yaml_parameter_rejects_negative_list_index(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, parameters={"yaml:/model/channels/-1/input_dim": [9]})
     output_dir = tmp_path / "plan"
 
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert not (output_dir / "run_all.sh").exists()

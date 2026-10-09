@@ -360,6 +360,7 @@ def test_batched_sidecars_never_accumulate_trusted_legacy_identity(
 @pytest.mark.parametrize("entrypoint", ["hparam", "experiment"])
 def test_public_monitors_make_fresh_sidecar_batches(tmp_path, monkeypatch, reads, entrypoint):
     plan_dir, rows = _seed_plan(tmp_path)
+    reads.clear()  # Seeding runs `plan` in this process; its experiment.yaml probe is not a monitor read.
     _stub_queue(monkeypatch, rows, "COMPLETED")
     for iteration in range(2):
         if iteration:
@@ -375,6 +376,7 @@ def test_public_monitors_make_fresh_sidecar_batches(tmp_path, monkeypatch, reads
 
 def test_hparam_monitor_preserves_relative_plan_directory(tmp_path, monkeypatch, reads):
     plan_dir, rows = _seed_plan(tmp_path)
+    reads.clear()  # Seeding runs `plan` in this process; its experiment.yaml probe is not a monitor read.
     for row in rows:
         _write_sidecar(row)
     _stub_queue(monkeypatch, rows, "COMPLETED")

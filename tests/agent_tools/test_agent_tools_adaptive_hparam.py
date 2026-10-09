@@ -3,13 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from agent_tool_test_helpers import write_yaml
+from agent_tool_test_helpers import run_cli, write_yaml
 import pytest
 import yaml
 
 from agent_tools import adaptive_hparam, adaptive_replacement, adaptive_state, manifests, plan_hparam
 from tests.agent_tools import adaptive_hparam_test_support as test_support
-from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe, _run
+from tests.agent_tools.adaptive_hparam_test_support import _adaptive_recipe
 
 _stub_execution_snapshot_preflight = test_support._stub_execution_snapshot_preflight
 
@@ -146,7 +146,7 @@ def test_adaptive_minutes_since_accepts_slurm_sidecar_timestamp():
 def test_adaptive_recipe_requires_explicit_test_feedback_flag(tmp_path: Path):
     recipe = _adaptive_recipe(tmp_path, test_feedback=False)
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
 
     assert result.returncode == 1
     assert "adaptive.test_feedback_for_selection" in result.stdout
@@ -160,7 +160,7 @@ def test_adaptive_default_test_objective_requires_test_after_fit(tmp_path: Path)
     payload["decisions"]["test_after_fit"] = {"value": False, "source": "explicit_recipe"}
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
 
     assert result.returncode == 2
     assert "test-metric adaptive objective requires test_after_fit=true" in result.stdout
@@ -199,7 +199,7 @@ def test_adaptive_rejects_removed_run_budget_and_gpu_fields(tmp_path: Path, sect
     payload[section][removed_field] = payload[section].pop(current_field) if current_field else 1
     recipe.write_text(yaml.safe_dump(payload))
 
-    result = _run("doctor", "--recipe", str(recipe))
+    result = run_cli("doctor", "--recipe", str(recipe))
 
     assert result.returncode == 1
     assert f"{section}.{removed_field} is no longer supported" in result.stdout
@@ -213,7 +213,7 @@ def test_adaptive_combined_removed_fields_stop_at_search_preflight(tmp_path: Pat
     payload["execution"]["gpus_per_trial"] = 1
     recipe.write_text(yaml.safe_dump(payload))
 
-    result = _run("doctor", "--recipe", str(recipe))
+    result = run_cli("doctor", "--recipe", str(recipe))
 
     assert result.returncode == 1
     assert "search.max_trials is no longer supported" in result.stdout

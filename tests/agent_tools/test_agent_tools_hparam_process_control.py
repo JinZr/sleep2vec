@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 
-from agent_tool_test_helpers import FakeLauncher, call_while_run_lock_holder_commits
+from agent_tool_test_helpers import FakeLauncher, call_while_run_lock_holder_commits, run_cli
 import pytest
 from test_agent_tools_hparam_runtime import (
     _embedded_process_group_running,
@@ -17,7 +17,6 @@ from test_agent_tools_hparam_runtime import (
     _is_remote_python_program,
     _process_identity,
     _read_table,
-    _run,
     _write_proc_stat,
     _write_process_identity,
     _write_runtime_rows,
@@ -52,7 +51,7 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(
         execution["host"] = "unit-host"
     recipe = _hparam_recipe(tmp_path, execution=execution)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     plan = run_artifacts.read_hparam_plan(plan_dir)
     run = plan["runs"][0]
@@ -131,7 +130,7 @@ def test_hparam_unlaunched_stop_leaves_other_runs_launchable(tmp_path: Path, mon
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     cancelled, remaining = run_artifacts.read_hparam_plan(plan_dir)["runs"]
     launcher = FakeLauncher()
@@ -161,7 +160,7 @@ def test_hparam_metadata_stop_publication_failure_keeps_terminal_commit(
     else:
         recipe = _hparam_recipe(tmp_path)
         plan_dir = tmp_path / "plan"
-        result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+        result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
         assert result.returncode == 0, result.stderr
         plan = run_artifacts.read_hparam_plan(plan_dir)
     run = plan["runs"][0]
@@ -215,7 +214,7 @@ def test_hparam_metadata_stop_publication_failure_keeps_terminal_commit(
 def test_hparam_stop_does_not_metadata_cancel_uncertain_launch(tmp_path: Path, monkeypatch, evidence):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     rows = _read_table(tmp_path / "run_manifest.tsv")
     rows[0].update(evidence)
@@ -234,7 +233,7 @@ def test_hparam_stop_does_not_metadata_cancel_uncertain_launch(tmp_path: Path, m
 def test_hparam_unlaunched_stop_serializes_with_launch(tmp_path: Path, monkeypatch, first_operation):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     run = run_artifacts.read_hparam_plan(plan_dir)["runs"][0]
     first_ready = threading.Event()
@@ -312,7 +311,7 @@ def test_hparam_unlaunched_stop_serializes_with_launch(tmp_path: Path, monkeypat
 def test_hparam_unlaunched_stop_survives_stale_monitor_commit(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     run = run_artifacts.read_hparam_plan(plan_dir)["runs"][0]
     real_merge = hparam_runtime.merge_run_manifest
@@ -349,7 +348,7 @@ def test_hparam_concurrent_stops_keep_plan_projections_canonical(tmp_path: Path,
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     runs = run_artifacts.read_hparam_plan(plan_dir)["runs"]
     projection_ready = threading.Event()
@@ -423,7 +422,7 @@ def test_hparam_concurrent_stops_keep_plan_projections_canonical(tmp_path: Path,
 def test_hparam_stop_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     run = run_artifacts.read_hparam_plan(plan_dir)["runs"][0]
 
@@ -444,7 +443,7 @@ def test_hparam_stop_reads_workspace_state_only_under_run_lock(tmp_path: Path, m
 def test_hparam_runtime_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch, entrypoint):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     if entrypoint == "queue":
         # Terminal runs let the queue return after its first canonical poll.
@@ -464,7 +463,7 @@ def test_hparam_runtime_reads_workspace_state_only_under_run_lock(tmp_path: Path
 def test_hparam_plan_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
 
     plan = call_while_run_lock_holder_commits(
@@ -477,7 +476,7 @@ def test_hparam_plan_reads_workspace_state_only_under_run_lock(tmp_path: Path, m
 def test_hparam_plan_commit_rereads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    result = _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     plan = run_artifacts.read_hparam_plan(plan_dir)
     # Skip the registration reads and merge before the final full read, which the harness then races.

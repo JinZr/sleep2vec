@@ -4,14 +4,13 @@ import json
 from pathlib import Path
 import subprocess
 
-from agent_tool_test_helpers import FakeLauncher
+from agent_tool_test_helpers import FakeLauncher, run_cli
 import pytest
 from test_agent_tools_hparam_runtime import (
     _hparam_recipe,
     _is_remote_python_program,
     _process_identity,
     _read_table,
-    _run,
     _write_process_identity,
     _write_runtime_rows,
 )
@@ -260,7 +259,7 @@ def test_hparam_monitor_polls_until_the_current_plan_is_terminal(tmp_path: Path,
 def test_hparam_monitor_does_not_overwrite_workspace_terminal_status(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
-    assert _run("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
     rows = _read_table(plan_dir / "launch_manifest.tsv")
     rows[0]["status"] = "launched"
