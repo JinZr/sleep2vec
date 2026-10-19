@@ -119,6 +119,7 @@ class SundialTokenizer2(BaseTokenizer):
         clamp_value: float | None = None,
         modality_scale: float = 1.0,
         num_mlp_layers: int = 2,
+        residual_mixing: str = "residual_scaled",
     ):
         super().__init__(out_feature_dim=out_feature_dim, device=device)
 
@@ -150,6 +151,13 @@ class SundialTokenizer2(BaseTokenizer):
         self.residual_scale = residual_scale
         self.ff_scale = ff_scale
         self.clamp_value = clamp_value
+
+        # "residual_scaled": out = residual_scale * res + y (since #139).
+        # "ffn_scaled": out = res + residual_scale * y, the formula before #139 (commit 9860221).
+        # Tokenizer weights trained with that formula must be read with it.
+        if residual_mixing not in ("residual_scaled", "ffn_scaled"):
+            raise ValueError(f"residual_mixing must be 'residual_scaled' or 'ffn_scaled', got {residual_mixing!r}.")
+        self.residual_mixing = residual_mixing
 
         # Per-modality global scale. This does not change dim, only scales output & gradients.
         self.modality_scale = nn.Parameter(torch.tensor(modality_scale, dtype=torch.float32))
@@ -184,8 +192,11 @@ class SundialTokenizer2(BaseTokenizer):
         # same normalized input
         res = self.residual_layer(x_norm)
 
-        # Residual mixing with explicit scale on residual branch
-        out = self.residual_scale * res + y
+        if self.residual_mixing == "ffn_scaled":
+            out = res + self.residual_scale * y
+        else:
+            # Residual mixing with explicit scale on residual branch
+            out = self.residual_scale * res + y
 
         # Post-norm as before, then apply a per-modality scale
         out = self.norm(out)
