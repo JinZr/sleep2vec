@@ -245,6 +245,7 @@ def supervised(args, config_bundle):
             patience=args.patience,
             verbose=False,
             mode=args.monitor_mod,
+            check_on_train_epoch_end=False,
         )
 
         checkpoint_kwargs = {}
