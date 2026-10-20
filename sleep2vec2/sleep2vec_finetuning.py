@@ -1,3 +1,4 @@
+from copy import copy
 from dataclasses import asdict
 import logging
 
@@ -282,6 +283,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 )
 
     def load_state_dict(self, state_dict, strict: bool = True):
+        # Class weights belong to the current task config, not the recovered model.
+        state_dict = copy(state_dict)
+        state_dict.pop("_classification_loss.weight", None)
+        if self._classification_loss.weight is not None:
+            state_dict["_classification_loss.weight"] = self._classification_loss.weight
         # Allow missing/extra layer-mix weights when loading older checkpoints.
         result = super().load_state_dict(state_dict, strict=False)
         if not strict:
