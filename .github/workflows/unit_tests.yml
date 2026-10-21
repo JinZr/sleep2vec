@@ -266,6 +266,7 @@ jobs:
             tests/runtime/test_checkpoints.py \
             tests/runtime/test_ahi_event_metrics.py \
             tests/variants/test_variant_infer_preset_override.py \
+            tests/variants/test_sleep2vec2_diagnostics.py \
             tests/variants/test_sleep2vec2_namespace.py \
             tests/variants/test_sleep2expert_namespace.py
 
