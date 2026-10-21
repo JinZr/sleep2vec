@@ -258,12 +258,16 @@ jobs:
             tests/variants/test_sleep2expert_moe_config.py \
             tests/config/test_registries_and_builders.py \
             tests/models/test_losses.py \
+            tests/models/test_finetune_weights_init.py \
             tests/models/test_downstream_separate_adapters.py \
             tests/variants/test_sleep2vec2_roformer_parity.py \
             tests/variants/test_sleep2expert_roformer_parity.py \
             tests/variants/test_sleep2expert_moe_forward.py \
             tests/runtime/test_sidecar_loading.py \
             tests/runtime/test_checkpoints.py \
+            tests/runtime/test_all_checkpoint_test_after_fit.py \
+            tests/runtime/test_sleep2vec2_class_weight_loading.py \
+            tests/runtime/test_sleep2vec2_resume_early_stopping.py \
             tests/runtime/test_ahi_event_metrics.py \
             tests/variants/test_variant_infer_preset_override.py \
             tests/variants/test_sleep2vec2_namespace.py \
