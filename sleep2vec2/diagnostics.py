@@ -567,6 +567,7 @@ def attach_diagnostics(model: nn.Module, opts: Optional[TensorDiagnosticOptions]
             if isinstance(_output, Tensor) and _output.dtype in (
                 torch.float32,
                 torch.float16,
+                torch.bfloat16,
                 torch.float64,
             ):
                 _model_diagnostic[f"{_name}.output"].accumulate(_output, class_name=get_class_name(_module))
@@ -575,6 +576,7 @@ def attach_diagnostics(model: nn.Module, opts: Optional[TensorDiagnosticOptions]
                     if isinstance(o, Tensor) and o.dtype in (
                         torch.float32,
                         torch.float16,
+                        torch.bfloat16,
                         torch.float64,
                     ):
                         _model_diagnostic[f"{_name}.output[{i}]"].accumulate(o, class_name=get_class_name(_module))
@@ -585,6 +587,7 @@ def attach_diagnostics(model: nn.Module, opts: Optional[TensorDiagnosticOptions]
             if isinstance(_output, Tensor) and _output.dtype in (
                 torch.float32,
                 torch.float16,
+                torch.bfloat16,
                 torch.float64,
             ):
                 _model_diagnostic[f"{_name}.grad"].accumulate(_output, class_name=get_class_name(_module))
@@ -593,6 +596,7 @@ def attach_diagnostics(model: nn.Module, opts: Optional[TensorDiagnosticOptions]
                     if isinstance(o, Tensor) and o.dtype in (
                         torch.float32,
                         torch.float16,
+                        torch.bfloat16,
                         torch.float64,
                     ):
                         _model_diagnostic[f"{_name}.grad[{i}]"].accumulate(o, class_name=get_class_name(_module))

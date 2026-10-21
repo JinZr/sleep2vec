@@ -263,6 +263,8 @@ class TensorDiagnostic(object):
                     stats = torch.cat([x.tensor / get_count(x.count) for x in stats_list], dim=0)
 
                 if stats_type == "eigs":
+                    if stats.dtype in (torch.float16, torch.bfloat16):
+                        stats = stats.float()
                     try:
                         if hasattr(torch, "linalg") and hasattr(torch.linalg, "eigh"):
                             eigs, _ = torch.linalg.eigh(stats)
@@ -565,6 +567,7 @@ def attach_diagnostics(model: nn.Module, opts: Optional[TensorDiagnosticOptions]
             if isinstance(_output, Tensor) and _output.dtype in (
                 torch.float32,
                 torch.float16,
+                torch.bfloat16,
                 torch.float64,
             ):
                 _model_diagnostic[f"{_name}.output"].accumulate(_output, class_name=get_class_name(_module))
@@ -573,6 +576,7 @@ def attach_diagnostics(model: nn.Module, opts: Optional[TensorDiagnosticOptions]
                     if isinstance(o, Tensor) and o.dtype in (
                         torch.float32,
                         torch.float16,
+                        torch.bfloat16,
                         torch.float64,
                     ):
                         _model_diagnostic[f"{_name}.output[{i}]"].accumulate(o, class_name=get_class_name(_module))
@@ -583,6 +587,7 @@ def attach_diagnostics(model: nn.Module, opts: Optional[TensorDiagnosticOptions]
             if isinstance(_output, Tensor) and _output.dtype in (
                 torch.float32,
                 torch.float16,
+                torch.bfloat16,
                 torch.float64,
             ):
                 _model_diagnostic[f"{_name}.grad"].accumulate(_output, class_name=get_class_name(_module))
@@ -591,6 +596,7 @@ def attach_diagnostics(model: nn.Module, opts: Optional[TensorDiagnosticOptions]
                     if isinstance(o, Tensor) and o.dtype in (
                         torch.float32,
                         torch.float16,
+                        torch.bfloat16,
                         torch.float64,
                     ):
                         _model_diagnostic[f"{_name}.grad[{i}]"].accumulate(o, class_name=get_class_name(_module))
