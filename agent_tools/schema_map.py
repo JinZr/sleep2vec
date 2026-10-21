@@ -67,6 +67,7 @@ BASE_RECIPE_FIELDS: dict[str, RecipeField] = {
     ),
     "config": RecipeField((("inputs", "config"),), ("inputs", "config")),
     "ckpt_path": RecipeField((("inputs", "ckpt_path"),), ("inputs", "ckpt_path")),
+    "init_checkpoint_path": RecipeField((("inputs", "init_checkpoint_path"),), ("inputs", "init_checkpoint_path")),
     "eval_split": RecipeField((("inputs", "eval_split"),), ("inputs", "eval_split")),
     "embedding_channels": RecipeField((("extraction", "channels"),)),
     "embedding_kind": RecipeField((("extraction", "embedding_kind"),)),

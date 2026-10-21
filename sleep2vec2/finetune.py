@@ -184,6 +184,8 @@ def _finish_wandb_run(preexisting_run) -> None:
 
 def supervised(args, config_bundle):
     validate_finetune_scheduler_args(args)
+    if getattr(args, "init_checkpoint_path", None) and (args.pretrained_backbone_path or args.ckpt_path):
+        raise ValueError("--init-checkpoint-path cannot be combined with --pretrained-backbone-path or --ckpt-path.")
     # Programmatic callers may build Namespace without CLI defaults.
     if not hasattr(args, "accumulate_grad_batches"):
         args.accumulate_grad_batches = 1
@@ -538,7 +540,11 @@ def build_version_name(args) -> str:
     else:
         few_stub = f"fewshot-{few_shot}"
 
-    pretrain_suffix = "with_pretrain" if args.pretrained_backbone_path else "from_scratch"
+    pretrain_suffix = (
+        "with_init"
+        if getattr(args, "init_checkpoint_path", None)
+        else "with_pretrain" if args.pretrained_backbone_path else "from_scratch"
+    )
     pieces = [
         args.version_prefix,
         args.label_name,
@@ -691,6 +697,15 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Optional pretrain-model init checkpoint (.ckpt). Loads ema_model. first and falls back to model.",
+    )
+    parser.add_argument(
+        "--init-checkpoint-path",
+        type=str,
+        default=None,
+        help=(
+            "Full finetune model weights-only initialization; requires matching model/task semantics "
+            "and starts fresh trainer state."
+        ),
     )
     parser.add_argument(
         "--ckpt-path",

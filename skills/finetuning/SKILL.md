@@ -23,7 +23,7 @@ Stop and consult the user if:
 
 - `label_name` is missing.
 - The config contains several plausible labels.
-- `pretrained_backbone_path` is absent on a `sleep2vec`, `sleep2vec2` or `sleep2expert` recipe and the recipe does not explicitly say scratch training is intended.
+- `pretrained_backbone_path` is absent on a `sleep2vec`, `sleep2vec2` or `sleep2expert` recipe and neither scratch training nor supported full-model initialization is explicitly intended.
 - `finetune.task.monitor` is missing or inconsistent with the label.
 - The data backend is unclear.
 - The config points to both index and preset inputs without a clear priority.
@@ -36,6 +36,12 @@ Use the recipe `variant` to choose the module: `python -m sleep2vec.finetune`, `
 `log-finetune/<version>/checkpoints/`, stable `best.ckpt`, run manifest, copied config/CLI snapshots, optional results CSV.
 
 ## Validation gates
+For `sleep2vec2` continuation from a selected full finetune checkpoint, use
+`inputs.init_checkpoint_path` / `--init-checkpoint-path` for weights-only
+initialization, not `pretrained_backbone_path` or trainer resume. Follow the
+[full-model initialization contract](../../doc/agent_contracts/hparam_workflow.md#full-model-weights-only-initialization)
+for semantic compatibility, local publication, hash binding and fresh trainer state.
+
 Run the selected variant's `finetune --help`, config checks, and targeted runtime/result tests.
 
 ## Common failure modes

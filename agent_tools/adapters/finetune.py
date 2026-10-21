@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status, needs_issue
-from ..decision_paths import multilabel_sidecar_issue, sex_age_pretrained_backbone_issue, survival_sidecar_issue
+from ..decision_paths import (
+    finetune_init_checkpoint_issue,
+    multilabel_sidecar_issue,
+    sex_age_pretrained_backbone_issue,
+    survival_sidecar_issue,
+)
 from ..models import REPO_ROOT, ConfigSummaryInput, JsonValue, recipe_name
 from ..plan_rendering import (
     FINETUNE_RUNTIME_FIELDS,
@@ -31,12 +36,16 @@ class FinetuneAdapter(TaskAdapter):
     recipe_extra_fields = frozenset({"artifacts", "evaluation_policy", "execution", "inputs", "runtime"})
     artifact_fields = frozenset({"overwrite", "results_csv_path", "version_name"})
     contract_sections = {
-        "inputs": frozenset({"ckpt_path", "config", "data_backend", "label_name", "pretrained_backbone_path"}),
+        "inputs": frozenset(
+            {"ckpt_path", "config", "data_backend", "label_name", "pretrained_backbone_path", "init_checkpoint_path"}
+        ),
         "evaluation_policy": frozenset(
             {"external_test_locked", "selection_metric", "selection_mode", "selection_split", "test_after_fit"}
         ),
     }
-    extra_decision_fields = frozenset({"ckpt_path", "config", "external_test_locked", "test_after_fit"})
+    extra_decision_fields = frozenset(
+        {"ckpt_path", "config", "external_test_locked", "test_after_fit", "init_checkpoint_path"}
+    )
     validates_dataset_paths = True
     uses_finetune_config = True
     enforces_required_channels = True
@@ -50,11 +59,15 @@ class FinetuneAdapter(TaskAdapter):
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         inputs = recipe_inputs(recipe)
         required: list[tuple[str, Any]] = []
-        for input_field in ("pretrained_backbone_path", "ckpt_path"):
+        for input_field in ("pretrained_backbone_path", "ckpt_path", "init_checkpoint_path"):
             value = inputs.get(input_field)
             if value not in (None, "", "ASK_USER"):
                 required.append((input_field, value))
         return required
+
+    def frozen_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, Path]]:
+        value = recipe_inputs(recipe).get("init_checkpoint_path")
+        return [("inputs.init_checkpoint_path", Path(str(value)))] if value else []
 
     def task_issues(
         self,
@@ -64,6 +77,9 @@ class FinetuneAdapter(TaskAdapter):
         high_impact: dict[str, dict[str, Any]],
     ) -> list[DecisionIssue]:
         issues: list[DecisionIssue] = []
+        init_issue = finetune_init_checkpoint_issue(recipe)
+        if init_issue is not None:
+            issues.append(init_issue)
         evaluation = recipe.get("evaluation_policy")
         if not isinstance(evaluation, dict):
             evaluation = {}
@@ -138,6 +154,17 @@ class FinetuneAdapter(TaskAdapter):
         unlock_final_test: bool,
         output_dir: Path | None = None,
     ) -> list[DecisionIssue]:
+        inputs = recipe_inputs(recipe)
+        if inputs.get("init_checkpoint_path") and inputs.get("ckpt_path"):
+            return [
+                DecisionIssue(
+                    DecisionStatus.FAIL,
+                    "init_checkpoint_path",
+                    "init_checkpoint_path cannot be combined with a finetune resume ckpt_path.",
+                    None,
+                    {"preflight_before_workspace": True},
+                )
+            ]
         evaluation = recipe.get("evaluation_policy")
         if not isinstance(evaluation, dict):
             evaluation = {}

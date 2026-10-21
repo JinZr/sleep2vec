@@ -24,6 +24,7 @@ from ..domain import finetune_hparam_profile
 from ..models import BoundFinalEvalConfigSnapshot, ConfigSummaryInput, JsonValue
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, variant_module
 from .base import TaskAdapter
+from .finetune import FINETUNE_ADAPTER
 
 
 class HparamTuneAdapter(TaskAdapter):
@@ -36,6 +37,7 @@ class HparamTuneAdapter(TaskAdapter):
     extra_decision_fields = frozenset(
         {
             "ckpt_path",
+            "init_checkpoint_path",
             "config",
             "data_backend",
             "final_eval_config_path",
@@ -56,6 +58,12 @@ class HparamTuneAdapter(TaskAdapter):
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         return FINETUNE_RUNTIME_FIELDS | INFER_RUNTIME_FIELDS
+
+    def required_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, JsonValue]]:
+        return [item for item in FINETUNE_ADAPTER.required_input_paths(recipe) if item[0] == "init_checkpoint_path"]
+
+    def frozen_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, Path]]:
+        return FINETUNE_ADAPTER.frozen_input_paths(recipe)
 
     def frozen_command_prefix(self, recipe: dict[str, Any]) -> tuple[str, ...]:
         execution = recipe.get("execution")

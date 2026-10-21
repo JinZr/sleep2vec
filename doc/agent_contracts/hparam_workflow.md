@@ -214,6 +214,31 @@ expansion beyond the authorized budget or frozen search domain, or changes to an
 existing adaptive protocol. Report only the best observed candidate within the
 frozen domain, metric, split and budget, never a global optimum.
 
+### Full-model weights-only initialization
+
+Optional `inputs.init_checkpoint_path` is supported for `sleep2vec2` finetune
+and hparam recipes. Supply an absolute full finetune checkpoint path and publish
+locally on its execution host (`execution.target: local`, including Slurm).
+The plan freezes its SHA-256 in the resolved recipe and each run's input
+snapshots; registered-plan reads and the leaf script verify those bytes.
+`inputs.ckpt_path` remains final-evaluation-only for hparam and is not passed
+to training. Do not combine initialization with a pretrained-backbone input
+or a direct runtime resume checkpoint. An explicit null pretrained-backbone
+decision means no backbone-only initialization, not scratch training when this
+full-model source is present.
+
+`--init-checkpoint-path` loads the complete Lightning state dictionary strictly,
+including backbone, trained head, LayerMix and buffers; missing/extra keys fail.
+It requires the saved model configuration (including tokenizer semantics) and
+task, LayerMix, loss, covariate and enabled LoRA configurations to match. Trainer epoch,
+optimizer, scheduler and callbacks are not restored. The new trainability
+policy and runtime schedule apply. Source checkpoint task metadata does not
+prove arbitrary same-shaped label identity; the recipe author must retain the
+authorized label. Structural model/head/LayerMix changes and
+`finetune_balanced` are unsupported; use an explicit compatible search.
+Doctor and registration do not construct the model or certify checkpoint
+semantic compatibility; the runtime load performs that check.
+
 ### Registration preflight
 
 New ordinary hparam plans and adaptive rounds are fully materialized in a
