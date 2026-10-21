@@ -134,6 +134,7 @@ def _run_supervised(
     check_val_every_n_epoch: int = 1,
     label_name: str = "custom",
     frozen_checkpoint_dir: str | None = None,
+    init_checkpoint_path: str | None = None,
 ):
     finetune_mod = _load_finetune_module(module_name, monkeypatch)
     checkpoints = []
@@ -179,6 +180,8 @@ def _run_supervised(
             self.is_global_zero = True
 
         def fit(self, *args, **kwargs):
+            if init_checkpoint_path is not None:
+                assert kwargs["ckpt_path"] is None
             checkpoint_dir = Path(checkpoints[0].dirpath)
             checkpoint_dir.mkdir(parents=True)
             for name in checkpoint_names:
@@ -222,6 +225,8 @@ def _run_supervised(
         check_val_every_n_epoch=check_val_every_n_epoch,
         print_diagnostics=False,
         ckpt_path="",
+        init_checkpoint_path=init_checkpoint_path,
+        pretrained_backbone_path=None,
         results_csv_path=tmp_path / "results.csv",
         label_name=label_name,
         export_predictions=export_predictions,
@@ -297,6 +302,26 @@ def _run_supervised(
     else:
         finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
     return checkpoints, test_calls, result_rows, manifest_calls, args
+
+
+def test_weights_only_initialization_does_not_resume_trainer(tmp_path, monkeypatch):
+    _run_supervised(
+        "sleep2vec2.finetune",
+        tmp_path,
+        monkeypatch,
+        checkpoint_names=("epoch=00.ckpt",),
+        test_all_checkpoints_after_fit=False,
+        init_checkpoint_path="selected.ckpt",
+    )
+
+
+@pytest.mark.parametrize("conflicting_field", ["pretrained_backbone_path", "ckpt_path"])
+def test_weights_only_initialization_rejects_competing_sources_before_io(monkeypatch, conflicting_field):
+    module = _load_finetune_module("sleep2vec2.finetune", monkeypatch)
+    args = SimpleNamespace(init_checkpoint_path="selected.ckpt", pretrained_backbone_path=None, ckpt_path=None)
+    setattr(args, conflicting_field, "other.ckpt")
+    with pytest.raises(ValueError, match="cannot be combined"):
+        module.supervised(args, None)
 
 
 @pytest.mark.parametrize("module_name", FINETUNE_MODULES)

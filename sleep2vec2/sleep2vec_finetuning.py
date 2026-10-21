@@ -1,3 +1,4 @@
+from copy import copy
 from dataclasses import asdict
 import logging
 
@@ -11,6 +12,7 @@ import yaml
 
 from sleep2vec2 import diagnostics
 from sleep2vec2.averagings.base import BaseModelAverager, build_model_averager
+from sleep2vec2.checkpoints import get_state_dict_from_checkpoint, load_checkpoint
 from sleep2vec2.common import remap_stage_labels
 from sleep2vec2.data.multilabel import load_multilabel_disease_columns
 from sleep2vec2.data.survival import load_survival_disease_columns
@@ -71,6 +73,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self.model_config = model_config
         self.finetune_config = finetune_config
         self.averaging_config = averaging_config
+        init_checkpoint_path = getattr(args, "init_checkpoint_path", None)
+        if init_checkpoint_path and (args.pretrained_backbone_path or getattr(args, "ckpt_path", None)):
+            raise ValueError(
+                "--init-checkpoint-path cannot be combined with --pretrained-backbone-path or --ckpt-path."
+            )
 
         self.backbone = Sleep2vecPretrainModel(
             model_config=model_config,
@@ -170,6 +177,23 @@ class Sleep2vecFinetuning(pl.LightningModule):
         self._eval_visualizer = DownstreamEvalVisualizer(
             getattr(finetune_config, "eval_visualizations", None) if finetune_config is not None else None
         )
+        if init_checkpoint_path:
+            checkpoint = load_checkpoint(init_checkpoint_path, "cpu")
+            if checkpoint.get("model_config") != asdict(model_config):
+                raise ValueError("Initialization checkpoint model_config must match the current model semantics.")
+            saved_finetune = checkpoint["finetune_config"]
+            current_finetune = asdict(finetune_config)
+            for field in ("task", "layer_mix", "loss", "survival", "multilabel"):
+                if saved_finetune.get(field) != current_finetune[field]:
+                    raise ValueError(f"Initialization checkpoint finetune.{field} must match the current config.")
+            if (
+                self.tuning_config.trains("lora")
+                and saved_finetune["tuning"]["lora"] != current_finetune["tuning"]["lora"]
+            ):
+                raise ValueError("Initialization checkpoint LoRA configuration must match the current config.")
+            # Bypass the legacy inference loader's allowance for absent LayerMix weights.
+            torch.nn.Module.load_state_dict(self, get_state_dict_from_checkpoint(checkpoint), strict=True)
+            logging.info("Initialized full model weights from %s; trainer state is fresh.", init_checkpoint_path)
 
     def on_save_checkpoint(self, checkpoint):
         super().on_save_checkpoint(checkpoint)
@@ -282,6 +306,11 @@ class Sleep2vecFinetuning(pl.LightningModule):
                 )
 
     def load_state_dict(self, state_dict, strict: bool = True):
+        # Class weights belong to the current task config, not the recovered model.
+        state_dict = copy(state_dict)
+        state_dict.pop("_classification_loss.weight", None)
+        if self._classification_loss.weight is not None:
+            state_dict["_classification_loss.weight"] = self._classification_loss.weight
         # Allow missing/extra layer-mix weights when loading older checkpoints.
         result = super().load_state_dict(state_dict, strict=False)
         if not strict:

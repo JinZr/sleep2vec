@@ -207,6 +207,7 @@ def infer_runtime_cli_args(runtime: dict[str, Any]) -> list[Any]:
 def finetune_input_cli_args(inputs: dict[str, Any]) -> list[Any]:
     args: list[Any] = []
     append_option(args, "--pretrained-backbone-path", inputs.get("pretrained_backbone_path"))
+    append_option(args, "--init-checkpoint-path", inputs.get("init_checkpoint_path"))
     append_option(args, "--ckpt-path", inputs.get("ckpt_path"))
     return args
 

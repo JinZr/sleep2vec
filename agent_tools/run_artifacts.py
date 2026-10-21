@@ -615,7 +615,7 @@ def _validate_registered_workspace_runs(
             raise ValueError(f"Workspace run pipeline identity conflicts with its managed step: {key[0]} / {key[1]}")
         identity_fields = list(REGISTERED_PLAN_IDENTITY_FIELDS)
         if task == "hparam_tune":
-            identity_fields.extend(("parameter_summary", "terminal_status_owner"))
+            identity_fields.extend(("parameter_summary", "terminal_status_owner", "input_snapshots"))
         else:
             identity_fields.append("input_snapshots")
             if _text_value(canonical.get("parameter_summary")) != "single resolved recipe":

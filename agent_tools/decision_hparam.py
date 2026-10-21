@@ -17,6 +17,7 @@ from . import plan_hparam
 from .adaptive_proposals import validate_configurations, validate_parameter_envelopes
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import (
+    finetune_init_checkpoint_issue,
     managed_runtime_env_issues,
     managed_runtime_resource_issues,
     multilabel_sidecar_issue,
@@ -92,6 +93,7 @@ _HPARAM_AGENT_PROPOSAL_REQUIRED_FIELDS = (
     "max_runs_total",
 )
 _HPARAM_INPUT_FIELDS = {
+    "init_checkpoint_path",
     "ckpt_path",
     "config",
     "data_backend",
@@ -366,6 +368,9 @@ def _hparam_config_issues(
     pretrained_issue = sex_age_pretrained_backbone_issue(recipe)
     if pretrained_issue is not None:
         issues.append(pretrained_issue)
+    init_issue = finetune_init_checkpoint_issue(recipe)
+    if init_issue is not None:
+        issues.append(init_issue)
     local_field_map = {
         "selection_metric": ("evaluation_policy.selection_metric", "selection_metric"),
         "selection_mode": ("evaluation_policy.selection_mode", "selection_mode"),

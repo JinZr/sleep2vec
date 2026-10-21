@@ -85,9 +85,9 @@ The closed section fields are:
 - Recipe `step`: `id`, `phase`, `purpose`. The separate experiment step-registration command also owns `inputs` and `outputs`; those are not recipe-step fields.
 - `inputs`:
   - `preset_prepare`: `config`, `dataset_name`, `index`.
-  - `finetune`: `ckpt_path`, `config`, `data_backend`, `label_name`, `pretrained_backbone_path`.
+  - `finetune`: `ckpt_path`, `config`, `data_backend`, `label_name`, `pretrained_backbone_path`, `init_checkpoint_path`.
   - `infer` / `evaluate`: `ckpt_path`, `config`, `data_backend`, `eval_split`, `inference_preset_path`, `label_name`, `override_dataset_names`, `pretrained_backbone_path`.
-  - `hparam_tune`: `ckpt_path`, `config`, `data_backend`, `final_eval_config_path`, `inference_preset_path`, `label_name`, `override_dataset_names`, `pretrained_backbone_path`. For hparam recipes, `ckpt_path` selects the final-evaluation checkpoint and is not passed to tuning runs.
+  - `hparam_tune`: `ckpt_path`, `config`, `data_backend`, `final_eval_config_path`, `inference_preset_path`, `label_name`, `override_dataset_names`, `pretrained_backbone_path`, `init_checkpoint_path`. For hparam recipes, `ckpt_path` selects the final-evaluation checkpoint and is not passed to tuning runs. Optional `init_checkpoint_path` initializes full weights for `sleep2vec2` only; see the [initialization contract](../../doc/agent_contracts/hparam_workflow.md#full-model-weights-only-initialization).
   - `sleep2stat`: `config`, `split`.
   - `embedding_extraction`: `config`, `ckpt_path`, `data_index`, `eval_split`.
 - `runtime`:

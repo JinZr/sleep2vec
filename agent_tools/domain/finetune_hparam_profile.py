@@ -441,6 +441,10 @@ def _profile_axes(recipe: dict[str, Any], config_summary: ConfigSummaryInput) ->
     # What matters is which parameters receive gradient, not what the preset is called: a
     # `head_only` config that unfreezes the encoder through `groups` does train a backbone,
     # and a `full` config that freezes it through `groups` does not. Read the effective value.
+    if inputs.get("init_checkpoint_path") not in (None, ""):
+        raise ValueError(
+            "finetune_balanced does not support full-model initialization; use an explicit compatible search."
+        )
     if not has_trained_backbone and not _trains_encoder(tuning):
         raise ValueError(
             f"finetune_balanced cannot freeze the encoder under preset '{preset}' without a pretrained backbone."

@@ -33,6 +33,7 @@ from . import (
     experiment_io as exp_io,
     plan_contract,
     plan_rendering as rendering,
+    python_programs,
     slurm,
     transport,
 )
@@ -582,6 +583,12 @@ def compile_hparam_run_contracts(
         if not isinstance(base_config, dict):
             raise ValueError("Frozen hparam source config must be a mapping.")
     run_inputs = {key: value for key, value in inputs.items() if key != "ckpt_path"}
+    init_snapshots = []
+    if inputs.get("init_checkpoint_path"):
+        init_snapshot = plan_contract.frozen_input_snapshot(recipe, "inputs.init_checkpoint_path")
+        if init_snapshot["path"] != inputs["init_checkpoint_path"]:
+            raise ValueError("Frozen initialization checkpoint differs from its recipe path.")
+        init_snapshots.append(init_snapshot)
     runtime_defaults_value = recipe.get("runtime")
     runtime_defaults = runtime_defaults_value if isinstance(runtime_defaults_value, dict) else {}
     artifacts_value = recipe.get("artifacts")
@@ -655,12 +662,26 @@ def compile_hparam_run_contracts(
                     "terminal_status_owner": "scheduler_sidecar",
                 }
             )
+        if init_snapshots:
+            row["input_snapshots"] = init_snapshots
         contract: plan_contract.HparamRunContract | plan_contract.MaterializedHparamRunContract = {"row": row}
         if base_config is not None:
             run_config = copy.deepcopy(base_config)
             apply_search_overrides(run_config, combo)
             config_bytes = yaml.safe_dump(run_config).encode()
             script_commands = [row["command"]]
+            if init_snapshots:
+                script_commands.insert(
+                    0,
+                    rendering.render_command(
+                        [
+                            execution["python"],
+                            "-c",
+                            python_programs.source("plan_rendering.verify_input_snapshots"),
+                            json.dumps(init_snapshots, sort_keys=True, separators=(",", ":")),
+                        ]
+                    ),
+                )
             if selection_split == "test":
                 script_commands.insert(
                     0,
@@ -1302,6 +1323,8 @@ def hparam_manifest_rows(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
         }
         if "terminal_status_owner" in run:
             row["terminal_status_owner"] = run["terminal_status_owner"]
+        if "input_snapshots" in run:
+            row["input_snapshots"] = run["input_snapshots"]
         for field in sorted(SCHEDULER_PLAN_IDENTITY_FIELDS | {"log_path"}):
             if field in run:
                 row[field] = run[field]

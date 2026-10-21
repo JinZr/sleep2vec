@@ -842,6 +842,36 @@ def inference_checkpoint_averaging_issue(recipe: dict, ckpt_path: Any) -> Decisi
     return None
 
 
+def finetune_init_checkpoint_issue(recipe: dict) -> DecisionIssue | None:
+    inputs = recipe.get("inputs") or {}
+    value = inputs.get("init_checkpoint_path")
+    if value in (None, ""):
+        return None
+    message = None
+    if recipe.get("variant") != "sleep2vec2":
+        message = "init_checkpoint_path is supported only for sleep2vec2."
+    elif value == "ASK_USER":
+        return DecisionIssue(
+            DecisionStatus.NEEDS_USER_INPUT,
+            "init_checkpoint_path",
+            "Full-model initialization checkpoint is unresolved.",
+            "Which full finetune checkpoint should initialize this run?",
+        )
+    elif not isinstance(value, str) or not Path(value).is_absolute():
+        message = "init_checkpoint_path must be an absolute checkpoint file path."
+    elif inputs.get("pretrained_backbone_path") not in (None, ""):
+        message = "init_checkpoint_path cannot be combined with pretrained_backbone_path."
+    elif (recipe.get("execution") or {}).get("target", "local") != "local":
+        message = "Full-model initialization requires local plan publication on the checkpoint execution host."
+    elif (recipe.get("search") or {}).get("profile"):
+        message = "Full-model initialization requires an explicit compatible search, not a structural search profile."
+    if message is None:
+        return None
+    return DecisionIssue(
+        DecisionStatus.FAIL, "init_checkpoint_path", message, None, {"preflight_before_workspace": True}
+    )
+
+
 def sex_age_pretrained_backbone_issue(recipe: dict) -> DecisionIssue | None:
     # The baseline CLIs accept --pretrained-backbone-path only to match sleep2vec and raise when it is set.
     if recipe.get("variant") != "sex_age_baseline":
