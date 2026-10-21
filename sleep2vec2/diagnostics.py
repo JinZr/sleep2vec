@@ -263,6 +263,8 @@ class TensorDiagnostic(object):
                     stats = torch.cat([x.tensor / get_count(x.count) for x in stats_list], dim=0)
 
                 if stats_type == "eigs":
+                    if stats.dtype in (torch.float16, torch.bfloat16):
+                        stats = stats.float()
                     try:
                         if hasattr(torch, "linalg") and hasattr(torch.linalg, "eigh"):
                             eigs, _ = torch.linalg.eigh(stats)
