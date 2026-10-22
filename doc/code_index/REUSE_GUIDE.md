@@ -126,7 +126,10 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Channel `init_from` (finetune `model.channels[].init_from`) is applied inside
   `load_pretrain_init_weights(channel_init_from=...)`: it copies the named pretrained
   channel's tokenizer and `mask_embed` to a differently named channel before loading;
-  source and target must share a tokenizer layout, and `validate_init_from_sources` in
+  source and target must share a tokenizer layout, and the target's `input_dim` and tokenizer
+  block must equal the source channel's as serialized in the checkpoint, checked by
+  `Sleep2vecDownstreamModel._check_init_from_tokenizer_semantics` before any weights load;
+  `validate_init_from_sources` in
   `sleep2vec2/sleep2vec_finetuning.py` is the weight-source guard that both the module and
   `sleep2vec2.finetune.supervised` run before the run directory is claimed.
   Pretrain and adapt configs reject the field; do not pre-bake renamed-channel checkpoints.

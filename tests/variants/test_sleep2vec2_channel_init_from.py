@@ -175,17 +175,7 @@ def test_channel_init_from_rejects_mismatched_tokenizer_layout(tmp_path: Path):
         )
 
 
-def test_load_pretrained_backbone_passes_channel_init_from(monkeypatch: pytest.MonkeyPatch):
-    from sleep2vec2 import downstream_model
-
-    calls = []
-
-    def fake_load(module, ckpt_path, **kwargs):
-        calls.append(kwargs)
-        return SimpleNamespace(loaded_keys=0, missing_keys=[], unexpected_keys=[])
-
-    monkeypatch.setattr(downstream_model, "load_checkpoint", lambda path, device: {"model_config_yaml": "{}"})
-    monkeypatch.setattr(downstream_model, "load_pretrain_init_weights", fake_load)
+def _downstream_model_with_init_from_targets(downstream_model):
     model = downstream_model.Sleep2vecDownstreamModel.__new__(downstream_model.Sleep2vecDownstreamModel)
     torch.nn.Module.__init__(model)
     model.backbone = torch.nn.Identity()
@@ -197,10 +187,70 @@ def test_load_pretrained_backbone_passes_channel_init_from(monkeypatch: pytest.M
             ChannelConfig(name="ppg", input_dim=3840),
         ],
     )
+    return model
+
+
+def _checkpoint_with_channels(*channels: dict) -> dict:
+    return {"model_config_yaml": yaml.safe_dump({"channels": list(channels)})}
+
+
+_LINEAR_TOKENIZER = {"name": "linear", "out_dim": None, "kwargs": {}}
+
+
+def test_load_pretrained_backbone_passes_channel_init_from(monkeypatch: pytest.MonkeyPatch):
+    from sleep2vec2 import downstream_model
+
+    calls = []
+
+    def fake_load(module, ckpt_path, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(loaded_keys=0, missing_keys=[], unexpected_keys=[])
+
+    ckpt = _checkpoint_with_channels({"name": "eeg_original", "input_dim": 3840, "tokenizer": _LINEAR_TOKENIZER})
+    monkeypatch.setattr(downstream_model, "load_checkpoint", lambda path, device: ckpt)
+    monkeypatch.setattr(downstream_model, "load_pretrain_init_weights", fake_load)
+    model = _downstream_model_with_init_from_targets(downstream_model)
 
     model.load_pretrained_backbone("pretrain.ckpt")
 
     assert calls[0]["channel_init_from"] == {"zmax_eegl": "eeg_original", "zmax_eegr": "eeg_original"}
+
+
+@pytest.mark.parametrize(
+    ("ckpt_channel", "match"),
+    [
+        (
+            {
+                "name": "eeg_original",
+                "input_dim": 3840,
+                "tokenizer": {**_LINEAR_TOKENIZER, "kwargs": {"residual_mixing": "ffn_scaled"}},
+            },
+            "input_dim/tokenizer differ from the checkpoint's 'eeg_original' channel",
+        ),
+        (
+            {"name": "eeg_original", "input_dim": 1920, "tokenizer": _LINEAR_TOKENIZER},
+            "input_dim/tokenizer differ from the checkpoint's 'eeg_original' channel",
+        ),
+        (
+            {"name": "ppg", "input_dim": 3840, "tokenizer": _LINEAR_TOKENIZER},
+            "has no channel named 'eeg_original'",
+        ),
+    ],
+)
+def test_load_pretrained_backbone_rejects_init_from_semantic_mismatch(
+    monkeypatch: pytest.MonkeyPatch, ckpt_channel: dict, match: str
+):
+    from sleep2vec2 import downstream_model
+
+    calls = []
+    ckpt = _checkpoint_with_channels(ckpt_channel)
+    monkeypatch.setattr(downstream_model, "load_checkpoint", lambda path, device: ckpt)
+    monkeypatch.setattr(downstream_model, "load_pretrain_init_weights", lambda *args, **kwargs: calls.append(kwargs))
+    model = _downstream_model_with_init_from_targets(downstream_model)
+
+    with pytest.raises(ValueError, match=match):
+        model.load_pretrained_backbone("pretrain.ckpt")
+    assert calls == []
 
 
 def test_finetuning_module_rejects_init_from_without_initialization_checkpoint():
