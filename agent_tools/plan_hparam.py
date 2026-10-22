@@ -1203,7 +1203,7 @@ def render_hparam_preflight_card(
                 continue
             channel_details = [
                 f"{field}={channel[field]}"
-                for field in ("input_dim", "tokenizer", "out_dim")
+                for field in ("input_dim", "tokenizer", "out_dim", "init_from")
                 if channel.get(field) not in (None, "")
             ]
             channel_text = str(channel["name"])

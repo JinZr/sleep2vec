@@ -14,7 +14,7 @@ Requires config YAML, `--label-name`, data backend inputs, pretrained-backbone p
 ## Decision checklist
 Confirm `data.finetune_preset_path`, `data.finetune_data_index`, `data.backend`, task monitor, results CSV, and any explicit `--no-test-after-fit` opt-out.
 
-On `sleep2vec`, `sleep2vec2` and `sleep2expert`, also confirm `pretrained_backbone_path` and the `finetune.tuning` block that decides what trains (its `preset` and any `groups` overrides, LoRA included). `sex_age_baseline` has neither: it trains its own model and its loader never reads `finetune.tuning`, so asking for a tuning policy there sends the agent hunting for a block no config in that variant carries.
+On `sleep2vec`, `sleep2vec2` and `sleep2expert`, also confirm `pretrained_backbone_path` and the `finetune.tuning` block that decides what trains (its `preset` and any `groups` overrides, LoRA included). A `sleep2vec2` channel with `model.channels[].init_from` takes its tokenizer and `mask_embed` weights from the differently named pretrained-checkpoint channel it names; `alias` is the data-side npz key, not a weight mapping. `sex_age_baseline` has neither: it trains its own model and its loader never reads `finetune.tuning`, so asking for a tuning policy there sends the agent hunting for a block no config in that variant carries.
 
 ## Stop-and-consult gates
 The agent must stop and ask the user before continuing if any high-impact decision is missing, ambiguous, conflicting, or marked as `ASK_USER`.
@@ -24,6 +24,7 @@ Stop and consult the user if:
 - `label_name` is missing.
 - The config contains several plausible labels.
 - `pretrained_backbone_path` is absent on a `sleep2vec`, `sleep2vec2` or `sleep2expert` recipe and neither scratch training nor supported full-model initialization is explicitly intended.
+- Any `model.channels[].init_from` is set while `pretrained_backbone_path` is absent and neither `init_checkpoint_path` nor a resume `ckpt_path` is given; the run fails at launch rather than training those tokenizers from scratch.
 - `finetune.task.monitor` is missing or inconsistent with the label.
 - The data backend is unclear.
 - The config points to both index and preset inputs without a clear priority.

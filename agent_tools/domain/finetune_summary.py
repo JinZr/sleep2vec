@@ -43,6 +43,7 @@ def _channel_summary(item: dict[str, Any]) -> ChannelSummary:
         "input_dim": item.get("input_dim"),
         "tokenizer": tokenizer.get("name"),
         "out_dim": tokenizer.get("out_dim"),
+        "init_from": item.get("init_from"),
     }
 
 
