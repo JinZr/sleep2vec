@@ -163,11 +163,12 @@ def test_load_pretrained_backbone_passes_channel_init_from(monkeypatch: pytest.M
     assert calls[0]["channel_init_from"] == {"zmax_eegl": "eeg_original", "zmax_eegr": "eeg_original"}
 
 
-def test_finetune_rejects_init_from_without_initialization_checkpoint():
-    from sleep2vec2 import finetune
+def test_finetuning_module_rejects_init_from_without_initialization_checkpoint():
+    from sleep2vec2 import sleep2vec_finetuning
 
     model_config = SimpleNamespace(channels=[ChannelConfig(name="zmax_eegl", input_dim=3840, init_from="eeg_original")])
-    args = SimpleNamespace(pretrained_backbone_path=None, ckpt_path=None)
+    args = SimpleNamespace(pretrained_backbone_path=None, ckpt_path=None, init_checkpoint_path=None)
 
+    # Raised before the backbone is built, so the stub model_config is never consumed.
     with pytest.raises(ValueError, match="needs --pretrained-backbone-path"):
-        finetune.supervised(args, SimpleNamespace(model=model_config))
+        sleep2vec_finetuning.Sleep2vecFinetuning(args, model_config)

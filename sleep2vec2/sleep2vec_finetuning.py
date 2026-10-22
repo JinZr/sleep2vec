@@ -78,6 +78,16 @@ class Sleep2vecFinetuning(pl.LightningModule):
             raise ValueError(
                 "--init-checkpoint-path cannot be combined with --pretrained-backbone-path or --ckpt-path."
             )
+        init_from_channels = [c.name for c in model_config.channels if c.init_from]
+        # A finetune checkpoint (resume or full-model warmstart) already holds the new channel names.
+        if init_from_channels and not (
+            args.pretrained_backbone_path or getattr(args, "ckpt_path", None) or init_checkpoint_path
+        ):
+            raise ValueError(
+                f"channels {init_from_channels} set init_from, which needs --pretrained-backbone-path "
+                "(or a finetune checkpoint via --ckpt-path / --init-checkpoint-path); otherwise the tokenizers "
+                "would train from scratch."
+            )
 
         self.backbone = Sleep2vecPretrainModel(
             model_config=model_config,
