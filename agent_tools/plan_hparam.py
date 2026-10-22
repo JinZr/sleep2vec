@@ -349,6 +349,26 @@ def _final_eval_config_drift_issue(recipe: dict, snapshot: BoundFinalEvalConfigS
     )
 
 
+def check_trial_init_from_sources(trial_inputs: dict, run_config: dict, combo: dict) -> None:
+    """A search override may add ``model.channels[].init_from`` to one arm, so each post-override candidate needs
+    its own weight source. The hparam ckpt_path is final-evaluation-only; an ASK_USER source is still pending."""
+    model = run_config.get("model")
+    channels = model.get("channels") if isinstance(model, dict) else None
+    init_from_channels = [
+        channel.get("name")
+        for channel in (channels if isinstance(channels, list) else [])
+        if isinstance(channel, dict) and channel.get("init_from")
+    ]
+    if init_from_channels and all(
+        trial_inputs.get(key) in (None, "") for key in ("pretrained_backbone_path", "init_checkpoint_path")
+    ):
+        raise ValueError(
+            f"hparam candidate {combo} sets init_from on model.channels {init_from_channels} without "
+            "pretrained_backbone_path or init_checkpoint_path; the hparam ckpt_path is final-evaluation-only, so "
+            "every such trial would be rejected by validate_init_from_sources at launch."
+        )
+
+
 def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[DecisionIssue]:
     inputs_value = recipe.get("inputs")
     inputs = inputs_value if isinstance(inputs_value, dict) else {}
@@ -398,6 +418,7 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
         for combo in hparam_combos(recipe):
             run_config = copy.deepcopy(base_config)
             apply_search_overrides(run_config, combo)
+            check_trial_init_from_sources(inputs, run_config, combo)
             run_config_bytes = yaml.safe_dump(run_config).encode()
             if run_config_bytes not in validated_configs:
                 validate_finetune_config_bytes(recipe, run_config_bytes)
@@ -668,6 +689,7 @@ def compile_hparam_run_contracts(
         if base_config is not None:
             run_config = copy.deepcopy(base_config)
             apply_search_overrides(run_config, combo)
+            check_trial_init_from_sources(run_inputs, run_config, combo)
             config_bytes = yaml.safe_dump(run_config).encode()
             script_commands = [row["command"]]
             if init_snapshots:

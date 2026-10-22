@@ -130,10 +130,14 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   block must equal the source channel's as serialized in the checkpoint, checked by
   `Sleep2vecDownstreamModel._check_init_from_tokenizer_semantics` before any weights load;
   `validate_init_from_sources` in
-  `sleep2vec2/sleep2vec_finetuning.py` is the weight-source guard that both the module and
-  `sleep2vec2.finetune.supervised` run before the run directory is claimed;
+  `sleep2vec2/sleep2vec_finetuning.py` is the weight-source guard that
+  `sleep2vec2.finetune.supervised` runs before the run directory is claimed; external checkpoint
+  consumers such as the sleep2stat analyzer construct the module without it;
   `finetune_init_from_source_issue` in `agent_tools/decision_paths.py` is its consultation-time
-  twin, run by `FinetuneAdapter.task_issues` and therefore by `hparam_tune`'s base-task gate.
+  twin, run by `FinetuneAdapter.task_issues` and therefore by `hparam_tune`'s base-task gate,
+  where the final-evaluation-only hparam `ckpt_path` does not count as a source;
+  `plan_hparam.check_trial_init_from_sources` repeats the check on each post-override candidate
+  config in `hparam_yaml_override_issues` and `compile_hparam_run_contracts`.
   Pretrain and adapt configs reject the field; do not pre-bake renamed-channel checkpoints.
 - Use result owners for output directories, CSV schemas, prediction ids, and manifests.
 - Use inference `--results-root` to isolate a managed attempt; consume its unique terminal manifest instead of scanning shared default outputs.

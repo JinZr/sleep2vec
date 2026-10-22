@@ -253,17 +253,6 @@ def test_load_pretrained_backbone_rejects_init_from_semantic_mismatch(
     assert calls == []
 
 
-def test_finetuning_module_rejects_init_from_without_initialization_checkpoint():
-    from sleep2vec2 import sleep2vec_finetuning
-
-    model_config = SimpleNamespace(channels=[ChannelConfig(name="zmax_eegl", input_dim=3840, init_from="eeg_original")])
-    args = SimpleNamespace(pretrained_backbone_path=None, ckpt_path=None, init_checkpoint_path=None)
-
-    # Raised before the backbone is built, so the stub model_config is never consumed.
-    with pytest.raises(ValueError, match="needs --pretrained-backbone-path"):
-        sleep2vec_finetuning.Sleep2vecFinetuning(args, model_config)
-
-
 def test_finetune_rejects_init_from_without_weight_source_before_claiming_run_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

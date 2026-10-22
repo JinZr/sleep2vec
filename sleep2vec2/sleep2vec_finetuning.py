@@ -77,7 +77,8 @@ def _model_semantics(model_config: dict) -> dict:
 
 def validate_init_from_sources(args, model_config) -> None:
     """Channels with init_from need a weight source; a finetune checkpoint (resume or full-model warmstart)
-    already holds the new channel names."""
+    already holds the new channel names. Run by the training entry (``finetune.supervised``), not by the module:
+    external checkpoint consumers construct the module first and then load a trained checkpoint."""
     init_from_channels = [c.name for c in model_config.channels if c.init_from]
     if init_from_channels and not (
         args.pretrained_backbone_path or getattr(args, "ckpt_path", None) or getattr(args, "init_checkpoint_path", None)
@@ -101,7 +102,6 @@ class Sleep2vecFinetuning(pl.LightningModule):
             raise ValueError(
                 "--init-checkpoint-path cannot be combined with --pretrained-backbone-path or --ckpt-path."
             )
-        validate_init_from_sources(args, model_config)
 
         self.backbone = Sleep2vecPretrainModel(
             model_config=model_config,

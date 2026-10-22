@@ -893,9 +893,12 @@ def finetune_init_from_source_issue(
         return None
     inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
     init_checkpoint = decisions.get("init_checkpoint_path")
+    # An hparam ckpt_path is final-evaluation-only (compile_hparam_run_contracts drops it from trial inputs), so it
+    # cannot initialize a trial; only a direct finetune resume counts it.
+    is_hparam = "search" in recipe
     sources = {
         "pretrained_backbone_path": backbone.value,
-        "ckpt_path": decisions["ckpt_path"].value,
+        "ckpt_path": None if is_hparam else decisions["ckpt_path"].value,
         "init_checkpoint_path": (
             init_checkpoint.value if init_checkpoint is not None else inputs.get("init_checkpoint_path")
         ),
@@ -907,7 +910,8 @@ def finetune_init_from_source_issue(
         "pretrained_backbone_path",
         f"model.channels {init_from_channels} set init_from, which copies tokenizer weights from "
         "pretrained_backbone_path (or a finetune checkpoint via ckpt_path / init_checkpoint_path); training from "
-        "scratch would leave those tokenizers uninitialized and the finetune command rejects it at launch.",
+        "scratch would leave those tokenizers uninitialized and the finetune command rejects it at launch."
+        + (" The hparam ckpt_path is final-evaluation-only and does not initialize trials." if is_hparam else ""),
         None,
         {"init_from_channels": init_from_channels, "sources": sources, "preflight_before_workspace": True},
     )

@@ -1,10 +1,13 @@
+import hashlib
 from pathlib import Path
+import sys
 
-from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import config_payload, run_cli, write_finetune_recipe, write_yaml
 import pytest
 from test_agent_plan_blocks_on_ambiguity import _hparam_recipe
 import yaml
 
+from agent_tools import plan_contract, plan_hparam
 from agent_tools.configs import config_summary
 from agent_tools.decision_models import ResolvedDecision
 from agent_tools.decision_paths import finetune_init_from_source_issue
@@ -119,6 +122,22 @@ def test_helper_treats_ask_user_as_pending_source():
     }
 
 
+def test_helper_counts_ckpt_path_only_for_direct_finetune():
+    summary = {"model": {"channels": [{"name": "ppg", "init_from": "eeg_original"}]}}
+    scratch = ResolvedDecision("pretrained_backbone_path", None, "explicit_recipe", "high", {"value": None})
+    ckpt = ResolvedDecision("ckpt_path", "x", "explicit_recipe", "high", {"value": "x"})
+    decisions = {"pretrained_backbone_path": scratch, "ckpt_path": ckpt}
+
+    assert finetune_init_from_source_issue({"inputs": {"ckpt_path": "x"}}, summary, decisions) is None
+
+    issue = finetune_init_from_source_issue(
+        {"inputs": {"ckpt_path": "x"}, "search": {"parameters": {"runtime.lr": [1e-6]}}}, summary, decisions
+    )
+    assert issue is not None
+    assert issue.evidence["sources"]["ckpt_path"] is None
+    assert "final-evaluation-only" in issue.message
+
+
 def test_hparam_doctor_blocks_scratch_init_from(tmp_path):
     recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
     _add_init_from(tmp_path / "config.yaml")
@@ -128,3 +147,66 @@ def test_hparam_doctor_blocks_scratch_init_from(tmp_path):
     assert result.returncode == 1
     assert "base_finetune.pretrained_backbone_path" in result.stdout
     assert "set init_from" in result.stdout
+
+
+def test_hparam_doctor_ignores_final_evaluation_ckpt_path_as_init_from_source(tmp_path):
+    ckpt = tmp_path / "final.ckpt"
+    ckpt.write_bytes(b"")
+    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2", ckpt_path=ckpt)
+    _add_init_from(tmp_path / "config.yaml")
+
+    result = run_cli("doctor", "--recipe", str(recipe))
+
+    assert result.returncode == 1
+    assert "base_finetune.pretrained_backbone_path" in result.stdout
+    assert "set init_from" in result.stdout
+
+
+def _hparam_recipe_with_init_from_override(tmp_path: Path) -> Path:
+    base_channel = config_payload(tmp_path / "index.csv")["model"]["channels"][0]
+    parameters = {"yaml:/model/channels/0": [base_channel, {**base_channel, "init_from": "eeg_original"}]}
+    return _hparam_recipe(tmp_path, variant="sleep2vec2", parameters=parameters, max_runs=2)
+
+
+def test_hparam_override_adding_init_from_without_source_fails_doctor(tmp_path):
+    recipe = _hparam_recipe_with_init_from_override(tmp_path)
+
+    result = run_cli("doctor", "--recipe", str(recipe))
+
+    assert result.returncode == 1
+    assert "hparam_search_space" in result.stdout
+    assert "sets init_from on model.channels" in result.stdout
+
+
+def test_hparam_override_adding_init_from_with_backbone_passes_override_check(tmp_path):
+    recipe_path = _hparam_recipe_with_init_from_override(tmp_path)
+    base_path = Path(yaml.safe_load(recipe_path.read_text())["base_recipe"])
+    base = yaml.safe_load(base_path.read_text())
+    _set_backbone(base, tmp_path)
+    write_yaml(base_path, base)
+
+    result = run_cli("doctor", "--recipe", str(recipe_path))
+
+    assert "sets init_from on model.channels" not in result.stdout
+
+
+def test_compile_hparam_run_contracts_rejects_init_from_candidate_without_source(tmp_path):
+    source = tmp_path / "source.yaml"
+    payload = config_payload(tmp_path / "index.csv")
+    captured = yaml.safe_dump(payload, sort_keys=False).encode()
+    source.write_bytes(captured)
+    channel = {**payload["model"]["channels"][0], "init_from": "eeg_original"}
+    recipe = {
+        "variant": "sleep2vec2",
+        "inputs": {"config": str(source), "label_name": "ahi", "ckpt_path": str(tmp_path / "final.ckpt")},
+        "experiment": {"id": "unit-candidates"},
+        "step": {"id": "tune"},
+        "execution": {"python": sys.executable, "runtime_commit": "a" * 40, "workdir": str(tmp_path)},
+        "evaluation_policy": {"test_after_fit": False, "selection_split": "val"},
+        "search": {"configurations": [{"yaml:/model/channels/0": channel}]},
+    }
+    plan_contract.bind_plan_context(recipe)
+    plan_contract.bind_frozen_input_snapshot(recipe, "inputs.config", source, hashlib.sha256(captured).hexdigest())
+
+    with pytest.raises(ValueError, match="init_from"):
+        plan_hparam.compile_hparam_run_contracts(recipe, tmp_path / "plan", 0, source_config_bytes=captured)
