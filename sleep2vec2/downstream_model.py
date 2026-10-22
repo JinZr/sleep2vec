@@ -511,6 +511,9 @@ class Sleep2vecDownstreamModel(nn.Module):
             device="cpu",
             strict=False,
             prefixes=prefixes,
+            channel_init_from=(
+                {c.name: c.init_from for c in self.model_config.channels if c.init_from} if self.model_config else None
+            ),
         )
 
         # 打印加载结果

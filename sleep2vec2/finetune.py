@@ -183,6 +183,19 @@ def _finish_wandb_run(preexisting_run) -> None:
 
 
 def supervised(args, config_bundle):
+    init_from_channels = [c.name for c in config_bundle.model.channels if c.init_from]
+    # A finetune checkpoint (resume or full-model warmstart) already holds the new channel names.
+    weight_sources = (
+        args.pretrained_backbone_path,
+        getattr(args, "ckpt_path", None),
+        getattr(args, "init_checkpoint_path", None),
+    )
+    if init_from_channels and not any(weight_sources):
+        raise ValueError(
+            f"channels {init_from_channels} set init_from, which needs --pretrained-backbone-path "
+            "(or a finetune checkpoint via --ckpt-path / --init-checkpoint-path); otherwise the tokenizers "
+            "would train from scratch."
+        )
     validate_finetune_scheduler_args(args)
     if getattr(args, "init_checkpoint_path", None) and (args.pretrained_backbone_path or args.ckpt_path):
         raise ValueError("--init-checkpoint-path cannot be combined with --pretrained-backbone-path or --ckpt-path.")

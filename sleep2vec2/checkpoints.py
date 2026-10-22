@@ -97,6 +97,7 @@ def load_pretrain_init_weights(
     device: torch.device | str = torch.device("cpu"),
     strict: bool = False,
     prefixes: t.Sequence[str] = ("ema_model.", "model."),
+    channel_init_from: t.Mapping[str, str] | None = None,
 ) -> PretrainInitLoadResult:
     ckpt = load_checkpoint(ckpt_path, device)
     filtered_state_dict, used_prefix = extract_pretrain_init_state_dict(ckpt, prefixes=prefixes)
@@ -115,17 +116,38 @@ def load_pretrain_init_weights(
         )
     target_keys = module.state_dict().keys()
     target_uses_standalone_roformer = any(".attention.self_attention." in key for key in target_keys)
-    legacy_roformer_keys = [
-        key
-        for key in filtered_state_dict
-        if ".attention.self." in key or ".LayerNorm." in key
-    ]
+    legacy_roformer_keys = [key for key in filtered_state_dict if ".attention.self." in key or ".LayerNorm." in key]
     if target_uses_standalone_roformer and legacy_roformer_keys:
         preview = ", ".join(legacy_roformer_keys[:3])
         raise ValueError(
             "sleep2vec2 does not support loading legacy sleep2vec/HF RoFormer checkpoints into the standalone "
             f"RoFormer backbone. Train or convert a sleep2vec2 checkpoint instead. Legacy keys: {preview}"
         )
+    # Each target channel's tokenizer (and mask_embed) starts from a differently named checkpoint channel.
+    for target, source in (channel_init_from or {}).items():
+        source_prefix = f"tokenizer_mapping.{source}."
+        source_keys = [key for key in filtered_state_dict if key.startswith(source_prefix)]
+        if not source_keys:
+            available = sorted(
+                {key.split(".")[1] for key in filtered_state_dict if key.startswith("tokenizer_mapping.")}
+            )
+            raise ValueError(
+                f"Channel '{target}' sets init_from '{source}', but {ckpt_path} has no tokenizer for '{source}'. "
+                f"Checkpoint tokenizer channels: {available}"
+            )
+        if any(key.startswith(f"tokenizer_mapping.{target}.") for key in filtered_state_dict):
+            raise ValueError(
+                f"Channel '{target}' sets init_from '{source}', but {ckpt_path} already holds a pretrained "
+                f"tokenizer for '{target}'; init_from would overwrite it."
+            )
+        copies = {
+            f"tokenizer_mapping.{target}.{key[len(source_prefix):]}": filtered_state_dict[key] for key in source_keys
+        }
+        if f"mask_embed.{source}" in filtered_state_dict:
+            copies[f"mask_embed.{target}"] = filtered_state_dict[f"mask_embed.{source}"]
+        # load_state_dict copies values into each parameter, so targets sharing a source stay independent.
+        filtered_state_dict.update(copies)
+        logging.info("Initialized channel '%s' from checkpoint channel '%s' (%d tensors).", target, source, len(copies))
     load_info = module.load_state_dict(filtered_state_dict, strict=strict)
     # A subtree matched but the module took nothing from it: this checkpoint holds a different
     # model. `strict=False` is there to tolerate a partial mismatch -- a renamed channel, a

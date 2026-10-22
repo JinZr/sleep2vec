@@ -123,6 +123,10 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   managed `inputs.init_checkpoint_path` reuses frozen input snapshots. See the
   [initialization contract](../agent_contracts/hparam_workflow.md#full-model-weights-only-initialization)
   for its variant and semantic boundaries; do not substitute backbone-only loading or trainer resume.
+- Channel `init_from` (finetune `model.channels[].init_from`) is applied inside
+  `load_pretrain_init_weights(channel_init_from=...)`: it copies the named pretrained
+  channel's tokenizer and `mask_embed` to a differently named channel before loading.
+  Pretrain and adapt configs reject the field; do not pre-bake renamed-channel checkpoints.
 - Use result owners for output directories, CSV schemas, prediction ids, and manifests.
 - Use inference `--results-root` to isolate a managed attempt; consume its unique terminal manifest instead of scanning shared default outputs.
 - Let analysis/export failures terminate instead of emitting partial-success bundles.
