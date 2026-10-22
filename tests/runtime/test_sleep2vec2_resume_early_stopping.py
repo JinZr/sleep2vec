@@ -102,7 +102,7 @@ def run_finetune(monkeypatch, tmp_path):
             test_all_checkpoints_after_fit=False,
             label_name="stage5",
         )
-        bundle = SimpleNamespace(model=None, averaging=None, finetune=None)
+        bundle = SimpleNamespace(model=SimpleNamespace(channels=[]), averaging=None, finetune=None)
         finetune.supervised(args, bundle)
         return model, trainers[0]
 

@@ -149,6 +149,19 @@ def load_pretrain_init_weights(
         }
         if f"mask_embed.{source}" in filtered_state_dict:
             target_copies[f"mask_embed.{target}"] = filtered_state_dict[f"mask_embed.{source}"]
+        expected = {
+            key
+            for key in target_keys
+            if key.startswith(f"tokenizer_mapping.{target}.") or key == f"mask_embed.{target}"
+        }
+        if set(target_copies) != expected:
+            missing = sorted(expected - set(target_copies))
+            unexpected = sorted(set(target_copies) - expected)
+            raise ValueError(
+                f"Channel '{target}' sets init_from '{source}', but the '{source}' tokenizer in {ckpt_path} does not "
+                f"match this model's '{target}' tokenizer layout (missing: {missing[:3]}, "
+                f"unexpected: {unexpected[:3]}); init_from requires the same tokenizer architecture."
+            )
         copies.update(target_copies)
         logging.info(
             "Initialized channel '%s' from checkpoint channel '%s' (%d tensors).", target, source, len(target_copies)

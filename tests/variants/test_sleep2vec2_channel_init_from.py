@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -151,6 +152,29 @@ def test_channel_init_from_rejects_target_already_in_checkpoint(tmp_path: Path):
         )
 
 
+class _MismatchedTokenizerBackbone(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.tokenizer_mapping = torch.nn.ModuleDict(
+            {"zmax_eegl": torch.nn.Sequential(torch.nn.Linear(4, 3), torch.nn.Linear(3, 3))}
+        )
+        self.mask_embed = torch.nn.ParameterDict({"zmax_eegl": torch.nn.Parameter(torch.zeros(3))})
+
+
+def test_channel_init_from_rejects_mismatched_tokenizer_layout(tmp_path: Path):
+    ckpt_path = tmp_path / "pretrain.ckpt"
+    _save_source_checkpoint(ckpt_path)
+
+    with pytest.raises(ValueError, match="does not match this model's 'zmax_eegl' tokenizer layout"):
+        load_pretrain_init_weights(
+            _MismatchedTokenizerBackbone(),
+            ckpt_path,
+            device="cpu",
+            prefixes=("model.",),
+            channel_init_from={"zmax_eegl": "eeg_original"},
+        )
+
+
 def test_load_pretrained_backbone_passes_channel_init_from(monkeypatch: pytest.MonkeyPatch):
     from sleep2vec2 import downstream_model
 
@@ -188,3 +212,33 @@ def test_finetuning_module_rejects_init_from_without_initialization_checkpoint()
     # Raised before the backbone is built, so the stub model_config is never consumed.
     with pytest.raises(ValueError, match="needs --pretrained-backbone-path"):
         sleep2vec_finetuning.Sleep2vecFinetuning(args, model_config)
+
+
+def test_finetune_rejects_init_from_without_weight_source_before_claiming_run_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from sleep2vec2 import finetune as finetune_mod
+
+    calls = []
+    monkeypatch.setattr(finetune_mod, "_preflight_finetune_run_directory", lambda *_: calls.append("preflight"))
+    monkeypatch.setattr(finetune_mod, "persist_run_config_and_args", lambda *_: calls.append("persist"))
+    monkeypatch.setattr(finetune_mod, "prepare_dataloader", lambda *_: calls.append("dataloader"))
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(
+        version="unit-test",
+        epochs=1,
+        test_after_fit=True,
+        test_all_checkpoints_after_fit=False,
+        pretrained_backbone_path=None,
+        ckpt_path=None,
+        init_checkpoint_path=None,
+    )
+    bundle = SimpleNamespace(
+        model=SimpleNamespace(channels=[ChannelConfig(name="zmax_eegl", input_dim=3840, init_from="eeg_original")]),
+        averaging=None,
+        finetune=None,
+    )
+
+    with pytest.raises(ValueError, match="needs --pretrained-backbone-path"):
+        finetune_mod.supervised(args, bundle)
+    assert calls == []

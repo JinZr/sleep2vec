@@ -119,7 +119,7 @@ def test_failed_manifest_write_does_not_mask_primary_training_error(
         wandb_group="unit",
         wandb_mode="offline",
     )
-    config_bundle = types.SimpleNamespace(model={}, finetune={}, averaging={})
+    config_bundle = types.SimpleNamespace(model=types.SimpleNamespace(channels=[]), finetune={}, averaging={})
     logger_kwargs = {}
 
     class DummyLogger:

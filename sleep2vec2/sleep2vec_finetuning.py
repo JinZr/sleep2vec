@@ -75,6 +75,20 @@ def _model_semantics(model_config: dict) -> dict:
     return {**model_config, "channels": channels}
 
 
+def validate_init_from_sources(args, model_config) -> None:
+    """Channels with init_from need a weight source; a finetune checkpoint (resume or full-model warmstart)
+    already holds the new channel names."""
+    init_from_channels = [c.name for c in model_config.channels if c.init_from]
+    if init_from_channels and not (
+        args.pretrained_backbone_path or getattr(args, "ckpt_path", None) or getattr(args, "init_checkpoint_path", None)
+    ):
+        raise ValueError(
+            f"channels {init_from_channels} set init_from, which needs --pretrained-backbone-path "
+            "(or a finetune checkpoint via --ckpt-path / --init-checkpoint-path); otherwise the tokenizers "
+            "would train from scratch."
+        )
+
+
 class Sleep2vecFinetuning(pl.LightningModule):
     def __init__(self, args, model_config, finetune_config=None, averaging_config=None):
         super().__init__()
@@ -87,16 +101,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             raise ValueError(
                 "--init-checkpoint-path cannot be combined with --pretrained-backbone-path or --ckpt-path."
             )
-        init_from_channels = [c.name for c in model_config.channels if c.init_from]
-        # A finetune checkpoint (resume or full-model warmstart) already holds the new channel names.
-        if init_from_channels and not (
-            args.pretrained_backbone_path or getattr(args, "ckpt_path", None) or init_checkpoint_path
-        ):
-            raise ValueError(
-                f"channels {init_from_channels} set init_from, which needs --pretrained-backbone-path "
-                "(or a finetune checkpoint via --ckpt-path / --init-checkpoint-path); otherwise the tokenizers "
-                "would train from scratch."
-            )
+        validate_init_from_sources(args, model_config)
 
         self.backbone = Sleep2vecPretrainModel(
             model_config=model_config,

@@ -87,6 +87,7 @@ def _load_finetune_module(module_name: str, monkeypatch: pytest.MonkeyPatch) -> 
     ):
         setattr(stubbed_modules[f"{namespace}.results"], name, lambda *_args, **_kwargs: None)
     stubbed_modules[f"{namespace}.sleep2vec_finetuning"].Sleep2vecFinetuning = object
+    stubbed_modules[f"{namespace}.sleep2vec_finetuning"].validate_init_from_sources = lambda *_args: None
     stubbed_modules[f"{namespace}.utils"].get_finetune_dataloaders = lambda *_args, **_kwargs: (None, None, None)
 
     for name, module in stubbed_modules.items():
@@ -295,12 +296,18 @@ def _run_supervised(
 
     if test_failure_checkpoint is not None:
         with pytest.raises(RuntimeError, match=f"checkpoint test failed: {re.escape(test_failure_checkpoint)}"):
-            finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
+            finetune_mod.supervised(
+                args, SimpleNamespace(model=SimpleNamespace(channels=[]), averaging=None, finetune=None)
+            )
     elif artifact_failure is not None:
         with pytest.raises(RuntimeError, match=f"{artifact_failure} artifact failed"):
-            finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
+            finetune_mod.supervised(
+                args, SimpleNamespace(model=SimpleNamespace(channels=[]), averaging=None, finetune=None)
+            )
     else:
-        finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
+        finetune_mod.supervised(
+            args, SimpleNamespace(model=SimpleNamespace(channels=[]), averaging=None, finetune=None)
+        )
     return checkpoints, test_calls, result_rows, manifest_calls, args
 
 
@@ -349,7 +356,9 @@ def test_finetune_rejects_nonempty_run_directory_before_persisting(
     )
 
     with pytest.raises(FileExistsError, match="Use a new --version-name"):
-        finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
+        finetune_mod.supervised(
+            args, SimpleNamespace(model=SimpleNamespace(channels=[]), averaging=None, finetune=None)
+        )
 
     assert persist_calls == []
 
@@ -382,7 +391,9 @@ def test_finetune_nonzero_rank_rejects_stale_runtime_before_persist_or_dataloade
     )
 
     with pytest.raises(FileExistsError, match="Finetune run directory"):
-        finetune_mod.supervised(args, SimpleNamespace(model=object(), averaging=None, finetune=None))
+        finetune_mod.supervised(
+            args, SimpleNamespace(model=SimpleNamespace(channels=[]), averaging=None, finetune=None)
+        )
     assert calls == []
 
 
@@ -801,7 +812,7 @@ def test_all_checkpoint_mode_requires_test_after_fit_positive_epochs_and_every_e
     module_name: str, monkeypatch: pytest.MonkeyPatch
 ):
     finetune_mod = _load_finetune_module(module_name, monkeypatch)
-    bundle = SimpleNamespace(model=object(), averaging=None, finetune=None)
+    bundle = SimpleNamespace(model=SimpleNamespace(channels=[]), averaging=None, finetune=None)
     preflight_calls = []
     monkeypatch.setattr(finetune_mod, "_preflight_finetune_run_directory", lambda *_args: preflight_calls.append(True))
 
