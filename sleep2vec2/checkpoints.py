@@ -124,30 +124,37 @@ def load_pretrain_init_weights(
             f"RoFormer backbone. Train or convert a sleep2vec2 checkpoint instead. Legacy keys: {preview}"
         )
     # Each target channel's tokenizer (and mask_embed) starts from a differently named checkpoint channel.
+    # Sources and targets are checked against the checkpoint's own channels, so a mapping cannot chain
+    # through another init_from target and the outcome does not depend on channel order.
+    checkpoint_channels = sorted(
+        {key.split(".")[1] for key in filtered_state_dict if key.startswith("tokenizer_mapping.")}
+    )
+    copies: dict[str, torch.Tensor] = {}
     for target, source in (channel_init_from or {}).items():
-        source_prefix = f"tokenizer_mapping.{source}."
-        source_keys = [key for key in filtered_state_dict if key.startswith(source_prefix)]
-        if not source_keys:
-            available = sorted(
-                {key.split(".")[1] for key in filtered_state_dict if key.startswith("tokenizer_mapping.")}
-            )
+        if source not in checkpoint_channels:
             raise ValueError(
                 f"Channel '{target}' sets init_from '{source}', but {ckpt_path} has no tokenizer for '{source}'. "
-                f"Checkpoint tokenizer channels: {available}"
+                f"Checkpoint tokenizer channels: {checkpoint_channels}"
             )
-        if any(key.startswith(f"tokenizer_mapping.{target}.") for key in filtered_state_dict):
+        if target in checkpoint_channels:
             raise ValueError(
                 f"Channel '{target}' sets init_from '{source}', but {ckpt_path} already holds a pretrained "
                 f"tokenizer for '{target}'; init_from would overwrite it."
             )
-        copies = {
-            f"tokenizer_mapping.{target}.{key[len(source_prefix):]}": filtered_state_dict[key] for key in source_keys
+        source_prefix = f"tokenizer_mapping.{source}."
+        target_copies = {
+            f"tokenizer_mapping.{target}.{key[len(source_prefix):]}": value
+            for key, value in filtered_state_dict.items()
+            if key.startswith(source_prefix)
         }
         if f"mask_embed.{source}" in filtered_state_dict:
-            copies[f"mask_embed.{target}"] = filtered_state_dict[f"mask_embed.{source}"]
-        # load_state_dict copies values into each parameter, so targets sharing a source stay independent.
-        filtered_state_dict.update(copies)
-        logging.info("Initialized channel '%s' from checkpoint channel '%s' (%d tensors).", target, source, len(copies))
+            target_copies[f"mask_embed.{target}"] = filtered_state_dict[f"mask_embed.{source}"]
+        copies.update(target_copies)
+        logging.info(
+            "Initialized channel '%s' from checkpoint channel '%s' (%d tensors).", target, source, len(target_copies)
+        )
+    # load_state_dict copies values into each parameter, so targets sharing a source stay independent.
+    filtered_state_dict.update(copies)
     load_info = module.load_state_dict(filtered_state_dict, strict=strict)
     # A subtree matched but the module took nothing from it: this checkpoint holds a different
     # model. `strict=False` is there to tolerate a partial mismatch -- a renamed channel, a

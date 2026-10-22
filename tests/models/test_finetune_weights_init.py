@@ -122,6 +122,26 @@ def test_full_init_rejects_same_shape_semantic_mismatch(tmp_path, field):
         _module(checkpoint=str(path))
 
 
+@pytest.mark.parametrize("saved_init_from", ["absent", "eeg_original"])
+def test_full_init_ignores_channel_init_from_in_model_config(tmp_path, saved_init_from):
+    # init_from only directs --pretrained-backbone-path loading, so a checkpoint saved before the field
+    # existed, or one recording a different init_from, still matches the current model semantics.
+    source = _module()
+    payload = _checkpoint(source)
+    for channel in payload["model_config"]["channels"]:
+        if saved_init_from == "absent":
+            del channel["init_from"]
+        else:
+            channel["init_from"] = saved_init_from
+    path = tmp_path / "selected.ckpt"
+    torch.save(payload, path)
+
+    target = _module(checkpoint=str(path))
+
+    for name, value in source.state_dict().items():
+        torch.testing.assert_close(target.state_dict()[name], value, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("subtree", ["head", "layer_mix"])
 def test_full_init_does_not_tolerate_missing_learned_state(tmp_path, subtree):
     payload = _checkpoint(_module())

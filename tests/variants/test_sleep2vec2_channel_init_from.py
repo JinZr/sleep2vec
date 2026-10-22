@@ -121,6 +121,22 @@ def test_channel_init_from_rejects_unknown_source(tmp_path: Path):
         )
 
 
+def test_channel_init_from_resolves_sources_against_the_checkpoint_not_other_targets(tmp_path: Path):
+    ckpt_path = tmp_path / "pretrain.ckpt"
+    _save_source_checkpoint(ckpt_path)
+
+    # zmax_eegl is an init_from target, not a checkpoint channel, so zmax_eegr cannot chain through it
+    # even though the mapping lists zmax_eegl first.
+    with pytest.raises(ValueError, match=r"no tokenizer for 'zmax_eegl'.*\['eeg_original'\]"):
+        load_pretrain_init_weights(
+            _TinyBackbone(),
+            ckpt_path,
+            device="cpu",
+            prefixes=("model.",),
+            channel_init_from={"zmax_eegl": "eeg_original", "zmax_eegr": "zmax_eegl"},
+        )
+
+
 def test_channel_init_from_rejects_target_already_in_checkpoint(tmp_path: Path):
     ckpt_path = tmp_path / "pretrain.ckpt"
     _save_source_checkpoint(ckpt_path, extra={"tokenizer_mapping.zmax_eegl.weight": torch.randn(3, 4)})
