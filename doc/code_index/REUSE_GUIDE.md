@@ -136,8 +136,9 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   `finetune_init_from_source_issue` in `agent_tools/decision_paths.py` is its consultation-time
   twin, run by `FinetuneAdapter.task_issues` and therefore by `hparam_tune`'s base-task gate,
   where the final-evaluation-only hparam `ckpt_path` does not count as a source;
-  `plan_hparam.check_trial_init_from_sources` repeats the check on each post-override candidate
-  config in `hparam_yaml_override_issues` and `compile_hparam_run_contracts`.
+  `plan_hparam.check_trial_init_from_sources` covers `init_from` that a search override introduces,
+  per candidate, in `hparam_yaml_override_issues` and `compile_hparam_run_contracts`; base-config
+  `init_from` is owned by the base gate, which still asks for a pending source.
   Pretrain and adapt configs reject the field; do not pre-bake renamed-channel checkpoints.
 - Use result owners for output directories, CSV schemas, prediction ids, and manifests.
 - Use inference `--results-root` to isolate a managed attempt; consume its unique terminal manifest instead of scanning shared default outputs.

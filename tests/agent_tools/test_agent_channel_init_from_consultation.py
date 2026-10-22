@@ -1,3 +1,4 @@
+import copy
 import hashlib
 from pathlib import Path
 import sys
@@ -210,3 +211,39 @@ def test_compile_hparam_run_contracts_rejects_init_from_candidate_without_source
 
     with pytest.raises(ValueError, match="init_from"):
         plan_hparam.compile_hparam_run_contracts(recipe, tmp_path / "plan", 0, source_config_bytes=captured)
+
+
+def test_hparam_pending_backbone_with_base_init_from_is_asked_not_failed(tmp_path):
+    recipe_path = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    _add_init_from(tmp_path / "config.yaml")
+    base_path = Path(yaml.safe_load(recipe_path.read_text())["base_recipe"])
+    base = yaml.safe_load(base_path.read_text())
+    del base["decisions"]["pretrained_backbone_path"]
+    write_yaml(base_path, base)
+    output_dir = tmp_path / "doctor"
+
+    result = run_cli("doctor", "--recipe", str(recipe_path), "--output-dir", str(output_dir))
+
+    assert result.returncode == 2
+    assert "base_finetune.pretrained_backbone_path" in result.stdout
+    assert "hparam_search_space" not in result.stdout
+    assert (output_dir / "decisions.yaml").exists()
+
+
+def test_trial_helper_checks_only_override_introduced_init_from():
+    base = {
+        "model": {
+            "channels": [
+                {"name": "ppg", "init_from": "eeg_original"},
+                {"name": "eeg", "input_dim": 8},
+            ]
+        }
+    }
+    combo = {"yaml:/model/channels/1": {"name": "eeg", "input_dim": 8, "init_from": "eeg_original"}}
+
+    plan_hparam.check_trial_init_from_sources({}, base, copy.deepcopy(base), {})
+
+    run_config = copy.deepcopy(base)
+    plan_hparam.apply_search_overrides(run_config, combo)
+    with pytest.raises(ValueError, match=r"\['eeg'\]"):
+        plan_hparam.check_trial_init_from_sources({}, base, run_config, combo)
