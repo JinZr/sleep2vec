@@ -123,20 +123,28 @@ def test_helper_treats_ask_user_as_pending_source():
     }
 
 
-def test_helper_counts_ckpt_path_only_for_direct_finetune():
+def test_helper_skips_hparam_recipes():
     summary = {"model": {"channels": [{"name": "ppg", "init_from": "eeg_original"}]}}
     scratch = ResolvedDecision("pretrained_backbone_path", None, "explicit_recipe", "high", {"value": None})
+    no_ckpt = ResolvedDecision("ckpt_path", None, "missing", "none", {})
     ckpt = ResolvedDecision("ckpt_path", "x", "explicit_recipe", "high", {"value": "x"})
-    decisions = {"pretrained_backbone_path": scratch, "ckpt_path": ckpt}
+    hparam = {"inputs": {}, "search": {"parameters": {"runtime.lr": [1e-6]}}}
 
-    assert finetune_init_from_source_issue({"inputs": {"ckpt_path": "x"}}, summary, decisions) is None
-
+    assert (
+        finetune_init_from_source_issue(hparam, summary, {"pretrained_backbone_path": scratch, "ckpt_path": no_ckpt})
+        is None
+    )
+    assert (
+        finetune_init_from_source_issue(
+            {"inputs": {"ckpt_path": "x"}}, summary, {"pretrained_backbone_path": scratch, "ckpt_path": ckpt}
+        )
+        is None
+    )
     issue = finetune_init_from_source_issue(
-        {"inputs": {"ckpt_path": "x"}, "search": {"parameters": {"runtime.lr": [1e-6]}}}, summary, decisions
+        {"inputs": {}}, summary, {"pretrained_backbone_path": scratch, "ckpt_path": no_ckpt}
     )
     assert issue is not None
-    assert issue.evidence["sources"]["ckpt_path"] is None
-    assert "final-evaluation-only" in issue.message
+    assert issue.status is DecisionStatus.FAIL
 
 
 def test_hparam_doctor_blocks_scratch_init_from(tmp_path):
@@ -146,8 +154,9 @@ def test_hparam_doctor_blocks_scratch_init_from(tmp_path):
     result = run_cli("doctor", "--recipe", str(recipe))
 
     assert result.returncode == 1
-    assert "base_finetune.pretrained_backbone_path" in result.stdout
-    assert "set init_from" in result.stdout
+    assert "hparam_search_space" in result.stdout
+    assert "sets init_from on model.channels" in result.stdout
+    assert "base_finetune.pretrained_backbone_path" not in result.stdout
 
 
 def test_hparam_doctor_ignores_final_evaluation_ckpt_path_as_init_from_source(tmp_path):
@@ -159,8 +168,9 @@ def test_hparam_doctor_ignores_final_evaluation_ckpt_path_as_init_from_source(tm
     result = run_cli("doctor", "--recipe", str(recipe))
 
     assert result.returncode == 1
-    assert "base_finetune.pretrained_backbone_path" in result.stdout
-    assert "set init_from" in result.stdout
+    assert "hparam_search_space" in result.stdout
+    assert "sets init_from on model.channels" in result.stdout
+    assert "base_finetune.pretrained_backbone_path" not in result.stdout
 
 
 def _hparam_recipe_with_init_from_override(tmp_path: Path) -> Path:
@@ -213,7 +223,7 @@ def test_compile_hparam_run_contracts_rejects_init_from_candidate_without_source
         plan_hparam.compile_hparam_run_contracts(recipe, tmp_path / "plan", 0, source_config_bytes=captured)
 
 
-def test_hparam_pending_backbone_with_base_init_from_is_asked_not_failed(tmp_path):
+def test_hparam_pending_backbone_with_base_init_from_reports_both(tmp_path):
     recipe_path = _hparam_recipe(tmp_path, variant="sleep2vec2")
     _add_init_from(tmp_path / "config.yaml")
     base_path = Path(yaml.safe_load(recipe_path.read_text())["base_recipe"])
@@ -224,26 +234,33 @@ def test_hparam_pending_backbone_with_base_init_from_is_asked_not_failed(tmp_pat
 
     result = run_cli("doctor", "--recipe", str(recipe_path), "--output-dir", str(output_dir))
 
-    assert result.returncode == 2
+    assert result.returncode == 1
     assert "base_finetune.pretrained_backbone_path" in result.stdout
-    assert "hparam_search_space" not in result.stdout
-    assert (output_dir / "decisions.yaml").exists()
+    assert "hparam_search_space" in result.stdout
+    assert not (output_dir / "decisions.yaml").exists()
 
 
-def test_trial_helper_checks_only_override_introduced_init_from():
-    base = {
-        "model": {
-            "channels": [
-                {"name": "ppg", "init_from": "eeg_original"},
-                {"name": "eeg", "input_dim": 8},
-            ]
-        }
-    }
-    combo = {"yaml:/model/channels/1": {"name": "eeg", "input_dim": 8, "init_from": "eeg_original"}}
+def test_hparam_candidates_removing_init_from_need_no_source(tmp_path):
+    base_channel = config_payload(tmp_path / "index.csv")["model"]["channels"][0]
+    recipe = _hparam_recipe(
+        tmp_path, variant="sleep2vec2", parameters={"yaml:/model/channels/0": [base_channel]}, max_runs=1
+    )
+    _add_init_from(tmp_path / "config.yaml")
 
-    plan_hparam.check_trial_init_from_sources({}, base, copy.deepcopy(base), {})
+    result = run_cli("doctor", "--recipe", str(recipe))
 
+    assert "init_from" not in result.stdout
+    assert result.returncode == 0
+
+
+def test_trial_helper_checks_every_materialized_init_from():
+    base = {"model": {"channels": [{"name": "ppg", "init_from": "eeg_original"}]}}
+
+    with pytest.raises(ValueError, match=r"\['ppg'\]"):
+        plan_hparam.check_trial_init_from_sources({}, copy.deepcopy(base), {})
+    plan_hparam.check_trial_init_from_sources({"pretrained_backbone_path": "x"}, copy.deepcopy(base), {})
+
+    combo = {"yaml:/model/channels/0": {"name": "ppg"}}
     run_config = copy.deepcopy(base)
     plan_hparam.apply_search_overrides(run_config, combo)
-    with pytest.raises(ValueError, match=r"\['eeg'\]"):
-        plan_hparam.check_trial_init_from_sources({}, base, run_config, combo)
+    plan_hparam.check_trial_init_from_sources({}, run_config, combo)

@@ -24,7 +24,7 @@ Stop and consult the user if:
 - `label_name` is missing.
 - The config contains several plausible labels.
 - `pretrained_backbone_path` is absent on a `sleep2vec`, `sleep2vec2` or `sleep2expert` recipe and neither scratch training nor supported full-model initialization is explicitly intended.
-- Any `model.channels[].init_from` is set while `pretrained_backbone_path` is absent and neither `init_checkpoint_path` nor a resume `ckpt_path` is given; doctor and plan fail consultation on `pretrained_backbone_path` for that recipe instead of emitting a command that `validate_init_from_sources` rejects at launch. For hparam recipes `ckpt_path` does not count (it is final-evaluation-only), and search overrides that add `init_from` are checked per candidate.
+- Any `model.channels[].init_from` is set while `pretrained_backbone_path` is absent and neither `init_checkpoint_path` nor a resume `ckpt_path` is given; doctor and plan fail consultation on `pretrained_backbone_path` for that recipe instead of emitting a command that `validate_init_from_sources` rejects at launch. For hparam recipes the check runs per materialized candidate after `yaml:/...` overrides, and `ckpt_path` does not count because it is final-evaluation-only.
 - `finetune.task.monitor` is missing or inconsistent with the label.
 - The data backend is unclear.
 - The config points to both index and preset inputs without a clear priority.
