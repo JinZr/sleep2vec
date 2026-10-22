@@ -123,6 +123,22 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   managed `inputs.init_checkpoint_path` reuses frozen input snapshots. See the
   [initialization contract](../agent_contracts/hparam_workflow.md#full-model-weights-only-initialization)
   for its variant and semantic boundaries; do not substitute backbone-only loading or trainer resume.
+- Channel `init_from` (finetune `model.channels[].init_from`) is applied inside
+  `load_pretrain_init_weights(channel_init_from=...)`: it copies the named pretrained
+  channel's tokenizer and `mask_embed` to a differently named channel before loading;
+  source and target must share a tokenizer layout, and the target's `input_dim` and tokenizer
+  block must equal the source channel's as serialized in the checkpoint, checked by
+  `Sleep2vecDownstreamModel._check_init_from_tokenizer_semantics` before any weights load;
+  `validate_init_from_sources` in
+  `sleep2vec2/sleep2vec_finetuning.py` is the weight-source guard that
+  `sleep2vec2.finetune.supervised` runs before the run directory is claimed; external checkpoint
+  consumers such as the sleep2stat analyzer construct the module without it;
+  `finetune_init_from_source_issue` in `agent_tools/decision_paths.py` is its direct-finetune
+  consultation twin (a pending backbone is asked, an explicit scratch choice fails); for hparam
+  recipes `plan_hparam.check_trial_init_from_sources` is the single owner, run on each materialized
+  candidate in `hparam_yaml_override_issues` and `compile_hparam_run_contracts`, with the hparam
+  `ckpt_path` excluded.
+  Pretrain and adapt configs reject the field; do not pre-bake renamed-channel checkpoints.
 - Use result owners for output directories, CSV schemas, prediction ids, and manifests.
 - Use inference `--results-root` to isolate a managed attempt; consume its unique terminal manifest instead of scanning shared default outputs.
 - Let analysis/export failures terminate instead of emitting partial-success bundles.

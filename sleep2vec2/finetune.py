@@ -37,7 +37,7 @@ from sleep2vec2.results import (
     save_training_run_manifest,
 )
 from sleep2vec2.schedulers import validate_finetune_scheduler_args
-from sleep2vec2.sleep2vec_finetuning import Sleep2vecFinetuning
+from sleep2vec2.sleep2vec_finetuning import Sleep2vecFinetuning, validate_init_from_sources
 from sleep2vec2.utils import get_finetune_dataloaders
 
 # from model.ahi_metric import AHIMetricsCollection
@@ -208,6 +208,8 @@ def supervised(args, config_bundle):
 
     model_config = config_bundle.model
     averaging_config = config_bundle.averaging
+    # Fail before the single-use run directory is claimed and dataloaders are built.
+    validate_init_from_sources(args, model_config)
 
     # Persist YAML alongside experiment artifacts
     exp_root = Path(f"log-finetune/{args.version}/")

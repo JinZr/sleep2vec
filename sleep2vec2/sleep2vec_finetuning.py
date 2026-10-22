@@ -66,6 +66,30 @@ def _require_tuning_config(finetune_config):
     return tuning
 
 
+def _model_semantics(model_config: dict) -> dict:
+    """Drop ``channels[].init_from``: it only directs ``--pretrained-backbone-path`` loading, so it is not model
+    semantics, and checkpoints saved before the field existed carry no key for it."""
+    channels = [
+        {key: value for key, value in channel.items() if key != "init_from"} for channel in model_config["channels"]
+    ]
+    return {**model_config, "channels": channels}
+
+
+def validate_init_from_sources(args, model_config) -> None:
+    """Channels with init_from need a weight source; a finetune checkpoint (resume or full-model warmstart)
+    already holds the new channel names. Run by the training entry (``finetune.supervised``), not by the module:
+    external checkpoint consumers construct the module first and then load a trained checkpoint."""
+    init_from_channels = [c.name for c in model_config.channels if c.init_from]
+    if init_from_channels and not (
+        args.pretrained_backbone_path or getattr(args, "ckpt_path", None) or getattr(args, "init_checkpoint_path", None)
+    ):
+        raise ValueError(
+            f"channels {init_from_channels} set init_from, which needs --pretrained-backbone-path "
+            "(or a finetune checkpoint via --ckpt-path / --init-checkpoint-path); otherwise the tokenizers "
+            "would train from scratch."
+        )
+
+
 class Sleep2vecFinetuning(pl.LightningModule):
     def __init__(self, args, model_config, finetune_config=None, averaging_config=None):
         super().__init__()
@@ -179,7 +203,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
         )
         if init_checkpoint_path:
             checkpoint = load_checkpoint(init_checkpoint_path, "cpu")
-            if checkpoint.get("model_config") != asdict(model_config):
+            if _model_semantics(checkpoint["model_config"]) != _model_semantics(asdict(model_config)):
                 raise ValueError("Initialization checkpoint model_config must match the current model semantics.")
             saved_finetune = checkpoint["finetune_config"]
             current_finetune = asdict(finetune_config)

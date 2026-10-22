@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import importlib
 from pathlib import Path
 
@@ -778,6 +778,7 @@ def test_select_best_ahi_threshold_logs_sparse_fine_progress(monkeypatch: pytest
 @dataclass
 class _DummyModelConfig:
     marker: int = 1
+    channels: list = field(default_factory=list)
 
 
 def test_ahi_threshold_is_persisted_in_checkpoint(monkeypatch: pytest.MonkeyPatch):

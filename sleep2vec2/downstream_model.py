@@ -1,3 +1,4 @@
+from dataclasses import asdict
 import logging
 import typing as t
 
@@ -504,6 +505,11 @@ class Sleep2vecDownstreamModel(nn.Module):
 
         # Sanity check CLS settings against serialized config in checkpoint (assumes YAML is present)
         self._warn_on_cls_mismatch(ckpt)
+        channel_init_from = (
+            {c.name: c.init_from for c in self.model_config.channels if c.init_from} if self.model_config else {}
+        )
+        if channel_init_from:
+            self._check_init_from_tokenizer_semantics(ckpt, ckpt_path)
 
         load_info = load_pretrain_init_weights(
             self.backbone,
@@ -511,6 +517,7 @@ class Sleep2vecDownstreamModel(nn.Module):
             device="cpu",
             strict=False,
             prefixes=prefixes,
+            channel_init_from=channel_init_from or None,
         )
 
         # 打印加载结果
@@ -683,6 +690,30 @@ class Sleep2vecDownstreamModel(nn.Module):
                 ckpt_down or "tokens",
                 curr_down or "tokens",
             )
+
+    def _check_init_from_tokenizer_semantics(self, ckpt: dict, ckpt_path) -> None:
+        """init_from copies weights, so the target must declare the source's tokenizer (name, out_dim, kwargs) and
+        input_dim exactly as the checkpoint serialized them: identical state-dict keys do not prove identical forward
+        semantics (e.g. sundial2 residual_mixing or clamp_value)."""
+        ckpt_channels = {item["name"]: item for item in yaml.safe_load(ckpt["model_config_yaml"])["channels"]}
+        for channel in self.model_config.channels:
+            if not channel.init_from:
+                continue
+            source = ckpt_channels.get(channel.init_from)
+            if source is None:
+                raise ValueError(
+                    f"Channel '{channel.name}' sets init_from '{channel.init_from}', but {ckpt_path} has no channel "
+                    f"named '{channel.init_from}'. Checkpoint channels: {sorted(ckpt_channels)}"
+                )
+            expected = {"input_dim": source["input_dim"], "tokenizer": source["tokenizer"]}
+            actual = {"input_dim": channel.input_dim, "tokenizer": asdict(channel.tokenizer)}
+            if expected != actual:
+                raise ValueError(
+                    f"Channel '{channel.name}' sets init_from '{channel.init_from}', but its input_dim/tokenizer "
+                    f"differ from the checkpoint's '{channel.init_from}' channel "
+                    f"(checkpoint: {expected}; config: {actual}). "
+                    "init_from requires the same tokenizer semantics; copy the source channel's tokenizer block."
+                )
 
     def _warn_on_dropped_cls_weights(self, unexpected_keys: list[str]):
         cls_unexpected = [k for k in unexpected_keys if k.startswith("cls_embedding")]

@@ -113,6 +113,7 @@ class ChannelSummary(TypedDict):
     input_dim: JsonValue
     tokenizer: JsonValue
     out_dim: JsonValue
+    init_from: JsonValue
 
 
 class TaskSummary(TypedDict):

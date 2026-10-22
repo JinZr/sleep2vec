@@ -14,6 +14,7 @@ from typing import Any
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status, needs_issue
 from ..decision_paths import (
     finetune_init_checkpoint_issue,
+    finetune_init_from_source_issue,
     multilabel_sidecar_issue,
     sex_age_pretrained_backbone_issue,
     survival_sidecar_issue,
@@ -80,6 +81,9 @@ class FinetuneAdapter(TaskAdapter):
         init_issue = finetune_init_checkpoint_issue(recipe)
         if init_issue is not None:
             issues.append(init_issue)
+        init_from_issue = finetune_init_from_source_issue(recipe, config_summary, decisions)
+        if init_from_issue is not None:
+            issues.append(init_from_issue)
         evaluation = recipe.get("evaluation_policy")
         if not isinstance(evaluation, dict):
             evaluation = {}

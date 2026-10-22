@@ -18,7 +18,7 @@ import subprocess  # noqa: F401 -- tests patch decision_paths.subprocess.run (st
 from typing import Any
 
 from . import gpu_rules, slurm, transport
-from .decision_models import DecisionIssue, DecisionStatus
+from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision
 from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, ConfigSummaryInput, JsonValue, is_full_git_object_id
 
 _EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target", "workdir"}
@@ -869,6 +869,51 @@ def finetune_init_checkpoint_issue(recipe: dict) -> DecisionIssue | None:
         return None
     return DecisionIssue(
         DecisionStatus.FAIL, "init_checkpoint_path", message, None, {"preflight_before_workspace": True}
+    )
+
+
+def finetune_init_from_source_issue(
+    recipe: dict, config_summary: ConfigSummaryInput | None, decisions: dict[str, ResolvedDecision]
+) -> DecisionIssue | None:
+    """``model.channels[].init_from`` copies tokenizer weights from a checkpoint channel, so an explicit scratch
+    choice (no pretrained_backbone_path, ckpt_path or init_checkpoint_path) must fail during consultation: the
+    rendered command would otherwise be rejected by ``validate_init_from_sources`` at launch, after doctor/plan
+    passed. An unresolved or ASK_USER source is left to the issue that already asks for it. Hparam recipes are
+    checked per materialized candidate by ``plan_hparam.check_trial_init_from_sources`` instead."""
+    # Hparam trials run materialized configs, so plan_hparam.check_trial_init_from_sources decides per candidate.
+    if "search" in recipe:
+        return None
+    model_value = config_summary.get("model") if config_summary else None
+    model = model_value if isinstance(model_value, dict) else {}
+    channels_value = model.get("channels")
+    channels = channels_value if isinstance(channels_value, list) else []
+    init_from_channels = [
+        channel["name"] for channel in channels if isinstance(channel, dict) and channel.get("init_from")
+    ]
+    if not init_from_channels:
+        return None
+    backbone = decisions["pretrained_backbone_path"]
+    if backbone.value in (None, "") and "recipe" in backbone.evidence:
+        return None
+    inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
+    init_checkpoint = decisions.get("init_checkpoint_path")
+    sources = {
+        "pretrained_backbone_path": backbone.value,
+        "ckpt_path": decisions["ckpt_path"].value,
+        "init_checkpoint_path": (
+            init_checkpoint.value if init_checkpoint is not None else inputs.get("init_checkpoint_path")
+        ),
+    }
+    if any(value not in (None, "") for value in sources.values()):
+        return None
+    return DecisionIssue(
+        DecisionStatus.FAIL,
+        "pretrained_backbone_path",
+        f"model.channels {init_from_channels} set init_from, which copies tokenizer weights from "
+        "pretrained_backbone_path (or a finetune checkpoint via ckpt_path / init_checkpoint_path); training from "
+        "scratch would leave those tokenizers uninitialized and the finetune command rejects it at launch.",
+        None,
+        {"init_from_channels": init_from_channels, "sources": sources, "preflight_before_workspace": True},
     )
 
 

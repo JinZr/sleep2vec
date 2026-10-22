@@ -29,6 +29,8 @@ class ChannelConfig:
     input_dim: int
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
     alias: str | None = None
+    # Pretrained-checkpoint channel whose tokenizer/mask_embed weights initialize this channel.
+    init_from: str | None = None
 
 
 @dataclass
@@ -382,6 +384,11 @@ def _require_channels(model_block: dict[str, t.Any]) -> t.List[ChannelConfig]:
         alias = item.get("alias")
         if alias is not None and (not isinstance(alias, str) or not alias):
             raise ValueError(f"channel '{item.get('name', '?')}' alias must be a non-empty string.")
+        init_from = item.get("init_from")
+        if init_from is not None and (not isinstance(init_from, str) or not init_from):
+            raise ValueError(f"channel '{item.get('name', '?')}' init_from must be a non-empty string.")
+        if init_from is not None and init_from == item.get("name"):
+            raise ValueError(f"channel '{item.get('name', '?')}' init_from must name a different channel.")
 
         channels.append(ChannelConfig(tokenizer=tok_cfg, **item))
     return channels
@@ -1147,6 +1154,12 @@ def load_pretrain_config(path: str | Path) -> PretrainConfigBundle:
     loss_block = data.get("loss", {})
     data_block = data.get("data", {})
     model_cfg = _build_model_config(model_block, require_head=False)
+    init_from_channels = [c.name for c in model_cfg.channels if c.init_from]
+    if init_from_channels:
+        raise ValueError(
+            f"channel init_from is only supported for finetune initialization from --pretrained-backbone-path; "
+            f"remove it from channels {init_from_channels}."
+        )
 
     loss_cfg = _build_loss(loss_block)
     data_cfg = PretrainDataConfig(**data_block)

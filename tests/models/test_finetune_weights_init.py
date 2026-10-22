@@ -1,3 +1,4 @@
+import argparse
 from dataclasses import asdict
 import subprocess
 import sys
@@ -16,10 +17,15 @@ def test_sleep2vec2_cli_advertises_weights_only_init():
     assert "--init-checkpoint-path" in result.stdout
 
 
-def _module(*, checkpoint=None, preset="full", lr=0.001):
+def _module(*, checkpoint=None, preset="full", lr=0.001, init_from=None, args=None):
     model = config.ModelConfig(
         channels=[
-            config.ChannelConfig(name="ppg", input_dim=8, tokenizer=config.TokenizerConfig(name="linear", out_dim=16))
+            config.ChannelConfig(
+                name="ppg",
+                input_dim=8,
+                tokenizer=config.TokenizerConfig(name="linear", out_dim=16),
+                init_from=init_from,
+            )
         ],
         backbone=config.BackboneConfig(
             name="roformer",
@@ -53,20 +59,40 @@ def _module(*, checkpoint=None, preset="full", lr=0.001):
             type="classification", output_dim=2, is_seq=False, monitor="val_sex_acc", monitor_mod="max"
         ),
     )
-    args = SimpleNamespace(
+    if args is None:
+        args = SimpleNamespace(
+            device="cpu",
+            label_name="sex",
+            output_dim=2,
+            is_classification=True,
+            is_seq=False,
+            pretrained_backbone_path=None,
+            init_checkpoint_path=checkpoint,
+            ckpt_path=None,
+            lr=lr,
+            weight_decay=0.01,
+            warmup_steps=0,
+        )
+    return Sleep2vecFinetuning(args, model, finetune_config=finetune)
+
+
+def test_module_constructs_init_from_channel_for_checkpoint_consumers():
+    # The sleep2stat analyzer builds the module with no weight source and then loads a trained finetune checkpoint
+    # that already holds the init_from target's weights; only the training entry checks init_from sources.
+    args = argparse.Namespace(
         device="cpu",
         label_name="sex",
         output_dim=2,
         is_classification=True,
         is_seq=False,
         pretrained_backbone_path=None,
-        init_checkpoint_path=checkpoint,
-        ckpt_path=None,
-        lr=lr,
-        weight_decay=0.01,
-        warmup_steps=0,
+        print_diagnostics=False,
+        diagnostics_steps=5,
     )
-    return Sleep2vecFinetuning(args, model, finetune_config=finetune)
+
+    module = _module(init_from="eeg_original", args=args)
+
+    assert module.model_config.channels[0].init_from == "eeg_original"
 
 
 def _checkpoint(module):
@@ -120,6 +146,26 @@ def test_full_init_rejects_same_shape_semantic_mismatch(tmp_path, field):
     torch.save(payload, path)
     with pytest.raises(ValueError, match="model_config" if field == "tokenizer" else field):
         _module(checkpoint=str(path))
+
+
+@pytest.mark.parametrize("saved_init_from", ["absent", "eeg_original"])
+def test_full_init_ignores_channel_init_from_in_model_config(tmp_path, saved_init_from):
+    # init_from only directs --pretrained-backbone-path loading, so a checkpoint saved before the field
+    # existed, or one recording a different init_from, still matches the current model semantics.
+    source = _module()
+    payload = _checkpoint(source)
+    for channel in payload["model_config"]["channels"]:
+        if saved_init_from == "absent":
+            del channel["init_from"]
+        else:
+            channel["init_from"] = saved_init_from
+    path = tmp_path / "selected.ckpt"
+    torch.save(payload, path)
+
+    target = _module(checkpoint=str(path))
+
+    for name, value in source.state_dict().items():
+        torch.testing.assert_close(target.state_dict()[name], value, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("subtree", ["head", "layer_mix"])
