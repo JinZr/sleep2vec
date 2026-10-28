@@ -34,7 +34,7 @@ yasa==0.7.0
 pytest==9.0.3
 
 # Formatting, linting, and type-checking dependencies
-black==26.3.1
+black==26.10.1
 flake8==7.3.0
 isort==5.13.2
 mypy==1.18.2
