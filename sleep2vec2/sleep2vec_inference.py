@@ -307,7 +307,7 @@ def build_ahi_prediction_rows(records: list[dict[str, np.ndarray]], threshold: f
         score = np.asarray(record["score"], dtype=np.float32).reshape(-1)
         prediction = (score > float(threshold)).astype(np.int64)
         _, pred_ahi, _ = _evaluate_single_ahi_record(record, threshold=float(threshold))
-        token_starts = sorted(token_starts_by_path.get(path, []))
+        token_starts = sorted(set(token_starts_by_path.get(path, [])))
         rows.append(
             {
                 "path": path,

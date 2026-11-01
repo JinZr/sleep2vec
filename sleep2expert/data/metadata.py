@@ -161,7 +161,8 @@ def process_metadata(samples, disease_names, regression_names: t.Sequence[str] |
             batch_metadata[disease_name].append(meta.get(disease_name, "nan"))
 
     processed = {}
-    processed["age"] = torch.tensor([safe_cast(v, -1) for v in batch_metadata["age"]], dtype=torch.float)
+    processed["age"] = torch.tensor([safe_cast_float(v, -1.0) for v in batch_metadata["age"]], dtype=torch.float)
+    processed["age"].masked_fill_(~torch.isfinite(processed["age"]), -1.0)
     processed["sex"] = torch.tensor([_encode_binary_label(v) for v in batch_metadata["sex"]], dtype=torch.long)
     for disease_name in disease_names:
         values = batch_metadata[disease_name]

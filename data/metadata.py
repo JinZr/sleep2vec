@@ -149,7 +149,8 @@ def _encode_indicator(v) -> int:
 def required_covariate_is_valid(name: str, value: t.Any) -> bool:
     """Whether a raw metadata value can feed covariate ``name``; other names only need a value."""
     if name == "age":
-        return safe_cast(value, -1) >= 0
+        age = safe_cast_float(value, math.nan)
+        return math.isfinite(age) and age >= 0
     if name == "sex":
         return _encode_binary_label(value) in {0, 1}
     if name == "bmi_missing":
@@ -180,7 +181,8 @@ def process_metadata(samples, disease_names, regression_names: t.Sequence[str] |
             batch_metadata[disease_name].append(meta.get(disease_name, "nan"))
 
     processed = {}
-    processed["age"] = torch.tensor([safe_cast(v, -1) for v in batch_metadata["age"]], dtype=torch.float)
+    processed["age"] = torch.tensor([safe_cast_float(v, -1.0) for v in batch_metadata["age"]], dtype=torch.float)
+    processed["age"].masked_fill_(~torch.isfinite(processed["age"]), -1.0)
     processed["sex"] = torch.tensor([_encode_binary_label(v) for v in batch_metadata["sex"]], dtype=torch.long)
     # bmi is imputed upstream and stays continuous; NaN marks a value the covariate path must reject.
     processed["bmi"] = torch.tensor(

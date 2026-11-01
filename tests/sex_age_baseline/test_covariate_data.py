@@ -202,8 +202,7 @@ def test_collate_uses_the_signal_metadata_encoding(tmp_path):
     batch = _collate_records(dataset.records)
 
     metadata = batch["metadata"]
-    # process_metadata truncates age to whole years, exactly as the signal collate does.
-    assert metadata["age"].tolist() == [45.0, 60.0]
+    assert metadata["age"].tolist() == pytest.approx([45.9, 60.0])
     assert metadata["sex"].dtype == torch.long and metadata["sex"].tolist() == [1, 0]
     assert metadata["bmi"].tolist() == [23.5, 30.0]
     assert metadata["bmi_missing"].dtype == torch.long and metadata["bmi_missing"].tolist() == [0, 1]

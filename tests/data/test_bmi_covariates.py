@@ -19,7 +19,7 @@ def _write_multilabel_fixture(tmp_path):
             "eid": ["p001", "p002", "p003"],
             "split": ["train"] * 3,
             "duration": [60] * 3,
-            "age": [40, 67, 55],
+            "age": [40.25, 67.5, 55],
             "sex": [0, 1, 1],
             "bmi": [23.75, 26.125, float("nan")],
             "bmi_missing": [0, 1, 1],
@@ -92,7 +92,7 @@ def test_bmi_covariates_reach_the_multilabel_batch_from_index_and_preset(tmp_pat
         # The row with a missing (NaN) bmi is dropped by required-covariate filtering; bmi keeps its fraction.
         torch.testing.assert_close(metadata["bmi"], torch.tensor([23.75, 26.125]))
         assert metadata["bmi_missing"].tolist() == [0, 1]
-        torch.testing.assert_close(metadata["age"], torch.tensor([40.0, 67.0]))
+        torch.testing.assert_close(metadata["age"], torch.tensor([40.25, 67.5]))
         assert metadata["disease_label"].tolist() == [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]
 
 
@@ -132,7 +132,12 @@ def test_process_metadata_always_emits_bmi_without_truncation(data_package, vari
     ("name", "value", "valid"),
     [
         ("age", 0, True),
+        ("age", 45.9, True),
+        ("age", "60.25", True),
         ("age", -1, False),
+        ("age", -0.5, False),
+        ("age", float("inf"), False),
+        ("age", float("nan"), False),
         ("sex", "1", True),
         ("sex", 2, False),
         ("bmi", 18.5, True),
