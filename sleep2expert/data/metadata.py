@@ -140,6 +140,26 @@ def _encode_binary_label(v):
     return -1
 
 
+def _encode_indicator(v) -> int:
+    """Strict numeric 0/1 indicator; unlike binary labels it accepts no sex-style aliases. Invalid -> -1."""
+    f = safe_cast_float(v, math.nan)
+    return int(f) if f in (0.0, 1.0) else -1
+
+
+def required_covariate_is_valid(name: str, value: t.Any) -> bool:
+    """Whether a raw metadata value can feed covariate ``name``; other names only need a value."""
+    if name == "age":
+        age = safe_cast_float(value, math.nan)
+        return math.isfinite(age) and age >= 0
+    if name == "sex":
+        return _encode_binary_label(value) in {0, 1}
+    if name in {"bmi_missing", "height_missing", "weight_missing"}:
+        return _encode_indicator(value) in {0, 1}
+    if name in {"bmi", "height", "weight"}:
+        return math.isfinite(safe_cast_float(value, math.nan))
+    return value is not None and not (isinstance(value, float) and math.isnan(value))
+
+
 def process_metadata(samples, disease_names, regression_names: t.Sequence[str] | None = None):
     regression_names = set(regression_names or [])
     batch_metadata = {
@@ -164,6 +184,14 @@ def process_metadata(samples, disease_names, regression_names: t.Sequence[str] |
     processed["age"] = torch.tensor([safe_cast_float(v, -1.0) for v in batch_metadata["age"]], dtype=torch.float)
     processed["age"].masked_fill_(~torch.isfinite(processed["age"]), -1.0)
     processed["sex"] = torch.tensor([_encode_binary_label(v) for v in batch_metadata["sex"]], dtype=torch.long)
+    # These values are imputed upstream and stay continuous; NaN marks a value the covariate path must reject.
+    for name in ("bmi", "height", "weight"):
+        processed[name] = torch.tensor(
+            [safe_cast_float(s.metadata.get(name), math.nan) for s in samples], dtype=torch.float
+        )
+        processed[f"{name}_missing"] = torch.tensor(
+            [_encode_indicator(s.metadata.get(f"{name}_missing")) for s in samples], dtype=torch.long
+        )
     for disease_name in disease_names:
         values = batch_metadata[disease_name]
         if disease_name in regression_names:
