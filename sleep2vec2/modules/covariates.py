@@ -1,9 +1,9 @@
 """Covariate encoding shared by the survival and multilabel downstream heads.
 
 Covariates are consumed in the fixed ``SUPPORTED_COVARIATES`` order, whatever order a recipe lists them in, so the
-concatenated feature layout does not depend on the spelling of the list. ``age`` and ``bmi`` are continuous and
-standardized with the frozen training statistics in ``covariate_normalization``; without an ``age`` entry, age keeps
-its historical ``age / 100`` scaling. ``sex`` and ``bmi_missing`` are 0/1 indicators.
+concatenated feature layout does not depend on the spelling of the list. ``age``, ``bmi``, ``height`` and ``weight``
+are continuous and standardized with the frozen training statistics in ``covariate_normalization``; without an
+``age`` entry, age keeps its historical ``age / 100`` scaling. ``sex`` and the missingness flags are 0/1 indicators.
 """
 
 import typing as t
@@ -13,7 +13,7 @@ import torch.nn as nn
 
 from sleep2vec2.config import SUPPORTED_COVARIATES
 
-CONTINUOUS_COVARIATES = ("age", "bmi")
+CONTINUOUS_COVARIATES = ("age", "bmi", "height", "weight")
 
 
 def ordered_covariates(names: t.Iterable[str]) -> t.Tuple[str, ...]:
@@ -49,8 +49,8 @@ def _covariate_column(
     value = value.to(dtype=dtype)
     if name == "age" and (value < 0).any():
         raise ValueError("Survival covariate 'age' is missing for at least one sample.")
-    if name == "bmi" and not torch.isfinite(value).all():
-        raise ValueError("Survival covariate 'bmi' requires finite imputed values.")
+    if name in {"bmi", "height", "weight"} and not torch.isfinite(value).all():
+        raise ValueError(f"Survival covariate '{name}' requires finite imputed values.")
     if name == "age" and "age" not in normalization:
         return value / 100.0
     stats = normalization[name]
