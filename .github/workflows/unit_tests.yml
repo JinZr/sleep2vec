@@ -257,6 +257,12 @@ jobs:
             tests/variants/test_finetune_tuning_conformance.py \
             tests/variants/test_sleep2expert_moe_config.py \
             tests/config/test_registries_and_builders.py \
+            tests/data/test_bmi_covariates.py \
+            tests/models/test_survival_covariates.py \
+            tests/sex_age_baseline/test_config.py \
+            tests/sex_age_baseline/test_covariate_data.py \
+            tests/sex_age_baseline/test_covariate_model.py \
+            tests/variants/test_sleep2expert_finetune_tuning.py \
             tests/models/test_losses.py \
             tests/models/test_finetune_weights_init.py \
             tests/models/test_downstream_separate_adapters.py \

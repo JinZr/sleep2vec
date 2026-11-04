@@ -581,7 +581,7 @@ def test_load_finetune_config_defaults_multilabel_covariates(tmp_path: Path):
     ("multilabel_patch", "pattern"),
     [
         ({"covariates": ["age", "age"]}, "must not contain duplicates"),
-        ({"covariates": ["weight"]}, "only supports"),
+        ({"covariates": ["waist"]}, "only supports"),
         ({"covariates": "age"}, "must be a list"),
         ({"covariate_embedding_dim": 0}, "must be a positive integer"),
         ({"covariate_embedding_dim": True}, "must be a positive integer"),
@@ -648,7 +648,7 @@ def test_load_finetune_config_rejects_multilabel_block_for_other_tasks(tmp_path:
     ("survival_patch", "pattern"),
     [
         ({"covariates": ["age", "age"]}, "must not contain duplicates"),
-        ({"covariates": ["weight"]}, "only supports"),
+        ({"covariates": ["waist"]}, "only supports"),
         ({"covariates": "age"}, "must be a list"),
         ({"covariate_embedding_dim": 0}, "must be a positive integer"),
         ({"covariate_embedding_dim": True}, "must be a positive integer"),
@@ -671,7 +671,7 @@ _BMI_NORMALIZATION = {"age": {"mean": 50, "std": 20}, "bmi": {"mean": 25, "std":
 
 
 @pytest.mark.parametrize("task", ["survival", "multilabel"])
-@pytest.mark.parametrize("module_name", ["sleep2vec.config", "sleep2vec2.config"])
+@pytest.mark.parametrize("module_name", ["sleep2vec.config", "sleep2vec2.config", "sleep2expert.config"])
 def test_load_finetune_config_parses_bmi_covariates_with_frozen_normalization(
     tmp_path: Path, module_name: str, task: str
 ):
@@ -689,8 +689,11 @@ def test_load_finetune_config_parses_bmi_covariates_with_frozen_normalization(
 
 @pytest.mark.parametrize("task", ["survival", "multilabel"])
 @pytest.mark.parametrize("names", [["height"], ["weight"], ["weight_missing", "height", "weight", "height_missing"]])
-def test_sleep2vec2_parses_independent_height_weight_covariates(tmp_path: Path, task: str, names: list):
-    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+@pytest.mark.parametrize("module_name", ["sleep2vec.config", "sleep2vec2.config", "sleep2expert.config"])
+def test_load_finetune_config_parses_independent_height_weight_covariates(
+    tmp_path: Path, task: str, names: list, module_name: str
+):
+    loader = importlib.import_module(module_name).load_finetune_config
     normalization = {
         name: {"mean": 170 if name == "height" else 70, "std": 10} for name in names if not name.endswith("_missing")
     }
@@ -705,8 +708,9 @@ def test_sleep2vec2_parses_independent_height_weight_covariates(tmp_path: Path, 
 
 @pytest.mark.parametrize("task", ["survival", "multilabel"])
 @pytest.mark.parametrize("name", ["height", "weight"])
-def test_sleep2vec2_height_weight_require_training_normalization(tmp_path: Path, task: str, name: str):
-    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+@pytest.mark.parametrize("module_name", ["sleep2vec.config", "sleep2vec2.config", "sleep2expert.config"])
+def test_height_weight_require_training_normalization(tmp_path: Path, task: str, name: str, module_name: str):
+    loader = importlib.import_module(module_name).load_finetune_config
     payload = _covariate_task_payload(task)
     payload["finetune"][task].update(covariates=[name, f"{name}_missing"])
 
@@ -717,7 +721,7 @@ def test_sleep2vec2_height_weight_require_training_normalization(tmp_path: Path,
 
 
 @pytest.mark.parametrize("task", ["survival", "multilabel"])
-@pytest.mark.parametrize("module_name", ["sleep2vec.config", "sleep2vec2.config"])
+@pytest.mark.parametrize("module_name", ["sleep2vec.config", "sleep2vec2.config", "sleep2expert.config"])
 def test_load_finetune_config_keeps_age_sex_recipes_without_normalization(tmp_path: Path, module_name: str, task: str):
     loader = importlib.import_module(module_name).load_finetune_config
     payload = _covariate_task_payload(task)
@@ -741,7 +745,7 @@ def test_load_finetune_config_keeps_age_sex_recipes_without_normalization(tmp_pa
     ],
 )
 @pytest.mark.parametrize("task", ["survival", "multilabel"])
-@pytest.mark.parametrize("module_name", ["sleep2vec.config", "sleep2vec2.config"])
+@pytest.mark.parametrize("module_name", ["sleep2vec.config", "sleep2vec2.config", "sleep2expert.config"])
 def test_load_finetune_config_rejects_invalid_covariate_normalization(
     tmp_path: Path, module_name: str, task: str, covariates: list, normalization, pattern: str
 ):
@@ -754,17 +758,22 @@ def test_load_finetune_config_rejects_invalid_covariate_normalization(
 
 
 @pytest.mark.parametrize("task", ["survival", "multilabel"])
-def test_sleep2expert_keeps_the_age_sex_covariate_contract(tmp_path: Path, task: str):
-    loader = importlib.import_module("sleep2expert.config").load_finetune_config
+@pytest.mark.parametrize("module_name", ["sleep2vec.config", "sleep2vec2.config", "sleep2expert.config"])
+def test_load_finetune_config_accepts_all_eight_covariates(tmp_path: Path, task: str, module_name: str):
+    module = importlib.import_module(module_name)
+    names = ["age", "sex", "bmi", "bmi_missing", "height", "height_missing", "weight", "weight_missing"]
+    normalization = {
+        **_BMI_NORMALIZATION,
+        "height": {"mean": 170.0, "std": 10.0},
+        "weight": {"mean": 70.0, "std": 10.0},
+    }
     payload = _covariate_task_payload(task)
-    payload["finetune"][task].update({"covariates": ["age", "bmi"]})
-    with pytest.raises(ValueError, match=r"only supports \['age', 'sex'\]"):
-        loader(_write_yaml(tmp_path, payload, name="bmi.yaml"))
+    payload["finetune"][task].update(covariates=list(reversed(names)), covariate_normalization=normalization)
+    task_cfg = getattr(module.load_finetune_config(_write_yaml(tmp_path, payload)).finetune, task)
 
-    payload = _covariate_task_payload(task)
-    payload["finetune"][task].update({"covariates": ["age"], "covariate_normalization": {}})
-    with pytest.raises(ValueError, match="unsupported fields"):
-        loader(_write_yaml(tmp_path, payload, name="normalization.yaml"))
+    assert tuple(module.SUPPORTED_COVARIATES) == tuple(names)
+    assert task_cfg.covariates == list(reversed(names))
+    assert task_cfg.covariate_normalization == normalization
 
 
 def test_load_finetune_config_rejects_sequence_survival_task(tmp_path: Path):

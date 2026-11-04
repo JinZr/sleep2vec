@@ -14,6 +14,7 @@ import torch.nn as nn
 from sleep2expert import downstream_model as downstream_module
 from sleep2expert.backbones.roformer.moe import MoERoutingOutput
 from sleep2expert.config import (
+    SUPPORTED_COVARIATES,
     BackboneConfig,
     ChannelAggConfig,
     ChannelConfig,
@@ -27,7 +28,9 @@ from sleep2expert.config import (
     HeadConfig,
     ModelConfig,
     MoeConfig,
+    MultilabelConfig,
     ProjectionConfig,
+    SurvivalConfig,
     TemporalAggConfig,
     TokenizerConfig,
 )
@@ -159,6 +162,43 @@ def _module(
 
 def _named_params(module: Sleep2vecFinetuning, fragment: str) -> list[tuple[str, torch.nn.Parameter]]:
     return [(name, param) for name, param in module.model.named_parameters() if fragment in name]
+
+
+@pytest.mark.parametrize("task", ["survival", "multilabel"])
+def test_finetuning_passes_all_covariates_and_frozen_statistics_to_model(task):
+    normalization = {
+        "bmi": {"mean": 25.0, "std": 5.0},
+        "height": {"mean": 170.0, "std": 10.0},
+        "weight": {"mean": 70.0, "std": 10.0},
+    }
+    fields = dict(
+        key_column="eid",
+        disease_columns_index="diseases.txt",
+        has_label_index="masks.csv",
+        covariates=list(SUPPORTED_COVARIATES),
+        covariate_embedding_dim=3,
+        covariate_normalization=normalization,
+    )
+    task_cfg = (
+        SurvivalConfig(event_time_index="times.csv", is_event_index="events.csv", **fields)
+        if task == "survival"
+        else MultilabelConfig(label_index="labels.csv", **fields)
+    )
+    args = _args()
+    args.is_seq = False
+    args.label_name = "disease"
+    args.output_dim = 2
+    finetune = FinetuneConfig(tuning=FinetuneTuningConfig(preset="full", groups=_groups()), **{task: task_cfg})
+
+    module = Sleep2vecFinetuning(args, _model_config(), finetune_config=finetune)
+
+    assert module.model.survival_covariates == SUPPORTED_COVARIATES
+    assert module.model.covariate_normalization == normalization
+    assert module.model.head.extra_feature_dim == 24
+    for name in SUPPORTED_COVARIATES:
+        embedding = getattr(module.model, f"survival_{name}_embedding")
+        assert embedding.weight.requires_grad
+        assert module._finetune_param_to_group[f"survival_{name}_embedding.weight"] == "head"
 
 
 def _set_fake_trainer(module: Sleep2vecFinetuning) -> None:

@@ -7,7 +7,8 @@ import pandas as pd
 import pytest
 import torch
 
-PACKAGES = [("data", "sleep2vec"), ("sleep2vec2.data", "sleep2vec2")]
+PACKAGES = [("data", "sleep2vec"), ("sleep2vec2.data", "sleep2vec2"), ("sleep2expert.data", "sleep2expert")]
+DATA_PACKAGES = [package for package, _ in PACKAGES]
 
 
 def _write_multilabel_fixture(tmp_path):
@@ -110,23 +111,24 @@ def test_bmi_covariates_fail_fast_on_an_index_without_bmi(tmp_path, data_package
 
 
 @pytest.mark.parametrize(("data_package", "variant"), PACKAGES)
-def test_process_metadata_always_emits_bmi_without_truncation(data_package, variant):
+@pytest.mark.parametrize("name", ["bmi", "height", "weight"])
+def test_process_metadata_always_emits_continuous_covariates_without_truncation(data_package, variant, name):
     process_metadata = import_module(f"{data_package}.metadata").process_metadata
 
     processed = process_metadata(
         [
-            SimpleNamespace(metadata={"bmi": 23.75, "bmi_missing": 0}),
-            SimpleNamespace(metadata={"bmi": "unused", "bmi_missing": 0.5}),
+            SimpleNamespace(metadata={name: 23.75, f"{name}_missing": 0}),
+            SimpleNamespace(metadata={name: "unused", f"{name}_missing": 0.5}),
             SimpleNamespace(metadata={}),
-            SimpleNamespace(metadata={"bmi_missing": "female"}),
+            SimpleNamespace(metadata={f"{name}_missing": "female"}),
         ],
         [],
     )
 
-    assert processed["bmi"].dtype == torch.float
-    assert processed["bmi"][0].item() == 23.75
-    assert processed["bmi"][1:].isnan().all()
-    assert processed["bmi_missing"].tolist() == [0, -1, -1, -1]
+    assert processed[name].dtype == torch.float
+    assert processed[name][0].item() == 23.75
+    assert processed[name][1:].isnan().all()
+    assert processed[f"{name}_missing"].tolist() == [0, -1, -1, -1]
 
 
 @pytest.mark.parametrize(
@@ -155,21 +157,31 @@ def test_process_metadata_always_emits_bmi_without_truncation(data_package, vari
         ("eid", float("nan"), False),
     ],
 )
-@pytest.mark.parametrize("data_package", ["data", "sleep2vec2.data"])
+@pytest.mark.parametrize("data_package", DATA_PACKAGES)
 def test_required_covariate_is_valid(data_package, name, value, valid):
     assert import_module(f"{data_package}.metadata").required_covariate_is_valid(name, value) is valid
 
 
-@pytest.mark.parametrize("preset_data_package", ["data", "sleep2vec2.data"])
-def test_height_weight_covariates_reach_batch_from_index_and_preset(tmp_path, preset_data_package):
+@pytest.mark.parametrize("preset_data_package, variant", [*PACKAGES, ("data", "sleep2vec2"), ("data", "sleep2expert")])
+def test_all_covariates_reach_batch_from_index_and_preset(tmp_path, preset_data_package, variant):
     index_path, label_config = _write_multilabel_fixture(tmp_path)
     frame = pd.read_csv(index_path)
     frame["height"] = [168.75, 176.125, float("nan")]
     frame["height_missing"] = [0, 1, 1]
     frame["weight"] = [63.25, 75.5, 68.0]
     frame["weight_missing"] = [1, 0, 0]
+    frame.loc[2, "bmi"] = 24.0
     frame.to_csv(index_path, index=False)
-    label_config.covariates = ["height", "height_missing", "weight", "weight_missing"]
+    label_config.covariates = [
+        "age",
+        "sex",
+        "bmi",
+        "bmi_missing",
+        "height",
+        "height_missing",
+        "weight",
+        "weight_missing",
+    ]
     preset_path = tmp_path / "height_weight.pkl"
     import_module(f"{preset_data_package}.psg_pretrain_dataset").PSGPretrainDataset(
         channel_names=["wearable"],
@@ -187,7 +199,7 @@ def test_height_weight_covariates_reach_batch_from_index_and_preset(tmp_path, pr
         save_preset_path=str(preset_path),
         load_preset_path=None,
     )
-    build_loader = import_module("sleep2vec2.utils")._build_finetune_loader
+    build_loader = import_module(f"{variant}.utils")._build_finetune_loader
 
     for preset in (None, str(preset_path)):
         loader = build_loader(
@@ -199,6 +211,10 @@ def test_height_weight_covariates_reach_batch_from_index_and_preset(tmp_path, pr
         )
         metadata = next(iter(loader))["metadata"]
 
+        torch.testing.assert_close(metadata["age"], torch.tensor([40.25, 67.5]))
+        assert metadata["sex"].tolist() == [0, 1]
+        torch.testing.assert_close(metadata["bmi"], torch.tensor([23.75, 26.125]))
+        assert metadata["bmi_missing"].tolist() == [0, 1]
         torch.testing.assert_close(metadata["height"], torch.tensor([168.75, 176.125]))
         torch.testing.assert_close(metadata["weight"], torch.tensor([63.25, 75.5]))
         assert metadata["height_missing"].tolist() == [0, 1]
@@ -206,9 +222,10 @@ def test_height_weight_covariates_reach_batch_from_index_and_preset(tmp_path, pr
         assert metadata["height_missing"].dtype == metadata["weight_missing"].dtype == torch.long
 
 
-def test_old_preset_without_height_weight_cannot_supply_selected_covariates(tmp_path):
+@pytest.mark.parametrize("variant", [variant for _, variant in PACKAGES])
+def test_old_preset_without_height_weight_cannot_supply_selected_covariates(tmp_path, variant):
     index_path, label_config = _write_multilabel_fixture(tmp_path)
-    build_loader = import_module("sleep2vec2.utils")._build_finetune_loader
+    build_loader = import_module(f"{variant}.utils")._build_finetune_loader
     old_loader = build_loader(
         _loader_args(index_path, None, label_config),
         split=["train"],
@@ -232,11 +249,35 @@ def test_old_preset_without_height_weight_cannot_supply_selected_covariates(tmp_
 
 @pytest.mark.parametrize("name", ["height", "weight"])
 @pytest.mark.parametrize("value, valid", [("168.75", True), (None, False), (float("inf"), False)])
-def test_height_weight_required_values_are_finite(name, value, valid):
-    assert import_module("sleep2vec2.data.metadata").required_covariate_is_valid(name, value) is valid
+@pytest.mark.parametrize("data_package", DATA_PACKAGES)
+def test_height_weight_required_values_are_finite(data_package, name, value, valid):
+    assert import_module(f"{data_package}.metadata").required_covariate_is_valid(name, value) is valid
 
 
 @pytest.mark.parametrize("name", ["height_missing", "weight_missing"])
 @pytest.mark.parametrize("value, valid", [(0, True), ("1", True), (0.5, False), ("female", False)])
-def test_height_weight_missing_indicators_are_strict(name, value, valid):
-    assert import_module("sleep2vec2.data.metadata").required_covariate_is_valid(name, value) is valid
+@pytest.mark.parametrize("data_package", DATA_PACKAGES)
+def test_height_weight_missing_indicators_are_strict(data_package, name, value, valid):
+    assert import_module(f"{data_package}.metadata").required_covariate_is_valid(name, value) is valid
+
+
+@pytest.mark.parametrize("variant", [variant for _, variant in PACKAGES])
+@pytest.mark.parametrize(
+    "name, value",
+    [("height", float("inf")), ("weight", float("inf")), ("height_missing", 0.5), ("weight_missing", "female")],
+)
+def test_invalid_height_weight_covariates_are_filtered_before_batching(tmp_path, variant, name, value):
+    index_path, label_config = _write_multilabel_fixture(tmp_path)
+    frame = pd.read_csv(index_path)
+    frame[name] = value
+    frame.to_csv(index_path, index=False)
+    label_config.covariates = [name]
+
+    with pytest.raises(ValueError, match="No samples remain after required metadata filtering"):
+        import_module(f"{variant}.utils")._build_finetune_loader(
+            _loader_args(index_path, None, label_config),
+            split=["train"],
+            sources=[],
+            shuffle=False,
+            is_train_set=True,
+        )

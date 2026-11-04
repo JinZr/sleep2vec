@@ -210,6 +210,59 @@ def test_collate_uses_the_signal_metadata_encoding(tmp_path):
     assert batch["event_time"].tolist() == [[10.0], [20.0]]
 
 
+@pytest.mark.parametrize("task", ["survival", "multilabel_classification"])
+@pytest.mark.parametrize("source", ["index", "preset", "kaldi"])
+def test_all_eight_covariates_survive_each_metadata_source(tmp_path, task, source):
+    covariates = ("age", "sex", "bmi", "bmi_missing", "height", "height_missing", "weight", "weight_missing")
+    rows = [
+        _row("1", age=45.9, bmi=23.5, bmi_missing=0, height=168.75, height_missing=0, weight=63.25, weight_missing=1),
+        _row(
+            "2", age=60, sex=1, bmi=30.0, bmi_missing=1, height=176.125, height_missing=1, weight=75.5, weight_missing=0
+        ),
+        _row("3", bmi=25.0, bmi_missing=0, height=np.nan, height_missing=1, weight=68.0, weight_missing=0),
+    ]
+    if source == "index":
+        cfg = _config(tmp_path, index=_index(tmp_path, rows), task=task, covariates=covariates)
+    elif source == "kaldi":
+        _index(tmp_path, rows)
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text(json.dumps({"splits": {"train": {"manifest": "index.csv"}}}))
+        cfg = _config(tmp_path, kaldi=manifest, task=task, covariates=covariates)
+    else:
+        labels = (
+            {"event_time": [10.0], "is_event": [1.0], "has_label": [1.0]}
+            if task == "survival"
+            else {"disease_label": [1.0], "has_label": [1.0]}
+        )
+        samples = [
+            SampleIndex(id=i, path=row["path"], start=0, end=10, metadata={**row, **labels})
+            for i, row in enumerate(rows)
+        ]
+        preset = tmp_path / "preset.pkl"
+        preset.write_bytes(pickle.dumps(samples))
+        cfg = _config(tmp_path, preset=preset, task=task, covariates=covariates)
+
+    dataset = load_split_dataset(cfg, "train", sources=None)
+    metadata = _collate_records(dataset.records)["metadata"]
+
+    assert [record.key for record in dataset.records] == ["1", "2"]
+    assert metadata["height"].tolist() == pytest.approx([168.75, 176.125])
+    assert metadata["weight"].tolist() == pytest.approx([63.25, 75.5])
+    assert metadata["height_missing"].dtype == metadata["weight_missing"].dtype == torch.long
+    assert metadata["height_missing"].tolist() == [0, 1]
+    assert metadata["weight_missing"].tolist() == [1, 0]
+
+
+@pytest.mark.parametrize("name", ["height", "weight", "height_missing", "weight_missing"])
+def test_duplicate_keys_require_matching_height_weight_covariates(tmp_path, name):
+    values = [160.0, 175.0] if not name.endswith("_missing") else [0, 1]
+    rows = [_row("1", **{name: value}) for value in values]
+    cfg = _config(tmp_path, index=_index(tmp_path, rows), covariates=(name,))
+
+    with pytest.raises(ValueError, match=f"conflicting {name} values"):
+        load_split_dataset(cfg, "train", sources=None)
+
+
 def test_the_data_source_is_required_when_the_rows_are_read(tmp_path):
     with pytest.raises(ValueError, match="requires finetune_preset_path or finetune_data_index"):
         load_split_dataset(_config(tmp_path), "train", sources=None)

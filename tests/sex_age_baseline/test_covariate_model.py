@@ -39,16 +39,48 @@ def _capture_inputs(model, names):
 
 
 def test_continuous_covariates_are_standardized_with_the_frozen_statistics():
-    normalization = {"age": {"mean": 50.0, "std": 20.0}, "bmi": {"mean": 25.0, "std": 5.0}}
+    normalization = {
+        "age": {"mean": 50.0, "std": 20.0},
+        "bmi": {"mean": 25.0, "std": 5.0},
+        "height": {"mean": 170.0, "std": 10.0},
+        "weight": {"mean": 70.0, "std": 10.0},
+    }
     # Listed out of order: the module always consumes covariates in the canonical order.
-    model = SexAgeMLP(_config(["bmi_missing", "bmi", "sex", "age"], normalization=normalization))
-    seen = _capture_inputs(model, ["age", "bmi"])
+    model = SexAgeMLP(
+        _config(
+            ["weight_missing", "height", "height_missing", "weight", "bmi_missing", "bmi", "sex", "age"],
+            normalization=normalization,
+        )
+    )
+    seen = _capture_inputs(model, ["age", "bmi", "height", "weight"])
 
-    output = model(_metadata(age=[0.0, 70.0], sex=[0, 1], bmi=[20.5, 25.0], bmi_missing=[0, 1]))
+    output = model(
+        _metadata(
+            age=[0.0, 70.0],
+            sex=[0, 1],
+            bmi=[20.5, 25.0],
+            bmi_missing=[0, 1],
+            height=[160.0, 175.0],
+            height_missing=[1, 0],
+            weight=[65.0, 90.0],
+            weight_missing=[0, 1],
+        )
+    )
 
-    assert list(model.embeddings) == ["age", "sex", "bmi", "bmi_missing"]
+    assert list(model.embeddings) == [
+        "age",
+        "sex",
+        "bmi",
+        "bmi_missing",
+        "height",
+        "height_missing",
+        "weight",
+        "weight_missing",
+    ]
     assert seen["age"] == pytest.approx([-2.5, 1.0])
     assert seen["bmi"] == pytest.approx([-0.9, 0.0])
+    assert seen["height"] == pytest.approx([-1.0, 0.5])
+    assert seen["weight"] == pytest.approx([-0.5, 2.0])
     assert output.shape == (2, 2)
 
 
@@ -75,11 +107,31 @@ def test_covariate_embeddings_start_as_a_no_op():
     [
         ("bmi", [float("nan"), 24.0], "finite imputed values"),
         ("bmi_missing", [2, 0], "must be 0 or 1"),
+        ("height", [float("nan"), 175.0], "finite imputed values"),
+        ("weight", [float("inf"), 75.0], "finite imputed values"),
+        ("height_missing", [0.5, 0], "must be 0 or 1"),
+        ("weight_missing", [-1, 1], "must be 0 or 1"),
     ],
 )
 def test_invalid_batch_covariates_fail(column, values, message):
-    model = SexAgeMLP(_config(["bmi", "bmi_missing"], normalization={"bmi": {"mean": 25.0, "std": 5.0}}))
-    metadata = _metadata(bmi=[24.0, 26.0], bmi_missing=[0, 1])
+    model = SexAgeMLP(
+        _config(
+            ["bmi", "bmi_missing", "height", "height_missing", "weight", "weight_missing"],
+            normalization={
+                "bmi": {"mean": 25.0, "std": 5.0},
+                "height": {"mean": 170.0, "std": 10.0},
+                "weight": {"mean": 70.0, "std": 10.0},
+            },
+        )
+    )
+    metadata = _metadata(
+        bmi=[24.0, 26.0],
+        bmi_missing=[0, 1],
+        height=[160.0, 175.0],
+        height_missing=[1, 0],
+        weight=[65.0, 90.0],
+        weight_missing=[0, 1],
+    )
     metadata[column] = torch.tensor(values)
 
     with pytest.raises(ValueError, match=message):

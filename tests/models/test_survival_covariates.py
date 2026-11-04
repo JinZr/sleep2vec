@@ -133,7 +133,12 @@ def test_downstream_classification_head_accepts_covariates(package_name: str, mo
 
 @pytest.mark.parametrize(
     ("package_name", "fusion"),
-    [("sleep2vec", "feature_concat"), ("sleep2vec2", "feature_concat"), ("sleep2vec2", "token_concat")],
+    [
+        ("sleep2vec", "feature_concat"),
+        ("sleep2vec2", "feature_concat"),
+        ("sleep2vec2", "token_concat"),
+        ("sleep2expert", "feature_concat"),
+    ],
 )
 def test_downstream_classification_head_rejects_relu_with_covariates(package_name: str, fusion: str, monkeypatch):
     module = _import_downstream_module(package_name, monkeypatch)
@@ -320,7 +325,7 @@ def _set_identity_embeddings(model) -> None:
             embedding.weight[1].fill_(1.0)
 
 
-@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2"])
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 def test_bmi_covariates_keep_checkpoint_parameter_names(package_name: str, monkeypatch):
     model = _bmi_model(package_name, monkeypatch)
 
@@ -337,7 +342,7 @@ def test_bmi_covariates_keep_checkpoint_parameter_names(package_name: str, monke
     assert all(not value.any() for key, value in model.state_dict().items() if key in covariate_keys)
 
 
-@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2"])
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 def test_bmi_covariate_features_are_normalized_in_canonical_order(package_name: str, monkeypatch):
     model = _bmi_model(package_name, monkeypatch)
     _set_identity_embeddings(model)
@@ -356,7 +361,7 @@ def test_bmi_covariate_features_are_normalized_in_canonical_order(package_name: 
         ("age", -1.0, "'age' is missing"),
     ],
 )
-@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2"])
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 def test_bmi_covariate_features_reject_invalid_metadata(package_name: str, name, value, pattern, monkeypatch):
     model = _bmi_model(package_name, monkeypatch)
     batch = _bmi_batch()
@@ -391,6 +396,52 @@ def test_sleep2vec2_risk_covariates_standardize_before_reduced_precision(monkeyp
 
     assert values.dtype == torch.bfloat16
     assert values[0, 2].item() == pytest.approx(0.01, abs=1e-4)
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+def test_all_eight_covariate_embeddings_share_feature_layout(package_name, monkeypatch):
+    normalization = {**_NORMALIZATION, "height": {"mean": 170, "std": 10}, "weight": {"mean": 70, "std": 10}}
+    model = _bmi_model(
+        package_name,
+        monkeypatch,
+        covariates=["weight_missing", "weight", "height_missing", "height", *_ALL_COVARIATES_SHUFFLED],
+        normalization=normalization,
+    )
+    batch = _bmi_batch()
+    batch["metadata"].update(
+        height=torch.tensor([160.0, 175.0]),
+        height_missing=torch.tensor([1, 0]),
+        weight=torch.tensor([65.0, 90.0]),
+        weight_missing=torch.tensor([0, 1]),
+    )
+    assert model.head.extra_feature_dim == 24
+    expected_names = ["age", "sex", "bmi", "bmi_missing", "height", "height_missing", "weight", "weight_missing"]
+    with torch.no_grad():
+        for name in expected_names:
+            embedding = getattr(model, f"survival_{name}_embedding")
+            assert not embedding.weight.any()
+            if name in normalization:
+                embedding.weight.fill_(1.0)
+                embedding.bias.zero_()
+            else:
+                embedding.weight[0].zero_()
+                embedding.weight[1].fill_(1.0)
+    expected = torch.cat((_EXPECTED_VALUES, torch.tensor([[-1.0, 1.0, -0.5, 0.0], [0.5, 0.0, 2.0, 1.0]])), dim=1)
+    features = model._build_survival_extra_features(batch, torch.zeros(2, 8))
+    assert torch.equal(features, expected.repeat_interleave(3, dim=1))
+
+    for name in ("height", "weight"):
+        original = batch["metadata"][name]
+        batch["metadata"][name] = torch.tensor([float("nan"), 175.0])
+        with pytest.raises(ValueError, match=f"'{name}' requires finite imputed values"):
+            model._build_survival_extra_features(batch, torch.zeros(2, 8))
+        batch["metadata"][name] = original
+    for name in ("height_missing", "weight_missing"):
+        original = batch["metadata"][name]
+        batch["metadata"][name] = torch.tensor([0.5, 0.0])
+        with pytest.raises(ValueError, match=f"'{name}' must be 0 or 1"):
+            model._build_survival_extra_features(batch, torch.zeros(2, 8))
+        batch["metadata"][name] = original
 
 
 @pytest.mark.parametrize("fusion", ["feature_concat", "token_concat", "risk"])

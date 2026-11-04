@@ -9,6 +9,8 @@ import yaml
 from sex_age_baseline.config import load_config
 
 BMI_NORMALIZATION = {"bmi": {"mean": 25.0, "std": 5.0}}
+COVARIATES = ("age", "sex", "bmi", "bmi_missing", "height", "height_missing", "weight", "weight_missing")
+NORMALIZATION = {**BMI_NORMALIZATION, "height": {"mean": 170.0, "std": 10.0}, "weight": {"mean": 70.0, "std": 10.0}}
 
 
 def _write_yaml(path: Path, payload: dict) -> Path:
@@ -94,10 +96,12 @@ def test_checked_in_configs_load(path: str):
 
 
 @pytest.mark.parametrize(
-    "covariates", [list(c) for n in (1, 2, 4) for c in combinations(("age", "sex", "bmi", "bmi_missing"), n)]
+    "covariates",
+    [list(c) for n in (1, 2, 4) for c in combinations(("age", "sex", "bmi", "bmi_missing"), n)]
+    + [["height"], ["height_missing"], ["weight"], ["weight_missing"], list(COVARIATES)],
 )
 @pytest.mark.parametrize("num_layers", [1, 2, 3])
-@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2"])
+@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 def test_covariate_subsets_and_dense_head_match_the_shared_builders(tmp_path, covariates, num_layers, variant):
     import importlib
 
@@ -112,8 +116,7 @@ def test_covariate_subsets_and_dense_head_match_the_shared_builders(tmp_path, co
     payload = _cox_payload(tmp_path)
     survival = payload["finetune"]["survival"]
     survival["covariates"] = list(reversed(covariates))
-    if "bmi" in covariates:
-        survival["covariate_normalization"] = BMI_NORMALIZATION
+    survival["covariate_normalization"] = {name: stats for name, stats in NORMALIZATION.items() if name in covariates}
     payload["model"]["head"]["kwargs"]["num_layers"] = num_layers
     cfg = load_config(_write_yaml(tmp_path / "subset.yaml", payload))
     network = SexAgeMLP(cfg).eval()
@@ -125,6 +128,10 @@ def test_covariate_subsets_and_dense_head_match_the_shared_builders(tmp_path, co
         "sex": torch.tensor([0, 1]),
         "bmi": torch.tensor([20.0, 30.0]),
         "bmi_missing": torch.tensor([1, 0]),
+        "height": torch.tensor([160.0, 175.0]),
+        "height_missing": torch.tensor([1, 0]),
+        "weight": torch.tensor([65.0, 90.0]),
+        "weight_missing": torch.tensor([0, 1]),
     }
     embedded = embed_covariates(network.embeddings, metadata, network.covariate_normalization, torch.device("cpu"))
     reference = ClassificationHead(
@@ -146,7 +153,7 @@ def test_zero_initialized_embeddings_receive_gradients(tmp_path, act, num_layers
 
     payload = _cox_payload(tmp_path)
     survival = payload["finetune"]["survival"]
-    survival.update(covariates=["age", "sex", "bmi", "bmi_missing"], covariate_normalization=BMI_NORMALIZATION)
+    survival.update(covariates=list(COVARIATES), covariate_normalization=NORMALIZATION)
     payload["model"]["head"].update(act=act, dropout=0.0)
     payload["model"]["head"]["kwargs"]["num_layers"] = num_layers
     network = SexAgeMLP(load_config(_write_yaml(tmp_path / "compatible.yaml", payload)))
@@ -159,6 +166,10 @@ def test_zero_initialized_embeddings_receive_gradients(tmp_path, act, num_layers
         # Not symmetric around the mean: the identical zero-init rows would otherwise cancel the bmi gradient.
         "bmi": torch.tensor([20.0, 35.0]),
         "bmi_missing": torch.tensor([0, 1]),
+        "height": torch.tensor([160.0, 190.0]),
+        "height_missing": torch.tensor([1, 0]),
+        "weight": torch.tensor([60.0, 90.0]),
+        "weight_missing": torch.tensor([0, 1]),
     }
 
     network(metadata).sum().backward()
@@ -182,11 +193,11 @@ def test_zero_initialized_embeddings_receive_gradients(tmp_path, act, num_layers
         (lambda p: p["finetune"]["survival"].update(covariates=[]), "non-empty"),
         (lambda p: p["finetune"]["survival"].pop("covariates"), "non-empty"),
         (lambda p: p["finetune"]["survival"].update(covariates=["age", "age"]), "duplicates"),
-        (lambda p: p["finetune"]["survival"].update(covariates=["height"]), "only supports"),
+        (lambda p: p["finetune"]["survival"].update(covariates=["waist"]), "only supports"),
         (lambda p: p["finetune"]["survival"].update(covariates=["age", "bmi"]), "BMI requires"),
         (
             lambda p: p["finetune"]["survival"].update(covariate_normalization={"bmi": {"mean": 25.0, "std": 5.0}}),
-            "selected age and bmi",
+            "only supports selected",
         ),
         (
             lambda p: p["finetune"]["survival"].update(covariate_normalization={"age": {"mean": 50.0}}),
@@ -210,16 +221,27 @@ def test_task_block_carries_the_signal_covariate_fields(tmp_path, payload_factor
     payload = payload_factory(tmp_path)
     block = "survival" if "survival" in payload["finetune"] else "multilabel"
     payload["finetune"][block].update(
-        covariates=["age", "sex", "bmi", "bmi_missing"],
-        covariate_normalization={"age": {"mean": 50, "std": 20}, **BMI_NORMALIZATION},
+        covariates=list(COVARIATES),
+        covariate_normalization={"age": {"mean": 50, "std": 20}, **NORMALIZATION},
     )
 
     cfg = load_config(_write_yaml(tmp_path / "bmi.yaml", payload))
     task_cfg = getattr(cfg.finetune, block)
 
-    assert task_cfg.covariates == ["age", "sex", "bmi", "bmi_missing"]
+    assert task_cfg.covariates == list(COVARIATES)
     assert task_cfg.covariate_embedding_dim == 4
-    assert task_cfg.covariate_normalization == {"age": {"mean": 50.0, "std": 20.0}, **BMI_NORMALIZATION}
+    assert task_cfg.covariate_normalization == {"age": {"mean": 50.0, "std": 20.0}, **NORMALIZATION}
+
+
+@pytest.mark.parametrize("payload_factory", [_cox_payload, _multilabel_payload])
+@pytest.mark.parametrize("name", ["height", "weight"])
+def test_height_weight_require_frozen_normalization(tmp_path, payload_factory, name):
+    payload = payload_factory(tmp_path)
+    block = "survival" if "survival" in payload["finetune"] else "multilabel"
+    payload["finetune"][block].update(covariates=[name, f"{name}_missing"])
+
+    with pytest.raises(ValueError, match=f"{name} requires training-fitted"):
+        load_config(_write_yaml(tmp_path / "missing_normalization.yaml", payload))
 
 
 def test_model_contract_freezes_the_covariate_pathway(tmp_path):
