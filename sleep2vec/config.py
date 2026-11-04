@@ -661,9 +661,9 @@ def _build_finetune_sampler_config(raw: t.Any) -> FinetuneSamplerConfig:
     return FinetuneSamplerConfig(weighted_random=weighted_random)
 
 
-# Covariates the downstream heads consume, in their fixed feature order. age and bmi are continuous; sex and
-# bmi_missing are 0/1 indicators.
-SUPPORTED_COVARIATES = ("age", "sex", "bmi", "bmi_missing")
+# Covariates the downstream heads consume, in their fixed feature order. age, bmi, height and weight are continuous;
+# sex and the missingness flags are 0/1 indicators.
+SUPPORTED_COVARIATES = ("age", "sex", "bmi", "bmi_missing", "height", "height_missing", "weight", "weight_missing")
 COVARIATE_FIELDS = {"covariates", "covariate_embedding_dim", "covariate_normalization"}
 
 
@@ -682,12 +682,14 @@ def parse_covariate_fields(raw: t.Mapping[str, t.Any], prefix: str) -> t.Dict[st
     if not isinstance(embedding_dim, int) or isinstance(embedding_dim, bool) or embedding_dim < 1:
         raise ValueError(f"{prefix}.covariate_embedding_dim must be a positive integer.")
 
-    # Optional for age/sex recipes, whose age keeps the age / 100 scaling; BMI must freeze training-fitted scaling.
+    # Optional for age/sex recipes, whose age keeps the age / 100 scaling; other continuous covariates freeze scaling.
     normalization = raw.get("covariate_normalization", {})
     if not isinstance(normalization, dict):
         raise ValueError(f"{prefix}.covariate_normalization must be a mapping.")
-    if set(normalization) - (set(covariates) & {"age", "bmi"}):
-        raise ValueError(f"{prefix}.covariate_normalization only supports selected age and bmi covariates.")
+    if set(normalization) - (set(covariates) & {"age", "bmi", "height", "weight"}):
+        raise ValueError(
+            f"{prefix}.covariate_normalization only supports selected age, bmi, height and weight covariates."
+        )
     for name, stats in normalization.items():
         if not isinstance(stats, dict) or set(stats) != {"mean", "std"}:
             raise ValueError(f"{prefix}.covariate_normalization.{name} requires mean and std.")
@@ -695,8 +697,10 @@ def parse_covariate_fields(raw: t.Mapping[str, t.Any], prefix: str) -> t.Dict[st
             raise ValueError(f"{prefix}.covariate_normalization.{name} requires finite numeric mean and std.")
         if stats["std"] <= 0:
             raise ValueError(f"{prefix}.covariate_normalization.{name}.std must be positive.")
-    if "bmi" in covariates and "bmi" not in normalization:
-        raise ValueError(f"BMI requires training-fitted {prefix}.covariate_normalization.bmi.")
+    for name in ("bmi", "height", "weight"):
+        if name in covariates and name not in normalization:
+            label = "BMI" if name == "bmi" else name
+            raise ValueError(f"{label} requires training-fitted {prefix}.covariate_normalization.{name}.")
 
     return {
         "covariates": list(covariates),
