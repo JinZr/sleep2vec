@@ -24,27 +24,32 @@ model:
 ```
 
 Covariates are declared in `finetune.survival` or `finetune.multilabel` with the
-same fields, validation and encoders as `sleep2vec` and `sleep2vec2`
-(`sleep2vec/modules/covariates.py`):
+same fields, validation and encoding semantics as `sleep2vec`, `sleep2vec2`, and
+`sleep2expert`. The baseline reuses `sleep2vec/modules/covariates.py`:
 
 ```yaml
 finetune:
   survival:
     key_column: eid
     # ... label sidecars ...
-    covariates: [age, sex, bmi, bmi_missing]
+    covariates: [age, sex, bmi, bmi_missing, height, height_missing, weight, weight_missing]
     covariate_embedding_dim: 16
     covariate_normalization:
+      # Illustrative statistics; replace with training-fitted values in the input units.
       bmi: {mean: 26.1, std: 4.3}
+      height: {mean: 170.0, std: 10.0}
+      weight: {mean: 70.0, std: 15.0}
 ```
 
-`covariates` is a nonempty, duplicate-free subset of `age`, `sex`, `bmi` and
-`bmi_missing`, always encoded in that canonical order. `age` and `bmi` use
-zero-initialized `Linear(1, d)` projections of standardized values; `sex` and
-`bmi_missing` use zero-initialized `Embedding(2, d)` tables. Normalization
-statistics are frozen in the YAML, fitted on the training split: `bmi` requires
-an entry, `age` without one falls back to `age / 100`, and entries are accepted
-only for selected `age`/`bmi`.
+`covariates` is a nonempty, duplicate-free subset of the eight fields above,
+always encoded in that canonical order. `age`, `bmi`, `height`, and `weight`
+use zero-initialized `Linear(1, d)` projections of standardized values; `sex`
+and the three missingness flags use zero-initialized `Embedding(2, d)` tables.
+Normalization statistics are frozen in the YAML and fitted on the training
+split: selected `bmi`, `height`, and `weight` each require an entry with a finite
+mean and positive finite std, in the same units as the input values. `age`
+without statistics keeps `age / 100`. Entries are accepted only for selected
+continuous covariates.
 
 The head applies its activation to the concatenated embeddings before its first
 Linear, so `head.act` must be `elu`, `gelu` or `silu`; ReLU would block every
@@ -78,10 +83,11 @@ whose `split` column names it, as `KaldiPSGDataset` does).
 - A preset supplies the labels embedded at preset generation; an index or Kaldi
   manifest reads the label sidecars. Label names always come from
   `disease_columns_index`, because they belong to the checkpoint label contract.
-- `bmi` is raw BMI (imputed upstream) and `bmi_missing` its 0/1 imputation
-  indicator; both must be columns of the index or manifest and are copied into
-  regenerated presets. A preset built before these columns existed cannot serve
-  a BMI recipe.
+- `bmi`, `height`, and `weight` carry finite values imputed upstream; each
+  corresponding `*_missing` column is numeric 0/1, with 1 indicating imputation.
+  An indicator of 1 does not fill an empty value or bypass filtering. Selected
+  fields must exist in the index or manifest and are copied into regenerated
+  presets; older presets without the selected fields cannot supply them.
 
 With a shared preset the baseline and the signal run see the same cohort. From
 a raw index or Kaldi manifest, the signal model additionally drops windows by
