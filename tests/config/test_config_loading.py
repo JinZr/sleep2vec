@@ -688,6 +688,35 @@ def test_load_finetune_config_parses_bmi_covariates_with_frozen_normalization(
 
 
 @pytest.mark.parametrize("task", ["survival", "multilabel"])
+@pytest.mark.parametrize("names", [["height"], ["weight"], ["weight_missing", "height", "weight", "height_missing"]])
+def test_sleep2vec2_parses_independent_height_weight_covariates(tmp_path: Path, task: str, names: list):
+    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+    normalization = {
+        name: {"mean": 170 if name == "height" else 70, "std": 10} for name in names if not name.endswith("_missing")
+    }
+    payload = _covariate_task_payload(task)
+    payload["finetune"][task].update(covariates=names, covariate_normalization=normalization)
+
+    task_cfg = getattr(loader(_write_yaml(tmp_path, payload)).finetune, task)
+
+    assert task_cfg.covariates == names
+    assert task_cfg.covariate_normalization == normalization
+
+
+@pytest.mark.parametrize("task", ["survival", "multilabel"])
+@pytest.mark.parametrize("name", ["height", "weight"])
+def test_sleep2vec2_height_weight_require_training_normalization(tmp_path: Path, task: str, name: str):
+    loader = importlib.import_module("sleep2vec2.config").load_finetune_config
+    payload = _covariate_task_payload(task)
+    payload["finetune"][task].update(covariates=[name, f"{name}_missing"])
+
+    with pytest.raises(
+        ValueError, match=f"{name} requires training-fitted finetune.{task}.covariate_normalization.{name}"
+    ):
+        loader(_write_yaml(tmp_path, payload))
+
+
+@pytest.mark.parametrize("task", ["survival", "multilabel"])
 @pytest.mark.parametrize("module_name", ["sleep2vec.config", "sleep2vec2.config"])
 def test_load_finetune_config_keeps_age_sex_recipes_without_normalization(tmp_path: Path, module_name: str, task: str):
     loader = importlib.import_module(module_name).load_finetune_config

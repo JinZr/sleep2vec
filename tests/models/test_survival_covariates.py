@@ -277,7 +277,9 @@ _NORMALIZATION = {"age": {"mean": 50.0, "std": 25.0}, "bmi": {"mean": 25.0, "std
 _EXPECTED_VALUES = torch.tensor([[-2.0, 0.0, -1.0, 1.0], [1.0, 1.0, 1.0, 0.0]])
 
 
-def _bmi_model(package_name: str, monkeypatch, **kwargs):
+def _bmi_model(
+    package_name: str, monkeypatch, *, covariates=_ALL_COVARIATES_SHUFFLED, normalization=_NORMALIZATION, **kwargs
+):
     module = _import_downstream_module(package_name, monkeypatch)
     config = _model_config(package_name, head_name="classification")
     return module.Sleep2vecDownstreamModel(
@@ -290,9 +292,9 @@ def _bmi_model(package_name: str, monkeypatch, **kwargs):
         device="cpu",
         model_config=config,
         head_config=config.head,
-        survival_covariates=_ALL_COVARIATES_SHUFFLED,
+        survival_covariates=covariates,
         survival_covariate_embedding_dim=3,
-        covariate_normalization=_NORMALIZATION,
+        covariate_normalization=normalization,
         **kwargs,
     )
 
@@ -389,3 +391,55 @@ def test_sleep2vec2_risk_covariates_standardize_before_reduced_precision(monkeyp
 
     assert values.dtype == torch.bfloat16
     assert values[0, 2].item() == pytest.approx(0.01, abs=1e-4)
+
+
+@pytest.mark.parametrize("fusion", ["feature_concat", "token_concat", "risk"])
+def test_sleep2vec2_height_weight_covariates_normalize_across_fusions(fusion, monkeypatch):
+    normalization = {**_NORMALIZATION, "height": {"mean": 170, "std": 10}, "weight": {"mean": 70, "std": 10}}
+    model = _bmi_model(
+        "sleep2vec2",
+        monkeypatch,
+        covariates=["weight_missing", "height_missing", "weight", "height", *_ALL_COVARIATES_SHUFFLED],
+        normalization=normalization,
+        survival_covariate_fusion=fusion,
+    )
+    batch = _bmi_batch()
+    batch["metadata"].update(
+        height=torch.tensor([160.0, 175.0]),
+        height_missing=torch.tensor([1, 0]),
+        weight=torch.tensor([65.0, 90.0]),
+        weight_missing=torch.tensor([0, 1]),
+    )
+    expected = torch.cat((_EXPECTED_VALUES, torch.tensor([[-1.0, 1.0, -0.5, 0.0], [0.5, 0.0, 2.0, 1.0]])), dim=1)
+
+    assert torch.equal(model._build_survival_covariate_values(batch, torch.zeros(2, 8)), expected)
+    if fusion == "risk":
+        assert model.survival_covariate_risk.in_features == 8
+    else:
+        for name in ("height", "height_missing", "weight", "weight_missing"):
+            assert not getattr(model, f"survival_{name}_embedding").weight.any()
+        _set_identity_embeddings(model)
+        with torch.no_grad():
+            for name in ("height", "weight"):
+                embedding = getattr(model, f"survival_{name}_embedding")
+                embedding.weight.fill_(1.0)
+                embedding.bias.zero_()
+            for name in ("height_missing", "weight_missing"):
+                embedding = getattr(model, f"survival_{name}_embedding")
+                embedding.weight[0].zero_()
+                embedding.weight[1].fill_(1.0)
+        features = model._build_survival_covariate_embeddings(batch, torch.zeros(2, 8))
+        assert torch.equal(features, expected.repeat_interleave(3, dim=1))
+
+    for name in ("height", "weight"):
+        original = batch["metadata"][name]
+        batch["metadata"][name] = torch.tensor([float("nan"), 175.0])
+        with pytest.raises(ValueError, match=f"'{name}' requires finite imputed values"):
+            model._build_survival_covariate_values(batch, torch.zeros(2, 8))
+        batch["metadata"][name] = original
+    for name in ("height_missing", "weight_missing"):
+        original = batch["metadata"][name]
+        batch["metadata"][name] = torch.tensor([0.5, 0.0])
+        with pytest.raises(ValueError, match=f"'{name}' must be 0 or 1"):
+            model._build_survival_covariate_values(batch, torch.zeros(2, 8))
+        batch["metadata"][name] = original
