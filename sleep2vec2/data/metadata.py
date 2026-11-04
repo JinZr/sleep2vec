@@ -152,9 +152,9 @@ def required_covariate_is_valid(name: str, value: t.Any) -> bool:
         return safe_cast(value, -1) >= 0
     if name == "sex":
         return _encode_binary_label(value) in {0, 1}
-    if name == "bmi_missing":
+    if name in {"bmi_missing", "height_missing", "weight_missing"}:
         return _encode_indicator(value) in {0, 1}
-    if name == "bmi":
+    if name in {"bmi", "height", "weight"}:
         return math.isfinite(safe_cast_float(value, math.nan))
     return value is not None and not (isinstance(value, float) and math.isnan(value))
 
@@ -182,13 +182,14 @@ def process_metadata(samples, disease_names, regression_names: t.Sequence[str] |
     processed = {}
     processed["age"] = torch.tensor([safe_cast(v, -1) for v in batch_metadata["age"]], dtype=torch.float)
     processed["sex"] = torch.tensor([_encode_binary_label(v) for v in batch_metadata["sex"]], dtype=torch.long)
-    # bmi is imputed upstream and stays continuous; NaN marks a value the covariate path must reject.
-    processed["bmi"] = torch.tensor(
-        [safe_cast_float(s.metadata.get("bmi"), math.nan) for s in samples], dtype=torch.float
-    )
-    processed["bmi_missing"] = torch.tensor(
-        [_encode_indicator(s.metadata.get("bmi_missing")) for s in samples], dtype=torch.long
-    )
+    # These values are imputed upstream and stay continuous; NaN marks a value the covariate path must reject.
+    for name in ("bmi", "height", "weight"):
+        processed[name] = torch.tensor(
+            [safe_cast_float(s.metadata.get(name), math.nan) for s in samples], dtype=torch.float
+        )
+        processed[f"{name}_missing"] = torch.tensor(
+            [_encode_indicator(s.metadata.get(f"{name}_missing")) for s in samples], dtype=torch.long
+        )
     for disease_name in disease_names:
         values = batch_metadata[disease_name]
         if disease_name in regression_names:
