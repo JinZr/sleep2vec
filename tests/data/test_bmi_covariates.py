@@ -1,4 +1,5 @@
 from importlib import import_module
+import pickle
 from types import SimpleNamespace
 
 import numpy as np
@@ -157,3 +158,85 @@ def test_process_metadata_always_emits_bmi_without_truncation(data_package, vari
 @pytest.mark.parametrize("data_package", ["data", "sleep2vec2.data"])
 def test_required_covariate_is_valid(data_package, name, value, valid):
     assert import_module(f"{data_package}.metadata").required_covariate_is_valid(name, value) is valid
+
+
+@pytest.mark.parametrize("preset_data_package", ["data", "sleep2vec2.data"])
+def test_height_weight_covariates_reach_batch_from_index_and_preset(tmp_path, preset_data_package):
+    index_path, label_config = _write_multilabel_fixture(tmp_path)
+    frame = pd.read_csv(index_path)
+    frame["height"] = [168.75, 176.125, float("nan")]
+    frame["height_missing"] = [0, 1, 1]
+    frame["weight"] = [63.25, 75.5, 68.0]
+    frame["weight_missing"] = [1, 0, 0]
+    frame.to_csv(index_path, index=False)
+    label_config.covariates = ["height", "height_missing", "weight", "weight_missing"]
+    preset_path = tmp_path / "height_weight.pkl"
+    import_module(f"{preset_data_package}.psg_pretrain_dataset").PSGPretrainDataset(
+        channel_names=["wearable"],
+        channel_input_dims={"wearable": 4},
+        index=str(index_path),
+        split=["train"],
+        max_tokens=2,
+        mask_rate=0.0,
+        randomly_select_channels=False,
+        batch_size=2,
+        shuffle=False,
+        num_workers=0,
+        multilabel_label_config=label_config,
+        multilabel_output_dim=3,
+        save_preset_path=str(preset_path),
+        load_preset_path=None,
+    )
+    build_loader = import_module("sleep2vec2.utils")._build_finetune_loader
+
+    for preset in (None, str(preset_path)):
+        loader = build_loader(
+            _loader_args(index_path, preset, label_config),
+            split=["train"],
+            sources=[],
+            shuffle=False,
+            is_train_set=True,
+        )
+        metadata = next(iter(loader))["metadata"]
+
+        torch.testing.assert_close(metadata["height"], torch.tensor([168.75, 176.125]))
+        torch.testing.assert_close(metadata["weight"], torch.tensor([63.25, 75.5]))
+        assert metadata["height_missing"].tolist() == [0, 1]
+        assert metadata["weight_missing"].tolist() == [1, 0]
+        assert metadata["height_missing"].dtype == metadata["weight_missing"].dtype == torch.long
+
+
+def test_old_preset_without_height_weight_cannot_supply_selected_covariates(tmp_path):
+    index_path, label_config = _write_multilabel_fixture(tmp_path)
+    build_loader = import_module("sleep2vec2.utils")._build_finetune_loader
+    old_loader = build_loader(
+        _loader_args(index_path, None, label_config),
+        split=["train"],
+        sources=[],
+        shuffle=False,
+        is_train_set=True,
+    )
+    preset_path = tmp_path / "old.pkl"
+    preset_path.write_bytes(pickle.dumps(old_loader.dataset.data))
+    label_config.covariates = ["height", "height_missing", "weight", "weight_missing"]
+    for preset in (None, str(preset_path)):
+        with pytest.raises(ValueError, match="No samples remain after required metadata filtering"):
+            build_loader(
+                _loader_args(index_path, preset, label_config),
+                split=["train"],
+                sources=[],
+                shuffle=False,
+                is_train_set=True,
+            )
+
+
+@pytest.mark.parametrize("name", ["height", "weight"])
+@pytest.mark.parametrize("value, valid", [("168.75", True), (None, False), (float("inf"), False)])
+def test_height_weight_required_values_are_finite(name, value, valid):
+    assert import_module("sleep2vec2.data.metadata").required_covariate_is_valid(name, value) is valid
+
+
+@pytest.mark.parametrize("name", ["height_missing", "weight_missing"])
+@pytest.mark.parametrize("value, valid", [(0, True), ("1", True), (0.5, False), ("female", False)])
+def test_height_weight_missing_indicators_are_strict(name, value, valid):
+    assert import_module("sleep2vec2.data.metadata").required_covariate_is_valid(name, value) is valid
