@@ -1,0 +1,146 @@
+# Example joint architecture based on the PPG Cox template. Bind the actual signal model and fold before use.
+model:
+  backbone:
+    name: roformer
+    hidden_size: 1024
+    num_hidden_layers: 16
+    num_attention_heads: 16
+    vocab_size: 1
+  projection:
+    name: simclr
+    enabled: true
+    hidden_dim: 768
+    out_dim: 128
+  cls:
+    embedding_type: bert
+    downstream: tokens
+  channels:
+    - name: ppg
+      input_dim: 3000  # 30 s * 100 Hz; change if your PPG sampling rate differs
+      tokenizer:
+        name: sundial2
+        out_dim: 768
+        kwargs:
+          norm_layer: true
+          pre_norm: false
+          residual_scale: 0.1
+          ff_scale: 1.0
+          clamp_value: null
+          modality_scale: 1.0
+          num_mlp_layers: 3
+  head:
+    name: regression
+    dropout: 0.1
+    hidden_dim: null
+    channel_agg:
+      name: gated_scalar
+      kwargs: {}
+    temporal_agg:
+      name: mean
+      kwargs: {}
+data:
+  max_tokens: 1535  # whole-night cap in 30 s epochs
+  data_channel_names: [ppg]
+  finetune_data_index: null
+  finetune_preset_path: null
+  train_dataset_names: []
+  test_dataset_names: []
+  n_few_shot: 0
+finetune:
+  tuning:
+    preset: full
+    groups:
+      tokenizers: {train: false}
+  loss:
+    class_weights: null
+    pos_weight: null
+  sampler:
+    weighted_random: false
+  layer_mix:
+    enabled: true
+    shared_across_modalities: false
+    layer_indices: [4, 8, 12, 16]
+  task:
+    type: survival
+    output_dim: 624
+    is_seq: false
+    monitor: val_loss
+    monitor_mod: min
+  survival:
+    key_column: eid
+    disease_columns_index: /path/to/disease_columns.txt
+    event_time_index: /path/to/event_time.csv
+    is_event_index: /path/to/is_event.csv
+    has_label_index: /path/to/has_label.csv
+    covariate_fusion: feature_concat
+    covariates:
+      - age
+      - sex
+      - bmi
+      - bmi_missing
+      - sbp
+      - dbp
+      - total_cholesterol
+      - hdl_cholesterol
+      - ldl_cholesterol
+      - hba1c
+      - smoking_status
+      - diabetes_history
+      - antihypertensive_use
+      - lipid_lowering_use
+      - parental_cvd_history
+      - ethnicity
+      - alcohol_frequency
+      - age_missing
+      - sbp_missing
+      - dbp_missing
+      - total_cholesterol_missing
+      - hdl_cholesterol_missing
+      - ldl_cholesterol_missing
+      - hba1c_missing
+    covariate_embedding_dim: 16
+    # Illustrative values and ID order. Copy the actual fold_preprocessing into both arms.
+    fold_preprocessing:
+      continuous:
+        age: {median: 59.0, mean: 58.0, std: 8.0}
+        bmi: {median: 26.0, mean: 27.0, std: 4.0}
+        sbp: {median: 132.0, mean: 134.0, std: 17.0}
+        dbp: {median: 78.0, mean: 79.0, std: 10.0}
+        total_cholesterol: {median: 5.4, mean: 5.5, std: 1.0}
+        hdl_cholesterol: {median: 1.4, mean: 1.5, std: 0.4}
+        ldl_cholesterol: {median: 3.3, mean: 3.4, std: 0.9}
+        hba1c: {median: 35.0, mean: 36.0, std: 6.0}
+      categorical:
+        smoking_status: [never, previous, current, unknown]
+        diabetes_history: ["no", "yes", unknown]
+        antihypertensive_use: ["no", "yes", unknown]
+        lipid_lowering_use: ["no", "yes", unknown]
+        parental_cvd_history: ["no", "yes", unknown]
+        ethnicity: [White, Asian, Black, Mixed or other, unknown]
+        alcohol_frequency:
+          - never
+          - special_occasions
+          - one_to_three_times_a_month
+          - once_or_twice_a_week
+          - three_or_four_times_a_week
+          - daily_or_almost_daily
+          - unknown
+  eval_visualizations:
+    enabled: false
+    stages: [val, test]
+    confusion_matrix:
+      enabled: false
+    roc_curve:
+      enabled: false
+    regression_scatter:
+      enabled: false
+preset_build:
+  required_channels: [ppg]
+  min_channels: 1
+model_averaging:
+  name: ema
+  params:
+    enabled: true
+    base_momentum: 0.996
+    final_momentum: 1.0
+    use_for_eval: true

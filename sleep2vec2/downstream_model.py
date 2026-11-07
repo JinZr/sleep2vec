@@ -8,7 +8,14 @@ import torch.nn as nn
 import yaml
 
 from sleep2vec2.checkpoints import backbone_init_prefixes, load_checkpoint, load_pretrain_init_weights
-from sleep2vec2.config import SUPPORTED_COVARIATES, HeadConfig, LayerMixConfig, ModelConfig
+from sleep2vec2.config import (
+    CATEGORICAL_COVARIATE_SIZES,
+    SUPPORTED_COVARIATES,
+    FoldPreprocessing,
+    HeadConfig,
+    LayerMixConfig,
+    ModelConfig,
+)
 from sleep2vec2.modules.covariates import (
     build_covariate_embedding,
     covariate_values,
@@ -56,6 +63,7 @@ class Sleep2vecDownstreamModel(nn.Module):
         survival_covariate_embedding_dim: int = 16,
         survival_covariate_fusion: str = "feature_concat",
         covariate_normalization: t.Mapping[str, t.Mapping[str, float]] | None = None,
+        fold_preprocessing: FoldPreprocessing | None = None,
     ):
         super().__init__()
         # core attributes
@@ -86,8 +94,13 @@ class Sleep2vecDownstreamModel(nn.Module):
             raise ValueError("survival_covariate_fusion must be 'feature_concat', 'risk', or 'token_concat'.")
         if survival_covariate_fusion in {"risk", "token_concat"} and not self.survival_covariates:
             raise ValueError(f"survival_covariate_fusion='{survival_covariate_fusion}' requires survival_covariates.")
+        if fold_preprocessing is not None and survival_covariate_fusion != "feature_concat":
+            raise ValueError("fold_preprocessing requires survival_covariate_fusion='feature_concat'.")
         self.survival_covariate_fusion = survival_covariate_fusion
-        self.covariate_normalization = dict(covariate_normalization or {})
+        self.covariate_normalization = (
+            dict(covariate_normalization or {}) if fold_preprocessing is None else fold_preprocessing["continuous"]
+        )
+        categories = {} if fold_preprocessing is None else fold_preprocessing["categorical"]
         # The survival_<name>_embedding attribute names are part of the finetuned checkpoint contract.
         self.survival_age_embedding = None
         self.survival_sex_embedding = None
@@ -101,7 +114,8 @@ class Sleep2vecDownstreamModel(nn.Module):
             nn.init.zeros_(self.survival_covariate_risk.bias)
         else:
             for name in ordered_covariates(self.survival_covariates):
-                embedding = build_covariate_embedding(name, survival_covariate_embedding_dim)
+                num_categories = len(categories[name]) if name in CATEGORICAL_COVARIATE_SIZES else 2
+                embedding = build_covariate_embedding(name, survival_covariate_embedding_dim, num_categories)
                 setattr(self, f"survival_{name}_embedding", embedding)
 
         self.n_channels = len(self.channel_names)

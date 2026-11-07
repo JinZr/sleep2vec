@@ -806,12 +806,15 @@ def _validate_checkpoint_contracts(checkpoint: Any, cfg: BaselineConfig, path: s
 
 def _model_contract(cfg: BaselineConfig) -> dict[str, Any]:
     task_cfg = covariate_task_config(cfg)
-    return {
+    contract = {
         "covariates": list(ordered_covariates(task_cfg.covariates)),
         "covariate_embedding_dim": task_cfg.covariate_embedding_dim,
         "covariate_normalization": dict(task_cfg.covariate_normalization),
         "head": asdict(cfg.model.head),
     }
+    if task_cfg.fold_preprocessing is not None:
+        contract["fold_preprocessing"] = task_cfg.fold_preprocessing
+    return contract
 
 
 def _label_contract(cfg: BaselineConfig | Mapping[str, Any]) -> dict[str, Any]:

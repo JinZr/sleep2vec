@@ -109,6 +109,8 @@ class KaldiPSGDataset(DefaultDataset):
             mask_rate=mask_rate,
         )
         mask_generators = {name: registry[name][2] for name in self.channel_names}
+        task_config = survival_label_config if survival_label_config is not None else multilabel_label_config
+        fold_preprocessing = getattr(task_config, "fold_preprocessing", None)
 
         super().__init__(
             save_preset_path=None,
@@ -121,7 +123,9 @@ class KaldiPSGDataset(DefaultDataset):
             few_shot=few_shot,
             meta_data_names=meta_data_names,
             meta_data_regression_names=meta_data_regression_names,
-            required_metadata_names=required_metadata_names,
+            required_metadata_names=(
+                task_config.covariates if fold_preprocessing is not None else required_metadata_names
+            ),
             sources=sources,
             pair_selector=pair_selector,
             weighted_random_sampler=weighted_random_sampler,
@@ -131,6 +135,7 @@ class KaldiPSGDataset(DefaultDataset):
             multilabel_output_dim=None if multilabel_labels is None else len(multilabel_labels.label_names),
             multilabel_key_column=None if multilabel_labels is None else multilabel_labels.key_column,
             dataloader_config=dataloader_kwargs,
+            fold_preprocessing=fold_preprocessing,
         )
 
     def _load_manifest_json(self) -> dict[str, t.Any]:

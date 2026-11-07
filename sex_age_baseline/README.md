@@ -7,6 +7,9 @@ with the [Cox](../configs/sex_age_baseline/cox.yaml) or
 [multilabel](../configs/sex_age_baseline/multilabel.yaml) model template and the
 matching [managed recipes](../recipes/templates/).
 
+For the 624-output clinical arm, see the [UKB clinical covariate contract](../doc/ukb_clinical_covariates.md).
+Its frozen fold configuration adds continuous, multiclass and missing-indicator inputs with strict row validation.
+
 ## Model and task contract
 
 The `model` block names the model and its dense head only:
@@ -23,9 +26,9 @@ model:
       num_layers: 3
 ```
 
-Covariates are declared in `finetune.survival` or `finetune.multilabel` with the
-same fields, validation and encoding semantics as `sleep2vec`, `sleep2vec2`, and
-`sleep2expert`. The baseline reuses `sleep2vec/modules/covariates.py`:
+Covariates are declared in `finetune.survival` or `finetune.multilabel`. The
+baseline reuses `sleep2vec/modules/covariates.py`. This example uses the legacy
+fields shared by the signal packages.
 
 ```yaml
 finetune:
@@ -41,7 +44,7 @@ finetune:
       weight: {mean: 70.0, std: 15.0}
 ```
 
-`covariates` is a nonempty, duplicate-free subset of the eight fields above,
+In the legacy configuration, `covariates` is a nonempty, duplicate-free subset of the eight fields above,
 always encoded in that canonical order. `age`, `bmi`, `height`, and `weight`
 use zero-initialized `Linear(1, d)` projections of standardized values; `sex`
 and the three missingness flags use zero-initialized `Embedding(2, d)` tables.
@@ -78,8 +81,8 @@ whose `split` column names it, as `KaldiPSGDataset` does).
 - Dataset-name filters match the signal loader: `train_dataset_names` for
   train/val, `test_dataset_names` for test, and inference
   `--override-dataset-names` in place of either.
-- Rows whose selected covariates are missing or invalid are dropped with a
-  logged count, as the signal loader's required-metadata filter does.
+- Legacy configs drop rows with missing or invalid selected covariates and log
+  the count. Configs with `fold_preprocessing` fail on invalid covariates.
 - A preset supplies the labels embedded at preset generation; an index or Kaldi
   manifest reads the label sidecars. Label names always come from
   `disease_columns_index`, because they belong to the checkpoint label contract.

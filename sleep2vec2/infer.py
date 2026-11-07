@@ -179,7 +179,9 @@ def run_inference(args):
         ckpt_paths = select_checkpoints(Path(ckpt_dir), end_ckpt=end_ckpt, num_ckpts=args.avg_ckpts)
         selected_ckpt_paths = ckpt_paths
         logging.info("Averaging checkpoints: %s", ", ".join(str(p) for p in ckpt_paths))
-        avg_state = average_checkpoints(ckpt_paths, device=torch.device("cpu"))
+        avg_state = average_checkpoints(
+            ckpt_paths, device=torch.device("cpu"), validate_checkpoint=model.validate_checkpoint_fold_preprocessing
+        )
         missing_keys, unexpected_keys = model.load_state_dict(avg_state, strict=False)
         if missing_keys:
             logging.warning("Missing keys when loading averaged checkpoint: %s", missing_keys)

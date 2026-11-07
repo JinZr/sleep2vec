@@ -128,6 +128,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
             survival_covariate_embedding_dim=(getattr(covariate_cfg, "covariate_embedding_dim", 16)),
             survival_covariate_fusion=getattr(covariate_cfg, "covariate_fusion", "feature_concat"),
             covariate_normalization=getattr(covariate_cfg, "covariate_normalization", None),
+            fold_preprocessing=getattr(covariate_cfg, "fold_preprocessing", None),
         ).to(args.device)
 
         if args.pretrained_backbone_path:
@@ -208,7 +209,10 @@ class Sleep2vecFinetuning(pl.LightningModule):
             saved_finetune = checkpoint["finetune_config"]
             current_finetune = asdict(finetune_config)
             for field in ("task", "layer_mix", "loss", "survival", "multilabel"):
-                if saved_finetune.get(field) != current_finetune[field]:
+                saved = saved_finetune.get(field)
+                if field in {"survival", "multilabel"} and saved is not None:
+                    saved = {"fold_preprocessing": None, **saved}
+                if saved != current_finetune[field]:
                     raise ValueError(f"Initialization checkpoint finetune.{field} must match the current config.")
             if (
                 self.tuning_config.trains("lora")
@@ -288,6 +292,7 @@ class Sleep2vecFinetuning(pl.LightningModule):
 
     def on_load_checkpoint(self, checkpoint):
         super().on_load_checkpoint(checkpoint)
+        self.validate_checkpoint_fold_preprocessing(checkpoint)
         if self.model_averager is not None:
             self.model_averager.on_load_checkpoint(checkpoint)
         if self._is_ahi_task():
@@ -302,6 +307,23 @@ class Sleep2vecFinetuning(pl.LightningModule):
             self._arousal_eval_threshold_fallback_subtypes = (
                 None if fallback_subtypes is None else validate_arousal_fallback_subtypes(fallback_subtypes)
             )
+
+    def validate_checkpoint_fold_preprocessing(self, checkpoint):
+        saved_finetune = checkpoint.get("finetune_config", {})
+        for field in ("survival", "multilabel"):
+            saved = saved_finetune.get(field) or {}
+            current = getattr(self.finetune_config, field, None)
+            saved_fold = saved.get("fold_preprocessing")
+            fold = getattr(current, "fold_preprocessing", None)
+            if fold is None and saved_fold is None:
+                continue
+            if saved_fold != fold or any(
+                saved.get(key) != getattr(current, key)
+                for key in ("covariates", "covariate_embedding_dim", "covariate_fusion")
+            ):
+                raise ValueError(
+                    f"Checkpoint finetune.{field} covariates and fold_preprocessing must match the current config."
+                )
 
     def on_test_start(self):
         super().on_test_start()

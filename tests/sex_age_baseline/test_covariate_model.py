@@ -10,7 +10,10 @@ from sex_age_baseline.model import SexAgeMLP
 
 def _config(covariates, *, normalization=None, task="survival", output_dim=2):
     task_cfg = SimpleNamespace(
-        covariates=list(covariates), covariate_embedding_dim=4, covariate_normalization=normalization or {}
+        covariates=list(covariates),
+        covariate_embedding_dim=4,
+        covariate_normalization=normalization or {},
+        fold_preprocessing=None,
     )
     return SimpleNamespace(
         finetune=SimpleNamespace(

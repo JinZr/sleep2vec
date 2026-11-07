@@ -35,9 +35,14 @@ def load_checkpoint(path: Path | str, device: torch.device | str) -> t.Any:
     return torch.load(Path(path), map_location=torch.device(device), weights_only=False)
 
 
-def _load_state_dict(path: Path, device: torch.device) -> dict[str, torch.Tensor]:
+def _load_state_dict(
+    path: Path, device: torch.device, validate_checkpoint: t.Callable[[t.Any], None] | None
+) -> dict[str, torch.Tensor]:
     ckpt = load_checkpoint(path, device)
-    return get_state_dict_from_checkpoint(ckpt)
+    state = get_state_dict_from_checkpoint(ckpt)
+    if validate_checkpoint is not None:
+        validate_checkpoint(ckpt)
+    return state
 
 
 def get_state_dict_from_checkpoint(ckpt: t.Any) -> dict[str, torch.Tensor]:
@@ -240,12 +245,13 @@ def average_checkpoints(
     filenames: t.Sequence[Path],
     *,
     device: torch.device | str = torch.device("cpu"),
+    validate_checkpoint: t.Callable[[t.Any], None] | None = None,
 ) -> dict[str, torch.Tensor]:
     if not filenames:
         raise ValueError("No checkpoints provided for averaging.")
 
     device = torch.device(device)
-    state = _load_state_dict(Path(filenames[0]), device=device)
+    state = _load_state_dict(Path(filenames[0]), device=device, validate_checkpoint=validate_checkpoint)
     avg: dict[str, torch.Tensor] = {}
 
     for key, value in state.items():
@@ -253,7 +259,7 @@ def average_checkpoints(
             avg[key] = value.clone()
 
     for path in filenames[1:]:
-        state_dict = _load_state_dict(Path(path), device=device)
+        state_dict = _load_state_dict(Path(path), device=device, validate_checkpoint=validate_checkpoint)
         for key, value in avg.items():
             if key not in state_dict:
                 raise KeyError(f"Missing key '{key}' in checkpoint {path}")

@@ -17,10 +17,14 @@ class SexAgeMLP(nn.Module):
     def __init__(self, cfg: BaselineConfig) -> None:
         super().__init__()
         task_cfg = covariate_task_config(cfg)
-        self.covariate_normalization = dict(task_cfg.covariate_normalization)
+        fold = task_cfg.fold_preprocessing
+        self.covariate_normalization = dict(
+            fold["continuous"] if fold is not None else task_cfg.covariate_normalization
+        )
+        category_sizes = {name: len(labels) for name, labels in fold["categorical"].items()} if fold is not None else {}
         self.embeddings = nn.ModuleDict(
             {
-                name: build_covariate_embedding(name, task_cfg.covariate_embedding_dim)
+                name: build_covariate_embedding(name, task_cfg.covariate_embedding_dim, category_sizes.get(name, 2))
                 for name in ordered_covariates(task_cfg.covariates)
             }
         )
