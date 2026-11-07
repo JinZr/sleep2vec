@@ -1,6 +1,6 @@
 """Covariate encoding shared by the survival and multilabel downstream heads.
 
-Covariates are consumed in the fixed ``SUPPORTED_COVARIATES`` order, whatever order a recipe lists them in, so the
+Covariates are consumed in the fixed ``FOLD_COVARIATES`` order, whatever order a recipe lists them in, so the
 concatenated feature layout does not depend on the recipe order. Continuous inputs are already imputed in their
 original units and standardized with the supplied training-fold statistics. Without age statistics, age keeps
 its historical ``age / 100`` scaling. Sex and missingness flags use two rows; multiclass inputs use one row per ID.
@@ -11,12 +11,12 @@ import typing as t
 import torch
 import torch.nn as nn
 
-from sleep2vec2.config import CONTINUOUS_COVARIATES, SUPPORTED_COVARIATES
+from sleep2vec2.config import CONTINUOUS_COVARIATES, FOLD_COVARIATES
 
 
 def ordered_covariates(names: t.Iterable[str]) -> t.Tuple[str, ...]:
     selected = set(names)
-    return tuple(name for name in SUPPORTED_COVARIATES if name in selected)
+    return tuple(name for name in FOLD_COVARIATES if name in selected)
 
 
 def build_covariate_embedding(name: str, embedding_dim: int, num_categories: int = 2) -> nn.Module:

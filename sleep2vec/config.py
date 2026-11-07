@@ -661,7 +661,8 @@ def _build_finetune_sampler_config(raw: t.Any) -> FinetuneSamplerConfig:
     return FinetuneSamplerConfig(weighted_random=weighted_random)
 
 
-_LEGACY_COVARIATES = ("age", "sex", "bmi", "bmi_missing", "height", "height_missing", "weight", "weight_missing")
+# Covariates supported without fold preprocessing, in their historical feature order.
+SUPPORTED_COVARIATES = ("age", "sex", "bmi", "bmi_missing", "height", "height_missing", "weight", "weight_missing")
 _NEW_CONTINUOUS_COVARIATES = ("sbp", "dbp", "total_cholesterol", "hdl_cholesterol", "ldl_cholesterol", "hba1c")
 CONTINUOUS_COVARIATES = ("age", "bmi", "height", "weight", *_NEW_CONTINUOUS_COVARIATES)
 CATEGORICAL_COVARIATE_SIZES = {
@@ -673,18 +674,12 @@ CATEGORICAL_COVARIATE_SIZES = {
     "ethnicity": 5,
     "alcohol_frequency": 7,
 }
-_NEW_MISSING_INDICATOR_COVARIATES = ("age_missing", *(f"{name}_missing" for name in _NEW_CONTINUOUS_COVARIATES))
-MISSING_INDICATOR_COVARIATES = (
-    "bmi_missing",
-    "height_missing",
-    "weight_missing",
-    *_NEW_MISSING_INDICATOR_COVARIATES,
-)
-SUPPORTED_COVARIATES = (
-    *_LEGACY_COVARIATES,
+FOLD_COVARIATES = (
+    *SUPPORTED_COVARIATES,
     *_NEW_CONTINUOUS_COVARIATES,
     *CATEGORICAL_COVARIATE_SIZES,
-    *_NEW_MISSING_INDICATOR_COVARIATES,
+    "age_missing",
+    *(f"{name}_missing" for name in _NEW_CONTINUOUS_COVARIATES),
 )
 COVARIATE_FIELDS = {"covariates", "covariate_embedding_dim", "covariate_normalization", "fold_preprocessing"}
 
@@ -742,23 +737,24 @@ def parse_covariate_fields(
         raise ValueError(f"{prefix}.covariates must be a list of non-empty strings.")
     if len(set(covariates)) != len(covariates):
         raise ValueError(f"{prefix}.covariates must not contain duplicates.")
-    unsupported = sorted(set(covariates) - set(SUPPORTED_COVARIATES))
+    supported = FOLD_COVARIATES if allow_fold_preprocessing else SUPPORTED_COVARIATES
+    unsupported = sorted(set(covariates) - set(supported))
     if unsupported:
-        raise ValueError(f"{prefix}.covariates only supports {list(SUPPORTED_COVARIATES)}, got {unsupported}.")
+        raise ValueError(f"{prefix}.covariates only supports {list(supported)}, got {unsupported}.")
 
     embedding_dim = raw.get("covariate_embedding_dim", 16)
     if not isinstance(embedding_dim, int) or isinstance(embedding_dim, bool) or embedding_dim < 1:
         raise ValueError(f"{prefix}.covariate_embedding_dim must be a positive integer.")
 
-    clinical = set(covariates) - set(_LEGACY_COVARIATES)
+    clinical = set(covariates) - set(SUPPORTED_COVARIATES)
     fold_preprocessing = raw.get("fold_preprocessing")
-    if not allow_fold_preprocessing and (clinical or fold_preprocessing is not None):
-        raise ValueError(f"{prefix} clinical covariates and fold_preprocessing require sex_age_baseline or sleep2vec2.")
+    if not allow_fold_preprocessing and fold_preprocessing is not None:
+        raise ValueError(f"{prefix} fold_preprocessing requires sex_age_baseline or sleep2vec2.")
     if fold_preprocessing is not None:
         if raw.get("covariate_normalization", {}) != {}:
             raise ValueError(f"{prefix}.fold_preprocessing and covariate_normalization are mutually exclusive.")
         return {
-            "covariates": [name for name in SUPPORTED_COVARIATES if name in covariates],
+            "covariates": [name for name in FOLD_COVARIATES if name in covariates],
             "covariate_embedding_dim": embedding_dim,
             "covariate_normalization": {},
             "fold_preprocessing": _parse_fold_preprocessing(

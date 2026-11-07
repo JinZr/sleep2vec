@@ -4,7 +4,7 @@ import typing as t
 
 import pandas as pd
 
-from sleep2vec2.config import SUPPORTED_COVARIATES
+from sleep2vec2.config import FOLD_COVARIATES
 from sleep2vec2.data.default_dataset import DefaultDataset, SampleIndex
 from sleep2vec2.data.multilabel import attach_multilabel_metadata, load_multilabel_label_table
 from sleep2vec2.data.survival import attach_survival_metadata, load_survival_label_table
@@ -203,7 +203,7 @@ class PSGPretrainDataset(DefaultDataset):
                     "path": row["path"],
                     "split": row["split"],
                 }
-                for optional_meta_name in SUPPORTED_COVARIATES:
+                for optional_meta_name in FOLD_COVARIATES:
                     if optional_meta_name in row.index:
                         metadata[optional_meta_name] = row[optional_meta_name]
                 if survival_labels is not None:
