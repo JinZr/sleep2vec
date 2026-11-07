@@ -9,7 +9,9 @@ reproduced here; a shared preset already carries them.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 import json
 import logging
 import math
@@ -23,7 +25,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from data.kaldi_psg_dataset import _first_present
-from data.metadata import process_metadata, required_covariate_is_valid
+from data.metadata import prepare_clinical_covariates, process_metadata, required_covariate_is_valid
 from data.multilabel import load_multilabel_disease_columns, load_multilabel_label_table, normalize_multilabel_key
 from data.survival import load_survival_disease_columns, load_survival_label_table, normalize_survival_key
 
@@ -44,10 +46,18 @@ class BaselineRecord:
 
 
 class SexAgeDataset(Dataset):
-    def __init__(self, records: list[BaselineRecord], *, task_type: str, label_names: list[str]) -> None:
+    def __init__(
+        self,
+        records: list[BaselineRecord],
+        *,
+        task_type: str,
+        label_names: list[str],
+        clinical_covariates: Sequence[str] = (),
+    ) -> None:
         self.records = list(records)
         self.task_type = task_type
         self.label_names = list(label_names)
+        self.clinical_covariates = tuple(clinical_covariates)
 
     def __len__(self) -> int:
         return len(self.records)
@@ -60,9 +70,11 @@ def load_split_dataset(cfg: BaselineConfig, split: str, *, sources: list[str] | 
     """One record per task key in ``split``, restricted to rows whose source contains one of ``sources``."""
     task_cfg = covariate_task_config(cfg)
     key_column = task_cfg.key_column
+    fold_preprocessing = getattr(task_cfg, "fold_preprocessing", None)
+    legacy_covariates = task_cfg.covariates if fold_preprocessing is None else []
     rows = _load_metadata_rows(cfg, split)
     present = set().union(*(row.keys() for row in rows))
-    missing = sorted({"split", key_column, *task_cfg.covariates} - present)
+    missing = sorted({"split", key_column, *legacy_covariates} - present)
     if missing:
         raise ValueError(f"Sex/age baseline metadata is missing required columns: {missing}")
     survival = cfg.finetune.task.type == "survival"
@@ -72,10 +84,17 @@ def load_split_dataset(cfg: BaselineConfig, split: str, *, sources: list[str] | 
     # A preset embeds the labels its signal run trains on; read them as the signal preset path does.
     from_preset = cfg.data.backend == "npz" and bool(cfg.data.finetune_preset_path)
 
-    rows = _select_rows(rows, split, sources, task_cfg.covariates)
+    rows = _select_rows(rows, split, sources, legacy_covariates)
+    records = [BaselineRecord(key=normalize_key(row[key_column], key_column), metadata=row) for row in rows]
+    if fold_preprocessing is not None:
+        prepare_clinical_covariates(
+            ((record.key, record.metadata) for record in records),
+            task_cfg.covariates,
+            fold_preprocessing["categorical"],
+        )
     records = _collapse_by_key(
-        [BaselineRecord(key=normalize_key(row[key_column], key_column), metadata=row) for row in rows],
-        task_cfg.covariates,
+        records,
+        legacy_covariates,
         label_fields=label_fields if from_preset else (),
         output_dim=output_dim,
     )
@@ -105,7 +124,12 @@ def load_split_dataset(cfg: BaselineConfig, split: str, *, sources: list[str] | 
         )
         for record in records
     ]
-    return SexAgeDataset(records, task_type=cfg.finetune.task.type, label_names=label_names)
+    return SexAgeDataset(
+        records,
+        task_type=cfg.finetune.task.type,
+        label_names=label_names,
+        clinical_covariates=task_cfg.covariates if fold_preprocessing is not None else (),
+    )
 
 
 def make_dataloader(
@@ -124,7 +148,7 @@ def make_dataloader(
         sampler=sampler,
         drop_last=drop_last,
         num_workers=num_workers,
-        collate_fn=_collate_records,
+        collate_fn=partial(_collate_records, clinical_covariates=dataset.clinical_covariates),
     )
 
 
@@ -212,7 +236,7 @@ def _collapse_by_key(
     """
     if not records:
         return []
-    encoded = process_metadata(records, [])
+    encoded = process_metadata(records, []) if covariates else {}
     first_index: dict[str, int] = {}
     for index, record in enumerate(records):
         first = first_index.setdefault(record.key, index)
@@ -258,12 +282,12 @@ def _require_label_key(key: str, labels: dict[str, np.ndarray], split: str) -> s
     return key
 
 
-def _collate_records(records: list[BaselineRecord]) -> dict[str, Any]:
+def _collate_records(records: list[BaselineRecord], *, clinical_covariates: Sequence[str] = ()) -> dict[str, Any]:
     batch: dict[str, Any] = {
         "key": [record.key for record in records],
         "sample_index": torch.tensor([record.sample_index for record in records], dtype=torch.long),
         # The signal collate's covariate encoding, so the shared covariate module sees identical inputs.
-        "metadata": process_metadata(records, []),
+        "metadata": process_metadata(records, [], clinical_covariates=clinical_covariates),
     }
     first = records[0]
     if first.event_time is not None:

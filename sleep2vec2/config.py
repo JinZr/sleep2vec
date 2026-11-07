@@ -301,6 +301,11 @@ class FinetuneSamplerConfig:
     weighted_random: bool = False
 
 
+class FoldPreprocessing(t.TypedDict):
+    continuous: dict[str, dict[str, float]]
+    categorical: dict[str, list[str]]
+
+
 @dataclass
 class SurvivalConfig:
     key_column: str
@@ -312,6 +317,7 @@ class SurvivalConfig:
     covariate_embedding_dim: int = 16
     covariate_fusion: str = "feature_concat"
     covariate_normalization: t.Dict[str, t.Dict[str, float]] = field(default_factory=dict)
+    fold_preprocessing: FoldPreprocessing | None = None
 
 
 @dataclass
@@ -324,6 +330,7 @@ class MultilabelConfig:
     covariate_embedding_dim: int = 16
     covariate_fusion: str = "feature_concat"
     covariate_normalization: t.Dict[str, t.Dict[str, float]] = field(default_factory=dict)
+    fold_preprocessing: FoldPreprocessing | None = None
 
 
 @dataclass
@@ -685,10 +692,71 @@ def _build_finetune_sampler_config(raw: t.Any) -> FinetuneSamplerConfig:
     return FinetuneSamplerConfig(weighted_random=weighted_random)
 
 
-# Covariates the downstream heads consume, in their fixed feature order. age, bmi, height and weight are continuous;
-# sex and the missingness flags are 0/1 indicators.
-SUPPORTED_COVARIATES = ("age", "sex", "bmi", "bmi_missing", "height", "height_missing", "weight", "weight_missing")
-COVARIATE_FIELDS = {"covariates", "covariate_embedding_dim", "covariate_normalization"}
+_LEGACY_COVARIATES = ("age", "sex", "bmi", "bmi_missing", "height", "height_missing", "weight", "weight_missing")
+_NEW_CONTINUOUS_COVARIATES = ("sbp", "dbp", "total_cholesterol", "hdl_cholesterol", "ldl_cholesterol", "hba1c")
+CONTINUOUS_COVARIATES = ("age", "bmi", "height", "weight", *_NEW_CONTINUOUS_COVARIATES)
+CATEGORICAL_COVARIATE_SIZES = {
+    "smoking_status": 4,
+    "diabetes_history": 3,
+    "antihypertensive_use": 3,
+    "lipid_lowering_use": 3,
+    "parental_cvd_history": 3,
+    "ethnicity": 5,
+    "alcohol_frequency": 7,
+}
+_NEW_MISSING_INDICATOR_COVARIATES = ("age_missing", *(f"{name}_missing" for name in _NEW_CONTINUOUS_COVARIATES))
+MISSING_INDICATOR_COVARIATES = (
+    "bmi_missing",
+    "height_missing",
+    "weight_missing",
+    *_NEW_MISSING_INDICATOR_COVARIATES,
+)
+SUPPORTED_COVARIATES = (
+    *_LEGACY_COVARIATES,
+    *_NEW_CONTINUOUS_COVARIATES,
+    *CATEGORICAL_COVARIATE_SIZES,
+    *_NEW_MISSING_INDICATOR_COVARIATES,
+)
+COVARIATE_FIELDS = {"covariates", "covariate_embedding_dim", "covariate_normalization", "fold_preprocessing"}
+
+
+def _parse_fold_preprocessing(raw: t.Any, covariates: list[str], prefix: str) -> FoldPreprocessing:
+    if not isinstance(raw, dict) or set(raw) != {"continuous", "categorical"}:
+        raise ValueError(f"{prefix} requires continuous and categorical mappings.")
+
+    continuous = raw["continuous"]
+    if not isinstance(continuous, dict) or set(continuous) != set(covariates).intersection(CONTINUOUS_COVARIATES):
+        raise ValueError(f"{prefix}.continuous must list exactly the selected continuous covariates.")
+    for name, stats in continuous.items():
+        if not isinstance(stats, dict) or set(stats) != {"median", "mean", "std"}:
+            raise ValueError(f"{prefix}.continuous.{name} requires median, mean and std.")
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in stats.values()):
+            raise ValueError(f"{prefix}.continuous.{name} requires finite numeric median, mean and std.")
+        if stats["std"] <= 0:
+            raise ValueError(f"{prefix}.continuous.{name}.std must be positive.")
+
+    categorical = raw["categorical"]
+    if not isinstance(categorical, dict) or set(categorical) != set(covariates).intersection(
+        CATEGORICAL_COVARIATE_SIZES
+    ):
+        raise ValueError(f"{prefix}.categorical must list exactly the selected multiclass covariates.")
+    for name, labels in categorical.items():
+        size = CATEGORICAL_COVARIATE_SIZES[name]
+        if (
+            not isinstance(labels, list)
+            or len(labels) != size
+            or not all(isinstance(label, str) and label.strip() for label in labels)
+            or len(set(labels)) != size
+            or "unknown" not in labels
+        ):
+            raise ValueError(f"{prefix}.categorical.{name} requires {size} unique labels including 'unknown'.")
+
+    return {
+        "continuous": {
+            name: {stat: float(value) for stat, value in stats.items()} for name, stats in continuous.items()
+        },
+        "categorical": {name: list(labels) for name, labels in categorical.items()},
+    }
 
 
 def parse_covariate_fields(raw: t.Mapping[str, t.Any], prefix: str) -> t.Dict[str, t.Any]:
@@ -706,7 +774,20 @@ def parse_covariate_fields(raw: t.Mapping[str, t.Any], prefix: str) -> t.Dict[st
     if not isinstance(embedding_dim, int) or isinstance(embedding_dim, bool) or embedding_dim < 1:
         raise ValueError(f"{prefix}.covariate_embedding_dim must be a positive integer.")
 
-    # Optional for age/sex recipes, whose age keeps the age / 100 scaling; other continuous covariates freeze scaling.
+    if raw.get("fold_preprocessing") is not None:
+        if raw.get("covariate_normalization", {}) != {}:
+            raise ValueError(f"{prefix}.fold_preprocessing and covariate_normalization are mutually exclusive.")
+        fold = _parse_fold_preprocessing(raw["fold_preprocessing"], covariates, f"{prefix}.fold_preprocessing")
+        return {
+            "covariates": [name for name in SUPPORTED_COVARIATES if name in covariates],
+            "covariate_embedding_dim": embedding_dim,
+            "covariate_normalization": {},
+            "fold_preprocessing": fold,
+        }
+    if set(covariates) - set(_LEGACY_COVARIATES):
+        raise ValueError(f"{prefix}.fold_preprocessing is required for the selected clinical covariates.")
+
+    # Legacy age/sex recipes keep age / 100 unless they freeze explicit normalization.
     normalization = raw.get("covariate_normalization", {})
     if not isinstance(normalization, dict):
         raise ValueError(f"{prefix}.covariate_normalization must be a mapping.")
@@ -768,6 +849,8 @@ def _build_survival_config(raw: t.Any, task_cfg: TaskConfig | None) -> SurvivalC
         raise ValueError(
             f"finetune.survival.covariate_fusion='{covariate_fusion}' requires finetune.survival.covariates."
         )
+    if "fold_preprocessing" in covariate_fields and covariate_fusion != "feature_concat":
+        raise ValueError("finetune.survival.fold_preprocessing requires covariate_fusion='feature_concat'.")
 
     values = {field_name: raw[field_name] for field_name in required}
     values.update(covariate_fields)
@@ -808,6 +891,8 @@ def _build_multilabel_config(raw: t.Any, task_cfg: TaskConfig | None) -> Multila
         raise ValueError(
             f"finetune.multilabel.covariate_fusion='{covariate_fusion}' requires finetune.multilabel.covariates."
         )
+    if "fold_preprocessing" in covariate_fields and covariate_fusion != "feature_concat":
+        raise ValueError("finetune.multilabel.fold_preprocessing requires covariate_fusion='feature_concat'.")
 
     values = {field_name: raw[field_name] for field_name in required}
     values.update(covariate_fields)

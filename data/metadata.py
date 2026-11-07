@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from data.samplers import WeightedRandomDistributedSampler
+from sleep2vec.config import CATEGORICAL_COVARIATE_SIZES, CONTINUOUS_COVARIATES
 
 
 def _equal_matrix_from_ids(vals: t.Sequence[str]) -> torch.Tensor:
@@ -160,7 +161,49 @@ def required_covariate_is_valid(name: str, value: t.Any) -> bool:
     return value is not None and not (isinstance(value, float) and math.isnan(value))
 
 
-def process_metadata(samples, disease_names, regression_names: t.Sequence[str] | None = None):
+def prepare_clinical_covariates(
+    rows: t.Iterable[tuple[str, dict[str, t.Any]]],
+    covariates: t.Sequence[str],
+    categories: t.Mapping[str, t.Sequence[str]],
+) -> None:
+    """Validate prepared participant rows and store numeric covariate values in their metadata."""
+    first_by_key: dict[str, dict[str, float | int]] = {}
+    max_value = np.finfo(np.float32).max
+    for key, metadata in rows:
+        encoded: dict[str, float | int] = {}
+        for name in covariates:
+            if name not in metadata:
+                raise ValueError(f"Clinical covariate {name!r} is missing for key {key!r}.")
+            raw = metadata[name]
+            value = math.nan if isinstance(raw, (bool, np.bool_)) else safe_cast_float(raw, math.nan)
+            if name in CONTINUOUS_COVARIATES:
+                if not math.isfinite(value) or abs(value) > max_value or (name == "age" and value < 0):
+                    raise ValueError(f"Clinical covariate {name!r} requires a finite imputed value for key {key!r}.")
+                encoded[name] = value
+                continue
+            if name == "sex":
+                value = float(_encode_binary_label(raw))
+            count = len(categories[name]) if name in CATEGORICAL_COVARIATE_SIZES else 2
+            if not value.is_integer() or not 0 <= value < count:
+                raise ValueError(
+                    f"Clinical covariate {name!r} requires an integer category ID in [0, {count}) for key {key!r}."
+                )
+            encoded[name] = int(value)
+
+        first = first_by_key.setdefault(key, encoded)
+        for name in covariates:
+            if first[name] != encoded[name]:
+                raise ValueError(f"Duplicate key {key!r} has conflicting {name} values.")
+        metadata.update(encoded)
+
+
+def process_metadata(
+    samples,
+    disease_names,
+    regression_names: t.Sequence[str] | None = None,
+    *,
+    clinical_covariates: t.Sequence[str] = (),
+):
     regression_names = set(regression_names or [])
     batch_metadata = {
         "age": [],
@@ -192,6 +235,9 @@ def process_metadata(samples, disease_names, regression_names: t.Sequence[str] |
         processed[f"{name}_missing"] = torch.tensor(
             [_encode_indicator(s.metadata.get(f"{name}_missing")) for s in samples], dtype=torch.long
         )
+    for name in clinical_covariates:
+        dtype = torch.float32 if name in CONTINUOUS_COVARIATES else torch.long
+        processed[name] = torch.tensor([s.metadata[name] for s in samples], dtype=dtype)
     for disease_name in disease_names:
         values = batch_metadata[disease_name]
         if disease_name in regression_names:

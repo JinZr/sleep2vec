@@ -7,7 +7,7 @@ from typing import Any, NoReturn
 
 import yaml
 
-from sleep2vec.config import COVARIATE_FIELDS, parse_covariate_fields
+from sleep2vec.config import COVARIATE_FIELDS, FoldPreprocessing, parse_covariate_fields
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,7 @@ class SurvivalConfig:
     covariates: list[str]
     covariate_embedding_dim: int
     covariate_normalization: dict[str, dict[str, float]]
+    fold_preprocessing: FoldPreprocessing | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,7 @@ class MultilabelConfig:
     covariates: list[str]
     covariate_embedding_dim: int
     covariate_normalization: dict[str, dict[str, float]]
+    fold_preprocessing: FoldPreprocessing | None = None
 
 
 @dataclass(frozen=True)

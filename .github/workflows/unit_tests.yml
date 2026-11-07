@@ -259,6 +259,7 @@ jobs:
             tests/config/test_registries_and_builders.py \
             tests/data/test_bmi_covariates.py \
             tests/models/test_survival_covariates.py \
+            tests/models/test_ukb_clinical_covariates.py \
             tests/sex_age_baseline/test_config.py \
             tests/sex_age_baseline/test_covariate_data.py \
             tests/sex_age_baseline/test_covariate_model.py \

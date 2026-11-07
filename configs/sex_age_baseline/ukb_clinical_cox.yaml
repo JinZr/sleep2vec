@@ -1,0 +1,87 @@
+model:
+  name: sex_age_mlp
+  head:
+    name: classification
+    hidden_dim: 256
+    dropout: 0.1
+    act: elu
+    kwargs:
+      num_layers: 3
+
+data:
+  # The matching signal run's index, preset or Kaldi manifest; rows collapse to one record per key_column value.
+  backend: npz
+  finetune_data_index: null
+  finetune_preset_path: null
+  kaldi_data_root: null
+  kaldi_manifest: null
+  train_dataset_names: []
+  test_dataset_names: []
+
+finetune:
+  loss:
+    eps: 1.0e-9
+  task:
+    type: survival
+    output_dim: 624
+    is_seq: false
+    monitor: val_c_index
+    monitor_mod: max
+  survival:
+    key_column: eid
+    disease_columns_index: /path/to/disease_columns.txt
+    event_time_index: /path/to/event_time.csv
+    is_event_index: /path/to/is_event.csv
+    has_label_index: /path/to/has_label.csv
+    covariates:
+      - age
+      - sex
+      - bmi
+      - bmi_missing
+      - sbp
+      - dbp
+      - total_cholesterol
+      - hdl_cholesterol
+      - ldl_cholesterol
+      - hba1c
+      - smoking_status
+      - diabetes_history
+      - antihypertensive_use
+      - lipid_lowering_use
+      - parental_cvd_history
+      - ethnicity
+      - alcohol_frequency
+      - age_missing
+      - sbp_missing
+      - dbp_missing
+      - total_cholesterol_missing
+      - hdl_cholesterol_missing
+      - ldl_cholesterol_missing
+      - hba1c_missing
+    covariate_embedding_dim: 16
+    # Illustrative values and ID order. Copy the actual fold_preprocessing into both arms.
+    fold_preprocessing:
+      continuous:
+        age: {median: 59.0, mean: 58.0, std: 8.0}
+        bmi: {median: 26.0, mean: 27.0, std: 4.0}
+        sbp: {median: 132.0, mean: 134.0, std: 17.0}
+        dbp: {median: 78.0, mean: 79.0, std: 10.0}
+        total_cholesterol: {median: 5.4, mean: 5.5, std: 1.0}
+        hdl_cholesterol: {median: 1.4, mean: 1.5, std: 0.4}
+        ldl_cholesterol: {median: 3.3, mean: 3.4, std: 0.9}
+        hba1c: {median: 35.0, mean: 36.0, std: 6.0}
+      categorical:
+        smoking_status: [never, previous, current, unknown]
+        diabetes_history: ["no", "yes", unknown]
+        antihypertensive_use: ["no", "yes", unknown]
+        lipid_lowering_use: ["no", "yes", unknown]
+        parental_cvd_history: ["no", "yes", unknown]
+        ethnicity: [White, Asian, Black, Mixed or other, unknown]
+        alcohol_frequency:
+          - never
+          - special_occasions
+          - one_to_three_times_a_month
+          - once_or_twice_a_week
+          - three_or_four_times_a_week
+          - daily_or_almost_daily
+          - unknown

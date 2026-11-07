@@ -34,7 +34,7 @@ def _sidecars(tmp_path, task, keys=("1", "2", "3")):
 
 
 def _config(tmp_path, *, index=None, preset=None, kaldi=None, task="survival", covariates=("age", "sex"), **data):
-    task_cfg = SimpleNamespace(**_sidecars(tmp_path, task), covariates=list(covariates))
+    task_cfg = SimpleNamespace(**_sidecars(tmp_path, task), covariates=list(covariates), fold_preprocessing=None)
     return SimpleNamespace(
         finetune=SimpleNamespace(
             task=SimpleNamespace(type=task, output_dim=1),

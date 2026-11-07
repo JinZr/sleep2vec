@@ -4,6 +4,7 @@ import typing as t
 
 import pandas as pd
 
+from sleep2vec2.config import SUPPORTED_COVARIATES
 from sleep2vec2.data.default_dataset import DefaultDataset, SampleIndex
 from sleep2vec2.data.multilabel import attach_multilabel_metadata, load_multilabel_label_table
 from sleep2vec2.data.survival import attach_survival_metadata, load_survival_label_table
@@ -202,16 +203,7 @@ class PSGPretrainDataset(DefaultDataset):
                     "path": row["path"],
                     "split": row["split"],
                 }
-                for optional_meta_name in (
-                    "age",
-                    "sex",
-                    "bmi",
-                    "bmi_missing",
-                    "height",
-                    "height_missing",
-                    "weight",
-                    "weight_missing",
-                ):
+                for optional_meta_name in SUPPORTED_COVARIATES:
                     if optional_meta_name in row.index:
                         metadata[optional_meta_name] = row[optional_meta_name]
                 if survival_labels is not None:
@@ -273,6 +265,8 @@ class PSGPretrainDataset(DefaultDataset):
         extractors = {name: registry[name][0] for name in channel_names}
         tokenizers = {name: registry[name][1] for name in channel_names}
         mask_generators = {name: registry[name][2] for name in channel_names}
+        task_config = survival_label_config if survival_label_config is not None else multilabel_label_config
+        fold_preprocessing = getattr(task_config, "fold_preprocessing", None)
 
         super().__init__(
             save_preset_path,
@@ -285,7 +279,9 @@ class PSGPretrainDataset(DefaultDataset):
             few_shot=few_shot,
             meta_data_names=meta_data_names,
             meta_data_regression_names=meta_data_regression_names,
-            required_metadata_names=required_metadata_names,
+            required_metadata_names=(
+                task_config.covariates if fold_preprocessing is not None else required_metadata_names
+            ),
             sources=sources,
             pair_selector=pair_selector,
             weighted_random_sampler=weighted_random_sampler,
@@ -298,4 +294,5 @@ class PSGPretrainDataset(DefaultDataset):
             channel_aliases=channel_aliases,
             filter_max_workers=filter_max_workers,
             channel_length_tolerance=channel_length_tolerance,
+            fold_preprocessing=fold_preprocessing,
         )

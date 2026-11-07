@@ -10,15 +10,17 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
+from sleep2vec2.config import FoldPreprocessing
 from sleep2vec2.data.metadata import (
     build_w_h_age_sex_center,
     extract_binary_labels,
     make_weighted_sampler_from_labels,
+    prepare_clinical_covariates,
     process_metadata,
     required_covariate_is_valid,
 )
-from sleep2vec2.data.multilabel import stack_multilabel_metadata
-from sleep2vec2.data.survival import stack_survival_metadata
+from sleep2vec2.data.multilabel import normalize_multilabel_key, stack_multilabel_metadata
+from sleep2vec2.data.survival import normalize_survival_key, stack_survival_metadata
 from sleep2vec2.data.utils import (
     AROUSAL_METADATA_KEYS,
     _extract_builtin_arousal_window,
@@ -87,6 +89,7 @@ class DefaultDataset(BaseDataset):
         seed: int = 42,
         filter_max_workers: int | None = None,
         channel_length_tolerance: int = 1,
+        fold_preprocessing: FoldPreprocessing | None = None,
     ) -> None:
         """
         Args:
@@ -102,6 +105,7 @@ class DefaultDataset(BaseDataset):
         self.meta_data_names = meta_data_names or []
         self.meta_data_regression_names = meta_data_regression_names or []
         self.required_metadata_names = list(required_metadata_names or [])
+        self.fold_preprocessing = fold_preprocessing
         self.sources = sources or []
         self.few_shot = few_shot
         self.extractors = extractors
@@ -272,6 +276,8 @@ class DefaultDataset(BaseDataset):
             for meta_data_name in itertools.chain(self.meta_data_names, self.required_metadata_names):
                 if meta_data_name in built_in_runtime_metadata:
                     continue
+                if self.fold_preprocessing is not None and meta_data_name in self.required_metadata_names:
+                    continue
                 value = d.metadata.get(meta_data_name, None)
 
                 # 如果字段缺失 或 值为 NaN，则丢弃
@@ -296,6 +302,16 @@ class DefaultDataset(BaseDataset):
 
             if keep:
                 selected.append(d)
+
+        if self.fold_preprocessing is not None:
+            key_column = self.survival_key_column or self.multilabel_key_column
+            assert key_column is not None
+            normalize_key = normalize_survival_key if self.survival_key_column is not None else normalize_multilabel_key
+            prepare_clinical_covariates(
+                ((normalize_key(d.metadata.get(key_column), key_column), d.metadata) for d in selected),
+                self.required_metadata_names,
+                self.fold_preprocessing["categorical"],
+            )
 
         logging.info(f"Filtered metadata: kept {len(selected)} / {len(self.data)} samples")
         self.data = selected
@@ -517,7 +533,12 @@ class DefaultDataset(BaseDataset):
             # 2️⃣ 获取整个 batch 中的最大 token 长度（裁剪后），用于 pad
             max_len = max(next(iter(s.tokens.values())).shape[0] for s in samples)
 
-            metadata_batch = process_metadata(samples, disease_names, self.meta_data_regression_names)
+            metadata_batch = process_metadata(
+                samples,
+                disease_names,
+                self.meta_data_regression_names,
+                clinical_covariates=self.required_metadata_names if self.fold_preprocessing is not None else (),
+            )
             if self.survival_output_dim is not None:
                 metadata_batch.update(
                     stack_survival_metadata(
