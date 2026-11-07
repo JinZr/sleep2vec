@@ -235,9 +235,6 @@ def process_metadata(
         processed[f"{name}_missing"] = torch.tensor(
             [_encode_indicator(s.metadata.get(f"{name}_missing")) for s in samples], dtype=torch.long
         )
-    for name in clinical_covariates:
-        dtype = torch.float32 if name in CONTINUOUS_COVARIATES else torch.long
-        processed[name] = torch.tensor([s.metadata[name] for s in samples], dtype=dtype)
     for disease_name in disease_names:
         values = batch_metadata[disease_name]
         if disease_name in regression_names:
@@ -250,6 +247,9 @@ def process_metadata(
                 [_encode_binary_label(v) for v in values],
                 dtype=torch.long,
             )
+    for name in clinical_covariates:
+        dtype = torch.float32 if name in CONTINUOUS_COVARIATES else torch.long
+        processed[name] = torch.tensor([s.metadata[name] for s in samples], dtype=dtype)
 
     processed["source"] = [v for v in batch_metadata["source"]]
     processed["path"] = [v for v in batch_metadata["path"]]

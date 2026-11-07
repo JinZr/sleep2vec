@@ -70,7 +70,7 @@ def load_split_dataset(cfg: BaselineConfig, split: str, *, sources: list[str] | 
     """One record per task key in ``split``, restricted to rows whose source contains one of ``sources``."""
     task_cfg = covariate_task_config(cfg)
     key_column = task_cfg.key_column
-    fold_preprocessing = getattr(task_cfg, "fold_preprocessing", None)
+    fold_preprocessing = task_cfg.fold_preprocessing
     legacy_covariates = task_cfg.covariates if fold_preprocessing is None else []
     rows = _load_metadata_rows(cfg, split)
     present = set().union(*(row.keys() for row in rows))

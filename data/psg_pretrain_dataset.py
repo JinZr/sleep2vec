@@ -16,7 +16,7 @@ from data.utils import (
     default_tokenizer,
     window,
 )
-from sleep2vec.config import SUPPORTED_COVARIATES
+from sleep2vec.config import FOLD_COVARIATES
 
 PAD_STAGE = -1
 
@@ -203,7 +203,7 @@ class PSGPretrainDataset(DefaultDataset):
                     "path": row["path"],
                     "split": row["split"],
                 }
-                for optional_meta_name in SUPPORTED_COVARIATES:
+                for optional_meta_name in FOLD_COVARIATES:
                     if optional_meta_name in row.index:
                         metadata[optional_meta_name] = row[optional_meta_name]
                 if survival_labels is not None:

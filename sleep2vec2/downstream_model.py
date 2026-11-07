@@ -10,6 +10,7 @@ import yaml
 from sleep2vec2.checkpoints import backbone_init_prefixes, load_checkpoint, load_pretrain_init_weights
 from sleep2vec2.config import (
     CATEGORICAL_COVARIATE_SIZES,
+    FOLD_COVARIATES,
     SUPPORTED_COVARIATES,
     FoldPreprocessing,
     HeadConfig,
@@ -78,10 +79,11 @@ class Sleep2vecDownstreamModel(nn.Module):
         self.survival_covariates = tuple(survival_covariates or ())
         if len(set(self.survival_covariates)) != len(self.survival_covariates):
             raise ValueError("survival_covariates must not contain duplicates.")
-        unsupported_covariates = sorted(set(self.survival_covariates) - set(SUPPORTED_COVARIATES))
+        supported_covariates = FOLD_COVARIATES if fold_preprocessing is not None else SUPPORTED_COVARIATES
+        unsupported_covariates = sorted(set(self.survival_covariates) - set(supported_covariates))
         if unsupported_covariates:
             raise ValueError(
-                f"survival_covariates only supports {list(SUPPORTED_COVARIATES)}, got {unsupported_covariates}."
+                f"survival_covariates only supports {list(supported_covariates)}, got {unsupported_covariates}."
             )
         if self.survival_covariates and self.is_seq:
             raise ValueError("survival covariates are only supported for non-sequence downstream tasks.")

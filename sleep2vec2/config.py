@@ -692,7 +692,8 @@ def _build_finetune_sampler_config(raw: t.Any) -> FinetuneSamplerConfig:
     return FinetuneSamplerConfig(weighted_random=weighted_random)
 
 
-_LEGACY_COVARIATES = ("age", "sex", "bmi", "bmi_missing", "height", "height_missing", "weight", "weight_missing")
+# Covariates supported without fold preprocessing, in their historical feature order.
+SUPPORTED_COVARIATES = ("age", "sex", "bmi", "bmi_missing", "height", "height_missing", "weight", "weight_missing")
 _NEW_CONTINUOUS_COVARIATES = ("sbp", "dbp", "total_cholesterol", "hdl_cholesterol", "ldl_cholesterol", "hba1c")
 CONTINUOUS_COVARIATES = ("age", "bmi", "height", "weight", *_NEW_CONTINUOUS_COVARIATES)
 CATEGORICAL_COVARIATE_SIZES = {
@@ -704,18 +705,12 @@ CATEGORICAL_COVARIATE_SIZES = {
     "ethnicity": 5,
     "alcohol_frequency": 7,
 }
-_NEW_MISSING_INDICATOR_COVARIATES = ("age_missing", *(f"{name}_missing" for name in _NEW_CONTINUOUS_COVARIATES))
-MISSING_INDICATOR_COVARIATES = (
-    "bmi_missing",
-    "height_missing",
-    "weight_missing",
-    *_NEW_MISSING_INDICATOR_COVARIATES,
-)
-SUPPORTED_COVARIATES = (
-    *_LEGACY_COVARIATES,
+FOLD_COVARIATES = (
+    *SUPPORTED_COVARIATES,
     *_NEW_CONTINUOUS_COVARIATES,
     *CATEGORICAL_COVARIATE_SIZES,
-    *_NEW_MISSING_INDICATOR_COVARIATES,
+    "age_missing",
+    *(f"{name}_missing" for name in _NEW_CONTINUOUS_COVARIATES),
 )
 COVARIATE_FIELDS = {"covariates", "covariate_embedding_dim", "covariate_normalization", "fold_preprocessing"}
 
@@ -766,9 +761,9 @@ def parse_covariate_fields(raw: t.Mapping[str, t.Any], prefix: str) -> t.Dict[st
         raise ValueError(f"{prefix}.covariates must be a list of non-empty strings.")
     if len(set(covariates)) != len(covariates):
         raise ValueError(f"{prefix}.covariates must not contain duplicates.")
-    unsupported = sorted(set(covariates) - set(SUPPORTED_COVARIATES))
+    unsupported = sorted(set(covariates) - set(FOLD_COVARIATES))
     if unsupported:
-        raise ValueError(f"{prefix}.covariates only supports {list(SUPPORTED_COVARIATES)}, got {unsupported}.")
+        raise ValueError(f"{prefix}.covariates only supports {list(FOLD_COVARIATES)}, got {unsupported}.")
 
     embedding_dim = raw.get("covariate_embedding_dim", 16)
     if not isinstance(embedding_dim, int) or isinstance(embedding_dim, bool) or embedding_dim < 1:
@@ -779,12 +774,12 @@ def parse_covariate_fields(raw: t.Mapping[str, t.Any], prefix: str) -> t.Dict[st
             raise ValueError(f"{prefix}.fold_preprocessing and covariate_normalization are mutually exclusive.")
         fold = _parse_fold_preprocessing(raw["fold_preprocessing"], covariates, f"{prefix}.fold_preprocessing")
         return {
-            "covariates": [name for name in SUPPORTED_COVARIATES if name in covariates],
+            "covariates": [name for name in FOLD_COVARIATES if name in covariates],
             "covariate_embedding_dim": embedding_dim,
             "covariate_normalization": {},
             "fold_preprocessing": fold,
         }
-    if set(covariates) - set(_LEGACY_COVARIATES):
+    if set(covariates) - set(SUPPORTED_COVARIATES):
         raise ValueError(f"{prefix}.fold_preprocessing is required for the selected clinical covariates.")
 
     # Legacy age/sex recipes keep age / 100 unless they freeze explicit normalization.
