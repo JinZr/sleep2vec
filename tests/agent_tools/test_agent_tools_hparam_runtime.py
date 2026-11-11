@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import csv
 import hashlib
 import json
@@ -157,16 +156,6 @@ def _write_proc_stat(proc_root: Path, pid: int, pgid: int, state: str) -> None:
     process_dir = proc_root / str(pid)
     process_dir.mkdir(parents=True)
     (process_dir / "stat").write_text(f"{pid} (unit) {state} 1 {pgid}\n")
-
-
-def _embedded_process_group_running(proc_root: Path, pgid: int) -> bool | None:
-    tree = ast.parse(python_programs.source("run_evidence.process_probe"))
-    function = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "process_group_running"
-    )
-    namespace = {"os": os}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), "run_evidence.process_probe", "exec"), namespace)
-    return namespace["process_group_running"](pgid, str(proc_root))
 
 
 def _set_execution_probe(

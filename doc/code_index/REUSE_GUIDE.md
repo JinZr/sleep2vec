@@ -203,8 +203,9 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   the manager's self-contained sync kernel, so it also bootstraps checkouts that predate the command. A
   Slurm job takes no lock: its frozen `job.sbatch` records HEAD in `run_dir/runtime_commit` and checks the
   frozen run-file hashes before `srun`.
-- Reuse `python_programs.source` and `transport.remote_python_program_command` for embedded kernels;
-  keep byte-preserving sources under `agent_tools/python_program_sources`, not inline copies.
+- Reuse `python_programs.source` for embedded `python -c` programs; keep byte-preserving sources under
+  `agent_tools/python_program_sources`, not inline copies. `agent_tools/process_identity.py` is the one source
+  of the process start token and group liveness: `run_evidence` imports it and the launch wrapper embeds it.
 
 ### Standalone variants
 

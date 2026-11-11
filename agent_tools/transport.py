@@ -1,9 +1,7 @@
 """Shared local shell command construction and execution.
 
-Provides shell quoting, the bounded local ``bash -lc`` runner and its default
-timeout, and the ``python3 -c`` command line for an embedded program. Program
-bodies come from ``python_programs``; this module never embeds program source
-inline.
+Provides shell quoting and the bounded local ``bash -lc`` runner and its
+default timeout.
 """
 
 from __future__ import annotations
@@ -11,8 +9,6 @@ from __future__ import annotations
 import shlex
 import subprocess
 from typing import Any
-
-from . import python_programs
 
 COMMAND_TIMEOUT_SECONDS = 10
 
@@ -37,7 +33,3 @@ def run_shell(
         if not swallow_timeout:
             raise
         return subprocess.CompletedProcess(argv, 124, "", f"timed out after {timeout}s")
-
-
-def python_program_command(name: str, *args: Any) -> str:
-    return " ".join([f"python3 -c {sh(python_programs.source(name))}", *(sh(arg) for arg in args)])
