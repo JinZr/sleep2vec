@@ -796,6 +796,42 @@ def test_process_monitor_reports_an_uncertain_probe_as_unknown(
     assert run_evidence.process_identity_running({}, identity) is expected
 
 
+@pytest.mark.parametrize("group_running", [False, True])
+def test_process_monitor_treats_a_leader_that_exits_mid_probe_as_gone(monkeypatch, group_running: bool):
+    # getpgid sees the leader, then its stat vanishes before the start token is read (a zombie being reaped).
+    identity = _process_identity()
+    calls = []
+
+    def getpgid(_pid):
+        calls.append(_pid)
+        if len(calls) > 1:
+            raise ProcessLookupError()
+        return 123
+
+    monkeypatch.setattr(run_evidence.os, "getpgid", getpgid)
+    monkeypatch.setattr(run_evidence, "start_token", lambda _pid: None)
+    monkeypatch.setattr(run_evidence, "process_group_running", lambda _pgid: group_running)
+
+    assert run_evidence.process_identity_running({}, identity) is group_running
+
+
+def test_process_group_probe_skips_members_that_exit_mid_scan(tmp_path: Path, monkeypatch):
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc_stat(proc_root, 123, 123, "Z")
+    _write_proc_stat(proc_root, 124, 123, "S")
+    real_open = open
+
+    def open_exiting_member(path, *args, **kwargs):
+        if str(path) == str(proc_root / "124" / "stat"):
+            raise ProcessLookupError()
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(process_identity, "open", open_exiting_member, raising=False)
+
+    assert process_identity.process_group_running(123, proc_root=str(proc_root)) is False
+
+
 @pytest.mark.parametrize(
     ("process_args", "expected_status", "expected_pid"),
     [

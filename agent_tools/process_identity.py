@@ -70,7 +70,8 @@ def process_group_running(pgid: int, proc_root: str = "/proc") -> bool | None:
     try:
         with open(os.path.join(proc_root, str(pgid), "stat"), encoding="utf-8") as stat_file:
             leader_stat = stat_file.read()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # ESRCH, like ENOENT, means the leader exited while its stat was read.
         leader_stat = None
     except OSError:
         leader_stat = None
@@ -105,7 +106,7 @@ def process_group_running(pgid: int, proc_root: str = "/proc") -> bool | None:
         try:
             with open(os.path.join(proc_root, entry, "stat"), encoding="utf-8") as stat_file:
                 stat_text = stat_file.read()
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             continue
         except OSError:
             uncertain = True

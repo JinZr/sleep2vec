@@ -476,9 +476,13 @@ def process_identity_running(row: Mapping[str, JsonValue], identity: ProcessIden
             leader = None
         else:
             token = start_token(pid)
-            if token is None:
+            if token is not None:
+                leader = {"pid": pid, "process_group_id": leader_pgid, "process_start_token": token}
+            elif _process_exists(pid):
                 return None
-            leader = {"pid": pid, "process_group_id": leader_pgid, "process_start_token": token}
+            else:
+                # The leader exited while its start time was read; only the group state decides now.
+                leader = None
         group_running = process_group_running(identity["process_group_id"])
     except OSError:
         # An inspection failure leaves the group state unknown; callers keep that apart from an exited group.
@@ -488,6 +492,14 @@ def process_identity_running(row: Mapping[str, JsonValue], identity: ProcessIden
     if leader is not None and any(str(leader[field]) != str(identity[field]) for field in PROCESS_IDENTITY_FIELDS):
         raise ProcessIdentityError(f"PID {pid} was reused by a different process.")
     return group_running
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        os.getpgid(pid)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def _require_matching_process_identity(row: Mapping[str, JsonValue], identity: ProcessIdentity) -> None:

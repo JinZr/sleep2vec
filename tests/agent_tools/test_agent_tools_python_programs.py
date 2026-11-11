@@ -10,7 +10,7 @@ from agent_tools import process_identity, python_programs
 
 SOURCE_HASHES = {
     "managed_scheduler.cli_preflight": "5620962bcbd5db619b4f934773ad9e3d67e2c6ddc1edc212fac7cda872cb0cd1",
-    "managed_scheduler.process_launch": "7080cc8c29513ba594951e2f65304986433088ce94b0c418092aeec34c89221e",
+    "managed_scheduler.process_launch": "5b31879d2a85cf3a3625fa522798bc573dd1287c248b47fef68d47be525423a7",
     "managed_scheduler.runtime_identity": "ad21db85b664d221a18430c9e053c7626c4055036fd71b653090d87ee334ff96",
     "plan_rendering.commit_status": "7112cb97e0d1ac2bce6fef0c4c453a1dd7adc307eaca04ae7cd66d52416531c9",
     "plan_rendering.verify_input_snapshots": "8c07f2508676126a0362ad9bd080db823a3649d587c00dcf90051149b1fa1701",
