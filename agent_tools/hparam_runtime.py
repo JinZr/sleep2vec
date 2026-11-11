@@ -1,4 +1,4 @@
-"""Launch, queue, monitor, and stop for a registered hyper-parameter plan's runs.
+"""Launch, queue, and stop for a registered hyper-parameter plan's runs.
 
 Dispatches through ``managed_scheduler`` for capacity and process lifecycle. A
 direct plan's queue runs as one detached runner per plan, guarded by the plan's
@@ -31,10 +31,8 @@ from . import (
 from .experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     LAUNCHABLE_STATUSES,
-    MONITOR_OBSERVATION_FIELDS,
     PROCESS_IDENTITY_FIELDS,
     TERMINAL_STATUSES,
-    RunKey,
     append_event,
     experiment_root,
     has_managed_launch_evidence,
@@ -82,8 +80,8 @@ def launch_hparam_runs(
 
     Validates frozen inputs and serializes the pass with the workspace run lock.
     dry_run=True previews scheduling without starting processes or submitting
-    jobs, but still writes launch/status projections and may merge manifest
-    rows; it is not a read-only operation. Execution can observe local
+    jobs, but still writes the launch_manifest.tsv projection and may merge
+    manifest rows; it is not a read-only operation. Execution can observe local
     runs, launch eligible work within capacity and record lifecycle evidence;
     for a Slurm plan it is one submit pass that submits or adopts every
     launchable run.
@@ -178,18 +176,19 @@ def run_hparam_queue(
     *,
     dry_run: bool = True,
     poll_seconds: float = 60,
-) -> Path:
-    """Advance a registered hparam queue and return its status-table path.
+) -> list[dict[str, str]]:
+    """Advance a registered hparam queue and return the plan's canonical run rows.
 
-    With dry_run=True, performs one launch preview and returns launch_manifest.tsv,
-    including that preview's projection writes. With dry_run=False, a direct plan
-    repeatedly monitors and launches eligible runs in the calling process, writing
-    canonical state and projections, until every run in this plan is terminal, and
-    returns run_status.tsv then. Terminal includes failed/stopped runs and does not
-    imply selection succeeded. A direct plan's loop holds the plan's
-    queue_runner.lock (recording this PID) and fails at once if another runner
-    holds it. A Slurm plan makes one submit pass, which submits or adopts every
-    launchable run, and returns run_status.tsv without polling; Slurm queues the jobs.
+    With dry_run=True, performs one launch preview, including that preview's
+    launch_manifest.tsv write. With dry_run=False, a direct plan repeatedly runs
+    launch passes in the calling process, each of which observes the plan's runs
+    and launches eligible ones, until every run in this plan is terminal.
+    Terminal includes failed/stopped runs and does not imply selection succeeded.
+    A direct plan's loop holds the plan's queue_runner.lock (recording this PID)
+    and fails at once if another runner holds it. A Slurm plan makes one submit
+    pass, which submits or adopts every launchable run, and returns without
+    polling; Slurm queues the jobs. The returned rows are read from
+    run_manifest.tsv in plan order once the pass or loop ends.
 
     poll_seconds must be finite and positive. Missing process identity can raise
     instead of advancing the queue; other validation and runtime errors propagate.
@@ -200,9 +199,6 @@ def run_hparam_queue(
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
-    if dry_run:
-        return launch_hparam_runs(run_dir, dry_run=True)
-
     # Only the frozen workspace binding is needed to lock; launched run scripts and concurrent monitors replace
     # run_manifest.tsv under the run lock, so every workspace-state read below holds it.
     plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False)
@@ -211,62 +207,56 @@ def run_hparam_queue(
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    if dry_run:
+        launch_hparam_runs(run_dir, dry_run=True)
+        return _canonical_plan_rows(workspace, plan)
     with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(run_dir)
-    expected_keys = {validated_run_key(run) for run in plan["runs"]}
-    status_path = run_dir / "run_status.tsv"
-    exp_io.validate_managed_output_paths(workspace, [status_path])
     if not _is_direct_plan(plan):
         launch_hparam_runs(run_dir, dry_run=False)
-        return status_path
+        return _canonical_plan_rows(workspace, plan)
     # Taken outside the run lock and held for the whole loop, which takes the run lock repeatedly.
     exp_io.validate_managed_output_paths(workspace, [run_dir / scheduler.QUEUE_RUNNER_LOCK_NAME])
     with scheduler.queue_runner_lock(run_dir, record_pid=True):
-        return _drain_hparam_queue(run_dir, workspace, plan, expected_keys, status_path, poll_seconds)
+        return _drain_hparam_queue(run_dir, workspace, plan, poll_seconds)
 
 
 def _is_direct_plan(plan: plan_contract.HparamPlan) -> bool:
     return {scheduler_type(run) for run in plan["runs"]} == {"direct"}
 
 
+def _canonical_plan_rows(workspace: Path, plan: plan_contract.HparamPlan) -> list[dict[str, str]]:
+    with experiment_workspace.managed_run_lock(workspace):
+        rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
+    return [rows_by_key[validated_run_key(run)] for run in plan["runs"]]
+
+
+def _queue_is_terminal(rows: Sequence[Mapping[str, str]]) -> bool:
+    """Return whether every plan run is terminal; a missing_pid run blocks the queue instead of waiting."""
+    if all(row.get("status") in TERMINAL_STATUSES for row in rows):
+        return True
+    missing_pid = sorted(validated_run_key(row) for row in rows if row.get("status") == "missing_pid")
+    if missing_pid:
+        step_id, run_id = missing_pid[0]
+        raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
+    return False
+
+
 def _drain_hparam_queue(
     run_dir: Path,
     workspace: Path,
     plan: plan_contract.HparamPlan,
-    expected_keys: set[RunKey],
-    status_path: Path,
     poll_seconds: float,
-) -> Path:
+) -> list[dict[str, str]]:
+    # Each launch pass observes the plan's runs under the run lock before it fills capacity.
     while True:
-        with experiment_workspace.managed_run_lock(workspace):
-            rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
-        if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
-            write_rows(status_path, [rows_by_key[validated_run_key(run)] for run in plan["runs"]])
-            return status_path
-        missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
-        if missing_pid:
-            step_id, run_id = missing_pid[0]
-            raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
-
-        monitor_hparam_runs(run_dir)
-        with experiment_workspace.managed_run_lock(workspace):
-            rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
-        if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
-            return status_path
-        missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
-        if missing_pid:
-            step_id, run_id = missing_pid[0]
-            raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
-
+        rows = _canonical_plan_rows(workspace, plan)
+        if _queue_is_terminal(rows):
+            return rows
         launch_hparam_runs(run_dir, dry_run=False, fail_on_missing_pid_blocker=True)
-        with experiment_workspace.managed_run_lock(workspace):
-            rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
-        if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
-            return status_path
-        missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
-        if missing_pid:
-            step_id, run_id = missing_pid[0]
-            raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
+        rows = _canonical_plan_rows(workspace, plan)
+        if _queue_is_terminal(rows):
+            return rows
         time.sleep(poll_seconds)
 
 
@@ -288,10 +278,7 @@ def _launch_hparam_runs(
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
     manifest = run_dir / "launch_manifest.tsv"
-    status_path = run_dir / "run_status.tsv"
-    exp_io.validate_managed_output_paths(
-        workspace, [manifest, status_path, run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME]
-    )
+    exp_io.validate_managed_output_paths(workspace, [manifest, run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME])
     execution_value = recipe.get("execution")
     execution = execution_value if isinstance(execution_value, dict) else {}
     runtime_value = recipe.get("runtime")
@@ -313,7 +300,6 @@ def _launch_hparam_runs(
 
     def write_projections(result: scheduler.LaunchResult) -> None:
         write_rows(manifest, result.launch_rows)
-        write_rows(status_path, result.committed_rows)
 
     # Built per pass so a patched public owner takes effect; hooks replace only the process effects.
     launch_hooks = scheduler.SchedulerHooks(
@@ -356,117 +342,6 @@ def _inspect_execution_target(
     return execution_snapshot.inspect_execution_target(execution, runs, plan_label="hparam")
 
 
-def monitor_hparam_runs(
-    run_dir: str | Path,
-    *,
-    once: bool = True,
-    health: bool = False,
-    poll_seconds: float = 60,
-) -> Path:
-    """Observe a registered hparam plan, commit status updates and return run_status.tsv.
-
-    Reads local execution evidence, merges observations into the canonical
-    run manifest and records status transitions. run_status.tsv carries the
-    committed rows plus this poll's observation fields (such as log_tail), which
-    run_manifest.tsv does not persist. Never starts pending runs. health requests
-    additional health evidence from the observers.
-
-    The Python default once=True performs one round; once=False polls until all
-    plan runs are terminal, including failures/stops. poll_seconds must be finite
-    and positive even for one round. Missing canonical runs, invalid frozen
-    inputs and unhandled observation/I/O errors raise; earlier writes can remain."""
-    if not math.isfinite(poll_seconds) or poll_seconds <= 0:
-        raise ValueError("poll_seconds must be positive.")
-    root = Path(run_dir)
-    # Only the frozen workspace binding is needed to lock; launches, stops and launched run scripts replace
-    # run_manifest.tsv under the run lock, so the workspace-state reads below hold it while observation does not.
-    plan = artifacts.read_hparam_plan(root, require_workspace_state=False)
-    recipe_value = plan.get("recipe")
-    recipe = recipe_value if isinstance(recipe_value, dict) else {}
-    status_path = root / "run_status.tsv"
-    workspace = experiment_root(recipe)
-    if workspace is None:
-        raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    exp_io.validate_managed_output_paths(workspace, [root / "launch_manifest.tsv", status_path])
-    with experiment_workspace.managed_run_lock(workspace):
-        plan = artifacts.read_hparam_plan(root)
-    expected_keys = {validated_run_key(run) for run in plan["runs"]}
-    while True:
-        with experiment_workspace.managed_run_lock(workspace):
-            workspace_rows = read_run_manifest(workspace)
-        workspace_by_key = {validated_run_key(row): row for row in workspace_rows}
-        missing = expected_keys - set(workspace_by_key)
-        if missing:
-            step_id, run_id = sorted(missing)[0]
-            raise ValueError(f"Canonical run is missing for the current hparam plan: {step_id} / {run_id}")
-        previous_rows = {key: workspace_by_key[key] for key in expected_keys}
-        slurm_jobs = scheduler.slurm_job_snapshot(previous_rows.values())
-        rows: list[Mapping[str, JsonValue]] = []
-        for run in plan["runs"]:
-            key = validated_run_key(run)
-            prior = previous_rows[key]
-            # A stop can bind a job to a run whose submit pass never recorded its execution identity.
-            if prior.get("target") in (None, "") and prior.get("scheduler_job_id") in (None, ""):
-                rows.append(prior)
-                continue
-            if scheduler_type(prior) == "slurm":
-                # Anchor CLI-relative owners without resolving aliases or removing raw '..' components.
-                rows.append(scheduler.observe_slurm_run(root.absolute(), prior, slurm_jobs, health=health))
-            else:
-                rows.append(scheduler.observe_run(root, prior, prior, health=health))
-        observed_by_key = {validated_run_key(row): row for row in rows}
-        committed = merge_run_manifest(workspace, rows)
-        committed_by_key = {validated_run_key(row): row for row in committed}
-        rows = [committed_by_key[validated_run_key(run)] for run in plan["runs"]]
-        write_rows(
-            status_path,
-            [
-                {
-                    **row,
-                    **{
-                        field: value
-                        for field, value in observed_by_key[validated_run_key(row)].items()
-                        if field in MONITOR_OBSERVATION_FIELDS
-                    },
-                }
-                for row in rows
-            ],
-        )
-        for row in rows:
-            before = previous_rows[validated_run_key(row)].get("status")
-            after = row.get("status")
-            if before and after and before != after:
-                append_event(
-                    workspace,
-                    "run_status_changed",
-                    {
-                        "step_id": row["step_id"],
-                        "run_id": row["run_id"],
-                        "from": before,
-                        "to": after,
-                    },
-                )
-                # A stale pre-cancel observation may merge to stopped without confirming a scheduler stop.
-                if (
-                    after == "stopped"
-                    and scheduler_type(row) == "slurm"
-                    and previous_rows[validated_run_key(row)].get("stop_requested_at") not in (None, "")
-                ):
-                    append_event(
-                        workspace,
-                        "run_stopped",
-                        {
-                            "step_id": row["step_id"],
-                            "run_id": row["run_id"],
-                            "reason": row.get("stop_reason", ""),
-                        },
-                    )
-        if once or all(row.get("status") in TERMINAL_STATUSES for row in rows):
-            return status_path
-        print(f"wrote {status_path}")
-        time.sleep(poll_seconds)
-
-
 def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     if not reason.strip():
         raise ValueError("Stopping a run requires a non-empty reason.")
@@ -477,11 +352,10 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     manifest_path = root / "launch_manifest.tsv"
-    status_path = root / "run_status.tsv"
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    exp_io.validate_managed_output_paths(workspace, [manifest_path, status_path])
+    exp_io.validate_managed_output_paths(workspace, [manifest_path])
     with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(root)
         expected_keys = {validated_run_key(run) for run in plan["runs"]}
@@ -580,13 +454,11 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                 )
                 committed = merge_run_manifest(workspace, [final], lock_held=True)
         committed_by_key = {validated_run_key(item): item for item in committed}
-        final_status_rows = [committed_by_key[validated_run_key(run)] for run in plan["runs"]]
-        write_rows(status_path, final_status_rows)
-        write_rows(manifest_path, final_status_rows)
+        write_rows(manifest_path, [committed_by_key[validated_run_key(run)] for run in plan["runs"]])
         if backend != "slurm" or metadata_stop:
             append_event(
                 workspace,
                 "run_stopped",
                 {"step_id": key[0], "run_id": run_id, "reason": reason},
             )
-    return status_path
+    return workspace / "run_manifest.tsv"

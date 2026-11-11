@@ -70,14 +70,14 @@ Managed tables declare either one row per run or many rows per run. Both forms r
 
 ## Canonical state and projections
 
-`launch_manifest.tsv` and `run_status.tsv` retain their plan-local paths and fields but are written only from rows returned by a successful canonical commit. They are projections and are never read to restore lifecycle status or execution identity. `reports/monitor.md`, rankings, and events are also derived artifacts. `RESEARCH_LOG.md` is an append-only narrative record rather than a projection, but it likewise never owns or restores lifecycle state. `experiment-status` computes its snapshot from `run_manifest.tsv` on demand and writes nothing.
+`launch_manifest.tsv` keeps its plan-local path and fields but is written only from rows returned by a successful canonical commit. It is a projection and is never read to restore lifecycle status or execution identity. No current command writes or reads `run_status.tsv`; a copy left in an older plan directory is inert. `reports/monitor.md`, rankings, and events are also derived artifacts. `RESEARCH_LOG.md` is an append-only narrative record rather than a projection, but it likewise never owns or restores lifecycle state. `experiment-status` computes its snapshot from `run_manifest.tsv` on demand and writes nothing.
 
 Per-poll observation fields are never persisted in `run_manifest.tsv`: the
 canonical merge drops `log_tail`, `log_age_seconds`, `monitored_at`,
 `gpu_summary`, `io_read_delta_bytes`, `io_write_delta_bytes`,
 `progress_status`, `progress_total`, `progress_updated_at` and
-`progress_age_seconds` from incoming rows. A monitor round shows them in
-`reports/monitor.md`, its `--json` runs, or `run_status.tsv`. Fields a later
+`progress_age_seconds` from incoming rows. An `experiment-monitor` round shows
+them in `reports/monitor.md` and its `--json` runs. Fields a later
 round or the lifecycle reads back stay canonical: `health_status`,
 `io_read_bytes`, `io_write_bytes`, `progress_processed`, `checkpoint_count`,
 `checkpoints`, `run_manifest`, `process_identity_error` and the `scheduler_*`
@@ -107,9 +107,10 @@ observed evidence, and none of them restores run status.
 | File | Location | Written by | Lifecycle role |
 | --- | --- | --- | --- |
 | `run_manifest.tsv` | `<experiment.root>/` | Canonical [atomic commit](#atomic-commit) from plan registration, launch, monitor and stop | Only mutable lifecycle and execution-identity owner; one row per run |
-| `launch_manifest.tsv`, `run_status.tsv` | Plan directory | Rewritten from the rows of each successful canonical commit | Projections; never read to restore state |
+| `launch_manifest.tsv` | Hparam plan directory | Rewritten from the rows of each hparam launch pass or stop commit | Projection; never read to restore state |
 | `experiment_manifest.tsv` | `<experiment.root>/` | `experiment-init` | Optional one-row index that must match `experiment.yaml` |
 | `trial_status.tsv` | Historical trees | None | Removed format; managed commands refuse a tree that contains it |
+| `run_status.tsv` | Older hparam plan directories | None | Removed projection; a leftover copy is inert and never read |
 
 ## Runtime artifact evidence
 
@@ -339,8 +340,9 @@ own lifecycle.
 the row:
 
 - **The row has a job id:** atomically record non-terminal `stopping` with the
-  reason, request time, and job binding, then call `scancel`. The monitor
-  commits `stopped` according to the table. A failed or interrupted
+  reason, request time, and job binding, then call `scancel`.
+  `experiment-monitor` commits `stopped` according to the table and records
+  the `run_stopped` event. A failed or interrupted
   cancellation keeps that intent, and it may be retried only with the same
   reason.
 - **The row is launchable:** look its name up in `squeue`. One match binds that

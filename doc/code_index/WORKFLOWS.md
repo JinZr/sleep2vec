@@ -243,7 +243,7 @@ carry those choices into launch and recovery.
 4. Execute through [launch and queue](../agent_contracts/hparam_workflow.md#launch-and-queue),
    with [snapshot revalidation](../agent_contracts/hparam_workflow.md#execution-snapshot-and-launch-revalidation).
    For a direct plan, `hparam-run-queue --execute` starts one detached
-   [queue runner](../agent_contracts/hparam_workflow.md#direct-queue-runner) and returns; monitors report its liveness.
+   [queue runner](../agent_contracts/hparam_workflow.md#direct-queue-runner) and returns; `experiment-monitor` reports its liveness.
    For a Slurm plan, `--execute` submits every launchable run once and returns.
    A rolling checkout may use a newer commit, but it must expose the current managed launch protocol before a direct
    claim or Slurm submission. Direct starts use point-in-time identity and artifact checks under the short runtime
@@ -258,7 +258,7 @@ carry those choices into launch and recovery.
    registered plan's task.
 5. Inspect recorded state with
    [read-only status](../agent_contracts/experiment_workspace.md#read-only-status-and-advisory-actions),
-   or explicitly refresh evidence with non-launching monitors; the
+   or explicitly refresh evidence with the non-launching `experiment-monitor`; the
    [entrypoint side-effect table](../agent_contracts/experiment_workspace.md#lifecycle-entrypoints)
    distinguishes them. [Run-manifest evidence](../agent_contracts/run_manifest.md#evidence-ownership)
    and [Slurm evidence](../agent_contracts/run_manifest.md#slurm-scheduler-evidence)
@@ -268,7 +268,7 @@ carry those choices into launch and recovery.
    append meaningful [research notes](../agent_contracts/experiment_workspace.md#research-log),
    then follow [finalization](../agent_contracts/experiment_workspace.md#finalization).
 
-Monitors never gain launch authority.
+`experiment-monitor` never gains launch authority.
 Recurring follow-up starts from the workspace's
 [short heartbeat guidance](../agent_contracts/experiment_workspace.md#short-heartbeat-maintenance).
 

@@ -54,7 +54,7 @@ Launch and observation:
 - `execution_snapshot`: the frozen execution snapshot, its target probe, and the frozen-versus-live check.
 - `gpu_rules`: partitioning a GPU pool into launch groups.
 - `run_evidence`: observation of one direct run and identity-verified process-group stop.
-- `hparam_runtime`: launch, queue runner, monitor, and stop for a registered hparam plan.
+- `hparam_runtime`: launch, queue runner, and stop for a registered hparam plan; observation is `experiments.monitor_experiment` or each launch pass.
 - `hparam_selection`: candidate ranking on the frozen selection split.
 - `run_artifacts`: registered-plan and run-artifact reads, and hparam plan registration.
 - `runtime_lock`, `runtime_sync`: the per-checkout runtime lock, and the clean `origin/main` fast-forward taken under it.
@@ -63,7 +63,7 @@ Launch and observation:
 
 Experiment workspace:
 
-- `experiments`: the facade for the experiment lifecycle commands.
+- `experiments`: the facade for the experiment lifecycle commands, including `experiment-monitor`, the one observe command.
 - `experiment_workspace`: `run_manifest.tsv`, the only lifecycle owner, with its lock and managed manifests.
 - `experiment_io`: atomic replace, a sidecar `flock` per file, and `locked_append` under it, plain reads, and the output-path preflight.
 - `research_log`: append-only research notes.

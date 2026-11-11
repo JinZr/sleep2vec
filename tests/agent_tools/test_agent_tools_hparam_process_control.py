@@ -27,6 +27,7 @@ import yaml
 
 from agent_tools import (
     cli,
+    execution_snapshot,
     experiments,
     hparam_runtime,
     managed_scheduler,
@@ -67,10 +68,11 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(tmp_path: Pat
     # Stop and the queue take no hooks, so the public owner guards them against starting a process.
     monkeypatch.setattr(managed_scheduler, "start_process", launcher.start_process)
 
-    assert hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason) == plan_dir / "run_status.tsv"
+    assert hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason) == tmp_path / "run_manifest.tsv"
 
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
-    assert canonical == _read_table(plan_dir / "run_status.tsv")[0] == _read_table(plan_dir / "launch_manifest.tsv")[0]
+    assert canonical == _read_table(plan_dir / "launch_manifest.tsv")[0]
+    assert not (plan_dir / "run_status.tsv").exists()
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == reason
     assert canonical["stopped_at"] == now
@@ -97,9 +99,8 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(tmp_path: Pat
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before_repeat
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "stopped"
-    monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", lambda *_a, **_k: pytest.fail("no queue monitor"))
     monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_a, **_k: pytest.fail("no queue launch"))
-    assert hparam_runtime.run_hparam_queue(plan_dir, dry_run=False) == plan_dir / "run_status.tsv"
+    assert [row["status"] for row in hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)] == ["stopped"]
     launcher.assert_not_started()
 
 
@@ -296,7 +297,7 @@ def test_hparam_unlaunched_stop_survives_stale_monitor_commit(tmp_path: Path, mo
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
     run = run_artifacts.read_hparam_plan(plan_dir)["runs"][0]
-    real_merge = hparam_runtime.merge_run_manifest
+    real_merge = experiments.merge_run_manifest
     cancelled = False
     monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-30T04:05:06Z")
 
@@ -308,14 +309,12 @@ def test_hparam_unlaunched_stop_survives_stale_monitor_commit(tmp_path: Path, mo
             rows = [{**row, "stopped_at": "", "stop_reason": ""} for row in rows]
         return real_merge(root, rows, **kwargs)
 
-    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge_after_cancel)
-    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_a, **_k: pytest.fail("no identity read"))
+    monkeypatch.setattr(experiments, "merge_run_manifest", merge_after_cancel)
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
 
-    hparam_runtime.monitor_hparam_runs(plan_dir)
+    experiments.monitor_experiment(tmp_path)
 
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
-    assert canonical == _read_table(plan_dir / "run_status.tsv")[0] == _read_table(plan_dir / "launch_manifest.tsv")[0]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "cancel before launch"
     assert canonical["stopped_at"] == "2026-08-30T04:05:06Z"
@@ -343,7 +342,7 @@ def test_hparam_concurrent_stops_keep_plan_projections_canonical(tmp_path: Path,
     real_lock = hparam_runtime.experiment_workspace.managed_run_lock
 
     def write_projection(path, rows):
-        if threading.current_thread().name == "first-stop" and path == plan_dir / "run_status.tsv":
+        if threading.current_thread().name == "first-stop" and path == plan_dir / "launch_manifest.tsv":
             with (tmp_path / "run_manifest.tsv.lock").open("a+") as lock_file:
                 try:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -392,7 +391,6 @@ def test_hparam_concurrent_stops_keep_plan_projections_canonical(tmp_path: Path,
     assert failures == []
     canonical = _read_table(tmp_path / "run_manifest.tsv")
     assert [row["status"] for row in canonical] == ["stopped", "stopped"]
-    assert _read_table(plan_dir / "run_status.tsv") == canonical
     assert _read_table(plan_dir / "launch_manifest.tsv") == canonical
     assert projection_lock_held == [True]
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
@@ -408,37 +406,33 @@ def test_hparam_stop_reads_workspace_state_only_under_run_lock(tmp_path: Path, m
     assert result.returncode == 0, result.stderr
     run = run_artifacts.read_hparam_plan(plan_dir)["runs"][0]
 
-    status_path = call_while_run_lock_holder_commits(
+    manifest_path = call_while_run_lock_holder_commits(
         monkeypatch,
         tmp_path,
         lambda: hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="cancel during monitor commit"),
     )
 
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
-    assert status_path == plan_dir / "run_status.tsv"
-    assert _read_table(status_path) == [canonical]
+    assert manifest_path == tmp_path / "run_manifest.tsv"
+    assert _read_table(plan_dir / "launch_manifest.tsv") == [canonical]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "cancel during monitor commit"
 
 
-@pytest.mark.parametrize("entrypoint", ["monitor", "queue"])
-def test_hparam_runtime_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch, entrypoint):
+def test_hparam_queue_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
-    if entrypoint == "queue":
-        # Terminal runs let the queue return after its first canonical poll.
-        for run in run_artifacts.read_hparam_plan(plan_dir)["runs"]:
-            hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="settle queue")
-    calls = {
-        "monitor": lambda: hparam_runtime.monitor_hparam_runs(plan_dir),
-        "queue": lambda: hparam_runtime.run_hparam_queue(plan_dir, dry_run=False),
-    }
+    # Terminal runs let the queue return after its first canonical poll.
+    for run in run_artifacts.read_hparam_plan(plan_dir)["runs"]:
+        hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="settle queue")
 
-    call_while_run_lock_holder_commits(monkeypatch, tmp_path, calls[entrypoint])
+    rows = call_while_run_lock_holder_commits(
+        monkeypatch, tmp_path, lambda: hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)
+    )
 
-    assert _read_table(plan_dir / "run_status.tsv") == _read_table(tmp_path / "run_manifest.tsv")
+    assert rows == _read_table(tmp_path / "run_manifest.tsv")
 
 
 def test_hparam_plan_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
@@ -479,7 +473,6 @@ def test_hparam_plan_commit_rereads_workspace_state_only_under_run_lock(tmp_path
 def test_stop_signal_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running", **_process_identity()}])
     before_launch = (tmp_path / "launch_manifest.tsv").read_bytes()
-    before_status = (tmp_path / "run_status.tsv").read_bytes()
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda _path, _row: _process_identity())
     monkeypatch.setattr(
         run_evidence,
@@ -491,7 +484,6 @@ def test_stop_signal_failure_does_not_commit_stopped_state(tmp_path: Path, monke
         hparam_runtime.stop_hparam_run(tmp_path, rows[0]["run_id"], reason="validation diverged")
 
     assert (tmp_path / "launch_manifest.tsv").read_bytes() == before_launch
-    assert (tmp_path / "run_status.tsv").read_bytes() == before_status
     assert not (tmp_path / "events.jsonl").exists()
 
 
@@ -872,14 +864,15 @@ def test_hparam_run_queue_fails_after_dead_unfrozen_process_identity(tmp_path: P
         "_require_process_script",
         lambda *_args: (_ for _ in ()).throw(AssertionError("dead identity must remain unbound")),
     )
-    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+    # The hand-written plan froze no execution snapshot; the launch pass still observes before it fills capacity.
+    monkeypatch.setattr(execution_snapshot, "validated_execution_snapshot", lambda *_args, **_kwargs: (None, False))
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: pytest.fail("no start"))
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("no sleep"))
 
-    with pytest.raises(RuntimeError, match="cannot advance.*missing_pid"):
+    with pytest.raises(managed_scheduler.MissingPidCapacityError, match="run-000 has status missing_pid"):
         hparam_runtime.run_hparam_queue(tmp_path, dry_run=False)
 
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "missing_pid"
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "missing_pid"
 
 
 def test_status_marks_a_zombie_only_managed_process_finished(tmp_path: Path, monkeypatch):
@@ -1111,9 +1104,7 @@ def test_hparam_stop_commits_one_final_row_to_all_manifests(tmp_path: Path, monk
     hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
 
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
-    local = _read_table(tmp_path / "run_status.tsv")[0]
-    launch = _read_table(tmp_path / "launch_manifest.tsv")[0]
-    assert canonical == local == launch
+    assert canonical == _read_table(tmp_path / "launch_manifest.tsv")[0]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "manual stop"
     assert stopped == [_process_identity()]
@@ -1143,24 +1134,24 @@ def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor
 
     def stale_observation(_root, observation, _prior, **_kwargs):
         # The monitor read the running row under the run lock and observes outside it while stop runs.
-        if threading.current_thread().name == "competing-hparam-monitor":
+        if threading.current_thread().name == "competing-experiment-monitor":
             monitor_observing.set()
             assert release_monitor_observation.wait(timeout=5)
         return {**observation, "status": "finished"}
 
     def competing_merge(root, rows, **kwargs):
-        if threading.current_thread().name == "competing-hparam-monitor":
+        if threading.current_thread().name == "competing-experiment-monitor":
             monitor_commit_ready.set()
             assert release_monitor_commit.wait(timeout=5)
         return real_merge(root, rows, **kwargs)
 
     def monitor():
         try:
-            hparam_runtime.monitor_hparam_runs(tmp_path)
+            experiments.monitor_experiment(tmp_path)
         except Exception as exc:
             monitor_failures.append(exc)
 
-    monitor_thread = threading.Thread(target=monitor, name="competing-hparam-monitor")
+    monitor_thread = threading.Thread(target=monitor, name="competing-experiment-monitor")
     stopped = []
 
     def stop_while_monitor_commits(_row, observed):
@@ -1188,8 +1179,8 @@ def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor
         finally:
             release_monitor_commit.set()
 
-    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", competing_merge)
-    monkeypatch.setattr(hparam_runtime.scheduler, "observe_run", stale_observation)
+    monkeypatch.setattr(experiments, "merge_run_manifest", competing_merge)
+    monkeypatch.setattr(run_evidence, "status_row", stale_observation)
     monkeypatch.setattr(run_evidence, "stop_process_group", stop_while_monitor_commits)
     monitor_thread.start()
     assert monitor_observing.wait(timeout=5)
@@ -1203,12 +1194,12 @@ def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "manual stop"
-    assert _read_table(tmp_path / "run_status.tsv")[0] == canonical
     assert _read_table(tmp_path / "launch_manifest.tsv")[0] == canonical
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_stopped") == 1
     assert not any(
-        event.get("event_type") == "run_status_changed" and event.get("to") == "finished" for event in events
+        event.get("event_type") == "run_status_changed" and event.get("to") in {"finished", "completed"}
+        for event in events
     )
 
 
@@ -1277,7 +1268,7 @@ def test_hparam_run_queue_execute_detaches_one_runner_for_a_direct_plan(tmp_path
     spawns = _record_queue_runner_spawns(monkeypatch)
     launcher = FakeLauncher()
     monkeypatch.setattr(managed_scheduler, "start_process", launcher.start_process)
-    monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", lambda *_a, **_k: pytest.fail("no queue monitor"))
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_a, **_k: pytest.fail("no queue launch"))
     manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
     log_path = plan_dir / "queue_runner.log"
 
@@ -1316,7 +1307,7 @@ def test_hparam_run_queue_execute_detaches_one_runner_for_a_direct_plan(tmp_path
 def test_hparam_run_queue_refuses_a_second_runner_while_the_lock_is_held(tmp_path: Path, monkeypatch, capsys):
     plan_dir = _publish_queue_plan(tmp_path, "direct")
     spawns = _record_queue_runner_spawns(monkeypatch)
-    monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", lambda *_a, **_k: pytest.fail("no queue monitor"))
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_a, **_k: pytest.fail("no queue launch"))
     log_path = plan_dir / "queue_runner.log"
 
     with managed_scheduler.queue_runner_lock(plan_dir, record_pid=True):
@@ -1337,15 +1328,17 @@ def test_hparam_run_queue_foreground_holds_the_runner_lock_for_the_loop(tmp_path
     plan = run_artifacts.read_hparam_plan(plan_dir)
     observed = []
 
-    def monitor(_run_dir):
+    def launch(_run_dir, **_kwargs):
         observed.append(managed_scheduler.queue_runner_liveness(plan_dir))
         for run in plan["runs"]:
             hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="settle queue")
 
-    monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", monitor)
-    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_a, **_k: pytest.fail("no launch"))
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", launch)
+    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("settled queue must not sleep"))
 
-    assert hparam_runtime.run_hparam_queue(plan_dir, dry_run=False) == plan_dir / "run_status.tsv"
+    rows = hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)
+
+    assert {row["status"] for row in rows} == {"stopped"}
 
     assert observed == [
         {

@@ -579,9 +579,11 @@ def monitor_experiment(run_dir: str | Path) -> tracking.ExperimentMonitorResult:
     Requires an active, valid managed workspace. Reads local process,
     artifact and Slurm evidence (one ``squeue --me`` query when a Slurm run
     needs a state), merges observations into run_manifest.tsv, then writes
-    reports/monitor.md. Per-poll observation fields (MONITOR_OBSERVATION_FIELDS,
-    such as log_tail and log_age_seconds) appear only in that report and the
-    returned runs, never in run_manifest.tsv. Also probes the queue runner of
+    reports/monitor.md. Appends a run_status_changed event for each status this
+    poll changes, plus run_stopped when it confirms a requested Slurm stop.
+    Per-poll observation fields (MONITOR_OBSERVATION_FIELDS, such as log_tail
+    and log_age_seconds) appear only in that report and the returned runs,
+    never in run_manifest.tsv. Also probes the queue runner of
     every registered plan that has a queue_runner.lock (only a direct hparam
     queue creates one) without starting any runner. Returns run_dir, the
     committed runs with this poll's observation fields, that runner liveness and
@@ -598,6 +600,8 @@ def monitor_experiment(run_dir: str | Path) -> tracking.ExperimentMonitorResult:
     slurm_jobs = managed_scheduler.slurm_job_snapshot(run_rows)
     observations = [tracking.monitor_run_row(root, row, run_rows, slurm_jobs=slurm_jobs) for row in run_rows]
     observed_by_key = {validated_run_key(row): row for row in observations}
+    committed_rows = merge_run_manifest(root, observations)
+    _record_status_transitions(root, run_rows, committed_rows)
     # run_manifest.tsv drops per-poll observation fields, so the report and returned runs carry this poll's values.
     committed = [
         {
@@ -608,7 +612,7 @@ def monitor_experiment(run_dir: str | Path) -> tracking.ExperimentMonitorResult:
                 if field in MONITOR_OBSERVATION_FIELDS
             },
         }
-        for row in merge_run_manifest(root, observations)
+        for row in committed_rows
     ]
     # Registered plans own canonical rows, and _managed_rows checked every row's experiment_id.
     step_manifests = read_registered_steps(root, experiment_id=str(run_rows[0]["experiment_id"])) if run_rows else []
@@ -621,6 +625,22 @@ def monitor_experiment(run_dir: str | Path) -> tracking.ExperimentMonitorResult:
     report = tracking.monitor_report(committed, queue_runners)
     exp_io.write_text_at(report_path, report)
     return {"run_dir": str(root), "runs": committed, "queue_runners": queue_runners, "report": str(report_path)}
+
+
+def _record_status_transitions(
+    root: Path, previous_rows: Sequence[dict[str, str]], committed_rows: Sequence[dict[str, str]]
+) -> None:
+    previous_by_key = {validated_run_key(row): row for row in previous_rows}
+    for row in committed_rows:
+        previous = previous_by_key.get(validated_run_key(row), {})
+        before, after = previous.get("status"), row.get("status")
+        if not before or not after or before == after:
+            continue
+        run = {"step_id": row["step_id"], "run_id": row["run_id"]}
+        append_event(root, "run_status_changed", {**run, "from": before, "to": after})
+        # A stale pre-cancel observation may merge to stopped without confirming a scheduler stop.
+        if after == "stopped" and scheduler_type(row) == "slurm" and previous.get("stop_requested_at"):
+            append_event(root, "run_stopped", {**run, "reason": row.get("stop_reason", "")})
 
 
 def experiment_status(run_dir: str | Path) -> tracking.ExperimentStatusSnapshot:

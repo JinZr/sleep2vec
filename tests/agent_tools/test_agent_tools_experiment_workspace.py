@@ -378,10 +378,10 @@ def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
         "run-stop", "--plan-dir", str(plan_dir), "--run-id", "run-000", "--reason", "validation diverged"
     )
     assert stopped_cli.returncode == 0, stopped_cli.stderr
-    status_path = plan_dir / "run_status.tsv"
+    manifest_path = tmp_path / "run_manifest.tsv"
 
-    assert stopped_cli.stdout == f"Wrote {status_path}\n"
-    assert "validation diverged" in status_path.read_text()
+    assert stopped_cli.stdout == f"Wrote {manifest_path}\n"
+    assert "validation diverged" in manifest_path.read_text()
     assert "validation diverged" in (tmp_path / "events.jsonl").read_text()
     stopped = next(
         json.loads(line)

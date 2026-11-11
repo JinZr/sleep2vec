@@ -163,7 +163,7 @@ def _canonical(tmp_path: Path, run: dict) -> dict[str, str]:
     return next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
 
 
-def test_hparam_monitor_uses_one_squeue_query_per_round_and_records_runtime_drift(tmp_path: Path, monkeypatch):
+def test_experiment_monitor_uses_one_squeue_query_per_round_and_records_runtime_drift(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path, run_count=2)
     first, second = plan["runs"]
     queue = _fake_queue(monkeypatch)
@@ -178,7 +178,7 @@ def test_hparam_monitor_uses_one_squeue_query_per_round_and_records_runtime_drif
     (Path(first["run_dir"]) / "runtime_commit").write_text("f" * 40 + "\n")
     (Path(second["run_dir"]) / "runtime_commit").write_text(plan["recipe"]["execution"]["runtime_commit"] + "\n")
 
-    hparam_runtime.monitor_hparam_runs(plan_dir)
+    experiments.monitor_experiment(tmp_path)
 
     assert queue["squeue"] == 2
     finished, running = _canonical(tmp_path, first), _canonical(tmp_path, second)
@@ -191,7 +191,6 @@ def test_hparam_monitor_uses_one_squeue_query_per_round_and_records_runtime_drif
     assert finished["runtime_commit"] == "f" * 40
     assert finished["planned_runtime_commit"] == plan["recipe"]["execution"]["runtime_commit"]
     assert not (tmp_path / "reports" / "run_matrix.md").exists()
-    assert [row["status"] for row in _read_table(plan_dir / "run_status.tsv")] == ["completed", "running"]
     slurm_columns = {
         "scheduler_type",
         "scheduler_script",
@@ -222,7 +221,7 @@ def test_slurm_hparam_run_queue_execute_is_one_submit_pass(tmp_path: Path, monke
     assert cli.main(["hparam-run-queue", "--plan-dir", str(plan_dir), "--execute"]) == 0
 
     assert len(queue["submitted"]) == 2
-    assert [row["status"] for row in _read_table(plan_dir / "run_status.tsv")] == ["queued", "queued"]
+    assert [_canonical(tmp_path, run)["status"] for run in plan["runs"]] == ["queued", "queued"]
 
 
 def test_slurm_stop_of_unsubmitted_run_is_a_metadata_stop(tmp_path: Path, monkeypatch):
@@ -279,14 +278,14 @@ def test_hparam_stop_records_intent_before_scancel_and_monitor_commits_stopped(t
     assert queue["cancelled"] == ["3880"]
     assert canonical["status"] == "stopping"
     assert canonical.get("stopped_at", "") == ""
-    assert _read_table(plan_dir / "run_status.tsv")[0] == canonical
+    assert _read_table(plan_dir / "launch_manifest.tsv")[0] == canonical
     with pytest.raises(ValueError, match="pending stop request"):
         hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="repeat request")
     hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")
     assert queue["cancelled"] == ["3880", "3880"]
 
     queue["jobs"] = [slurm.JobObservation("3880", slurm.job_name(run), "CANCELLED", "", "gpu-01")]
-    hparam_runtime.monitor_hparam_runs(plan_dir)
+    experiments.monitor_experiment(tmp_path)
 
     canonical = _canonical(tmp_path, run)
     assert canonical["status"] == "stopped"
@@ -300,7 +299,7 @@ def test_hparam_stop_resolves_lost_run_without_scancel(tmp_path: Path, monkeypat
     run = plan["runs"][0]
     queue = _fake_queue(monkeypatch)
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
-    hparam_runtime.monitor_hparam_runs(plan_dir)
+    experiments.monitor_experiment(tmp_path)
     assert _canonical(tmp_path, run)["status"] == "lost"
     snapshot = experiments.experiment_status(tmp_path)
     assert any(blocker["code"] == "lost" for blocker in snapshot["blockers"])
@@ -351,10 +350,9 @@ def test_slurm_monitor_preserves_concurrent_stop_intent(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(managed_scheduler, "observe_slurm_run", observe_stale_row)
 
-    hparam_runtime.monitor_hparam_runs(plan_dir)
+    experiments.monitor_experiment(tmp_path)
 
     canonical = _canonical(tmp_path, run)
     assert canonical["status"] == "stopping"
     assert canonical["stop_requested_at"] == _STOP_AT
     assert canonical["stop_reason"] == "validation diverged"
-    assert _read_table(plan_dir / "run_status.tsv")[0] == canonical

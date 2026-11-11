@@ -105,19 +105,22 @@ def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group
 
 
 def test_hparam_run_queue_dry_run_returns_after_one_preview(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     calls = []
-    manifest = tmp_path / "launch_manifest.tsv"
     monkeypatch.setattr(
         hparam_runtime,
         "launch_hparam_runs",
-        lambda plan_dir, *, dry_run: calls.append((Path(plan_dir), dry_run)) or manifest,
+        lambda plan_dir, *, dry_run: calls.append((Path(plan_dir), dry_run)),
     )
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda _seconds: pytest.fail("dry-run must not sleep"))
 
-    result = hparam_runtime.run_hparam_queue(tmp_path / "plan")
+    rows = hparam_runtime.run_hparam_queue(plan_dir)
 
-    assert result == manifest
-    assert calls == [((tmp_path / "plan").resolve(), True)]
+    assert rows == _read_table(tmp_path / "run_manifest.tsv")
+    assert [row["status"] for row in rows] == ["planned"]
+    assert calls == [(plan_dir.resolve(), True)]
 
 
 def test_hparam_run_queue_executes_each_wave_until_all_runs_are_terminal(tmp_path: Path, monkeypatch):
@@ -146,28 +149,28 @@ def test_hparam_run_queue_executes_each_wave_until_all_runs_are_terminal(tmp_pat
     )
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda seconds: sleeps.append(seconds))
 
-    status_path = hparam_runtime.run_hparam_queue(plan_dir, dry_run=False, poll_seconds=0.25)
+    rows = hparam_runtime.run_hparam_queue(plan_dir, dry_run=False, poll_seconds=0.25)
 
-    assert status_path == plan_dir / "run_status.tsv"
     assert len(started) == 3
     assert sleeps == [0.25, 0.25, 0.25]
-    assert {row["status"] for row in _read_table(status_path)} == {"finished"}
+    assert {row["status"] for row in rows} == {"finished"}
+    assert rows == _read_table(tmp_path / "run_manifest.tsv")
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert sum(event["event_type"] == "run_status_changed" for event in events) == 3
 
 
-def test_hparam_run_queue_returns_terminal_plan_without_monitor_or_launch(tmp_path: Path, monkeypatch):
+def test_hparam_run_queue_returns_terminal_plan_without_launch(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     merge_run_manifest(tmp_path, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "finished"}])
-    assert not (plan_dir / "run_status.tsv").exists()
-    monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no monitor"))
     monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
 
-    assert hparam_runtime.run_hparam_queue(plan_dir, dry_run=False) == plan_dir / "run_status.tsv"
-    assert _read_table(plan_dir / "run_status.tsv")[0]["status"] == "finished"
+    rows = hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)
+
+    assert [row["status"] for row in rows] == ["finished"]
+    assert not (plan_dir / "run_status.tsv").exists()
 
 
 def test_hparam_run_queue_fails_instead_of_waiting_on_missing_pid(tmp_path: Path, monkeypatch):
@@ -179,7 +182,6 @@ def test_hparam_run_queue_fails_instead_of_waiting_on_missing_pid(tmp_path: Path
         tmp_path,
         [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "missing_pid"}],
     )
-    monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no monitor"))
     monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("no sleep"))
 
@@ -195,16 +197,17 @@ def test_hparam_run_queue_blocks_after_unsafe_process_identity(tmp_path: Path, m
         raise run_evidence.ProcessIdentityError("PID 123 was reused by a different process")
 
     monkeypatch.setattr(run_evidence, "process_identity_running", reject_identity)
-    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
+    # The hand-written plan froze no execution snapshot; the launch pass still observes before it fills capacity.
+    monkeypatch.setattr(execution_snapshot, "validated_execution_snapshot", lambda *_args, **_kwargs: (None, False))
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: pytest.fail("no start"))
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("no sleep"))
 
-    with pytest.raises(RuntimeError, match="cannot advance.*missing_pid"):
+    with pytest.raises(managed_scheduler.MissingPidCapacityError, match="run-000 has status missing_pid"):
         hparam_runtime.run_hparam_queue(tmp_path, dry_run=False)
 
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
     assert canonical["status"] == "missing_pid"
     assert "reused by a different process" in canonical["process_identity_error"]
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "missing_pid"
 
 
 def test_hparam_run_queue_records_transition_observed_during_launch(tmp_path: Path, monkeypatch):
@@ -217,7 +220,8 @@ def test_hparam_run_queue_records_transition_observed_during_launch(tmp_path: Pa
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     merge_run_manifest(tmp_path, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "running"}])
-    observations = iter(["running", "finished"])
+    # The queue observes once per round, inside its launch pass.
+    observations = iter(["finished"])
     monkeypatch.setattr(
         hparam_runtime.evidence,
         "status_row",

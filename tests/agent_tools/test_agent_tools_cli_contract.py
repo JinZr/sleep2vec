@@ -9,10 +9,9 @@ import sys
 
 import pytest
 
-from agent_tools import cli, execution_snapshot, hparam_runtime, managed_scheduler, models, plans
+from agent_tools import cli, execution_snapshot, hparam_runtime, models, plans
 from agent_tools.adapters.registry import get_adapter
 from agent_tools.decisions import evaluate_consultation_gates
-from agent_tools.manifests import write_rows
 from agent_tools.recipes import load_consultation_policy
 
 SUBCOMMANDS = {
@@ -22,7 +21,6 @@ SUBCOMMANDS = {
     "preset-launch",
     "run-stop",
     "hparam-run-queue",
-    "hparam-monitor",
     "experiment-init",
     "experiment-note",
     "experiment-finalize",
@@ -73,16 +71,19 @@ def _subcommand_help(parser: argparse.ArgumentParser, name: str) -> str | None:
     return next((choice.help for choice in subparsers._choices_actions if choice.dest == name), None)
 
 
-def test_cli_has_exactly_19_subcommands():
+def test_cli_has_exactly_18_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == SUBCOMMANDS
-    assert len(subcommands) == 19
+    assert len(subcommands) == 18
 
 
-@pytest.mark.parametrize("removed", ["hparam-launch", "progress", "hparam-stop", "infer-stop", "preset-stop"])
+@pytest.mark.parametrize(
+    "removed", ["hparam-launch", "progress", "hparam-stop", "infer-stop", "preset-stop", "hparam-monitor"]
+)
 def test_removed_subcommands_are_unknown(removed: str, capsys):
-    # hparam-run-queue owns hparam launch, the monitors own progress, and run-stop owns every stop: no aliases.
+    # hparam-run-queue owns hparam launch, experiment-monitor owns observation, and run-stop owns every stop:
+    # no aliases.
     parser, subcommands = _parser_contract()
 
     assert removed not in subcommands
@@ -172,7 +173,7 @@ def test_experiment_commands_reject_the_removed_remote_option(command: str):
 
 
 def test_cli_reports_expected_errors_as_one_line_and_exit_one(tmp_path: Path, capsys):
-    assert cli.main(["hparam-monitor", "--run-dir", str(tmp_path)]) == 1
+    assert cli.main(["hparam-run-queue", "--plan-dir", str(tmp_path)]) == 1
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -463,23 +464,18 @@ def test_hparam_run_queue_cli_contract():
         parser.parse_args(["hparam-run-queue", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
 
 
-def test_hparam_run_queue_reports_execute_and_lifecycle_counts(tmp_path: Path, monkeypatch, capsys):
-    status = tmp_path / "run_status.tsv"
-    write_rows(
-        status,
-        [
-            {"step_id": "tune", "run_id": "run-001", "status": "completed"},
-            {"step_id": "tune", "run_id": "run-002", "status": "failed"},
-        ],
-    )
-    monkeypatch.setattr(cli, "run_hparam_queue", lambda *_args, **_kwargs: status)
+def test_hparam_run_queue_reports_execute_and_lifecycle_counts(monkeypatch, capsys):
+    rows = [
+        {"step_id": "tune", "run_id": "run-001", "status": "completed"},
+        {"step_id": "tune", "run_id": "run-002", "status": "failed"},
+    ]
+    monkeypatch.setattr(cli, "run_hparam_queue", lambda *_args, **_kwargs: rows)
     monkeypatch.setattr(cli, "start_hparam_queue_runner", lambda *_args, **_kwargs: pytest.fail("no detached runner"))
 
     assert cli.main(["hparam-run-queue", "--plan-dir", "plan-dir", "--execute", "--foreground"]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "Mode: execute (state changes enabled)",
         "Lifecycle states: completed=1, failed=1",
-        f"Wrote {status}",
     ]
 
 
@@ -503,13 +499,12 @@ def test_hparam_run_queue_execute_reports_the_detached_runner(tmp_path: Path, mo
 
 
 @pytest.mark.parametrize("execute", [False, True], ids=["dry-run", "slurm-execute"])
-def test_hparam_run_queue_runs_in_process_without_a_detached_runner(tmp_path: Path, monkeypatch, capsys, execute: bool):
-    status = tmp_path / "run_status.tsv"
-    write_rows(status, [{"step_id": "tune", "run_id": "run-001", "status": "planned"}])
+def test_hparam_run_queue_runs_in_process_without_a_detached_runner(monkeypatch, capsys, execute: bool):
+    rows = [{"step_id": "tune", "run_id": "run-001", "status": "planned"}]
     queue_calls = []
     start_calls = []
     monkeypatch.setattr(
-        cli, "run_hparam_queue", lambda plan_dir, *, dry_run, poll_seconds: queue_calls.append(dry_run) or status
+        cli, "run_hparam_queue", lambda plan_dir, *, dry_run, poll_seconds: queue_calls.append(dry_run) or rows
     )
     # start_hparam_queue_runner returns None for a Slurm plan, whose --execute is one submit pass in this process.
     monkeypatch.setattr(cli, "start_hparam_queue_runner", lambda *_args, **_kwargs: start_calls.append("start") or None)
@@ -518,120 +513,59 @@ def test_hparam_run_queue_runs_in_process_without_a_detached_runner(tmp_path: Pa
 
     assert queue_calls == [not execute]
     assert start_calls == (["start"] if execute else [])
-    assert capsys.readouterr().out.splitlines()[0] == (
-        "Mode: execute (state changes enabled)" if execute else "Mode: dry-run (no launch attempted)"
-    )
-
-
-def test_hparam_monitor_cli_contract(tmp_path: Path, monkeypatch):
-    parser, subcommands = _parser_contract()
-    actions = _actions(subcommands["hparam-monitor"])
-    default_argv = ["hparam-monitor", "--run-dir", "run-dir"]
-    argv = [
-        "hparam-monitor",
-        "--run-dir",
-        "run-dir",
-        "--once",
-        "--health",
-        "--include-log-tail",
-        "--poll-seconds",
-        "17",
+    assert capsys.readouterr().out.splitlines() == [
+        "Mode: execute (state changes enabled)" if execute else "Mode: dry-run (no launch attempted)",
+        "Lifecycle states: planned=1",
     ]
-    defaults = parser.parse_args(default_argv)
-    args = parser.parse_args(argv)
-    status = tmp_path / "run_status.tsv"
-    calls = []
 
-    def monitor(run_dir, *, once, health, poll_seconds):
-        calls.append((run_dir, once, health, poll_seconds))
-        return status
 
-    monkeypatch.setattr(cli, "monitor_hparam_runs", monitor)
+def test_experiment_monitor_cli_contract():
+    parser, subcommands = _parser_contract()
+    actions = _actions(subcommands["experiment-monitor"])
+    args = parser.parse_args(["experiment-monitor", "--run-dir", "experiment"])
+    summary = _subcommand_help(parser, "experiment-monitor")
 
     assert {name for name, action in actions.items() if action.required} == {"run_dir"}
-    assert defaults.once is False
-    assert defaults.health is False
-    assert defaults.include_log_tail is False
-    assert defaults.poll_seconds == 60
-    assert args.include_log_tail is True
-    assert cli.main(default_argv) == 0
-    assert cli.main(argv) == 0
-    assert calls == [
-        ("run-dir", False, False, 60),
-        ("run-dir", True, True, 17),
-    ]
+    # One poll per call: the removed hparam-monitor loop and its opt-in flags do not reappear here.
+    assert set(actions) - {"help"} == {"run_dir", "json"}
+    assert args.json is False
+    assert summary is not None
+    assert "Never launches runs or starts a runner." in summary
 
 
-def test_hparam_monitor_requires_opt_in_for_raw_log_tail(tmp_path: Path, monkeypatch, capsys):
-    status = tmp_path / "run_status.tsv"
-    write_rows(
-        status,
-        [
-            {
-                "step_id": "tune",
-                "run_id": "run-001",
-                "status": "failed",
-                "scheduler_reason": "NonZeroExitCode",
-                "log_path": "/logs/run-001.log",
-                "log_tail": "rank 2: Traceback\nrank 2: CUDA out of memory",
-            },
-            {"step_id": "tune", "run_id": "run-002", "status": "completed"},
+def test_experiment_monitor_prints_failure_evidence_without_raw_log_tail(monkeypatch, capsys):
+    failed = {
+        "step_id": "tune",
+        "run_id": "run-001",
+        "status": "failed",
+        "scheduler_reason": "NonZeroExitCode",
+        "log_path": "/logs/run-001.log",
+        "log_tail": "rank 2: Traceback\nrank 2: CUDA out of memory",
+    }
+    result = {
+        "run_dir": "experiment",
+        "runs": [failed, {"step_id": "tune", "run_id": "run-002", "status": "completed"}],
+        "queue_runners": [
+            {"plan_dir": "experiment/plans/tune", "active": False, "pid": None, "log_path": "queue_runner.log"}
         ],
-    )
-    monkeypatch.setattr(cli, "monitor_hparam_runs", lambda *_args, **_kwargs: status)
+        "report": "experiment/reports/monitor.md",
+    }
+    monkeypatch.setattr(cli, "monitor_experiment", lambda *_args, **_kwargs: result)
 
-    assert cli.main(["hparam-monitor", "--run-dir", "run-dir", "--once", "--health"]) == 0
+    assert cli.main(["experiment-monitor", "--run-dir", "experiment"]) == 0
     assert capsys.readouterr().out.splitlines() == [
+        "Queue runner experiment/plans/tune: not active; log=queue_runner.log",
         "Lifecycle states: completed=1, failed=1",
-        "Queue runner: not active; log=run-dir/queue_runner.log",
         "Failure evidence:",
         "- tune / run-001: status=failed; scheduler reason=NonZeroExitCode; log=/logs/run-001.log",
-        f"Wrote {status}",
+        "Wrote experiment/reports/monitor.md",
     ]
 
-    assert cli.main(["hparam-monitor", "--run-dir", "run-dir", "--once", "--health", "--include-log-tail"]) == 0
-    assert capsys.readouterr().out.splitlines() == [
-        "Lifecycle states: completed=1, failed=1",
-        "Queue runner: not active; log=run-dir/queue_runner.log",
-        "Failure evidence:",
-        "- tune / run-001: status=failed; scheduler reason=NonZeroExitCode; log=/logs/run-001.log",
-        "  rank 2: Traceback",
-        "  rank 2: CUDA out of memory",
-        f"Wrote {status}",
-    ]
-
-
-@pytest.mark.parametrize("runner", ["active", "not-active", "slurm"])
-def test_hparam_monitor_reports_queue_runner_liveness_from_the_lock_probe(
-    tmp_path: Path, monkeypatch, capsys, runner: str
-):
-    status = tmp_path / "run_status.tsv"
-    row = {"step_id": "tune", "run_id": "run-001", "status": "running"}
-    if runner == "slurm":
-        row["scheduler_type"] = "slurm"
-    write_rows(status, [row])
-    monkeypatch.setattr(cli, "monitor_hparam_runs", lambda *_args, **_kwargs: status)
-    monkeypatch.setattr(cli, "start_hparam_queue_runner", lambda *_args, **_kwargs: pytest.fail("no runner start"))
-    log_path = tmp_path / "queue_runner.log"
-
-    if runner == "active":
-        with managed_scheduler.queue_runner_lock(tmp_path, record_pid=True):
-            assert cli.main(["hparam-monitor", "--run-dir", str(tmp_path), "--once"]) == 0
-    else:
-        assert cli.main(["hparam-monitor", "--run-dir", str(tmp_path), "--once"]) == 0
-
-    runner_lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("Queue runner")]
-    assert (
-        runner_lines
-        == {
-            "active": [f"Queue runner: active; pid={os.getpid()}; log={log_path}"],
-            "not-active": [f"Queue runner: not active; log={log_path}"],
-            "slurm": [],
-        }[runner]
-    )
-    # The probe never creates the lock file or a runner log.
-    assert (tmp_path / "queue_runner.lock").exists() is (runner == "active")
-    assert not log_path.exists()
+    # The raw tail may contain sensitive data, so only the structured --json result carries it.
+    assert cli.main(["experiment-monitor", "--run-dir", "experiment", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["runs"][0]["log_tail"] == failed["log_tail"]
+    assert payload["queue_runners"] == result["queue_runners"]
 
 
 def test_preset_launch_cli_required_arguments_and_launch_default():

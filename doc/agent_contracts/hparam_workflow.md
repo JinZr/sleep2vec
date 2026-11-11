@@ -243,11 +243,10 @@ active blockers from other plans sharing the relevant GPU
 pool, then commits their status transitions. The full queue fails if a
 current-plan run or relevant cross-plan capacity blocker is `missing_pid`.
 A queue with no eligible slot does not probe the execution snapshot.
-`hparam-monitor` never starts pending work: by default it rereads and observes
-the current plan every 60 seconds until terminal; `--poll-seconds` changes the
-interval and `--once` performs one round. `--health` adds progress evidence.
-See [workspace command side effects](experiment_workspace.md#lifecycle-entrypoints)
-for observation writes and explicit raw-log display.
+Each queue round is one launch pass: it observes the plan's runs under the run
+lock, commits their transitions, then fills capacity; the queue has no separate
+monitor step. To observe without launching, run `experiment-monitor` on the
+workspace; see [workspace command side effects](experiment_workspace.md#lifecycle-entrypoints).
 
 #### Direct queue runner
 
@@ -263,15 +262,15 @@ and is distinct from, the workspace run lock. Queue errors end the runner and
 land in the log; rerun `--execute` after inspecting it. `--foreground` runs the
 same loop in the calling process under the same lock. A Slurm plan's
 `--execute` submits every launchable run once and returns; it takes no runner
-lock. `hparam-monitor` and `experiment-monitor` report runner liveness from a
+lock. `experiment-monitor` reports runner liveness from a
 non-blocking shared-lock probe of `queue_runner.lock`, with the recorded PID
-and log path, and never start a runner; `experiment-status` advises
+and log path, and never starts a runner; `experiment-status` advises
 `hparam-run-queue` only for a plan with launchable runs and no live runner.
 
 `run-stop --run-id <id>` with a non-empty reason can cancel a canonical `planned` or
 `pending` run before any execution identity is bound. It rereads the canonical
 row under the same lock as launch, records `stopped`, the reason, and stop time,
-then updates the existing projections and `run_stopped` event. This applies to
+then updates the plan's `launch_manifest.tsv` projection and records the `run_stopped` event. This applies to
 direct plans without process or scheduler probes. A Slurm plan first looks
 the run's job name up in `squeue`, so a job submitted outside the canonical row
 is still cancelled; see [stopping and lost runs](run_manifest.md#stopping-and-lost-runs).

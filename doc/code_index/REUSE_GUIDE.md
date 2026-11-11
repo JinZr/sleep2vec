@@ -68,7 +68,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Managed scheduler lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py) with Slurm primitives in [`agent_tools/slurm.py`](../../agent_tools/slurm.py); one `squeue --me` snapshot serves a whole submission pass or monitor round; snapshot hooks distinguish missing from empty snapshots and request writes only for present snapshots | hparam-local capacity, scheduler commands, observation, adoption, snapshot, start, or stop implementations |
 | GPU pool partitioning | `gpu_group_plan` in [`agent_tools/gpu_rules.py`](../../agent_tools/gpu_rules.py); live capacity and process placement stay in `managed_scheduler` | scheduler-, planner-, or adapter-local device arithmetic |
 | Registered plan reads | `is_registered_blocked_plan` for exact nested blocked-plan envelopes and strict plan-owned artifacts in root-resident workspaces, `read_registered_plan` for materialized control bundles reusing the static recipe structure owner, and `read_hparam_plan` for stronger local launch-time validation in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) | status- or launcher-specific parsing |
-| Public hparam operations | [`agent_tools/hparam_runtime.py`](../../agent_tools/hparam_runtime.py) for launch, queue, monitor, and stop; [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py) for selection | direct private cross-module imports |
+| Public hparam operations | [`agent_tools/hparam_runtime.py`](../../agent_tools/hparam_runtime.py) for launch, queue, and stop; [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py) for selection; observation is `experiments.monitor_experiment` | direct private cross-module imports or a plan-local monitor |
 | Checkpoint evidence validation | `validate_checkpoint_evidence_rows` in [`agent_tools/experiment_tracking.py`](../../agent_tools/experiment_tracking.py) for finalization and hparam selection | status-, selection-, or CLI-local checkpoint checks |
 | Public experiment operations | [`agent_tools/experiments.py`](../../agent_tools/experiments.py) facade, including canonical-only `experiment_status`, with I/O/tracking owners behind it | skills or CLI handlers |
 | Index/config/preset summaries | [`agent_tools/domain/`](../../agent_tools/domain/) through stable top-level facades | shell parsing templates |
@@ -196,7 +196,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   owns their interpretation.
   Drive hparam launch tests through `launch_hparam_runs(..., hooks=SchedulerHooks(...))`, which replaces
   only the execution-snapshot, command, and process-start effects, not private launch helpers; entries
-  without hooks (queue, monitor, stop) patch the public `managed_scheduler.start_process`.
+  without hooks (queue, `experiment-monitor`, stop) patch the public `managed_scheduler.start_process`.
 - Reuse `runtime-sync` for a clean in-place `origin/main` fast-forward and the shared runtime lock for
   launch/update coordination. Keep the planned commit in frozen artifacts and record the actual start commit
   in the canonical run manifest; do not clone or rewrite a published plan to follow HEAD. Its remote path sends

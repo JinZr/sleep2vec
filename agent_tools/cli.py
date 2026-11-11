@@ -1,4 +1,4 @@
-"""The ``agent_tools`` command-line surface: 19 subcommands.
+"""The ``agent_tools`` command-line surface: 18 subcommands.
 
 It forwards the domain commands (``config-summary``, ``index-summary``,
 ``preset-summary``) while the rest stay task-agnostic.
@@ -28,7 +28,6 @@ from .configs import config_summary
 from .domain.index_csv import index_summary
 from .domain.presets import preset_summary
 from .experiment_tracking import format_experiment_status, format_queue_runner
-from .experiment_workspace import scheduler_type
 from .experiments import (
     append_experiment_note,
     experiment_status,
@@ -40,10 +39,9 @@ from .experiments import (
     stop_infer_run,
     stop_preset_run,
 )
-from .hparam_runtime import monitor_hparam_runs, run_hparam_queue, start_hparam_queue_runner, stop_hparam_run
+from .hparam_runtime import run_hparam_queue, start_hparam_queue_runner, stop_hparam_run
 from .hparam_selection import select_hparam_candidates
-from .managed_scheduler import queue_runner_liveness
-from .manifests import read_json, read_rows
+from .manifests import read_json
 from .markdown import report_text
 from .models import json_ready
 from .plans import (
@@ -300,23 +298,6 @@ def _add_launch_commands(sub: argparse._SubParsersAction) -> None:
     run_queue.add_argument("--poll-seconds", type=float, default=60, help="Seconds to wait between queue polls.")
     run_queue.set_defaults(func=_cmd_hparam_run_queue)
 
-    monitor = _command(
-        sub,
-        "hparam-monitor",
-        "Poll a hyper-parameter run directory and report lifecycle states and, for a direct plan, "
-        "queue-runner liveness. Never launches runs or starts a runner.",
-    )
-    monitor.add_argument("--run-dir", required=True, help="Run directory holding run_manifest.tsv.")
-    monitor.add_argument("--once", action="store_true", help="Poll a single round and exit instead of looping.")
-    monitor.add_argument("--health", action="store_true", help="Include scheduler and process health probes.")
-    monitor.add_argument(
-        "--include-log-tail",
-        action="store_true",
-        help="Print recorded raw log tails; they may contain sensitive data.",
-    )
-    monitor.add_argument("--poll-seconds", type=float, default=60, help="Seconds to wait between polls.")
-    monitor.set_defaults(func=_cmd_hparam_monitor)
-
 
 def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
     """Register the experiment lifecycle commands."""
@@ -358,15 +339,15 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
     experiment_monitor = _command(
         sub,
         "experiment-monitor",
-        "Observe an experiment's runs, commit their status and write reports/monitor.md; report queue-runner "
-        "liveness. "
+        "Observe an experiment's runs once with health probes, commit their status and write reports/monitor.md; "
+        "report lifecycle counts, failure evidence and queue-runner liveness. Rerun it to poll again. "
         "Never launches runs or starts a runner.",
     )
     experiment_monitor.add_argument("--run-dir", required=True, help="Experiment workspace root to monitor.")
     experiment_monitor.add_argument(
         "--json",
         action="store_true",
-        help="Emit the monitor result as JSON instead of the written report path.",
+        help="Emit the monitor result as JSON, including each run's raw log_tail, instead of the text summary.",
     )
     experiment_monitor.set_defaults(func=_cmd_experiment_monitor)
 
@@ -546,56 +527,20 @@ def _cmd_hparam_run_queue(args: argparse.Namespace) -> int:
             print("Mode: execute (detached queue runner started)")
             print(f"Queue runner: started; pid={runner.pid}; log={runner.log_path}")
             return 0
-    status = run_hparam_queue(
+    rows = run_hparam_queue(
         args.plan_dir,
         dry_run=not args.execute,
         poll_seconds=args.poll_seconds,
     )
-    rows = read_rows(status, require_managed_identity=True)
-    counts = Counter(str(row.get("status") or "unknown") for row in rows)
     mode = "execute (state changes enabled)" if args.execute else "dry-run (no launch attempted)"
-    states = ", ".join(f"{run_status}={count}" for run_status, count in sorted(counts.items())) or "none"
     print(f"Mode: {mode}")
-    print(f"Lifecycle states: {states}")
-    print(f"Wrote {status}")
+    print(f"Lifecycle states: {_lifecycle_states(rows)}")
     return 0
 
 
-def _cmd_hparam_monitor(args: argparse.Namespace) -> int:
-    status = monitor_hparam_runs(
-        args.run_dir,
-        once=args.once,
-        health=args.health,
-        poll_seconds=args.poll_seconds,
-    )
-    rows = read_rows(status, require_managed_identity=True)
-    counts = Counter(str(row.get("status") or "unknown") for row in rows)
-    states = ", ".join(f"{status}={count}" for status, count in sorted(counts.items())) or "none"
-    print(f"Lifecycle states: {states}")
-    if rows and all(scheduler_type(row) == "direct" for row in rows):
-        print(f"Queue runner: {format_queue_runner(queue_runner_liveness(Path(args.run_dir)))}")
-    evidence_rows = [
-        row
-        for row in rows
-        if row.get("status") in {"failed", "missing_pid", "lost"} or row.get("process_identity_error")
-    ]
-    if evidence_rows:
-        print("Failure evidence:")
-    for row in evidence_rows:
-        details = [f"status={row.get('status') or 'unknown'}"]
-        for label, field in (
-            ("scheduler reason", "scheduler_reason"),
-            ("process identity error", "process_identity_error"),
-            ("log", "log_path"),
-        ):
-            if row.get(field):
-                details.append(f"{label}={row[field]}")
-        print(f"- {row['step_id']} / {row['run_id']}: {'; '.join(details)}")
-        if args.include_log_tail:
-            for line in str(row.get("log_tail") or "").splitlines():
-                print(f"  {line}")
-    print(f"Wrote {status}")
-    return 0
+def _lifecycle_states(rows: list[dict[str, str]]) -> str:
+    counts = Counter(row.get("status") or "unknown" for row in rows)
+    return ", ".join(f"{status}={count}" for status, count in sorted(counts.items())) or "none"
 
 
 def _cmd_experiment_init(args: argparse.Namespace) -> int:
@@ -623,10 +568,29 @@ def _cmd_experiment_monitor(args: argparse.Namespace) -> int:
     result = monitor_experiment(args.run_dir)
     if args.json:
         _emit(result, as_json=True)
-    else:
-        for runner in result["queue_runners"]:
-            print(f"Queue runner {runner['plan_dir']}: {format_queue_runner(runner)}")
-        print(f"Wrote {result['report']}")
+        return 0
+    for runner in result["queue_runners"]:
+        print(f"Queue runner {runner['plan_dir']}: {format_queue_runner(runner)}")
+    print(f"Lifecycle states: {_lifecycle_states(result['runs'])}")
+    # Structured evidence only; the raw log_tail stays in --json because it may contain sensitive data.
+    evidence_rows = [
+        row
+        for row in result["runs"]
+        if row.get("status") in {"failed", "missing_pid", "lost"} or row.get("process_identity_error")
+    ]
+    if evidence_rows:
+        print("Failure evidence:")
+    for row in evidence_rows:
+        details = [f"status={row.get('status') or 'unknown'}"]
+        for label, field in (
+            ("scheduler reason", "scheduler_reason"),
+            ("process identity error", "process_identity_error"),
+            ("log", "log_path"),
+        ):
+            if row.get(field):
+                details.append(f"{label}={row[field]}")
+        print(f"- {row['step_id']} / {row['run_id']}: {'; '.join(details)}")
+    print(f"Wrote {result['report']}")
     return 0
 
 

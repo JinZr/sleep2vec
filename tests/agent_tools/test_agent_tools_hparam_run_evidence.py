@@ -4,20 +4,13 @@ import json
 from pathlib import Path
 import subprocess
 
-from agent_tool_test_helpers import FakeLauncher, run_cli
+from agent_tool_test_helpers import FakeLauncher
 import pytest
-from test_agent_tools_hparam_runtime import (
-    _hparam_recipe,
-    _process_identity,
-    _read_table,
-    _write_process_identity,
-    _write_runtime_rows,
-)
+from test_agent_tools_hparam_runtime import _process_identity, _read_table, _write_process_identity, _write_runtime_rows
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 
-from agent_tools import hparam_runtime, managed_scheduler, manifests, run_evidence
+from agent_tools import experiments, hparam_runtime, managed_scheduler, manifests, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
-from agent_tools.hparam_runtime import monitor_hparam_runs
 
 
 @pytest.mark.parametrize(
@@ -70,7 +63,7 @@ def test_find_run_manifest_distinguishes_missing_and_valid_regular_file(tmp_path
     assert run_evidence.find_run_manifest(run) == manifest
 
 
-def test_hparam_monitor_handles_running_missing_and_failed_rows(tmp_path: Path, monkeypatch):
+def test_experiment_monitor_handles_running_missing_and_failed_hparam_rows(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
     _write_process_identity(pid_path, 101)
     missing_pid = tmp_path / "missing.pid"
@@ -105,9 +98,9 @@ def test_hparam_monitor_handles_running_missing_and_failed_rows(tmp_path: Path, 
         lambda _row, identity: identity["pid"] == 101,
     )
 
-    monitor_hparam_runs(tmp_path)
+    experiments.monitor_experiment(tmp_path)
 
-    status = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_status.tsv")}
+    status = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
     assert status["running"] == "running"
     assert status["missing"] == "missing_pid"
     assert status["failed"] == "failed"
@@ -118,61 +111,7 @@ def test_hparam_monitor_handles_running_missing_and_failed_rows(tmp_path: Path, 
     assert {event["run_id"] for event in status_events} == {"running", "missing", "failed"}
 
 
-def test_hparam_monitor_polls_until_the_current_plan_is_terminal(tmp_path: Path, monkeypatch):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    statuses = iter(["running", "finished"])
-    observed = []
-    sleeps = []
-
-    def observe(_root, prior, *_args, **_kwargs):
-        observed.append((prior["status"], prior.get("log_tail", "")))
-        return {**prior, "status": next(statuses)}
-
-    def sleep(seconds):
-        sleeps.append(seconds)
-        rows = _read_table(tmp_path / "run_manifest.tsv")
-        rows[0]["log_tail"] = "external-update"
-        manifests.write_rows(tmp_path / "run_manifest.tsv", rows)
-
-    monkeypatch.setattr(hparam_runtime.scheduler, "observe_run", observe)
-    monkeypatch.setattr(hparam_runtime.time, "sleep", sleep)
-    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
-    monkeypatch.setattr(hparam_runtime.scheduler.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
-
-    out = monitor_hparam_runs(tmp_path, once=False, poll_seconds=60)
-
-    assert out == tmp_path / "run_status.tsv"
-    assert observed == [("running", ""), ("running", "external-update")]
-    assert sleeps == [60]
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "finished"
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "finished"
-
-
-def test_hparam_monitor_does_not_overwrite_workspace_terminal_status(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
-    rows = _read_table(plan_dir / "launch_manifest.tsv")
-    rows[0]["status"] = "launched"
-    manifests.write_rows(plan_dir / "launch_manifest.tsv", rows)
-    manifests.write_rows(plan_dir / "run_status.tsv", rows)
-    merge_run_manifest(
-        tmp_path,
-        [{"step_id": rows[0]["step_id"], "run_id": rows[0]["run_id"], "status": "failed"}],
-    )
-    event_count = len((tmp_path / "events.jsonl").read_text().splitlines())
-
-    hparam_runtime.monitor_hparam_runs(plan_dir)
-
-    local_rows = _read_table(plan_dir / "run_status.tsv")
-    workspace_rows = _read_table(tmp_path / "run_manifest.tsv")
-    assert local_rows[0]["status"] == "failed"
-    assert workspace_rows[0]["status"] == "failed"
-    assert len((tmp_path / "events.jsonl").read_text().splitlines()) == event_count
-
-
-def test_hparam_monitor_mirrors_and_reports_the_status_committed_by_the_canonical_owner(tmp_path: Path, monkeypatch):
+def test_experiment_monitor_reports_the_status_committed_by_the_canonical_owner(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     merge_run_manifest(tmp_path, [{"step_id": "train-model", "run_id": "run-000", "status": "running"}])
     real_merge = merge_run_manifest
@@ -181,9 +120,9 @@ def test_hparam_monitor_mirrors_and_reports_the_status_committed_by_the_canonica
         real_merge(root, [{"step_id": "train-model", "run_id": "run-000", "status": "failed"}])
         return real_merge(root, rows)
 
-    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", merge_after_wandb_update)
+    monkeypatch.setattr(experiments, "merge_run_manifest", merge_after_wandb_update)
     monkeypatch.setattr(
-        hparam_runtime.evidence,
+        run_evidence,
         "status_row",
         lambda _root, observation, _prior, *, script_commits_terminal_status, health: {
             **observation,
@@ -191,17 +130,17 @@ def test_hparam_monitor_mirrors_and_reports_the_status_committed_by_the_canonica
         },
     )
 
-    hparam_runtime.monitor_hparam_runs(tmp_path)
+    result = experiments.monitor_experiment(tmp_path)
 
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "failed"
+    assert result["runs"][0]["status"] == "failed"
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     status_event = next(event for event in events if event["event_type"] == "run_status_changed")
     assert status_event["from"] == "running"
     assert status_event["to"] == "failed"
 
 
-def test_hparam_monitor_marks_clean_exit_finished_without_launch_manifest(tmp_path: Path, monkeypatch):
+def test_experiment_monitor_marks_clean_hparam_exit_completed_once(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
         tmp_path,
         [{"run_id": "run-000", "status": "running", **_process_identity()}],
@@ -213,32 +152,15 @@ def test_hparam_monitor_marks_clean_exit_finished_without_launch_manifest(tmp_pa
     manifests.write_rows(tmp_path / "run_manifest.tsv", workspace_rows)
     (tmp_path / "launch_manifest.tsv").unlink()
 
-    hparam_runtime.monitor_hparam_runs(tmp_path)
-    hparam_runtime.monitor_hparam_runs(tmp_path)
+    experiments.monitor_experiment(tmp_path)
+    experiments.monitor_experiment(tmp_path)
 
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "finished"
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "finished"
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "completed"
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_status_changed") == 1
 
 
-@pytest.mark.parametrize("poll_seconds", [0, -1, float("nan"), float("inf")])
-def test_hparam_monitor_rejects_invalid_poll_interval_before_writing(
-    tmp_path: Path,
-    monkeypatch,
-    poll_seconds: float,
-):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("invalid interval must not sleep"))
-
-    with pytest.raises(ValueError, match="poll_seconds must be positive"):
-        monitor_hparam_runs(tmp_path, once=False, poll_seconds=poll_seconds)
-
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-def test_hparam_monitor_keeps_failed_status_after_failure_evidence_disappears(tmp_path: Path, monkeypatch):
+def test_experiment_monitor_keeps_failed_status_after_failure_evidence_disappears(tmp_path: Path, monkeypatch):
     dead_pid = tmp_path / "dead.pid"
     _write_process_identity(dead_pid)
     fail_log = tmp_path / "fail.log"
@@ -258,16 +180,16 @@ def test_hparam_monitor_keeps_failed_status_after_failure_evidence_disappears(tm
     )
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
 
-    hparam_runtime.monitor_hparam_runs(tmp_path)
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "failed"
+    experiments.monitor_experiment(tmp_path)
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
     fail_log.write_text("")
 
-    hparam_runtime.monitor_hparam_runs(tmp_path)
+    experiments.monitor_experiment(tmp_path)
 
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "failed"
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
 
 
-def test_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch):
+def test_experiment_monitor_never_launches_pending_hparam_runs(tmp_path: Path, monkeypatch):
     dead_pid = tmp_path / "dead.pid"
     _write_process_identity(dead_pid)
     _write_runtime_rows(
@@ -292,67 +214,16 @@ def test_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch)
 
     monkeypatch.setattr(managed_scheduler, "start_process", fake_start)
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
-    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("once monitor must not sleep"))
     monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
     monkeypatch.setattr(hparam_runtime.scheduler.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
 
-    monitor_hparam_runs(tmp_path, once=True, poll_seconds=60)
+    experiments.monitor_experiment(tmp_path)
 
-    status = {row["run_id"]: row for row in _read_table(tmp_path / "run_status.tsv")}
-    manifest = {row["run_id"]: row for row in _read_table(tmp_path / "launch_manifest.tsv")}
+    status = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
     assert started == []
-    assert status["run-000"]["status"] == "finished"
+    assert status["run-000"]["status"] == "completed"
     assert status["run-001"]["status"] == "pending"
-    assert manifest["run-001"]["status"] == "pending"
-    assert not manifest["run-001"]["launched_at"]
-
-
-def test_continuous_hparam_monitor_never_launches_pending_runs(tmp_path: Path, monkeypatch):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "pending"}])
-
-    class StopPolling(Exception):
-        pass
-
-    def stop_polling(seconds):
-        assert seconds == 60
-        raise StopPolling
-
-    monkeypatch.setattr(hparam_runtime.time, "sleep", stop_polling)
-    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args, **_kwargs: pytest.fail("no start"))
-    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
-    monkeypatch.setattr(hparam_runtime.scheduler.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no submit"))
-
-    with pytest.raises(StopPolling):
-        monitor_hparam_runs(tmp_path, once=False, poll_seconds=60)
-
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "pending"
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "pending"
-    launch_row = _read_table(tmp_path / "launch_manifest.tsv")[0]
-    assert launch_row["status"] == "pending"
-    assert not launch_row["launched_at"]
-
-
-def test_hparam_monitor_health_is_opt_in(tmp_path: Path, monkeypatch):
-    pid_path = tmp_path / "running.pid"
-    _write_process_identity(pid_path)
-    _write_runtime_rows(
-        tmp_path,
-        [
-            {
-                "run_id": "running",
-                "version": "v1",
-                "pid_path": str(pid_path),
-                "status": "launched",
-                **_process_identity(),
-            }
-        ],
-    )
-    monkeypatch.setattr(run_evidence, "process_identity_running", lambda _row, _identity: True)
-
-    monitor_hparam_runs(tmp_path)
-
-    row = _read_table(tmp_path / "run_status.tsv")[0]
-    assert "health_status" not in row
+    assert not status["run-001"]["launched_at"]
 
 
 def test_hparam_status_preserves_terminal_state_with_live_pid(tmp_path: Path, monkeypatch):
@@ -390,7 +261,7 @@ def test_hparam_launch_does_not_start_when_local_pid_is_corrupt(tmp_path: Path, 
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "missing_pid"
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "missing_pid"
 
 
 @pytest.mark.parametrize("status", ["planned", "pending"])
@@ -414,7 +285,6 @@ def test_hparam_launch_recovers_after_transient_local_pid_read_error(tmp_path: P
         hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == status
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == status
 
     read_fails["value"] = False
@@ -422,12 +292,11 @@ def test_hparam_launch_recovers_after_transient_local_pid_read_error(tmp_path: P
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
     assert len(launcher.starts) == 1
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "launched"
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
 
 
 @pytest.mark.parametrize("failure", ["directory", "invalid_utf8", "os_error", "dangling_symlink"])
-def test_hparam_monitor_preserves_nonterminal_status_for_unreadable_local_pid(
+def test_experiment_monitor_preserves_nonterminal_status_for_unreadable_local_pid(
     tmp_path: Path, monkeypatch, failure: str
 ):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
@@ -449,9 +318,8 @@ def test_hparam_monitor_preserves_nonterminal_status_for_unreadable_local_pid(
 
         monkeypatch.setattr(Path, "read_text", fail_pid_read)
 
-    hparam_runtime.monitor_hparam_runs(tmp_path)
+    experiments.monitor_experiment(tmp_path)
 
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "running"
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
 
 
@@ -491,7 +359,7 @@ def test_gpu_summary_preserves_process_group_probe_uncertainty(monkeypatch):
     assert run_evidence.gpu_summary({"gpus": "0", "process_group_id": 123}, 123) is None
 
 
-def test_hparam_monitor_health_classifies_compute_active(tmp_path: Path, monkeypatch):
+def test_experiment_monitor_health_classifies_compute_active(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
     _write_process_identity(pid_path)
     _write_runtime_rows(
@@ -512,14 +380,12 @@ def test_hparam_monitor_health_classifies_compute_active(tmp_path: Path, monkeyp
     monkeypatch.setattr(run_evidence, "log_age_seconds", lambda _path: None)
     monkeypatch.setattr(run_evidence, "read_run_progress", lambda run_dir, row: {"status": "missing"})
 
-    monitor_hparam_runs(tmp_path, health=True)
-
-    row = _read_table(tmp_path / "run_status.tsv")[0]
+    row = experiments.monitor_experiment(tmp_path)["runs"][0]
     assert row["health_status"] == "compute_active"
     assert row["gpu_summary"] == "123, GPU-1, 1024"
 
 
-def test_hparam_monitor_health_classifies_data_loading_from_io_delta(tmp_path: Path, monkeypatch):
+def test_experiment_monitor_health_classifies_data_loading_from_io_delta(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
     _write_process_identity(pid_path)
     rows = _write_runtime_rows(
@@ -535,7 +401,6 @@ def test_hparam_monitor_health_classifies_data_loading_from_io_delta(tmp_path: P
         ],
     )
     rows[0].update({"status": "running", "io_read_bytes": 100, "io_write_bytes": 50, "checkpoint_count": 0})
-    manifests.write_rows(tmp_path / "run_status.tsv", rows)
     merge_run_manifest(
         tmp_path,
         [
@@ -555,14 +420,12 @@ def test_hparam_monitor_health_classifies_data_loading_from_io_delta(tmp_path: P
     monkeypatch.setattr(run_evidence, "log_age_seconds", lambda _path: None)
     monkeypatch.setattr(run_evidence, "read_run_progress", lambda run_dir, row: {"status": "missing"})
 
-    monitor_hparam_runs(tmp_path, health=True)
-
-    row = _read_table(tmp_path / "run_status.tsv")[0]
+    row = experiments.monitor_experiment(tmp_path)["runs"][0]
     assert row["health_status"] == "data_loading"
     assert row["io_read_delta_bytes"] == "150"
 
 
-def test_hparam_monitor_health_classifies_stalled(tmp_path: Path, monkeypatch):
+def test_experiment_monitor_health_classifies_stalled(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
     _write_process_identity(pid_path)
     _write_runtime_rows(
@@ -590,9 +453,7 @@ def test_hparam_monitor_health_classifies_stalled(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(run_evidence, "log_age_seconds", lambda _path: 500)
     monkeypatch.setattr(run_evidence, "read_run_progress", lambda run_dir, row: {"status": "missing"})
 
-    monitor_hparam_runs(tmp_path, health=True)
-
-    status = {row["run_id"]: row["health_status"] for row in _read_table(tmp_path / "run_status.tsv")}
+    status = {row["run_id"]: row["health_status"] for row in experiments.monitor_experiment(tmp_path)["runs"]}
     assert status == {"stalled": "possibly_stalled"}
 
 
@@ -666,7 +527,7 @@ def test_process_identity_rejects_malformed_runtime_commit(tmp_path: Path, runti
         run_evidence.read_process_identity(pid_path)
 
 
-def test_hparam_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypatch):
+def test_experiment_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
     _write_process_identity(pid_path)
     rows = _write_runtime_rows(
@@ -689,7 +550,6 @@ def test_hparam_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypat
             "checkpoint_count": 0,
         }
     )
-    manifests.write_rows(tmp_path / "run_status.tsv", rows)
     merge_run_manifest(
         tmp_path,
         [
@@ -716,9 +576,7 @@ def test_hparam_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypat
         },
     )
 
-    monitor_hparam_runs(tmp_path, health=True)
-
-    row = _read_table(tmp_path / "run_status.tsv")[0]
+    row = experiments.monitor_experiment(tmp_path)["runs"][0]
     assert row["health_status"] == "possibly_stalled"
 
 
