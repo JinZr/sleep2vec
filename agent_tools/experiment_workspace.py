@@ -532,19 +532,18 @@ def commit_step_manifest(
     if not step_id:
         raise ValueError("Incoming step manifest is missing step.id.")
     path = root / "steps" / step_id / "step.yaml"
-    exists = exp_io.path_exists_at(path)
-    current_text = exp_io.read_text_at(path) if exists else ""
-    existing = _validated_step_manifest(current_text, path, step_id) if exists else {}
-    merged = merge_step_manifest(existing, incoming)
-    if merged == existing:
-        return merged, False
-    replacement = yaml.safe_dump(merged, sort_keys=False)
-    _validated_step_manifest(replacement, path, step_id)
-    exp_io.locked_replace(
-        path,
-        replacement,
-        expected_sha256=hashlib.sha256(current_text.encode()).hexdigest() if exists else None,
-    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Planners registering plans for one step merge under the step file's lock, so neither drops the other's plan.
+    with exp_io.blocking_file_lock(exp_io.lock_path_for(path)):
+        exists = exp_io.path_exists_at(path)
+        current_text = exp_io.read_text_at(path) if exists else ""
+        existing = _validated_step_manifest(current_text, path, step_id) if exists else {}
+        merged = merge_step_manifest(existing, incoming)
+        if merged == existing:
+            return merged, False
+        replacement = yaml.safe_dump(merged, sort_keys=False)
+        _validated_step_manifest(replacement, path, step_id)
+        exp_io.atomic_replace(path, replacement)
     return merged, not exists
 
 

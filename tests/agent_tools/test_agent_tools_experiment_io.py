@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -39,22 +38,6 @@ def test_atomic_replace_never_exposes_a_partial_file(tmp_path: Path, monkeypatch
 
     assert target.read_text() == "step_id\trun_id\n"
     assert sorted(path.name for path in tmp_path.iterdir()) == ["run_manifest.tsv"]
-
-
-def test_locked_replace_publishes_complete_text_and_rejects_a_stale_digest(tmp_path: Path):
-    target = tmp_path / "steps" / "train" / "step.yaml"
-
-    experiment_io.locked_replace(target, "first\n")
-    first_sha256 = hashlib.sha256(b"first\n").hexdigest()
-    experiment_io.locked_replace(target, "second\n", expected_sha256=first_sha256)
-
-    assert target.read_text() == "second\n"
-    with pytest.raises(RuntimeError, match="changed before its replacement"):
-        experiment_io.locked_replace(target, "third\n", expected_sha256=first_sha256)
-    assert target.read_text() == "second\n"
-    with pytest.raises(RuntimeError, match="changed before its replacement"):
-        experiment_io.locked_replace(tmp_path / "missing.yaml", "text\n", expected_sha256=first_sha256)
-    assert not (tmp_path / "missing.yaml").exists()
 
 
 def test_locked_append_extends_the_file_under_its_sidecar_lock(tmp_path: Path):

@@ -1028,7 +1028,7 @@ def test_only_experiment_workspace_reads_or_writes_the_canonical_run_manifest():
     assert offenders == []
 
 
-def test_step_manifest_writes_use_one_locked_replace_owner():
+def test_step_manifest_writes_merge_under_the_step_file_lock():
     agent_tools_dir = Path(__file__).parents[2] / "agent_tools"
 
     def function_calls(filename: str, function_name: str) -> set[str]:
@@ -1040,7 +1040,7 @@ def test_step_manifest_writes_use_one_locked_replace_owner():
             if isinstance(node, ast.Call)
         }
 
-    assert {"merge_step_manifest", "locked_replace"} <= function_calls(
+    assert {"blocking_file_lock", "merge_step_manifest", "atomic_replace"} <= function_calls(
         "experiment_workspace.py", "commit_step_manifest"
     )
     assert "commit_step_manifest" in function_calls("experiment_workspace.py", "ensure_experiment_workspace")
@@ -1679,22 +1679,24 @@ def test_concurrent_step_manifest_commits_preserve_both_plans(tmp_path: Path, mo
         "plans": ["/workspace/plan-base"],
     }
     commit_step_manifest(tmp_path, base_payload)
-    barrier = threading.Barrier(2)
+    first_inside = threading.Event()
     real_exists = experiment_io.path_exists_at
-    initial_probes = 0
+    probes = 0
     probe_lock = threading.Lock()
 
-    def synchronized_exists(path):
-        nonlocal initial_probes
+    def slow_first_probe(path):
+        # Hold the first committer between its read and its write while the second one starts.
+        nonlocal probes
         if Path(path).name == "step.yaml":
             with probe_lock:
-                initial_probes += 1
-                should_wait = initial_probes <= 2
-            if should_wait:
-                barrier.wait(timeout=5)
+                probes += 1
+                first = probes == 1
+            if first:
+                first_inside.set()
+                time.sleep(0.3)
         return real_exists(path)
 
-    monkeypatch.setattr(experiment_io, "path_exists_at", synchronized_exists)
+    monkeypatch.setattr(experiment_io, "path_exists_at", slow_first_probe)
     errors = []
 
     def commit(plan: str):
@@ -1713,8 +1715,9 @@ def test_concurrent_step_manifest_commits_preserve_both_plans(tmp_path: Path, mo
             errors.append(exc)
 
     threads = [threading.Thread(target=commit, args=(plan,)) for plan in ("/workspace/plan-a", "/workspace/plan-b")]
-    for thread in threads:
-        thread.start()
+    threads[0].start()
+    assert first_inside.wait(timeout=5)
+    threads[1].start()
     for thread in threads:
         thread.join(timeout=5)
 

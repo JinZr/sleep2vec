@@ -1,10 +1,11 @@
 """Managed file I/O: locked atomic writes and plain reads for workspace files.
 
 Writers publish through a temporary file in the target's directory, fsync and
-``os.replace``, so a reader never sees a half-written file. ``locked_replace``
-and ``locked_append`` serialize writers of one file through a sidecar ``flock``;
-callers that already hold an owning lock (such as the run lock for
-``run_manifest.tsv``) call ``atomic_replace`` directly.
+``os.replace``, so a reader never sees a half-written file. ``locked_append``
+and read-modify-write callers such as the step manifest commit serialize
+writers of one file through its sidecar ``flock``; callers that already hold an
+owning lock (such as the run lock for ``run_manifest.tsv``) call
+``atomic_replace`` directly.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ def blocking_file_lock(path: str | Path) -> Iterator[None]:
 
 
 def lock_path_for(path: str | Path) -> Path:
-    """The sidecar lock that locked_replace and locked_append take for path."""
+    """The sidecar lock that serializes writers of path."""
     target = Path(path)
     return target.with_name(f".{target.name}.lock")
 
@@ -51,22 +52,6 @@ def atomic_replace(path: str | Path, text: str) -> None:
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
-
-
-def locked_replace(path: str | Path, text: str, *, expected_sha256: str | None = None) -> None:
-    """Atomically replace path under its sidecar lock.
-
-    With expected_sha256, the current bytes must exist and hash to it, or this
-    raises RuntimeError without writing: a compare-by-hash guard against lost
-    updates by a writer that read the file earlier."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with blocking_file_lock(lock_path_for(target)):
-        if expected_sha256 is not None:
-            current = target.read_bytes() if target.exists() else None
-            if current is None or hashlib.sha256(current).hexdigest() != expected_sha256:
-                raise RuntimeError(f"Managed file changed before its replacement: {target}")
-        atomic_replace(target, text)
 
 
 def locked_append(path: str | Path, text: str) -> None:

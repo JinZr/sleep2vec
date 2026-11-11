@@ -64,7 +64,7 @@ Experiment workspace:
 
 - `experiments`: the facade for the experiment lifecycle commands.
 - `experiment_workspace`: `run_manifest.tsv`, the only lifecycle owner, with its lock and managed manifests.
-- `experiment_io`: atomic replace, `locked_replace` (optional expected SHA-256) and `locked_append` under a sidecar `flock`, plain reads, and the output-path preflight.
+- `experiment_io`: atomic replace, a sidecar `flock` per file, and `locked_append` under it, plain reads, and the output-path preflight.
 - `research_log`: append-only research notes.
 - `experiment_sources`: checkpoint evidence validation.
 - `experiment_tracking`: status projections, monitor results, and hparam ranking validation.

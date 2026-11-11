@@ -50,7 +50,6 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
         "write_text_at",
         "write_rows_at",
         "atomic_replace",
-        "locked_replace",
         "locked_append",
         "mkdir_experiment_dirs",
     ):
@@ -100,7 +99,6 @@ def test_experiment_status_contract_error_is_zero_write(tmp_path, monkeypatch, c
         "write_text_at",
         "write_rows_at",
         "atomic_replace",
-        "locked_replace",
         "locked_append",
         "mkdir_experiment_dirs",
     ):
