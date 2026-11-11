@@ -48,7 +48,6 @@ Other exceptions are bugs and keep their traceback.
 | Read recorded status or refresh observations? | [Read-only status](experiment_workspace.md#read-only-status-and-advisory-actions) versus [entrypoint effects](experiment_workspace.md#lifecycle-entrypoints) |
 | Why is selection/finalization blocked? | [Selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers), then [finalization](experiment_workspace.md#finalization) |
 | How does the next adaptive round proceed; where may the proposer write? | [Adaptive workflow](hparam_workflow.md#adaptive-workflow) and [proposal handshake](hparam_workflow.md#proposal-handshake) |
-| How do I run a resumable managed evaluation pipeline? | [Pipeline invocation and frozen state](experiment_pipeline.md#invocation-and-frozen-state), then [cohort selection](experiment_pipeline.md#cohort-selection-and-report-only-boundary) when internal cohorts gate candidates. |
 | Where do meaningful observations and decisions go? | [Research log](experiment_workspace.md#research-log) |
 | What runtime-update or heartbeat setup may be carried forward? | [Conditional runtime refresh](experiment_workspace.md#conditional-runtime-refresh-before-initialization), [short heartbeat maintenance](experiment_workspace.md#short-heartbeat-maintenance) |
 
@@ -67,6 +66,5 @@ second lifecycle or authorization source.
 | Managed run identity, canonical state, reducer, commit, projections, and evidence | [run_manifest.md](run_manifest.md) |
 | Diagnostic context bundles | [context_bundle.md](context_bundle.md) |
 | Final and external-test gates | [external_test_locking.md](external_test_locking.md) |
-| Resumable managed evaluation over registered-ranking winners or internally gated candidates | [experiment_pipeline.md](experiment_pipeline.md) |
 
-New runnable plans must follow the recipe and workspace contracts. Run-state consumers must follow the run-manifest contract rather than recovering state from derived artifacts. Multi-job managed evaluation must additionally follow the pipeline contract.
+New runnable plans must follow the recipe and workspace contracts. Run-state consumers must follow the run-manifest contract rather than recovering state from derived artifacts.

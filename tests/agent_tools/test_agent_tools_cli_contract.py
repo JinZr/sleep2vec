@@ -33,7 +33,6 @@ SUBCOMMAND_GROUPS = {
         "experiment-note",
         "experiment-register-step",
         "experiment-finalize",
-        "experiment-run",
         "experiment-wandb-sync",
         "experiment-index-checkpoints",
         "experiment-monitor",
@@ -96,11 +95,11 @@ def _subcommand_help(parser: argparse.ArgumentParser, name: str) -> str | None:
     return next((choice.help for choice in subparsers._choices_actions if choice.dest == name), None)
 
 
-def test_cli_has_exactly_40_subcommands():
+def test_cli_has_exactly_39_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == set.union(*SUBCOMMAND_GROUPS.values())
-    assert len(subcommands) == 40
+    assert len(subcommands) == 39
 
 
 def test_every_subcommand_documents_itself():
@@ -184,8 +183,8 @@ def test_architecture_cli_triage_matches_parser_and_ownership():
 @pytest.mark.parametrize(
     ("original", "replacement"),
     [
-        ("40 subcommands", "38 subcommands"),
-        ("Kernel (29)", "Kernel (27)"),
+        ("39 subcommands", "37 subcommands"),
+        ("Kernel (28)", "Kernel (26)"),
         ("infer-launch, ", ""),
         ("infer-launch, ", "unknown-command, "),
         ("infer-launch, infer-stop", "infer-launch, infer-launch"),
@@ -204,7 +203,7 @@ def test_architecture_cli_triage_guard_rejects_drift(original: str, replacement:
 
 def test_architecture_cli_triage_guard_rejects_omission_with_matching_counts():
     document = (Path(cli.__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-    document = document.replace("40 subcommands", "39 subcommands").replace("Kernel (29)", "Kernel (28)")
+    document = document.replace("39 subcommands", "38 subcommands").replace("Kernel (28)", "Kernel (27)")
     document = document.replace("infer-launch, ", "", 1)
 
     with pytest.raises(AssertionError):
@@ -325,32 +324,6 @@ def test_experiment_note_cli_contract():
     assert args.remote is None
     assert "local YAML file path" in actions["entry"].help
     assert "inline text is not accepted" in actions["entry"].help
-
-
-def test_experiment_run_cli_contract():
-    parser, subcommands = _parser_contract()
-    actions = _actions(subcommands["experiment-run"])
-    args = parser.parse_args(["experiment-run", "--run-dir", "experiment", "--spec", "matrix.yaml"])
-
-    assert "managed evaluation pipeline" in subcommands["experiment-run"].description.lower()
-    assert {name for name, action in actions.items() if action.required} == {"run_dir", "spec"}
-    assert args.dry_run is True
-    assert args.execute is False
-    assert args.resume is False
-    assert args.unlock_final_test is False
-    assert args.poll_seconds == 60
-
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            ["experiment-run", "--run-dir", "experiment", "--spec", "matrix.yaml", "--dry-run", "--execute"]
-        )
-
-
-@pytest.mark.parametrize(("status", "exit_code"), [("completed", 0), ("failed", 1), ("blocked", 1)])
-def test_experiment_run_execute_exit_code_reflects_terminal_status(monkeypatch, status: str, exit_code: int):
-    monkeypatch.setattr(cli, "run_experiment_pipeline", lambda *_args, **_kwargs: {"status": status})
-
-    assert cli.main(["experiment-run", "--run-dir", "experiment", "--spec", "matrix.yaml", "--execute"]) == exit_code
 
 
 def test_hparam_adaptive_step_cli_contract():

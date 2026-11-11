@@ -182,27 +182,6 @@ def test_experiment_status_rejects_unexpected_final_external_test_script(tmp_pat
     assert _workspace_files(root) == before
 
 
-def test_experiment_status_rejects_pipeline_identity_on_ordinary_run(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _plan_dir, canonical = _add_plan(root, step_id="train")
-    canonical.update(
-        {
-            "pipeline_id": "pipeline-unit",
-            "job_id": "job-unit",
-            "attempt": "1",
-            "result_root": str(root / "pipeline-results" / "job-unit" / "attempt-001"),
-        }
-    )
-    write_rows(root / "run_manifest.tsv", [canonical])
-    before = _workspace_files(root)
-
-    with pytest.raises(ValueError, match="pipeline identity conflicts with its managed step"):
-        experiments.experiment_status(root)
-
-    assert _workspace_files(root) == before
-
-
 @pytest.mark.parametrize("allow_unresolved", [False, True])
 def test_experiment_status_skips_registered_blocked_plan_after_successful_retry(tmp_path, allow_unresolved):
     root = tmp_path / "experiment"
@@ -330,17 +309,10 @@ def test_experiment_status_allows_later_ordinary_plan_from_new_recipe(tmp_path):
     assert len(snapshot["decision"]["other_legal_actions"]) == 2
 
 
-@pytest.mark.parametrize(("adaptive", "pipeline"), [(True, False), (False, True)])
-def test_experiment_status_allows_controller_owned_recipe_path(tmp_path, adaptive, pipeline):
+def test_experiment_status_allows_controller_owned_recipe_path(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    plan_dir, _canonical = _add_plan(
-        root,
-        step_id="train",
-        task="hparam_tune" if adaptive else "finetune",
-        adaptive=adaptive,
-        pipeline=pipeline,
-    )
+    plan_dir, _canonical = _add_plan(root, step_id="train", task="hparam_tune", adaptive=True)
     plan_path = plan_dir / "plan.json"
     plan = json.loads(plan_path.read_text())
     plan["recipe"]["_recipe_path"] = str(root / "controller-recipe.yaml")

@@ -369,5 +369,4 @@ the unique run through the shared Slurm stop transaction. Repeated execute
 does not resubmit a queued, active, terminal, or uncertain run. The
 [Slurm evidence contract](run_manifest.md#slurm-scheduler-evidence) owns terminal
 and lost-receipt rules, including failures before the workload starts. This
-does not extend managed evaluation pipelines or migrate historical manually
-wrapped inference plans.
+does not migrate historical manually wrapped inference plans.

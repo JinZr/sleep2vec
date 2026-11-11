@@ -199,26 +199,16 @@ def test_experiment_status_launch_actions_and_manual_choice(tmp_path):
     assert multiple["decision"]["other_legal_actions"][0]["argv"] == ["bash", str(generic_plan / "run.sh")]
 
 
-@pytest.mark.parametrize(
-    ("adaptive", "pipeline", "code"),
-    [(True, False, "adaptive_phase_deferred"), (False, True, "pipeline_phase_deferred")],
-)
-def test_experiment_status_does_not_infer_adaptive_or_pipeline_launch(tmp_path, adaptive, pipeline, code):
+def test_experiment_status_does_not_infer_adaptive_launch(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    _add_plan(
-        root,
-        step_id="train",
-        task="hparam_tune" if adaptive else "finetune",
-        adaptive=adaptive,
-        pipeline=pipeline,
-    )
+    _add_plan(root, step_id="train", task="hparam_tune", adaptive=True)
 
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "blocked"
     assert snapshot["decision"]["recommended_next"] is None
-    assert snapshot["blockers"][0]["code"] == code
+    assert snapshot["blockers"][0]["code"] == "adaptive_phase_deferred"
     assert "v1" not in snapshot["blockers"][0]["message"]
 
 
@@ -245,21 +235,6 @@ def test_experiment_status_rejects_coherent_adaptive_recipe_downgrade(tmp_path):
     assert _workspace_files(root) == before
 
 
-def test_experiment_status_rejects_pipeline_identity_downgrade(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _plan_dir, canonical = _add_plan(root, step_id="evaluate", pipeline=True)
-    for field in ("pipeline_id", "job_id", "attempt", "result_root"):
-        canonical.pop(field)
-    write_rows(root / "run_manifest.tsv", [canonical])
-    before = _workspace_files(root)
-
-    with pytest.raises(ValueError, match="pipeline run identity is incomplete"):
-        experiments.experiment_status(root)
-
-    assert _workspace_files(root) == before
-
-
 def test_experiment_status_rejects_missing_step_controller_without_writing(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -281,16 +256,14 @@ def test_experiment_status_scopes_deferred_plans_away_from_ordinary_launch(tmp_p
     _init_workspace(root)
     ordinary, _row = _add_plan(root, step_id="ordinary")
     _add_plan(root, step_id="adaptive", task="hparam_tune", status="completed", adaptive=True)
-    _add_plan(root, step_id="pipeline", status="failed", pipeline=True)
 
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
     assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(ordinary / "run.sh")]
-    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize", "pipeline_advance"]
+    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize"]
     assert {(blocker["code"], blocker["step_id"]) for blocker in snapshot["blockers"]} == {
         ("adaptive_phase_deferred", "adaptive"),
-        ("pipeline_phase_deferred", "pipeline"),
     }
 
 
@@ -341,7 +314,7 @@ def test_experiment_status_keeps_multiple_ordinary_candidates_with_deferred_plan
     _init_workspace(root)
     first, _row = _add_plan(root, step_id="first")
     second, _row = _add_plan(root, step_id="second")
-    _add_plan(root, step_id="pipeline", status="completed", pipeline=True)
+    _add_plan(root, step_id="adaptive", task="hparam_tune", status="completed", adaptive=True)
 
     snapshot = experiments.experiment_status(root)
 
@@ -352,7 +325,7 @@ def test_experiment_status_keeps_multiple_ordinary_candidates_with_deferred_plan
         ["bash", str(first / "run.sh")],
         ["bash", str(second / "run.sh")],
     ]
-    assert snapshot["decision"]["blocked_actions"] == ["finalize", "pipeline_advance"]
+    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize"]
 
 
 @pytest.mark.parametrize(
@@ -388,39 +361,6 @@ def test_experiment_status_attributes_blockers_by_full_managed_run_key(tmp_path)
     assert blockers_by_step["terminal"] == []
 
 
-def test_experiment_status_defers_terminal_pipeline_finalization(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="evaluate", status="failed", pipeline=True)
-
-    snapshot = experiments.experiment_status(root)
-
-    assert snapshot["summary"]["state"] == "blocked"
-    assert snapshot["decision"]["recommended_next"] is None
-    assert snapshot["decision"]["other_legal_actions"] == []
-    assert snapshot["decision"]["blocked_actions"] == ["finalize", "pipeline_advance"]
-    assert snapshot["blockers"][0]["code"] == "pipeline_phase_deferred"
-
-    manifest = yaml.safe_load((root / "experiment.yaml").read_text())
-    manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
-    (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
-    with pytest.raises(ValueError, match="cannot be verified for adaptive or pipeline plans") as exc_info:
-        experiments.experiment_status(root)
-    assert "v1" not in str(exc_info.value)
-
-
-def test_experiment_status_rejects_completed_pipeline_with_successful_attempt(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="evaluate", status="completed", pipeline=True)
-    manifest = yaml.safe_load((root / "experiment.yaml").read_text())
-    manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
-    (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
-
-    with pytest.raises(ValueError, match="cannot be verified for adaptive or pipeline plans"):
-        experiments.experiment_status(root)
-
-
 def test_experiment_status_defers_terminal_adaptive_finalization(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -437,8 +377,9 @@ def test_experiment_status_defers_terminal_adaptive_finalization(tmp_path):
     manifest = yaml.safe_load((root / "experiment.yaml").read_text())
     manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
     (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
-    with pytest.raises(ValueError, match="cannot be verified for adaptive or pipeline plans"):
+    with pytest.raises(ValueError, match="cannot be verified for adaptive plans") as exc_info:
         experiments.experiment_status(root)
+    assert "v1" not in str(exc_info.value)
 
 
 def test_experiment_status_rejects_completed_mixed_ordinary_and_deferred_plans(tmp_path):
@@ -450,5 +391,5 @@ def test_experiment_status_rejects_completed_mixed_ordinary_and_deferred_plans(t
     manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
     (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
 
-    with pytest.raises(ValueError, match="cannot be verified for adaptive or pipeline plans"):
+    with pytest.raises(ValueError, match="cannot be verified for adaptive plans"):
         experiments.experiment_status(root)

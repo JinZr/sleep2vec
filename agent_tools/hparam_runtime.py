@@ -354,7 +354,6 @@ def _launch_hparam_runs(
         runtime,
         dry_run=dry_run,
         fail_on_missing_pid_blocker=fail_on_missing_pid_blocker,
-        default_script_commits_terminal_status=False,
         projection_writer=write_projections,
         hooks=launch_hooks,
         lock_held=manifest_lock_held,

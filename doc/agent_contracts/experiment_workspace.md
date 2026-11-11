@@ -28,7 +28,6 @@ Read by question:
 │   ├── hparam_selection.md
 │   ├── experiment_ranking.csv
 │   └── final.md
-├── pipelines/<pipeline-id>/  # optional managed evaluation-pipeline state
 ├── steps/<step.id>/step.yaml
 └── <plan directory>/
     ├── recipe.resolved.yaml
@@ -42,8 +41,6 @@ Read by question:
         └── artifacts.json
 ```
 
-The pipeline owns its [internal artifact tree](experiment_pipeline.md#invocation-and-frozen-state).
-
 ## Ownership and paths
 
 `experiment.yaml` records a stable id, title, objective, canonical root, and
@@ -51,10 +48,10 @@ explicit baseline. Experiment and step ids use lowercase letters, digits,
 hyphens, and underscores. Step phase is one of `prepare`, `train`, `evaluate`,
 or `analyze`. Every step file uses the shared
 `{step, experiment_id, plan_controller, recipe_path, plans}` envelope.
-`plan_controller` is the only owner of whether the step is `ordinary`,
-`adaptive`, or `pipeline`. `experiment-register-step` initially records
-`unassigned` with no recipe or plans; the first planner or pipeline freeze may
-bind it to one concrete owner, and that binding cannot later change.
+`plan_controller` is the only owner of whether the step is `ordinary` or
+`adaptive`. `experiment-register-step` initially records `unassigned` with no
+recipe or plans; the first planner may bind it to one concrete owner, and that
+binding cannot later change.
 
 Existing experiment and step metadata are read through the workspace owner and
 merged through their reducers. Missing files may be created only by their
@@ -219,9 +216,8 @@ Commit drift does not authorize mutation of registered recipes, plans, configs,
 scripts, or `execution_snapshot.json`. `execution.runtime_commit` remains the
 planned/baseline commit, and a different launch-time HEAD is recorded and
 warned rather than blocked. `runtime-sync` itself still requires a clean tree
-without untracked or ignored importable code. Hparam, ordinary Slurm, and
-pipeline managed-attempt launches retain their owner-specific managed-scheduler
-gates. Managed direct launch checks stable Python/route/module origin, live argv,
+without untracked or ignored importable code. Hparam and ordinary Slurm
+launches retain their owner-specific managed-scheduler gates. Managed direct launch checks stable Python/route/module origin, live argv,
 clean code, and artifact hashes before starting. Commit drift remains allowed.
 The Slurm allocation
 recheck requires the current module to remain inside the current repository with
@@ -401,7 +397,6 @@ fact should not create an entry.
 | `hparam-select` | Commit step-scoped ranking/selection; [selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers). |
 | `hparam-adaptive-*` | Tool-owned round publication and advancement; [adaptive workflow](hparam_workflow.md#adaptive-workflow). |
 | `experiment-note` | Append an evidence-backed [research note](#research-log), no lifecycle change. |
-| `experiment-run` | Explicit resumable [managed evaluation pipeline](experiment_pipeline.md); dry-run starts nothing. |
 | `experiment-status` | Validate and display the [read-only snapshot](#read-only-status-and-advisory-actions). |
 | `experiment-rank`, `experiment-finalize` | Write experiment ranking; commit completion only under [finalization](#finalization). |
 
@@ -411,7 +406,7 @@ one observation round. Its terminal CLI summary projects structured failure
 evidence from `run_status.tsv`, not a second lifecycle interpretation or a new
 log read. Raw recorded `log_tail` is printed only with `--include-log-tail`
 because it may contain sensitive data. Neither continuous nor single-round
-monitoring launches pending work, including pipeline jobs.
+monitoring launches pending work.
 
 ## Read-only status and advisory actions
 
@@ -420,7 +415,7 @@ step and frozen plan control bundle, and canonical `run_manifest.tsv`, then
 prints a deterministic snapshot. It may display already-recorded scheduler,
 process, health, checkpoint and runtime-manifest fields but never refreshes
 them. `run_status.tsv`, `launch_manifest.tsv`, events, logs, runtime manifests,
-W&B and adaptive/pipeline controller state are not alternate lifecycle inputs.
+W&B and adaptive controller state are not alternate lifecycle inputs.
 Modern hparam selection reports, shared rankings and plan-local checkpoint
 audits are read only as hash-bound consistency evidence for canonical selection
 rows. Status does not read checkpoint contents or write workspace state.
@@ -453,17 +448,16 @@ remain readable. Plans bind the registered step's core `id`, `phase`, `purpose`;
 manifest-owned `inputs` and `outputs` remain valid metadata.
 
 Only step `plan_controller` classifies launch advice and controller-deferred
-blockers; frozen recipes and canonical pipeline identity must agree with it.
-Active adaptive/pipeline plans defer their own advance/finalize actions without
-blocking unrelated ordinary launch advice. Status's read-set contains no
-controller completion proof, so completed experiment metadata with any adaptive
-or pipeline plan is corrupt under this read-set. A registered step with no
+blockers; frozen recipes must agree with it. Active adaptive plans defer their
+own advance/finalize actions without blocking unrelated ordinary launch advice.
+Status's read-set contains no controller completion proof, so completed
+experiment metadata with any adaptive plan is corrupt under this read-set. A registered step with no
 materialized plan and no canonical rows also blocks finalization; completed
 metadata cannot prove the declared work was absent or finished.
 
-These status blockers do not revoke controller finalize callbacks: an adaptive
-or pipeline controller that validates its own frozen terminal state may call
-`experiment-finalize`. The direct finalizer independently rejects unmaterialized
+These status blockers do not bind `experiment-finalize`: once an adaptive
+controller has validated its own frozen terminal state, the experiment may be
+finalized. The direct finalizer independently rejects unmaterialized
 steps rather than treating status's incomplete controller read-set as proof.
 A canonical `stopped` row without non-empty `stop_reason` blocks finalize advice
 and makes completed metadata corrupt; the finalizer enforces the same boundary.

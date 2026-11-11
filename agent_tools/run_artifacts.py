@@ -330,7 +330,6 @@ def read_registered_plan(
         task=task,
         runs=runs,
         workspace_rows=workspace_rows,
-        plan_controller=plan_controller,
     )
 
     bundle_paths = []
@@ -595,7 +594,6 @@ def _validate_registered_workspace_runs(
     task: Any,
     runs: list[dict[str, Any]],
     workspace_rows: list[dict[str, Any]],
-    plan_controller: str,
 ) -> None:
     canonical_by_key = {managed_run_key(row): row for row in workspace_rows}
     for run in runs:
@@ -606,24 +604,15 @@ def _validate_registered_workspace_runs(
             raise ValueError(f"Workspace run_manifest.tsv is missing registered plan run: {key[0]} / {key[1]}")
         if canonical.get("status") in (None, ""):
             raise ValueError(f"Workspace run manifest is missing status: {key[0]} / {key[1]}")
-        pipeline_fields = ("pipeline_id", "job_id", "attempt", "result_root")
-        pipeline_values = [_text_value(canonical.get(field)) for field in pipeline_fields]
-        if plan_controller == "pipeline":
-            if task == "hparam_tune" or not all(pipeline_values) or canonical.get("terminal_status_owner") != "script":
-                raise ValueError(f"Workspace pipeline run identity is incomplete: {key[0]} / {key[1]}")
-        elif any(pipeline_values):
-            raise ValueError(f"Workspace run pipeline identity conflicts with its managed step: {key[0]} / {key[1]}")
         identity_fields = list(REGISTERED_PLAN_IDENTITY_FIELDS)
         if task == "hparam_tune":
             identity_fields.extend(("parameter_summary", "terminal_status_owner", "input_snapshots"))
         else:
-            identity_fields.append("input_snapshots")
+            identity_fields.extend(("input_snapshots", "terminal_status_owner"))
             if _text_value(canonical.get("parameter_summary")) != "single resolved recipe":
                 raise ValueError(
                     f"Workspace run manifest differs from plan field parameter_summary: {key[0]} / {key[1]}"
                 )
-            if plan_controller != "pipeline":
-                identity_fields.append("terminal_status_owner")
         if run.get("scheduler_type") == "slurm":
             identity_fields.append("log_path")
         for field in identity_fields:
